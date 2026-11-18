@@ -110,6 +110,8 @@ abstract class StudioTransport
         BootstrapTransport,
         DirectoryFeedPort,
         ConversationTransport,
+        CurrentTransport,
+        HistoryTransport,
         CommandTransport,
         ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.

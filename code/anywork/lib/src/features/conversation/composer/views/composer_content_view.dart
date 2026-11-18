@@ -159,6 +159,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
     return ComposerDockView(
       compact: widget.compact,
       additionalDiagnostics: [
+        if (thread.interactionReadError case final error?) Text('$error'),
         for (final diagnostic in thread.additionalDiagnostics)
           if (diagnostic != thread.targetDiagnostic)
             ComposerTargetDiagnosticView(diagnostic: diagnostic),

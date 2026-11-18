@@ -35,7 +35,6 @@ use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::AppState;
-use crate::conversation;
 use crate::error::ApiError;
 use crate::sse;
 use crate::timeline;
@@ -52,11 +51,11 @@ use pl_studio_runtime::{
     ),
     components(schemas(
         StudioError,
-        pl_studio_runtime::ActivitySnapshot,
-        pl_studio_runtime::ActivityEntry,
-        pl_studio_runtime::ActivityIdentity,
-        pl_studio_runtime::ChatScope,
-        pl_studio_runtime::DisplayMemberBatch
+        pl_studio_runtime::CurrentView,
+        pl_studio_runtime::CurrentFrame,
+        pl_studio_runtime::CurrentProjection,
+        pl_studio_runtime::CurrentCollectionPage,
+        pl_studio_runtime::ChatScope
     ))
 )]
 struct StudioApi;
@@ -357,21 +356,26 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(thread_mode_definition_schema))
         .routes(routes!(preview_thread_mode_workflow))
         .routes(routes!(set_thread_model_route))
-        .routes(routes!(list_thread_turns))
-        .routes(routes!(conversation::older))
-        .routes(routes!(timeline::open))
-        .routes(routes!(timeline::next))
-        .routes(routes!(timeline::older))
-        .routes(routes!(timeline::live_older))
-        .routes(routes!(timeline::close))
-        .routes(routes!(timeline::members))
-        .routes(routes!(conversation::completed))
-        .routes(routes!(conversation::manifest))
-        .routes(routes!(conversation::read))
-        .routes(routes!(conversation::current))
-        .routes(routes!(conversation::legacy_evidence))
-        .routes(routes!(conversation::legacy_evidence_content))
-        .routes(routes!(sse::watch_content))
+        .routes(routes!(timeline::open_history))
+        .routes(routes!(timeline::capture))
+        .routes(routes!(timeline::timeline))
+        .routes(routes!(timeline::group))
+        .routes(routes!(timeline::turns))
+        .routes(routes!(timeline::events))
+        .routes(routes!(timeline::event))
+        .routes(routes!(timeline::bodies))
+        .routes(routes!(timeline::body))
+        .routes(routes!(timeline::costs))
+        .routes(routes!(timeline::accounting))
+        .routes(routes!(timeline::changed))
+        .routes(routes!(timeline::close_history))
+        .routes(routes!(timeline::open_current))
+        .routes(routes!(timeline::snapshot))
+        .routes(routes!(timeline::watch))
+        .routes(routes!(timeline::page))
+        .routes(routes!(timeline::body_read))
+        .routes(routes!(timeline::body_watch))
+        .routes(routes!(timeline::close_current))
         .routes(routes!(submit_prompt))
         .routes(routes!(admit_attachment_drafts))
         .routes(routes!(remove_attachment_draft))
@@ -441,8 +445,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_update))
         .routes(routes!(check_update))
         .routes(routes!(sse::product_events))
-        .routes(routes!(sse::thread_events))
-        .routes(routes!(sse::thread_state_events))
         .merge(crate::bots::bot_routes())
         .merge(crate::acp_business::routes())
         .merge(attachment_upload)
@@ -788,21 +790,6 @@ async fn preview_thread_mode_workflow(
         state
             .runtime
             .preview_thread_mode_workflow(request)
-            .map_err(ApiError::from)?,
-    ))
-}
-
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/turns", operation_id = "thread.listTurns", params(("thread_id" = String, Path), ("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn list_thread_turns(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ThreadPageQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .list_thread_turns(&thread_id, query.cursor.as_deref(), query.limit())
-            .await
             .map_err(ApiError::from)?,
     ))
 }

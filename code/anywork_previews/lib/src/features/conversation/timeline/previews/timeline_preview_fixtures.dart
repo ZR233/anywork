@@ -7,6 +7,20 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 
+final class TimelinePreviewRunEntry {
+  const TimelinePreviewRunEntry({
+    required this.id,
+    required this.order,
+    required this.atom,
+    required this.memberCount,
+  });
+
+  final String id;
+  final int order;
+  final ChatAtom atom;
+  final int memberCount;
+}
+
 /// Synthetic immutable presentation values. They exercise production widgets
 /// only and do not model a repository, runtime, provider or native bridge.
 abstract final class TimelinePreviewFixtures {
@@ -26,17 +40,16 @@ abstract final class TimelinePreviewFixtures {
     ),
   );
 
-  static final deferredUserInput = ChatItemPresentation.forUnit(
+  static final longUserInputItem = ChatItemPresentation.forUnit(
     TimelineDisplayUnit(
       block: DisplayBlock(
         id: 'preview-user-deferred',
         blockOrder: 1,
         body: SingleDisplayBlock(
-          visibility: SingleVisibility.content,
+          visibility: HistorySingleVisibility.content,
           record: DisplayRecord(
             atom: ChatAtom(
               id: 'preview-user-deferred',
-              completionItemId: 'preview-user-deferred',
               source: const InputChatSource(inputId: 'preview-input'),
               sourceOrder: 1,
               kind: ChatAtomKind.input,
@@ -52,12 +65,10 @@ abstract final class TimelinePreviewFixtures {
                   reference: userBodyReference,
                 ),
               ],
-              payload: const DeferredPayload(
-                reference: ContentRef(
-                  databaseId: 'preview',
-                  target: ItemPayloadTarget(itemId: 'preview-user-deferred'),
-                ),
-                byteLength: 90000,
+              payload: _payload(
+                'text',
+                const {'channel': 'user', 'attachments': []},
+                bodies: [body('body', longUserInput)],
               ),
             ),
             contentSource: CompletedOriginal(
@@ -376,24 +387,6 @@ abstract final class TimelinePreviewFixtures {
       sealedAt: 1735689602,
     ),
   );
-  static final overlapText = CompletedEntry(
-    recordId: 'preview-overlap-T',
-    completionSeq: 1,
-
-    atom: overlapTextAtom,
-  );
-  static final overlapActivity = ActivitySnapshot(
-    revision: 1,
-    completedThrough: 1,
-    executionPresent: true,
-    entries: [
-      ActivityEntry(
-        identity: ModelPartActivityIdentity(atomId: activeReasoning.id),
-        atom: activeReasoning,
-      ),
-    ],
-  );
-
   static const mediaSource = ForegroundTurnChatSource(
     turnId: 'preview-media-turn',
   );
@@ -526,45 +519,52 @@ abstract final class TimelinePreviewFixtures {
   );
   static final mediaGroup = runEntry('preview-media-group', 3, count: 3);
 
-  static CompletedEntry runEntry(String id, int seq, {int count = 1}) =>
-      CompletedEntry(
-        recordId: id,
-        completionSeq: seq,
-
-        atom: ChatAtom(
-          id: id,
-          completionItemId: id,
-          completionSeq: seq,
-          source: groupSource,
-          sourceOrder: null,
-          kind: ChatAtomKind.toolCall,
-          delivery: ChatDeliveryKind.foreground,
-          lifecycle: const TerminalChatAtom(
-            started: null,
-            ended: null,
-            outcome: ChatTerminalOutcome.completed,
-          ),
-          contents: const [],
-          payload: DeferredPayload(
-            reference: ContentRef(
-              databaseId: 'preview',
-              target: ItemPayloadTarget(itemId: id),
-            ),
-            byteLength: 100,
-          ),
+  static TimelinePreviewRunEntry runEntry(
+    String id,
+    int seq, {
+    int count = 1,
+  }) => TimelinePreviewRunEntry(
+    id: id,
+    order: seq,
+    memberCount: count,
+    atom: ChatAtom(
+      id: id,
+      source: groupSource,
+      sourceOrder: null,
+      kind: ChatAtomKind.toolCall,
+      delivery: ChatDeliveryKind.foreground,
+      lifecycle: const TerminalChatAtom(
+        started: null,
+        ended: null,
+        outcome: ChatTerminalOutcome.completed,
+      ),
+      contents: const [],
+      payload: DeferredPayload(
+        reference: ContentRef(
+          databaseId: 'preview',
+          target: ItemPayloadTarget(itemId: id),
         ),
-      );
-  static TimelineDisplayUnit runUnit(CompletedEntry entry) =>
+        byteLength: 100,
+      ),
+    ),
+  );
+  static TimelineDisplayUnit runUnit(TimelinePreviewRunEntry entry) =>
       TimelineDisplayUnit(
         block: DisplayBlock(
-          id: entry.recordId,
-          blockOrder: entry.completionSeq,
+          id: entry.id,
+          blockOrder: entry.order,
           body: WorkDisplayBlock(
             timing: workTiming(),
             members: DisplayBlockRef(
-              databaseId: 'preview',
-              blockId: entry.recordId,
+              blockId: entry.id,
+              cut: HistoryCut('preview-cut'),
+              anchorSeq: entry.order,
+              headSeq: entry.order,
             ),
+            executionPresent: false,
+            memberCount: entry.memberCount,
+            unfinishedCount: 0,
+            groupClosed: true,
           ),
         ),
       );
@@ -842,7 +842,6 @@ abstract final class TimelinePreviewFixtures {
     );
     final atom = ChatAtom(
       id: id,
-      completionItemId: id,
       source: InboxMessageChatSource(
         sourceId: 'agent:preview-parent',
         messageId: id,
@@ -872,7 +871,7 @@ abstract final class TimelinePreviewFixtures {
           id: id,
           blockOrder: order,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: atom,
               contentSource: CompletedOriginal(completionId: id),

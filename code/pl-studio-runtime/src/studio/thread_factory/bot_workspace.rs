@@ -88,7 +88,7 @@ impl StudioThreadFactory {
         let snapshot = match snapshot {
             Some(snapshot) => snapshot,
             None => {
-                loaded = super::recovery::load_checkpoint_read_only(&self.services.store, thread)
+                loaded = super::recovery::load_current_read_only(&self.services.store, thread)
                     .await
                     .map_err(|error| resource_error("read saved bot child admission", error))?
                     .ok_or_else(|| {
@@ -96,8 +96,10 @@ impl StudioThreadFactory {
                             &thread.id,
                             "bot child has no saved workspace receipt",
                         )
-                    })?;
-                &loaded.state
+                    })?
+                    .state
+                    .to_paused_snapshot();
+                &loaded
             }
         };
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
@@ -221,14 +223,12 @@ fn bot_workspace_refusal(id: &str, reason: &str) -> ThreadAssemblyError {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
-    use crate::studio::storage_fault_test_support::{
-        ThreadStorageSink, close_factory, spawn_live_projection,
-    };
+    use crate::studio::storage_fault_test_support::close_factory;
     use crate::thread_assembler::{
         StudioActivationFactory, StudioChildResources, ThreadActivation, ThreadPreparation,
     };
     use anyhow::{Context, Result};
-    use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle, extensions::ExtensionMutation};
+    use pl_core::thread::{ThreadHandle, extensions::ExtensionMutation};
     use pl_tool::workspace::SessionFiles;
 
     #[tokio::test]
@@ -502,7 +502,7 @@ mod migration_tests {
         assert!(store.workspace_identity(&request.id).await?.is_none());
         assert!(!tokio::fs::try_exists(managed.join(SessionFiles::new(&request.id).root())).await?);
 
-        // An old incompatible checkpoint is rejected before instruction/route migration, binding
+        // An old incompatible current is rejected before instruction/route migration, binding
         // changes or tools. Its original history and exact execution files remain available.
         let mut old = other.clone();
         old.id = "legacy-bot-worktree".into();
@@ -527,10 +527,24 @@ mod migration_tests {
             review_target: None,
         };
         profile.profile.workspace_mode = AgentWorkspaceMode::Worktree;
-        let core = ThreadHandle::resume_without_model(old.id.clone(), None)?;
-        let sink = ThreadStorageSink::new(store.clone(), old.clone(), None).await?;
-        spawn_live_projection(&sink);
-        core.attach_storage(ColdStoreHandle::new(sink)).await?;
+        let core = ThreadHandle::restore_current(
+            pl_core::thread::current::ThreadCurrent::new(
+                old.id.clone(),
+                pl_core::thread::current::RuntimeEpoch::new(),
+            ),
+            None,
+        )?;
+        let epoch = core.runtime_epoch();
+        let mut current_store = store.state_for(&old.workspace_id, &old.id)?;
+        current_store
+            .attach_current(
+                store.thread_persistence().clone(),
+                None,
+                epoch,
+                crate::studio::storage::current_writer::CurrentSource::from_thread(core.clone()),
+            )
+            .await?;
+
         core.mutate_extensions(vec![
             ExtensionMutation::Put {
                 id: crate::studio::workspace_receipt::EXTENSION.into(),
@@ -545,14 +559,15 @@ mod migration_tests {
             },
         ])
         .await?;
-        core.close().await?;
-        store
-            .thread_persistence()
-            .history_channel(&old.id)
-            .stop_and_join()
+        current_store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
             .await?;
-        let history = store.history(&old.id).await?;
-        let before = serde_json::to_vec(&history.checkpoint().await?)?;
+        let current = store
+            .state_for(&old.workspace_id, &old.id)?
+            .load_current()
+            .await?
+            .context("closed fixture current")?;
+        let before = serde_json::to_vec(&current)?;
         let old_files = other_root.join(SessionFiles::new(&old.id).root());
         tokio::fs::create_dir_all(&old_files).await?;
         tokio::fs::write(old_files.join("original"), b"old identity preserved").await?;
@@ -573,7 +588,16 @@ mod migration_tests {
             .await,
             Err(ThreadAssemblyError::Workspace { .. })
         ));
-        assert_eq!(serde_json::to_vec(&history.checkpoint().await?)?, before);
+        assert_eq!(
+            serde_json::to_vec(
+                &store
+                    .state_for(&old.workspace_id, &old.id)?
+                    .load_current()
+                    .await?
+                    .context("preserved fixture current")?
+            )?,
+            before
+        );
         assert_eq!(
             tokio::fs::read(old_files.join("original")).await?,
             b"old identity preserved"
@@ -673,10 +697,26 @@ mod migration_tests {
             let extensions = spec.initial_extensions.clone();
             drop(spec);
             request.workspace_owner = Default::default();
-            let core = ThreadHandle::resume_without_model(registered.id.clone(), None)?;
-            let sink = ThreadStorageSink::new(store.clone(), registered.clone(), None).await?;
-            spawn_live_projection(&sink);
-            core.attach_storage(ColdStoreHandle::new(sink)).await?;
+            let core = ThreadHandle::restore_current(
+                pl_core::thread::current::ThreadCurrent::new(
+                    registered.id.clone(),
+                    pl_core::thread::current::RuntimeEpoch::new(),
+                ),
+                None,
+            )?;
+            let epoch = core.runtime_epoch();
+            let mut current_store = store.state_for(&registered.workspace_id, &registered.id)?;
+            current_store
+                .attach_current(
+                    store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        core.clone(),
+                    ),
+                )
+                .await?;
+
             core.mutate_extensions(
                 extensions
                     .into_iter()
@@ -688,19 +728,15 @@ mod migration_tests {
                     .collect(),
             )
             .await?;
-            core.flush().await?;
-            prepared.push((registered, core));
+            prepared.push((registered, core, current_store, epoch));
         }
-        for (registered, core) in prepared.into_iter().rev() {
+        for (registered, core, current_store, epoch) in prepared.into_iter().rev() {
             factory
                 .begin_child_close(&registered, Some(&core.snapshot()), false)
                 .await?;
             factory.begin_child_close(&registered, None, false).await?;
-            core.close().await?;
-            store
-                .thread_persistence()
-                .history_channel(&registered.id)
-                .stop_and_join()
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
                 .await?;
             factory.finish_child_execution(&registered).await?;
             factory.finish_child_worktree_cleanup(&registered).await?;
@@ -712,9 +748,8 @@ mod migration_tests {
             );
             assert!(
                 store
-                    .history(&registered.id)
-                    .await?
-                    .checkpoint()
+                    .state_for(&registered.workspace_id, &registered.id)?
+                    .load_current()
                     .await?
                     .is_some()
             );

@@ -67,16 +67,15 @@ pub(crate) struct CardStreamRow {
     pub state_json: String,
 }
 
-/// One canonical input of a Thread, projected from the durable checkpoint.
+/// One canonical input of a Thread, projected from the durable Current.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ThreadInputRow {
-    /// Thread identity of the checkpoint these facts came from.
+    /// Thread identity of the Current these facts came from.
     pub thread_id: String,
     /// Read-only database the row was read from, for diagnostics.
     pub source: String,
     pub id: String,
     pub ordinal: u64,
-    pub accepted_sequence: u64,
     /// Latest immutable state revision of this input.
     pub revision: u64,
     /// Content digest of a terminal identity; a resident record carries none.
@@ -100,210 +99,94 @@ pub(crate) enum ThreadInputState {
     Discarded,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CheckpointProjection {
-    thread_id: String,
-    state: CheckpointStateProjection,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CheckpointStateProjection {
-    // Required: a checkpoint without the queue arrays is not the current shape.
-    // This is a read-only projection of the current schema, not a full decoder.
-    inputs: Vec<InputRecordProjection>,
-    /// Bounded tail of minimal identities for inputs that already reached a
-    /// terminal state; a consumed input may only be visible here.
-    terminal_inputs: Vec<InputIdentityProjection>,
-}
-
-/// `InputIdentity` as `pl-core` serializes it (camelCase, all fields required).
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InputIdentityProjection {
-    pub(crate) digest: String,
-    pub(crate) delivery: InputDeliveryProjection,
-    pub(crate) id: String,
-    pub(crate) ordinal: u64,
-    pub(crate) revision: u64,
-    pub(crate) state: InputStateProjection,
-}
-
-/// `InputRecord` as `pl-core` serializes it (camelCase, all fields required).
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InputRecordProjection {
-    pub(crate) accepted_sequence: u64,
-    pub(crate) delivery: InputDeliveryProjection,
-    pub(crate) input: InputBodyProjection,
-    pub(crate) ordinal: u64,
-    pub(crate) revision: u64,
-    pub(crate) state: InputStateProjection,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InputBodyProjection {
-    pub(crate) id: String,
-}
-
-/// `InputDelivery` as `pl-core` serializes it: internally tagged with a `value`.
-#[derive(serde::Deserialize)]
-#[serde(
-    tag = "kind",
-    content = "value",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub(crate) enum InputDeliveryProjection {
-    NextTurn,
-    CurrentTurn { turn_id: String },
-}
-
-impl InputDeliveryProjection {
-    fn typed(&self) -> ThreadInputDelivery {
-        match self {
-            Self::NextTurn => ThreadInputDelivery::NextTurn,
-            Self::CurrentTurn { turn_id } => ThreadInputDelivery::CurrentTurn {
+/// Reads the exact persisted input queues from the complete Current JSON.
+/// History sequences are deliberately absent from this observation.
+pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<ThreadInputRow>> {
+    use pl_core::thread::{
+        current::ThreadCurrent,
+        input::{InputDelivery, InputState},
+    };
+    fn delivery(value: &InputDelivery) -> ThreadInputDelivery {
+        match value {
+            InputDelivery::NextTurn => ThreadInputDelivery::NextTurn,
+            InputDelivery::CurrentTurn { turn_id } => ThreadInputDelivery::CurrentTurn {
                 turn_id: turn_id.clone(),
             },
         }
     }
-}
-
-/// Current tagged encoding only; an unknown or missing tag is an error.
-#[derive(serde::Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-enum InputStateProjection {
-    Pending,
-    Consumed {
-        turn_id: String,
-        // Decoded to prove the current tagged shape stays complete; the attempt
-        // identity itself is not asserted here.
-        #[allow(dead_code)]
-        attempt_id: String,
-    },
-    Discarded,
-}
-
-/// Reads the canonical inputs of one Thread from its durable checkpoint.
-///
-/// The public Thread snapshot publishes no input list, so acceptance reads the
-/// same checkpoint the runtime resumes from. The projection is a local strict
-/// type over the current schema: a missing checkpoint row, an unknown input state
-/// tag, or an unreadable database is an error, never an empty result. Only the
-/// requested Thread is returned, and a second Thread in the same database is
-/// reported as a conflict instead of being silently mixed.
-pub(crate) async fn thread_inputs(home: &Path, thread_id: &str) -> Result<Vec<ThreadInputRow>> {
-    let mut databases = Vec::new();
-    collect_history_databases(home, 0, &mut databases)?;
-    let mut rows: Option<(String, Vec<ThreadInputRow>)> = None;
-    for path in databases {
-        let mut connection = connect(&path).await.with_context(|| {
-            format!(
-                "failed to open the Thread checkpoint database {}",
-                path.display()
-            )
-        })?;
-        let selected = sea_orm::sqlx::query("SELECT payload FROM session_checkpoint")
-            .fetch_all(&mut connection)
+    fn state(value: &InputState) -> ThreadInputState {
+        match value {
+            InputState::Pending => ThreadInputState::Pending,
+            InputState::Consumed { turn_id, .. } => ThreadInputState::Consumed {
+                turn_id: turn_id.clone(),
+            },
+            InputState::Discarded => ThreadInputState::Discarded,
+        }
+    }
+    let mut paths = Vec::new();
+    collect_current_files(home, 0, &mut paths)?;
+    let mut result = None;
+    for path in paths {
+        let bytes = tokio::fs::read(&path)
             .await
-            .with_context(|| format!("failed to read session_checkpoint in {}", path.display()))?;
-        connection
-            .close()
-            .await
-            .with_context(|| format!("failed to close {}", path.display()))?;
-        for row in selected {
-            let payload = row
-                .try_get::<String, _>(0)
-                .with_context(|| format!("checkpoint payload missing in {}", path.display()))?;
-            let checkpoint: CheckpointProjection =
-                serde_json::from_str(&payload).with_context(|| {
-                    format!("checkpoint payload is unreadable in {}", path.display())
-                })?;
-            if checkpoint.thread_id != thread_id {
-                continue;
-            }
-            let mut thread_rows = Vec::new();
-            let terminal = checkpoint.state.terminal_inputs.iter().map(|input| {
-                let state = match &input.state {
-                    InputStateProjection::Pending => ThreadInputState::Pending,
-                    InputStateProjection::Consumed { turn_id, .. } => ThreadInputState::Consumed {
-                        turn_id: turn_id.clone(),
-                    },
-                    InputStateProjection::Discarded => ThreadInputState::Discarded,
-                };
-                ThreadInputRow {
-                    thread_id: checkpoint.thread_id.clone(),
+            .with_context(|| format!("read Current {}", path.display()))?;
+        let envelope: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let saved_thread_id = envelope["threadId"]
+            .as_str()
+            .context("saved Current omitted its Thread identity")?;
+        let saved = ThreadCurrent::from_json(&bytes, saved_thread_id)?;
+        if saved.thread_id != thread_id {
+            continue;
+        }
+        anyhow::ensure!(result.is_none(), "duplicate Current identity {thread_id}");
+        let mut rows = saved
+            .state
+            .inputs
+            .iter()
+            .map(|input| ThreadInputRow {
+                thread_id: saved.thread_id.clone(),
+                source: path.display().to_string(),
+                id: input.input.id.clone(),
+                ordinal: input.ordinal,
+                revision: input.revision,
+                digest: None,
+                delivery: delivery(&input.delivery),
+                state: state(&input.state),
+            })
+            .collect::<Vec<_>>();
+        rows.extend(
+            saved
+                .state
+                .terminal_inputs
+                .iter()
+                .map(|input| ThreadInputRow {
+                    thread_id: saved.thread_id.clone(),
                     source: path.display().to_string(),
                     id: input.id.clone(),
                     ordinal: input.ordinal,
-                    accepted_sequence: 0,
                     revision: input.revision,
                     digest: Some(input.digest.clone()),
-                    delivery: input.delivery.typed(),
-                    state,
-                }
-            });
-            for input in checkpoint.state.inputs {
-                let state = match input.state {
-                    InputStateProjection::Pending => ThreadInputState::Pending,
-                    InputStateProjection::Consumed { turn_id, .. } => {
-                        ThreadInputState::Consumed { turn_id }
-                    }
-                    InputStateProjection::Discarded => ThreadInputState::Discarded,
-                };
-                thread_rows.push(ThreadInputRow {
-                    thread_id: checkpoint.thread_id.clone(),
-                    source: path.display().to_string(),
-                    id: input.input.id,
-                    ordinal: input.ordinal,
-                    accepted_sequence: input.accepted_sequence,
-                    revision: input.revision,
-                    digest: None,
-                    delivery: input.delivery.typed(),
-                    state,
-                });
-            }
-            thread_rows.extend(terminal);
-            match rows {
-                Some((seen, _)) if seen != checkpoint.thread_id => {
-                    anyhow::bail!("checkpoint databases disagree on the Thread identity")
-                }
-                Some((_, existing)) => {
-                    anyhow::bail!(
-                        "the Thread {thread_id} appears in more than one checkpoint database ({} rows so far, {} in {})",
-                        existing.len(),
-                        thread_rows.len(),
-                        path.display()
-                    )
-                }
-                None => rows = Some((checkpoint.thread_id, thread_rows)),
-            }
-        }
+                    delivery: delivery(&input.delivery),
+                    state: state(&input.state),
+                }),
+        );
+        result = Some(rows);
     }
-    let Some((_, mut rows)) = rows else {
-        anyhow::bail!("no checkpoint database holds Thread {thread_id}");
-    };
+    let mut rows = result.with_context(|| format!("no saved Current holds Thread {thread_id}"))?;
     rows.sort_by_key(|row| row.ordinal);
     Ok(rows)
 }
 
-/// Bounded recursive search for per-Thread `history.sqlite` files.
+/// Bounded recursive search for per-Thread `current.json` files.
 ///
 /// Exceeding a bound is an error: a truncated search would silently report
-/// "no checkpoint" for a Thread that really exists.
-fn collect_history_databases(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<()> {
+/// "no Current" for a Thread that really exists.
+fn collect_current_files(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<()> {
     const MAX_DEPTH: usize = 8;
     const MAX_FILES: usize = 32;
     anyhow::ensure!(
         depth <= MAX_DEPTH,
-        "checkpoint search exceeded {MAX_DEPTH} levels at {}",
+        "Current search exceeded {MAX_DEPTH} levels at {}",
         dir.display()
     );
     let entries =
@@ -317,19 +200,16 @@ fn collect_history_databases(dir: &Path, depth: usize, found: &mut Vec<PathBuf>)
         let metadata = std::fs::symlink_metadata(&path)?;
         anyhow::ensure!(
             !metadata.file_type().is_symlink(),
-            "checkpoint search refuses symlink {}",
+            "Current search refuses symlink {}",
             path.display()
         );
         if metadata.is_dir() {
-            collect_history_databases(&path, depth + 1, found)?;
-        } else if path
-            .file_name()
-            .is_some_and(|name| name == "history.sqlite")
-        {
+            collect_current_files(&path, depth + 1, found)?;
+        } else if path.file_name().is_some_and(|name| name == "current.json") {
             found.push(path);
             anyhow::ensure!(
                 found.len() <= MAX_FILES,
-                "checkpoint search found more than {MAX_FILES} databases"
+                "Current search found more than {MAX_FILES} databases"
             );
         }
     }

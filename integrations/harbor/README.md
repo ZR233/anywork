@@ -1,6 +1,6 @@
 # 本地 Harbor 评测
 
-本包使用生产 `anywk exec`，由 Harbor 安装式智能体适配器负责私有目录、取消、原生产物校验、ATIF 与统计转换。Harbor 固定在 `06d0e86a8cfbac213548e0caec533afc5d81ff31`（0.25.0），依赖由 `uv.lock` 冻结。只消费原生导出版本 2，不实现模型循环或第二套账本。
+本包使用生产 `anywk exec`，由 Harbor 安装式智能体适配器负责私有目录、取消、原生产物校验、ATIF 与统计转换。Harbor 固定在 `06d0e86a8cfbac213548e0caec533afc5d81ff31`（0.25.0），依赖由 `uv.lock` 冻结。只消费原生导出版本 3，不实现模型循环或第二套账本。
 
 **Harbor 安装在本地 Linux 宿主，不加入项目 Docker 构建镜像，也不在持续集成运行 Harbor。** 本地任务仍使用 Harbor 官方 Docker 环境。需要 Python 3.12 以上、uv、可运行 Linux amd64 容器的 Docker；下载正式 Debian 包还需 `dpkg-deb`。真实模型调用仅发生于明确执行 `run` 后。开发回归和完整基准需要运行者自己的原生账号配置及环境变量凭据；本仓库不提供或自动读取个人凭据。
 
@@ -36,11 +36,11 @@ bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
 uv sync --project integrations/harbor --locked
 uv run --project integrations/harbor pytest integrations/harbor/tests
 uv run --project integrations/harbor ruff check integrations/harbor
-uv run --project integrations/harbor python -m anywork_harbor.smoke \
+uv run --project integrations/harbor python3 -m anywork_harbor.smoke \
   --binary target/harbor-linux/x86_64-unknown-linux-gnu/release/anywk \
   --fixture target/harbor-linux/x86_64-unknown-linux-gnu/release/pl-provider-fixture \
   --output target/harbor/manual-file
-uv run --project integrations/harbor python -m anywork_harbor.smoke --case cancel \
+uv run --project integrations/harbor python3 -m anywork_harbor.smoke --case cancel \
   --binary target/harbor-linux/x86_64-unknown-linux-gnu/release/anywk \
   --fixture target/harbor-linux/x86_64-unknown-linux-gnu/release/pl-provider-fixture \
   --output target/harbor/manual-cancel
@@ -119,6 +119,6 @@ uv run --project integrations/harbor anywk-freeze-history-seed \
 
 报告逐次保留完整性、异常、清理、原生 byModel、按 purpose/auxiliary 分组的调用及原始计量、缓存/推理词元、各阶段时间。输入包含缓存、输出可能包含推理词元，不能把这些子项再次相加。成功有效样本延迟使用线性插值 P50/P95，报告 n，超时单列截尾。先按 task 汇总重复，再以固定 seed=20261113 做 10,000 次 task 级配对 bootstrap；披露缺失配对，少于十个独立任务不作稳定性结论。A/B 和 B/C/D 分开解释。
 
-适配器在 `run()` 返回前验证版本、身份、真实退出码、关闭、事件序号/哈希、成员水位、内容长度/哈希、账单去重与 ATIF。退出码和原生 `TurnFailure` 决定错误分类，禁用基类文本匹配。成功轨迹但缺少 token/价格不是基础设施错误。post-run 只填上下文，晚发现的损坏写入诊断并在报告标无效，不伪称 Harbor 已追溯改判。外层取消以随机运行标识、PID/starttime 与 session 归属回收，控制命令最多等待五秒，不按进程名清理。边界失败保留原始证据。
+适配器在 `run()` 返回前验证版本、身份、真实退出码、关闭、事件序号/哈希、成员 History 水位、完成事件/typed Head 身份、NDJSON 内容 manifest、每个原件与正文分块的路径/长度/摘要、账单去重与 ATIF。退出码和原生 `TurnFailure` 决定错误分类，禁用基类文本匹配。成功轨迹但缺少 token/价格不是基础设施错误。post-run 只填上下文，晚发现的损坏写入诊断并在报告标无效，不伪称 Harbor 已追溯改判。外层取消以随机运行标识、PID/starttime 与 session 归属回收，控制命令最多等待五秒，不按进程名清理。边界失败保留原始证据。
 
 本地合成验收只证明接入与统计契约，不证明真实模型质量提升，也不证明 Windows/macOS 原生执行或完整官方基准成绩。

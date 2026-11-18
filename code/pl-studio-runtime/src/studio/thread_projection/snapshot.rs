@@ -1,7 +1,7 @@
 //! Authoritative current snapshots and independently persisted history projections.
-use super::{ProjectionError, project_active_turn};
+use super::ProjectionError;
 use crate::{
-    HistoryFault, Thread, ThreadPersistenceSnapshot, ThreadStatus, ThreadStorageExecution,
+    HistoryFault, ThreadPersistenceSnapshot, ThreadStatus, ThreadStorageExecution,
     ThreadStorageState,
 };
 use pl_core::thread::{
@@ -9,53 +9,6 @@ use pl_core::thread::{
     cold::{StorageExecutionPhase, StorageFaultKind},
     input::InputState,
 };
-
-/// 权威快照：canonical Thread 状态 + typed 活动 + typed 存储状态。
-///
-/// 活动是 owner 已发布状态的**纯内存投影**（见 [`super::project_activity`]），不需要共享 Session；
-/// `persistence` 是该 Thread 的 typed 持久化快照，缺失表示没有可报告的存储事实，因此 `storage`
-/// 保持 `None`，不填占位值。快照是冷读/权威首帧：没有上一条活动，活动版本从 0 开始。
-pub(in crate::studio) fn project_snapshot(
-    mut thread: Thread,
-    state: &ThreadSnapshot,
-    usage: &pl_core::thread::UsageSummary,
-    persistence: Option<&ThreadPersistenceSnapshot>,
-    business_refs: crate::ThreadBusinessRefs,
-) -> Result<crate::ThreadSnapshot, ProjectionError> {
-    let active_turn = project_active_turn(&thread.id, state, thread.updated_at)?;
-    let mut interactions = Vec::new();
-    for id in state.permissions.keys().chain(state.interactions.keys()) {
-        if let Ok(Some(interaction)) =
-            crate::thread_assembler::project_thread_interaction(&thread.id, id, state)
-        {
-            interactions.push(interaction);
-        }
-    }
-    // The directory owns product status; a saved Closed Core resource can still
-    // belong to an executable conversation after normal application shutdown.
-    if thread.parent_thread_id.is_none()
-        && let Ok(Some(mode)) = saved_mode(state)
-    {
-        thread.mode = Some(mode);
-    }
-    let runtime = super::runtime::project_runtime(&thread.id, state, thread.updated_at, usage).ok();
-    let model_route = crate::studio::model_route::projected(state)
-        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
-    let activity = super::project_activity(&thread.id, state, None);
-    let storage = persistence.map(|persistence| storage_state(state, persistence));
-    Ok(crate::ThreadSnapshot {
-        schema_version: crate::THREAD_SCHEMA_VERSION,
-        revision: state.commit_sequence,
-        runtime,
-        model_route,
-        thread,
-        active_turn,
-        interactions,
-        business_refs,
-        activity,
-        storage,
-    })
-}
 
 /// Thread 存储状态：runtime 持久化协调器的 typed 故障/水位 + core 的存储执行阶段。
 ///

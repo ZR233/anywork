@@ -52,7 +52,6 @@ void main() {
                 controller: controller,
                 generation: 1,
                 isDisplayActive: () => true,
-                contentRangeBuilder: (_, _, label, _, _) => Text(label),
                 onLoadOlder: hasOlder
                     ? () async {
                         pages++;

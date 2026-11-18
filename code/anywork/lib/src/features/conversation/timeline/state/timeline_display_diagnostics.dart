@@ -1,7 +1,9 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
-/// Actual mounted complete Work members. No query is started by these
+import 'timeline_display_models.dart';
+
+/// Actual mounted expanded Run window. No query is started by these
 /// synchronous borrows; business Children keeps its independent parent domain.
 abstract interface class TimelineGroupDisplay {
   String get unitId;
@@ -38,31 +40,9 @@ abstract interface class TimelineMemberDisplay {
   Iterable<TimelineCurrentWindowDisplay> get windows;
 }
 
-/// A borrow of the mounted current display and its already admitted bounded resources.
-///
-/// These getters never expand, page or watch. A retired source must expose no old page/window.
-abstract interface class TimelineCurrentDisplay {
-  bool get isCurrent;
-  String? get turnId;
-  String? get activityId;
-  bool get expanded;
-  Iterable<TimelineCurrentCollectionDisplay> get collections;
-  Iterable<TimelineCurrentWindowDisplay> get windows;
-}
-
-abstract interface class TimelineCurrentCollectionDisplay {
-  bool get isCurrent;
-  CurrentCollectionRef get reference;
-  int get generation;
-  bool get expanded;
-  bool get loading;
-  Object? get error;
-  CurrentCollectionPage? get page;
-}
-
 abstract interface class TimelineCurrentWindowDisplay {
   String get id;
-  ContentRef get reference;
+  Object get reference;
   int get offset;
   ContentWindow? get window;
   Object? get error;

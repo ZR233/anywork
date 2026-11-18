@@ -3,8 +3,6 @@
 //! atomic facts and the saved current cut; no original fact is rewritten.
 use super::legacy_timeline_store as timeline;
 use super::*;
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct TimelineItems;
 impl MigrationName for TimelineItems {
@@ -70,11 +68,13 @@ pub(super) async fn validate_source(db: &impl ConnectionTrait) -> Result<()> {
 mod tests {
     use super::super::super::HistoryStore;
     use super::*;
-    use crate::protocol::*;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::conversation;
     use crate::studio::storage::history::schema::legacy_timeline_types::{
-        ChatEntry, CurrentProjection, TimelineItem, TimelineItemKind,
+        ChatEntry, CurrentCollectionRef, CurrentContentPreview, CurrentProjection, TimelineItem,
+        TimelineItemKind,
     };
+    use crate::*;
     use anyhow::{Context, Result, ensure};
     use pl_core::{
         chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
@@ -218,7 +218,7 @@ mod tests {
             );
             store.upsert_item(db, 4, member.clone()).await?;
             let completion = pl_core::chat::ChatItem::complete(
-                crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity)?,
+                crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity, None)?,
                 part,
             );
             conversation::migration::append_published(db, &completion).await?;
@@ -240,7 +240,7 @@ mod tests {
         );
         store.upsert_item(db, 4, sealed.clone()).await?;
         let completion = pl_core::chat::ChatItem::complete(
-            crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity)?,
+            crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity, None)?,
             3,
         );
         conversation::migration::append_published(db, &completion).await?;
@@ -1124,7 +1124,7 @@ mod tests {
         let migrated = HistoryStore::open(&path, THREAD).await?;
         migrated.prepare_history_access().await?;
         let db = &migrated.writer().await?.db;
-        assert_eq!(version(db).await?, HISTORY_SCHEMA_VERSION);
+        assert_eq!(version(db).await?, V24_HISTORY_SCHEMA_VERSION);
         assert!(
             db.query_one_raw(statement(
                 "SELECT 1 FROM seaql_migrations WHERE version=?",
@@ -1211,16 +1211,6 @@ mod tests {
         );
 
         let database_identity = migrated.conversation_database_id().await?;
-        assert!(
-            migrated
-                .cold_current_state()
-                .await?
-                .context("cold state")?
-                .projection()
-                .atoms
-                .is_empty(),
-            "ordinary cold browsing cannot restore the legacy active group"
-        );
         let derived = derived_bytes(db).await?;
         migrated.close_for_deletion().await?;
         drop(migrated);

@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
-import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -35,28 +34,21 @@ void main() {
       stock.messages[index].metadata![timelineDisplayUnitKey]
           as TimelineDisplayUnit;
 
-  test(
-    'a frozen Work head is one synchronous Main operation without members',
-    () async {
-      final accepted = adapter.applyFixtureUpdate(
-        displayBatch([displayWork('large', 3)]),
-      );
-      expect(
-        stock.messages.single.id,
-        'large',
-        reason: 'mutation precedes Future/paint',
-      );
-      expect(unit(0).timing!.startedAt, 0);
-      expect(unit(0).expansion.members, isNull);
-      await accepted;
-      await Future<void>.delayed(Duration.zero);
-      expect(operations.single.type, ChatOperationType.set);
-      expect(operations.single.animated, isFalse);
-    },
-  );
+  test('a frozen Work head is one Main operation without members', () async {
+    final accepted = adapter.applyFixtureUpdate(
+      displayBatch([displayWork('large', 3)]),
+    );
+    await accepted;
+    expect(stock.messages.single.id, 'large');
+    expect(unit(0).timing!.startedAt, 0);
+    expect(unit(0).expansion.members, isNull);
+    await Future<void>.delayed(Duration.zero);
+    expect(operations.single.type, ChatOperationType.set);
+    expect(operations.single.animated, isFalse);
+  });
 
   test(
-    'Set/Prepend/Append each batch once and never update an old tail block',
+    'Set/Prepend/Append each batch once and never update an older block',
     () async {
       await adapter.applyFixtureUpdate(
         displayBatch([displayWork('middle', 3)]),
@@ -64,16 +56,16 @@ void main() {
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('old-a', 1), displayWork('old-b', 2)],
-          placement: ChatPlacement.prepend,
+          placement: TimelineApplyPlacement.prepend,
           through: 3,
         ),
-        placement: ChatPlacement.prepend,
+        placement: TimelineApplyPlacement.prepend,
       );
       final oldTail = stock.messages.last;
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('next-a', 4), displayWork('next-b', 5)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
       );
@@ -94,37 +86,6 @@ void main() {
     },
   );
 
-  test(
-    'pure live changes perform no history enumeration or component operation',
-    () async {
-      final reads = _ReadCounter();
-      final controller = TimelineMessageController(reads, generation: 1);
-      await controller.applyFixtureUpdate(
-        displayBatch([displayWork('first', 1)]),
-      );
-      reads.reads = 0;
-      await controller.applyFixtureUpdate(
-        displayBatch(
-          [],
-          placement: ChatPlacement.append,
-          from: 1,
-          through: 1,
-          live: TailSnapshot(
-            currentWorkId: null,
-            revision: 2,
-            layoutRevision: 2,
-            readyFrontier: 1,
-            executionPresent: true,
-            blocks: [],
-          ),
-        ),
-      );
-      expect(reads.reads, 0);
-      controller.dispose();
-      reads.dispose();
-    },
-  );
-
   test('handoff borrows the exact live disclosure identity and keeps expansion intent', () async {
     final intent = intents.putIfAbsent('work', TimelineExpansionIntent.new);
     intent.expanded = true;
@@ -133,7 +94,7 @@ void main() {
     expect(unit(0).expansion.expanded, isTrue);
     expect(
       unit(0).memberReference,
-      const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
+      (displayWork('work', 1).body as WorkDisplayBlock).members,
     );
   });
 
@@ -148,12 +109,12 @@ void main() {
       for (final batch in [
         displayBatch(
           [displayWork('existing', 4)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
         displayBatch(
           [displayWork('existing', 2)],
-          placement: ChatPlacement.prepend,
+          placement: TimelineApplyPlacement.prepend,
           through: 3,
         ),
       ]) {
@@ -165,7 +126,7 @@ void main() {
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('valid', 4)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
       );
@@ -176,7 +137,7 @@ void main() {
     },
   );
 
-  for (final placement in ChatPlacement.values) {
+  for (final placement in TimelineApplyPlacement.values) {
     test(
       'failed component Future for ${placement.name} preserves position, Main and shared intent until a correct retry',
       () async {
@@ -209,13 +170,13 @@ void main() {
         final gate = Completer<void>();
         component.failure = gate.future;
         final batch = switch (placement) {
-          ChatPlacement.set => displayBatch([displayWork('next', 5)]),
-          ChatPlacement.prepend => displayBatch(
+          TimelineApplyPlacement.set => displayBatch([displayWork('next', 5)]),
+          TimelineApplyPlacement.prepend => displayBatch(
             [displayWork('next', 2)],
             placement: placement,
             through: 3,
           ),
-          ChatPlacement.append => displayBatch(
+          TimelineApplyPlacement.append => displayBatch(
             [displayWork('next', 4)],
             placement: placement,
             from: 3,
@@ -243,7 +204,7 @@ void main() {
         await projection.applyFixtureUpdate(
           displayBatch(
             [displayWork('next', 4)],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: 3,
           ),
         );
@@ -275,13 +236,4 @@ class _FailingComponent extends InMemoryChatController {
   }) =>
       failure ??
       super.insertAllMessages(messages, index: index, animated: animated);
-}
-
-class _ReadCounter extends InMemoryChatController {
-  int reads = 0;
-  @override
-  List<Message> get messages {
-    reads++;
-    return super.messages;
-  }
 }

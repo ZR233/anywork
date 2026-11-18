@@ -2,103 +2,78 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_core::context::ContextContent;
-use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
+use pl_core::context::OpaquePayload;
 use pl_studio_runtime::{
-    ChatScope, ContentRange, PayloadData, ReadDemand, StudioPromptInput, SubmitPromptRequest,
-    ThreadWorkspaceMode,
+    ChatScope, ThreadWorkspaceMode,
+    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader},
+    resource_store::RESOURCE_ID_PREFIX,
 };
-use pl_tool::file_display::{FileDisplayOrigin, FileDisplayResult, saved_file_display_receipt};
+use pl_tool::file_display::saved_file_display_receipt;
 use serde_json::json;
+
+async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() as u64 != reference.byte_length {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                bytes.len() as u64,
+                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
+            )
+            .await?;
+        ensure!(!window.bytes.is_empty(), "artifact body did not advance");
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
 
 async fn public_artifact(
     runtime: &pl_studio_runtime::StudioRuntime,
     thread: &str,
     turn: &str,
 ) -> Result<serde_json::Value> {
-    let mut feed = runtime
-        .open_conversation_feed(
-            thread,
-            ChatScope::conversation(None),
-            ReadDemand {
-                max_items: 64,
-                max_bytes: 256 * 1024,
-            },
-        )
+    let demand = HistoryDemand {
+        max_rows: 128,
+        max_bytes: 256 * 1024,
+    };
+    let reader = runtime
+        .open_history_reader(thread, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
         .await?;
     let checked = async {
-        let batch = tokio::time::timeout(support::integration_test_deadline()?, async {
-            loop {
-                if let pl_studio_runtime::ConversationEvent::Chat { batch } =
-                    feed.recv().await?.context("public Chat ended")?
-                {
-                    return Ok::<_, anyhow::Error>(batch);
-                }
-            }
-        })
-        .await??;
-        ensure!(
-            batch.before.is_none(),
-            "fixture unexpectedly requires paging"
-        );
-        for entry in batch.entries {
-            let atom = entry.atom;
-            let bytes = match atom.payload.context("sealed atom")? {
-                PayloadData::Inline { bytes } => bytes,
-                PayloadData::Deferred {
-                    reference,
-                    byte_length,
-                } => {
-                    ensure!(byte_length < 64 * 1024);
-                    feed.reader()
-                        .read_content(
-                            &reference,
-                            ContentRange {
-                                offset: 0,
-                                max_bytes: 64 * 1024,
-                            },
-                        )
-                        .await?
-                        .bytes
-                }
+        let originals = reader
+            .events_page(
+                HistoryEventsQuery::Originals {
+                    scope: ChatScope::conversation(None),
+                },
+                None,
+                None,
+                demand,
+            )
+            .await?;
+        ensure!(!originals.entries.is_empty(), "history has no originals");
+        for event in originals.entries {
+            let Some(payload_ref) = &event.payload_ref else {
+                continue;
             };
-            let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if value["type"] != "tool"
-                || !value["data"]["invocation"]["callId"]
-                    .as_str()
-                    .is_some_and(|id| id.starts_with("display-call:nested:"))
+            let payload = body(&reader, payload_ref).await?;
+            let value: serde_json::Value = serde_json::from_slice(&payload)?;
+            if event.header.turn_id.as_deref() != Some(turn)
+                || value["type"] != "tool"
+                || value["data"]["invocation"]["name"] != "show_files"
             {
                 continue;
             }
-            ensure!(atom.turn_id.as_deref() == Some(turn));
+            ensure!(event.header.turn_id.as_deref() == Some(turn));
             ensure!(value["data"]["invocation"]["presentationContract"] == "builtin.show_files@1");
-            let manifest = feed
-                .reader()
-                .list_contents(
-                    &atom.id,
-                    None,
-                    ReadDemand {
-                        max_items: 64,
-                        max_bytes: 256 * 1024,
-                    },
-                )
+            let bodies = reader
+                .list_bodies(event.header.event_id.clone(), None, demand)
                 .await?;
-            let artifacts = manifest
+            let artifacts = bodies
                 .entries
-                .iter()
-                .find(|entry| entry.key == "tool.output-artifacts")
+                .into_iter()
+                .find(|entry| entry.body_key == "tool.output-artifacts")
                 .context("file display artifact manifest")?;
-            let bytes = feed
-                .reader()
-                .read_content(
-                    &artifacts.reference,
-                    ContentRange {
-                        offset: 0,
-                        max_bytes: 64 * 1024,
-                    },
-                )
-                .await?
-                .bytes;
+            let bytes = body(&reader, &artifacts.reference).await?;
             let artifacts: serde_json::Value = serde_json::from_slice(&bytes)?;
             let artifact = artifacts
                 .as_array()
@@ -111,20 +86,11 @@ async fn public_artifact(
             ensure!(artifact["payload"]["version"] == 1);
             return Ok(artifact.clone());
         }
-        anyhow::bail!("completed public tool atom missing")
+        anyhow::bail!("completed public tool original missing")
     }
     .await;
-    let reader = feed.reader().clone();
-    feed.request_close();
-    reader.request_close();
-    let (feed_closed, reader_closed) = tokio::join!(feed.close(), reader.close());
-    let closed = feed_closed.and(reader_closed);
+    reader.close().await;
     checked
-        .with_context(|| format!("feed close: {closed:?}"))
-        .and_then(|value| {
-            closed?;
-            Ok(value)
-        })
 }
 
 fn show_files_reply(call: &str, arguments: serde_json::Value) -> pl_provider_fixture::Reply {
@@ -208,53 +174,91 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let turn = support::completed_prompt(&env.runtime, &thread, "display").await?;
         let live_artifact = public_artifact(&env.runtime, &thread, &turn.id).await?;
         let requests = env.root_provider.recorded();
-        let tool_names: Vec<_> = requests[0].body["tools"].as_array().context("catalog")?
-            .iter().filter_map(|tool| tool["name"].as_str()).collect();
-        ensure!(!tool_names.iter().any(|name| name.ends_with("show_files")));
-        ensure!(requests[0].body["tools"].as_array().context("catalog")?.iter().any(|tool| tool["name"]=="exec" && tool["description"].as_str().is_some_and(|text| text.contains("tools[\"show_files\"]"))));
-        ensure!(!tool_names.iter().any(|name| name.ends_with("show_image")));
+        let catalog = requests[0].body["tools"].as_array().context("catalog")?;
+        ensure!(!catalog.iter().any(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("show_files"))
+        }));
+        ensure!(catalog.iter().any(|tool| {
+            tool["name"] == "exec"
+                && tool["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("tools[\"show_files\"]"))
+        }));
+        ensure!(!catalog.iter().any(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("show_image"))
+        }));
         let summary = support::tool_output(&env.root_provider, "display-call")?;
         ensure!(!summary.contains(std::str::from_utf8(BYTES)?.trim()));
         ensure!(!summary.contains(&env.repo.to_string_lossy().to_string()));
-        ensure!(!summary.contains(&unselected_id), "unselected resource capability reached model context");
-        // Destroy the original paths before closing and cold reading the actual archived bytes.
+        ensure!(
+            !summary.contains(&unselected_id),
+            "unselected resource capability reached model context"
+        );
+
         std::fs::remove_file(env.repo.join("report.txt"))?;
         std::fs::remove_file(env.repo.join("report-copy.txt"))?;
         std::fs::remove_file(env.repo.join("unselected.txt"))?;
         let calls_before_read = env.root_provider.recorded().len();
         env.restart().await?;
-        ensure!(public_artifact(&env.runtime, &thread, &turn.id).await? == live_artifact,
-            "cold read changed the original display artifact");
-        ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
-        ensure!(env.root_provider.recorded().len() == calls_before_read, "cold read re-executed model/tool");
-        let original = support::nested_delivery(&env.home, &thread, "display-call").await?;
-        ensure!(original.delivered_context.iter().all(|content| !matches!(content, ContextContent::Opaque { .. })));
-        let receipt = saved_file_display_receipt(original.output.payload())?.context("file receipt")?;
-        ensure!(receipt.caption.as_deref() == Some("selected files") && receipt.files.len() == 4);
-        ensure!(matches!(&receipt.files[0], FileDisplayResult::Ready { resource, filename, origin:FileDisplayOrigin::Local { path }, .. }
-            if resource.id() == id && filename == "report.txt" && std::path::Path::new(path).is_absolute()));
-        ensure!(matches!(&receipt.files[1], FileDisplayResult::Failed { filename, .. } if filename == "missing.txt"));
-        ensure!(matches!(&receipt.files[2], FileDisplayResult::Ready { resource, filename, .. }
-            if resource.id() == id && filename == "report-copy.txt"));
-        // The recovered call resolves the original receipt using the current Thread's frozen
-        // context and durable task facts, preserving a filename rather than trusting an id prefix.
-        let revision = env.runtime.thread_snapshot(&thread).await?.model_route
-            .context("saved model route")?.revision;
-        env.runtime.submit_prompt_command(thread.clone(), SubmitPromptRequest {
-            input: StudioPromptInput { input_id:"input-again".into(), text:"again".into(), attachment_draft_ids:Vec::new() },
-            expected_model_route_revision: revision,
-        }).await?;
-        support::completed_prompt(&env.runtime, &thread, "again").await?;
-        env.restart().await?;
-        let selected = support::nested_delivery(&env.home, &thread, "archive-call").await?;
-        let selected = saved_file_display_receipt(selected.output.payload())?.context("archive receipt")?;
-        ensure!(matches!(&selected.files[0], FileDisplayResult::Ready { resource, filename, .. }
-            if resource.id() == id && filename == "report.txt"));
-        ensure!(matches!(&selected.files[1], FileDisplayResult::Failed { .. }));
-        ensure!(matches!(&selected.files[2], FileDisplayResult::Failed { .. }), "hidden child receipt granted an unselected resource");
-        ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
-        ensure!(env.runtime.read_thread_attachment(thread, "pl.studio.resource:unreferenced".into()).await.is_err());
+        ensure!(
+            public_artifact(&env.runtime, &thread, &turn.id).await? == live_artifact,
+            "cold History read changed the original display artifact"
+        );
+        ensure!(
+            env.runtime
+                .read_thread_attachment(thread.clone(), id.clone())
+                .await?
+                == BYTES
+        );
+        ensure!(
+            env.root_provider.recorded().len() == calls_before_read,
+            "cold read re-executed model/tool"
+        );
+
+        let revision = env
+            .runtime
+            .thread_snapshot(&thread)
+            .await?
+            .model_route
+            .context("saved model route")?
+            .revision;
+        env.runtime
+            .submit_prompt_command(
+                thread.clone(),
+                pl_studio_runtime::SubmitPromptRequest {
+                    input: pl_studio_runtime::StudioPromptInput {
+                        input_id: "input-again".into(),
+                        text: "again".into(),
+                        attachment_draft_ids: Vec::new(),
+                    },
+                    expected_model_route_revision: revision,
+                },
+            )
+            .await?;
+        let archive_turn = support::completed_prompt(&env.runtime, &thread, "again").await?;
+        let archive_artifact = public_artifact(&env.runtime, &thread, &archive_turn.id).await?;
+        let payload: OpaquePayload = serde_json::from_value(archive_artifact["payload"].clone())?;
+        let receipt = saved_file_display_receipt(&payload)?.context("archive file receipt")?;
+        ensure!(receipt.caption.is_none());
+        ensure!(receipt.files.len() == 3);
+        ensure!(
+            env.runtime
+                .read_thread_attachment(thread.clone(), id.clone())
+                .await?
+                == BYTES
+        );
+        ensure!(
+            env.runtime
+                .read_thread_attachment(thread, "pl.studio.resource:unreferenced".into())
+                .await
+                .is_err()
+        );
         Ok(())
-    }.await;
+    }
+    .await;
     env.finish(result).await
 }

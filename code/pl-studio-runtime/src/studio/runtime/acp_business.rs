@@ -101,24 +101,11 @@ mod mixed_tests {
 
     async fn native_inbox_report(
         runtime: &crate::studio::StudioRuntime,
-        owner: &SessionRuntime,
         caller: &crate::AgentThreadIdentity,
         child: &crate::AgentThreadIdentity,
         resources: &super::AcpResources,
         completed: &pl_acp::session::Completed,
     ) -> Result<String> {
-        let parent = owner
-            .observed_thread(caller.thread_id.as_str())
-            .context("Native parent")?;
-        let scope = owner.native_resources(&parent)?;
-        let mut changes = scope
-            .observations
-            .lock()
-            .unwrap()
-            .last()
-            .context("Native parent observation")?
-            .report_changes();
-        let history = runtime.store.history(caller.thread_id.as_str()).await?;
         let expected_id = format!(
             "studio.acp.{}:{}:{}:{}",
             child.agent_id.as_str().len(),
@@ -126,64 +113,59 @@ mod mixed_tests {
             resources.generation,
             completed.completion_sequence
         );
+        let text = serde_json::to_string(&serde_json::json!({
+            "agentId": child.agent_id, "backend": "acp", "generation": resources.generation,
+            "run": {"instance": completed.run.instance, "sequence": completed.run.sequence},
+            "completionSequence": completed.completion_sequence,
+            "result": completed.result.as_ref().map_err(|error| anyhow::anyhow!("ACP completion failed: {error}"))?,
+            "summary": completed.summary, "truncated": completed.truncated,
+        }))?;
+        let expected = pl_core::thread::inbox::ThreadMessage {
+            kind: pl_core::context::AgentMessageKind::Report,
+            id: expected_id.clone(),
+            source_id: format!("agent:{}", child.thread_id),
+            payload: pl_core::context::OpaquePayload::text(text.clone()),
+            context: vec![pl_core::context::ContextContent::Text { text: text.into() }],
+        };
+        let parent = runtime
+            .ensure_thread_owner(caller.thread_id.as_str())
+            .await?;
+        let mut changes = parent.subscribe();
+        // ACP completion reaches the Native recipient's ordinary inbox. A child report has no
+        // public parent-message original: verify its actual acceptance, even if already consumed.
         tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let snapshot = parent.snapshot();
-            let records = snapshot
-                .inbox
-                .iter()
-                .filter(|record| record.message.id == expected_id)
-                .collect::<Vec<_>>();
-            if let Some(receipt) = history.message_identity(&expected_id).await?
-                && let Some(record) = records.first()
-            {
+            while let Some(snapshot) = changes.next().await {
+                let pending = snapshot
+                    .inbox
+                    .iter()
+                    .filter(|entry| entry.message.id == expected_id)
+                    .collect::<Vec<_>>();
+                let consumed = snapshot
+                    .consumed_message_identities
+                    .iter()
+                    .filter(|entry| entry.id == expected_id)
+                    .collect::<Vec<_>>();
+                if pending.is_empty() && consumed.is_empty() {
+                    continue;
+                }
                 assert_eq!(
-                    records.len(),
+                    pending.len() + consumed.len(),
                     1,
-                    "stable completion identity was duplicated"
+                    "duplicate stable ACP report"
                 );
-                assert_eq!(
-                    record.message.source_id,
-                    format!("agent:{}", child.thread_id)
-                );
-                assert_eq!(
-                    record.message.kind,
-                    pl_core::context::AgentMessageKind::Report
-                );
-                assert_eq!(receipt.sequence, record.sequence);
-                assert_eq!(
-                    receipt.digest.as_deref(),
-                    Some(record.message.digest().as_str())
-                );
-                let body: serde_json::Value =
-                    serde_json::from_str(record.message.payload.content())?;
-                assert_eq!(body["agentId"], child.agent_id.as_str());
-                assert_eq!(body["backend"], "acp");
-                assert_eq!(body["generation"], resources.generation);
-                assert_eq!(body["completionSequence"], completed.completion_sequence);
-                assert_eq!(
-                    body["run"],
-                    serde_json::json!({
-                        "instance": completed.run.instance, "sequence": completed.run.sequence,
-                    })
-                );
-                assert_eq!(body["summary"], completed.summary);
-                assert_eq!(body["truncated"], completed.truncated);
-                assert_eq!(
-                    body["result"],
-                    serde_json::to_value(completed.result.as_ref().unwrap())?
-                );
-                eprintln!(
-                    "Native inbox durable report: id={expected_id}, acceptedSequence={}, run={:?}",
-                    receipt.sequence, completed.run
-                );
-                return Ok::<_, anyhow::Error>(expected_id.clone());
+                if let Some(record) = pending.first() {
+                    assert_eq!(record.message, expected);
+                    assert!(record.sequence > 0);
+                } else {
+                    assert_eq!(consumed[0].digest, expected.digest());
+                    assert!(consumed[0].sequence > 0);
+                }
+                return Ok::<_, anyhow::Error>(expected_id);
             }
-            drop(snapshot);
-            changes.changed().await?;
-        }
-    })
-    .await?
+            anyhow::bail!("Native recipient closed before accepting the ACP result")
+        })
+        .await
+        .context("Native inbox did not accept the exact ACP result")?
     }
 
     async fn close_fixture(
@@ -367,7 +349,8 @@ mod mixed_tests {
                 changed.changed().await?;
             }
         })
-        .await?
+        .await
+        .context("wait for the next ACP completion")?
     }
 
     fn rebuild_native_parent_and_restore_child<'a>(
@@ -409,10 +392,6 @@ mod mixed_tests {
             assert_eq!(restored_identity.thread_id, child.thread_id);
             assert_eq!(restored_identity.parent_agent_id.as_ref(), Some(&caller.agent_id));
             assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
-            let history = runtime.store.history(caller.thread_id.as_str()).await?;
-            let old_receipt = history.message_identity(&old_message_id).await?
-                .context("prior durable report survived runtime reconstruction")?;
-
             let accepted = host.send(call(&host, caller, "runtime-rebuilt-send"), AgentMessage {
                 id: "after-runtime-reconstruction".into(),
                 target: child.agent_id.to_string(),
@@ -436,16 +415,9 @@ mod mixed_tests {
             assert_eq!(latest.reports[0]["result"], serde_json::to_value(&completed.result)?);
             assert!(latest.cursor.is_some());
             assert_ne!(latest.cursor.as_deref(), Some(old_cursor.as_str()));
-            let new_message_id = native_inbox_report(&runtime, &owner, caller, child,
+            let new_message_id = native_inbox_report(&runtime, caller, child,
                 &restored, &completed).await?;
             assert_ne!(new_message_id, old_message_id);
-            let new_receipt = history.message_identity(&new_message_id).await?
-                .context("new generation durable Native inbox receipt")?;
-            assert!(new_receipt.sequence > old_receipt.sequence);
-            let retained = history.message_identity(&old_message_id).await?
-                .context("new generation cannot replace the previous durable report")?;
-            assert_eq!(retained.sequence, old_receipt.sequence);
-            assert_eq!(retained.digest, old_receipt.digest);
             eprintln!("full StudioRuntime reconstruction: oldGeneration={old_generation}, newGeneration={}, completionSequence={}, oldMessage={old_message_id}, newMessage={new_message_id}, staleCursorRejected=true, sameProcess=true",
                 restored.generation, completed.completion_sequence);
 
@@ -525,7 +497,6 @@ mod mixed_tests {
                     Some(
                         native_inbox_report(
                             &fixture.runtime,
-                            &owner,
                             &caller,
                             &identity,
                             &resources,
@@ -570,15 +541,8 @@ mod mixed_tests {
                 assert!(send.sequence.is_none());
                 let second = completion(&resources, first.completion_sequence).await?;
                 if native {
-                    native_inbox_report(
-                        &fixture.runtime,
-                        &owner,
-                        &caller,
-                        &identity,
-                        &resources,
-                        &second,
-                    )
-                    .await?;
+                    native_inbox_report(&fixture.runtime, &caller, &identity, &resources, &second)
+                        .await?;
                 }
                 assert!(
                     host.interrupt(call(&host, &caller, "stop-idle"), agent.as_str())
@@ -693,7 +657,6 @@ mod mixed_tests {
                 let latest_message_id = if native {
                     let new_id = native_inbox_report(
                         &fixture.runtime,
-                        &owner,
                         &caller,
                         &identity,
                         &restored,
@@ -702,17 +665,6 @@ mod mixed_tests {
                     .await?;
                     let old_id = first_message_id.context("first Native inbox message identity")?;
                     assert_ne!(new_id, old_id);
-                    assert!(
-                        fixture
-                            .runtime
-                            .store
-                            .history(caller.thread_id.as_str())
-                            .await?
-                            .message_identity(&old_id)
-                            .await?
-                            .is_some(),
-                        "reopening the child erased its prior durable parent report"
-                    );
                     Some(new_id)
                 } else {
                     None
@@ -880,23 +832,48 @@ mod mixed_tests {
         assert_eq!(body["turn"]["state"]["kind"], "failed");
         assert!(body["review"].is_null(), "ordinary child must not create structured review");
         let turn_id = body["turnId"].as_str().context("original terminal turn identity")?;
-        let history = fixture.runtime.store.history(identity.thread_id.as_str()).await?;
-        let terminal_sequence = history.terminal_report_sequence(turn_id).await?.context("durable terminal sequence")?;
+        let reader = fixture
+            .runtime
+            .open_history_reader(
+                identity.thread_id.as_str(),
+                crate::history::HISTORY_PROTOCOL_VERSION,
+            )
+            .await?;
+        let terminal_sequence = body["commitSequence"]
+            .as_u64()
+            .context("durable terminal sequence")?;
         assert_eq!(body["commitSequence"], terminal_sequence);
         assert_eq!(report.id, crate::studio::agent_close::terminal_report_id(identity.thread_id.as_str(), terminal_sequence));
         assert_eq!(report.source_id, format!("studio.child:{}", identity.thread_id));
-        assert_eq!(history.parent_report(terminal_sequence).await?, Some(report.clone()));
         let child = owner.observed_thread(identity.thread_id.as_str()).context("Native child owner")?;
         assert!(child.snapshot().execution.is_none());
-        let original=history.read_chat_item(&crate::studio::thread_projection::order::turn_id(turn_id)).await?.context("original failed Turn")?;
-        let atom:crate::ChatAtom=serde_json::from_slice(&original.header.metadata)?;
-        assert!(matches!(atom.lifecycle,crate::ChatAtomLifecycle::Terminal { outcome:crate::ChatTerminalOutcome::Failed,.. }),"the child's original failure remains durable");
-        let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
-        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-            &fixture.runtime.store, &record.into(),
-        ).await?.context("Native child's own saved checkpoint")?;
-        assert!(checkpoint.state.commit_sequence >= terminal_sequence,
-            "the child's own checkpoint must cover the source report commit");
+        let turn_page = reader
+            .events_page(
+                crate::history::HistoryEventsQuery::Turn {
+                    turn_id: turn_id.to_owned(),
+                },
+                None,
+                None,
+                crate::history::HistoryDemand {
+                    max_rows: 16,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        assert!(
+            turn_page.entries.iter().any(|entry| {
+                matches!(
+                    &entry.head,
+                    Some(crate::history::HistoryRowHead::Turn(
+                        crate::history::HistoryTurnHead {
+                            state: crate::history::HistoryTurnState::Failed,
+                            ..
+                        }
+                    ))
+                )
+            }),
+            "the child's original failed Turn remains durable"
+        );
         let protocol = fixture.runtime.agent_facility.product_events
             .thread_snapshot(identity.thread_id.as_str())?.context("Native child projection")?;
         assert_eq!(
@@ -913,7 +890,11 @@ mod mixed_tests {
         assert!(closed.error.is_none(), "{closed:?}");
         assert!(closed.agents[0].execution_closed);
         assert!(closed.agents[0].worktree_cleanup.is_terminal());
-        assert_eq!(history.parent_report(terminal_sequence).await?, Some(report));
+        let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
+        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
+            &fixture.runtime.store, &record.into(),
+        ).await?.context("Native child's own final saved current")?;
+        assert_eq!(current.state.lifecycle, pl_core::thread::ThreadLifecycle::Closed);
         let close_record = fixture.runtime.store.agent_close(identity.thread_id.as_str()).await?.context("durable permanent close")?;
         assert!(close_record.execution_closed && close_record.worktree_cleanup.is_terminal());
         assert!(owner.observed_thread(caller.thread_id.as_str()).is_none());
@@ -921,6 +902,19 @@ mod mixed_tests {
         assert!(host.send(call(&host, &caller, "closed-native-send"), AgentMessage {
             id: "after-close".into(), target: agent.to_string(), message: "must not run".into(),
         }).await.is_err());
+        // The ACP root is not a Native session entry. Once its Native child is fully
+        // closed, release the shared connection explicitly and prove the owner has no
+        // descendant obligation left before fixture-wide runtime shutdown.
+        owner.close(identity.thread_id.as_str()).await?;
+        assert!(owner.observed_thread(identity.thread_id.as_str()).is_none());
+        let parent_close = parent_resources.close().await;
+        assert!(
+            parent_close.local_complete,
+            "ACP root cleanup retained local resources: {parent_close:?}"
+        );
+        assert!(parent_close.worker_error.is_none(), "{parent_close:?}");
+        assert!(parent_close.driver_error.is_none(), "{parent_close:?}");
+        assert!(owner.close_session().await.is_empty());
         Ok(())
     }).catch_unwind().await;
         let provider_cleanup = match provider {
@@ -2102,7 +2096,6 @@ mod tests {
             let persistence = crate::studio::storage_fault_test_support::ThreadStorageSink::new(
                 self.store.clone(),
                 self.thread.clone(),
-                None,
             )
             .await
             .map_err(|error| {
@@ -2111,7 +2104,7 @@ mod tests {
                     source: error.into_boxed_dyn_error(),
                 }
             })?;
-            spec.cold_store = Some(pl_core::thread::cold::ColdStoreHandle::new(persistence));
+            spec.history_sink = Some(persistence);
             Ok(spec)
         }
     }

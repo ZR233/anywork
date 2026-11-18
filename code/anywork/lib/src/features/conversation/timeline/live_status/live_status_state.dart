@@ -1,7 +1,8 @@
 import 'package:anywork_client/models.dart';
-import 'package:flutter/foundation.dart' show immutable, listEquals;
+import 'package:flutter/foundation.dart' show immutable, listEquals, setEquals;
 
 import '../widgets/timeline_activity_row.dart';
+import '../state/timeline_display_models.dart';
 
 /// 根据类型化活动阶段、前台活跃工具事实以及当前顶栏是否正在展示思考摘要解析指示器样式：
 /// - `responding` -> 分层书写动态图标；
@@ -29,190 +30,6 @@ TimelineActivityIndicatorStyle resolveLiveHeaderIndicatorStyle(
   return TimelineActivityIndicatorStyle.restingCat;
 }
 
-/// 区分底部实时状态栏与上方时间线实时工作区两条独立的更早窗口分页通道。
-enum LiveStatusSectionTarget { outputBar, timelineWork }
-
-/// 实时窗口有效性切面身份：只要窗口修订、历史水位、执行在场性、尝试代数或展示资格改变，
-/// 已打开的 `older` 实时分页窗口立即失效归零，绝不跨切面残留旧实时页。
-@immutable
-final class LiveWindowCut {
-  const LiveWindowCut({
-    required this.revision,
-    required this.readyFrontier,
-    required this.executionPresent,
-    required this.attemptId,
-    required this.isDisplayActive,
-  });
-
-  const LiveWindowCut.inactive()
-    : revision = null,
-      readyFrontier = null,
-      executionPresent = null,
-      attemptId = null,
-      isDisplayActive = false;
-
-  final int? revision;
-  final int? readyFrontier;
-  final bool? executionPresent;
-  final Object? attemptId;
-  final bool isDisplayActive;
-
-  bool get hasWindow => isDisplayActive && revision != null;
-
-  bool matchesWindow(TailSnapshot window) =>
-      revision == window.layoutRevision &&
-      readyFrontier == window.readyFrontier &&
-      executionPresent == window.executionPresent;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveWindowCut &&
-          revision == other.revision &&
-          readyFrontier == other.readyFrontier &&
-          executionPresent == other.executionPresent &&
-          attemptId == other.attemptId &&
-          isDisplayActive == other.isDisplayActive;
-
-  @override
-  int get hashCode => Object.hash(
-    revision,
-    readyFrontier,
-    executionPresent,
-    attemptId,
-    isDisplayActive,
-  );
-}
-
-/// 实时窗口分页状态机子状态：替代原先散落在 Widget `State` 中的 `_older`/`_loadingOlder`/`_olderError`。
-@immutable
-sealed class LiveWindowPagingState {
-  const LiveWindowPagingState();
-
-  TailSnapshot? get olderWindow => switch (this) {
-    ViewingOlderLiveWindow(:final window) => window,
-    LatestLiveWindow() ||
-    LoadingOlderLiveWindow() ||
-    OlderLiveWindowFailed() => null,
-  };
-
-  bool get isLoading => this is LoadingOlderLiveWindow;
-  bool get isViewingOlder => this is ViewingOlderLiveWindow;
-
-  Object? get error => switch (this) {
-    OlderLiveWindowFailed(:final error) => error,
-    _ => null,
-  };
-
-  /// 切面变化时自动重置回最新实时窗口。
-  LiveWindowPagingState reconcile(LiveWindowCut currentCut) {
-    if (!currentCut.hasWindow) return const LatestLiveWindow();
-    return switch (this) {
-      LatestLiveWindow() => this,
-      LoadingOlderLiveWindow(:final cut) ||
-      ViewingOlderLiveWindow(:final cut) ||
-      OlderLiveWindowFailed(
-        :final cut,
-      ) => cut == currentCut ? this : const LatestLiveWindow(),
-    };
-  }
-}
-
-final class LatestLiveWindow extends LiveWindowPagingState {
-  const LatestLiveWindow();
-
-  @override
-  bool operator ==(Object other) => other is LatestLiveWindow;
-
-  @override
-  int get hashCode => (LatestLiveWindow).hashCode;
-}
-
-final class LoadingOlderLiveWindow extends LiveWindowPagingState {
-  const LoadingOlderLiveWindow({
-    required this.before,
-    required this.cut,
-    this.previousOlder,
-  });
-
-  final String before;
-  final LiveWindowCut cut;
-  final TailSnapshot? previousOlder;
-
-  @override
-  TailSnapshot? get olderWindow => previousOlder;
-
-  @override
-  bool get isViewingOlder => previousOlder != null;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LoadingOlderLiveWindow &&
-          before == other.before &&
-          cut == other.cut &&
-          identical(previousOlder, other.previousOlder);
-
-  @override
-  int get hashCode => Object.hash(before, cut, previousOlder);
-}
-
-final class ViewingOlderLiveWindow extends LiveWindowPagingState {
-  const ViewingOlderLiveWindow({
-    required this.before,
-    required this.window,
-    required this.cut,
-  });
-
-  final String before;
-  final TailSnapshot window;
-  final LiveWindowCut cut;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ViewingOlderLiveWindow &&
-          before == other.before &&
-          identical(window, other.window) &&
-          cut == other.cut;
-
-  @override
-  int get hashCode => Object.hash(before, window, cut);
-}
-
-final class OlderLiveWindowFailed extends LiveWindowPagingState {
-  const OlderLiveWindowFailed({
-    required this.before,
-    required this.error,
-    required this.cut,
-    this.previousOlder,
-  });
-
-  final String before;
-  @override
-  final Object error;
-  final LiveWindowCut cut;
-  final TailSnapshot? previousOlder;
-
-  @override
-  TailSnapshot? get olderWindow => previousOlder;
-
-  @override
-  bool get isViewingOlder => previousOlder != null;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is OlderLiveWindowFailed &&
-          before == other.before &&
-          error == other.error &&
-          cut == other.cut &&
-          identical(previousOlder, other.previousOlder);
-
-  @override
-  int get hashCode => Object.hash(before, error, cut, previousOlder);
-}
-
 /// 实时状态栏顶层特殊通知封闭联合类型。
 @immutable
 sealed class LiveStatusNotice {
@@ -232,77 +49,74 @@ final class ExecutionLiveNotice extends LiveStatusNotice {
   int get hashCode => view.hashCode;
 }
 
-final class UnrestoredLiveNotice extends LiveStatusNotice {
-  const UnrestoredLiveNotice();
-
-  @override
-  bool operator ==(Object other) => other is UnrestoredLiveNotice;
-
-  @override
-  int get hashCode => (UnrestoredLiveNotice).hashCode;
-}
-
-/// 实时状态栏可见时的主表面封闭联合类型：
-/// 仅在对应表面有意义的载荷严格内聚在各自变体内部，禁止平行可空字段。
+/// 实时状态栏唯一主表面：权威活动/错误通知，不包含 Current Work 或历史行镜像。
 @immutable
-sealed class LiveStatusPrimarySurface {
-  const LiveStatusPrimarySurface();
+final class LiveStatusNoticeSurface {
+  LiveStatusNoticeSurface({required List<LiveStatusNotice> notices})
+    : notices = List.unmodifiable(notices);
 
-  /// 按稳定顺序交付给底部实时状态栏渲染的实时展示块。
-  List<LiveDisplayBlock> get blocks;
-
-  /// 独立渲染在块列表上方的阶段/故障通知（已被开放 Work 头或流式正文吸收的通知不含在内）。
-  List<LiveStatusNotice> get standaloneNotices;
-}
-
-/// 流式正文表面：流式正文、活跃压缩原子或更早实时单块（`SingleDisplayBlock`）占据实时状态栏。
-final class LiveStatusStreamingSurface extends LiveStatusPrimarySurface {
-  LiveStatusStreamingSurface({
-    required List<LiveDisplayBlock> singleBlocks,
-    List<LiveStatusNotice> standaloneNotices = const [],
-  }) : singleBlocks = List.unmodifiable(singleBlocks),
-       standaloneNotices = List.unmodifiable(standaloneNotices);
-
-  final List<LiveDisplayBlock> singleBlocks;
-  @override
-  final List<LiveStatusNotice> standaloneNotices;
-
-  @override
-  List<LiveDisplayBlock> get blocks => singleBlocks;
+  final List<LiveStatusNotice> notices;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStatusStreamingSurface &&
-          listEquals(singleBlocks, other.singleBlocks) &&
-          listEquals(standaloneNotices, other.standaloneNotices);
+      other is LiveStatusNoticeSurface && listEquals(notices, other.notices);
+
+  @override
+  int get hashCode => Object.hashAll(notices);
+}
+
+/// Current activity-tool collection is exposed as one bounded page. The total
+/// count comes from the Current collection head and is never inferred from the
+/// loaded page.
+@immutable
+final class LiveActivityToolsWindow {
+  LiveActivityToolsWindow({
+    required this.reference,
+    required this.totalCount,
+    required List<ThreadActivityToolEntry> entries,
+    required this.expanded,
+    required this.loading,
+    required this.hasPrevious,
+    required this.hasNext,
+    this.error,
+  }) : entries = List.unmodifiable(entries);
+
+  final CurrentCollectionRef reference;
+  final int totalCount;
+  final List<ThreadActivityToolEntry> entries;
+  final bool expanded;
+  final bool loading;
+  final bool hasPrevious;
+  final bool hasNext;
+  final Object? error;
+
+  int get loadedCount => entries.length;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is LiveActivityToolsWindow &&
+          reference == other.reference &&
+          totalCount == other.totalCount &&
+          listEquals(entries, other.entries) &&
+          expanded == other.expanded &&
+          loading == other.loading &&
+          hasPrevious == other.hasPrevious &&
+          hasNext == other.hasNext &&
+          error == other.error;
 
   @override
   int get hashCode => Object.hash(
-    Object.hashAll(singleBlocks),
-    Object.hashAll(standaloneNotices),
+    reference,
+    totalCount,
+    Object.hashAll(entries),
+    expanded,
+    loading,
+    hasPrevious,
+    hasNext,
+    error,
   );
-}
-
-/// 纯通知表面：无实时块占据底栏，仅展示纯阶段通知（思考中、压缩中、`exec` 运行中、审批或存储故障等）或分页回退。
-final class LiveStatusNoticeOnlySurface extends LiveStatusPrimarySurface {
-  LiveStatusNoticeOnlySurface({List<LiveStatusNotice> notices = const []})
-    : standaloneNotices = List.unmodifiable(notices);
-
-  @override
-  final List<LiveStatusNotice> standaloneNotices;
-
-  @override
-  List<LiveDisplayBlock> get blocks => const [];
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusNoticeOnlySurface &&
-          listEquals(standaloneNotices, other.standaloneNotices);
-
-  @override
-  int get hashCode => Object.hashAll(standaloneNotices);
 }
 
 /// 底部实时状态栏封闭生命周期状态机状态。
@@ -360,14 +174,10 @@ final class LiveStatusDockMasked extends LiveStatusMachineState {
 final class LiveStatusPresenting extends LiveStatusMachineState {
   const LiveStatusPresenting({
     required this.surface,
-    required this.effectiveWindow,
-    required this.paging,
     required this.showInteractionDetails,
   });
 
-  final LiveStatusPrimarySurface surface;
-  final TailSnapshot? effectiveWindow;
-  final LiveWindowPagingState paging;
+  final LiveStatusNoticeSurface surface;
   @override
   final bool showInteractionDetails;
 
@@ -376,118 +186,68 @@ final class LiveStatusPresenting extends LiveStatusMachineState {
       identical(this, other) ||
       other is LiveStatusPresenting &&
           surface == other.surface &&
-          identical(effectiveWindow, other.effectiveWindow) &&
-          paging == other.paging &&
           showInteractionDetails == other.showInteractionDetails;
 
   @override
-  int get hashCode =>
-      Object.hash(surface, effectiveWindow, paging, showInteractionDetails);
-}
-
-/// 交付给上方 `TimelineConnector` 的只读时间线实时工作区切片：
-/// 仅当归属时间线区的封存/遮蔽/跨轮次 `Work` 块或分页变化时才通知重建。
-@immutable
-final class LiveStatusTimelineWorkSlice {
-  LiveStatusTimelineWorkSlice({
-    List<LiveDisplayBlock> workBlocks = const [],
-    this.mergedWorkActivity,
-    this.effectiveWindow,
-    this.paging = const LatestLiveWindow(),
-  }) : workBlocks = List.unmodifiable(workBlocks);
-
-  static final empty = LiveStatusTimelineWorkSlice();
-
-  final List<LiveDisplayBlock> workBlocks;
-  final ({String blockId, ConversationActivityView activity})?
-  mergedWorkActivity;
-  final TailSnapshot? effectiveWindow;
-  final LiveWindowPagingState paging;
-
-  ConversationActivityView? mergedActivityFor(String blockId) =>
-      mergedWorkActivity?.blockId == blockId
-      ? mergedWorkActivity?.activity
-      : null;
-
-  bool get hasVisibleContent =>
-      workBlocks.isNotEmpty ||
-      paging.isViewingOlder ||
-      paging.isLoading ||
-      paging.error != null;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusTimelineWorkSlice &&
-          listEquals(workBlocks, other.workBlocks) &&
-          mergedWorkActivity == other.mergedWorkActivity &&
-          identical(effectiveWindow, other.effectiveWindow) &&
-          paging == other.paging;
-
-  @override
-  int get hashCode => Object.hash(
-    Object.hashAll(workBlocks),
-    mergedWorkActivity,
-    effectiveWindow,
-    paging,
-  );
+  int get hashCode => Object.hash(surface, showInteractionDetails);
 }
 
 /// 状态机纯输入快照：仅保存客户端已归约的不可变领域值，不持有原生流或可变句柄。
 @immutable
 final class LiveStatusInputs {
   LiveStatusInputs({
-    required this.cut,
     this.storage,
     List<PendingInteraction> interactions = const [],
     this.businessRefs,
     this.activeTurnId,
     this.activity,
-    this.latestLive,
+    this.current,
+    Set<String> renderedCurrentAtomIds = const {},
     this.hasContentOwner = false,
-  }) : interactions = List.unmodifiable(interactions);
+  }) : interactions = List.unmodifiable(interactions),
+       renderedCurrentAtomIds = Set.unmodifiable(renderedCurrentAtomIds);
 
   const LiveStatusInputs.empty()
-    : cut = const LiveWindowCut.inactive(),
-      storage = null,
+    : storage = null,
       interactions = const [],
       businessRefs = null,
       activeTurnId = null,
       activity = null,
-      latestLive = null,
+      current = null,
+      renderedCurrentAtomIds = const {},
       hasContentOwner = false;
 
-  final LiveWindowCut cut;
   final ThreadStorageStateView? storage;
   final List<PendingInteraction> interactions;
   final ThreadBusinessRefs? businessRefs;
   final String? activeTurnId;
   final ThreadActivityView? activity;
-  final TailSnapshot? latestLive;
+  final CurrentAtomSnapshot? current;
+  final Set<String> renderedCurrentAtomIds;
   final bool hasContentOwner;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveStatusInputs &&
-          cut == other.cut &&
           storage == other.storage &&
           listEquals(interactions, other.interactions) &&
           businessRefs == other.businessRefs &&
           activeTurnId == other.activeTurnId &&
           activity == other.activity &&
-          identical(latestLive, other.latestLive) &&
+          current == other.current &&
+          setEquals(renderedCurrentAtomIds, other.renderedCurrentAtomIds) &&
           hasContentOwner == other.hasContentOwner;
 
   @override
   int get hashCode => Object.hash(
-    cut,
     storage,
     Object.hashAll(interactions),
     businessRefs,
     activeTurnId,
     activity,
-    latestLive,
+    current,
+    Object.hashAllUnordered(renderedCurrentAtomIds),
     hasContentOwner,
   );
 }
@@ -497,16 +257,14 @@ final class LiveStatusInputs {
 final class LiveStatusView {
   const LiveStatusView({
     required this.threadId,
-    required this.cut,
     required this.barState,
-    required this.timelineWork,
     this.primaryActivity,
+    this.currentAtomsError,
+    this.activityTools,
   });
   final String threadId;
-  final LiveWindowCut cut;
   final LiveStatusMachineState barState;
-  final LiveStatusTimelineWorkSlice timelineWork;
   final ConversationActivityView? primaryActivity;
-  bool get hasAnyRealtimeRegion =>
-      barState is! LiveStatusHidden || timelineWork.workBlocks.isNotEmpty;
+  final Object? currentAtomsError;
+  final LiveActivityToolsWindow? activityTools;
 }

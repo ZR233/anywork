@@ -1113,8 +1113,17 @@ async fn retry_never_executes_discarded_tool_call_or_reexecutes_preceding_result
     assert_eq!(completed.model_steps, 3);
     let calls = calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].0, "first-call");
-    assert_eq!(calls[1].0, "second-call");
+    let accepted_calls = thread
+        .snapshot()
+        .context
+        .records
+        .iter()
+        .flat_map(|record| record.tool_calls.iter().map(|call| call.call_id.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls.iter().map(|call| call.0.clone()).collect::<Vec<_>>(),
+        accepted_calls
+    );
     assert!(calls[1].1.contains("successful argument"));
     assert!(
         !calls

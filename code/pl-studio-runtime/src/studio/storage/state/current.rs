@@ -1,15 +1,15 @@
-//! Callable current-only entry points. Existing production checkpoint entry points stay unchanged.
+//! Current-file and live CurrentWriter ownership entry points.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pl_core::thread::current::{RuntimeEpoch, ThreadCurrent};
-use tokio::sync::watch;
 
+use super::super::current_writer::CurrentSaveReceipt;
 use super::super::{
     coordinator::ThreadPersistenceCoordinator,
     current_file::CurrentFile,
-    current_writer::{CurrentSaveReceipt, CurrentSaveState, CurrentSource, CurrentWriter},
+    current_writer::{CurrentSaveState, CurrentSource, CurrentWriter},
 };
 use super::StateStore;
 
@@ -28,7 +28,8 @@ impl StateStore {
             .await
     }
 
-    /// Explicit opt-in to the independent writer, not a production load/flush/close switch.
+    /// Registers the independent current writer for the live Thread owner.
+    ///
     /// The expected predecessor is checked by the stable writer after all old I/O has ended.
     pub(crate) async fn attach_current(
         &mut self,
@@ -52,12 +53,6 @@ impl StateStore {
         writer.activate(previous_epoch, epoch, source).await
     }
 
-    pub(crate) fn mark_dirty(&self, epoch: RuntimeEpoch) {
-        if let Some(current) = &self.current {
-            current.writer.mark_dirty(epoch);
-        }
-    }
-
     pub(crate) async fn flush_current(&self, epoch: RuntimeEpoch) -> Result<CurrentSaveReceipt> {
         self.current
             .as_ref()
@@ -76,26 +71,32 @@ impl StateStore {
             .snapshot())
     }
 
-    pub(crate) fn subscribe_current(&self) -> Result<watch::Receiver<CurrentSaveState>> {
-        Ok(self
-            .current
-            .as_ref()
-            .context("current source is not registered")?
-            .writer
-            .subscribe())
-    }
-
-    pub(crate) async fn close_current(&self, epoch: RuntimeEpoch) -> Result<()> {
-        let current = self
-            .current
-            .as_ref()
-            .context("current source is not registered")?;
-        let result = current.writer.close(epoch).await;
-        // Both success and failure own a real join. A stale close cannot release a live successor.
-        if current.writer.is_joined() {
+    pub(crate) async fn close_current(
+        &self,
+        epoch: RuntimeEpoch,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<()> {
+        let Some(current) = self.current.as_ref() else {
+            // Preparation can be sealed before a Current source was ever admitted. Such an
+            // owner has no writer to join; this does not acknowledge a save or invent data.
+            return Ok(());
+        };
+        let result = current.writer.close(epoch, purpose).await;
+        // A failed final write keeps its lease and retained data for an explicit close retry.
+        // Deletion releases it only after the actual worker join; stale closes release nothing.
+        if current.writer.is_joined()
+            && (result.is_ok()
+                || purpose == crate::thread_assembler::ClosePurpose::Delete
+                || current.writer.snapshot().runtime_epoch.is_none())
+        {
             current
                 .coordinator
                 .release_current_writer(&self.thread_id, &current.writer);
+        }
+        if purpose == crate::thread_assembler::ClosePurpose::Delete && current.writer.is_joined() {
+            // Explicit deletion needs the original worker and every capture/observer joined, but
+            // does not promise to repair or save data that the user has asked to remove.
+            return Ok(());
         }
         result
     }
@@ -155,7 +156,9 @@ mod tests {
         }
         // Clean up even on the old implementation, which accepts and acknowledges both writers.
         for (store, epoch, _) in &accepted {
-            store.close_current(*epoch).await?;
+            store
+                .close_current(*epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
         }
         assert_eq!(
             accepted.len(),
@@ -180,7 +183,8 @@ mod tests {
             .await?;
         next.flush_current(epoch).await?;
         assert_eq!(next.load_current().await?.unwrap().thread_id, next_id);
-        next.close_current(epoch).await?;
+        next.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
@@ -208,7 +212,10 @@ mod tests {
                 .is_err()
         );
         assert!(
-            store.close_current(epoch).await.is_err(),
+            store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err(),
             "an unbound writer joins but cannot invent final data"
         );
         store
@@ -221,8 +228,6 @@ mod tests {
             .current_writer("state-test", directory.path().into())
             .await?;
         assert!(Arc::ptr_eq(&first, &second));
-        let subscribed = store.subscribe_current()?;
-        assert_eq!(subscribed.borrow().runtime_epoch, Some(epoch));
         assert!(
             coordinator
                 .current_writer("state-test", directory.path().join("another-session"))
@@ -241,7 +246,6 @@ mod tests {
             "history teardown cannot release the current slot"
         );
         assert!(coordinator.forget_deleted("state-test").is_err());
-        store.mark_dirty(epoch);
         assert_eq!(store.flush_current(epoch).await?.runtime_epoch, epoch);
         assert_eq!(
             store
@@ -256,7 +260,9 @@ mod tests {
             0,
             "current does not advance history pressure or watermarks"
         );
-        store.close_current(epoch).await?;
+        store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(first.is_joined());
         assert_eq!(store.load_current().await?.unwrap().snapshot_revision, 7);
         coordinator.forget_deleted("state-test")?;
@@ -264,7 +270,75 @@ mod tests {
         next.attach_current(coordinator.clone(), None, RuntimeEpoch::new(), source)
             .await?;
         assert!(!Arc::ptr_eq(&first, &next.current.as_ref().unwrap().writer));
-        next.close_current(next.current_save_state()?.runtime_epoch.unwrap())
+        next.close_current(
+            next.current_save_state()?.runtime_epoch.unwrap(),
+            crate::thread_assembler::ClosePurpose::Preserve,
+        )
+        .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closed_writer_releases_registration_before_saved_current_starts_r2() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let r1 = RuntimeEpoch::new();
+        let mut first = StateStore::new(directory.path().into(), "cold-r2");
+        first
+            .attach_current(coordinator.clone(), None, r1, named_source("cold-r2"))
+            .await?;
+        first.flush_current(r1).await?;
+        first
+            .close_current(r1, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
+
+        // The saved file still names R1, but the coordinator slot was released after a real join.
+        // A newly registered writer is Unbound, so R2 admission must use `previous = None`.
+        let r2 = RuntimeEpoch::new();
+        let mut second = StateStore::new(directory.path().into(), "cold-r2");
+        second
+            .attach_current(coordinator, None, r2, named_source("cold-r2"))
+            .await?;
+        assert_eq!(second.current_save_state()?.runtime_epoch, Some(r2));
+        assert_eq!(second.flush_current(r2).await?.runtime_epoch, r2);
+        assert_eq!(
+            second.load_current().await?.unwrap().saved_runtime_epoch,
+            r2
+        );
+        second
+            .close_current(r2, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn open_registered_writer_replaces_observer_with_actual_epoch_as_predecessor()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let r1 = RuntimeEpoch::new();
+        let writer = coordinator
+            .current_writer("replace-r1", directory.path().into())
+            .await?;
+        writer
+            .activate(None, r1, named_source("replace-r1"))
+            .await?;
+
+        let r2 = RuntimeEpoch::new();
+        let mut store = StateStore::new(directory.path().into(), "replace-r1");
+        store
+            .attach_current(
+                coordinator.clone(),
+                Some(r1),
+                r2,
+                named_source("replace-r1"),
+            )
+            .await?;
+        assert_eq!(store.current_save_state()?.runtime_epoch, Some(r2));
+        assert!(store.flush_current(r1).await.is_err());
+        assert_eq!(store.flush_current(r2).await?.runtime_epoch, r2);
+        store
+            .close_current(r2, crate::thread_assembler::ClosePurpose::Preserve)
             .await?;
         Ok(())
     }
@@ -313,7 +387,9 @@ mod tests {
                 .is_err(),
             "release before join cannot surrender physical ownership"
         );
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(writer.is_joined());
         assert!(
             coordinator
@@ -348,7 +424,8 @@ mod tests {
                 .await
                 .is_err()
         );
-        next.close(epoch).await?;
+        next.close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         coordinator.release_current_writer("foreign-owner", &next);
         Ok(())
     }
@@ -385,7 +462,10 @@ mod tests {
         );
         let epoch = RuntimeEpoch::new();
         assert!(
-            writer.close(epoch).await.is_err(),
+            writer
+                .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err(),
             "unbound close cannot invent a final state"
         );
         coordinator.release_current_writer("failed-prepare", &writer);

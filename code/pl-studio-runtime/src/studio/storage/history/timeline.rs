@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ExecutionItem;
+use pl_core::chat::ChatError;
 #[path = "timeline/codec.rs"]
 pub(super) mod codec;
 #[path = "timeline/descriptor.rs"]

@@ -22,6 +22,8 @@ pub(super) struct State {
     pub write_error: Option<String>,
 }
 pub(super) struct Inner {
+    pub thread_id: String,
+    pub read_only: bool,
     pub database_id: String,
     pub writer: DatabaseConnection,
     pub reader: DatabaseConnection,
@@ -41,7 +43,78 @@ pub(super) struct Inner {
 pub struct HistoryStore {
     pub(super) inner: Arc<Inner>,
 }
+
+impl std::fmt::Debug for HistoryStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HistoryStore")
+            .field("thread_id", &self.inner.thread_id)
+            .field("database_id", &self.inner.database_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A coordinator-owned weak view of the one writer lease.
+///
+/// The registry must not extend a Thread's database lifetime. It only converges concurrent opens
+/// while at least one production holder remains alive.
+#[derive(Clone)]
+pub struct HistoryStoreShare(std::sync::Weak<Inner>);
+
+impl std::fmt::Debug for HistoryStoreShare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryStoreShare").finish_non_exhaustive()
+    }
+}
+
 impl HistoryStore {
+    /// Opens an independent, read-only reader without creating or registering a writer.
+    ///
+    /// The file must already exist and contain the current append-only schema. This path takes no
+    /// writer lease and never consults current JSON, so it remains usable while another process owns
+    /// the one writer connection.
+    pub async fn open_reader(
+        path: impl AsRef<Path>,
+        thread_id: &str,
+        limits: HistoryLimits,
+    ) -> Result<HistoryReader> {
+        if thread_id.is_empty() || limits.pending_events == 0 || limits.pending_bytes == 0 {
+            return Err(HistoryError::InvalidEvent(
+                "empty owner identity or capacity".into(),
+            ));
+        }
+        let path = path.as_ref();
+        let reader = schema::connect(path, true, false).await?;
+        let (database_id, head) = schema::identity(&reader, thread_id).await?;
+        let (changed, _) = watch::channel(head);
+        let inner = Arc::new(Inner {
+            thread_id: thread_id.to_owned(),
+            read_only: true,
+            database_id,
+            // Reader-only stores never invoke writer paths; retaining the same read-only handle
+            // keeps their capability visibly read-only instead of opening an unused writable pool.
+            writer: reader.clone(),
+            reader,
+            state: Mutex::new(State {
+                pending: Arc::new(Pending::default()),
+                head,
+                accepting: false,
+                closing: false,
+                write_error: None,
+            }),
+            changed,
+            cancel: CancellationToken::new(),
+            operations: TaskTracker::new(),
+            admission: tokio::sync::Mutex::new(()),
+            flush: tokio::sync::Mutex::new(()),
+            item_budget: Arc::new(Semaphore::new(limits.pending_events as usize)),
+            byte_budget: Arc::new(Semaphore::new(limits.pending_bytes as usize)),
+            limits,
+            lease: Mutex::new(None),
+        });
+        Ok(HistoryReader::new(inner))
+    }
+
     /// Opens this Thread's single registered history owner. Existing non-25 files are rejected
     /// read-only; production schema upgrades belong to the explicit migration boundary.
     pub async fn open(
@@ -95,6 +168,8 @@ impl HistoryStore {
         let (changed, _) = watch::channel(head);
         Ok(Self {
             inner: Arc::new(Inner {
+                thread_id: thread_id.to_owned(),
+                read_only: false,
                 database_id,
                 writer,
                 reader,
@@ -120,10 +195,19 @@ impl HistoryStore {
     pub fn database_id(&self) -> &str {
         &self.inner.database_id
     }
+    pub fn thread_id(&self) -> &str {
+        &self.inner.thread_id
+    }
     pub fn reader(&self) -> HistoryReader {
         HistoryReader::new(self.inner.clone())
     }
-    pub(super) async fn anchor_exists(&self, row: &str) -> Result<bool> {
+    pub fn shared(&self) -> HistoryStoreShare {
+        HistoryStoreShare(Arc::downgrade(&self.inner))
+    }
+    pub fn from_share(share: &HistoryStoreShare) -> Option<Self> {
+        share.0.upgrade().map(|inner| Self { inner })
+    }
+    pub(crate) async fn anchor_exists(&self, row: &str) -> Result<bool> {
         let pending = self
             .inner
             .state
@@ -154,10 +238,24 @@ impl HistoryStore {
     /// Atomic, bounded acceptance. Capacity is explicit so the producer can keep processing
     /// cancellation/current saves while its existing pressure mechanism pauses new archive work.
     pub async fn accept_batch(&self, events: &[HistoryEvent]) -> Result<Vec<u64>> {
-        let _admission = self.inner.admission.lock().await;
-        self.accept_locked(events).await
+        let admission = self.admission_guard().await;
+        self.accept_locked(&admission, events).await
     }
-    pub(super) async fn accept_locked(&self, events: &[HistoryEvent]) -> Result<Vec<u64>> {
+
+    /// Takes the same admission boundary used by [`Self::accept_batch`].
+    ///
+    /// Producer-specific preparation (classifier and usage folding) needs to inspect the pending
+    /// root while no other admission can interleave. Those callers may then call the non-locking
+    /// [`Self::accept_locked`] with the complete candidate effect, avoiding recursive acquisition.
+    pub(crate) async fn admission_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.admission.lock().await
+    }
+
+    pub(crate) async fn accept_locked(
+        &self,
+        _admission: &tokio::sync::MutexGuard<'_, ()>,
+        events: &[HistoryEvent],
+    ) -> Result<Vec<u64>> {
         let pending = {
             let state = self
                 .inner

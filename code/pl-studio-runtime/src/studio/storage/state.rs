@@ -1,13 +1,7 @@
-//! Current SQLite checkpoint loading and the isolated v2 TOML migration boundary.
-//! Legacy files are removed only after the imported transaction can be read and verified.
+//! Independent current.json ownership and the isolated, one-shot v2 TOML migration boundary.
+//! Normal Current recovery never reads History. Legacy files are removed only after the explicit
+//! schema-24 import can be read back and verified.
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
 mod current;
 
 use std::{
@@ -53,12 +47,10 @@ pub(crate) fn checkpoint_recovery_snapshot() -> BTreeMap<String, String> {
         .clone()
 }
 
-/// Lightweight per-Thread identity record for one admitted input that reached a terminal state.
+/// Frozen schema-24 backup identity for an admitted input.
 ///
-/// It is deliberately not a history entity: it carries only the identity, content digest and the
-/// framework receipt needed to answer a repeated `submitPrompt`, so neither the admitted body nor
-/// its context is duplicated. Core keeps its bounded resident window; this row is the durable
-/// fallback the runtime consults after a restart.
+/// This is migration material only. Normal idempotency comes from the resident Thread state and
+/// exact History entity/original reads; Current recovery must not use this row as a fallback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InputIdentityEntry {
@@ -91,6 +83,7 @@ pub(crate) struct InputIdentityEntry {
 }
 
 impl InputIdentityEntry {
+    #[cfg(test)]
     pub(crate) fn new(
         identity: pl_core::thread::input::InputIdentity,
         accepted_sequence: u64,
@@ -118,13 +111,6 @@ pub(crate) struct StateStore {
     directory: PathBuf,
     thread_id: String,
     legacy_calls: Option<super::calls::CallsStore>,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "current-only API is intentionally not wired to production before #470"
-        )
-    )]
     current: Option<current::CurrentRegistration>,
 }
 
@@ -143,25 +129,15 @@ impl StateStore {
         self
     }
 
-    /// Strictly read-only checkpoint read for read-only product projections.
+    /// The sole v2 TOML import entry.
     ///
-    /// Unlike [`Self::prepare_recovery`] this never imports a legacy checkpoint, never deletes the files it
-    /// replaced and never touches the state directory: a projection only reports facts that are
-    /// already durable in the history database. Migration and legacy cleanup stay exclusive to the
-    /// explicit recovery/activation entries.
-    pub(crate) async fn load_read_only(
-        &self,
-        history: &super::history::HistoryStore,
-    ) -> Result<Option<ThreadCheckpoint>> {
-        ensure!(
-            history.thread_id() == self.thread_id,
-            "history database belongs to another Thread"
-        );
-        history.checkpoint().await
-    }
-
-    /// The sole file-import entry. SQLite migrations finish before any checkpoint is decoded.
-    pub(crate) async fn prepare_recovery(
+    /// This is maintenance-only. The caller must hold the Thread maintenance gate and retire every
+    /// schema-24 writer before invoking it. Normal Current recovery reads `current.json`; it never
+    /// opens History or calls this method. SQLite schema preparation finishes before any TOML
+    /// checkpoint is decoded, and the original files remain in place until the import has been
+    /// read back and verified. Import never deletes the primary manifest, fallback manifest or
+    /// checkpoint bodies: those are user-owned migration evidence with no cleanup authorization.
+    pub(crate) async fn legacy_prepare(
         &self,
         history: &super::history::HistoryStore,
     ) -> Result<Option<ThreadCheckpoint>> {
@@ -171,19 +147,18 @@ impl StateStore {
         );
         history.prepare_activation().await?;
         if let Some(checkpoint) = history.checkpoint().await? {
-            self.cleanup_legacy(history).await?;
             return Ok(Some(checkpoint));
         }
-        // Current SQLite recovery must not carry the legacy parser, accounting and import
-        // temporaries in every poll frame. Allocate that owned branch only when import is needed.
-        Box::pin(self.clone().import_legacy(history.clone())).await
+        // The explicit legacy import must not carry its parser, accounting and temporary state in
+        // every normal Current load. Allocate that owned branch only when migration is needed.
+        Box::pin(self.clone().import_legacy_checkpoint(history.clone())).await
     }
 
-    async fn import_legacy(
+    async fn import_legacy_checkpoint(
         self,
         history: super::history::HistoryStore,
     ) -> Result<Option<ThreadCheckpoint>> {
-        let Some(mut checkpoint) = self.load_legacy().await? else {
+        let Some(mut checkpoint) = self.legacy_checkpoint().await? else {
             ensure!(
                 history.watermark().await? == 0,
                 "history exists without a recovery checkpoint"
@@ -266,38 +241,14 @@ impl StateStore {
             .checkpoint()
             .await?
             .context("imported checkpoint is absent")?;
-        self.cleanup_legacy(&history).await?;
         Ok(Some(restored))
     }
 
-    async fn cleanup_legacy(&self, history: &super::history::HistoryStore) -> Result<()> {
-        if !history.legacy_cleanup_pending().await? {
-            return Ok(());
-        }
-        for path in [self.path(), self.previous_path()] {
-            match tokio::fs::remove_file(&path).await {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("remove migrated checkpoint {}", path.display()));
-                }
-            }
-        }
-        // This dedicated namespace belongs only to the replaced TOML manifests. Attachment
-        // and command-output blobs are siblings and must never enter this cleanup.
-        match tokio::fs::remove_dir_all(self.checkpoint_blobs_dir()).await {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error).context("remove migrated checkpoint bodies"),
-        }
-        history.finish_legacy_cleanup().await?;
-        Ok(())
-    }
-
-    /// Shared by explicit recovery and layout-migration evidence gathering only. Normal reads
-    /// remain SQLite-only; both migration entries verify versions, Thread identity and all bodies.
-    pub(in crate::studio) async fn load_legacy(&self) -> Result<Option<ThreadCheckpoint>> {
+    /// Reads the replaced v2 TOML manifest for explicit recovery and layout-migration evidence.
+    ///
+    /// This verifies the source version, Thread identity and every external body before any caller
+    /// can materialize `current.json` or create schema 24. It is never part of normal Current reads.
+    pub(in crate::studio) async fn legacy_checkpoint(&self) -> Result<Option<ThreadCheckpoint>> {
         let mut primary_error = None;
         for path in [self.path(), self.previous_path()] {
             let content = match tokio::fs::read_to_string(&path).await {

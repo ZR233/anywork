@@ -15,6 +15,8 @@
 ## 5.1 参数与类型设计
 
 - **线协议命名与基础类型**：序列化类型统一使用 `#[serde(rename_all = "camelCase")]`，Rust 字段保持 `snake_case`。ID 使用 `String`，内部按需解析 UUID；既有领域协议时间戳使用 Unix 秒 `i64`，字段命名为 `*_at`。独立 Native current 的捕获时间与 schema 25 历史头按 [15](./15-session-storage.md#native-current-与历史解耦的目标合同) 使用 UTC 毫秒；适配器显式换算，不能据此改写原始领域载荷的时间单位。
+- **Current 与 History 的 version 域**：`ThreadSnapshot` 使用 schema 18，Current 与 History 公开协议版本各为 1，History schema 为 25。`CurrentRevision` 仅在同一 Current owner 内可比较；History `seq`、opaque `HistoryCut`、collection revision 与 body generation 不互换。旧 client/schema 明确返回 Protocol mismatch，不保留双协议探测。
+- **CurrentStateField 判别**：State 小头中的 deferred 字段必须使用带 `kind` 的 `Body { field, reference, byteLength }` 或 `Collection { field, reference, count }`。`count` 是完整集合总量；集合页条目可为内联值或 `CurrentPayloadData::Deferred` body 引用。inline 占位不代表完整值，调用方不解析 generation 公式，也不在本地拼回第二个常驻集合。
 - **消除布尔参数歧义**：核心接口不暴露语义模糊的裸布尔参数；前端输入在 `anywork` 边界处统一转换为语义明确的枚举或值对象。
 - **工具参数模式与分页游标绑定**：工具的参数模式（schema）必须完整描述影响参数有效性的全部约束。分页游标（cursor）只能与生成该游标的请求投影配套使用；翻页请求必须保持游标所绑定的过滤条件、目标路径与匹配参数不变，一旦工作区发生变更，旧游标立即失效。
 - **补丁控制前缀转义**：Codex 补丁（patch）的 `Update` 块（hunk）中，每行首字符固定为控制前缀（空格表示上下文行、`-` 表示删除行、`+` 表示新增行）；当代码行正文自身以 `-` 或 `+` 开头时，正文字符必须紧跟在控制前缀之后（例如删除 `- old` 写作 `-- old`，新增 `- new` 写作 `+- new`）。

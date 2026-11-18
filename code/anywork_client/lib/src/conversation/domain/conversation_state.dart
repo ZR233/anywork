@@ -5,9 +5,9 @@ import '../../studio/stores/domain_sync.dart';
 /// 单个会话的 canonical 状态投影。
 ///
 /// 这里只有 Thread 状态事实（runtime/turn/interactions/storage 与流水位）。正文、已加载消息、
-/// 展示模式与分页游标都不属于它：唯一已加载消息集合由当前展示 lease 的
-/// `InMemoryChatController` 持有，内容连接另由 SDK 的有界尾部 reducer 负责
-/// （design/25 §25.6、design/26 §26.8）。状态流不反写正文，正文恢复也不把状态标成 ready。
+/// 展示模式与分页游标都不属于它；界面持有唯一有界历史窗口和自己的正文读取资源。
+/// Native 交互只保留原 Current owner 优先查询得到的一项决定，不累计完整集合。
+/// 状态流不反写正文，正文读取也不把状态标成 ready。
 ///
 /// revision / streamEpoch / baseRevision 都参与相等。
 /// workflow 在 [runtime] 上，不另建旁路字段。
@@ -20,6 +20,8 @@ class ThreadSessionState {
     this.streamEpoch,
     this.baseRevision,
     this.sync = const DomainSyncStatus(),
+    this.interactionReadError,
+    this.interactionReadReference,
   });
 
   final String threadId;
@@ -35,6 +37,17 @@ class ThreadSessionState {
   final int? baseRevision;
   final DomainSyncStatus sync;
 
+  /// Failure of the bounded active-decision query; other Current State keeps updating.
+  final Object? interactionReadError;
+  final CurrentCollectionRef? interactionReadReference;
+
+  /// Absence is authoritative only after this Current reference was read.
+  bool get hasInteractionBaseline =>
+      hasSnapshot &&
+      interactionReadError == null &&
+      (businessRefs?.interactions == null ||
+          interactionReadReference == businessRefs?.interactions);
+
   int get revision => workspace?.revision ?? 0;
   ThreadRuntimeView? get runtime => workspace?.runtime;
   ThreadBusinessRefs? get businessRefs => workspace?.businessRefs;
@@ -42,7 +55,7 @@ class ThreadSessionState {
   WorkflowRuntimeView? get workflow => runtime?.workflow;
   StudioTurnView? get activeTurn => workspace?.activeTurn;
   List<PendingInteraction> get interactions =>
-      workspace?.interactions ?? const [];
+      hasInteractionBaseline ? workspace?.interactions ?? const [] : const [];
   ThreadActivityView? get activity => workspace?.activity;
   ThreadStorageStateView? get storage => workspace?.storage;
   StudioTurnView? get lastTurn => workspace?.lastTurn;
@@ -62,6 +75,8 @@ class ThreadSessionState {
     Object? streamEpoch = _unset,
     Object? baseRevision = _unset,
     DomainSyncStatus? sync,
+    Object? interactionReadError = _unset,
+    Object? interactionReadReference = _unset,
   }) {
     return ThreadSessionState(
       threadId: threadId,
@@ -77,6 +92,12 @@ class ThreadSessionState {
           ? this.baseRevision
           : baseRevision as int?,
       sync: sync ?? this.sync,
+      interactionReadError: identical(interactionReadError, _unset)
+          ? this.interactionReadError
+          : interactionReadError,
+      interactionReadReference: identical(interactionReadReference, _unset)
+          ? this.interactionReadReference
+          : interactionReadReference as CurrentCollectionRef?,
     );
   }
 
@@ -90,6 +111,8 @@ class ThreadSessionState {
           streamEpoch == other.streamEpoch &&
           baseRevision == other.baseRevision &&
           sync == other.sync &&
+          interactionReadError == other.interactionReadError &&
+          interactionReadReference == other.interactionReadReference &&
           directoryRow == other.directoryRow &&
           identical(workspace, other.workspace);
 
@@ -101,6 +124,8 @@ class ThreadSessionState {
     streamEpoch,
     baseRevision,
     sync,
+    interactionReadError,
+    interactionReadReference,
     directoryRow,
     identityHashCode(workspace),
   );

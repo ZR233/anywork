@@ -12,9 +12,9 @@ use anyhow::{Context, Result, bail};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
+use crate::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::conversation_store::ConversationStore;
 use crate::studio::storage::calls::CallsStore;
-use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
 
 /// Per-Thread persistence watermarks and queue pressure reported by the owning writer.
@@ -22,9 +22,6 @@ use crate::studio::storage::thread_writer::HistoryChannel;
 pub(crate) struct ThreadPersistenceMetrics {
     pub(crate) fault_generation: u64,
     pub(crate) fault: Option<crate::HistoryFault>,
-    pub(crate) state_dirty_revision: u64,
-    pub(crate) state_saving_revision: u64,
-    pub(crate) state_durable_revision: u64,
     pub(crate) history_admitted_sequence: u64,
     pub(crate) history_durable_sequence: u64,
     pub(crate) pending_operations: u64,
@@ -37,7 +34,6 @@ pub(crate) struct ThreadPersistenceMetrics {
 /// One owner's absolute reliable-history state.
 pub(crate) struct ThreadPersistenceReport {
     pub(crate) pending: Option<PendingSequenceRange>,
-    pub(crate) pending_checkpoint: bool,
     pub(crate) error: Option<String>,
     pub(crate) metrics: ThreadPersistenceMetrics,
 }
@@ -120,8 +116,6 @@ pub(crate) struct CallsQueueMetrics {
 struct IncarnationStatus {
     /// Admitted effects this incarnation still owes an ordered history write.
     pending: Option<PendingSequenceRange>,
-    /// Whether this incarnation still owes the publication of a retained checkpoint.
-    pending_checkpoint: bool,
     /// Last write failure of this incarnation, kept until one of its own writes succeeds.
     error: Option<String>,
     metrics: ThreadPersistenceMetrics,
@@ -137,7 +131,7 @@ struct IncarnationStatus {
 impl IncarnationStatus {
     /// Commits this incarnation still owes durability for.
     fn owed(&self) -> u64 {
-        self.pending.map_or(0, PendingSequenceRange::count) + u64::from(self.pending_checkpoint)
+        self.pending.map_or(0, PendingSequenceRange::count)
     }
 
     /// Last failure worth surfacing for this incarnation; its own write error outranks the terminal
@@ -179,23 +173,10 @@ struct ThreadStatus {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
 struct RegisteredCurrentWriter {
     directory_key: String,
     writer: Arc<super::current_writer::CurrentWriter>,
 }
-
-#[cfg(test)]
-type RetryGate = (
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
 
 #[cfg(test)]
 type CallsSampleGate = (
@@ -214,8 +195,6 @@ struct Inner {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
-    #[cfg(test)]
-    retry_gate: Mutex<Option<RetryGate>>,
     #[cfg(test)]
     calls_sample_gate: Mutex<Option<CallsSampleGate>>,
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
@@ -269,8 +248,6 @@ impl Default for ThreadPersistenceCoordinator {
             #[cfg(test)]
             release_gate: Mutex::new(None),
             #[cfg(test)]
-            retry_gate: Mutex::new(None),
-            #[cfg(test)]
             calls_sample_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(BTreeMap::new()),
@@ -286,18 +263,32 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    /// Stops and joins every registered append-only writer before a one-shot schema upgrade.
+    ///
+    /// The caller owns the maintenance gate that prevents a new writer from being admitted while
+    /// this method runs. Existing queued work must drain successfully; an unresolved writer failure
+    /// is returned instead of being hidden by the upgrade's writer lease.
+    pub(crate) async fn retire_history_for_upgrade(&self, thread_id: &str) -> Result<()> {
+        let channel = {
+            self.0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(thread_id)
+                .map(|status| status.channel.clone())
+        };
+        if let Some(channel) = channel {
+            channel.stop_and_join().await?;
+            self.release_delivery_channel(thread_id, &channel);
+        }
+        Ok(())
+    }
+
     /// Install exactly one stable current writer in the existing per-Thread registration slot.
     /// Prepare only the caller-owned session directory, then identify its physical location before
     /// taking the registration lock. Creation/lookup errors propagate; no guessed missing-path key,
     /// history access, or extra global path registry is involved. The owner must keep this directory
     /// in place until join/release, just as for the session's other physical assets.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "current-only API is intentionally not wired to production before #470"
-        )
-    )]
     pub(crate) async fn current_writer(
         &self,
         thread_id: &str,
@@ -380,23 +371,24 @@ impl ThreadPersistenceCoordinator {
                 )),
                 current: None,
             });
+        let weak = Arc::downgrade(&self.0);
         let writer = super::current_writer::CurrentWriter::new(
             super::current_file::CurrentFile::new(directory, thread_id.to_owned()),
+            move || {
+                if let Some(inner) = weak.upgrade() {
+                    ThreadPersistenceCoordinator(inner).refresh();
+                }
+            },
         );
         status.current = Some(RegisteredCurrentWriter {
             directory_key,
             writer: writer.clone(),
         });
+        drop(threads);
+        self.refresh();
         Ok(writer)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "current-only API is intentionally not wired to production before #470"
-        )
-    )]
     pub(crate) fn release_current_writer(
         &self,
         thread_id: &str,
@@ -425,6 +417,7 @@ impl ThreadPersistenceCoordinator {
             status.channel.clone()
         };
         self.release_delivery_channel(thread_id, &channel);
+        self.refresh();
     }
 
     pub(in crate::studio) fn forget_deleted(&self, thread_id: &str) -> anyhow::Result<()> {
@@ -704,14 +697,6 @@ impl ThreadPersistenceCoordinator {
                 );
             }
             if status.fault.is_none() {
-                #[cfg(test)]
-                {
-                    let gate = self.0.retry_gate.lock().unwrap().take();
-                    if let Some((entered, released)) = gate {
-                        let _ = entered.send(());
-                        released.await?;
-                    }
-                }
                 let pending_reports = self
                     .0
                     .threads
@@ -753,24 +738,6 @@ impl ThreadPersistenceCoordinator {
             }
         }
     }
-    #[cfg(test)]
-    pub(crate) fn pause_retry_before_reports(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (entered, observed) = tokio::sync::oneshot::channel();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let previous = self
-            .0
-            .retry_gate
-            .lock()
-            .unwrap()
-            .replace((entered, released));
-        assert!(previous.is_none());
-        (observed, release)
-    }
     pub(crate) fn subscribe(&self) -> watch::Receiver<ThreadPersistenceSnapshot> {
         self.0.state.subscribe()
     }
@@ -789,11 +756,27 @@ impl ThreadPersistenceCoordinator {
     /// Bridge/GUI publication is a later task; this is the canonical runtime value it maps onto
     /// [`crate::PersistenceQueueSnapshot`], so the protocol fields never report placeholders.
     pub(crate) fn queue_snapshot(&self) -> crate::PersistenceQueueSnapshot {
-        let snapshot = self.0.state.borrow().clone();
+        // Re-sample the real Current owners so snapshot age advances even without a new save.
+        // This read does not publish to the watch channel, which would wake its own consumers.
+        let threads = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let calls = self
+            .0
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = aggregate(&threads, &calls);
         crate::PersistenceQueueSnapshot {
             statistics_gap: snapshot.statistics_gap,
             pending_operations: snapshot
-                .pending_commits
+                .threads
+                .iter()
+                .fold(0_u64, |total, thread| {
+                    total.saturating_add(thread.pending_operations)
+                })
                 .saturating_add(snapshot.calls_pending_operations),
             pending_bytes: snapshot
                 .pending_bytes
@@ -837,7 +820,6 @@ impl ThreadPersistenceCoordinator {
                 return;
             };
             incarnation.pending = report.pending;
-            incarnation.pending_checkpoint = report.pending_checkpoint;
             incarnation.error = report.error;
             incarnation.metrics = report.metrics;
             // A cancelled initializer has not adopted a predecessor's obligations merely by
@@ -854,11 +836,8 @@ impl ThreadPersistenceCoordinator {
                             inherited.pending.is_some_and(|pending| {
                                 pending.covers(previous, inherited.metrics.history_durable_sequence)
                             }) || inherited.metrics.history_durable_sequence >= previous.last
-                        })
-                        && (!previous.pending_checkpoint
-                            || inherited.metrics.state_durable_revision
-                                >= previous.metrics.state_dirty_revision))
-                        .then_some(*id)
+                        }))
+                    .then_some(*id)
                 })
                 .collect::<Vec<_>>();
             for id in covered {
@@ -1170,16 +1149,6 @@ impl ThreadPersistenceCoordinator {
             .or_insert(summary);
     }
 
-    /// Latest cumulative usage summary of one Thread; absent until a checkpoint or a fold is seen.
-    pub(crate) fn usage(&self, thread_id: &str) -> Option<UsageSummary> {
-        self.0
-            .usage
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(thread_id)
-            .cloned()
-    }
-
     pub(crate) fn retry_now(&self) {
         self.0.retry.notify_one();
     }
@@ -1327,29 +1296,49 @@ fn aggregate(
                 newest_live = Some((*owner, incarnation));
             }
         }
-        let row = newest_live.or(newest);
-        if let Some((_, incarnation)) = row {
-            let metrics = &incarnation.metrics;
-            // 只有仍在运行的 writer 报告的水位才是当前已观测事实（含 0）；已停止的 incarnation
-            // 只能说明它退出时的队列压力，因此水位保持 `None`（未知），不补零。
-            let live = newest_live.is_some();
-            snapshot.threads.push(crate::ThreadPersistenceSnapshot {
-                thread_id: id.clone(),
-                fault_generation: metrics.fault_generation,
-                fault: metrics.fault,
-                state_dirty_revision: live.then_some(metrics.state_dirty_revision),
-                state_saving_revision: live.then_some(metrics.state_saving_revision),
-                state_durable_revision: live.then_some(metrics.state_durable_revision),
-                history_admitted_sequence: live.then_some(metrics.history_admitted_sequence),
-                history_durable_sequence: live.then_some(metrics.history_durable_sequence),
-                pending_operations: metrics.pending_operations,
-                pending_bytes: metrics.pending_bytes,
-                oldest_pending_age_millis: metrics.oldest_pending_age_millis,
-                in_flight_bytes: metrics.in_flight_bytes,
-                last_error: failure.or_else(|| recovery.get(id).cloned()),
-                pressure_paused: metrics.pressure_paused,
-            });
+        let mut row = crate::ThreadPersistenceSnapshot {
+            thread_id: id.clone(),
+            last_error: failure.or_else(|| recovery.get(id).cloned()),
+            ..Default::default()
+        };
+        // Each outstanding incarnation contributes pressure; only the latest live History writer
+        // supplies watermarks. Current is sampled separately even when no History writer exists.
+        for incarnation in status.incarnations.values() {
+            row.pending_operations = row.pending_operations.saturating_add(incarnation.owed());
+            row.pending_bytes = row
+                .pending_bytes
+                .saturating_add(incarnation.metrics.pending_bytes);
+            row.in_flight_bytes = row
+                .in_flight_bytes
+                .saturating_add(incarnation.metrics.in_flight_bytes);
+            row.pressure_paused |= incarnation.metrics.pressure_paused;
+            if let Some(age) = incarnation.metrics.oldest_pending_age_millis {
+                row.oldest_pending_age_millis = Some(
+                    row.oldest_pending_age_millis
+                        .map_or(age, |previous| previous.max(age)),
+                );
+            }
         }
+        if let Some((_, incarnation)) = newest_live.or(newest) {
+            row.fault_generation = incarnation.metrics.fault_generation;
+            row.fault = incarnation.metrics.fault;
+            if newest_live.is_some() {
+                row.history_admitted_sequence = Some(incarnation.metrics.history_admitted_sequence);
+                row.history_durable_sequence = Some(incarnation.metrics.history_durable_sequence);
+            }
+        }
+        if let Some(current) = &status.current {
+            let current = current.writer.snapshot().persistence_snapshot();
+            row.pending_operations = row
+                .pending_operations
+                .saturating_add(u64::from(current.dirty || current.in_flight));
+            if let Some(error) = &current.last_error {
+                row.last_error.get_or_insert_with(|| error.clone());
+                snapshot.error.get_or_insert_with(|| error.clone());
+            }
+            row.current = Some(current);
+        }
+        snapshot.threads.push(row);
     }
     // 只有 checkpoint 回退诊断、尚未报告过水位的 Thread 也必须可见；它没有 writer，
     // 因此水位保持 `None`（未知），而不是补零伪装成已观测事实。
@@ -1377,7 +1366,6 @@ mod tests {
     fn history_report() -> ThreadPersistenceReport {
         ThreadPersistenceReport {
             pending: Some(PendingSequenceRange { first: 3, last: 3 }),
-            pending_checkpoint: false,
             error: Some("retained failure".into()),
             metrics: ThreadPersistenceMetrics {
                 fault_generation: 4,
@@ -1428,7 +1416,6 @@ mod tests {
                 owner,
                 ThreadPersistenceReport {
                     pending: None,
-                    pending_checkpoint: false,
                     error: None,
                     metrics: ThreadPersistenceMetrics::default(),
                 },

@@ -120,7 +120,7 @@ bot 子智能体派发严格沿用上述同一受管执行根，不因 Profile �
 
 机器人根 `Thread` 默认挂载两类 Studio 产品级会话工具：
 
-会话查询工具、桌面与 HTTP 共用不可变完成原件。`read_session_messages` 新读取必须显式给出 Class／All，可选真实 parent，返回统一 `CompletedEntry` 小页及独立 State／Activity；继续读取使用原 readScope，正文沿 manifest／ContentRef 读取。`get_session.recentExecution` 在既有数量边界内返回真实原件头。Plan／交互仍通过 `read_business_refs` 与 `pageCurrent` 获取。搜索沿单个 Records 游标按工作预算推进，不展开展示组，不创建 Run reader；搜索范围继续由原正文角色规则决定，不扩大到推理、工具输出或敏感回答。关闭、取消和跨会话资格检查保持原资源所有者责任，见 [26](./26-timeline-content.md)。
+会话查询工具、桌面与 HTTP 使用独立 History/Current reader。`read_session_messages` 使用显式 `ChatScope`（Class/All 与可选真实 parent）和固定 `HistoryCut`，返回 `HistoryEventsPage`/`HistoryEventDetail`，正文沿 `HistoryEventBodyRef` 读取；不能把 Current atom 当历史。`get_session.recentExecution` 只返回该 cut 的 typed History head。Plan/交互通过 Current `CurrentPlanHead`／`CurrentCollectionRef` 读取。搜索沿 History original-event 索引按预算推进，不展开展示组，不扩大到未声明的推理、工具输出或敏感回答。
 
 - **跨项目会话查询与代发工具**：包括 `list_sessions`、`get_session`、`search_session_messages`、`read_session_messages` 与 `send_session_message`。查询覆盖所有本地项目，目录与内容复用现有所有者；正文搜索支持中文并按有界游标分页接续，不将截断预览或局部扫描当作全量搜索结果，且只读查询不启动执行所有者。`send_session_message` 走标准用户输入受理链，通过稳定操作身份防止重复执行；附件仅允许引用来源会话已归档的可靠资源并导入目标会话，代发来源保持可见，不赋予系统级或审批级特权。系统不向模型提供创建、停止或归档会话的管理工具。
 - **跨会话待决交互决议工具**：包括 `read_session_interaction`、`approve_session_plan`、`revise_session_plan`、`answer_session_questions` 与 `decide_session_tool_approval`，供可信入站用户在飞书聊天中显式指示时，代为处理其他本地会话的待决交互（具体契约见 §27.7）。
@@ -185,7 +185,7 @@ bot 子智能体派发严格沿用上述同一受管执行根，不因 Profile �
 
 目标轮次正文的完整性必须由统一内容源证明，有界尾部基线不能直接当作整轮全量正文。经历尾部重同步或重新打开观察后，正式完成发送前须重新补齐并核对目标轮次的覆盖范围；无法证明完整时保留“需处理”状态与诊断，不发送残缺正文或伪报完成。单次正文恢复最多扫描 16,384 条内容条目，累计正文上限为 800,000 UTF-8 字节，超限时明确报错而不静默截断。
 
-自动回复所有者独立订阅 [07](./07-streaming.md) §7.10 的会话状态与内容广播，与 GUI、HTTP 共用同一内容源和类型化读取结构。按真实输入关联确定目标 Turn，再读取其真实 Children；正常流式路径消费完成批次与同完成前缀的 Activity，按目标输入/轮次维护有界回复投影，不把每个事件仅当作唤醒信号后重新分页扫描正文。Activity 只提供 Final 预览，完成资格来自原 State 终态与已接纳的目标 Turn 不可变回执，并保留原 durable 核对；隐藏成功回执可在真实 Children 中读取，不要求 Main 展示它，也不把后台启动回执误当作任务最终成功。初次建立目标覆盖、明确缺口、重同步、恢复和正式终态核对才通过同一分页/详情能力补齐；补齐失败不以已有预览冒充完整正文。
+自动回复所有者分别读取 [07 §7.2](./07-streaming.md#72-current-观察) 的 Current State 与 [§7.3](./07-streaming.md#73-history-观察) 的固定 cut History，不与 GUI 合并第二份内容源。按真实输入关联确定目标 Turn 后，从 History 查询目标 final-role event 与不可变 body；Current 只提供当前执行资格和 Final preview，完成资格来自 canonical event 与当前 State 终态的一致判定。隐藏成功回执可用 `ChatScope::All` 读取，不要求出现在主时间线；后台启动或 transferred 回执不是最终成功。历史缺口、恢复和终态核对都通过同一 HistoryReader cut 与 body 范围补齐，补齐失败不以预览冒充完整正文。
 
 GUI 是否激活该会话不影响飞书订阅。GUI 退订后飞书继续取得更新，飞书慢消费不得阻塞 GUI 或执行；回复工作结束时只释放自己的订阅，不取消其他观察。多订阅者不新增副作用所有者：入站认领、卡片发送、交互续接和最终确认仍由原回复所有者唯一负责。
 

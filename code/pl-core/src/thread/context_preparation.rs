@@ -394,13 +394,14 @@ impl Owner {
                     message: error.to_string(),
                 },
             };
+            self.state.active_context_compaction = None;
+            self.state.model_execution = previous_phase;
             self.pending_context_compactions
                 .push(ContextCompactionEvent::Finished {
                     operation_id,
                     outcome,
                 });
             self.publish()?;
-            self.state.model_execution = previous_phase;
             self.publish_snapshot();
         }
         // A publish retains its immutable pending obligation on refusal. Do not report a successful
@@ -440,6 +441,11 @@ impl Owner {
                 self.state.commit_sequence.saturating_add(1)
             );
             call.operation_id = Some(operation_id.clone());
+            self.state.active_context_compaction = Some(ActiveContextCompaction {
+                operation_id: operation_id.clone(),
+                turn_id: call.turn_id.clone(),
+                attempt_id: call.attempt_id.clone(),
+            });
             self.pending_context_compactions
                 .push(ContextCompactionEvent::Started {
                     operation_id,

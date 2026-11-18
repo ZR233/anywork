@@ -75,6 +75,32 @@ impl MessageIdentity {
     }
 }
 
+const MESSAGE_RECEIPT_FORMAT: &str = "pl.core.message-receipt";
+
+/// Reads one explicit in-flight delivery receipt from its caller-owned Current extension.
+/// Absence does not consult history or the bounded consumed-message ledger.
+pub fn message_receipt(
+    state: &ThreadSnapshot,
+    extension_id: &str,
+    message: &ThreadMessage,
+) -> Result<Option<MessageIdentity>, ThreadError> {
+    if extension_id.is_empty() {
+        return Err(ThreadError::InvalidIdentity);
+    }
+    let Some(record) = state.extensions.get(extension_id) else {
+        return Ok(None);
+    };
+    if record.payload.format() != MESSAGE_RECEIPT_FORMAT || record.payload.version() != 1 {
+        return Err(ThreadError::InvalidIdentity);
+    }
+    let receipt: MessageIdentity =
+        serde_json::from_str(record.payload.content()).map_err(|_| ThreadError::InvalidIdentity)?;
+    if receipt.id != message.id || receipt.digest != message.digest() || receipt.sequence == 0 {
+        return Err(ThreadError::InvalidIdentity);
+    }
+    Ok(Some(receipt))
+}
+
 /// Allocates the next durable message sequence for one Thread.
 ///
 /// The value is the highest of the resident pending tail, the consumption watermark, the bounded
@@ -114,6 +140,33 @@ pub(super) fn admit_message(
 }
 
 impl Owner {
+    pub(super) fn receive_message_with_extensions(
+        &mut self,
+        message: ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+    ) -> Result<u64, ThreadError> {
+        if self.state.lifecycle != ThreadLifecycle::Open {
+            return Err(ThreadError::Closed);
+        }
+        if message.id.is_empty() || message.source_id.is_empty() {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        if message.payload.format() == input::CONTINUATION_PAYLOAD_FORMAT {
+            return Err(ThreadError::InvalidControlInput);
+        }
+        let previous = self.accepted_message_receipt(&message)?;
+        let mut candidate = self.state.clone();
+        extensions::stage_extensions(&mut candidate, mutations)?;
+        let sequence = match previous {
+            Some(sequence) => sequence,
+            None => admit_message(&mut candidate, message)?,
+        };
+        self.state = candidate;
+        self.publish()?;
+        self.publish_snapshot();
+        Ok(sequence)
+    }
+
     /// Resolves an already accepted message identity to its original admission receipt.
     ///
     /// A message's stable identity is its `id`; its frozen body is the stored content digest. The
@@ -166,6 +219,7 @@ impl Owner {
         message: ThreadMessage,
         drive: Option<input::InputDriverOptions>,
         claim_point: Option<&str>,
+        receipt_extension_id: Option<&str>,
     ) -> Result<u64, ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open {
             return Err(ThreadError::Closed);
@@ -179,7 +233,37 @@ impl Owner {
         if message.payload.format() == input::CONTINUATION_PAYLOAD_FORMAT {
             return Err(ThreadError::InvalidControlInput);
         }
-        if let Some(sequence) = self.accepted_message_receipt(&message)? {
+        let previous = self.accepted_message_receipt(&message)?;
+        let sequence = previous.map_or_else(|| next_sequence(&self.state), Ok)?;
+        let accepting_sequence = self
+            .state
+            .commit_sequence
+            .checked_add(1)
+            .ok_or(ThreadError::RevisionExhausted)?;
+        if let Some(id) = receipt_extension_id {
+            let receipt = MessageIdentity {
+                id: message.id.clone(),
+                digest: message.digest(),
+                sequence,
+            };
+            let payload = OpaquePayload::new(
+                MESSAGE_RECEIPT_FORMAT,
+                1,
+                serde_json::to_string(&receipt).map_err(|_| ThreadError::InvalidIdentity)?,
+            )
+            .map_err(|_| ThreadError::InvalidIdentity)?;
+            let mut candidate = self.state.clone();
+            extensions::stage_extensions(
+                &mut candidate,
+                vec![extensions::ExtensionMutation::Put {
+                    id: id.into(),
+                    expected_revision: None,
+                    payload,
+                }],
+            )?;
+            self.state = candidate;
+        }
+        if let Some(sequence) = previous {
             self.request_message_wakeup(sequence, drive);
             self.publish()?;
             self.publish_snapshot();
@@ -187,11 +271,6 @@ impl Owner {
         }
         // The commit that admits the message is also the commit that will carry its claim and the
         // durable watermark that claim owes, so all three facts are fixed together.
-        let accepting_sequence = self
-            .state
-            .commit_sequence
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
         let sequence = admit_message(&mut self.state, message)?;
         // A parent message that explicitly continues owed work carries the claim itself: the point
         // only records the reference, and consuming the message is what clears it again. The claim it

@@ -4,7 +4,7 @@ use utoipa::ToSchema;
 use crate::mode::ThreadModeId;
 use crate::{InteractionRequest, McpHealthSnapshot, RuntimeCostAmount, TodoListSnapshot, Turn};
 
-pub const THREAD_SCHEMA_VERSION: u32 = 17;
+pub const THREAD_SCHEMA_VERSION: u32 = 18;
 
 /// 会话级工作区模式：Project 根目录，或从 Project Git 仓库 `HEAD` 派生的独立 checkout。
 ///
@@ -162,7 +162,7 @@ pub struct ThreadSnapshot {
     /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
     ///
     /// 它是独立于 Timeline 内容的 typed 投影：内容只决定有哪些历史条目，活动只描述当前
-    /// 在做什么。完整正文通过同一会话 feed 的有界 ActivityContent 帧交付，不另作详情查询。
+    /// 在做什么。正文通过同一 Current owner 的类型化引用及有界 body read/watch 交付。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<crate::ThreadActivity>,
     /// Thread 的存储状态；`None` 表示该投影没有可报告的存储事实（不是“健康”）。
@@ -191,6 +191,9 @@ impl ThreadSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRuntimeSnapshot {
     pub thread_id: String,
+    /// Explicitly deferred fields, owned and versioned by the original State publisher.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<crate::CurrentStateField>,
     pub usage: ThreadRuntimeUsage,
     /// Best-effort usage for the currently running attempt. Durable totals remain in `usage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,30 +446,11 @@ impl ThreadNotificationEnvelope {
 )]
 pub enum ThreadSubscriptionUpdate {
     Snapshot {
-        /// Required Native content protocol handshake; no old decoder fallback.
-        completed_history_version: u32,
         snapshot: Box<ThreadSnapshot>,
     },
     Notification {
         notification: Box<ThreadNotificationEnvelope>,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTurnPage {
-    pub turns: Vec<ThreadTurnHistory>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTurnHistory {
-    pub turn: Turn,
-    pub items: Vec<crate::CompletedEntry>,
-    #[serde(default)]
-    pub context_disposition: ThreadContextDisposition,
 }
 
 pl_protocol::impl_labeled_enum!(

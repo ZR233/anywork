@@ -7,54 +7,44 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    ChatAtomKind, ChatPlacement, ChatScope, CompletedEntry, ContentOwner, ContentRange, ContentRef,
-    ContentTarget, ObservedResourceKind, PayloadData, ReadDemand, StudioErrorCode,
-    StudioPromptInput, SubmitPromptRequest, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-};
-use pl_studio_runtime::{
-    StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
-    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
-    StudioWorktreeRecoveryPreview,
+    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ObservedResourceKind, StudioErrorCode,
+    StudioPromptInput, StudioRecoveryImpact, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, SubmitPromptRequest,
+    ThreadWorkspaceMode,
+    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
 };
 use std::{path::Path, time::Duration};
-use support::{Environment, completed_prompt, git, held_reply, prompt_step, reached};
+use support::{
+    Environment, completed_prompt, current_demand, git, held_reply, prompt_step, reached,
+};
 
 // Read only the public frozen payload and explicit body references. Checkpoint
 // decoding below verifies workspace identity, never supplies chat text.
 async fn public_bytes(
-    reader: &pl_studio_runtime::ConversationReader,
-    reference: &ContentRef,
-    len: u64,
+    reader: &pl_studio_runtime::history::HistoryReader,
+    reference: &HistoryEventBodyRef,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    let mut generation = None;
-    while (bytes.len() as u64) < len {
-        let offset = bytes.len() as u64;
+    while bytes.len() as u64 != reference.byte_length {
         let window = reader
-            .read_content(
-                reference,
-                ContentRange {
-                    offset,
-                    max_bytes: (len - offset).min(64 * 1024) as u32,
-                },
+            .read_body(
+                reference.clone(),
+                bytes.len() as u64,
+                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
             )
             .await?;
-        ensure!(window.offset == offset && window.sealed && window.available_through == len);
-        ensure!(!window.bytes.is_empty() && window.bytes.len() as u64 <= len - offset);
-        ensure!(
-            generation
-                .as_ref()
-                .is_none_or(|value| value == &window.generation)
-        );
-        generation = Some(window.generation);
+        ensure!(!window.bytes.is_empty(), "history body did not advance");
         bytes.extend(window.bytes);
     }
     Ok(bytes)
 }
 
 #[derive(Debug, PartialEq)]
-struct MainHistoryItem {
-    item: CompletedEntry,
+struct PublicHistoryItem {
+    event_id: String,
+    kind: ChatAtomKind,
+    turn_id: Option<String>,
     envelope: Option<serde_json::Value>,
     bodies: Vec<Vec<u8>>,
 }
@@ -62,139 +52,64 @@ struct MainHistoryItem {
 async fn public_history(
     runtime: &pl_studio_runtime::StudioRuntime,
     id: &str,
-) -> Result<Vec<MainHistoryItem>> {
-    let demand = ReadDemand {
-        max_items: 3,
+) -> Result<Vec<PublicHistoryItem>> {
+    let demand = HistoryDemand {
+        max_rows: 128,
         max_bytes: 64 * 1024,
     };
-    let mut feed = runtime
-        .open_conversation_feed(id, ChatScope::conversation(None), demand)
+    let reader = runtime
+        .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
         .await?;
-    let reader = feed.reader().clone();
     let result = async {
-        ensure!(feed.thread_id() == id && reader.thread_id() == id);
-        let mut batch = loop {
-            let event = tokio::time::timeout(Duration::from_secs(20), feed.recv())
-                .await??
-                .context("public history feed ended before Set")?;
-            if let pl_studio_runtime::ConversationEvent::Chat { batch } = event {
-                break *batch;
+        let page = reader
+            .events_page(
+                HistoryEventsQuery::Originals {
+                    scope: ChatScope::conversation(None),
+                },
+                None,
+                None,
+                demand,
+            )
+            .await?;
+        let identities: std::collections::HashSet<_> = page
+            .entries
+            .iter()
+            .map(|event| event.header.event_id.as_str())
+            .collect();
+        ensure!(identities.len() == page.entries.len());
+        let mut items = Vec::new();
+        for event in page.entries {
+            let original = event.header.original.clone();
+            let payload_ref = event.payload_ref.clone();
+            let mut envelope = None;
+            if let Some(reference) = payload_ref {
+                let bytes = public_bytes(&reader, &reference).await?;
+                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+                ensure!(value["contract"] == "anywork.chat/1");
+                envelope = Some(value);
             }
-        };
-        ensure!(batch.placement == ChatPlacement::Set && batch.from_seq.is_none());
-        batch.validate_for(&ChatScope::conversation(None))?;
-        let mut pages = Vec::new();
-        loop {
-            let mut page = Vec::new();
-            for mut item in batch.entries {
-                let mut bodies = Vec::new();
-                let envelope = {
-                    let owner = item.record_id.as_str();
-                    let raw = match item
-                        .atom
-                        .payload
-                        .as_ref()
-                        .context("completed Main payload")?
-                    {
-                        PayloadData::Inline { bytes } => bytes.clone(),
-                        PayloadData::Deferred {
-                            reference,
-                            byte_length,
-                        } => {
-                            ensure!(
-                                matches!(&reference.target, ContentTarget::ItemPayload { item_id }
-                                    if item_id == owner),
-                                "Main payload changed its original content owner"
-                            );
-                            public_bytes(&reader, reference, *byte_length).await?
-                        }
-                    };
-                    let value: serde_json::Value = serde_json::from_slice(&raw)?;
-                    ensure!(value["contract"] == "anywork.chat/1");
-                    let mut contents = Vec::new();
-                    let mut continuation = None;
-                    loop {
-                        let page = reader
-                            .list_contents(owner, continuation.as_deref(), demand)
-                            .await?;
-                        contents.extend(page.entries);
-                        let Some(next) = page.continuation else {
-                            break;
-                        };
-                        ensure!(
-                            continuation.as_ref() != Some(&next),
-                            "content manifest cursor made no progress"
-                        );
-                        continuation = Some(next);
-                    }
-                    for body in value["bodies"].as_array().context("public body manifest")? {
-                        let key = body["key"].as_str().context("body key")?;
-                        let len = body["byteLength"].as_u64().context("body length")?;
-                        let reference = &contents
-                            .iter()
-                            .find(|content| {
-                                matches!(&content.reference.target,
-                                    ContentTarget::Body {
-                                        owner: ContentOwner::Item { item_id },
-                                        key: actual,
-                                    } if item_id == owner && actual == key)
-                            })
-                            .context("Main body has no declared original Item-owned reference")?
-                            .reference;
-                        let bytes = public_bytes(&reader, reference, len).await?;
-                        if let Some(inline) = body.get("inline") {
-                            ensure!(
-                                serde_json::from_value::<Vec<u8>>(inline.clone())? == bytes,
-                                "Main inline body differs from its declared content"
-                            );
-                        } else {
-                            ensure!(
-                                serde_json::from_value::<ContentRef>(body["reference"].clone())?
-                                    == *reference,
-                                "Main body manifest changed its declared content reference"
-                            );
-                        }
-                        ensure!(bytes.len() as u64 == len);
-                        bodies.push(bytes);
-                    }
-                    // Compare the decoded envelope, not its legal Inline/Deferred transport form.
-                    // All other fields of the original Main Item remain part of history equality.
-                    item.atom.payload = None;
-                    Some(value)
-                };
-                page.push(MainHistoryItem {
-                    item,
-                    envelope,
-                    bodies,
-                });
+            let mut bodies = Vec::new();
+            let body_page = reader
+                .list_bodies(event.header.event_id.clone(), None, demand)
+                .await?;
+            for body in body_page.entries {
+                bodies.push(public_bytes(&reader, &body.reference).await?);
             }
-            pages.splice(0..0, page);
-            let Some(before) = batch.before else {
-                break;
-            };
-            batch = reader.load_older(&before, demand).await?;
-            ensure!(batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none());
-            batch.validate_for(&ChatScope::conversation(None))?;
-            ensure!(
-                batch.before.as_ref() != Some(&before),
-                "history continuation did not advance"
-            );
+            items.push(PublicHistoryItem {
+                event_id: event.header.event_id,
+                kind: original
+                    .context("history original has no kind")?
+                    .original_kind,
+                turn_id: event.header.turn_id,
+                envelope,
+                bodies,
+            });
         }
-        let identities: std::collections::HashSet<_> =
-            pages.iter().map(|entry| &entry.item.record_id).collect();
-        ensure!(identities.len() == pages.len());
-        Ok(pages)
+        Ok(items)
     }
     .await;
-    feed.request_close();
-    reader.request_close();
-    let producer = feed.close().await;
-    let read = reader.close().await;
-    let pages =
-        result.with_context(|| format!("history cleanup: producer={producer:?}, read={read:?}"))?;
-    producer?;
-    read?;
-    Ok(pages)
+    reader.close().await;
+    result
 }
 
 async fn preview(
@@ -430,7 +345,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
             .runtime
             .create_thread_command(
                 env.project.id.clone(),
-                pl_studio_runtime::CreateThreadRequest {
+            pl_studio_runtime::CreateThreadRequest {
                     title: Some("Rejected initial input".into()),
                     input: StudioPromptInput {
                         input_id: "input-rejected-initial".into(),
@@ -814,10 +729,17 @@ async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch(
         );
         ensure!(!observed_status.lines().any(|line| line == "?? ignored.txt"));
         ensure!(observed_status.lines().any(|line| line == "!! ignored.txt"));
-        let _subscription = env
+        let subscription = env
             .runtime
-            .open_conversation_state_feed(&root.thread.id)
+            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
             .await?;
+        let snapshot = subscription.snapshot(current_demand()).await?;
+        ensure!(
+            snapshot.state.thread.id == root.thread.id
+                && snapshot.state.thread.workspace_path == root.thread.workspace_path,
+            "cold Current binding changed Thread identity"
+        );
+        subscription.close().await?;
         ensure!(
             git(path, &["rev-parse", "HEAD"])? == head
                 && git(path, &["branch", "--show-current"])? == "renamed-business",
@@ -841,13 +763,13 @@ async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch(
         let after = support::saved(&env.home, &root.thread.id).await?;
         ensure!(
             before.path == after.path
-                && after.context == before.context
-                && after.checkpoint.history_fence >= before.checkpoint.history_fence,
+                && serde_json::to_value(&after.current.state)?
+                    == serde_json::to_value(&before.current.state)?,
             "cold binding changed saved history ownership or content"
         );
         ensure!(
             !after
-                .checkpoint
+                .current
                 .state
                 .extensions
                 .contains_key("studio.agent-close")
@@ -930,7 +852,7 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
         env.restart().await?;
         child_running.release();
         let before = support::saved(&env.home, id).await?;
-        let workspace = &before.checkpoint.state.extensions["studio.workspace"].payload;
+        let workspace = &before.current.state.extensions["studio.workspace"].payload;
         ensure!(
             workspace.version() == 3,
             "new child did not freeze the current receipt format"
@@ -941,11 +863,16 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
             saved.worktree.context("owned child receipt")?.path
                 == child_path.to_str().context("child path")?
         );
-        let _root_subscription = env
+        let root_subscription = env
             .runtime
-            .open_conversation_state_feed(&root.thread.id)
+            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
             .await?;
-        let _child_subscription = env.runtime.open_conversation_state_feed(id).await?;
+        let child_subscription = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        root_subscription.close().await?;
+        child_subscription.close().await?;
         ensure!(
             git(child_path, &["rev-parse", "HEAD"])? == head
                 && git(child_path, &["branch", "--show-current"])?.is_empty(),
@@ -996,7 +923,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         let original_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
             original_page.iter().any(|entry| {
-                entry.item.atom.kind == ChatAtomKind::Text
+                entry.kind == ChatAtomKind::Text
                     && entry
                         .bodies
                         .iter()
@@ -1008,30 +935,23 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
         // open on Windows. Observe the completed scan before removing the test resource.
         recovery_ready(&env.runtime).await?;
         std::fs::remove_dir_all(&root.thread.workspace_path)?;
-        let mut subscription = env
+        let subscription = env
             .runtime
-            .open_conversation_state_feed(&root.thread.id)
+            .open_current_reader(&root.thread.id, CURRENT_PROTOCOL_VERSION, current_demand())
             .await?;
-        let Some(ThreadSubscriptionUpdate::Snapshot { snapshot, .. }) =
-            tokio::time::timeout(Duration::from_secs(20), subscription.recv())
-                .await
-                .context("missing-worktree history initial frame was not delivered")??
-        else {
-            anyhow::bail!("history subscription did not begin with a complete Snapshot");
-        };
+        let snapshot = subscription.snapshot(current_demand()).await?;
         ensure!(
-            snapshot.as_ref() == &original_snapshot,
-            "missing-worktree subscription changed the complete saved snapshot"
+            *snapshot.state == original_snapshot,
+            "missing-worktree Current changed the complete saved snapshot"
         );
         ensure!(
-            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                && snapshot.revision == history.checkpoint.state.commit_sequence
-                && snapshot.thread.id == root.thread.id
-                && snapshot.thread.workspace_id == env.project.id
-                && snapshot.thread.root_thread_id == root.thread.root_thread_id
-                && snapshot.thread.workspace_mode == ThreadWorkspaceMode::Worktree
-                && snapshot.thread.workspace_path == root.thread.workspace_path,
-            "history subscription lost the original Thread/workspace identity"
+            snapshot.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+                && snapshot.state.thread.id == root.thread.id
+                && snapshot.state.thread.workspace_id == env.project.id
+                && snapshot.state.thread.root_thread_id == root.thread.root_thread_id
+                && snapshot.state.thread.workspace_mode == ThreadWorkspaceMode::Worktree
+                && snapshot.state.thread.workspace_path == root.thread.workspace_path,
+            "Current lost the original Thread/workspace identity"
         );
         let subscribed_page = public_history(&env.runtime, &root.thread.id).await?;
         ensure!(
@@ -1040,10 +960,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
              before={original_page:?}; after={subscribed_page:?}"
         );
         ensure!(
-            snapshot.active_turn.is_none()
-                && snapshot.activity.is_none()
-                && snapshot.storage.is_none()
-                && snapshot.runtime.as_ref().is_some_and(|runtime| {
+            snapshot.state.active_turn.is_none()
+                && snapshot.state.activity.is_none()
+                && snapshot.state.storage.is_none()
+                && snapshot.state.runtime.as_ref().is_some_and(|runtime| {
                     runtime.thread_id == root.thread.id
                         && runtime.execution.is_none()
                         && runtime.live_usage.is_none()
@@ -1055,8 +975,9 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                     .iter()
                     .any(|thread| thread.thread_id == root.thread.id)
                 && env.root_provider.recorded().len() == 1,
-            "read-only history subscription activated execution or a persistence writer"
+            "read-only Current activated execution or a persistence writer"
         );
+        subscription.close().await?;
 
         let failure = env
             .runtime
@@ -1068,7 +989,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                         text: "must not execute in the missing workspace".into(),
                         attachment_draft_ids: vec![],
                     },
-                    expected_model_route_revision: snapshot
+                    expected_model_route_revision: original_snapshot
                         .model_route
                         .as_ref()
                         .context("original saved model route is missing")?
@@ -1167,6 +1088,12 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                     .any(|thread| thread.thread_id == root.thread.id),
             "rejected input changed original history or activated execution"
         );
+        let after_rejected_input = support::saved(&env.home, &root.thread.id).await?;
+        ensure!(
+            serde_json::to_vec(&after_rejected_input.current)?
+                == serde_json::to_vec(&history.current)?,
+            "rejected input changed the saved Current"
+        );
         // Existing archive remains available for a missing worktree, but visibility restoration
         // must never recreate it or change the original path to the main project.
         env.runtime
@@ -1179,8 +1106,8 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && !Path::new(&restored.workspace_path).exists()
         );
         ensure!(
-            history.path.exists()
-                && support::saved(&env.home, &root.thread.id).await?.context == history.context
+            public_history(&env.runtime, &root.thread.id).await? == original_page,
+            "archive/restore changed immutable history"
         );
         ensure!(
             env.root_provider.recorded().len() == 1,

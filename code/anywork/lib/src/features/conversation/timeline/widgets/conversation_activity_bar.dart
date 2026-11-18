@@ -21,7 +21,6 @@ class ConversationRealtimeNotices extends StatelessWidget {
           ExecutionLiveNotice(:final view) => ConversationActivityStatus(
             view: view,
           ),
-          UnrestoredLiveNotice() => const Text('上次执行未收束，尚未恢复'),
         },
     ],
   );

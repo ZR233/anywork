@@ -1,28 +1,42 @@
-//! Current completed-history model. Payloads are opaque; only indexed headers drive reads.
+//! Frozen schema-24 conversation decoding for the explicit legacy migration boundary.
 
 use super::{integer, statement};
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
 use pl_core::chat::{
-    ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatItem, ChatItemHeader, ChatKey,
-    ChatPageItem, ChatPublicationSeed, PayloadData, PayloadMode, select_payload,
+    ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatPageItem, ChatPublicationSeed,
+    PayloadData, PayloadMode, select_payload,
 };
-use sea_orm::{ConnectionTrait, QueryResult, Value, sqlx};
-use std::{collections::BTreeMap, sync::Arc};
+use pl_core::chat::{ChatItem, ChatItemHeader, ChatKey};
+use sea_orm::{ConnectionTrait, QueryResult};
+#[cfg(test)]
+use sea_orm::{Value, sqlx};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
-pub(in crate::studio) mod completed;
+/// Frozen schema-24 current/effect codec retained for explicit legacy imports.
+#[cfg(test)]
+pub(super) mod completed;
 #[path = "conversation/content.rs"]
 pub(in crate::studio::storage::history) mod content;
+#[cfg(test)]
 #[path = "conversation/current.rs"]
 pub(in crate::studio) mod current;
 pub(in crate::studio) mod display;
 #[path = "conversation/migration.rs"]
 pub(super) mod migration;
+#[cfg(test)]
 #[path = "conversation/range.rs"]
 mod range;
 
-pub(super) use content::{list_contents, read_contents, write_contents};
+pub(super) use content::read_contents;
+#[cfg(test)]
+pub(super) use content::{list_contents, write_contents};
+#[cfg(test)]
 pub(super) use range::read_content;
 
+#[cfg(test)]
 pub(super) async fn validate_content(
     db: &impl ConnectionTrait,
     content: &pl_core::chat::ChatContent,
@@ -59,6 +73,7 @@ pub(super) async fn latest_append_seq(db: &impl ConnectionTrait) -> Result<u64> 
         .unwrap_or(Ok(0))
 }
 
+#[cfg(test)]
 pub(super) async fn publication_seed(db: &impl ConnectionTrait) -> Result<ChatPublicationSeed> {
     Ok(ChatPublicationSeed {
         head_seq: latest_append_seq(db).await?,
@@ -98,6 +113,7 @@ pub(super) async fn append_records<'a>(
 
 /// The owning transaction reads its append baseline once and advances it locally.
 /// New suffix rows use SQLite's identity constraints; only actual replay reads old bytes.
+#[cfg(test)]
 pub(super) async fn append_records_at_head<'a>(
     db: &impl ConnectionTrait,
     records: impl IntoIterator<Item = &'a ChatItem>,
@@ -186,6 +202,7 @@ pub(super) async fn append_records_at_head<'a>(
 
 /// Explicit detail demand: one indexed lightweight header, then only its budgeted payload.
 /// Unlike the publication idempotency port this never reads a content manifest or body.
+#[cfg(test)]
 pub(super) async fn read_selected_item(
     db: &impl ConnectionTrait,
     request: &pl_core::chat::ChatHistoryItemRequest,
@@ -225,6 +242,7 @@ pub(super) async fn read_selected_item(
 }
 
 /// First fetch only indexed headers and BLOB lengths. Deferred records never fetch their payload.
+#[cfg(test)]
 pub(super) async fn page(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -234,6 +252,7 @@ pub(super) async fn page(
     page_filtered(db, request, budget, ascending, false).await
 }
 
+#[cfg(test)]
 pub(super) async fn page_filtered(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -286,6 +305,7 @@ pub(super) async fn page_filtered(
     materialize(db, request, budget, ascending, &rows, natural_end).await
 }
 
+#[cfg(test)]
 async fn materialize(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -488,7 +508,7 @@ pub(in crate::studio) mod record_read_tests {
                 CAST(json_set(metadata,'$.id','record-'||i,'$.completionItemId','record-'||i) AS BLOB)
                 FROM n CROSS JOIN conversation_items WHERE seq=1",vec![integer(size)?.into()])).await?;
             let sampler = sqlite_work::Sampler::install(&db).await?;
-            let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
+            let budget = crate::studio::storage::history::legacy_read::JsonBudget::new(
                 "fixture".into(),
                 String::new(),
             )
@@ -666,20 +686,17 @@ pub(in crate::studio) mod record_read_tests {
             &[super::super::execution_lifecycle::ExecutionLifecycle::from_atom(&a, 2)?],
         )
         .await?;
-        let first = store.recovery_atom_starts(None, 1).await?;
+        let first = super::super::execution_lifecycle::active(&connection.db, None, 1).await?;
         assert_eq!(first, [b.clone()]);
-        assert_eq!(store.recovery_atom_starts(Some(&b.id), 1).await?, [c]);
-        assert!(store.recovery_atom_starts(Some("c"), 1).await?.is_empty());
+        assert_eq!(
+            super::super::execution_lifecycle::active(&connection.db, Some(&b.id), 1).await?,
+            [c]
+        );
         assert!(
-            store
-                .cold_current_state()
+            super::super::execution_lifecycle::active(&connection.db, Some("c"), 1)
                 .await?
-                .unwrap()
-                .projection()
-                .atoms
                 .is_empty()
         );
-        assert!(store.recovery_atom_starts(None, 129).await.is_err());
         store.close_for_deletion().await?;
         Ok(())
     }
@@ -701,22 +718,18 @@ pub(in crate::studio) mod record_read_tests {
             #[default]
             CompletionHeads,
             AllStatements,
-            DisplayHeads,
-            DisplayMembers,
         }
 
         #[derive(Default)]
         struct State {
             scope: Scope,
             candidates: AtomicU64,
-            member_rows: AtomicU64,
             reference_rows: AtomicU64,
             statements: AtomicU64,
             vm_steps: AtomicU64,
             head_vm_steps: AtomicU64,
             fullscan_steps: AtomicU64,
             head_fullscan_steps: AtomicU64,
-            payload_column_authorizations: AtomicU64,
             denied_reads: AtomicU64,
             unexpected_statements: AtomicU64,
             invalid_counter: AtomicBool,
@@ -728,14 +741,12 @@ pub(in crate::studio) mod record_read_tests {
         #[derive(Debug)]
         pub(in crate::studio) struct Work {
             pub candidates: u64,
-            pub member_rows: u64,
             pub reference_rows: u64,
             pub statements: u64,
             pub vm_steps: u64,
             pub head_vm_steps: u64,
             pub fullscan_steps: u64,
             pub head_fullscan_steps: u64,
-            pub payload_column_authorizations: u64,
             pub denied_reads: u64,
         }
 
@@ -803,14 +814,6 @@ pub(in crate::studio) mod record_read_tests {
                 Self::install_scope(db, Scope::CompletionHeads).await
             }
 
-            pub async fn display_heads(db: &sea_orm::DatabaseConnection) -> Result<Self> {
-                Self::install_scope(db, Scope::DisplayHeads).await
-            }
-
-            pub async fn display_members(db: &sea_orm::DatabaseConnection) -> Result<Self> {
-                Self::install_scope(db, Scope::DisplayMembers).await
-            }
-
             async fn install_scope(db: &sea_orm::DatabaseConnection, scope: Scope) -> Result<Self> {
                 let pool = db.get_sqlite_connection_pool();
                 ensure!(
@@ -830,21 +833,15 @@ pub(in crate::studio) mod record_read_tests {
                 if matches!(scope, Scope::AllStatements) {
                     return Ok(sampler);
                 }
-                // Prove the column guard is active before the measured request. Preparing this forbidden
+                // Prove the body guard is active before the measured request. Preparing this forbidden
                 // read fails even though the fixture's content table is empty. Exclude the probe from Main.
-                let mut probes = vec!["SELECT data FROM conversation_content_chunks LIMIT 1"];
-                if !matches!(scope, Scope::CompletionHeads) {
-                    probes.push("SELECT payload FROM conversation_items LIMIT 1");
-                }
-                if matches!(scope, Scope::DisplayHeads) {
-                    probes.push("SELECT metadata FROM conversation_display_members LIMIT 1");
-                }
+                let probes = ["SELECT data FROM conversation_content_chunks LIMIT 1"];
                 for (index, sql) in probes.iter().enumerate() {
                     let probe = db.query_all_raw(statement(sql, vec![])).await;
                     if probe.is_ok() || sampler.state.denied_reads.load(Relaxed) != index as u64 + 1
                     {
                         sampler.finish(db).await?;
-                        anyhow::bail!("body/original/member authorizer probe was not denied");
+                        anyhow::bail!("body authorizer probe was not denied");
                     }
                 }
                 sampler.state.denied_reads.store(0, Relaxed);
@@ -953,14 +950,12 @@ pub(in crate::studio) mod record_read_tests {
                 );
                 Ok(Work {
                     candidates: s.candidates.load(Relaxed),
-                    member_rows: s.member_rows.load(Relaxed),
                     reference_rows: s.reference_rows.load(Relaxed),
                     statements: s.statements.load(Relaxed),
                     vm_steps: s.vm_steps.load(Relaxed),
                     head_vm_steps: s.head_vm_steps.load(Relaxed),
                     fullscan_steps: s.fullscan_steps.load(Relaxed),
                     head_fullscan_steps: s.head_fullscan_steps.load(Relaxed),
-                    payload_column_authorizations: s.payload_column_authorizations.load(Relaxed),
                     denied_reads: s.denied_reads.load(Relaxed),
                 })
             }
@@ -972,7 +967,6 @@ pub(in crate::studio) mod record_read_tests {
 
         enum Kind {
             Heads,
-            Members,
             Reference,
             Unexpected,
         }
@@ -982,19 +976,6 @@ pub(in crate::studio) mod record_read_tests {
                 return Kind::Unexpected;
             }
             let sql = sql.trim_ascii();
-            if !matches!(scope, Scope::CompletionHeads) {
-                if sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order ASC LIMIT ?"
-                    || sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order DESC LIMIT ?"
-                {
-                    return Kind::Heads;
-                }
-                if matches!(scope, Scope::DisplayMembers)
-                    && sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"
-                {
-                    return Kind::Members;
-                }
-                return Kind::Unexpected;
-            }
             if sql.starts_with(
                 b"SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length",
             ) && contains(sql, b"FROM conversation_items WHERE seq<=? AND seq>?")
@@ -1119,9 +1100,6 @@ pub(in crate::studio) mod record_read_tests {
                     Kind::Reference => {
                         state.reference_rows.fetch_add(1, Relaxed);
                     }
-                    Kind::Members => {
-                        state.member_rows.fetch_add(1, Relaxed);
-                    }
                     Kind::Unexpected => {}
                 }
             } else if event == libsqlite3_sys::SQLITE_TRACE_PROFILE as c_uint {
@@ -1155,7 +1133,7 @@ pub(in crate::studio) mod record_read_tests {
                             .head_fullscan_steps
                             .fetch_add(fullscan as u64, Relaxed);
                     }
-                    Kind::Reference | Kind::Members => {}
+                    Kind::Reference => {}
                     Kind::Unexpected => {
                         state.unexpected_statements.fetch_add(1, Relaxed);
                     }
@@ -1169,7 +1147,7 @@ pub(in crate::studio) mod record_read_tests {
             context: *mut c_void,
             action: c_int,
             table: *const c_char,
-            column: *const c_char,
+            _column: *const c_char,
             _: *const c_char,
             _: *const c_char,
         ) -> c_int {
@@ -1183,28 +1161,9 @@ pub(in crate::studio) mod record_read_tests {
             if matches!(state.scope, Scope::AllStatements) {
                 return libsqlite3_sys::SQLITE_OK;
             }
-            if !matches!(state.scope, Scope::CompletionHeads) {
-                let allowed = table == b"conversation_display_blocks"
-                    || (matches!(state.scope, Scope::DisplayMembers)
-                        && table == b"conversation_display_members");
-                if !allowed {
-                    state.denied_reads.fetch_add(1, Relaxed);
-                    return libsqlite3_sys::SQLITE_DENY;
-                }
-            }
             if table == b"conversation_contents" || table == b"conversation_content_chunks" {
                 state.denied_reads.fetch_add(1, Relaxed);
                 return libsqlite3_sys::SQLITE_DENY;
-            }
-            // SAFETY: short-circuit evaluation proves column is non-null before this conversion;
-            // SQLite's column argument has the same synchronous callback lifetime as table.
-            if table == b"conversation_items"
-                && !column.is_null()
-                && unsafe { CStr::from_ptr(column) }.to_bytes() == b"payload"
-            {
-                // SQLite authorizers cannot distinguish length(payload) from payload. Permit the
-                // header length access, and separately reject any non-header SQL in the trace audit.
-                state.payload_column_authorizations.fetch_add(1, Relaxed);
             }
             libsqlite3_sys::SQLITE_OK
         }
@@ -1410,54 +1369,6 @@ pub(in crate::studio::storage::history) mod tests {
                 .header
                 .append_seq,
             1
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_scope_budget_fits_completions_without_reserving_state() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store =
-            super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget")
-                .await?;
-        store.prepare_write().await?;
-        let record = Arc::new(item(1, "conversation", &[255; 2048]));
-        let current = super::super::test_current(1);
-        store
-            .commit_effect(
-                1,
-                super::super::EffectCommit {
-                    turns: &[],
-                    execution_order: 0,
-                    completions: std::slice::from_ref(&record),
-                    current: &current,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-            )
-            .await?;
-        let query = ChatQuery::new("conversation", None);
-        let exact = store
-            .cold_conversation(query.clone(), ReadDemand::new(1, 64), &Budget)
-            .await?
-            .unwrap();
-        assert_eq!(exact.page.items.len(), 1);
-        assert_eq!(exact.page.items[0].header, record.header);
-        assert!(matches!(
-            exact.page.items[0].payload,
-            PayloadData::Deferred { .. }
-        ));
-        assert!(
-            store
-                .cold_conversation(query, ReadDemand::new(1, 63), &Budget)
-                .await
-                .is_err()
         );
         Ok(())
     }

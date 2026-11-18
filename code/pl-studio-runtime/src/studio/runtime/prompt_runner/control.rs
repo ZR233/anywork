@@ -308,9 +308,9 @@ impl StudioRuntime {
         })
     }
 
-    /// Waits for the accepted operation to reach the durable identity index, then reads it back.
+    /// Waits for the accepted operation to reach immutable History, then reads it back.
     ///
-    /// The index row is written by the same commit that admits the control input, so this is a
+    /// The input fact is accepted by the same effect that admits the control input, so this is a
     /// bounded wait on an already-committed fact — not a second source of truth. A caller whose
     /// request is cancelled during the wait loses nothing: the admission stands and the same
     /// operation identity reads the same receipt afterwards.
@@ -336,7 +336,7 @@ impl StudioRuntime {
                 Ok(found) => {
                     match found {
                         Ok(Some(view)) => return Ok(view),
-                        // The admission is resident but its durable row is not readable yet: the
+                        // The admission is resident but its History cut is not readable yet: the
                         // answer may land inside this budget, so keep polling instead of answering a
                         // retryable Busy the caller did not have to receive.
                         Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => {
@@ -394,7 +394,7 @@ impl StudioRuntime {
     /// Reads one continuation operation without activating the Thread.
     ///
     /// The resident owner answers from its admitted input facts; a Thread with no owner answers from
-    /// the durable history identity index, so a receipt that was saved before the response was lost
+    /// immutable History input facts, so a receipt that was saved before the response was lost
     /// is still readable after a restart. A query never re-authorises execution and never clears a
     /// later stop; it also stays readable for an archived Thread, because reading a fact is not
     /// deciding, continuing or stopping work in it.
@@ -442,15 +442,15 @@ impl StudioRuntime {
 
     /// One projection shared by the command repeat check and the read-only query.
     ///
-    /// The durable identity index is consulted first, because it is the only place that carries the
-    /// *frozen* request identity (continuation point, route revision and admission revision). The
-    /// resident queue is only a fallback for the short window before the admission commit is saved;
-    /// it is never treated as a different kind of receipt.
+    /// Immutable History is consulted first, because it is the only place that carries the *frozen*
+    /// request identity (continuation point, route revision and admission revision). A resident
+    /// input is only proof that History acceptance is still pending; it is never returned as a
+    /// durable receipt.
     /// Answers a repeat of an already accepted continuation without leaking the internal marker.
     ///
-    /// While the admission is resident but its identity row is not durable yet, the honest public
+    /// While the admission is resident but its History fact is not readable yet, the honest public
     /// answer is the documented retryable Busy: the same operation identity reads the same receipt
-    /// once that row lands, so nothing is re-authorised and nothing is lost.
+    /// once that fact lands, so nothing is re-authorised and nothing is lost.
     async fn replayable_continuation(
         &self,
         thread_id: &str,
@@ -473,26 +473,23 @@ impl StudioRuntime {
         thread_id: &str,
         request: &ContinuationIdentity<'_>,
     ) -> Result<Option<ContinuationOperationView>> {
-        // A storage fault or an unreached durable fence is propagated: only a reliable "no durable
-        // record" answer may fall through to the resident facts or become NotFound.
-        let history = self.read_timeline_history(thread_id).await?;
-        if let Some(previous) = history.input_identity(request.operation_id).await? {
-            // A normal message identity under the same id is not a continuation operation, and it is
-            // never answered as one.
-            if previous.entry.purpose != pl_core::thread::input::InputPurpose::Continuation {
+        if let Some(admission) = self
+            .read_input_admission(thread_id, request.operation_id)
+            .await?
+        {
+            if admission.purpose != pl_core::thread::input::InputPurpose::Continuation {
                 return Ok(None);
             }
-            let stored_digest = previous.request_digest.clone();
             return Ok(Some(self.continuation_view(
                 thread_id,
                 ContinuationFacts {
-                    input_id: previous.entry.id.clone(),
-                    continuation: previous.entry.continuation.as_ref(),
-                    accepted_sequence: previous.entry.accepted_sequence,
-                    state: &previous.entry.state,
-                    expected_model_route_revision: previous.entry.expected_model_route_revision,
-                    admission_revision: previous.entry.continuation_admission_revision,
-                    stored_digest: stored_digest.as_deref(),
+                    input_id: admission.id.clone(),
+                    continuation: admission.continuation.as_ref(),
+                    accepted_sequence: admission.accepted_sequence,
+                    state: &admission.state,
+                    expected_model_route_revision: admission.expected_model_route_revision,
+                    admission_revision: admission.admission_revision,
+                    stored_digest: admission.request_digest.as_deref(),
                     durable: true,
                 },
                 request,
@@ -505,6 +502,12 @@ impl StudioRuntime {
             return Ok(None);
         };
         let snapshot = thread.snapshot();
+        if snapshot.terminal_inputs.iter().any(|record| {
+            record.id == request.operation_id
+                && record.purpose == pl_core::thread::input::InputPurpose::Continuation
+        }) {
+            return Err(anyhow::Error::new(AcceptedIdentityPending));
+        }
         let Some(record) = snapshot
             .inputs
             .iter()
@@ -517,13 +520,36 @@ impl StudioRuntime {
         if record.input.purpose != pl_core::thread::input::InputPurpose::Continuation {
             return Ok(None);
         }
-        // The resident queue can only prove that the admission happened, not the frozen identity it
-        // was accepted with: that lives in the durable row written by the admission commit. An
-        // identity whose row is still missing is therefore a retryable condition — never a
-        // conflicting request, and never a receipt no canonical fact could reproduce. It is reported
-        // as an internal marker so the post-admission wait keeps polling for the row instead of
-        // aborting on a condition that usually clears within milliseconds.
+        // The live queue proves local admission, not that the History cut is readable. Until the
+        // History fact lands it is only a short retry signal, never a fabricated durable receipt.
         Err(anyhow::Error::new(AcceptedIdentityPending))
+    }
+
+    /// Reads the canonical input-admission fact shared by continuation and submit replay.
+    ///
+    /// The query follows the existing entity-event index at one fixed cut. It does not activate the
+    /// Thread owner, load Current, or verify its workspace.
+    pub(super) async fn read_input_admission(
+        &self,
+        thread_id: &str,
+        input_id: &str,
+    ) -> Result<Option<crate::history::InputAdmission>> {
+        let paths = self.store.registered_session_paths(thread_id)?;
+        if self
+            .store
+            .thread_persistence()
+            .shared_history(thread_id)
+            .is_none()
+            && !tokio::fs::try_exists(paths.history_database()).await?
+        {
+            return Ok(None);
+        }
+        let reader = self.store.open_history_reader(thread_id).await?;
+        let result = crate::history::read_input_admission(&reader, input_id)
+            .await
+            .map_err(anyhow::Error::new);
+        reader.close().await;
+        result
     }
 
     fn continuation_view(
@@ -618,7 +644,7 @@ impl StudioRuntime {
     }
 }
 
-/// Frozen facts of one accepted continuation operation, from the durable index or the queue.
+/// Frozen facts of one accepted continuation operation from immutable History.
 struct ContinuationFacts<'a> {
     input_id: String,
     continuation: Option<&'a pl_core::thread::input::InputContinuation>,
@@ -632,11 +658,11 @@ struct ContinuationFacts<'a> {
 
 /// Revision core assigns to the commit that admits an input.
 ///
-/// The identity index records the admission revision on its first write; this constant only covers
-/// the short window before that write, where the queue's own revision is still the admission one.
+/// History normally records the original admission revision. This constant only covers a legacy
+/// fact that predates that field and therefore cannot prove the original value.
 const ADMISSION_REVISION_FALLBACK: u64 = 1;
 
-/// How long an accepted continuation may take to reach the durable identity index.
+/// How long an accepted continuation may take to reach readable History.
 const ACCEPTED_IDENTITY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Poll interval while waiting for that commit to land.
@@ -651,9 +677,8 @@ struct ContinuationIdentity<'a> {
 
 /// Requires the request to describe the accepted continuation operation exactly.
 ///
-/// The frozen facts come from the first admission — the durable identity row, or this runtime's
-/// record of it before that row is saved — so the resident and durable paths make the same decision:
-/// the same point and the same route revision answer the original receipt, anything else conflicts.
+/// The frozen facts come from the first admission recorded in History, so the same point and route
+/// revision answer the original receipt while anything else conflicts.
 fn ensure_accepted_continuation(
     thread_id: &str,
     request: &ContinuationIdentity<'_>,
@@ -674,21 +699,31 @@ fn ensure_accepted_continuation(
             }),
         ));
     }
-    if let (Some(expected), Some(accepted)) = (
-        request.expected_model_route_revision,
-        accepted_route_revision,
-    ) && expected != accepted
-    {
-        return Err(stale_identity(
-            StudioErrorReason::StaleContinuation,
-            "This operation was accepted with a different model route revision",
-            serde_json::json!({
-                "threadId": thread_id,
-                "operationId": request.operation_id,
-                "expectedModelRouteRevision": expected,
-                "acceptedModelRouteRevision": accepted,
-            }),
-        ));
+    if let Some(expected) = request.expected_model_route_revision {
+        let Some(accepted) = accepted_route_revision else {
+            return Err(stale_identity(
+                StudioErrorReason::StaleContinuation,
+                "This operation does not record the model route revision it was accepted with",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "operationId": request.operation_id,
+                    "expectedModelRouteRevision": expected,
+                    "acceptedModelRouteRevision": null,
+                }),
+            ));
+        };
+        if expected != accepted {
+            return Err(stale_identity(
+                StudioErrorReason::StaleContinuation,
+                "This operation was accepted with a different model route revision",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "operationId": request.operation_id,
+                    "expectedModelRouteRevision": expected,
+                    "acceptedModelRouteRevision": accepted,
+                }),
+            ));
+        }
     }
     Ok(())
 }
@@ -747,7 +782,7 @@ fn check_continuation(
     Ok(())
 }
 
-/// The accepted admission is resident but its durable identity row is not readable yet.
+/// The accepted admission is resident but its immutable History fact is not readable yet.
 ///
 /// It is an internal marker, never a public outcome: the post-admission wait keeps polling on it, and
 /// every entry that must answer without waiting converts it into the public retryable `Busy`. Keeping
@@ -850,6 +885,7 @@ mod tests {
         let result = async {
             let started = env.start(ThreadWorkspaceMode::Local, PROMPT).await?;
             let id = started.thread.id;
+            let original_submission = started.submission;
             support::reached(&first).await?;
             let session = env.runtime.require_session(&id)?;
             let thread = session.thread(&id).context("initial owner")?;
@@ -1004,9 +1040,31 @@ mod tests {
             third.release();
             evict(&env.runtime, &session, &id).await?;
             let moved_repo = env.repo.with_file_name("temporarily-unavailable-repo");
-            std::fs::rename(&env.repo, &moved_repo)?;
-            let replay = env.runtime.continue_thread(id.clone(), request).await;
-            std::fs::rename(&moved_repo, &env.repo)?;
+            std::fs::rename(&env.repo, &moved_repo)
+                .context("hide the workspace for cold receipt replay")?;
+            let replay = env
+                .runtime
+                .continue_thread(id.clone(), request)
+                .await
+                .context("replay the saved continuation while the workspace is absent");
+            let submit_again = env
+                .runtime
+                .submit_prompt(crate::StudioSubmitPromptRequest {
+                    thread_id: id.clone(),
+                    input: crate::StudioPromptInput {
+                        input_id: original_submission.input_id.clone(),
+                        text: PROMPT.into(),
+                        attachment_draft_ids: vec![],
+                    },
+                    options: Default::default(),
+                })
+                .await;
+            std::fs::rename(&moved_repo, &env.repo)
+                .context("restore the workspace after cold receipt replay")?;
+            ensure!(
+                submit_again? == original_submission,
+                "cold prompt repeat changed its receipt"
+            );
             let replay = replay?;
             ensure!(
                 replay == accepted,

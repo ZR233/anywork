@@ -18,8 +18,9 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    show TestHistoryReader;
 import '../support/chat_fixtures.dart';
-import '../support/display_fixtures.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
@@ -27,11 +28,115 @@ import '../support/test_statistics_feed.dart';
 class _AttachmentTransport extends RecordingDemoTransport {
   final reads = <(String, String)>[];
   final bytes = Completer<Uint8List>();
+  final changed = Completer<HistoryCut>();
 
   @override
   Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
     reads.add((threadId, attachmentId));
     return bytes.future;
+  }
+
+  @override
+  Future<HistoryReader> openHistoryReader(
+    String threadId, {
+    required int historyProtocolVersion,
+  }) async {
+    final reader = _FileHistoryReader(
+      threadId: threadId,
+      cut: HistoryCut('file-cut:$threadId'),
+    );
+    reader.onTimeline = (_, _, _) async => HistoryTimelinePage(
+      cut: reader.cut,
+      entries: [
+        HistoryTimelineEntry(
+          rowKey: 'files-call',
+          anchorSeq: 5,
+          headSeq: 5,
+          head: SingleHistoryRow(
+            HistoryEntityHead(
+              entityId: 'files-call',
+              source: const ReceiptChatSource(receiptId: 'files-call'),
+              kind: ChatAtomKind.receipt,
+              delivery: ChatDeliveryKind.independent,
+              state: const HistoryEntityState(
+                kind: HistoryEntityStateKind.knownTerminal,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              observation: const HistoryObservation(
+                kind: HistoryObservationKind.original,
+              ),
+              contentPresent: true,
+              detailEventId: 'files-call',
+              bodyManifestEventId: 'files-call',
+            ),
+          ),
+        ),
+      ],
+    );
+    reader.onWaitChanged = (_) => changed.future;
+    return reader;
+  }
+}
+
+final class _FileHistoryReader extends TestHistoryReader {
+  _FileHistoryReader({required super.threadId, required super.cut});
+
+  static final List<int> _payload = switch (_markdownFile().payload) {
+    InlinePayload(:final bytes) => List.unmodifiable(bytes),
+    _ => throw StateError('The file fixture payload must stay inline'),
+  };
+
+  static final HistoryEventBodyRef _payloadReference = HistoryEventBodyRef(
+    databaseId: 'file-db',
+    ownerEventId: 'files-call',
+    bodyKey: 'canonical_payload',
+    bodyId: 'files-call:canonical_payload',
+    byteStart: 0,
+    byteLength: _payload.length,
+  );
+
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) async {
+    return HistoryEventDetail(
+      header: HistoryEventHeader(
+        seq: 5,
+        eventId: eventId,
+        kind: 'original',
+        entityId: 'files-call',
+        callId: 'files-call',
+        recordedAt: 5,
+      ),
+      payloadRef: _payloadReference,
+    );
+  }
+
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) async {
+    if (reference.databaseId != _payloadReference.databaseId ||
+        reference.ownerEventId != _payloadReference.ownerEventId ||
+        reference.bodyKey != _payloadReference.bodyKey ||
+        reference.bodyId != _payloadReference.bodyId ||
+        reference.byteStart != _payloadReference.byteStart ||
+        reference.byteLength != _payload.length) {
+      throw StateError('Unexpected canonical History body reference');
+    }
+    if (offset < 0 || offset > _payload.length || maxBytes < 0) {
+      throw RangeError('Invalid canonical History body range');
+    }
+    final end = (offset + maxBytes).clamp(0, _payload.length).toInt();
+    return HistoryBodyWindow(
+      offset: offset,
+      bytes: _payload.sublist(offset, end),
+      totalLength: _payload.length,
+      mediaType: 'application/json',
+    );
   }
 }
 
@@ -87,7 +192,7 @@ void main() {
     testWidgets(
       revokeDuringRead
           ? 'switching Thread revokes a pending production attachment read'
-          : 'file reading keeps the timeline mounted across split/full/narrow and outlives its source row',
+          : 'file reading keeps the timeline mounted across split/full/narrow',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1200, 900));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -111,12 +216,19 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
+              graph.client.conversations.visibleThreadId.value ==
+                  'thread-main' &&
               graph.client.conversations
-                  .existingSession('thread-main')
-                  ?.state
-                  .hasSnapshot ==
-              true,
-          'snapshot',
+                      .existingSession('thread-main')
+                      ?.state
+                      .hasSnapshot ==
+                  true,
+          'visible snapshot',
+        );
+        await pumpClientFuture(
+          tester,
+          timelineReady(graph.timeline, 'thread-main'),
+          'timeline ready',
         );
         var width = 1100.0;
         var threadId = 'thread-main';
@@ -148,21 +260,6 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final feed = transport.timelineReaders.last;
-        final filePosition =
-            graph.timeline.lease('thread-main')!.live.value!.readyFrontier + 1;
-        feed.emitTimeline(
-          displayBatch(
-            [
-              displaySingle(
-                statusItem(_markdownFile(), completionSeq: 5),
-                blockOrder: filePosition,
-              ),
-            ],
-            placement: ChatPlacement.append,
-            from: filePosition - 1,
-          ),
-        );
         await pumpClientUntil(
           tester,
           () => find.text('notes.md').evaluate().isNotEmpty,
@@ -174,7 +271,6 @@ void main() {
           matching: find.byType(TimelineAttachmentsConnector),
         );
         expect(sourceFinder, findsOneWidget);
-        final source = tester.state(sourceFinder);
         final read = tester
             .widget<TimelineAttachmentsConnector>(sourceFinder)
             .readAttachment!;
@@ -208,37 +304,8 @@ void main() {
         );
         expect(tester.element(find.byType(TimelineConnector)), same(timeline));
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
-        // New completions move the original file row outside the virtual window.
-        resize(() => width = 1100);
-        await tester.pump();
-        feed.emitTimeline(
-          displayBatch(
-            [
-              displaySingle(
-                chatMessage(
-                  'after-file',
-                  completionSeq: 6,
-                  body: List.generate(
-                    100,
-                    (index) => 'Later paragraph $index',
-                  ).join('\n\n'),
-                ),
-                blockOrder: filePosition + 1,
-              ),
-            ],
-            placement: ChatPlacement.append,
-            from: filePosition,
-          ),
-        );
-        await pumpClientUntil(
-          tester,
-          () => !source.mounted,
-          'source row virtualized',
-        );
         Future<void>? revokedRead;
         if (revokeDuringRead) {
-          // This is the original production callback, retained after its source
-          // row has unmounted. It still admits reads under the same live lease.
           revokedRead = expectLater(
             read('notes'),
             throwsA(isA<StaleConversationScope>()),

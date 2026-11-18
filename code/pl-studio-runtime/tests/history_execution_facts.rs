@@ -5,12 +5,30 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_studio_runtime::ConversationEvent;
 use pl_studio_runtime::{
-    ChatAtomKind, ChatClassFilter, ChatScope, ContentRange, ReadDemand, ThreadWorkspaceMode,
+    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ThreadWorkspaceMode,
+    history::{
+        HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
+    },
 };
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
-use support::{Environment, completed_prompt, prompt_step, text_reply};
+use support::{Environment, completed_prompt, current_demand, prompt_step, text_reply};
+
+async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() as u64 != reference.byte_length {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                bytes.len() as u64,
+                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
+            )
+            .await?;
+        ensure!(!window.bytes.is_empty(), "history body did not advance");
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
 
 #[tokio::test]
 async fn durable_reopen_uses_original_records_without_execution_or_run_copies() -> Result<()> {
@@ -24,42 +42,119 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
     )
     .await?;
     let result = async {
-        let started = env.start(ThreadWorkspaceMode::Worktree,"facts").await?;
+        let started = env.start(ThreadWorkspaceMode::Worktree, "facts").await?;
         let id = &started.thread.id;
-        let turn = completed_prompt(&env.runtime,id,"facts").await?;
+        let turn = completed_prompt(&env.runtime, id, "facts").await?;
+        env.runtime.synchronize_thread_observation(id).await?;
         env.restart().await?;
-        let demand = ReadDemand { max_items:128,max_bytes:256*1024 };
-        let mut feed = env.runtime.open_conversation_feed(id,ChatScope { query_class:ChatClassFilter::All {},parent_id:None },demand).await?;
-        let read = async {
-            let Some(ConversationEvent::Chat { batch }) = feed.recv().await? else { anyhow::bail!("missing original baseline") };
-            ensure!(batch.entries.iter().any(|entry| entry.atom.kind == ChatAtomKind::Inference),"Full lost the inference diagnostic");
-            ensure!(batch.entries.iter().all(|entry| entry.atom.source_state.is_none()),"immutable originals gained dynamic source annotations");
-            let text = batch.entries.iter().find(|entry| entry.atom.kind == ChatAtomKind::Text).context("real model text")?;
-            let body = text.atom.contents.first().context("original text content")?;
-            let bytes = feed.reader().read_content(&body.reference,ContentRange { offset:0,max_bytes:4096 }).await?;
-            ensure!(bytes.bytes == "真实原件与恢复🧭".as_bytes());
-            let page = env.runtime.list_thread_turns(id,None,10).await?;
-            ensure!(page.turns.iter().any(|history| history.turn.id == turn.id && history.items.iter().any(|entry| entry.record_id == text.record_id)));
-            ensure!(feed.reader().legacy_execution_evidence(None,demand).await?.entries.is_empty());
-            Ok(())
-        }.await;
-        let close = feed.close().await;
-        read?;
-        close?;
-        let saved = support::saved(&env.home,id).await?;
-        let db = Database::connect(format!("sqlite://{}?mode=ro",saved.path.display())).await?;
+        let saved = support::saved(&env.home, id).await?;
+
+        let current = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let view = current.snapshot(current_demand()).await?;
+        ensure!(
+            !view.projection.execution_present,
+            "cold Current replayed an execution"
+        );
+        ensure!(
+            !view.projection
+                .atoms
+                .iter()
+                .any(|atom| atom.kind == ChatAtomKind::Text),
+            "cold Current replayed completed history into its live owner"
+        );
+        current.close().await?;
+
+        let demand = HistoryDemand {
+            max_rows: 128,
+            max_bytes: 256 * 1024,
+        };
+        let reader = env
+            .runtime
+            .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let originals = reader
+            .events_page(
+                HistoryEventsQuery::Originals {
+                    scope: ChatScope {
+                        query_class: pl_studio_runtime::ChatClassFilter::All {},
+                        parent_id: None,
+                    },
+                },
+                None,
+                None,
+                demand,
+            )
+            .await?;
+        let mut text_identity = None;
+        let mut saw_inference = false;
+        for event in originals.entries {
+            let Some(original) = &event.header.original else {
+                continue;
+            };
+            saw_inference |= original.original_kind == ChatAtomKind::Inference;
+            let Some(payload_ref) = &event.payload_ref else {
+                continue;
+            };
+            let payload = body(&reader, payload_ref).await?;
+            let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
+            ensure!(envelope["contract"] == "anywork.chat/1");
+            if original.original_kind != ChatAtomKind::Text {
+                continue;
+            }
+            let entries = reader
+                .list_bodies(event.header.event_id.clone(), None, demand)
+                .await?;
+            let reference = entries
+                .entries
+                .into_iter()
+                .find(|entry| entry.role == HistoryBodyRole::Body)
+                .context("text original has no body")?;
+            if body(&reader, &reference.reference).await? == "真实原件与恢复🧭".as_bytes() {
+                ensure!(text_identity.is_none(), "text original was duplicated");
+                text_identity = Some(event.header.event_id.clone());
+            }
+        }
+        ensure!(saw_inference, "history lost the inference diagnostic");
+        let text_identity = text_identity.context("real model text original")?;
+        let page = reader.turns_page(None, None, demand).await?;
+        ensure!(page.entries.iter().any(|entry| matches!(
+            &entry.head, pl_studio_runtime::history::HistoryRowHead::Turn(head)
+                if head.turn_id == turn.id
+        )));
+        let events = reader.events_page(
+            HistoryEventsQuery::Turn { turn_id: turn.id.clone() },
+            Some(page.cut), None, demand,
+        ).await?;
+        ensure!(events.entries.iter().any(|entry| entry.header.event_id == text_identity));
+        reader.close().await;
+
+        let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
         let check = async {
-            let rows = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,
-                "SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('history_items','conversation_atom_facts')")).await?;
-            ensure!(rows.is_empty(),"retired execution tables remain");
-            let version = db.query_one_raw(Statement::from_string(DbBackend::Sqlite,"SELECT schema_version,execution_order FROM history_meta WHERE id=1")).await?.context("history identity")?;
-            ensure!(version.try_get::<i64>("","schema_version")? == 24 && version.try_get::<i64>("","execution_order")? > 0);
-            let columns = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,"PRAGMA table_info(conversation_items)")).await?;
-            ensure!(!columns.iter().any(|column| column.try_get::<String>("","name").unwrap().starts_with("display_run_")));
+            let rows = db
+                .query_all_raw(Statement::from_string(
+                    DbBackend::Sqlite,
+                    "SELECT name FROM sqlite_schema WHERE type='table' AND name IN ('history_items','conversation_atom_facts','conversation_items','session_checkpoint','current_context')",
+                ))
+                .await?;
+            ensure!(rows.is_empty(), "retired execution/current tables remain");
+            let identity = db
+                .query_one_raw(Statement::from_string(
+                    DbBackend::Sqlite,
+                    "SELECT schema_version,thread_id FROM history_store_meta WHERE singleton=1",
+                ))
+                .await?
+                .context("history identity")?;
+            ensure!(identity.try_get::<i64>("", "schema_version")? == 25);
+            ensure!(identity.try_get::<String>("", "thread_id")?.as_str() == id.as_str());
             Ok(())
-        }.await;
+        }
+        .await;
         db.close().await?;
         check
-    }.await;
+    }
+    .await;
     env.finish(result).await
 }

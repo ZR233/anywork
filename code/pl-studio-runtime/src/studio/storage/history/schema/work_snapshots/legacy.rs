@@ -1,9 +1,12 @@
 //! Decode retired formats only inside the official migration transaction.
 use super::*;
-use crate::studio::thread_projection::presentation::{
+use crate::ChatAtom;
+use crate::studio::storage::history::schema::v24_presentation::{
     DisplayMemberWrite, lightweight, member_key, record,
 };
-use crate::{ChatAtom, DisplayBlockBody, SingleVisibility};
+use crate::studio::storage::history::schema::v24_presentation_types::{
+    DisplayBlockBody, DisplayBlockRef, DisplayMemberHead, SingleVisibility, WorkTiming,
+};
 use serde_json::{Value, json};
 
 pub(super) async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
@@ -120,7 +123,7 @@ pub(super) async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
                 head.remove("atom");
                 head.remove("completionId");
             }
-            let member: crate::studio::thread_projection::presentation::DisplayMemberWrite =
+            let member: crate::studio::storage::history::schema::v24_presentation::DisplayMemberWrite =
                 serde_json::from_value(value)?;
             db.execute_raw(statement("UPDATE conversation_display_members SET association_key=?,metadata=? WHERE member_key=?", vec![member.association_key.clone().into(),serde_json::to_vec(&member)?.into(),after.clone().into()])).await?;
         }
@@ -197,8 +200,8 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
                     thinking_summary: None,
                     body: if is_work {
                         DisplayBlockBody::Work {
-                            timing: crate::WorkTiming::default(),
-                            members: crate::DisplayBlockRef {
+                            timing: WorkTiming::default(),
+                            members: DisplayBlockRef {
                                 database_id: database.clone(),
                                 block_id: id.clone(),
                             },
@@ -226,7 +229,7 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
                 block_id: header.id.clone(),
                 association_key: association.clone(),
                 terminal: true,
-                head: crate::DisplayMemberHead {
+                head: DisplayMemberHead {
                     member_key: association.clone(),
                     member_order: ordinal,
                     record: record(atom, None),

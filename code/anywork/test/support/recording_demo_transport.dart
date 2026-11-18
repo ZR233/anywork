@@ -4,45 +4,36 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 
-import 'mapped_conversation_feed.dart';
-
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends TestDemoStudioTransport {
-  RecordingDemoTransport({super.lifecycleRoot});
-  final List<RecordingConversationFeed> feeds = [];
-  final List<RecordingConversationStateFeed> stateFeeds = [];
-  final Map<String, Completer<RecordingConversationStateFeed>>
-  _stateFeedWaiters = {};
+  RecordingDemoTransport({super.lifecycleRoot, super.lspActivityLoop});
+  final Map<String, Completer<RecordingCurrentReader>> _currentWaiters = {};
   final bootstrapDelivered = Completer<void>();
   int bootstrapCalls = 0;
-  Object? failNextInitial;
+  Object? failNextCurrentInitial;
 
-  /// 在当前实际状态订阅投递状态事实，并等待 SDK 处理后的显式 ACK。
   Future<void> publishWorkspace(ThreadWorkspace workspace) async {
-    final feed = await _activeStateFeed(workspace.thread.id);
-    await feed.emitStateAndWait(
-      ThreadSnapshotFrame(
-        workspace: workspace,
-        completedHistoryVersion: feed.completedHistoryVersion,
-        schemaVersion: feed.schemaVersion,
-      ),
+    var readers = currentReaders
+        .where(
+          (reader) =>
+              reader.threadId == workspace.thread.id && !reader.requested,
+        )
+        .toList();
+    if (readers.isEmpty) {
+      readers = [
+        await (_currentWaiters[workspace.thread.id] ??= Completer()).future,
+      ];
+    }
+    final frame = ThreadSnapshotFrame(
+      workspace: workspace,
+      schemaVersion: threadSchemaVersion,
     );
-  }
-
-  /// Waits for the actual visible-demand state feed; it never fabricates one.
-  Future<RecordingConversationStateFeed> _activeStateFeed(
-    String threadId,
-  ) async {
-    final current = stateFeeds
-        .where((feed) => feed.threadId == threadId && !feed._closed)
-        .lastOrNull;
-    if (current != null) return current;
-    return (_stateFeedWaiters[threadId] ??=
-            Completer<RecordingConversationStateFeed>())
-        .future;
+    await Future.wait([
+      for (final reader in readers) reader.emitStateAndWait(frame),
+    ]);
   }
 
   @override
@@ -55,571 +46,520 @@ class RecordingDemoTransport extends TestDemoStudioTransport {
     return result;
   }
 
+  final List<RecordingHistoryReader> historyReaders = [];
+  final List<RecordingCurrentReader> currentReaders = [];
+  Completer<void>? nextHistoryOpenGate;
+  Completer<void>? nextCurrentOpenGate;
+  void Function(String threadId)? testCurrentOpenEntered;
+
+  /// Test-only projection of the same Current frame. Subclasses may alter typed
+  /// fields for a scenario, but cannot inject a second State source.
+  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) => frame;
+
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<HistoryReader> openHistoryReader(
     String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
+    required int historyProtocolVersion,
   }) async {
-    final failure = failNextInitial;
-    failNextInitial = null;
-    final feed = RecordingConversationFeed(
-      inner: await super.openConversationFeed(
-        threadId,
-        scope: scope,
-        demand: demand,
-      ),
-      initialFailure: failure,
+    final inner = await super.openHistoryReader(
+      threadId,
+      historyProtocolVersion: historyProtocolVersion,
     );
-    feeds.add(feed);
-    return feed;
+    final reader = RecordingHistoryReader(inner: inner);
+    historyReaders.add(reader);
+    final gate = nextHistoryOpenGate;
+    nextHistoryOpenGate = null;
+    await gate?.future;
+    return reader;
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async {
-    final feed = RecordingConversationStateFeed(
-      inner: await super.openConversationStateFeed(threadId),
-    );
-    stateFeeds.add(feed);
-    _stateFeedWaiters.remove(threadId)?.complete(feed);
-    return feed;
-  }
-
-  final List<RecordingTimelineReader> timelineReaders = [];
-
-  @override
-  Future<TimelineReader> openTimelineReader(
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
+    required int currentProtocolVersion,
     required ReadDemand demand,
   }) async {
-    final failure = failNextInitial;
-    failNextInitial = null;
-    final reader = RecordingTimelineReader(
-      inner: await super.openTimelineReader(
-        threadId,
-        presentationVersion: presentationVersion,
-        readerProtocolVersion: readerProtocolVersion,
-        demand: demand,
-      ),
-      initialFailure: failure,
+    final inner = await super.openCurrentReader(
+      threadId,
+      currentProtocolVersion: currentProtocolVersion,
+      demand: demand,
     );
-    timelineReaders.add(reader);
+    final failure = failNextCurrentInitial;
+    failNextCurrentInitial = null;
+    final reader = RecordingCurrentReader(
+      inner: inner,
+      demand: demand,
+      initialFailure: failure,
+      mapState: testMapCurrentState,
+    );
+    currentReaders.add(reader);
+    _currentWaiters.remove(threadId)?.complete(reader);
+    testCurrentOpenEntered?.call(threadId);
+    final gate = nextCurrentOpenGate;
+    nextCurrentOpenGate = null;
+    await gate?.future;
     return reader;
   }
 }
 
-/// Gating/error injection is confined to the external transport seam. Real Demo facts,
-/// preview budgeting, typed DTOs and production SDK reduction remain on the normal path.
-class RecordingConversationFeed implements ConversationFeed {
-  RecordingConversationFeed({required this.inner, this.initialFailure});
-  final ConversationFeed inner;
+final class RecordingHistoryReader implements HistoryReader {
+  RecordingHistoryReader({required this.inner});
+
+  final HistoryReader inner;
+  int timelineCalls = 0;
+  int groupCalls = 0;
+  int turnsCalls = 0;
+  int eventCalls = 0;
+  int bodyCalls = 0;
+  int requestCloseCalls = 0;
+  int closeCalls = 0;
+  final joined = Completer<void>();
+  Future<void>? _closing;
+  bool _requested = false;
+  void Function()? onClosed;
+  Future<HistoryTimelinePage> Function(HistoryCut?, String?, HistoryDemand)?
+  onTimelinePage;
+
+  @override
+  OpenHistory get metadata => inner.metadata;
   @override
   String get threadId => inner.threadId;
   @override
-  String get subscriptionId => inner.subscriptionId;
+  Future<HistoryCut> capture() => inner.capture();
   @override
-  ConversationReader get reader => inner.reader;
-  Object? initialFailure;
-  void Function()? onClosed;
-  Completer<void>? initialGate;
-  final initialEntered = Completer<void>();
-  final nextEntered = Completer<void>();
-  final joined = Completer<void>();
-  int initialCalls = 0;
-  int nextCalls = 0;
-  int pageCalls = 0;
-  int detailCalls = 0;
-  int requestCloseCalls = 0;
-  int closeCalls = 0;
-  final acknowledgements = <int>[];
-  bool scriptFrames = false;
-  bool _closed = false;
-  bool _claimed = false;
-  int _sequence = 0;
-  int get deliveredFrames => _sequence;
-  final Map<int, int> _nativeSequences = {};
-  StreamSubscription<ConversationFrame>? _subscription;
-  Future<void>? _closing;
-  final Set<Future<void>> _pending = {};
-  late final StreamController<ConversationFrame> _events = StreamController(
-    onListen: _listen,
-    onCancel: () {
-      requestClose();
-      return close();
-    },
-  );
-  @override
-  Stream<ConversationFrame> get events {
-    if (_claimed) throw StateError('Recording feed already has a consumer');
-    _claimed = true;
-    return _events.stream;
-  }
-
-  void _listen() {
-    if (_closed) {
-      unawaited(_events.close());
-      return;
-    }
-    _subscription = inner.events.listen(
-      (frame) {
-        if (_closed) return;
-        // Retain the actual in-flight conversion/gate work so close can join it.
-        final work = _forward(frame);
-        _pending.add(work);
-        unawaited(
-          work.then<void>(
-            (_) {
-              _pending.remove(work);
-            },
-            onError: (Object error, StackTrace stack) {
-              _pending.remove(work);
-              if (!_closed) _events.addError(error, stack);
-            },
-          ),
-        );
-      },
-      onError: (Object error, StackTrace stack) {
-        if (!_closed) _events.addError(error, stack);
-      },
-      onDone: () {
-        if (!_closed) unawaited(_events.close());
-      },
-    );
-  }
-
-  Future<void> _forward(ConversationFrame frame) async {
-    final event = frame.event;
-    if (switch (event) {
-      ConversationChatEvent(batch: ChatBatch(placement: ChatPlacement.set)) =>
-        true,
-      _ => false,
-    }) {
-      initialCalls++;
-      if (!initialEntered.isCompleted) initialEntered.complete();
-      await initialGate?.future;
-      if (_closed) return;
-      if (initialFailure case final error?) {
-        initialFailure = null;
-        throw error;
-      }
-      nextCalls++;
-      if (!nextEntered.isCompleted) nextEntered.complete();
-    }
-    if (scriptFrames &&
-        switch (event) {
-          ConversationChatEvent(
-            batch: ChatBatch(placement: ChatPlacement.append),
-          ) =>
-            true,
-          _ => false,
-        }) {
-      return;
-    }
-    final terminal =
-        event is ConversationClosedEvent || event is ConversationFailureEvent;
-    final sequence = terminal ? _sequence : ++_sequence;
-    if (!terminal) _nativeSequences[sequence] = frame.deliverySequence;
-    if (!_closed) {
-      _events.add(
-        ConversationFrame(
-          threadId: threadId,
-          subscriptionId: subscriptionId,
-          deliverySequence: sequence,
-          event: event,
-        ),
-      );
-    }
-  }
-
-  /// An explicit scripted transport fault/value, not a second business reducer.
-  void emit(ChatBatch? batch) {
-    if (_closed) return;
-    if (batch == null) {
-      _events.add(
-        ConversationFrame(
-          threadId: threadId,
-          subscriptionId: subscriptionId,
-          deliverySequence: _sequence,
-          event: const ConversationClosedEvent(),
-        ),
-      );
-      return;
-    }
-    _events.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: ++_sequence,
-        event: ConversationChatEvent(batch: batch),
-      ),
-    );
-  }
-
-  void emitActivity(ActivitySnapshot snapshot) {
-    if (_closed) return;
-    _events.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: ++_sequence,
-        event: ConversationActivityEvent(snapshot: snapshot),
-      ),
-    );
-  }
-
-  void emitError(Object error) {
-    if (!_closed) _events.addError(error);
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) {
+    timelineCalls++;
+    return onTimelinePage?.call(cut, cursor, demand) ??
+        inner.timelinePage(cut: cut, cursor: cursor, demand: demand);
   }
 
   @override
-  Future<void> acknowledge(int deliverySequence) async {
-    acknowledgements.add(deliverySequence);
-    final native = _nativeSequences[deliverySequence];
-    if (native != null) await inner.acknowledge(native);
-    _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) {
+    groupCalls++;
+    return inner.groupPage(
+      groupId: groupId,
+      cut: cut,
+      cursor: cursor,
+      demand: demand,
+    );
   }
+
+  @override
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) {
+    turnsCalls++;
+    return inner.turnsPage(cut: cut, cursor: cursor, demand: demand);
+  }
+
+  @override
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) =>
+      inner.eventsPage(query: query, cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) {
+    eventCalls++;
+    return inner.readEvent(eventId: eventId, demand: demand);
+  }
+
+  @override
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => inner.listBodies(eventId: eventId, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) {
+    bodyCalls++;
+    return inner.readBody(
+      reference: reference,
+      offset: offset,
+      maxBytes: maxBytes,
+    );
+  }
+
+  @override
+  Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
+      inner.accounting(cut: cut);
+  @override
+  Future<HistoryTimelinePage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => inner.costsPage(cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryCut> waitChanged(HistoryCut after) => inner.waitChanged(after);
 
   @override
   void requestClose() {
     requestCloseCalls++;
-    if (_closed) return;
-    _closed = true;
+    if (_requested) return;
+    _requested = true;
     onClosed?.call();
     inner.requestClose();
-    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
   }
 
   @override
   Future<void> close() {
     requestClose();
-    return _closing ??= _join();
-  }
-
-  Future<void> _join() async {
-    closeCalls++;
-    try {
-      await inner.close();
-      await Future.wait(_pending.toList());
-      await _subscription?.cancel();
-      if (_claimed) unawaited(_events.close());
-      if (!joined.isCompleted) joined.complete();
-    } catch (_) {
-      _closing = null;
-      rethrow;
-    }
+    return _closing ??= () async {
+      try {
+        closeCalls++;
+        await inner.close();
+        if (!joined.isCompleted) joined.complete();
+      } catch (_) {
+        _closing = null;
+        rethrow;
+      }
+    }();
   }
 }
 
-class RecordingTimelineReader extends MappedTimelineReader {
-  RecordingTimelineReader({required TimelineReader inner, this.initialFailure})
-    : super(inner);
+final class RecordingCurrentReader implements CurrentReader {
+  RecordingCurrentReader({
+    required this.inner,
+    required this.demand,
+    this.initialFailure,
+    this.mapState,
+  });
+
+  final CurrentReader inner;
+  final ReadDemand demand;
   Object? initialFailure;
-  Completer<void>? initialGate;
-  final initialEntered = Completer<void>();
-  final nextEntered = Completer<void>();
+  final ThreadStreamFrame Function(ThreadStreamFrame)? mapState;
+  int snapshotCalls = 0;
+  int watchCalls = 0;
+  int initialViewReads = 0;
+  int pageCalls = 0;
+  int bodyCalls = 0;
+  Future<ContentWindow> Function(
+    CurrentContentRef reference,
+    ContentRange range,
+  )?
+  onReadBody;
+  Stream<ContentWindow> Function(
+    CurrentContentRef reference,
+    ContentRange range,
+  )?
+  onWatchBody;
+  int requestCloseCalls = 0;
+  int closeCalls = 0;
   final joined = Completer<void>();
-  final requestCursors = <ViewCursor>[];
-  final acceptedCursors = <ViewCursor>[];
-  final _accepted = <int, Completer<void>>{};
-  Future<void> waitForAccepted(int response) =>
-      acceptedCursors.length >= response
-      ? Future.value()
-      : (_accepted[response] ??= Completer<void>()).future;
-
-  int initialCalls = 0, nextCalls = 0, pageCalls = 0, detailCalls = 0;
-  int requestCloseCalls = 0, closeCalls = 0;
-  int get deliveredFrames => _sequence;
-  bool scriptFrames = false;
-  bool _closed = false;
-  int _sequence = 0;
-  ViewUpdate? _pending;
-  final _injected = StreamController<ViewUpdate>();
-  late final _iterator = StreamIterator(_injected.stream);
-  Future<ViewUpdate>? _injectedRead;
   Future<void>? _closing;
+  bool _requested = false;
   void Function()? onClosed;
-  void emitTimeline(ViewUpdate update) => _injected.add(update);
-  void emitError(Object error) => _injected.addError(error);
-  Future<ViewUpdate> _readInjected() async {
-    if (!await _iterator.moveNext()) throw const StaleConversationScope();
-    return _iterator.current;
+  final StreamController<CurrentFrame> _injected =
+      StreamController<CurrentFrame>.broadcast(sync: true);
+  Future<void>? _injectedClosing;
+  final watchEntered = Completer<void>();
+  int deliveredFrames = 0;
+
+  bool get requested => _requested;
+
+  @override
+  OpenCurrent get metadata => inner.metadata;
+  @override
+  String get threadId => inner.threadId;
+  @override
+  CurrentView get initialView {
+    initialViewReads++;
+    if (initialFailure case final failure?) throw failure;
+    return _mapView(inner.initialView);
+  }
+
+  CurrentView _mapView(CurrentView view) {
+    final state = mapState?.call(view.state) ?? view.state;
+    if (state is! ThreadSnapshotFrame) {
+      throw StateError('A scripted Current baseline must remain a snapshot');
+    }
+    return CurrentView(
+      revision: view.revision,
+      state: state,
+      projection: view.projection,
+    );
+  }
+
+  CurrentFrame _mapFrame(CurrentFrame frame) => switch (frame) {
+    ResetCurrentFrame(:final view) => ResetCurrentFrame(_mapView(view)),
+    NotificationCurrentFrame(:final revision, :final notification) =>
+      NotificationCurrentFrame(
+        revision: revision,
+        notification:
+            mapState?.call(notification) as ThreadNotificationFrame? ??
+            notification,
+      ),
+    ProjectionCurrentFrame() => frame,
+  };
+
+  @override
+  Future<CurrentView> snapshot(ReadDemand demand) {
+    snapshotCalls++;
+    return inner.snapshot(demand).then(_mapView);
   }
 
   @override
-  Future<ViewUpdate> next({required ViewCursor after}) async {
-    if (_closed) throw const StaleConversationScope();
-    requestCursors.add(after);
-    final previous = _pending;
-    if (previous != null && after == previous.after) return previous;
-    if (previous != null && after == previous.next) {
-      acceptedCursors.add(after);
-      _pending = null;
-      _accepted.remove(acceptedCursors.length)?.complete();
-    }
-    final first = _sequence == 0;
-    if (first) {
-      initialCalls++;
-      if (!initialEntered.isCompleted) initialEntered.complete();
-      await initialGate?.future;
-      if (_closed) throw const StaleConversationScope();
-      if (initialFailure case final error?) {
-        initialFailure = null;
-        throw error;
+  Future<CurrentWatch> watch({
+    CurrentRevision? after,
+    required ReadDemand demand,
+  }) {
+    watchCalls++;
+    return inner.watch(after: after, demand: demand).then((watch) {
+      if (!watchEntered.isCompleted) watchEntered.complete();
+      if (_requested) {
+        watch.requestClose();
+        return watch;
       }
-    }
-    ViewUpdate response;
-    if (first || !scriptFrames) {
-      final injected = _injectedRead ??= _readInjected();
-      var wasInjected = false;
-      response = await Future.any([
-        inner.next(after: after),
-        injected.then((value) {
-          wasInjected = true;
-          return value;
-        }),
-      ]);
-      if (wasInjected) {
-        scriptFrames = true;
-        _injectedRead = null;
-      }
-    } else {
-      response = await (_injectedRead ?? _readInjected());
-      _injectedRead = null;
-    }
-    _sequence++;
-    nextCalls++;
-    if (!nextEntered.isCompleted) nextEntered.complete();
-    return _pending = scriptFrames
-        ? ViewUpdate(
-            presentationVersion: response.presentationVersion,
-            readerProtocolVersion: response.readerProtocolVersion,
-            after: after,
-            next: ViewCursor('${metadata.readerId}-script-$_sequence'),
-            history: response.history,
-            tail: response.tail,
-          )
-        : response;
+      return _RecordingCurrentWatch(watch, _injected.stream, _mapFrame);
+    });
+  }
+
+  Future<void> emitStateAndWait(ThreadStreamFrame frame) async {
+    emitState(frame);
+    // The injected controller is synchronous. Completion here means every Current
+    // watch listener received the frame; SDK application remains owned by the
+    // production serial queue and is awaited through the session source.
+    await Future<void>.value();
+  }
+
+  void emitCurrentFrame(CurrentFrame frame) {
+    if (_requested) return;
+    deliveredFrames++;
+    _injected.add(frame);
+  }
+
+  void emitState(ThreadStreamFrame frame) {
+    if (_requested) return;
+    final ownerId = metadata.currentOwnerId;
+    final mapped = mapState?.call(frame) ?? frame;
+    final event = switch (mapped) {
+      ThreadSnapshotFrame(:final workspace) => ResetCurrentFrame(
+        CurrentView(
+          revision: CurrentRevision(
+            ownerId: ownerId,
+            revision: workspace.revision,
+          ),
+          state: mapped,
+          projection: CurrentProjection(
+            logicalStatus: workspace.thread.status,
+            executionPresent: workspace.runtime.execution != null,
+            sources: const [],
+            atoms: const [],
+            plan: workspace.businessRefs.plan,
+            interactions: workspace.businessRefs.interactions,
+            previews: const [],
+            collections: const [],
+          ),
+        ),
+      ),
+      ThreadNotificationFrame() => NotificationCurrentFrame(
+        revision: CurrentRevision(ownerId: ownerId, revision: mapped.revision),
+        notification: mapped,
+      ),
+    };
+    deliveredFrames++;
+    _injected.add(event);
   }
 
   @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
+  Future<CurrentCollectionPage> pageCollection({
+    required CurrentCollectionRef reference,
+    String? continuation,
     required ReadDemand demand,
   }) {
     pageCalls++;
-    return super.loadTimelineOlder(before: before, demand: demand);
+    return inner.pageCollection(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    );
   }
 
   @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required ReadDemand demand,
+  Future<ContentWindow> readBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
   }) {
-    detailCalls++;
-    return super.openDisplayMembers(reference: reference, demand: demand);
+    bodyCalls++;
+    return onReadBody?.call(reference, range) ??
+        inner.readBody(reference: reference, range: range);
+  }
+
+  @override
+  Future<CurrentBodyWatch> watchBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  }) {
+    final source = onWatchBody;
+    if (source == null) {
+      return inner.watchBody(reference: reference, range: range);
+    }
+    return Future.value(_FixtureCurrentBodyWatch(source(reference, range)));
   }
 
   @override
   void requestClose() {
     requestCloseCalls++;
-    if (_closed) return;
-    _closed = true;
+    if (_requested) return;
+    _requested = true;
     onClosed?.call();
-    if (initialGate case final gate? when !gate.isCompleted) gate.complete();
-    unawaited(_injected.close());
-    super.requestClose();
+    _injectedClosing ??= _injected.close();
+    inner.requestClose();
   }
 
   @override
   Future<void> close() {
     requestClose();
-    return _closing ??= _join();
-  }
-
-  Future<void> _join() async {
-    closeCalls++;
-    try {
-      await super.close();
-      await _iterator.cancel();
-      if (!joined.isCompleted) joined.complete();
-    } catch (_) {
-      _closing = null;
-      rethrow;
-    }
+    return _closing ??= () async {
+      try {
+        closeCalls++;
+        Object? error;
+        StackTrace? stack;
+        final injectedClosing = _injectedClosing;
+        if (injectedClosing != null) {
+          try {
+            await injectedClosing;
+          } catch (failure, trace) {
+            error = failure;
+            stack = trace;
+          }
+        }
+        try {
+          await inner.close();
+        } catch (failure, trace) {
+          error ??= failure;
+          stack ??= trace;
+        }
+        if (error != null) Error.throwWithStackTrace(error, stack!);
+        if (!joined.isCompleted) joined.complete();
+      } catch (_) {
+        _closing = null;
+        rethrow;
+      }
+    }();
   }
 }
 
-/// The state-channel recorder: identity, sequence and ACK stay on the
-/// independent state subscription; content never flows through it.
-class RecordingConversationStateFeed implements ConversationStateFeed {
-  RecordingConversationStateFeed({required this.inner});
-  final ConversationStateFeed inner;
+final class _FixtureCurrentBodyWatch implements CurrentBodyWatch {
+  const _FixtureCurrentBodyWatch(this.windows);
   @override
-  String get threadId => inner.threadId;
+  final Stream<ContentWindow> windows;
   @override
-  String get subscriptionId => inner.subscriptionId;
-  void Function(ThreadStreamFrame)? onState;
-  void Function()? onClosed;
-  final joined = Completer<void>();
-  int requestCloseCalls = 0;
-  int closeCalls = 0;
-  final acknowledgements = <int>[];
-  int? completedHistoryVersion;
-  int? schemaVersion;
-  int _sequence = 0;
-  int get deliveredFrames => _sequence;
-  final Map<int, int> _nativeSequences = {};
-  final Map<int, Completer<void>> _ackWaiters = {};
-  StreamSubscription<ConversationFrame>? _subscription;
-  bool _closed = false;
-  bool _claimed = false;
-  Future<void>? _closing;
-  final Set<Future<void>> _pending = {};
-  late final StreamController<ConversationFrame> _events = StreamController(
-    onListen: _listen,
-    onCancel: () {
-      requestClose();
-      return close();
-    },
-  );
+  void requestClose() {}
+  @override
+  Future<void> close() async {}
+}
 
-  @override
-  Stream<ConversationFrame> get events {
-    if (_claimed) throw StateError('Recording state feed already consumed');
-    _claimed = true;
-    return _events.stream;
+final class _RecordingCurrentWatch implements CurrentWatch {
+  _RecordingCurrentWatch(
+    this.inner,
+    Stream<CurrentFrame> injected,
+    CurrentFrame Function(CurrentFrame) mapFrame,
+  ) : _output = StreamController<CurrentFrame>(sync: true) {
+    try {
+      _innerSubscription = inner.frames
+          .map(mapFrame)
+          .listen(_addFrame, onError: _addError, onDone: _endFromInner);
+      if (!_output.isClosed) {
+        _injectedSubscription = injected.listen(
+          _addFrame,
+          onError: _addError,
+          onDone: _endFromInjected,
+        );
+      }
+    } catch (error, stack) {
+      requestClose();
+      Error.throwWithStackTrace(error, stack);
+    }
   }
 
-  void _listen() {
-    if (_closed) {
-      unawaited(_events.close());
+  final CurrentWatch inner;
+  final StreamController<CurrentFrame> _output;
+  StreamSubscription<CurrentFrame>? _innerSubscription;
+  StreamSubscription<CurrentFrame>? _injectedSubscription;
+  Future<void>? _closing;
+  bool _innerDone = false;
+  bool _requested = false;
+  Future<void>? _outputClosing;
+
+  @override
+  Stream<CurrentFrame> get frames => _output.stream;
+
+  void _addFrame(CurrentFrame frame) {
+    if (!_output.isClosed) _output.add(frame);
+  }
+
+  void _addError(Object error, StackTrace stack) {
+    if (!_output.isClosed) _output.addError(error, stack);
+  }
+
+  void _endFromInner() {
+    _innerDone = true;
+    requestClose();
+  }
+
+  void _endFromInjected() {
+    if (!_innerDone) unawaited(_innerSubscription?.cancel());
+    _innerDone = true;
+    _closeOutput();
+  }
+
+  void _closeOutput() {
+    if (_output.isClosed) {
+      _outputClosing ??= Future<void>.value();
       return;
     }
-    _subscription = inner.events.listen(
-      (frame) {
-        if (_closed) return;
-        final work = _forward(frame);
-        _pending.add(work);
-        unawaited(
-          work.then<void>(
-            (_) {
-              _pending.remove(work);
-            },
-            onError: (Object error, StackTrace stack) {
-              _pending.remove(work);
-              if (!_closed) _events.addError(error, stack);
-            },
-          ),
-        );
-      },
-      onError: (Object error, StackTrace stack) {
-        if (!_closed) _events.addError(error, stack);
-      },
-      onDone: () {
-        if (!_closed) unawaited(_events.close());
-      },
-    );
-  }
-
-  Future<void> _forward(ConversationFrame frame) async {
-    final event = frame.event;
-    if (event case ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        completedHistoryVersion: final historyVersion,
-        schemaVersion: final stateVersion,
-      ),
-    )) {
-      completedHistoryVersion = historyVersion;
-      schemaVersion = stateVersion;
-    }
-    if (event case ConversationStateEvent(:final frame)) onState?.call(frame);
-    final terminal =
-        event is ConversationClosedEvent || event is ConversationFailureEvent;
-    final sequence = terminal ? _sequence : ++_sequence;
-    if (!terminal) _nativeSequences[sequence] = frame.deliverySequence;
-    if (!_closed) {
-      _events.add(
-        ConversationFrame(
-          threadId: threadId,
-          subscriptionId: subscriptionId,
-          deliverySequence: sequence,
-          event: event,
-        ),
-      );
-    }
-  }
-
-  /// An explicit scripted state frame, not a second reducer.
-  void emitState(ThreadStreamFrame frame) {
-    if (_closed) return;
-    onState?.call(frame);
-    _events.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: ++_sequence,
-        event: ConversationStateEvent(frame: frame),
-      ),
-    );
-  }
-
-  Future<void> emitStateAndWait(ThreadStreamFrame frame) {
-    if (_closed) return Future.error(StateError('Recording state feed closed'));
-    final accepted = Completer<void>();
-    _ackWaiters[_sequence + 1] = accepted;
-    emitState(frame);
-    return accepted.future;
-  }
-
-  void emitError(Object error) {
-    if (!_closed) _events.addError(error);
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    acknowledgements.add(deliverySequence);
-    final native = _nativeSequences[deliverySequence];
-    if (native != null) await inner.acknowledge(native);
-    _nativeSequences.removeWhere((key, _) => key <= deliverySequence);
-    _ackWaiters.remove(deliverySequence)?.complete();
+    final listened = _output.hasListener;
+    final closed = _output.close();
+    // A late watch can be retired before its output is ever transferred to
+    // the SDK. Such a controller has no listener that could acknowledge done.
+    _outputClosing = listened ? closed : Future<void>.value();
   }
 
   @override
   void requestClose() {
-    requestCloseCalls++;
-    if (_closed) return;
-    _closed = true;
-    onClosed?.call();
+    if (_requested) return;
+    _requested = true;
     inner.requestClose();
-    for (final waiter in _ackWaiters.values) {
-      waiter.completeError(StateError('Feed closed before state ACK'));
-    }
-    _ackWaiters.clear();
+    unawaited(_injectedSubscription?.cancel());
+    _closeOutput();
   }
 
   @override
-  Future<void> close() {
+  Future<void> close() => _closing ??= () async {
     requestClose();
-    return _closing ??= _join();
-  }
-
-  Future<void> _join() async {
-    closeCalls++;
+    Object? error;
     try {
       await inner.close();
-      await Future.wait(_pending.toList());
-      await _subscription?.cancel();
-      if (_claimed) unawaited(_events.close());
-      if (!joined.isCompleted) joined.complete();
-    } catch (_) {
-      _closing = null;
-      rethrow;
+    } catch (failure) {
+      error = failure;
     }
-  }
+    await _innerSubscription?.cancel();
+    await _injectedSubscription?.cancel();
+    await _outputClosing;
+    if (error != null) throw error;
+  }();
 }
 
 /// Await the actual GUI application boundary, independently of completion consumers.

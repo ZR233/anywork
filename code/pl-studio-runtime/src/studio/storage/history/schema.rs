@@ -25,6 +25,8 @@ mod sqlite_metadata;
 mod timeline_background_tail;
 mod timeline_items;
 mod timeline_thinking_summary;
+pub(super) mod v24_presentation;
+pub(crate) mod v24_presentation_types;
 pub(in crate::studio::storage::history) mod work_snapshots;
 use conversion::{
     backfill_legacy_hidden_inputs, backfill_tool_user_input, migrate_context_sources,
@@ -134,6 +136,16 @@ struct Migrator {
     >,
 }
 
+/// Frozen migration definitions used to recognize already-applied v24 ledger entries.
+pub(super) fn migrations_for_upgrade(thread_id: &str) -> Vec<Box<dyn MigrationTrait>> {
+    Migrator {
+        thread_id: thread_id.to_owned(),
+        bot_root: None,
+        execution_identity: None,
+    }
+    .migrations()
+}
+
 impl MigratorTraitSelf for Migrator {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
         vec![
@@ -226,7 +238,9 @@ impl MigratorTraitSelf for Migrator {
 /// pending-step detection, transactions and completion records for every phase.
 pub(super) enum Preparation {
     Schema,
+    #[cfg(test)]
     ModelAccess,
+    #[cfg(test)]
     ExecutionIdentity,
 }
 const MODEL_ACCESS: &str = "m20261026_000007_history_model_access";
@@ -340,10 +354,12 @@ pub(super) async fn prepare_with_bot_root(
             .iter()
             .take_while(|step| !is_lifecycle_migration(step.name()))
             .count(),
+        #[cfg(test)]
         Preparation::ModelAccess => pending
             .iter()
             .take_while(|step| step.name() != EXECUTION_IDENTITY)
             .count(),
+        #[cfg(test)]
         Preparation::ExecutionIdentity => pending.len(),
     };
     let steps = u32::try_from(steps)?;

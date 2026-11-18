@@ -160,6 +160,9 @@ fn background_is_zero(value: &u32) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadActivity {
     pub thread_id: String,
+    /// Fields whose complete JSON value is available through this owner's Current body port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<crate::CurrentStateField>,
     /// 稳定活动身份；调用方不得解析它来猜测来源。
     pub identity: String,
     /// 该活动自其身份建立以来的单调递增版本。

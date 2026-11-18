@@ -270,7 +270,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         operation,
         threadId,
         (state) =>
-            state.hasSnapshot &&
+            state.hasInteractionBaseline &&
             !state.interactions.any((item) => item.id == interactionId),
         () => _clear(key),
       );

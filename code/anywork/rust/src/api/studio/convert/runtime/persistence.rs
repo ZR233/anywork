@@ -1,8 +1,9 @@
 use pl_studio_runtime::{PersistenceState, PersistenceStateSnapshot};
 
 use crate::api::studio::types::{
-    BridgePersistenceQueueSnapshot, BridgePersistenceQueueStateSnapshot, BridgePersistenceState,
-    BridgePersistenceStateSnapshot, BridgeThreadPersistenceSnapshot,
+    BridgeCurrentPersistenceSnapshot, BridgePersistenceQueueSnapshot,
+    BridgePersistenceQueueStateSnapshot, BridgePersistenceState, BridgePersistenceStateSnapshot,
+    BridgeThreadPersistenceSnapshot,
 };
 
 use super::bridge_state_error;
@@ -85,9 +86,19 @@ pub(crate) fn bridge_persistence_queue(
                     }
                     .to_owned()
                 }),
-                state_dirty_revision: thread.state_dirty_revision,
-                state_saving_revision: thread.state_saving_revision,
-                state_durable_revision: thread.state_durable_revision,
+                current: thread
+                    .current
+                    .map(|current| BridgeCurrentPersistenceSnapshot {
+                        runtime_epoch: current.runtime_epoch,
+                        dirty: current.dirty,
+                        in_flight: current.in_flight,
+                        saved_runtime_epoch: current.saved_runtime_epoch,
+                        saved_revision: current.saved_revision,
+                        last_successful_save_at: current.last_successful_save_at,
+                        last_successful_capture_at: current.last_successful_capture_at,
+                        snapshot_age_millis: current.snapshot_age_millis,
+                        last_error: current.last_error,
+                    }),
                 history_admitted_sequence: thread.history_admitted_sequence,
                 history_durable_sequence: thread.history_durable_sequence,
                 pending_operations: thread.pending_operations,

@@ -1,4 +1,4 @@
-"""原生版本 2 归档的只读验证边界。"""
+"""原生版本 3 归档的只读验证边界。"""
 
 import hashlib
 import json
@@ -55,9 +55,36 @@ def safe_file(root: Path, relative: str) -> Path:
     return current
 
 
+def verified_blob(root: Path, reference: dict) -> Path:
+    path = safe_file(root, reference["path"])
+    length = 0
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            length += len(chunk)
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if (
+        length != reference["byteLength"]
+        or actual != reference["sha256"]
+        or reference["path"] != f"contents/{actual}.bin"
+    ):
+        raise ValueError(f"内容长度或摘要不一致：{reference['path']}")
+    return path
+
+
+def iter_manifest(root: Path, reference: dict):
+    path = verified_blob(root, reference)
+    with path.open("rb") as stream:
+        for line_number, line in enumerate(stream, 1):
+            if not line.endswith(b"\n") or not line.strip():
+                raise ValueError(f"内容 manifest 第 {line_number} 行未完成或为空")
+            yield decode_json(line)
+
+
 def _validators() -> dict:
     # 构建时直接打包 canonical schema，不维护另一份协议。
-    directory = files("_anywork_run_export_schema").joinpath("v2")
+    directory = files("_anywork_run_export_schema").joinpath("v3")
     schemas = {
         name: json.loads(directory.joinpath(f"{name}.schema.json").read_text())
         for name in ("run", "result", "events", "native")
@@ -80,7 +107,123 @@ class RunArtifacts:
     complete: bool
 
     def content(self, reference: dict) -> bytes:
-        return safe_file(self.directory, reference["path"]).read_bytes()
+        return verified_blob(self.directory, reference).read_bytes()
+
+    def manifest_contents(self, reference: dict):
+        yield from iter_manifest(self.directory, reference)
+
+
+def _validate_manifest(
+    root: Path, reference: dict, event_id: str, payload: dict
+) -> None:
+    required = {
+        "nativeRef",
+        "role",
+        "historyRole",
+        "path",
+        "byteLength",
+        "sha256",
+        "mediaType",
+        "encoding",
+    }
+    body_ids = set()
+    database_id = None
+    canonical_payload = 0
+    canonical_metadata = 0
+    for entry in iter_manifest(root, reference):
+        if set(entry) != required:
+            raise ValueError("内容 manifest 字段集合无效")
+        native = entry["nativeRef"]
+        if not isinstance(native, dict) or set(native) != {
+            "databaseId",
+            "ownerEventId",
+            "bodyKey",
+            "bodyId",
+            "byteStart",
+            "byteLength",
+        }:
+            raise ValueError("内容 manifest nativeRef 格式无效")
+        if (
+            native["ownerEventId"] != event_id
+            or not native["databaseId"]
+            or not native["bodyKey"]
+            or not native["bodyId"]
+            or native["bodyId"] in body_ids
+            or not isinstance(native["byteStart"], int)
+            or isinstance(native["byteStart"], bool)
+            or native["byteStart"] < 0
+            or not isinstance(native["byteLength"], int)
+            or isinstance(native["byteLength"], bool)
+            or native["byteLength"] < 0
+            or not isinstance(entry["byteLength"], int)
+            or isinstance(entry["byteLength"], bool)
+            or entry["byteLength"] < 0
+            or native["byteLength"] != entry["byteLength"]
+        ):
+            raise ValueError("内容 manifest 原件身份或长度无效")
+        body_ids.add(native["bodyId"])
+        if database_id is None:
+            database_id = native["databaseId"]
+        elif native["databaseId"] != database_id:
+            raise ValueError("内容 manifest 跨 History 数据库")
+        history_role = entry["historyRole"]
+        if (
+            not isinstance(history_role, dict)
+            or history_role.get("kind")
+            not in {
+                "canonicalPayload",
+                "canonicalMetadata",
+                "body",
+                "reasoningSummary",
+                "toolArguments",
+                "toolOutput",
+                "attachment",
+                "waitPresentation",
+                "other",
+            }
+        ):
+            raise ValueError("内容 manifest History role 无效")
+        if history_role["kind"] == "other":
+            if set(history_role) != {"kind", "name"} or not history_role["name"]:
+                raise ValueError("内容 manifest 自定义 History role 无效")
+        elif set(history_role) != {"kind"}:
+            raise ValueError("内容 manifest History role 含多余字段")
+        role = entry["role"]
+        if role is not None and role not in {
+            "body",
+            "reasoningSummary",
+            "toolArguments",
+            "toolOutput",
+        }:
+            raise ValueError("内容 manifest Native role 无效")
+        expected_role = {
+            "reasoningSummary": "reasoningSummary",
+            "toolArguments": "toolArguments",
+            "toolOutput": "toolOutput",
+        }.get(history_role["kind"])
+        if expected_role is not None and role != expected_role:
+            raise ValueError("内容 manifest Native/History role 不一致")
+        if history_role["kind"] in {
+            "canonicalPayload",
+            "canonicalMetadata",
+            "attachment",
+            "waitPresentation",
+            "other",
+        } and role is not None:
+            raise ValueError("非正文 History body 不应声明 Native content role")
+        if not isinstance(entry["mediaType"], (str, type(None))) or not isinstance(
+            entry["encoding"], str
+        ):
+            raise TypeError("内容 manifest 媒体类型或编码无效")
+        verified_blob(root, entry)
+        if history_role["kind"] == "canonicalPayload":
+            canonical_payload += 1
+            if any(entry[key] != payload[key] for key in payload):
+                raise ValueError("canonical payload manifest 与完成 payload 不一致")
+        elif history_role["kind"] == "canonicalMetadata":
+            canonical_metadata += 1
+    if canonical_payload != 1 or canonical_metadata != 1:
+        raise ValueError("内容 manifest 必须各有一个 canonical payload 与 metadata")
 
 
 def read_and_validate_run_artifacts(
@@ -107,7 +250,9 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
 
     manifest = read_json(safe_file(root, "run.json"))
     validate("run", manifest)
-    UUID(manifest["runId"])
+    run_uuid = UUID(manifest["runId"])
+    if str(run_uuid) != manifest["runId"]:
+        raise ValueError("运行标识不是 canonical UUID")
     result_path = root / "result.json"
     result = read_json(safe_file(root, "result.json")) if result_path.exists() else None
     if result is None and success:
@@ -119,18 +264,22 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
         if expected_exit is not None and result["exitCode"] != expected_exit:
             raise ValueError("结果退出码与真实进程不一致")
     events = []
-    raw = safe_file(root, "events.jsonl").read_bytes()
-    lines = raw.splitlines(keepends=True)
-    for index, line in enumerate(lines):
-        if not line.endswith(b"\n"):
-            if success or index != len(lines) - 1:
-                raise ValueError("事件行未完成")
-            break
-        event = decode_json(line)
-        validate("events", event)
-        if event["runId"] != manifest["runId"] or event["eventSeq"] != index + 1:
-            raise ValueError("事件运行身份或连续序号无效")
-        events.append(event)
+    events_incomplete = False
+    events_sha256 = hashlib.sha256()
+    with safe_file(root, "events.jsonl").open("rb") as stream:
+        for line in stream:
+            events_sha256.update(line)
+            if not line.endswith(b"\n"):
+                if success:
+                    raise ValueError("事件行未完成")
+                events_incomplete = True
+                break
+            event = decode_json(line)
+            validate("events", event)
+            if event["runId"] != manifest["runId"] or event["eventSeq"] != len(events) + 1:
+                raise ValueError("事件运行身份或连续序号无效")
+            events.append(event)
+    events_sha256 = events_sha256.hexdigest()
     if not events or events[0]["type"] != "runStarted":
         raise ValueError("缺少运行开始事件")
     started = events[0]["data"]
@@ -165,49 +314,52 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
         else:
             if thread not in members or thread in seals:
                 raise ValueError("未登记成员或成员封口后仍写入")
-            initial = members[thread]["initialCompletionCursor"]
-            if source["epoch"] is not None and source["epoch"] != initial["epoch"]:
-                raise ValueError("原生完成代际不一致")
+            initial = members[thread]["initialHistoryCursor"]
             if kind == "inferenceFinished":
                 key = (thread, data["billing"]["inferenceId"])
                 if key in receipts or source["effectSeq"] is None:
                     raise ValueError("重复调用账单或缺少效果水位")
                 receipts[key] = event
             elif kind == "completion":
-                header, atom = data["header"], data["atom"]
-                seq = header["appendSeq"]
-                if seq in completions[thread] or seq <= initial["completionSeq"]:
-                    raise ValueError("完成原件重复或早于初始游标")
-                if (
-                    source["completionSeq"] != seq
-                    or atom["completionSeq"] != seq
-                    or source["completionItemId"] != header["itemId"]
-                    or atom["completionItemId"] != header["itemId"]
-                ):
+                header, atom = data["header"]["event"], data["atom"]
+                seq, event_id = header["seq"], header["eventId"]
+                if event_id in completions[thread] or seq <= initial["historySeq"]:
+                    raise ValueError("完成原件重复或早于初始 History 位置")
+                if source["historyEventSeq"] != seq or source["historyEventId"] != event_id:
                     raise ValueError("完成原件身份矛盾")
-                completions[thread][seq] = event
+                if (
+                    header["entityId"] != atom["entityId"]
+                    or header["runId"] != atom["runId"]
+                    or header["attemptId"] != atom["attemptId"]
+                    or header["source"] != atom["source"]
+                    or header["callId"]
+                    != (atom["tool"]["callId"] if atom["tool"] is not None else None)
+                    or atom["bodyManifestEventId"] != event_id
+                    or source["turnId"] != header["turnId"]
+                    or source["attemptId"] != header["attemptId"]
+                    or source["toolCallId"] != header["callId"]
+                ):
+                    raise ValueError("History event 与 typed head 身份矛盾")
+                completions[thread][event_id] = event
                 if atom.get("tool"):
                     calls[thread].add(atom["tool"]["callId"])
-                refs = [data["payload"], *data["contents"]]
-                for ref in refs:
-                    if ref is None:
-                        continue
-                    if not re.fullmatch(r"contents/[0-9a-f]{64}\.bin", ref["path"]):
-                        raise ValueError("内容寻址路径无效")
-                    blob = safe_file(root, ref["path"]).read_bytes()
-                    digest = sha256(blob)
-                    if (
-                        len(blob) != ref["byteLength"]
-                        or digest != ref["sha256"]
-                        or ref["path"] != f"contents/{digest}.bin"
-                    ):
-                        raise ValueError("内容长度或摘要不一致")
+                if not re.fullmatch(r"contents/[0-9a-f]{64}\.bin", data["payload"]["path"]):
+                    raise ValueError("内容寻址路径无效")
+                verified_blob(root, data["payload"])
+                _validate_manifest(
+                    root, data["contentsManifest"], event_id, data["payload"]
+                )
             elif kind == "threadSealed":
-                if data["threadId"] != thread or data["completionCut"]["epoch"] != initial["epoch"]:
+                if (
+                    data["threadId"] != thread
+                    or data["historyCut"]["historySeq"] < initial["historySeq"]
+                ):
                     raise ValueError("成员封口身份无效")
                 seals[thread] = data
     complete = bool(result and result["traceComplete"])
     if complete or success:
+        if events_incomplete:
+            raise ValueError("完整运行包含未完成事件行")
         if (
             not result
             or not run_seal
@@ -219,7 +371,7 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
         if (
             not trace["sealed"]
             or trace["eventsPath"] != "events.jsonl"
-            or trace["eventsSha256"] != sha256(raw)
+            or trace["eventsSha256"] != events_sha256
             or trace["eventCount"] != len(events)
             or trace["lastEventSeq"] != len(events)
         ):
@@ -237,17 +389,19 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
             if seal["summary"]["appliedSequence"] != seal["throughEffectSeq"]:
                 raise ValueError("用量归并水位与线程最终水位不一致")
             if (
-                cut["completionCut"] != seal["completionCut"]
+                cut["historyCut"] != seal["historyCut"]
                 or cut["throughEffectSeq"] != seal["throughEffectSeq"]
                 or not cut["sealed"]
                 or cut["agentId"] != member["agentId"]
                 or cut["parentAgentId"] != member["parentAgentId"]
             ):
                 raise ValueError("最终成员水位不一致")
-            start = member["initialCompletionCursor"]["completionSeq"]
-            end = seal["completionCut"]["completionSeq"]
-            if sorted(completions[thread]) != list(range(start + 1, end + 1)):
-                raise ValueError("完成原件存在缺口")
+            end = seal["historyCut"]["historySeq"]
+            if any(
+                event["source"]["historyEventSeq"] > end
+                for event in completions[thread].values()
+            ):
+                raise ValueError("完成原件超出成员 History 封口")
             if (
                 sum(owner == thread for owner, _ in receipts)
                 != seal["summary"]["totals"]["inferenceCount"]

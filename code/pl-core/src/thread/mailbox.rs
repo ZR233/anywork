@@ -31,6 +31,7 @@ pub(super) enum MailboxCommand {
     ContinueMessage(
         inbox::ThreadMessage,
         input::InputDriverOptions,
+        Option<String>,
         oneshot::Sender<Result<u64, ThreadError>>,
     ),
     /// Body-less continuation of the work this Thread already owes.
@@ -184,6 +185,11 @@ pub(super) enum MailboxCommand {
         Option<input::InputDriverOptions>,
         oneshot::Sender<Result<u64, ThreadError>>,
     ),
+    MessageWithExtensions {
+        message: inbox::ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+        reply: oneshot::Sender<Result<u64, ThreadError>>,
+    },
     WakeAcceptedMessage {
         id: String,
         sequence: u64,
@@ -204,8 +210,8 @@ impl Owner {
             MailboxCommand::ContinueInput(input, options, reply) => {
                 let _ = reply.send(self.continue_input(input, options));
             }
-            MailboxCommand::ContinueMessage(message, options, reply) => {
-                let _ = reply.send(self.continue_message(message, options));
+            MailboxCommand::ContinueMessage(message, options, receipt, reply) => {
+                let _ = reply.send(self.continue_message(message, options, receipt.as_deref()));
             }
             MailboxCommand::ContinueThread(input_id, options, reply) => {
                 let _ = reply.send(self.continue_thread(input_id, options));
@@ -592,7 +598,19 @@ impl Owner {
                 let result = if self.interrupt.is_closing() {
                     Err(ThreadError::Closed)
                 } else {
-                    self.receive_message(message, drive, None)
+                    self.receive_message(message, drive, None, None)
+                };
+                let _ = reply.send(result);
+            }
+            MailboxCommand::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            } => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.receive_message_with_extensions(message, mutations)
                 };
                 let _ = reply.send(result);
             }

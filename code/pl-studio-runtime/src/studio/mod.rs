@@ -4,7 +4,7 @@ mod agent_host;
 #[doc(hidden)]
 pub mod benchmark;
 pub(crate) mod catalog;
-mod conversation_identity;
+pub(crate) mod conversation_identity;
 pub(crate) mod conversation_store;
 pub(crate) mod delegation;
 pub(crate) mod entity;
@@ -56,8 +56,11 @@ pub(crate) use thread_factory::StudioThreadFactory;
 #[cfg(test)]
 pub(crate) mod storage_fault_test_support {
     pub(crate) use super::storage::thread_writer::storage_fault_tests::{
-        close_factory, register_test_thread, save_terminal_report, spawn_live_projection,
-        spawn_live_projection_for_thread, ticket,
+        close_factory, register_test_thread, save_terminal_report, spawn_live_projection_for_thread,
     };
     pub(crate) use super::storage::thread_writer::{HistoryChannel, ThreadStorageSink};
 }
+
+pub(crate) mod history_delivery;
+
+pub(crate) mod history_resources;

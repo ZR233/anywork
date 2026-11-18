@@ -1,14 +1,14 @@
-//! Per-Thread durable timeline storage with keyset pagination.
+//! Frozen schema-24 storage for one-shot v2 TOML import and schema 24→25 migration.
 
-use crate::{ExecutionItem, ExecutionShape};
 #[cfg(test)]
-use crate::{ExecutionKind, LegacyTurn};
+use crate::{ExecutionItem, ExecutionKind, ExecutionShape, LegacyTurn};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
 use pl_core::chat::{
     ChatBudget, ChatContent, ChatError, ChatHistory, ChatHistoryPage, ChatHistoryRequest, ChatItem,
     ContentManifestPage, ContentManifestRequest, ContentReadRequest, ContentWindow,
@@ -20,7 +20,6 @@ use sea_orm::{
 };
 
 const HISTORY_SCHEMA_VERSION: i64 = 24;
-use std::sync::Arc;
 
 pub(in crate::studio) mod conversation;
 pub(in crate::studio) mod execution_lifecycle;
@@ -28,132 +27,43 @@ pub(in crate::studio) mod execution_sources;
 pub(in crate::studio) mod turns;
 
 mod checkpoint;
+#[cfg(test)]
+pub(crate) mod legacy_read;
+#[cfg(test)]
 pub(crate) use checkpoint::SessionAccounting;
 
+#[cfg(test)]
 mod legacy_evidence;
+#[cfg(test)]
 mod parent_report;
 mod producer;
+#[cfg(test)]
 mod review_delivery;
 pub(crate) mod schema;
 mod timeline;
 pub(crate) use schema::validate_layout_source;
-/// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
-const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
-/// 一页 Turn 最多返回的 Turn 行数（调用方 `limit` 的上限）。
-const TURN_PAGE_ROW_LIMIT: usize = 200;
-/// 一条 Turn 在一个 Turn 页里最多返回的条目行数。
-///
-/// 整页字节预算已经限制返回字节，但 SQL 读取本身也必须先有行上限，否则一条巨型 Turn 会在
-/// 裁剪之前被整条读进内存。达到行上限的剩余条目由 `next_cursor` 在同一 Turn 内继续取回。
-const TURN_PAGE_ITEM_LIMIT: usize = 500;
-/// 一页 agent 会话窗口最多返回的条目行数（与 `session_page` 的 1..=50 契约一致）。
-const AGENT_PAGE_ROW_LIMIT: usize = 50;
 
-/// One independently owned Thread history database handle.
+pub(crate) fn frozen_v24_migrations(
+    thread_id: &str,
+) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+    schema::migrations_for_upgrade(thread_id)
+}
+
+/// One item-page worth of entries for the large-Turn history fixture.
+#[cfg(test)]
+const TURN_PAGE_ITEM_LIMIT: usize = 500;
+
+/// Frozen schema-24 source handle used by the one-shot upgrade and migration fixtures.
 ///
-/// Construction performs no filesystem or database IO. Cold reads open the *existing* database
-/// read-only and never create the directory/database nor run schema mutations, while writes lazily
-/// create and upgrade through the single writer connection. A deleted or damaged history store
-/// therefore stays untouched by a page/turn/item query instead of being silently rebuilt, and the
-/// per-Thread history writer stays the only owner that initializes or upgrades the schema.
+/// New Threads never create this store and normal reads never use it. The live schema-25
+/// `crate::history::HistoryStore` owns production History; this handle remains only while explicit
+/// v2 TOML import, schema 24→25 backup/conversion, and their focused regression fixtures run.
 #[derive(Clone)]
 pub(crate) struct HistoryStore {
     state: std::sync::Arc<HistoryStoreState>,
 }
 
-/// One weak, copyable view of a history handle's shared connection state.
-///
-/// It lets the per-Thread persistence coordinator remember which handle *is* the Thread's single
-/// ordered writer without keeping it alive: a handle exists exactly as long as a real holder (the
-/// effect sink or a live subscription) keeps it, so closing or evicting the Thread releases the
-/// database connections and no never-expiring strong history cache can appear.
-#[derive(Clone)]
-pub(crate) struct HistoryStoreShare(std::sync::Weak<HistoryStoreState>);
-
-/// 连接排队在生命周期 gate 外完成；pin 的首次 meta SELECT 才建立 SQLite 切面。
-pub(in crate::studio) struct ConversationSnapshot {
-    pub(super) tx: sea_orm::DatabaseTransaction,
-    pub(in crate::studio) database_id: String,
-}
-impl ConversationSnapshot {
-    pub(in crate::studio) async fn pin(&mut self, thread_id: &str) -> Result<()> {
-        let (database, _) = validate_existing_identity(&self.tx, thread_id).await?;
-        ensure!(
-            database == self.database_id,
-            "conversation database identity changed"
-        );
-        Ok(())
-    }
-    pub(in crate::studio) async fn current_state(
-        self,
-    ) -> Result<Arc<crate::studio::thread_projection::CurrentState>> {
-        let current = conversation::completed::cold(&self.tx).await?;
-        self.tx.commit().await?;
-        Ok(current)
-    }
-
-    pub(in crate::studio) async fn presentation_baseline(self) -> Result<ColdConversation> {
-        let head = conversation::latest_append_seq(&self.tx).await?;
-        self.tx.commit().await?;
-        Ok(ColdConversation {
-            database_id: self.database_id,
-            head,
-            page: ChatHistoryPage {
-                items: Vec::new(),
-                exhausted: true,
-            },
-        })
-    }
-    pub(in crate::studio) async fn cold_conversation(
-        self,
-        query: pl_core::chat::ChatQuery,
-        demand: pl_core::chat::ReadDemand,
-        budget: &dyn ChatBudget,
-    ) -> Result<Option<ColdConversation>> {
-        let head = conversation::latest_append_seq(&self.tx).await?;
-        demand.validate()?;
-        // State and Activity own their budgets. A completion page reserves only its own shell.
-        let fixed = budget.fixed_bytes();
-        let bytes = demand
-            .max_bytes
-            .checked_sub(fixed)
-            .filter(|bytes| *bytes > 0)
-            .context(ChatError::InvalidDemand(
-                "cold current cannot fit demand".into(),
-            ))?;
-        let request = ChatHistoryRequest {
-            query: Some(query),
-            after: 0,
-            before: None,
-            ceiling: head,
-            demand: pl_core::chat::ReadDemand::new(demand.max_items, bytes),
-        };
-        let page = conversation::page(&self.tx, &request, budget, false).await?;
-        ensure!(
-            page.exhausted || !page.items.is_empty(),
-            ChatError::InvalidDemand("cold page cannot fit a completion envelope".into())
-        );
-        self.tx.commit().await?;
-        Ok(Some(ColdConversation {
-            database_id: self.database_id,
-            head,
-            page,
-        }))
-    }
-}
-
-impl std::fmt::Debug for HistoryStoreShare {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("HistoryStoreShare")
-            .field("alive", &self.0.strong_count())
-            .finish()
-    }
-}
-
 struct HistoryStoreState {
-    #[cfg(test)]
-    reader_calls: std::sync::atomic::AtomicU64,
     closed: std::sync::atomic::AtomicBool,
     path: PathBuf,
     thread_id: String,
@@ -185,34 +95,11 @@ struct HistoryStoreState {
     /// Test-only probe fired immediately before a cold reader waits on `init`.
     #[cfg(test)]
     reader_before_init: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    /// Parks the next actual completion identity read before entering its SQL query.
-    #[cfg(test)]
-    completion_read_gate: tokio::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<String>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-    #[cfg(test)]
-    state_read_gate: tokio::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-    #[cfg(test)]
-    agent_page_gate: tokio::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-    #[cfg(test)]
-    agent_page_before_transaction: tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 /// Bounded singleton baselines owned only by one physical effect transaction.
 /// They are advanced locally; no second live projection or durable state is created.
+#[cfg(test)]
 struct EffectTransaction {
     applied: i64,
     pending_execution_order: u64,
@@ -220,6 +107,7 @@ struct EffectTransaction {
     completion: pl_core::chat::ChatPublicationSeed,
 }
 
+#[cfg(test)]
 impl EffectTransaction {
     async fn read(db: &impl ConnectionTrait) -> Result<Self> {
         let commit = checkpoint::read_commit_head(db).await?;
@@ -243,31 +131,19 @@ struct HistoryConnection {
 ///
 /// `request_digest` 只覆盖 host 提交身份（原始 request 与 presentation），因此重复提交可以在
 /// 附件草稿已被消费之后重新计算它并校验正文；载荷无法证明正文身份时为 `None`。
+#[cfg(test)]
 pub(crate) struct InputIdentityWrite {
     pub entry: crate::studio::storage::state::InputIdentityEntry,
     pub request_digest: Option<String>,
     pub presentation: crate::MessagePresentation,
 }
 
-/// 持久化幂等命中：保存的最小身份加上保存的 host 提交摘要。
-pub(crate) struct InputIdentityReceipt {
-    pub entry: crate::studio::storage::state::InputIdentityEntry,
-    pub request_digest: Option<String>,
-}
-
 /// One durable receipt of a terminal interaction/permission fact.
 ///
 /// `payload` is the canonical record the effect committed, so a repeated command can be answered
 /// with the same receipt instead of minting a new revision or a new execution grant.
+#[cfg(test)]
 pub(crate) struct FactReceipt {
-    pub kind: String,
-    pub payload: String,
-}
-
-/// One durable interaction/permission receipt together with the identity it was stored under.
-pub(crate) struct DecisionReceipt {
-    /// The stable receipt key, i.e. `order::receipt_id(kind, local_id)`.
-    pub item_id: String,
     pub kind: String,
     pub payload: String,
 }
@@ -286,6 +162,7 @@ pub(crate) struct FactReceiptWrite {
 /// 与 `sequence` 一起在产生该消息的 effect 事务里落库。因此重复投递可以证明“同身份同正文”，
 /// 命中时返回原始受理序号；`digest` 为 `None` 只可能来自迁移回填：索引证明该身份已受理，但
 /// 无法证明正文，读取方必须 fail-closed，绝不静默重投。
+#[cfg(test)]
 pub(crate) struct MessageIdentityWrite {
     pub message_id: String,
     /// 该消息在时间线上的条目身份，便于与 `history_items` 对齐排查。
@@ -294,13 +171,8 @@ pub(crate) struct MessageIdentityWrite {
     pub digest: Option<String>,
 }
 
-/// 持久化消息身份命中：原始受理序号与保存的正文摘要。
-pub(crate) struct MessageIdentityReceipt {
-    pub sequence: u64,
-    pub digest: Option<String>,
-}
-
 /// One effect's durable history write, committed as a single transaction.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(in crate::studio) struct EffectCommit<'a> {
     pub turns: &'a [turns::TurnWrite],
@@ -324,6 +196,7 @@ pub(in crate::studio) struct EffectCommit<'a> {
     pub attempt: Option<&'a pl_core::thread::journal::AttemptUpdate>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(crate) struct AccountingCommit<'a> {
     pub facts: &'a crate::studio::thread_projection::PreparedAccounting,
@@ -331,27 +204,13 @@ pub(crate) struct AccountingCommit<'a> {
 }
 
 /// A consecutive prepared effect in one physical history transaction.
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(in crate::studio) struct CheckpointEffect<'a> {
     pub checkpoint: &'a pl_core::thread::ThreadCheckpoint,
     pub effect: &'a pl_core::thread::ThreadEffectBatch,
     pub history: EffectCommit<'a>,
     pub accounting: AccountingCommit<'a>,
-}
-
-pub(in crate::studio) struct ColdStateFacet {
-    pub current: Arc<crate::studio::thread_projection::CurrentState>,
-    pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
-    pub terminal_turn: Option<crate::Turn>,
-    /// Saved core envelope from this same read. Context records stay with execution recovery;
-    /// usage, context-window and cost facts remain on the envelope.
-    pub saved_state: Option<pl_core::thread::ThreadSnapshot>,
-}
-
-pub(in crate::studio) struct ColdConversation {
-    pub database_id: String,
-    pub head: u64,
-    pub page: ChatHistoryPage,
 }
 
 impl std::fmt::Debug for HistoryStore {
@@ -364,18 +223,6 @@ impl std::fmt::Debug for HistoryStore {
 }
 
 impl HistoryStore {
-    pub(in crate::studio) async fn conversation_snapshot(
-        &self,
-    ) -> Result<Option<ConversationSnapshot>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        Ok(Some(ConversationSnapshot {
-            tx: connection.db.begin().await?,
-            database_id: connection.database_id.clone(),
-        }))
-    }
-
     /// Binds one Thread history database path without touching the filesystem or database.
     ///
     /// The first write creates the directory/database and initializes/upgrades the schema; reads
@@ -388,8 +235,6 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
-                #[cfg(test)]
-                reader_calls: std::sync::atomic::AtomicU64::new(0),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
@@ -400,21 +245,8 @@ impl HistoryStore {
                 init_gate: tokio::sync::Mutex::new(None),
                 #[cfg(test)]
                 reader_before_init: tokio::sync::Mutex::new(None),
-                #[cfg(test)]
-                completion_read_gate: tokio::sync::Mutex::new(None),
-                #[cfg(test)]
-                state_read_gate: tokio::sync::Mutex::new(None),
-                #[cfg(test)]
-                agent_page_gate: tokio::sync::Mutex::new(None),
-                #[cfg(test)]
-                agent_page_before_transaction: tokio::sync::Mutex::new(None),
             }),
         })
-    }
-
-    /// A weak view of this handle's shared connection state, for the per-Thread writer registry.
-    pub(crate) fn shared(&self) -> HistoryStoreShare {
-        HistoryStoreShare(std::sync::Arc::downgrade(&self.state))
     }
 
     pub(crate) fn thread_id(&self) -> &str {
@@ -438,6 +270,7 @@ impl HistoryStore {
 
     /// The existing database identity after the shared initialization/reader barrier. This never
     /// creates a store, starts a writer, flushes execution or loads recovery state.
+    #[cfg(test)]
     pub(crate) async fn conversation_database_id(&self) -> Result<Option<String>> {
         {
             let _initializing = self.state.init.read().await;
@@ -464,6 +297,7 @@ impl HistoryStore {
     /// This is initialization state, not a runtime rebuild boundary. A completed content migration
     /// with missing or malformed derived state fails here and preserves the original database.
     /// Explicit execution-writer preparation. Read/open paths must not call this creation boundary.
+    #[cfg(test)]
     pub(crate) async fn prepare_write(&self) -> Result<()> {
         self.writer().await?;
         Ok(())
@@ -493,42 +327,9 @@ impl HistoryStore {
         rx
     }
 
-    #[cfg(test)]
-    pub(crate) async fn arm_completion_read_gate(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<String>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *self.state.completion_read_gate.lock().await = Some((entered_tx, release_rx));
-        (entered_rx, release_tx)
-    }
-
-    #[cfg(test)]
-    async fn arm_state_read_gate(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *self.state.state_read_gate.lock().await = Some((entered_tx, release_rx));
-        (entered_rx, release_tx)
-    }
-
-    /// The handle behind one share, or `None` once its last real holder released it.
-    ///
-    /// The upgraded handle is the same logical connection state — the same writer and the same
-    /// validated database identity — not a new database client.
-    pub(crate) fn from_share(share: &HistoryStoreShare) -> Option<Self> {
-        share.0.upgrade().map(|state| Self { state })
-    }
-
     /// Classifies preparation without opening a writer or admitting a new content reader.
     /// A false result still requires reader() before consuming current-format content.
+    #[cfg(test)]
     async fn conversation_read_needs_preparation(&self) -> Result<bool> {
         #[cfg(test)]
         if let Some(tx) = self.state.reader_before_init.lock().await.take() {
@@ -587,10 +388,6 @@ impl HistoryStore {
     /// writer initialization waits behind it instead of validating the half-initialized database
     /// that `connect(mode=rwc)` just created.
     async fn reader(&self) -> Result<Option<&HistoryConnection>> {
-        #[cfg(test)]
-        self.state
-            .reader_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The first writer may have created the file with `connect(mode=rwc)` while its schema and
         // identity are still uncommitted. Take the read side of the initialization lock before
         // touching the file, so we either run before the file exists or after it is fully
@@ -607,13 +404,6 @@ impl HistoryStore {
             );
         }
         self.read_only_connection().await
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn reader_calls(&self) -> u64 {
-        self.state
-            .reader_calls
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Caller holds the initialization read guard. Never returns the writer, even when another
@@ -648,21 +438,6 @@ impl HistoryStore {
             );
         }
         Ok(Some(reader))
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) async fn measurement_connections(
-        &self,
-    ) -> Result<(sea_orm::DatabaseConnection, sea_orm::DatabaseConnection)> {
-        self.prepare_conversation_read().await?;
-        let writer = self.writer().await?.db.clone();
-        let reader = self
-            .reader()
-            .await?
-            .context("missing measurement reader")?
-            .db
-            .clone();
-        Ok((writer, reader))
     }
 
     /// The single writer connection, created and upgraded on first use.
@@ -852,6 +627,7 @@ impl HistoryStore {
 
     /// Publishes one consecutive prepared prefix in ONE physical transaction. No result or
     /// acknowledgement escapes until every effect, its current and all recovery facts commit.
+    #[cfg(test)]
     pub(in crate::studio) async fn commit_checkpoint_effects(
         &self,
         effects: &[CheckpointEffect<'_>],
@@ -879,7 +655,10 @@ impl HistoryStore {
                     && checkpoint.history_fence == effect.sequence
                     && accounting.facts.thread_id == effect.thread_id
                     && accounting.facts.sequence == effect.sequence
-                    && history.current.projection().source_effect_seq == effect.sequence,
+                    && history
+                        .current
+                        .owner_id()
+                        .is_none_or(|_| history.current.revision() == effect.sequence),
                 "checkpoint, current and history effect identities differ"
             );
         }
@@ -903,6 +682,7 @@ impl HistoryStore {
         Ok(results)
     }
 
+    #[cfg(test)]
     async fn apply_effect(
         &self,
         tx: &sea_orm::DatabaseTransaction,
@@ -930,17 +710,14 @@ impl HistoryStore {
         } = commit;
         ensure!(write_seq > 0, "history write sequence must be positive");
         ensure!(
-            current_view.projection().source_effect_seq == write_seq,
+            current_view
+                .owner_id()
+                .is_none_or(|_| current_view.revision() == write_seq),
             "current projection is not frozen from this effect"
         );
-        let database_id = self
-            .state
-            .writer
-            .get()
-            .context("effect transaction has no writer identity")?
-            .database_id
-            .clone();
-        conversation::current::validate_database(current_view.projection(), &database_id)?;
+        if let Some(owner_id) = current_view.owner_id() {
+            conversation::current::validate_owner(current_view.projection(), owner_id)?;
+        }
         let write_seq = integer(write_seq)?;
         let current = heads.applied;
         if write_seq <= current {
@@ -1109,7 +886,6 @@ impl HistoryStore {
         {
             Some(SessionAccounting {
                 revision: checkpoint.state_revision,
-                has_unpriced_usage: checkpoint.state.usage_summary.pricing.incomplete,
                 purpose_costs: checkpoint::read_purpose_costs(tx).await?,
             })
         } else {
@@ -1119,6 +895,7 @@ impl HistoryStore {
     }
 
     /// Reads the committed task identity and exact delivery, never a call-statistics projection.
+    #[cfg(test)]
     pub(crate) async fn tool_task(
         &self,
         task_id: &str,
@@ -1147,44 +924,13 @@ impl HistoryStore {
         }))
     }
 
-    /// Finds committed deliveries that may reference one archived tool attachment.
-    ///
-    /// The delivery is the durable authority for the full resource reference. The SQL substring
-    /// only narrows candidates; the caller decodes each delivery and verifies its typed media
-    /// projection before granting access to any bytes.
-    pub(crate) async fn tool_media_deliveries(
-        &self,
-        attachment_id: &str,
-    ) -> Result<Vec<pl_core::thread::ToolDelivery>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(Vec::new());
-        };
-        let rows = connection
-            .db
-            .query_all_raw(statement(
-                "SELECT delivery_payload FROM history_tool_tasks
-                 WHERE delivery_payload IS NOT NULL AND instr(delivery_payload, ?) > 0",
-                vec![attachment_id.to_owned().into()],
-            ))
-            .await?;
-        rows.into_iter()
-            .map(|row| {
-                let payload: String = row.try_get("", "delivery_payload")?;
-                Ok(serde_json::from_str(&payload)?)
-            })
-            .collect()
-    }
-
-    /// Reads the minimal identity of a previously admitted input, if the durable index knows it.
-    ///
-    /// This is the cross-restart idempotency lookup for `submitPrompt`: the returned record lets
-    /// the runtime rebuild the original receipt without re-admitting the input or replaying history.
     /// Reads the newest durable receipt of one interaction/permission identity.
     ///
     /// This is the cross-window/cross-restart authority for a repeated terminal interaction
     /// command: `payload` is the exact committed record, so the host can answer with the original
     /// receipt or reject a conflicting payload instead of minting a new revision, granting a new
     /// execution permission or replaying the effect. A missing store or receipt returns `None`.
+    #[cfg(test)]
     pub(crate) async fn latest_fact_receipt(&self, item_id: &str) -> Result<Option<FactReceipt>> {
         if item_id.is_empty() {
             return Ok(None);
@@ -1209,60 +955,20 @@ impl HistoryStore {
         }))
     }
 
-    /// The newest durable receipt of every decision identity this Thread ever committed.
-    ///
-    /// Canonical snapshots keep only pending decisions, so a settled question or approval leaves the
-    /// snapshot behind and the receipts become the only read-only source that can still prove it.
-    /// Operation identity reuse, a terminal replay and the hand-over reconciliation all read this one
-    /// source instead of a snapshot that has already dropped the record. A missing store or no
-    /// receipts returns an empty list; a storage fault is propagated.
-    pub(crate) async fn decision_receipts(&self) -> Result<Vec<DecisionReceipt>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(Vec::new());
-        };
-        let rows = connection
-            .db
-            .query_all_raw(statement(
-                "SELECT newest.item_id, newest.kind, newest.payload FROM history_fact_receipts newest \
-                 JOIN (SELECT item_id, MAX(revision) AS revision FROM history_fact_receipts \
-                       WHERE kind IN ('interaction','permission') GROUP BY item_id) latest \
-                   ON latest.item_id = newest.item_id AND latest.revision = newest.revision \
-                 WHERE newest.kind IN ('interaction','permission') ORDER BY newest.item_id",
-                Vec::new(),
-            ))
-            .await?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(DecisionReceipt {
-                    item_id: row.try_get("", "item_id")?,
-                    kind: row.try_get("", "kind")?,
-                    payload: row.try_get("", "payload")?,
-                })
-            })
-            .collect()
-    }
-
-    pub(crate) async fn input_identity(
-        &self,
-        input_id: &str,
-    ) -> Result<Option<InputIdentityReceipt>> {
+    /// Checks whether the durable input identity index contains one admitted input.
+    #[cfg(test)]
+    pub(crate) async fn input_identity(&self, input_id: &str) -> Result<Option<()>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?",
+                "SELECT 1 AS present FROM history_input_identities WHERE item_id=?",
                 vec![input_id.into()],
             ))
             .await?;
-        match row {
-            Some(row) => Ok(Some(InputIdentityReceipt {
-                entry: serde_json::from_str(&row.try_get::<String>("", "payload")?)?,
-                request_digest: row.try_get::<Option<String>>("", "request_digest")?,
-            })),
-            None => Ok(None),
-        }
+        Ok(row.map(|_| ()))
     }
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
@@ -1276,6 +982,7 @@ impl HistoryStore {
 
     /// Explicit content-access preparation. No TOML import, owner activation or identity recovery;
     /// an absent history remains absent. Uses the same writer/init lock as owner activation.
+    #[cfg(test)]
     pub(crate) async fn prepare_history_access(&self) -> Result<()> {
         self.prepare_activation().await
     }
@@ -1284,6 +991,7 @@ impl HistoryStore {
     ///
     /// Only a supported old format enters the existing content migration barrier.
     /// Current-format reads still pass the ordinary read-only identity/schema gate.
+    #[cfg(test)]
     pub(crate) async fn prepare_conversation_read(&self) -> Result<()> {
         if self.conversation_read_needs_preparation().await? {
             self.prepare_history_access().await?;
@@ -1293,6 +1001,7 @@ impl HistoryStore {
     }
 
     /// Only a committed hidden disposition can discharge a pruned input without a timeline row.
+    #[cfg(test)]
     pub(crate) async fn hidden_input_identities(
         &self,
         ids: impl IntoIterator<Item = String>,
@@ -1335,17 +1044,11 @@ impl HistoryStore {
         Ok(hidden)
     }
 
-    /// Reads the minimal durable identity of one accepted message, if the index knows it.
+    /// Checks whether the durable message identity index contains one accepted message.
     ///
-    /// This is the cross-window/cross-restart idempotency lookup for message delivery: the returned
-    /// sequence is the original admission receipt and the digest is the proof of the accepted body.
-    /// A row without a digest can only come from a migration backfill, and the caller must treat it
-    /// as unverifiable instead of re-delivering. A missing store or unknown identity returns `None`,
-    /// while a damaged store fails so the caller can fail closed rather than admit a duplicate.
-    pub(crate) async fn message_identity(
-        &self,
-        message_id: &str,
-    ) -> Result<Option<MessageIdentityReceipt>> {
+    /// A missing store or unknown identity returns `None`, while a damaged store fails.
+    #[cfg(test)]
+    pub(crate) async fn message_identity(&self, message_id: &str) -> Result<Option<()>> {
         if message_id.is_empty() {
             return Ok(None);
         }
@@ -1355,24 +1058,15 @@ impl HistoryStore {
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT sequence,digest FROM history_message_identities WHERE message_id=?",
+                "SELECT 1 AS present FROM history_message_identities WHERE message_id=?",
                 vec![message_id.into()],
             ))
             .await?;
-        match row {
-            Some(row) => {
-                let sequence = u64::try_from(row.try_get::<i64>("", "sequence")?)
-                    .context("durable message identity has an invalid admission sequence")?;
-                Ok(Some(MessageIdentityReceipt {
-                    sequence,
-                    digest: row.try_get::<Option<String>>("", "digest")?,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.map(|_| ()))
     }
 
     /// 只解析 checkpoint／保留 effect 明确引用的身份，不扫描整个 Turn。
+    #[cfg(test)]
     pub(crate) async fn execution_seeds(
         &self,
         ids: impl IntoIterator<Item = String>,
@@ -1386,97 +1080,6 @@ impl HistoryStore {
         Ok(items)
     }
 
-    /// 报告恢复独立读取真实父级的固定原件切面，不依赖展示库或已经打开的页面。
-    pub(in crate::studio) async fn turn_result(
-        &self,
-        turn_id: &str,
-    ) -> Result<crate::studio::thread_projection::TurnResult> {
-        use crate::{ChatAtom, ChatAtomKind, ThreadTextChannel};
-        let mut result = crate::studio::thread_projection::TurnResult::default();
-        let Some(connection) = self.reader().await? else {
-            return Ok(result);
-        };
-        let tx = connection.db.begin().await?;
-        let ceiling = conversation::latest_append_seq(&tx).await?;
-        let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
-            connection.database_id.clone(),
-            String::new(),
-        )
-        .headers_only();
-        let parent = pl_core::chat::ChatKey::new("turn", turn_id)?;
-        let mut before = None;
-        let mut commentary = std::collections::BTreeMap::new();
-        let mut last_tool: Option<(u64, String)> = None;
-        loop {
-            let page = conversation::page(
-                &tx,
-                &ChatHistoryRequest {
-                    query: Some(pl_core::chat::ChatQuery {
-                        query_class: None,
-                        parent_id: Some(parent.clone()),
-                    }),
-                    after: 0,
-                    before,
-                    ceiling,
-                    demand: pl_core::chat::ReadDemand::new(128, 256 * 1024),
-                },
-                &budget,
-                false,
-            )
-            .await?;
-            ensure!(
-                page.exhausted || !page.items.is_empty(),
-                "report record page did not advance"
-            );
-            before = page.items.first().map(|item| item.header.append_seq);
-            for entry in page.items {
-                let atom: ChatAtom = serde_json::from_slice(&entry.header.metadata)?;
-                result.observe_identity(&atom.id);
-                if atom.kind == ChatAtomKind::Text
-                    && atom.text_channel == Some(ThreadTextChannel::Final)
-                {
-                    let record = conversation::read_item(&tx, &entry.header.item_id)
-                        .await?
-                        .context("report original disappeared")?;
-                    result.observe_completion(&record, &self.state.thread_id)?;
-                } else if atom.kind == ChatAtomKind::Text
-                    && atom.text_channel == Some(ThreadTextChannel::Commentary)
-                {
-                    let order = atom
-                        .source_order
-                        .context("report commentary execution order is unknown")?;
-                    commentary.insert((order, entry.header.item_id.clone()), entry.header.item_id);
-                    while commentary.len()
-                        > crate::studio::thread_projection::live::TURN_COMMENTARY_PARTS
-                    {
-                        commentary.pop_first();
-                    }
-                } else if atom.kind == ChatAtomKind::ToolCall {
-                    let order = atom
-                        .source_order
-                        .context("report tool execution order is unknown")?;
-                    if last_tool.as_ref().is_none_or(|(old, _)| order > *old) {
-                        last_tool = Some((order, entry.header.item_id));
-                    }
-                }
-            }
-            if page.exhausted {
-                break;
-            }
-        }
-        for id in commentary
-            .values()
-            .chain(last_tool.iter().map(|(_, id)| id))
-        {
-            let record = conversation::read_item(&tx, id)
-                .await?
-                .context("report original disappeared")?;
-            result.observe_completion(&record, &self.state.thread_id)?;
-        }
-        tx.commit().await?;
-        Ok(result)
-    }
-
     pub(crate) async fn watermark(&self) -> Result<u64> {
         match self.reader().await? {
             Some(connection) => connection_watermark(connection).await,
@@ -1485,6 +1088,7 @@ impl HistoryStore {
     }
 
     /// Execution recovery's ordinal ceiling. This is not the public completion head.
+    #[cfg(test)]
     pub(crate) async fn latest_execution_ordinal(&self) -> Result<u64> {
         let Some(connection) = self.reader().await? else {
             return Ok(0);
@@ -1744,6 +1348,7 @@ impl HistoryStore {
     }
 
     /// Reads a complete frozen record, never the mutable execution fact with a similar identity.
+    #[cfg(test)]
     pub(crate) async fn read_chat_item(&self, item_id: &str) -> Result<Option<ChatItem>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
@@ -1755,6 +1360,7 @@ impl HistoryStore {
     }
 
     /// One fresh short read transaction, opened after Session captured its completion ceiling.
+    #[cfg(test)]
     async fn chat_page(
         &self,
         request: &ChatHistoryRequest,
@@ -1773,142 +1379,7 @@ impl HistoryStore {
         Ok(page)
     }
 
-    /// Saved bounded current only, through the same identity/schema admission as other reads.
     #[cfg(test)]
-    pub(crate) async fn conversation_current(&self) -> Result<Option<crate::CurrentProjection>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx)
-            .await?
-            .projection()
-            .clone();
-        tx.commit().await?;
-        Ok(Some(current))
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) async fn cold_current_state(
-        &self,
-    ) -> Result<Option<Arc<crate::studio::thread_projection::CurrentState>>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx).await?;
-        tx.commit().await?;
-        Ok(Some(current))
-    }
-
-    /// Cold State baseline: current, saved route and covered terminal share one read transaction.
-    /// The saved envelope is the same transaction's usage authority. Absence does not create
-    /// history, seed usage, or install execution.
-    pub(in crate::studio) async fn cold_state_facet(&self) -> Result<Option<ColdStateFacet>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let current = conversation::completed::cold(&tx).await?;
-        let model_route = checkpoint::read_model_route_head(&tx).await?;
-        let terminal_turn = Self::newest_terminal_turn_in(&tx).await?;
-        let saved_state = checkpoint::read_state_envelope(&tx, &self.state.thread_id)
-            .await?
-            .map(|checkpoint| checkpoint.state);
-        tx.commit().await?;
-        Ok(Some(ColdStateFacet {
-            current,
-            model_route,
-            terminal_turn,
-            saved_state,
-        }))
-    }
-
-    /// Same domain-head projection as State, from one fresh SQLite read transaction.
-    /// Missing history means this Thread has no established business read resources yet.
-    #[cfg(test)]
-    pub(in crate::studio) async fn read_business_refs(
-        &self,
-    ) -> Result<Option<crate::ThreadBusinessRefs>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let state = conversation::completed::cold(&tx).await?;
-        let references =
-            crate::studio::thread_projection::project_business_refs(state.projection());
-        tx.commit().await?;
-        Ok(Some(references))
-    }
-
-    /// Cold State and its business resources share one strictly read-only SQLite snapshot.
-    /// This validates the original state envelope without restoring execution context records.
-    pub(in crate::studio) async fn read_state_with_business_refs(
-        &self,
-    ) -> Result<Option<(pl_core::thread::ThreadSnapshot, crate::ThreadBusinessRefs)>> {
-        let connection = {
-            let _initializing = self.state.init.read().await;
-            self.read_only_connection().await?
-        };
-        let Some(connection) = connection else {
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let (database, _) = validate_existing(&tx, &self.state.thread_id).await?;
-        ensure!(
-            database == connection.database_id,
-            "canonical history identity changed"
-        );
-        let result = if let Some(checkpoint) =
-            checkpoint::read_state_envelope(&tx, &self.state.thread_id).await?
-        {
-            #[cfg(test)]
-            {
-                let gate = self.state.state_read_gate.lock().await.take();
-                if let Some((entered, release)) = gate {
-                    let _ = entered.send(());
-                    let _ = release.await;
-                }
-            }
-            let current = conversation::completed::cold_from_state(
-                &tx,
-                database,
-                self.state.thread_id.clone(),
-                checkpoint.history_fence,
-                &checkpoint.state,
-            )
-            .await?;
-            let references =
-                crate::studio::thread_projection::project_business_refs(current.projection());
-            Some((checkpoint.state, references))
-        } else {
-            None
-        };
-        tx.commit().await?;
-        Ok(result)
-    }
-
-    /// Execution recovery only: original accepted starts lacking a real terminal fact.
-    /// Pages are ordered by atom identity, include independent operations such as compaction,
-    /// and never restore a presentation group or read a payload/checkpoint.
-    pub(in crate::studio) async fn recovery_atom_starts(
-        &self,
-        after_atom_id: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<crate::ChatAtom>> {
-        ensure!(
-            (1..=128).contains(&limit),
-            "recovery start page limit must be 1..=128"
-        );
-        let Some(connection) = self.reader().await? else {
-            return Ok(Vec::new());
-        };
-        let tx = connection.db.begin().await?;
-        let atoms = execution_lifecycle::active(&tx, after_atom_id, limit).await?;
-        tx.commit().await?;
-        Ok(atoms)
-    }
-
     pub(crate) async fn execution_sources(
         &self,
         sources: &[crate::ChatSourceId],
@@ -1940,76 +1411,8 @@ impl HistoryStore {
         Ok(states)
     }
 
-    #[cfg(test)]
-    pub(in crate::studio) async fn cold_conversation(
-        &self,
-        query: pl_core::chat::ChatQuery,
-        demand: pl_core::chat::ReadDemand,
-        budget: &dyn ChatBudget,
-    ) -> Result<Option<ColdConversation>> {
-        let Some(mut snapshot) = self.conversation_snapshot().await? else {
-            return Ok(None);
-        };
-        snapshot.pin(&self.state.thread_id).await?;
-        snapshot.cold_conversation(query, demand, budget).await
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) async fn page_current(
-        &self,
-        reference: &crate::CurrentCollectionRef,
-        after: Option<&str>,
-        demand: crate::ReadDemand,
-        encode_continuation: &(dyn Fn(String) -> Result<String> + Send + Sync),
-    ) -> Result<crate::CurrentCollectionPage> {
-        let connection = self.reader().await?.context(ChatError::StaleContent)?;
-        ensure!(
-            reference.database_id == connection.database_id,
-            ChatError::StaleContent
-        );
-        let tx = connection.db.begin().await?;
-        let page = crate::studio::thread_projection::current_page(
-            conversation::completed::cold(&tx).await?.as_ref(),
-            reference,
-            after,
-            demand,
-            encode_continuation,
-        )?;
-        tx.commit().await?;
-        Ok(page)
-    }
-
-    /// Reads the newest terminal Turn this Thread already committed, without a body read.
-    ///
-    /// The realtime contract carries a finished Turn exactly once — the authoritative snapshot only
-    /// ever holds the *active* Turn and `turnCompleted` is broadcast only to the subscribers that
-    /// exist at that moment — so a projection owner that is installed (or a subscription that opens)
-    /// after the finishing commit has no live frame left to learn it from. This cold read closes that
-    /// gap from the durable facts the writer already committed, never from item bodies and never by
-    /// scanning: "finished" is a stored column (`history_items.lifecycle='terminal'`) and its partial
-    /// index is therefore able to return the single newest finished Turn by execution order.
-    ///
-    /// The two durable tables are one fact, chosen deliberately: `history_items` carries the
-    /// `lifecycle`/`last_write_seq` columns the partial index orders on, while `history_turns.payload`
-    /// carries the typed `Turn` the realtime frame and the client use. `commit_effect` writes both in
-    /// the same transaction from the same turn item, and `upsert_item` freezes a terminal Turn item's
-    /// `last_write_seq` (a later sequence is rejected), so an item row can name the newest finished
-    /// Turn in execution order and that identity's Turn payload is the very fact the item projected —
-    /// identity and revision are the writer's own, not a re-derivation, and no body is read.
-    ///
-    /// 冷读缺失历史库时返回 `None`，且绝不创建它。
-    pub(crate) async fn newest_terminal_turn(&self) -> Result<Option<crate::Turn>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        Self::newest_terminal_turn_in(&connection.db).await
-    }
-
-    async fn newest_terminal_turn_in(db: &impl ConnectionTrait) -> Result<Option<crate::Turn>> {
-        turns::terminal(db).await
-    }
-
     /// Latest real terminal effect, using the same partial index as terminal paging.
+    #[cfg(test)]
     pub(crate) async fn latest_terminal_report_sequence(&self) -> Result<Option<u64>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
@@ -2030,6 +1433,7 @@ impl HistoryStore {
 
     /// Body-free keyset of the real terminal effects that own parent report identities.
     /// The bounded canonical item index is reused; there is no second delivery ledger.
+    #[cfg(test)]
     pub(crate) async fn terminal_report_sequences(&self, after: u64) -> Result<Vec<u64>> {
         let Some(connection) = self.reader().await? else {
             return Ok(Vec::new());
@@ -2056,6 +1460,7 @@ impl HistoryStore {
     /// Reads complete original reports under the caller's serialized-report byte budget.
     /// Callers supply the bounded terminal keyset. A report that does not fit stays unreturned and
     /// therefore cannot advance their cursor; an oversized first report is an explicit error.
+    #[cfg(test)]
     pub(crate) async fn terminal_reports(
         &self,
         sequences: &[u64],
@@ -2091,172 +1496,13 @@ impl HistoryStore {
         Ok(reports)
     }
 
-    #[cfg(test)]
-    pub(crate) async fn terminal_report_sequence(&self, turn_id: &str) -> Result<Option<u64>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        let row = connection.db.query_one_raw(statement(
-            "SELECT terminal_effect AS last_write_seq FROM history_turns WHERE terminal_effect IS NOT NULL AND turn_id=? LIMIT 1",
-            vec![turn_id.to_owned().into()],
-        )).await?;
-        row.map(|row| {
-            let sequence: i64 = row.try_get("", "last_write_seq")?;
-            u64::try_from(sequence).context("negative terminal report sequence")
-        })
-        .transpose()
-    }
-
-    /// Reads the latest admitted Turn at exactly the caller's proven durable fence, without bodies.
-    /// Unlike the retained-terminal seed, this query must not skip a newer unfinished Turn. The
-    /// existing `(kind, ordinal)` item index orders admissions, not later items of an older Turn;
-    /// its matching typed Turn and the watermark are read in the same SQLite snapshot.
-    pub(crate) async fn latest_turn_at(&self, history_fence: u64) -> Result<Option<crate::Turn>> {
-        let Some(connection) = self.reader().await? else {
-            ensure!(history_fence == 0, "child durable history is missing");
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let turn = read_latest_turn_at(&tx, &self.state.thread_id, history_fence).await?;
-        tx.commit().await?;
-        Ok(turn)
-    }
-
-    /// Reads one bounded Turn page, newest Turn first, without activating a Thread owner.
-    ///
-    /// The page is a keyset over `history_turns.last_ordinal` (index-backed, no offset, no full
-    /// scan, no sort) and is bounded twice: by the caller's row limit and by [`PAGE_BYTE_BUDGET`]
-    /// over the serialized entries, exactly like the item page. When the byte budget stops the page
-    /// the returned cursor points at the last entry actually returned — inside the Turn it stopped
-    /// in — so the next page resumes exactly there. Every item of every Turn is therefore reachable
-    /// by following the cursors in ordinal order, and one page never grows with the size of one
-    /// Turn: an oversized Turn is returned as consecutive windows instead of one unbounded body.
-    ///
-    /// 冷读缺失历史库时返回空 Turn 页，且绝不创建它。
-    pub(crate) async fn turn_page(
-        &self,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<crate::ThreadTurnPage> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(crate::ThreadTurnPage {
-                turns: vec![],
-                next_cursor: None,
-            });
-        };
-        let tx = connection.db.begin().await?;
-        let page = turns::page(
-            &tx,
-            &self.state.thread_id,
-            &connection.database_id,
-            cursor,
-            limit,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(page)
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Keep the existing ordinal keyset parameters explicit alongside request cancellation"
-    )]
-    pub(crate) async fn agent_page(
-        &self,
-        descending: bool,
-        text_only: bool,
-        anchor: Option<u64>,
-        ceiling: Option<u64>,
-        through: Option<u64>,
-        limit: usize,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(u64, u64, Vec<crate::CompletedEntry>, bool)> {
-        let read = async {
-            // 行上限与探测行必须用同一份 limit：早先的写法按调用方 limit 比较 `has_more`，却把
-            // SQL LIMIT 截到 51，limit > 50 时会返回 51 条却宣称“没有更多”。这里先收敛 limit，再
-            // 多取一行作为“确实还有匹配条目”的证据。
-            let limit = limit.clamp(1, AGENT_PAGE_ROW_LIMIT);
-            let Some(connection) = self.reader().await? else {
-                // 缺失历史库：空窗口，且读操作绝不创建它。
-                return Ok((0, 0, Vec::new(), false));
-            };
-            // The first SELECT fixes this page's SQLite snapshot. All range metadata and content
-            // belong to it; a continuation still uses its original ordinal keyset, not a long transaction.
-            #[cfg(test)]
-            if let Some(entered) = self.state.agent_page_before_transaction.lock().await.take() {
-                let _ = entered.send(());
-            }
-            let tx = connection.db.begin().await?;
-            let watermark = u64::try_from(applied_write_seq(&tx).await?)
-                .context("negative history write sequence")?;
-            #[cfg(test)]
-            if let Some((entered, release)) = self.state.agent_page_gate.lock().await.take() {
-                let _ = entered.send(());
-                let _ = release.await;
-            }
-            if let Some(through) = through {
-                ensure!(
-                    through <= watermark,
-                    "agent session cursor is ahead of durable history"
-                );
-            }
-            let head = conversation::latest_append_seq(&tx).await?;
-            let ceiling = ceiling.unwrap_or(head);
-            ensure!(
-                ceiling <= head && anchor.is_none_or(|anchor| anchor <= ceiling),
-                "agent cursor exceeds its original completion cut"
-            );
-            let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
-                connection.database_id.clone(),
-                String::new(),
-            )
-            .headers_only();
-            let max_bytes = PAGE_BYTE_BUDGET
-                .checked_sub(budget.fixed_bytes())
-                .context("agent record envelope cannot fit")?;
-            let page = conversation::page_filtered(
-                &tx,
-                &ChatHistoryRequest {
-                    query: Some(pl_core::chat::ChatQuery {
-                        query_class: None,
-                        parent_id: None,
-                    }),
-                    after: if descending { 0 } else { anchor.unwrap_or(0) },
-                    before: if descending { anchor } else { None },
-                    ceiling,
-                    demand: pl_core::chat::ReadDemand::new(limit, max_bytes),
-                },
-                &budget,
-                !descending,
-                text_only,
-            )
-            .await?;
-            let has_more = !page.exhausted;
-            let mut items = crate::studio::runtime::conversation_reader::entries(
-                page.items,
-                &connection.database_id,
-            )?;
-            if descending {
-                items.reverse();
-            }
-            tx.commit().await?;
-            Ok((watermark, ceiling, items, has_more))
-        };
-        // Dropping the read future releases its initialization/acquisition wait and transaction.
-        // The driver owns rollback/connection cleanup; cancellation is not a hard SQL abort.
-        tokio::select! {
-            biased;
-            () = cancellation.cancelled() => Err(pl_core::thread::ThreadError::Cancelled.into()),
-            result = read => result,
-        }
-    }
-
     /// Reads one committed timeline item by its durable identity.
     ///
     /// The projection owner needs the canonical committed body of an identity whose live preview already
     /// released it (for example the tool result a reliable-output repair names) so the *same* owner can
     /// still project the repaired fact with its own content version instead of the writer inventing one.
     /// This is a read of an already-committed fact, never a read-back of the effect being written.
+    #[cfg(test)]
     pub(crate) async fn execution_item(&self, item_id: &str) -> Result<Option<ExecutionItem>> {
         if let Some(id) = crate::studio::thread_projection::order::business_id("turn", item_id) {
             let Some(connection) = self.reader().await? else {
@@ -2282,33 +1528,6 @@ impl HistoryStore {
                     ),
                 )));
             }
-        }
-        if let Some(record) = self.read_chat_item(item_id).await?
-            && serde_json::from_slice::<serde_json::Value>(&record.payload)?["type"] != "plan"
-        {
-            let connection = self
-                .reader()
-                .await?
-                .context("execution history connection")?;
-            let life = execution_lifecycle::read(&connection.db, item_id).await?;
-            let placement = life.as_ref().and_then(|life| {
-                life.execution_order
-                    .map(|order| (order, life.last_write_seq))
-            });
-            let mut item = crate::studio::runtime::chat_item::execution_item(
-                &record,
-                &self.state.thread_id,
-                placement,
-            )?;
-            if let Some(life) = life {
-                if let Some(turn) = life.turn_id {
-                    item.turn_id = turn;
-                }
-                if let Some(order) = life.execution_order {
-                    item.ordinal = order;
-                }
-            }
-            return self.restore_tool_receipt(item).await.map(Some);
         }
         if let Some(call_id) = crate::studio::thread_projection::order::business_id("tool", item_id)
             && let Some(saved) = self.tool_task(call_id).await?
@@ -2355,6 +1574,7 @@ impl HistoryStore {
     }
 
     /// 原件保持不变，执行恢复叠加该工具已经可靠接纳的最新问答回执。
+    #[cfg(test)]
     async fn restore_tool_receipt(&self, mut item: ExecutionItem) -> Result<ExecutionItem> {
         let Some(tool) = item.tool() else {
             return Ok(item);
@@ -2408,6 +1628,7 @@ impl HistoryStore {
     }
 }
 
+#[cfg(test)]
 impl ChatHistory for HistoryStore {
     async fn publication_seed(
         &self,
@@ -2472,14 +1693,6 @@ impl ChatHistory for HistoryStore {
     }
 
     async fn item(&self, item_id: &str) -> std::result::Result<Option<ChatItem>, ChatError> {
-        #[cfg(test)]
-        {
-            let gate = self.state.completion_read_gate.lock().await.take();
-            if let Some((entered, release)) = gate {
-                let _ = entered.send(item_id.to_owned());
-                let _ = release.await;
-            }
-        }
         self.read_chat_item(item_id)
             .await
             .map_err(chat_history_error)
@@ -2542,6 +1755,7 @@ impl ChatHistory for HistoryStore {
     }
 }
 
+#[cfg(test)]
 fn chat_history_error(error: anyhow::Error) -> ChatError {
     match error.downcast::<ChatError>() {
         Ok(error) => error,
@@ -2550,6 +1764,7 @@ fn chat_history_error(error: anyhow::Error) -> ChatError {
 }
 
 /// One query implementation for hot fixed-fence reads and strict read-only checkpoint snapshots.
+#[cfg(test)]
 async fn read_latest_turn_at(
     tx: &impl ConnectionTrait,
     thread_id: &str,
@@ -2708,6 +1923,7 @@ async fn validate_existing_identity(
     Ok((database_id, version))
 }
 
+#[cfg(test)]
 async fn write_tool_task(
     tx: &impl ConnectionTrait,
     write_seq: i64,
@@ -2762,6 +1978,7 @@ async fn write_tool_task(
     Ok(())
 }
 
+#[cfg(test)]
 async fn write_tool_delivery(
     tx: &impl ConnectionTrait,
     write_seq: i64,
@@ -2822,6 +2039,7 @@ async fn write_tool_delivery(
 ///
 /// This only supplements a durable delivery fact; the canonical timeline item and its content version
 /// are produced by the Thread's single projection owner, never invented here.
+#[cfg(test)]
 async fn write_tool_delivery_repair(
     tx: &impl ConnectionTrait,
     write_seq: i64,
@@ -2880,6 +2098,7 @@ fn statement(sql: &str, values: Vec<Value>) -> Statement {
 /// A repeated write of the same identity only refreshes its bookkeeping. A different digest for an
 /// already-recorded id is an identity conflict: the accepted identity is never silently
 /// overwritten, and the conflict fails the whole effect transaction instead.
+#[cfg(test)]
 async fn write_input_identity(
     db: &impl ConnectionTrait,
     write_seq: i64,
@@ -2965,6 +2184,7 @@ async fn write_input_identity(
     Ok(())
 }
 
+#[cfg(test)]
 fn presentation_label(presentation: crate::MessagePresentation) -> &'static str {
     match presentation {
         crate::MessagePresentation::Visible => "visible",
@@ -2980,6 +2200,7 @@ fn presentation_label(presentation: crate::MessagePresentation) -> &'static str 
 /// the accepted identity: the conflict fails the whole effect transaction. A row that exists without
 /// a digest (a migration backfill) is left untouched, so its readers keep failing closed instead of
 /// silently replacing an unverifiable accepted identity.
+#[cfg(test)]
 async fn write_message_identity(
     db: &impl ConnectionTrait,
     write_seq: i64,
@@ -3292,11 +2513,13 @@ pub(crate) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 
 #[cfg(test)]
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
-    conversation::current::PreparedCurrent::new(
+    conversation::current::PreparedCurrent::with_identity(
         crate::studio::thread_projection::FrozenCurrentProjection::new(
-            crate::CurrentProjection::empty(sequence, crate::ThreadStatus::Idle),
+            crate::CurrentProjection::empty(crate::ThreadStatus::Idle),
         ),
         std::sync::Arc::from([]),
+        sequence,
+        None,
     )
 }
 
@@ -3325,7 +2548,7 @@ pub(crate) async fn persist_completed(
     let drafts = items
         .iter()
         .map(|item| {
-            crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id)
+            crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id, None)
         })
         .collect::<Result<Vec<_>>>()?;
     let completions = session
@@ -3381,927 +2604,6 @@ pub(in crate::studio) fn test_turns(effect: u64, items: &[ExecutionItem]) -> Vec
             })
         })
         .collect()
-}
-
-#[cfg(test)]
-mod agent_session_tests {
-    use super::*;
-    use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
-    use tokio_util::sync::CancellationToken;
-
-    fn text(ordinal: u64, revision: u64, body: &str) -> ExecutionItem {
-        ExecutionItem::new(
-            format!("text-{ordinal}"),
-            "agent".into(),
-            "turn".into(),
-            ordinal,
-            revision,
-            1,
-            2,
-            ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Final,
-                body.into(),
-                vec![],
-                ThreadContentLifecycle::completed(2),
-            )),
-        )
-    }
-
-    #[tokio::test]
-    async fn agent_page_uses_one_snapshot_for_watermark_ceiling_and_content() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        let original = text(1, 1, "original");
-        persist_completed(&history, 1, std::slice::from_ref(&original)).await?;
-        let writing = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *history.state.agent_page_gate.lock().await = Some((entered_tx, release_rx));
-        let cancellation = CancellationToken::new();
-        let read = history.agent_page(false, true, None, None, None, 20, &cancellation);
-        let write = async {
-            entered.await?;
-            persist_completed(&writing, 2, &[text(2, 1, "new")]).await?;
-            release
-                .send(())
-                .map_err(|_| anyhow::anyhow!("read disappeared"))?;
-            Ok::<_, anyhow::Error>(())
-        };
-        let (page, committed) =
-            tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(read, write) })
-                .await?;
-        committed?;
-        let (watermark, ceiling, items, more) = page?;
-        assert_eq!((watermark, ceiling, more), (1, 1, false));
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].record_id, original.id);
-        let (watermark, ceiling, items, _) = history
-            .agent_page(false, true, None, None, None, 20, &cancellation)
-            .await?;
-        assert_eq!((watermark, ceiling, items.len()), (2, 2, 2));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn agent_page_cancelled_initialization_wait_releases_reader() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let history = HistoryStore::open(&path, "agent").await?;
-        let initializing = history.state.init.write().await;
-        let entered = history.arm_reader_before_init().await;
-        let cancellation = CancellationToken::new();
-        let read = history.agent_page(false, false, None, None, None, 20, &cancellation);
-        let cancel = async {
-            entered.await.unwrap();
-            cancellation.cancel();
-        };
-        let (result, ()) = tokio::join!(read, cancel);
-        assert!(matches!(
-            result
-                .unwrap_err()
-                .downcast_ref::<pl_core::thread::ThreadError>(),
-            Some(pl_core::thread::ThreadError::Cancelled)
-        ));
-        assert!(history.state.reader.get().is_none());
-        assert!(!path.exists());
-        drop(initializing);
-        persist_completed(&history, 1, &[text(1, 1, "saved")]).await?;
-        let page = history
-            .agent_page(
-                false,
-                false,
-                None,
-                None,
-                None,
-                20,
-                &CancellationToken::new(),
-            )
-            .await?;
-        assert_eq!((page.0, page.2.len()), (1, 1));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn agent_page_cancelled_pool_wait_and_transaction_release_capacity() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        persist_completed(&history, 1, &[text(1, 1, "saved")]).await?;
-        let connection = history.reader().await?.context("reader")?;
-        // The production read pool has one connection. Hold it to force an actual acquisition wait.
-        let occupied = connection.db.begin().await?;
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        *history.state.agent_page_before_transaction.lock().await = Some(entered_tx);
-        let cancellation = CancellationToken::new();
-        let read = history.agent_page(false, false, None, None, None, 20, &cancellation);
-        let cancel = async {
-            entered.await.unwrap();
-            cancellation.cancel();
-        };
-        let (result, ()) = tokio::join!(read, cancel);
-        assert!(matches!(
-            result
-                .unwrap_err()
-                .downcast_ref::<pl_core::thread::ThreadError>(),
-            Some(pl_core::thread::ThreadError::Cancelled)
-        ));
-        occupied.rollback().await?;
-
-        // Now cancel a page that already owns its transaction and read snapshot.
-        let (entered_tx, entered) = tokio::sync::oneshot::channel();
-        let (release, release_rx) = tokio::sync::oneshot::channel();
-        *history.state.agent_page_gate.lock().await = Some((entered_tx, release_rx));
-        let cancellation = CancellationToken::new();
-        let read = history.agent_page(false, false, None, None, None, 20, &cancellation);
-        let cancel = async {
-            entered.await.unwrap();
-            cancellation.cancel();
-        };
-        let (result, ()) = tokio::join!(read, cancel);
-        assert!(matches!(
-            result
-                .unwrap_err()
-                .downcast_ref::<pl_core::thread::ThreadError>(),
-            Some(pl_core::thread::ThreadError::Cancelled)
-        ));
-        assert!(
-            release.is_closed(),
-            "the original page future must have been dropped"
-        );
-        let cancellation = CancellationToken::new();
-        let page = tokio::time::timeout(
-            Duration::from_secs(10),
-            history.agent_page(false, false, None, None, None, 20, &cancellation),
-        )
-        .await??;
-        assert_eq!((page.0, page.2.len()), (1, 1));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn agent_page_distinguishes_absent_empty_and_read_error() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let history = HistoryStore::open(&path, "agent").await?;
-        let cancellation = CancellationToken::new();
-        let page = history
-            .agent_page(false, false, None, None, None, 20, &cancellation)
-            .await?;
-        assert_eq!(page, (0, 0, vec![], false));
-        assert!(!path.exists());
-        persist_completed(&history, 7, &[]).await?;
-        let page = history
-            .agent_page(false, false, None, None, None, 20, &cancellation)
-            .await?;
-        assert_eq!(page, (7, 0, vec![], false));
-        history
-            .writer()
-            .await?
-            .db
-            .execute_unprepared("DROP TABLE conversation_items")
-            .await?;
-        let error = history
-            .agent_page(false, false, None, None, None, 20, &cancellation)
-            .await
-            .expect_err("SQL damage must not become an empty page");
-        assert!(
-            error.downcast_ref::<sea_orm::DbErr>().is_some(),
-            "{error:#}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn agent_page_keyset_keeps_immutable_rows_in_original_range() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let history = HistoryStore::open(&dir.path().join("history.sqlite"), "agent").await?;
-        persist_completed(&history, 1, &[text(1, 1, "first"), text(2, 1, "second")]).await?;
-        let cancellation = CancellationToken::new();
-        let (through, ceiling, first, more) = history
-            .agent_page(false, true, None, None, None, 1, &cancellation)
-            .await?;
-        assert_eq!(
-            (through, ceiling, first[0].completion_seq, more),
-            (1, 2, 1, true)
-        );
-        persist_completed(&history, 2, &[text(3, 1, "outside ceiling")]).await?;
-        let (durable, bound, second, more) = history
-            .agent_page(
-                false,
-                true,
-                Some(1),
-                Some(ceiling),
-                Some(through),
-                1,
-                &cancellation,
-            )
-            .await?;
-        assert_eq!((durable, bound, more), (2, 2, true));
-        let (_, _, end, more) = history
-            .agent_page(
-                false,
-                true,
-                Some(2),
-                Some(ceiling),
-                Some(through),
-                1,
-                &cancellation,
-            )
-            .await?;
-        assert!(
-            end.is_empty() && !more,
-            "an exact full keyset page requires an empty EOF probe"
-        );
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].record_id, "text-2");
-        assert!(
-            history
-                .agent_page(false, true, None, Some(2), Some(3), 1, &cancellation)
-                .await
-                .is_err()
-        );
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod business_refs_tests {
-    //! Real SQLite business references: same-cut heads, immutable documents and local invalidation.
-    use super::*;
-    use crate::{ContentOwner, ContentTarget, ThreadBusinessRefs, UserQuestion};
-    use conversation::current::{CurrentContentWrite, PreparedCurrent};
-    use pl_core::{
-        context::OpaquePayload,
-        thread::{
-            ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot,
-            extensions::ExtensionRecord,
-            interactions::{InteractionRecord, InteractionRequest, InteractionState},
-        },
-    };
-    use std::collections::BTreeSet;
-
-    const THREAD: &str = "cold-business-refs";
-
-    #[tokio::test]
-    async fn cold_state_and_business_refs_keep_one_snapshot_across_a_real_writer_commit()
-    -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let writer = HistoryStore::open(&path, THREAD).await?;
-        let old_state = state_with_plan("# 读取切面的计划")?;
-        let old_refs = save(&writer, old_state.clone(), 1).await?;
-        let cold = HistoryStore::open(&path, THREAD).await?;
-        let (entered, release) = cold.arm_state_read_gate().await;
-        let reading = {
-            let cold = cold.clone();
-            tokio::spawn(async move { cold.read_state_with_business_refs().await })
-        };
-        tokio::time::timeout(Duration::from_secs(10), entered).await??;
-        let mut next_state = old_state.clone();
-        replace_plan(&mut next_state, "# 并发提交的新计划")?;
-        next_state
-            .interactions
-            .remove(&pl_core::tool::opaque::tool_interaction_id("first"));
-        next_state.interaction_collection_revision += 1;
-        let next_refs = save(&writer, next_state.clone(), 2).await?;
-        release
-            .send(())
-            .map_err(|_| anyhow::anyhow!("state read ended before release"))?;
-        let (state, refs) = tokio::time::timeout(Duration::from_secs(10), reading)
-            .await???
-            .context("captured State")?;
-        assert_eq!(state.commit_sequence, 1);
-        assert_eq!(state.interactions, old_state.interactions);
-        assert_eq!(state.extensions, old_state.extensions);
-        assert_eq!(refs, old_refs);
-        let (state, refs) = cold
-            .read_state_with_business_refs()
-            .await?
-            .context("new State")?;
-        assert_eq!(state.commit_sequence, 2);
-        assert_eq!(state.interactions, next_state.interactions);
-        assert_eq!(state.extensions, next_state.extensions);
-        assert_eq!(refs, next_refs);
-        assert_ne!(refs.plan, old_refs.plan);
-        assert_ne!(refs.interactions, old_refs.interactions);
-        let old_revision = old_refs
-            .interactions
-            .as_ref()
-            .context("old interactions")?
-            .revision;
-        let new_revision = refs
-            .interactions
-            .as_ref()
-            .context("new interactions")?
-            .revision;
-        assert_eq!(old_revision, old_state.interaction_collection_revision);
-        assert_eq!(new_revision, next_state.interaction_collection_revision);
-        eprintln!(
-            "cold business refs: old_state_seq=1 old_revision={old_revision} new_state_seq=2 new_revision={new_revision}"
-        );
-        assert!(
-            cold.state.writer.get().is_none(),
-            "cold State must not initialize a writer"
-        );
-        cold.close_for_deletion().await?;
-        writer.close_for_deletion().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_state_never_restores_context_but_execution_recovery_still_checks_it() -> Result<()>
-    {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let writer = HistoryStore::open(&path, THREAD).await?;
-        let expected = save(&writer, state_with_plan("# 独立业务状态")?, 1).await?;
-        writer
-            .writer()
-            .await?
-            .db
-            .execute_unprepared(
-                "INSERT INTO current_context(ordinal,record_id,payload,payload_hash)
-         VALUES(0,'poison','not a context record','invalid hash');
-         UPDATE session_checkpoint SET context_count=1 WHERE id=1;",
-            )
-            .await?;
-        let cold = HistoryStore::open(&path, THREAD).await?;
-        let (state, refs) = cold
-            .read_state_with_business_refs()
-            .await?
-            .context("cold State")?;
-        assert!(state.context.records.is_empty());
-        assert_eq!(refs, expected);
-        let error = writer
-            .checkpoint()
-            .await
-            .expect_err("execution recovery must inspect context");
-        assert!(format!("{error:#}").contains("current context ordering or hash mismatch"));
-        let reader = cold.reader().await?.context("read-only pool")?;
-        assert!(
-            reader
-                .db
-                .execute_unprepared("UPDATE history_meta SET applied_write_seq=2")
-                .await
-                .is_err(),
-            "State must use a strictly read-only connection"
-        );
-        assert!(cold.state.writer.get().is_none());
-        cold.close_for_deletion().await?;
-        writer.close_for_deletion().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_state_preserves_envelope_and_plan_validation_and_reports_absence() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let absent_path = dir.path().join("absent.sqlite");
-        let absent = HistoryStore::open(&absent_path, THREAD).await?;
-        assert!(absent.read_state_with_business_refs().await?.is_none());
-        assert!(!absent_path.exists());
-        for damage in [
-            "hash",
-            "schema",
-            "thread",
-            "revision",
-            "context_revision",
-            "fence",
-            "manifest",
-            "unsealed",
-            "no_checkpoint",
-        ] {
-            let case = tempfile::tempdir()?;
-            let path = case.path().join("history.sqlite");
-            let writer = HistoryStore::open(&path, THREAD).await?;
-            save(&writer, state_with_plan("# 校验原件")?, 1).await?;
-            let db = &writer.writer().await?.db;
-            match damage {
-                "hash" => {
-                    db.execute_unprepared("UPDATE session_checkpoint SET payload_hash='bad'")
-                        .await?;
-                }
-                "revision" => {
-                    db.execute_unprepared("UPDATE session_checkpoint SET revision=2")
-                        .await?;
-                }
-                "context_revision" => {
-                    db.execute_unprepared("UPDATE session_checkpoint SET context_revision=2")
-                        .await?;
-                }
-                "manifest" => {
-                    db.execute_unprepared(
-                    "DELETE FROM conversation_content_chunks; DELETE FROM conversation_contents",
-                )
-                .await?;
-                }
-                "unsealed" => {
-                    db.execute_unprepared(
-                "UPDATE conversation_contents SET payload=CAST(json_set(CAST(payload AS TEXT),'$.sealed',json('false')) AS BLOB)"
-            ).await?;
-                }
-                "no_checkpoint" => {
-                    db.execute_unprepared("DELETE FROM session_checkpoint")
-                        .await?;
-                }
-                _ => {
-                    let row = db
-                        .query_one_raw(statement(
-                            "SELECT payload FROM session_checkpoint WHERE id=1",
-                            vec![],
-                        ))
-                        .await?
-                        .context("checkpoint")?;
-                    let mut payload: serde_json::Value =
-                        serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-                    match damage {
-                        "schema" => payload["schemaVersion"] = 999.into(),
-                        "thread" => payload["threadId"] = "another-thread".into(),
-                        "fence" => payload["historyFence"] = 2.into(),
-                        _ => unreachable!(),
-                    }
-                    let payload = serde_json::to_string(&payload)?;
-                    let hash = pl_core::context::content_hash(payload.as_bytes());
-                    db.execute_raw(statement(
-                        "UPDATE session_checkpoint SET payload=?,payload_hash=? WHERE id=1",
-                        vec![payload.into(), hash.into()],
-                    ))
-                    .await?;
-                }
-            }
-            let cold = HistoryStore::open(&path, THREAD).await?;
-            let result = cold.read_state_with_business_refs().await;
-            if damage == "no_checkpoint" {
-                assert!(result?.is_none());
-            } else {
-                assert!(result.is_err(), "{damage}");
-            }
-            assert!(cold.state.writer.get().is_none());
-            cold.close_for_deletion().await?;
-            writer.close_for_deletion().await?;
-        }
-        Ok(())
-    }
-
-    fn state_with_plan(markdown: &str) -> Result<ThreadSnapshot> {
-        let mut machine =
-            crate::plan_tool::state::AgentSessionPlanMachine::new(Default::default())?;
-        machine.submit(crate::plan_tool::state::AgentSessionPlanSubmitCommand {
-            expected_revision: 0,
-            plan: markdown.into(),
-            interaction_id: "confirmation".into(),
-            operation_id: "submit".into(),
-            argument_hash: "hash".into(),
-            submitted_at: 1,
-        });
-        let plan = machine.into_state();
-        ensure!(
-            plan.document.is_some(),
-            "fixture did not submit a real Plan"
-        );
-        let mut state = ThreadSnapshot::default();
-        state.extensions.insert(
-            crate::plan_tool::PLAN_EXTENSION.into(),
-            ExtensionRecord {
-                revision: 1,
-                payload: crate::plan_tool::encode_plan_state(&plan)?,
-            },
-        );
-        for id in ["first", "second"] {
-            let id = pl_core::tool::opaque::tool_interaction_id(id);
-            state.interactions.insert(
-                id.clone(),
-                InteractionRecord {
-                    created_at: 1,
-                    updated_at: 1,
-                    continuation_id: None,
-                    revision: 1,
-                    state: InteractionState::Pending,
-                    extension_mutations: vec![],
-                    request: InteractionRequest {
-                        id: id.clone(),
-                        turn_id: "turn".into(),
-                        payload: OpaquePayload::new(
-                            "pl.tool.user-input",
-                            1,
-                            serde_json::to_string(&vec![UserQuestion {
-                                id,
-                                header: "问题".into(),
-                                question: "继续吗？".into(),
-                                is_other: true,
-                                is_secret: false,
-                                options: None,
-                            }])?,
-                        )?,
-                    },
-                },
-            );
-            state.interaction_collection_revision += 1;
-        }
-        Ok(state)
-    }
-
-    fn replace_plan(state: &mut ThreadSnapshot, markdown: &str) -> Result<()> {
-        use crate::plan_tool::state::*;
-        let record = state
-            .extensions
-            .get_mut(crate::plan_tool::PLAN_EXTENSION)
-            .context("Plan")?;
-        let plan = crate::plan_tool::decode_plan_state(&record.payload)?;
-        let mut machine = AgentSessionPlanMachine::new(plan)?;
-        let pending = machine
-            .state()
-            .pending_interaction_id
-            .clone()
-            .context("pending confirmation")?;
-        machine.resolve(AgentSessionPlanResolveCommand {
-            expected_revision: machine.state().revision,
-            interaction_id: pending,
-            operation_id: "revise".into(),
-            argument_hash: "revise-hash".into(),
-            decision: AgentSessionPlanConfirmationDecision::RequestRevision {
-                feedback: "修改计划".into(),
-            },
-            resolved_at: 2,
-        });
-        machine.submit(AgentSessionPlanSubmitCommand {
-            expected_revision: machine.state().revision,
-            plan: markdown.into(),
-            interaction_id: "next-confirmation".into(),
-            operation_id: "resubmit".into(),
-            argument_hash: "resubmit-hash".into(),
-            submitted_at: 3,
-        });
-        let plan = machine.into_state();
-        ensure!(
-            plan.document
-                .as_ref()
-                .is_some_and(|document| document.markdown == markdown),
-            "Plan fixture failed to resubmit"
-        );
-        record.revision += 1;
-        record.payload = crate::plan_tool::encode_plan_state(&plan)?;
-        Ok(())
-    }
-
-    /// The actual existing completion/checkpoint transaction, including independent Plan material.
-    async fn save(
-        store: &HistoryStore,
-        mut state: ThreadSnapshot,
-        seq: u64,
-    ) -> Result<ThreadBusinessRefs> {
-        store.prepare_write().await?;
-        state.commit_sequence = seq;
-        let database = store
-            .conversation_database_id()
-            .await?
-            .context("database")?;
-        let current = crate::studio::thread_projection::CurrentState::cold(
-            database,
-            THREAD.into(),
-            seq,
-            &state,
-        )?;
-        let refs = current.business_refs();
-        let contents = current.contents().values().filter(|content| {
-        conversation::content::current_owner(&content.descriptor.key.owner).ok().flatten()
-            .is_some_and(|owner| matches!(owner, ContentOwner::Current { domain, .. } if domain == "plan"))
-    }).map(|content| CurrentContentWrite { content: content.content(), sealed: true }).collect::<Vec<_>>();
-        let prepared = PreparedCurrent::new(current.frozen_projection().clone(), contents.into());
-        let checkpoint = ThreadCheckpoint::capture(THREAD.into(), seq, state)?;
-        let effect = ThreadEffectBatch {
-            thread_id: THREAD.into(),
-            sequence: seq,
-            committed_at: seq as i64,
-            ..Default::default()
-        };
-        let accounting = crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?;
-        store
-            .commit_checkpoint_effects(&[CheckpointEffect {
-                checkpoint: &checkpoint,
-                effect: &effect,
-                history: EffectCommit {
-                    turns: &[],
-                    execution_order: 0,
-                    completions: &[],
-                    current: &prepared,
-                    rolled_back_turns: &BTreeSet::new(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-                accounting: AccountingCommit {
-                    facts: &accounting,
-                    material_changed: false,
-                },
-            }])
-            .await?;
-        Ok(refs)
-    }
-
-    fn content_request(reference: &crate::ContentRef) -> Result<ContentReadRequest> {
-        let ContentTarget::Body { owner, key } = &reference.target else {
-            anyhow::bail!("body ref required");
-        };
-        Ok(ContentReadRequest {
-            epoch: pl_core::chat::TimelineEpoch::new("business")?,
-            reference: pl_core::chat::ContentRef::Body(pl_core::chat::ChatContentKey {
-                owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-                key: key.clone(),
-            }),
-            offset: 0,
-            max_bytes: 4096,
-            generation: None,
-        })
-    }
-
-    #[tokio::test]
-    async fn cold_reopen_keeps_plan_document_and_pending_interaction_refs_without_execution()
-    -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, THREAD).await?;
-        let hot = save(&store, state_with_plan("# 完整计划\n\n- 保留原文")?, 1).await?;
-        store.close_for_deletion().await?;
-        let cold = HistoryStore::open(&path, THREAD).await?;
-        let refs = cold.read_business_refs().await?.context("business refs")?;
-        assert_eq!(refs, hot);
-        let state = cold.cold_current_state().await?.context("cold state")?;
-        assert!(!state.projection().execution_present);
-        assert!(state.projection().atoms.is_empty());
-        let document = refs.plan.as_ref().unwrap().document.as_ref().unwrap();
-        let window = ChatHistory::read_content(&cold, &content_request(document)?).await?;
-        assert_eq!(
-            window.bytes.as_bytes(),
-            "# 完整计划\n\n- 保留原文".as_bytes()
-        );
-        assert!(window.sealed);
-        let reference = refs.interactions.as_ref().context("interactions")?;
-        let page = cold
-            .page_current(
-                reference,
-                None,
-                crate::ReadDemand {
-                    max_items: 1,
-                    max_bytes: 16384,
-                },
-                &|token| Ok(token),
-            )
-            .await?;
-        assert_eq!(page.entries.len(), 1);
-        let second = cold
-            .page_current(
-                reference,
-                page.continuation.as_deref(),
-                crate::ReadDemand {
-                    max_items: 1,
-                    max_bytes: 16384,
-                },
-                &|token| Ok(token),
-            )
-            .await?;
-        assert_eq!(second.entries.len(), 1);
-        assert_ne!(page.entries[0].id, second.entries[0].id);
-        let mut wrong = reference.clone();
-        wrong.database_id = "other-db".into();
-        assert!(
-            cold.page_current(
-                &wrong,
-                None,
-                crate::ReadDemand {
-                    max_items: 1,
-                    max_bytes: 16384
-                },
-                &|token| Ok(token)
-            )
-            .await
-            .is_err()
-        );
-        wrong = reference.clone();
-        wrong.collection = "members".into();
-        assert!(
-            cold.page_current(
-                &wrong,
-                None,
-                crate::ReadDemand {
-                    max_items: 1,
-                    max_bytes: 16384
-                },
-                &|token| Ok(token)
-            )
-            .await
-            .is_err()
-        );
-        wrong = reference.clone();
-        wrong.revision = wrong.revision.checked_add(1).unwrap();
-        assert!(
-            cold.page_current(
-                &wrong,
-                None,
-                crate::ReadDemand {
-                    max_items: 1,
-                    max_bytes: 16384
-                },
-                &|token| Ok(token)
-            )
-            .await
-            .is_err()
-        );
-        cold.close_for_deletion().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn failed_business_transaction_preserves_previous_refs_and_retry_uses_same_document()
-    -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-        let old_state = state_with_plan("# 旧计划")?;
-        let old = save(&store, old_state.clone(), 1).await?;
-        let mut next = old_state;
-        replace_plan(&mut next, "# 新计划")?;
-        let db = &store.writer().await?.db;
-        db.execute_unprepared(
-            "CREATE TRIGGER fail_business BEFORE UPDATE ON history_meta
-        WHEN NEW.applied_write_seq=2 BEGIN SELECT RAISE(ABORT,'business commit failure'); END;",
-        )
-        .await?;
-        assert!(save(&store, next.clone(), 2).await.is_err());
-        assert_eq!(store.read_business_refs().await?.unwrap(), old);
-        db.execute_unprepared("DROP TRIGGER fail_business").await?;
-        let new = save(&store, next, 2).await?;
-        assert_ne!(new.plan, old.plan);
-        assert_eq!(
-            new.interactions, old.interactions,
-            "Plan must not invalidate interactions"
-        );
-        assert_eq!(store.read_business_refs().await?.unwrap(), new);
-        let old_window = ChatHistory::read_content(
-            &store,
-            &content_request(old.plan.as_ref().unwrap().document.as_ref().unwrap())?,
-        )
-        .await?;
-        assert_eq!(old_window.bytes.as_bytes(), "# 旧计划".as_bytes());
-        store.close_for_deletion().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_captured_cold_snapshot_never_pairs_old_plan_with_new_refs() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-        let first_state = state_with_plan("# 第一个切面")?;
-        let first = save(&store, first_state.clone(), 1).await?;
-        let reader = store.reader().await?.context("reader")?;
-        let tx = reader.db.begin().await?;
-        let captured = conversation::completed::cold(&tx).await?;
-        let mut next = first_state;
-        replace_plan(&mut next, "# 第二个切面")?;
-        let new = save(&store, next, 2).await?;
-        assert_eq!(captured.business_refs(), first);
-        let same_snapshot = conversation::completed::cold(&tx).await?;
-        assert_eq!(same_snapshot.business_refs(), first);
-        tx.commit().await?;
-        assert_eq!(store.read_business_refs().await?.unwrap(), new);
-        store.close_for_deletion().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn missing_plan_manifest_or_chunk_is_an_error_and_never_a_checkpoint_text_fallback()
-    -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-        let refs = save(&store, state_with_plan("# 不能从 checkpoint 伪造正文")?, 1).await?;
-        let document = refs.plan.unwrap().document.unwrap();
-        let ContentTarget::Body {
-            owner: ContentOwner::Current { .. },
-            ..
-        } = &document.target
-        else {
-            anyhow::bail!("versioned current Plan document expected");
-        };
-        let request = content_request(&document)?;
-        let db = &store.writer().await?.db;
-        db.execute_unprepared("DELETE FROM conversation_content_chunks")
-            .await?;
-        assert!(ChatHistory::read_content(&store, &request).await.is_err());
-        db.execute_unprepared("DELETE FROM conversation_contents")
-            .await?;
-        assert!(store.read_business_refs().await.is_err());
-        store.close_for_deletion().await?;
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod future_size_tests {
-    //! Cold recovery must remain composable on the normal native/test thread stack.
-    use std::future::Future;
-    use std::mem::size_of;
-
-    use super::{HistoryStore, schema};
-    use crate::studio::storage::state::StateStore;
-    use crate::studio::thread_factory::recovery::load_checkpoint_for_recovery;
-    use crate::studio::{StudioRuntime, StudioStore};
-    use sea_orm::DatabaseConnection;
-
-    // Inspect the returned type without constructing/polling it or inventing a receiver.
-    fn future_size<Input, F: Future + Send>(_: impl FnOnce(Input) -> F) -> usize {
-        size_of::<F>()
-    }
-
-    #[test]
-    fn cold_recovery_futures_remain_bounded() {
-        let sizes = [
-            (
-                "schema preparation",
-                future_size(|db: &'static DatabaseConnection| {
-                    schema::prepare(db, "size", schema::Preparation::Schema, None)
-                }),
-            ),
-            (
-                "writer initialization",
-                future_size(|history: &'static HistoryStore| {
-                    history.open_writer(crate::studio::paths::SqliteFileMode::ReadWrite)
-                }),
-            ),
-            (
-                "history preparation",
-                future_size(|history: &'static HistoryStore| history.prepare_history_access()),
-            ),
-            (
-                "checkpoint read",
-                future_size(|history: &'static HistoryStore| history.checkpoint()),
-            ),
-            (
-                "model preparation",
-                future_size(|history: &'static HistoryStore| history.prepare_model_access()),
-            ),
-            (
-                "execution identity preparation",
-                future_size(|history: &'static HistoryStore| {
-                    history.prepare_execution_identity(|_| Ok(()))
-                }),
-            ),
-            (
-                "state recovery",
-                future_size(
-                    |(state, history): (&'static StateStore, &'static HistoryStore)| {
-                        state.prepare_recovery(history)
-                    },
-                ),
-            ),
-            (
-                "checkpoint recovery",
-                future_size(
-                    |(store, thread): (&'static StudioStore, &'static crate::Thread)| {
-                        load_checkpoint_for_recovery(store, thread)
-                    },
-                ),
-            ),
-            (
-                "owner activation",
-                future_size(|runtime: &'static StudioRuntime| runtime.ensure_thread_owner("size")),
-            ),
-            (
-                "state observation",
-                future_size(|runtime: &'static StudioRuntime| {
-                    runtime.open_conversation_state_feed("size")
-                }),
-            ),
-            (
-                "child interactions",
-                future_size(|runtime: &'static StudioRuntime| {
-                    runtime.read_child_interactions("size")
-                }),
-            ),
-            (
-                "conversation open",
-                future_size(|runtime: &'static StudioRuntime| {
-                    runtime.open_conversation_feed(
-                        "size",
-                        crate::ChatScope::conversation(None),
-                        crate::ReadDemand {
-                            max_items: 1,
-                            max_bytes: 16 * 1024,
-                        },
-                    )
-                }),
-            ),
-        ];
-        for (name, bytes) in &sizes {
-            eprintln!("{name}: {bytes} bytes");
-        }
-        // Bound individual inline states rather than raising the thread's stack limit. This is
-        // deliberately a ceiling, not an exact compiler/target-specific layout snapshot.
-        assert!(
-            sizes.iter().all(|(_, bytes)| *bytes <= 16 * 1024),
-            "cold recovery futures grew beyond the inline-state budget: {sizes:?}"
-        );
-    }
 }
 
 #[cfg(test)]
@@ -4418,16 +2720,62 @@ mod storage_fault_tests {
                     }),
                     status: ChatActiveStatus::Running,
                 };
-                let mut owner =
-                    crate::studio::thread_projection::presentation::PresentationState::default();
-                owner.bind(&connection.database_id)?;
-                let delta = owner.prepare(1, 10, &[atom], &[], &[])?;
-                conversation::display::apply(db, &delta).await?;
+                let source = serde_json::to_value(&atom.source)?;
+                let header = serde_json::json!({
+                    "version": 5,
+                    "id": "fixture-work",
+                    "source": source,
+                    "block_order": 1,
+                    "boundary": null,
+                    "first_content_at": null,
+                    "sealed": false,
+                    "unfinished": 1,
+                    "next_member": 1,
+                    "revision": 1,
+                    "body": {
+                        "kind": "work",
+                        "timing": {"startedAt": 10, "finishedAt": null},
+                        "members": {
+                            "databaseId": connection.database_id,
+                            "blockId": "fixture-work"
+                        }
+                    }
+                });
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_display_blocks(
+                        block_id,source_key,block_order,sealed,updated_effect,header
+                     ) VALUES('fixture-work',?,1,0,1,?)",
+                    vec![
+                        serde_json::to_string(&atom.source)?.into(),
+                        serde_json::to_vec(&header)?.into(),
+                    ],
+                ))
+                .await?;
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_display_members(
+                        block_id,member_order,member_key,association_key,terminal,
+                        completion_id,updated_effect,metadata
+                     ) VALUES('fixture-work',1,'fixture-member','fixture-member',0,NULL,1,?)",
+                    vec![serde_json::to_vec(&serde_json::json!({
+                        "block_id": "fixture-work",
+                        "association_key": "fixture-member",
+                        "terminal": false,
+                        "head": {
+                            "member_key": "fixture-member",
+                            "member_order": 1,
+                            "record": crate::studio::storage::history::schema::v24_presentation::record(
+                                atom,
+                                Some(ChatFactPosition { effect_seq: 1, suborder: 0 }),
+                            )
+                        }
+                    }))?.into()],
+                ))
+                .await?;
             } else {
                 let mut draft = ChatDraft::new(
                     "preserved-original",
                     "conversation",
-                    Arc::<[u8]>::from(b"preserved completion".as_slice()),
+                    std::sync::Arc::<[u8]>::from(b"preserved completion".as_slice()),
                 );
                 draft.metadata = serde_json::to_vec(&atom)?.into();
 
@@ -4484,281 +2832,6 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn conversation_read_probe_classifies_without_preparing_or_creating() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let missing_path = dir.path().join("absent/history.sqlite");
-        let missing = HistoryStore::open(&missing_path, "probe").await?;
-        assert!(!missing.conversation_read_needs_preparation().await?);
-        assert!(!missing_path.parent().unwrap().exists());
-        assert!(missing.state.reader.get().is_none());
-        assert!(missing.state.writer.get().is_none());
-
-        for version in [1, 8, 11, HISTORY_SCHEMA_VERSION] {
-            let dir = tempfile::tempdir()?;
-            let path = dir.path().join("history.sqlite");
-            let source = HistoryStore::open(&path, "probe").await?;
-            source.prepare_write().await?;
-            let db = &source.writer().await?.db;
-            if version < HISTORY_SCHEMA_VERSION {
-                discard_empty_demand_fixture(db).await?;
-                if version < 10 {
-                    db.execute_unprepared(
-                        "DROP TABLE timeline_records; DROP TABLE seaql_migrations",
-                    )
-                    .await?;
-                }
-                db.execute_raw(statement(
-                    "UPDATE history_meta SET schema_version=?",
-                    vec![version.into()],
-                ))
-                .await?;
-            } else {
-                // Neither this classifier nor ordinary current admission decodes recovery state.
-                db.execute_unprepared(
-                    "INSERT INTO session_checkpoint(id,revision,context_revision,context_count,payload,payload_hash)
-                     VALUES(1,0,0,0,'{\"schemaVersion\":999}','bad hash')",
-                )
-                .await?;
-            }
-            db.clone().close().await?;
-            drop(source);
-            let before = tokio::fs::read(&path).await?;
-            let cold = HistoryStore::open(&path, "probe").await?;
-            assert_eq!(
-                cold.conversation_read_needs_preparation().await?,
-                version < HISTORY_SCHEMA_VERSION,
-                "format {version}"
-            );
-            assert!(
-                cold.state.reader.get().is_none(),
-                "probe is not reader admission"
-            );
-            assert!(cold.state.writer.get().is_none(), "probe must not migrate");
-            assert_eq!(tokio::fs::read(&path).await?, before);
-            if version == HISTORY_SCHEMA_VERSION {
-                cold.reader().await?.context("current reader admission")?;
-                assert!(!cold.conversation_read_needs_preparation().await?);
-                assert!(cold.state.writer.get().is_none());
-            } else {
-                assert!(
-                    cold.reader().await.is_err(),
-                    "classification must not admit a legacy format to current reads"
-                );
-            }
-        }
-
-        for (damage, diagnostic) in [
-            (
-                "UPDATE history_meta SET schema_version=0",
-                "unsupported history schema 0",
-            ),
-            (
-                "UPDATE history_meta SET schema_version=999",
-                "unsupported history schema 999",
-            ),
-            (
-                "UPDATE history_meta SET database_id=''",
-                "history database identity is empty",
-            ),
-            (
-                "UPDATE history_meta SET thread_id='foreign'",
-                "history database belongs to another Thread",
-            ),
-            (
-                "UPDATE history_meta SET thread_id=''",
-                "history database belongs to another Thread",
-            ),
-            (
-                "DELETE FROM history_meta",
-                "history database identity row is missing",
-            ),
-            (
-                "DROP TABLE history_meta",
-                "history database has no readable identity table",
-            ),
-        ] {
-            let dir = tempfile::tempdir()?;
-            let path = dir.path().join("history.sqlite");
-            let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
-            db.execute_unprepared(
-                "CREATE TABLE history_meta(id INTEGER PRIMARY KEY,schema_version INTEGER NOT NULL,
-                 database_id TEXT NOT NULL,thread_id TEXT NOT NULL);
-                 INSERT INTO history_meta VALUES(1,12,'source-database','probe')",
-            )
-            .await?;
-            db.execute_unprepared(damage).await?;
-            db.close().await?;
-            let before = tokio::fs::read(&path).await?;
-            let cold = HistoryStore::open(&path, "probe").await?;
-            let error = cold
-                .conversation_read_needs_preparation()
-                .await
-                .expect_err("invalid identity must not fall through to writer preparation");
-            assert!(
-                format!("{error:#}").contains(diagnostic),
-                "{damage}: {error:#}"
-            );
-            assert!(cold.state.reader.get().is_none());
-            assert!(cold.state.writer.get().is_none());
-            assert_eq!(tokio::fs::read(&path).await?, before);
-        }
-        let directory_source = dir.path().join("is-a-directory");
-        tokio::fs::create_dir(&directory_source).await?;
-        let io = HistoryStore::open(&directory_source, "probe").await?;
-        let error = io
-            .conversation_read_needs_preparation()
-            .await
-            .expect_err("real read-only open failure must remain an error");
-        assert!(
-            error.downcast_ref::<sea_orm::DbErr>().is_some(),
-            "{error:#}"
-        );
-        assert!(io.state.reader.get().is_none());
-        assert!(io.state.writer.get().is_none());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn conversation_read_probe_waits_for_shared_initialization() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let store = HistoryStore::open(&path, "probe-barrier").await?;
-        let (entered, release) = store.arm_init_gate().await;
-        let waiting = store.arm_reader_before_init().await;
-        let probe = async {
-            entered.await?;
-            let classify = store.conversation_read_needs_preparation();
-            tokio::pin!(classify);
-            tokio::select! {
-                biased;
-                _ = &mut classify => anyhow::bail!("probe passed half-initialized identity"),
-                result = waiting => result?,
-            }
-            release
-                .send(())
-                .map_err(|_| anyhow::anyhow!("writer initialization gate dropped"))?;
-            assert!(!classify.await?);
-            Ok::<(), anyhow::Error>(())
-        };
-        let (written, classified) = tokio::time::timeout(Duration::from_secs(30), async {
-            tokio::join!(store.prepare_write(), probe)
-        })
-        .await?;
-        written?;
-        classified?;
-        assert!(store.state.writer.get().is_some());
-        assert!(
-            store.state.reader.get().is_none(),
-            "current writer suffices for classification"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn deletion_revokes_cached_qualification_and_closes_original_pools() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let history =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "deleted").await?;
-        history.prepare_write().await?;
-        assert!(history.conversation_database_id().await?.is_some());
-        assert!(!history.conversation_read_needs_preparation().await?);
-        assert!(
-            !history
-                .conversation_database_id()
-                .await?
-                .context("prepared database")?
-                .is_empty()
-        );
-        let writer = history.writer().await?.db.clone();
-        let reader = history
-            .reader()
-            .await?
-            .context("original reader")?
-            .db
-            .clone();
-        for connection in [&writer, &reader] {
-            assert!(
-                connection
-                    .query_one_raw(statement("SELECT 1", vec![]))
-                    .await?
-                    .is_some()
-            );
-        }
-        let retained = history.clone();
-        history.close_for_deletion().await?;
-        for connection in [&writer, &reader] {
-            assert!(
-                connection
-                    .query_one_raw(statement("SELECT 1", vec![]))
-                    .await
-                    .is_err(),
-                "deletion must close the actual original pool, not only logical admission"
-            );
-        }
-        assert!(retained.conversation_database_id().await.is_err());
-        assert!(
-            retained
-                .conversation_read_needs_preparation()
-                .await
-                .is_err()
-        );
-        assert!(retained.reader().await.is_err());
-        assert!(retained.prepare_write().await.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn ordinary_reader_is_read_only_and_never_borrows_the_live_writer() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let history =
-            HistoryStore::open(&directory.path().join("history.sqlite"), "reader").await?;
-        assert!(history.conversation_database_id().await?.is_none());
-        history.prepare_history_access().await?;
-        assert!(history.conversation_database_id().await?.is_none());
-        assert!(!tokio::fs::try_exists(directory.path().join("history.sqlite")).await?);
-        history.prepare_write().await?;
-        assert!(
-            history
-                .conversation_database_id()
-                .await?
-                .is_some_and(|id| !id.is_empty())
-        );
-        let writer = history.writer().await?;
-        let reader = history
-            .reader()
-            .await?
-            .context("initialized history reader")?;
-        assert!(!std::ptr::eq(reader, writer));
-        assert_eq!(reader.database_id, writer.database_id);
-        assert!(
-            reader
-                .db
-                .execute_unprepared("UPDATE history_meta SET applied_write_seq=1 WHERE id=1",)
-                .await
-                .is_err()
-        );
-        writer
-            .db
-            .execute_unprepared("UPDATE history_meta SET applied_write_seq=1 WHERE id=1")
-            .await?;
-        assert_eq!(
-            history.watermark().await?,
-            1,
-            "new request must see the writer commit"
-        );
-        writer
-            .db
-            .execute_unprepared("UPDATE history_meta SET applied_write_seq=2 WHERE id=1")
-            .await?;
-        assert_eq!(
-            history.watermark().await?,
-            2,
-            "reader must not reuse an old snapshot"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn atomic_timeline_commits_with_checkpoint_facts_and_retries_atomically() -> Result<()> {
         use pl_core::thread::{ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot};
         let directory = tempfile::tempdir()?;
@@ -4779,6 +2852,7 @@ mod storage_fault_tests {
                 &item,
                 1,
                 &store.writer().await?.database_id,
+                None,
             )?])
             .await?
             .iter()
@@ -5673,7 +3747,7 @@ mod storage_fault_tests {
             drop(cold);
             let prepared = HistoryStore::open(&path, "supported-v2").await?;
             let restored = prepared
-                .execution_seeds([item.id.clone()])
+                .legacy_fixture_seeds([item.id.clone()])
                 .await?
                 .remove(&item.id)
                 .context("restored original")?;
@@ -5780,40 +3854,7 @@ mod storage_fault_tests {
                 )
                 .await
         }
-        let third_page = store.turn_page(None, 1).await?;
-        let third_cursor = third_page.next_cursor.context("second Turn")?;
-        let second_page = store.turn_page(Some(&third_cursor), 1).await?;
-        let second_cursor = second_page.next_cursor.context("first Turn")?;
-        let first_page = store.turn_page(Some(&second_cursor), 1).await?;
-        let member_cursor = first_page
-            .next_cursor
-            .context("large first Turn continuation")?;
-        assert_eq!(first_page.turns[0].turn.id, "first");
-        let token: serde_json::Value = serde_json::from_str(&member_cursor)?;
-        assert_eq!(token["version"], 4);
-        assert!(token["recordBefore"].is_number());
         change(&store, 81, &[], &["first"]).await?;
-        // An unrelated new effect must not invalidate the unchanged second Turn.
-        assert_eq!(
-            store.turn_page(Some(&third_cursor), 1).await?.turns,
-            second_page.turns
-        );
-        assert!(store.turn_page(Some(&second_cursor), 1).await.is_err());
-        assert!(store.turn_page(Some(&member_cursor), 1).await.is_err());
-        let fresh_second = store
-            .turn_page(None, 2)
-            .await?
-            .next_cursor
-            .context("fresh first Turn")?;
-        let fresh = store.turn_page(Some(&fresh_second), 1).await?;
-        assert_eq!(
-            fresh.turns[0].context_disposition,
-            crate::ThreadContextDisposition::RolledBack
-        );
-        let mut legacy: serde_json::Value =
-            serde_json::from_str(fresh.next_cursor.as_ref().unwrap())?;
-        legacy["version"] = 3.into();
-        assert!(store.turn_page(Some(&legacy.to_string()), 1).await.is_err());
         change(&store, 81, &[], &["first"]).await?; // lost confirmation retry
         change(&store, 82, &[], &["first"]).await?;
         let original_turn = test_turns(30, &first_items);
@@ -5879,11 +3920,6 @@ mod storage_fault_tests {
         db.db
             .execute_unprepared("UPDATE history_turns SET updated_effect=30 WHERE turn_id='first'")
             .await?;
-        let fresh_second = store.turn_page(None, 2).await?.next_cursor.unwrap();
-        assert_eq!(
-            store.turn_page(Some(&fresh_second), 1).await?.turns[0].context_disposition,
-            crate::ThreadContextDisposition::RolledBack
-        );
         assert_eq!(
             turns::read(&db.db, "first").await?.unwrap().updated_effect,
             Some(30),
@@ -6240,6 +4276,7 @@ mod storage_fault_tests {
             &item,
             1,
             &store.writer().await?.database_id,
+            None,
         )?;
         let published = session.publish_batch(vec![first.clone()]).await?;
         assert_eq!(published[0].header.append_seq, 1);
@@ -6250,6 +4287,7 @@ mod storage_fault_tests {
             &second,
             1,
             &store.writer().await?.database_id,
+            None,
         )?;
         assert_eq!(
             session.publish_batch(vec![second_draft]).await?[0]
@@ -6262,7 +4300,7 @@ mod storage_fault_tests {
             0,
             "publication must not reserve SQLite sequence rows"
         );
-        persist_completed(&store, 1, &[item]).await?;
+        persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
         let row = store
             .reader()
             .await?
@@ -6291,10 +4329,7 @@ mod storage_fault_tests {
                 .is_err()
         );
         assert_eq!(store.watermark().await?, 1);
-        let mut changed_order = store
-            .execution_item("input-1")
-            .await?
-            .context("committed input")?;
+        let mut changed_order = item.clone();
         changed_order.ordinal = 42;
         changed_order.revision = 2;
         assert!(
@@ -6309,7 +4344,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &second,
                     2,
-                    &store.writer().await?.database_id
+                    &store.writer().await?.database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -6327,7 +4363,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &second,
                     2,
-                    &store.writer().await?.database_id
+                    &store.writer().await?.database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -6436,7 +4473,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &committed,
                     2,
-                    &database_id
+                    &database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -6451,7 +4489,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &committed,
                     3,
-                    &database_id
+                    &database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -7281,34 +5320,26 @@ mod storage_fault_tests {
             after - before
         );
 
-        // A timeline owns its HistoryStore independently of an execution owner. Preserve that
-        // actual shared writer holder, then require the canonical read to initialize a different,
-        // truly read-only connection instead of returning the writer's fast path.
-        let _timeline = test_session(store.clone());
-        let share = store.shared();
-        drop(store);
-        let retained = HistoryStore::from_share(&share).context("timeline retained history")?;
-        assert!(retained.state.writer.get().is_some());
-        let (checkpoint, latest) = retained
-            .read_only_checkpoint_with_latest_turn()
+        let (checkpoint, latest) = store
+            .legacy_test_checkpoint_with_latest_turn()
             .await?
             .context("canonical state through retained history")?;
         assert_eq!(checkpoint.state.commit_sequence, 139);
         assert_eq!(checkpoint.state.context, state.context);
         assert!(latest.is_none());
-        let reader = retained
+        let reader = store
             .state
             .reader
             .get()
             .context("strict read must use the read-only connection")?;
-        let writer = retained.state.writer.get().context("retained writer")?;
+        let writer = store.state.writer.get().context("retained writer")?;
         assert!(!std::ptr::eq(reader, writer));
         let write = "UPDATE history_meta SET applied_write_seq=applied_write_seq WHERE id=1";
         // The exact same statement is valid on the still-live writer, but SQLite must refuse it
         // on the connection the canonical read just used; no query-name convention is evidence.
         writer.db.execute_unprepared(write).await?;
         assert!(reader.db.execute_unprepared(write).await.is_err());
-        assert_eq!(retained.watermark().await?, 139);
+        assert_eq!(store.watermark().await?, 139);
         Ok(())
     }
 
@@ -7539,7 +5570,7 @@ mod storage_fault_tests {
         );
         assert!(checkpoint.state.last_attempt_usage_origin.is_none());
         let original = restored
-            .execution_seeds([item.id.clone()])
+            .legacy_fixture_seeds([item.id.clone()])
             .await?
             .remove(&item.id)
             .context("restored source")?;
@@ -7759,7 +5790,8 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn toml_checkpoint_import_cleans_only_replaced_files_and_reopens() -> Result<()> {
+    async fn toml_checkpoint_import_preserves_original_manifests_bodies_and_reopens() -> Result<()>
+    {
         use pl_core::thread::{ThreadCheckpoint, ThreadSnapshot};
         for (schema, external_metadata, has_saved_route) in [
             (1, false, false),
@@ -7813,6 +5845,25 @@ mod storage_fault_tests {
             } else {
                 checkpoint.externalize_bodies(1)
             };
+            let expected_body_files = bodies
+                .iter()
+                .map(|body| {
+                    let hex = body
+                        .entry
+                        .reference
+                        .digest()
+                        .strip_prefix("sha256:")
+                        .context("checkpoint body digest")?;
+                    Ok::<_, anyhow::Error>((
+                        directory
+                            .path()
+                            .join("blobs/checkpoint")
+                            .join(&hex[..2])
+                            .join(hex),
+                        body.bytes.clone(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
             let mut legacy =
                 serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&external)?)?)?;
             crate::studio::storage::history::legacy_usage::flatten(&mut legacy);
@@ -7878,7 +5929,7 @@ mod storage_fault_tests {
                 HistoryStore::open(&directory.path().join("history.sqlite"), "import").await?;
             if !bodies.is_empty() {
                 assert!(
-                    state.prepare_recovery(&history).await.is_err(),
+                    state.legacy_prepare(&history).await.is_err(),
                     "missing migration body must preserve source"
                 );
             }
@@ -7903,7 +5954,7 @@ mod storage_fault_tests {
                 tokio::fs::create_dir_all(&body_dir).await?;
                 tokio::fs::write(body_dir.join(hex), b"corrupt metadata body").await?;
                 assert!(
-                    state.prepare_recovery(&history).await.is_err(),
+                    state.legacy_prepare(&history).await.is_err(),
                     "invalid metadata body must fail before producer decoding"
                 );
                 assert_eq!(
@@ -7924,7 +5975,7 @@ mod storage_fault_tests {
                 tokio::fs::write(directory.path().join(name), &unknown_metadata).await?;
             }
             assert!(
-                state.prepare_recovery(&history).await.is_err(),
+                state.legacy_prepare(&history).await.is_err(),
                 "unknown producer version must preserve the old manifest"
             );
             assert!(history.checkpoint().await?.is_none());
@@ -7939,7 +5990,7 @@ mod storage_fault_tests {
             let future = toml::to_string(&legacy)?;
             tokio::fs::write(directory.path().join("state.toml"), &future).await?;
             assert!(
-                state.prepare_recovery(&history).await.is_err(),
+                state.legacy_prepare(&history).await.is_err(),
                 "a valid backup must not hide an unknown primary version"
             );
             assert_eq!(
@@ -7948,7 +5999,7 @@ mod storage_fault_tests {
             );
             tokio::fs::write(directory.path().join("state.toml"), &original).await?;
             history.writer().await?.db.execute_unprepared("CREATE TRIGGER reject_import BEFORE INSERT ON session_checkpoint BEGIN SELECT RAISE(ABORT,'migration interrupted'); END;").await?;
-            assert!(state.prepare_recovery(&history).await.is_err());
+            assert!(state.legacy_prepare(&history).await.is_err());
             assert!(history.checkpoint().await?.is_none());
             assert_eq!(
                 tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
@@ -7989,7 +6040,7 @@ mod storage_fault_tests {
                 .execute_unprepared("UPDATE history_meta SET applied_write_seq=1")
                 .await?;
             assert!(
-                state.prepare_recovery(&history).await.is_err(),
+                state.legacy_prepare(&history).await.is_err(),
                 "mismatched history fence must preserve source"
             );
             assert!(tokio::fs::try_exists(directory.path().join("state.toml")).await?);
@@ -8000,7 +6051,7 @@ mod storage_fault_tests {
                 .execute_unprepared("UPDATE history_meta SET applied_write_seq=0")
                 .await?;
             let imported = state
-                .prepare_recovery(&history)
+                .legacy_prepare(&history)
                 .await?
                 .context("imported checkpoint")?;
             assert_eq!(imported.state.context, checkpoint.state.context);
@@ -8027,16 +6078,71 @@ mod storage_fault_tests {
 
             assert!(imported.state.attempt_ids.contains_key("old-attempt"));
             assert_eq!(imported.state_revision, checkpoint.state_revision);
-            assert!(!tokio::fs::try_exists(directory.path().join("state.toml")).await?);
-            assert!(!tokio::fs::try_exists(directory.path().join("state.prev.toml")).await?);
-            assert!(!tokio::fs::try_exists(directory.path().join("blobs/checkpoint")).await?);
+            assert_eq!(
+                tokio::fs::read_to_string(directory.path().join("state.toml")).await?,
+                original,
+                "the primary TOML remains the user's migration evidence"
+            );
+            assert_eq!(
+                tokio::fs::read_to_string(directory.path().join("state.prev.toml")).await?,
+                original,
+                "the previous TOML remains the user's migration evidence"
+            );
+            tokio::fs::metadata(directory.path().join("blobs/checkpoint"))
+                .await
+                .context("checkpoint body directory must be retained")?;
+            for (path, bytes) in &expected_body_files {
+                assert_eq!(
+                    tokio::fs::read(path).await?,
+                    bytes.clone(),
+                    "checkpoint body must remain byte-for-byte available after import"
+                );
+            }
+            if let Some(reference) = &metadata_body {
+                let hex = reference
+                    .digest()
+                    .strip_prefix("sha256:")
+                    .context("metadata digest")?;
+                assert_eq!(
+                    tokio::fs::read(
+                        directory
+                            .path()
+                            .join("blobs/checkpoint")
+                            .join(&hex[..2])
+                            .join(hex)
+                    )
+                    .await?,
+                    metadata_content.as_bytes(),
+                    "external attempt metadata remains available after import"
+                );
+            }
+            assert_eq!(
+                tokio::fs::read(directory.path().join("blobs/checkpoint/orphan")).await?,
+                b"obsolete",
+                "unrelated files under the checkpoint blob directory are retained"
+            );
             assert_eq!(
                 tokio::fs::read(directory.path().join("blobs/attachment")).await?,
                 b"keep"
             );
+            let legacy_cleanup: i64 = history
+                .writer()
+                .await?
+                .db
+                .query_one_raw(statement(
+                    "SELECT legacy_cleanup FROM session_checkpoint WHERE id=1",
+                    vec![],
+                ))
+                .await?
+                .context("imported checkpoint status")?
+                .try_get("", "legacy_cleanup")?;
+            assert_eq!(
+                legacy_cleanup, 1,
+                "the database records that source material was imported without deleting it"
+            );
             assert_eq!(
                 state
-                    .prepare_recovery(&history)
+                    .legacy_prepare(&history)
                     .await?
                     .context("reopened")?
                     .state_revision,
@@ -9407,14 +7513,6 @@ mod storage_fault_tests {
         .await?;
         assert_eq!(window.bytes.as_bytes(), long_answer.as_bytes());
         assert!(window.sealed);
-        let restored = store
-            .execution_item(&item.id)
-            .await?
-            .context("restored original")?;
-        assert_eq!(
-            (restored.id.as_str(), restored.ordinal, restored.state()),
-            (item.id.as_str(), item.ordinal, item.state())
-        );
         let mut changed = complete.clone();
         changed.payload = std::sync::Arc::from(b"{\"changed\":true}".as_slice());
         changed.header.byte_length = changed.payload.len() as u64;

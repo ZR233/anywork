@@ -1,13 +1,27 @@
 use super::types::milliseconds_from_seconds;
 use super::*;
 use pl_core::thread::current::RuntimeEpoch;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryPlacement {
     Hidden,
     Work,
     Single,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HistoryRecordAnchors {
+    single_exists: bool,
+    work_exists: bool,
+}
+
+impl HistoryRecordAnchors {
+    pub(crate) fn requires_boundary_observation(&self, change: &HistoryEntityChange) -> bool {
+        change.placement == HistoryPlacement::Single
+            && !self.single_exists
+            && change.entity.content_present != Some(false)
+    }
 }
 
 /// A producer's actual boundary observation, including independently frozen bytes. A missing
@@ -18,7 +32,7 @@ pub struct HistoryBoundaryObservation {
     pub entity: HistoryEntityHead,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HistoryEntityChange {
     pub event: HistoryEvent,
     pub entity: HistoryEntityHead,
@@ -62,7 +76,7 @@ impl HistoryEntityHead {
             single_visibility: None,
             observation: HistoryObservation::Original,
             presentation_contract: None,
-            detail_event_id: atom.completion_item_id.clone(),
+            detail_event_id: None,
             input_manifest_event_id: None,
             body_manifest_event_id: None,
         })
@@ -82,9 +96,13 @@ impl HistoryEntityChange {
         } else {
             HistoryPlacement::Single
         };
+        let entity = HistoryEntityHead::from_atom(atom, Some(run.to_string()))?;
+        // Boundary bodies are frozen before classification. Their provenance must already carry
+        // this entity's owner, rather than inheriting an unqualified event header.
+        set_entity(&mut event, &entity);
         Ok(Self {
             event,
-            entity: HistoryEntityHead::from_atom(atom, Some(run.to_string()))?,
+            entity,
             placement,
             boundary_observations: Vec::new(),
             public_summary: None,
@@ -92,7 +110,7 @@ impl HistoryEntityChange {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct OpenGroup {
     head: HistoryWorkHead,
     active: BTreeMap<String, HistoryEntityHead>,
@@ -100,7 +118,7 @@ struct OpenGroup {
 
 /// Only the current run's open group and unfinished member headers are retained. Finished member
 /// existence is an indexed owner lookup, not an ever-growing in-memory history ledger.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HistoryClassifier {
     run: RuntimeEpoch,
     open: Option<OpenGroup>,
@@ -109,42 +127,106 @@ impl HistoryClassifier {
     pub fn new(run: RuntimeEpoch) -> Self {
         Self { run, open: None }
     }
+    pub fn from_run_id(run: &str) -> Result<Self> {
+        Ok(Self::new(run.parse().map_err(|error| {
+            HistoryError::Storage(anyhow::Error::new(error))
+        })?))
+    }
+    pub fn run_matches(&self, run: &str) -> bool {
+        self.run.to_string() == run
+    }
     pub fn open_group(&self) -> Option<&str> {
         self.open.as_ref().map(|group| group.head.group_id.as_str())
     }
 
-    /// Prepares on a local candidate; a failed acceptance leaves this classifier unchanged.
-    /// Call once per semantic fact; retry accepted storage batches with their original event IDs.
+    /// The bounded unfinished members whose original observations a visible boundary needs.
+    pub(crate) fn boundary_entities(&self) -> impl Iterator<Item = &str> {
+        self.open
+            .iter()
+            .flat_map(|group| group.active.keys().map(String::as_str))
+    }
+
+    /// Prepares and accepts one semantic change as a single History cut.
+    ///
+    /// The classifier advances only after the complete candidate batch is accepted. Capacity first
+    /// flushes already accepted complete batches, then retries the same immutable candidates.
     pub async fn record(
         &mut self,
         store: &HistoryStore,
         change: &HistoryEntityChange,
     ) -> Result<Vec<u64>> {
+        let admission = store.admission_guard().await;
+        let anchors = self
+            .resolve_record_anchors(&admission, store, change, &BTreeSet::new())
+            .await?;
+        let (events, candidate) = self.build_record(change, anchors, store.database_id())?;
+        let mut sequences = store.accept_locked(&admission, &events).await;
+        if matches!(sequences, Err(HistoryError::Capacity)) {
+            store.flush().await?;
+            sequences = store.accept_locked(&admission, &events).await;
+        }
+        let sequences = sequences?;
+        *self = candidate;
+        Ok(sequences)
+    }
+
+    /// Resolves every persisted anchor this change depends on before allocating body IDs.
+    ///
+    /// All queries happen while the caller holds History admission. The returned work row follows
+    /// the classifier candidate, so a group opened earlier in the same unaccepted effect is reused
+    /// rather than deriving a second group from the database's old state.
+    pub(crate) async fn resolve_record_anchors(
+        &self,
+        _admission: &tokio::sync::MutexGuard<'_, ()>,
+        store: &HistoryStore,
+        change: &HistoryEntityChange,
+        local_anchors: &BTreeSet<String>,
+    ) -> Result<HistoryRecordAnchors> {
+        let single_exists = if change.placement == HistoryPlacement::Single {
+            let row = format!("single:{}", change.entity.entity_id);
+            local_anchors.contains(&row) || store.anchor_exists(&row).await?
+        } else {
+            false
+        };
+        let work_exists = if change.placement == HistoryPlacement::Work {
+            let group_id = self.open.as_ref().map_or_else(
+                || format!("{}:{}", self.run, change.event.header.event_id),
+                |group| group.head.group_id.clone(),
+            );
+            let row = format!("member:{group_id}:{}", change.entity.entity_id);
+            local_anchors.contains(&row) || store.anchor_exists(&row).await?
+        } else {
+            false
+        };
+        Ok(HistoryRecordAnchors {
+            single_exists,
+            work_exists,
+        })
+    }
+
+    /// Builds the candidate without another await or UUID allocation after producer observations
+    /// have been frozen. This keeps cancellation/retry bytes deterministic.
+    pub(crate) fn build_record(
+        &self,
+        change: &HistoryEntityChange,
+        anchors: HistoryRecordAnchors,
+        database_id: &str,
+    ) -> Result<(Vec<HistoryEvent>, Self)> {
         let mut change = change.clone();
         if change.entity.run_id.as_deref() != Some(&self.run.to_string()) {
             return Err(HistoryError::InvalidEvent(
                 "entity belongs to another runtime epoch".into(),
             ));
         }
-        let single_exists = change.placement == HistoryPlacement::Single
-            && store
-                .anchor_exists(&format!("single:{}", change.entity.entity_id))
-                .await?;
-        let visible_boundary = change.placement == HistoryPlacement::Single
-            && !single_exists
-            && change.entity.content_present != Some(false);
+        let visible_boundary = anchors.requires_boundary_observation(&change);
         if !visible_boundary && !change.boundary_observations.is_empty() {
             return Err(HistoryError::InvalidEvent(
                 "boundary observations require a newly visible Single".into(),
             ));
         }
-        fit_wait(&mut change.event, &mut change.entity, store.database_id())?;
+        fit_wait(&mut change.event, &mut change.entity, database_id)?;
         for observation in &mut change.boundary_observations {
-            fit_wait(
-                &mut observation.event,
-                &mut observation.entity,
-                store.database_id(),
-            )?;
+            fit_wait(&mut observation.event, &mut observation.entity, database_id)?;
         }
         let mut candidate = self.clone();
         let mut events = Vec::new();
@@ -157,7 +239,7 @@ impl HistoryClassifier {
             }
             HistoryPlacement::Single => {
                 let row = format!("single:{}", change.entity.entity_id);
-                let exists = single_exists;
+                let exists = anchors.single_exists;
                 if !exists && change.entity.content_present == Some(false) {
                     canonical_metadata(&mut event, &change.entity)?;
                     events.push(event);
@@ -185,7 +267,10 @@ impl HistoryClassifier {
             }
             HistoryPlacement::Work => {
                 if candidate.open.is_none() {
-                    let group_id = uuid::Uuid::new_v4().to_string();
+                    // The first member event is a stable semantic identity. Deriving the group from
+                    // it keeps a crash-after-commit retry on the same append-only group instead of
+                    // allocating a second group for the same frozen effect.
+                    let group_id = format!("{}:{}", self.run, event.header.event_id);
                     let head = HistoryWorkHead {
                         group_id: group_id.clone(),
                         run_id: Some(self.run.to_string()),
@@ -211,7 +296,7 @@ impl HistoryClassifier {
                 }
                 let group = candidate.open.as_mut().expect("open group installed");
                 let row = format!("member:{}:{}", group.head.group_id, change.entity.entity_id);
-                let exists = store.anchor_exists(&row).await?;
+                let exists = anchors.work_exists;
                 if !exists {
                     group.head.member_count =
                         group.head.member_count.checked_add(1).ok_or_else(|| {
@@ -251,9 +336,7 @@ impl HistoryClassifier {
                 ));
             }
         }
-        let sequences = store.accept_batch(&events).await?;
-        *self = candidate;
-        Ok(sequences)
+        Ok((events, candidate))
     }
     fn close_boundary(
         &mut self,
@@ -357,6 +440,15 @@ fn group_event(
     event.is_anchor = anchor;
     event
 }
+pub(crate) fn prepare_entity_content(
+    event: &mut HistoryEvent,
+    entity: &mut HistoryEntityHead,
+    database_id: &str,
+) -> Result<()> {
+    fit_wait(event, entity, database_id)?;
+    canonical_metadata(event, entity)
+}
+
 fn canonical_metadata(event: &mut HistoryEvent, entity: &HistoryEntityHead) -> Result<()> {
     if event.header.original.is_some()
         && !event

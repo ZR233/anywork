@@ -244,10 +244,10 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
     let exercise = timeout(DEADLINE, async {
         let mut model = ModelInfo::compatible("current-model");
         model.binding.set_transport(ModelTransportProfile::responses_http());
-        let factory = ModelFactory::new(ThreadModel::new_current(ModelRuntime::new_with_account_id(
+        let factory = ModelFactory::new(ThreadModel::new(ModelRuntime::new_with_account_id(
             "fixture", ProtocolEndpoint::compatible("fixture", fixture.base_url()), model,
         )?, None));
-        let handle = ThreadHandle::start_current(THREAD.into(), factory.open_session().await?)?;
+        let handle = ThreadHandle::start_current(THREAD.into(), Some(factory.open_session().await?))?;
         owners.push(handle.clone());
         handle.register_tools(vec![Registration::prepare("read_file".into(), thread_tool_declaration(&ToolSpec::Function {
             name: "read_file".into(), description: "Execution must remain zero".into(),
@@ -297,7 +297,7 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
         check_saved(&loaded, &stream_from_file(&loaded)?, epoch, &commentary, &executions)?;
         let source_attempt = saved.0.model_call.as_ref().context("saved call")?.source_attempt_id.clone();
 
-        store.close_current(epoch).await?;
+        store.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve).await?;
         join_cancelled_turn(&mut turn).await?;
         ensure!(handle.snapshot().lifecycle == ThreadLifecycle::Closed && !store.current_save_state()?.observer_registered, "close must join the owner and its observer");
         ensure!(!release.is_cancelled(), "close must finish without waiting for the next network frame");
@@ -322,7 +322,7 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
         let paused_stream = stream_from_file(&paused)?;
         ensure!(has_prefix(&paused_stream, &commentary) && paused_stream.attempt_id == source_attempt && matches!(paused_stream.state, ModelStreamCurrentState::Failed { .. }), "paused restore lost the complete last accepted stream");
         ensure!(executions.load(Ordering::Relaxed) == 0 && fixture.recorded().len() == 1, "paused restore must neither execute tools nor start a model request");
-        store.close_current(new_epoch).await?;
+        store.close_current(new_epoch, crate::thread_assembler::ClosePurpose::Preserve).await?;
         Ok::<_, anyhow::Error>(())
     }).await.context("real Responses current integration exceeded its deadline").and_then(|result| result);
 
@@ -333,7 +333,9 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
         if let Ok(state) = store.current_save_state()
             && let Some(epoch) = state.runtime_epoch
         {
-            store.close_current(epoch).await?;
+            store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
         }
         Ok::<_, anyhow::Error>(())
     })

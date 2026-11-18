@@ -59,6 +59,10 @@ pub(in crate::thread) enum Command {
         cold::ColdStoreHandle,
         oneshot::Sender<Result<(), ThreadError>>,
     ),
+    AttachHistory(
+        super::super::history_sink::HistorySinkHandle,
+        oneshot::Sender<Result<(), ThreadError>>,
+    ),
     Turn(
         TurnInput,
         oneshot::Sender<Result<TurnCompletion, ThreadError>>,
@@ -115,7 +119,7 @@ impl Command {
             Self::Extensions(_, reply) => closed(reply),
             Self::Resources(_, reply) => closed(reply),
             Self::Retry { reply, .. } => closed(reply),
-            Self::AttachCold(_, reply) => closed(reply),
+            Self::AttachCold(_, reply) | Self::AttachHistory(_, reply) => closed(reply),
             Self::Turn(_, reply) => closed(reply),
             Self::QueuedTurn(_, reply) => closed(reply),
             Self::Capacity(_, reply) => closed(reply),

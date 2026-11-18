@@ -274,7 +274,10 @@ mod tests {
         .await?;
         let before = raw(db).await?;
         assert!(
-            store.read_only_checkpoint_with_latest_turn().await.is_err(),
+            store
+                .legacy_test_checkpoint_with_latest_turn()
+                .await
+                .is_err(),
             "normal reads cannot repair pending producer content"
         );
         // Unknown required producer versions fail closed, retaining the exact source bytes.
@@ -420,17 +423,11 @@ mod tests {
             serde_json::to_value(toml::from_str::<toml::Value>(&toml::to_string(&old)?)?)?;
         super::legacy_usage::flatten(&mut legacy);
         legacy["schemaVersion"] = json!(4);
-        tokio::fs::write(
-            import_dir.path().join("state.toml"),
-            toml::to_string(&legacy)?,
-        )
-        .await?;
+        let legacy_toml = toml::to_string(&legacy)?;
+        tokio::fs::write(import_dir.path().join("state.toml"), &legacy_toml).await?;
         let state =
             super::super::super::state::StateStore::new(import_dir.path().to_owned(), "producer");
-        let result = state
-            .prepare_recovery(&imported)
-            .await?
-            .context("imported")?;
+        let result = state.legacy_prepare(&imported).await?.context("imported")?;
         assert_eq!(result.state.context, current.state.context);
         assert_eq!(result.state.extensions, current.state.extensions);
         assert_eq!(result.history_fence, old.history_fence);
@@ -438,7 +435,11 @@ mod tests {
             result.state.extension_sequence,
             old.state.extension_sequence
         );
-        assert!(!import_dir.path().join("state.toml").exists());
+        assert_eq!(
+            tokio::fs::read_to_string(import_dir.path().join("state.toml")).await?,
+            legacy_toml,
+            "the v2 import preserves user-owned migration evidence"
+        );
         Ok(())
     }
 }

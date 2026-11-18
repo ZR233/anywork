@@ -210,9 +210,8 @@ impl StudioStore {
         // never-attached private creation merely because this activation has not attached yet.
         let published_root = identity.parent_id.is_none()
             && self
-                .history_for(&identity.workspace_id, &identity.thread_id)
-                .await?
-                .checkpoint()
+                .state_for(&identity.workspace_id, &identity.thread_id)?
+                .load_current()
                 .await?
                 .is_some();
         self.begin_removal_preparation(identity, published_root)

@@ -80,9 +80,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
       executionPresent: unit.executionPresent,
       state: unit.state,
       initiallyExpanded: unit.expansion.expanded!,
-      location: unit.blockOrder == null
-          ? WorkDisplayLocation.live
-          : WorkDisplayLocation.history,
+      location: WorkDisplayLocation.history,
       activity: widget.activity,
       now: widget.now,
       onExpandedChanged: (expanded) {
@@ -95,7 +93,10 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
           ? const SizedBox.shrink()
           : KeyedSubtree(
               key: ValueKey((unit.expansion, unit.expansion.bodyGeneration)),
-              child: Builder(builder: widget.childBuilder),
+              child: TimelineGroupBodyIntent(
+                intent: unit.expansion,
+                child: Builder(builder: widget.childBuilder),
+              ),
             ),
     );
   }

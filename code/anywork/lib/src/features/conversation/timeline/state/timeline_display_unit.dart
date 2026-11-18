@@ -1,8 +1,13 @@
+import 'dart:async';
+
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/widgets.dart';
 
 import 'timeline_display_diagnostics.dart';
 import '../view_models/display_member_controller.dart';
+
+import 'timeline_display_models.dart';
+export 'timeline_display_models.dart';
 
 /// Only local disclosure intent and its synchronously revocable capabilities.
 /// No membership, completion ranges or source-order facts are retained here.
@@ -12,7 +17,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand)?
+  Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand, bool)?
   openDisplayMembers;
   DisplayMemberController? members;
   final Set<Object> _bodyDisplays = {};
@@ -20,7 +25,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   Object bodyGeneration = Object();
   bool get isRetired => _retired;
   bool get bodyActive => !_retired && _bodyDisplays.isNotEmpty;
-  Future<ContentWindow> Function(Object, ContentRef, ContentRange)? readBody;
+  Future<ContentWindow> Function(Object, HistoryEventBodyRef, ContentRange)?
+  readHistoryBody;
+  Future<ContentWindow> Function(Object, CurrentContentRef, ContentRange)?
+  readCurrentBody;
+  CurrentBodyWatch Function(Object, CurrentContentRef, ContentRange)?
+  watchCurrentBody;
   VoidCallback? retireBody;
 
   /// A new opaque member capability revokes the old scope without changing
@@ -30,7 +40,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     bodyGeneration = Object();
     retirement.value = true;
     retireBody?.call();
-    members?.retire();
+    final previousMembers = members;
+    members = null;
+    previousMembers?.retire();
+    if (previousMembers != null) {
+      unawaited(previousMembers.close());
+    }
     notifyListeners();
     retirement.value = !bodyActive;
   }
@@ -42,7 +57,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     _bodyDisplays.clear();
     bodyGeneration = Object();
     retireBody?.call();
-    members?.retire();
+    final previousMembers = members;
+    members = null;
+    previousMembers?.retire();
+    if (previousMembers != null) {
+      unawaited(previousMembers.close());
+    }
     current = null;
     notifyListeners();
   }
@@ -61,8 +81,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     retirement.value = !bodyActive;
     if (!bodyActive && expanded != true) {
       retireBody?.call();
-      members?.retire();
+      final previousMembers = members;
       members = null;
+      previousMembers?.retire();
+      if (previousMembers != null) {
+        unawaited(previousMembers.close());
+      }
     }
     notifyListeners();
   }
@@ -91,31 +115,35 @@ final class TimelineDisplayUnit {
   }) : id = block.id,
        blockOrder = block.blockOrder,
        body = block.body,
-       state = DisplayBlockState.sealed,
-       executionPresent = false,
-       hasUnfinishedMembers = false,
-       thinkingSummary = null,
+       state = switch (block.body) {
+         WorkDisplayBlock(:final groupClosed) =>
+           groupClosed ? DisplayBlockState.sealed : DisplayBlockState.open,
+         SingleDisplayBlock() => DisplayBlockState.sealed,
+       },
+       executionPresent = switch (block.body) {
+         WorkDisplayBlock(:final executionPresent) => executionPresent,
+         SingleDisplayBlock() => false,
+       },
+       hasUnfinishedMembers = switch (block.body) {
+         WorkDisplayBlock(:final unfinishedCount) => unfinishedCount > 0,
+         SingleDisplayBlock() => false,
+       },
+       thinkingSummary = switch (block.body) {
+         WorkDisplayBlock(:final summary) => summary,
+         SingleDisplayBlock() => null,
+       },
        expansion = expansion ?? TimelineExpansionIntent();
 
-  TimelineDisplayUnit.live({
-    required LiveDisplayBlock block,
-    required this.executionPresent,
-    required this.expansion,
-  }) : id = block.id,
-       blockOrder = null,
-       body = block.body,
-       state = block.state,
-       hasUnfinishedMembers = block.hasUnfinishedMembers,
-       thinkingSummary = block.thinkingSummary;
-
   final String id;
-  final int? blockOrder;
+  final int blockOrder;
   final DisplayBlockBody body;
   final DisplayBlockState state;
   final bool executionPresent;
   final bool hasUnfinishedMembers;
   final String? thinkingSummary;
   final TimelineExpansionIntent expansion;
+  DisplayBlock get block =>
+      DisplayBlock(id: id, blockOrder: blockOrder, body: body);
   DisplayBlockRef? get memberReference => switch (body) {
     WorkDisplayBlock(:final members) => members,
     SingleDisplayBlock() => null,

@@ -6,12 +6,11 @@ import 'package:flutter/foundation.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
 
-/// Local member disclosure and its original range owner, held by a bounded
-/// display member page rather than a Widget's parent position.
+/// Local member disclosure and its original Current body owner.
 final class TimelineMemberDisclosure {
   bool expanded = false;
   bool retired = false;
-  ConversationCurrentOwner? owner;
+  CurrentAtomBodyOwner? owner;
 
   void retire() {
     if (retired) return;
@@ -25,24 +24,18 @@ final class TimelineMemberDisclosure {
   }
 }
 
-/// Display-owned range subscriptions on one captured SDK content qualification.
-/// Only bounded windows and resource handles live here, never chat messages or
-/// a text-delta accumulator.
-final class ConversationCurrentOwner extends ChangeNotifier {
-  ConversationCurrentOwner(
-    this.content, {
-    required this.isActive,
-    this.frozen = false,
-  });
+/// Display-owned Current body watches. It keeps only bounded windows and
+/// resource handles, never a second atom/history collection or text mirror.
+final class CurrentAtomBodyOwner extends ChangeNotifier {
+  CurrentAtomBodyOwner(this.reader, {required this.isActive});
 
-  final ConversationQueries content;
+  final CurrentReader reader;
   final bool Function() isActive;
-  final bool frozen;
   List<CurrentWindowSource> _explicitSources = const [];
-  ConversationQueryScope? _scope;
+  CurrentReadScope? _scope;
   final Map<Object, CurrentWindowObservation> _windows = {};
   final Map<Object, int> _offsets = {};
-  final Set<ConversationQueryScope> _retiredScopes = {};
+  final Set<CurrentReadScope> _retiredScopes = {};
   final Set<Future<void>> _cancellations = {};
   Future<void>? _joining;
   int _generation = 1;
@@ -57,8 +50,8 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   bool get expanded => _expanded;
   int get queryGeneration => _generation;
 
-  /// A mounted, explicitly expanded collection entry borrows its own scope.
-  /// Only producer-declared body capabilities from the bounded page are accepted.
+  /// A mounted, explicitly expanded Current row borrows only the producer's
+  /// declared CurrentContentRef values from its bounded atom/head.
   void synchronizeSources(List<CurrentWindowSource> sources) {
     if (_closed) return;
     _explicitSources = List.unmodifiable(sources);
@@ -66,11 +59,16 @@ final class ConversationCurrentOwner extends ChangeNotifier {
     _reconcile();
   }
 
-  ConversationQueryScope get queryScope {
+  CurrentReadScope get queryScope {
     if (!isCurrent || cleanupError != null) {
       throw const StaleConversationScope();
     }
-    return _scope ??= content.openScope(generation: _generation);
+    return _scope ??= CurrentReadScope(
+      threadId: reader.threadId,
+      generation: _generation,
+      reader: reader,
+      isEligible: () => isCurrent,
+    );
   }
 
   void _notify() {
@@ -81,57 +79,40 @@ final class ConversationCurrentOwner extends ChangeNotifier {
     if (!isCurrent || cleanupError != null || _joining != null) return;
     final wanted = <Object, CurrentWindowSource>{
       for (final source in _explicitSources)
-        contentReferenceIdentity(source.reference): source,
+        currentContentIdentity(source.reference): source,
     };
     _offsets.removeWhere((key, _) => !wanted.containsKey(key));
     if (wanted.isEmpty && !_expanded) {
       _retireScope();
       return;
     }
-    final removed = [
-      for (final entry in _windows.entries)
-        if (!wanted.containsKey(entry.key)) entry.value,
-    ];
-    if (removed.isNotEmpty) {
-      for (final observation in removed) {
-        if (observation.source.reference.target case BodyContentTarget(
-          owner: CurrentContentOwner(:final domain, :final id, :final revision),
-          :final key,
-        )) {
-          for (final replacement in wanted.values) {
-            if (replacement.reference.databaseId !=
-                observation.source.reference.databaseId) {
-              continue;
-            }
-            if (replacement.reference.target case BodyContentTarget(
-              owner: CurrentContentOwner(
-                domain: final nextDomain,
-                id: final nextId,
-                revision: final nextRevision,
-              ),
-              key: final nextKey,
-            )) {
-              if (domain == nextDomain &&
-                  id == nextId &&
-                  key == nextKey &&
-                  revision != nextRevision) {
-                invalidationNotice = '当前文档已更新，原版本已失效';
-              }
-            }
-          }
+    final changed =
+        _windows.length != wanted.length ||
+        wanted.entries.any((entry) => !_windows.containsKey(entry.key));
+    if (changed) {
+      final old = {
+        for (final entry in _windows.entries)
+          entry.key: entry.value.source.reference,
+      };
+      for (final entry in wanted.entries) {
+        final previous = old[entry.key];
+        if (previous != null &&
+            previous.ownerId == entry.value.reference.ownerId &&
+            previous.domain == entry.value.reference.domain &&
+            previous.entityId == entry.value.reference.entityId &&
+            previous.contentKey == entry.value.reference.contentKey &&
+            previous.generation != entry.value.reference.generation) {
+          invalidationNotice = '当前内容已更新，原版本已失效';
         }
       }
-      // Close the original scope before replacing capabilities; in particular a
-      // failed cancel cannot be hidden by opening a fresh display scope.
       _retireScope();
-      return;
     }
     for (final entry in wanted.entries) {
       final existing = _windows[entry.key];
-      if (existing != null) {
-        existing.source = entry.value;
-        continue;
-      }
+      if (existing != null) existing.source = entry.value;
+    }
+    for (final entry in wanted.entries) {
+      if (_windows.containsKey(entry.key)) continue;
       try {
         final scope = queryScope;
         final observation = CurrentWindowObservation(
@@ -139,31 +120,12 @@ final class ConversationCurrentOwner extends ChangeNotifier {
           offset: _offsets[entry.key] ?? 0,
         );
         _windows[entry.key] = observation;
-        final range = ContentRange(
-          offset: observation.offset,
-          maxBytes: 32 * 1024,
+        final handle = scope.watchBody(
+          reference: observation.source.reference,
+          range: ContentRange(offset: observation.offset, maxBytes: 32 * 1024),
         );
-        final stream = frozen
-            ? Stream.fromFuture(
-                scope
-                    .readContent(
-                      reference: observation.source.reference,
-                      range: range,
-                    )
-                    .then((window) {
-                      if (!window.sealed) {
-                        throw const ConversationContinuityError(
-                          'Frozen observation content is not sealed',
-                        );
-                      }
-                      return window;
-                    }),
-              )
-            : scope.watchContent(
-                reference: observation.source.reference,
-                range: range,
-              );
-        observation.subscription = stream.listen(
+        observation.handle = handle;
+        observation.subscription = handle.windows.listen(
           (window) {
             if (!_eligible(scope, observation, entry.key)) return;
             observation.window = window;
@@ -183,7 +145,7 @@ final class ConversationCurrentOwner extends ChangeNotifier {
   }
 
   bool _eligible(
-    ConversationQueryScope scope,
+    CurrentReadScope scope,
     CurrentWindowObservation observation,
     Object key,
   ) =>
@@ -198,14 +160,13 @@ final class ConversationCurrentOwner extends ChangeNotifier {
     if (_closed || window == null || window.bytes.isEmpty) return;
     final next = window.offset + window.bytes.length;
     if (next >= window.availableThrough) return;
-    final key = contentReferenceIdentity(observation.source.reference);
-    _offsets[key] = next;
+    _offsets[currentContentIdentity(observation.source.reference)] = next;
     _retireScope();
   }
 
   void firstWindow(CurrentWindowObservation observation) {
     if (_closed) return;
-    _offsets[contentReferenceIdentity(observation.source.reference)] = 0;
+    _offsets[currentContentIdentity(observation.source.reference)] = 0;
     _retireScope();
   }
 
@@ -213,24 +174,23 @@ final class ConversationCurrentOwner extends ChangeNotifier {
     final scope = _scope;
     _scope = null;
     for (final window in _windows.values) {
-      // Release no-longer-displayed windows before any native join.
       window.window = null;
       window.error = null;
       final subscription = window.subscription;
       window.subscription = null;
       if (subscription != null) {
-        final cancelled = Future<void>.sync(subscription.cancel);
-        _cancellations.add(cancelled);
+        _cancellations.add(Future<void>.sync(subscription.cancel));
       }
+      final handle = window.handle;
+      window.handle = null;
+      if (handle != null) handle.requestClose();
     }
     _windows.clear();
     if (scope == null) return;
-    scope.retire(); // Synchronously cancels watch admission/wakes native next.
+    scope.retire();
     _generation++;
     _retiredScopes.add(scope);
     unawaited(_joinRetired());
-    // All users of this scope lose eligibility now, even if content/attempt and
-    // collection references are unchanged. Joining must not be the first notice.
     _notify();
   }
 
@@ -242,9 +202,6 @@ final class ConversationCurrentOwner extends ChangeNotifier {
     completion.complete(
       Future<void>.sync(() async {
         try {
-          // A scope/cancellation may be retired while an earlier scope.close is
-          // awaiting IO. Keep the shared join pending until those new original
-          // obligations also finish; do not retry an unresolved failure here.
           while (_retiredScopes.isNotEmpty || _cancellations.isNotEmpty) {
             var failed = false;
             final cancellations = List.of(_cancellations);
@@ -321,26 +278,28 @@ final class CurrentWindowObservation implements TimelineCurrentWindowDisplay {
   @override
   String get id => source.id;
   @override
-  ContentRef get reference => source.reference;
+  CurrentContentRef get reference => source.reference;
   @override
   final int offset;
   @override
   ContentWindow? window;
   @override
   Object? error;
-  // The original SDK scope owns actual cancel/join; this is a borrowed handle.
+  CurrentBodyWatch? handle;
   // ignore: cancel_subscriptions
   StreamSubscription<ContentWindow>? subscription;
 }
 
-/// UI-only capability and bounded fallback, shared by previews and plan document.
+/// UI-only borrowed capability from a bounded Current head.
 final class CurrentWindowSource {
   const CurrentWindowSource({
     required this.id,
+    required this.role,
     required this.reference,
     required this.text,
   });
   final String id;
-  final ContentRef reference;
+  final ChatContentRole role;
+  final CurrentContentRef reference;
   final String text;
 }

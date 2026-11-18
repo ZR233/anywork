@@ -4,7 +4,7 @@ use super::{
 };
 use crate::studio::agent_close::state_error;
 use anyhow::{Context, Result, ensure};
-use pl_core::thread::{ThreadHandle, ThreadLifecycle};
+use pl_core::thread::{ThreadHandle, ThreadLifecycle, current::ThreadCurrent};
 use pl_tool::collaboration::control::{AgentCloseOutcome, AgentCloseResult, AgentWorktreeCleanup};
 use pl_tool::collaboration::thread::{AgentCloseOptions, WorkspaceRelease};
 use std::{collections::BTreeMap, sync::Arc};
@@ -125,13 +125,14 @@ impl AgentServices {
                     match owner.observed_thread(id) {
                         Some(thread) => Some(thread.snapshot()),
                         None => Some(
-                            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                            crate::studio::thread_factory::recovery::load_current_for_recovery(
                                 &self.store,
                                 record,
                             )
                             .await?
-                            .context("saved child has no canonical checkpoint")?
-                            .state,
+                            .context("saved child has no canonical current")?
+                            .state
+                            .to_paused_snapshot(),
                         ),
                     }
                 };
@@ -309,27 +310,27 @@ impl AgentServices {
                 owner.drain_observation(&record.id).await?;
                 owner.join_close_storage(&record.id).await?;
             }
-            let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+            let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
                 &self.store,
                 record,
             )
             .await?
-            .context("cold child has no saved checkpoint proving its shutdown state")?;
-            self.factory
-                .validate_child_close(record, &checkpoint.state)?;
-            if checkpoint.state.lifecycle == ThreadLifecycle::Closed
-                && crate::studio::agent_close::is_explicitly_closed(&checkpoint.state)?
+            .context("cold child has no saved current proving its shutdown state")?;
+            let state = current.state.to_paused_snapshot();
+            self.factory.validate_child_close(record, &state)?;
+            // The paused Core view deliberately reopens lifecycle; the saved Current itself
+            // carries the original producer's completed resource-close observation.
+            if current.state.lifecycle == ThreadLifecycle::Closed
+                && crate::studio::agent_close::is_explicitly_closed(&state)?
                 && owner.observed_thread(&record.id).is_none()
             {
-                self.factory
-                    .project_child_close(record, &checkpoint.state)
-                    .await?;
+                self.factory.project_child_close(record, &state).await?;
                 owner
                     .acknowledge_parent_reports(&self.store, record)
                     .await?;
                 return self.factory.finish_child_execution(record).await;
             }
-            self.install_storage_owner(owner, record, checkpoint, EntryPurpose::CloseStorage)?;
+            self.install_storage_owner(owner, record, current, EntryPurpose::CloseStorage)?;
         }
         owner.attach_close_storage(&record.id).await?;
         let thread = owner
@@ -357,7 +358,7 @@ impl AgentServices {
         &self,
         owner: &SessionRuntime,
         record: &crate::Thread,
-        checkpoint: pl_core::thread::ThreadCheckpoint,
+        current: ThreadCurrent,
         purpose: EntryPurpose,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
         let (identity, binding, parent_thread) =
@@ -375,8 +376,10 @@ impl AgentServices {
                 backend: crate::AgentBackendKind::Acp,
             });
         }
-        let thread =
-            ThreadHandle::resume_without_model(record.id.clone(), Some(checkpoint.clone()))?;
+        if current.thread_id != record.id {
+            return Err(ThreadAssemblyError::Identity(record.id.clone()));
+        }
+        let thread = ThreadHandle::restore_current(current.clone(), None)?;
         let mut state = owner.0.state();
         if state
             .creating
@@ -422,7 +425,7 @@ impl AgentServices {
                             .and_then(|entry| entry.native().ok()?.workspace_usage.clone()),
                         close_storage: Some(CloseStorage::Pending {
                             record: Box::new(record.clone()),
-                            checkpoint: Box::new(checkpoint),
+                            current: Box::new(current),
                         }),
                         published_resources_closed: previous.as_ref().is_some_and(|entry| {
                             entry

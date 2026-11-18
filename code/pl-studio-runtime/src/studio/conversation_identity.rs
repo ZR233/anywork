@@ -3,7 +3,7 @@
 use crate::ContentOwner;
 use pl_core::chat::{ChatError, ChatKey};
 
-pub(in crate::studio) fn content_owner_key(owner: &ContentOwner) -> Result<ChatKey, ChatError> {
+pub(crate) fn content_owner_key(owner: &ContentOwner) -> Result<ChatKey, ChatError> {
     match owner {
         ContentOwner::Item { item_id } => ChatKey::new("item", item_id),
         ContentOwner::DisplayObservation {

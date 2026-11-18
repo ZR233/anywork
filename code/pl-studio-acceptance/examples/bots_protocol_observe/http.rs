@@ -3,6 +3,11 @@ use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use pl_studio_runtime::WorkspaceRecord;
+use pl_studio_runtime::history::{
+    HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryBodyWindow, HistoryCut, HistoryDemand,
+    HistoryEventBodyRef, HistoryEventDetail, HistoryEventsPage, HistoryEventsQuery,
+    HistoryGroupPage, HistoryTimelinePage,
+};
 use pl_studio_runtime::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
     BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
@@ -12,19 +17,21 @@ use pl_studio_runtime::{
     StartBotRegistrationRequest, StudioError,
 };
 use pl_studio_runtime::{
-    ChatBatch, ChatPlacement, ChatScope, ContentRange, ContentRef, ContentWindow,
-    CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
+    CURRENT_PROTOCOL_VERSION, ContentRange, ContentWindow, CurrentCollectionPage,
+    CurrentCollectionRef, CurrentContentRef, CurrentFrame, CurrentRevision, CurrentView,
+    ReadDemand,
 };
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 pub(crate) const PREDICATE_TIMEOUT: Duration = Duration::from_secs(45);
 pub(crate) const POLL: Duration = Duration::from_millis(50);
 pub(crate) const ACK_BUDGET: Duration = Duration::from_secs(3);
 pub(crate) const SEND_UNKNOWN_TIMEOUT: Duration = Duration::from_secs(25);
+const CONVERSATION_HEADER: &str = "x-anywork-conversation";
 
 #[derive(Clone)]
 pub(crate) struct StudioHttp {
@@ -34,14 +41,36 @@ pub(crate) struct StudioHttp {
     base: String,
 }
 
-/// Only the transport capability of the original SSE response. Dropping it
-/// closes that response; no business Session or history cache is created.
-pub(crate) struct ChatRead {
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenHistoryResponse {
+    history_protocol_version: u32,
+    reader_id: String,
+}
+
+/// One immutable-history read scope. Every page/body request carries the original reader capability.
+#[derive(Clone)]
+pub(crate) struct HistoryRead {
     http: StudioHttp,
     thread_id: String,
-    scope: ChatScope,
     capability: String,
-    _stream: BoxStream<'static, Result<Event, EventStreamError<anyhow::Error>>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OpenCurrentResponse {
+    current_protocol_version: u32,
+    current_owner_id: String,
+    reader_id: String,
+}
+
+/// One live-current read scope. It is independent of immutable history and does not replay it.
+#[derive(Clone)]
+pub(crate) struct CurrentRead {
+    http: StudioHttp,
+    thread_id: String,
+    owner_id: String,
+    capability: String,
 }
 
 /// Preserves the typed public failure for revision-qualified reads; callers must not parse text.
@@ -64,115 +93,199 @@ impl std::fmt::Display for StudioHttpFailure {
 
 impl std::error::Error for StudioHttpFailure {}
 
-impl ChatRead {
-    pub async fn open_children(
+impl HistoryRead {
+    pub async fn timeline_page(
         &self,
-        parent_id: &str,
-        demand: ReadDemand,
-    ) -> Result<(ChatRead, ChatBatch)> {
-        self.http
-            .open_chat(
-                &self.thread_id,
-                ChatScope::conversation(Some(parent_id.to_owned())),
-                demand,
-            )
-            .await
+        cut: Option<HistoryCut>,
+        cursor: Option<String>,
+        demand: HistoryDemand,
+    ) -> Result<HistoryTimelinePage> {
+        self.post(
+            "history/timeline",
+            &serde_json::json!({ "cut": cut, "cursor": cursor, "demand": demand }),
+        )
+        .await
     }
-
-    pub async fn open_records(
+    pub async fn group_page(
         &self,
-        scope: ChatScope,
-        demand: ReadDemand,
-    ) -> Result<(ChatRead, ChatBatch)> {
-        self.http.open_chat(&self.thread_id, scope, demand).await
+        group_id: String,
+        cut: Option<HistoryCut>,
+        cursor: Option<String>,
+        demand: HistoryDemand,
+    ) -> Result<HistoryGroupPage> {
+        self.post(
+            "history/group",
+            &serde_json::json!({
+                "groupId": group_id, "cut": cut, "cursor": cursor, "demand": demand
+            }),
+        )
+        .await
     }
-
-    pub async fn load_older(&self, before: &str, demand: ReadDemand) -> Result<ChatBatch> {
-        let batch: ChatBatch = self
-            .post(
-                "chat/older",
-                &serde_json::json!({ "before": before, "demand": demand }),
-            )
-            .await?;
-        ensure!(
-            batch.placement == ChatPlacement::Prepend && batch.from_seq.is_none(),
-            "older conversation response is not a valid Prepend"
-        );
-        batch.validate_for(&self.scope)?;
-        ensure!(
-            batch.entries.len() <= demand.max_items as usize
-                && batch.encoded_len()? <= demand.max_bytes as usize,
-            "older conversation response exceeded demand"
-        );
-        Ok(batch)
+    pub async fn turns_page(
+        &self,
+        cut: Option<HistoryCut>,
+        cursor: Option<String>,
+        demand: HistoryDemand,
+    ) -> Result<HistoryTimelinePage> {
+        self.post(
+            "history/turns",
+            &serde_json::json!({ "cut": cut, "cursor": cursor, "demand": demand }),
+        )
+        .await
     }
-
-    /// Observe the original feed's typed Thread State notifications after the
-    /// initial snapshot and Main Set; no synthetic completion is inferred from
-    /// a successful receipt in the Main projection.
-    pub async fn next_notification(
-        &mut self,
-        deadline: Instant,
-    ) -> Result<pl_studio_runtime::ThreadNotificationEnvelope> {
-        loop {
-            let event = tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                self._stream.next(),
-            )
+    pub async fn events_page(
+        &self,
+        query: HistoryEventsQuery,
+        cut: Option<HistoryCut>,
+        cursor: Option<String>,
+        demand: HistoryDemand,
+    ) -> Result<HistoryEventsPage> {
+        self.post(
+            "history/events",
+            &serde_json::json!({
+                "query": query, "cut": cut, "cursor": cursor, "demand": demand
+            }),
+        )
+        .await
+    }
+    pub async fn event(&self, event_id: &str, demand: HistoryDemand) -> Result<HistoryEventDetail> {
+        self.post(
+            "history/event",
+            &serde_json::json!({ "eventId": event_id, "demand": demand }),
+        )
+        .await
+    }
+    pub async fn bodies(
+        &self,
+        event_id: &str,
+        cursor: Option<String>,
+        demand: HistoryDemand,
+    ) -> Result<HistoryBodyPage> {
+        self.post(
+            "history/bodies",
+            &serde_json::json!({ "eventId": event_id, "cursor": cursor, "demand": demand }),
+        )
+        .await
+    }
+    pub async fn body(
+        &self,
+        reference: HistoryEventBodyRef,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<HistoryBodyWindow> {
+        self.post(
+            "history/body",
+            &serde_json::json!({
+                "reference": reference, "offset": offset, "maxBytes": max_bytes
+            }),
+        )
+        .await
+    }
+    pub async fn close(&self) -> Result<()> {
+        self.post_empty("history/close").await
+    }
+    async fn post<T: DeserializeOwned, B: Serialize>(&self, suffix: &str, body: &B) -> Result<T> {
+        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
+        let response = self
+            .http
+            .client
+            .post(format!("{}{path}", self.http.base))
+            .header(CONVERSATION_HEADER, &self.capability)
+            .json(body)
+            .send()
             .await
-            .context("Thread notification read exceeded observation deadline")?
-            .context("conversation SSE ended before the required State notification")??;
-            match event.event.as_str() {
-                "notification" => {
-                    let update: pl_studio_runtime::ThreadSubscriptionUpdate =
-                        serde_json::from_str(&event.data)?;
-                    let pl_studio_runtime::ThreadSubscriptionUpdate::Notification { notification } =
-                        update
-                    else {
-                        bail!("conversation SSE notification frame carried a different update");
-                    };
-                    return Ok(*notification);
-                }
-                "activity" | "chat" => continue,
-                "lagged" => bail!("conversation SSE lagged before required State notification"),
-                "error" => {
-                    let error: StudioError = serde_json::from_str(&event.data)?;
-                    bail!("conversation SSE: {} ({:?})", error.message, error.code);
-                }
-                "closed" => bail!("conversation SSE closed before the required State notification"),
-                other => bail!("unexpected conversation SSE event {other}"),
-            }
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let text = response.text().await?;
+        decode_json(status, &text, &path)
+    }
+    async fn post_empty(&self, suffix: &str) -> Result<()> {
+        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
+        let response = self
+            .http
+            .client
+            .post(format!("{}{path}", self.http.base))
+            .header(CONVERSATION_HEADER, &self.capability)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if status.is_success() {
+            Ok(())
+        } else {
+            decode_json::<serde_json::Value>(status, &text, &path).map(|_| ())
         }
     }
+}
 
-    /// Consume a separate ActivitySnapshot event from the original feed.
-    /// Activity is not a field on a completed Main record or ChatBatch.
-    pub async fn next_activity(
-        &mut self,
-        deadline: Instant,
-    ) -> Result<pl_studio_runtime::ActivitySnapshot> {
-        loop {
-            let event = tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                self._stream.next(),
-            )
+impl CurrentRead {
+    pub async fn snapshot(&self, demand: ReadDemand) -> Result<CurrentView> {
+        self.post("current/snapshot", &serde_json::json!({ "demand": demand }))
             .await
-            .context("ActivitySnapshot read exceeded observation deadline")?
-            .context("conversation SSE ended before ActivitySnapshot")??;
-            match event.event.as_str() {
-                "activity" => return Ok(serde_json::from_str(&event.data)?),
-                "notification" | "chat" => continue,
-                "lagged" => bail!("conversation SSE lagged before ActivitySnapshot"),
-                "error" => {
-                    let error: StudioError = serde_json::from_str(&event.data)?;
-                    bail!("conversation SSE: {} ({:?})", error.message, error.code);
-                }
-                "closed" => bail!("conversation SSE closed before ActivitySnapshot"),
-                other => bail!("unexpected conversation SSE event {other}"),
-            }
-        }
     }
-
+    pub async fn watch(
+        &self,
+        after: Option<CurrentRevision>,
+        demand: ReadDemand,
+    ) -> Result<CurrentWatchStream> {
+        let path = format!("/api/v1/threads/{}/current/watch", self.thread_id);
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(RedirectPolicy::none())
+            .connect_timeout(Duration::from_secs(2))
+            .build()?;
+        let response = tokio::time::timeout(
+            ACK_BUDGET,
+            client
+                .post(format!("{}{path}", self.http.base))
+                .header(CONVERSATION_HEADER, &self.capability)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&serde_json::json!({ "after": after, "demand": demand }))
+                .send(),
+        )
+        .await
+        .context("current watch headers timed out")??;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return match decode_json::<serde_json::Value>(status, &body, &path) {
+                Err(error) => Err(error),
+                Ok(_) => bail!("current watch returned a successful body with HTTP {status}"),
+            };
+        }
+        ensure!(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream")),
+            "current watch response is not text/event-stream"
+        );
+        let mut bytes = 0usize;
+        let stream = response
+            .bytes_stream()
+            .map(move |chunk| -> Result<_> {
+                let chunk = chunk?;
+                bytes = bytes
+                    .checked_add(chunk.len())
+                    .context("current watch byte count overflow")?;
+                ensure!(
+                    bytes <= 4 * 1024 * 1024,
+                    "current watch exceeded its cumulative byte budget"
+                );
+                Ok(chunk)
+            })
+            .eventsource()
+            .boxed();
+        Ok(CurrentWatchStream {
+            stream,
+            owner_id: self.owner_id.clone(),
+            demand,
+            saw_reset: false,
+            revision: None,
+        })
+    }
     pub async fn page_current(
         &self,
         reference: &CurrentCollectionRef,
@@ -189,32 +302,34 @@ impl ChatRead {
             .await?;
         ensure!(
             page.revision == reference.revision
-                && page.entries.len() <= demand.max_items as usize
-                && serde_json::to_vec(&page)?.len() <= demand.max_bytes as usize,
+                && page.entries.len() <= usize::try_from(demand.max_items)?
+                && serde_json::to_vec(&page)?.len() <= usize::try_from(demand.max_bytes)?,
             "current collection response exceeded its qualified demand"
         );
         Ok(page)
     }
 
-    pub async fn read_content(
+    pub async fn read_body(
         &self,
-        reference: &ContentRef,
+        reference: &CurrentContentRef,
         range: ContentRange,
     ) -> Result<ContentWindow> {
         self.post(
-            "contents/read",
+            "current/body/read",
             &serde_json::json!({ "reference": reference, "range": range }),
         )
         .await
     }
-
+    pub async fn close(&self) -> Result<()> {
+        self.post_empty("current/close").await
+    }
     async fn post<T: DeserializeOwned, B: Serialize>(&self, suffix: &str, body: &B) -> Result<T> {
         let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
         let response = self
             .http
             .client
             .post(format!("{}{path}", self.http.base))
-            .header("X-Anywork-Conversation", &self.capability)
+            .header(CONVERSATION_HEADER, &self.capability)
             .json(body)
             .send()
             .await
@@ -222,6 +337,89 @@ impl ChatRead {
         let status = response.status();
         let text = response.text().await?;
         decode_json(status, &text, &path)
+    }
+    async fn post_empty(&self, suffix: &str) -> Result<()> {
+        let path = format!("/api/v1/threads/{}/{suffix}", self.thread_id);
+        let response = self
+            .http
+            .client
+            .post(format!("{}{path}", self.http.base))
+            .header(CONVERSATION_HEADER, &self.capability)
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if status.is_success() {
+            Ok(())
+        } else {
+            decode_json::<serde_json::Value>(status, &text, &path).map(|_| ())
+        }
+    }
+}
+
+type CurrentSseItem = Result<Event, EventStreamError<anyhow::Error>>;
+
+pub(crate) struct CurrentWatchStream {
+    stream: BoxStream<'static, CurrentSseItem>,
+    owner_id: String,
+    demand: ReadDemand,
+    saw_reset: bool,
+    revision: Option<u64>,
+}
+
+impl CurrentWatchStream {
+    pub async fn next(&mut self, deadline: Instant) -> Result<Option<CurrentFrame>> {
+        let event =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.stream.next())
+                .await
+                .context("current watch exceeded observation deadline")?;
+        let Some(event) = event else {
+            return Ok(None);
+        };
+        let event = event?;
+        ensure!(
+            event.data.len() <= usize::try_from(self.demand.max_bytes)?,
+            "current watch frame exceeded its byte demand"
+        );
+        match event.event.as_str() {
+            "current" => {
+                let frame: CurrentFrame = serde_json::from_str(&event.data)?;
+                let (owner_id, revision) = match &frame {
+                    CurrentFrame::Reset { view } => {
+                        ensure!(
+                            !view.revision.owner_id.is_empty(),
+                            "current Reset has no owner"
+                        );
+                        self.saw_reset = true;
+                        self.owner_id = view.revision.owner_id.clone();
+                        self.revision = None;
+                        (&view.revision.owner_id, view.revision.revision)
+                    }
+                    CurrentFrame::Notification { revision, .. }
+                    | CurrentFrame::Projection { revision, .. } => {
+                        ensure!(self.saw_reset, "current watch sent a frame before Reset");
+                        (&revision.owner_id, revision.revision)
+                    }
+                };
+                ensure!(
+                    owner_id == &self.owner_id,
+                    "current watch changed owner identity"
+                );
+                ensure!(
+                    self.revision.is_none_or(|previous| revision >= previous),
+                    "current watch revision moved backwards"
+                );
+                self.revision = Some(revision);
+                Ok(Some(frame))
+            }
+            "error" => {
+                let error: StudioError = serde_json::from_str(&event.data)?;
+                bail!("current watch: {} ({:?})", error.message, error.code);
+            }
+            "closed" => Ok(None),
+            other => bail!("unexpected current watch event {other}"),
+        }
     }
 }
 
@@ -405,184 +603,75 @@ impl StudioHttp {
         self.get_json("/api/v1/bots").await
     }
 
-    /// Canonical Thread snapshot (public projection, including the active Turn).
-    pub async fn read_thread(&self, thread_id: &str) -> Result<pl_studio_runtime::ThreadSnapshot> {
-        let snapshot: pl_studio_runtime::ThreadSnapshot = self
-            .get_json(&format!("/api/v1/threads/{thread_id}"))
-            .await?;
-        ensure!(
-            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
-            "Thread {} schema version {} is unsupported; expected {}",
-            snapshot.thread.id,
-            snapshot.schema_version,
-            pl_studio_runtime::THREAD_SCHEMA_VERSION
-        );
-        ensure!(
-            snapshot.thread.id == thread_id,
-            "Thread State belonged to {} instead of {thread_id}",
-            snapshot.thread.id
-        );
-        Ok(snapshot)
-    }
-
-    /// Read the initial bounded Set and retain its *original* SSE/read lease.
-    /// Every subsequent range/page request uses the returned handle, never a
-    /// replacement feed carrying an old cursor.
-    pub async fn open_chat(
-        &self,
-        thread_id: &str,
-        scope: ChatScope,
-        demand: ReadDemand,
-    ) -> Result<(ChatRead, ChatBatch)> {
-        // Unlike ordinary requests, an SSE response has no total HTTP timeout.
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(RedirectPolicy::none())
-            .connect_timeout(Duration::from_secs(2))
-            .build()?;
-        let mut url =
-            reqwest::Url::parse(&format!("{}/api/v1/threads/{thread_id}/events", self.base))?;
-        {
-            let mut query = url.query_pairs_mut();
-            query
-                .append_pair("maxItems", &demand.max_items.to_string())
-                .append_pair("maxBytes", &demand.max_bytes.to_string());
-            query.append_pair("queryClass", &serde_json::to_string(&scope.query_class)?);
-            if let Some(parent_id) = &scope.parent_id {
-                query.append_pair("parentId", parent_id);
-            }
-        }
-        let request = client
-            .get(url)
-            .header(reqwest::header::ACCEPT, "text/event-stream");
-        let response = tokio::time::timeout(ACK_BUDGET, request.send())
+    /// Opens one immutable-history owner. The returned capability is never shared with Current.
+    pub async fn open_history(&self, thread_id: &str) -> Result<HistoryRead> {
+        let path = format!("/api/v1/threads/{thread_id}/history/open");
+        let response = self
+            .client
+            .post(format!("{}{path}", self.base))
+            .json(&serde_json::json!({
+                "historyProtocolVersion": HISTORY_PROTOCOL_VERSION
+            }))
+            .send()
             .await
-            .context("conversation SSE headers timed out")??;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await?;
-            bail!(
-                "conversation SSE HTTP {status}: {}",
-                crate::env::redact(&body)
-            );
-        }
-        ensure!(
-            response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_some_and(|value| value.starts_with("text/event-stream")),
-            "conversation response is not text/event-stream"
-        );
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
         let capability = response
             .headers()
-            .get("X-Anywork-Conversation")
-            .context("conversation SSE omitted its read capability")?
-            .to_str()?
-            .to_owned();
+            .get(CONVERSATION_HEADER)
+            .map(|value| value.to_str().map(str::to_owned))
+            .transpose()?;
+        let text = response.text().await?;
+        let opened: OpenHistoryResponse = decode_json(status, &text, &path)?;
+        let capability = capability.context("history open omitted its reader capability")?;
         ensure!(
-            !capability.is_empty(),
-            "conversation SSE returned an empty capability"
+            opened.history_protocol_version == HISTORY_PROTOCOL_VERSION
+                && opened.reader_id == capability
+                && !capability.is_empty(),
+            "history open returned inconsistent protocol or reader identity"
         );
-        let mut received_bytes = 0usize;
-        let mut stream = response
-            .bytes_stream()
-            .map(move |chunk| -> Result<_> {
-                let chunk = chunk?;
-                received_bytes += chunk.len();
-                ensure!(
-                    received_bytes <= 4 * 1024 * 1024,
-                    "conversation SSE exceeded its byte budget"
-                );
-                Ok(chunk)
-            })
-            .eventsource()
-            .boxed();
-        let batch = tokio::time::timeout(PREDICATE_TIMEOUT, async {
-            // State precedes Chat; only the bounded initial Chat is retained.
-            let mut saw_snapshot = false;
-            for _ in 0..256 {
-                let event = stream
-                    .next()
-                    .await
-                    .context("conversation SSE ended before Set")??;
-                ensure!(
-                    event.data.len() <= 2 * 1024 * 1024,
-                    "conversation SSE event exceeded budget"
-                );
-                match event.event.as_str() {
-                    "snapshot" => {
-                        ensure!(!saw_snapshot, "conversation SSE sent multiple initial snapshots");
-                        let update: pl_studio_runtime::ThreadSubscriptionUpdate =
-                            serde_json::from_str(&event.data)?;
-                        let pl_studio_runtime::ThreadSubscriptionUpdate::Snapshot {
-                            completed_history_version,
-                            snapshot,
-                            ..
-                        } = update
-                        else {
-                            bail!("conversation SSE snapshot frame carried a different update");
-                        };
-                        ensure!(
-                            completed_history_version
-                                == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
-                            "conversation SSE completed history version {completed_history_version} is unsupported"
-                        );
-                        ensure!(
-                            snapshot.thread.id == thread_id
-                                && snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
-                            "conversation SSE State snapshot identity/schema did not match the current contract"
-                        );
-                        saw_snapshot = true;
-                    }
-                    "chat" => {
-                        ensure!(saw_snapshot, "conversation SSE delivered Chat before State snapshot");
-                        let batch: ChatBatch = serde_json::from_str(&event.data)?;
-                        batch.validate_for(&scope)?;
-                        ensure!(
-                            batch.placement == ChatPlacement::Set,
-                            "first Chat was not Set"
-                        );
-                        return Ok::<_, anyhow::Error>(batch);
-                    }
-                    "activity" => {}
-                    "notification" => {
-                        ensure!(saw_snapshot, "conversation SSE delivered notification before State snapshot");
-                        let update: pl_studio_runtime::ThreadSubscriptionUpdate =
-                            serde_json::from_str(&event.data)?;
-                        ensure!(
-                            matches!(update, pl_studio_runtime::ThreadSubscriptionUpdate::Notification { .. }),
-                            "conversation SSE notification frame carried a different update"
-                        );
-                    }
-                    "error" => {
-                        let error: StudioError = serde_json::from_str(&event.data)?;
-                        bail!("conversation SSE: {} ({:?})", error.message, error.code);
-                    }
-                    "closed" | "lagged" => {
-                        bail!(
-                            "conversation SSE terminated: {}: {}",
-                            event.event,
-                            crate::env::redact(&event.data)
-                        )
-                    }
-                    other => bail!("unexpected conversation SSE event {other}"),
-                }
-            }
-            bail!("conversation SSE exceeded the initial event budget")
+        Ok(HistoryRead {
+            http: self.clone(),
+            thread_id: thread_id.to_owned(),
+            capability,
         })
-        .await
-        .context("conversation SSE Set timed out")??;
-        Ok((
-            ChatRead {
-                http: self.clone(),
-                thread_id: thread_id.to_owned(),
-                scope: scope.clone(),
-                capability,
-                _stream: stream,
-            },
-            batch,
-        ))
+    }
+
+    /// Opens one live-current owner. Its initial snapshot is bounded by the supplied demand.
+    pub async fn open_current(&self, thread_id: &str, demand: ReadDemand) -> Result<CurrentRead> {
+        let path = format!("/api/v1/threads/{thread_id}/current/open");
+        let response = self
+            .client
+            .post(format!("{}{path}", self.base))
+            .json(&serde_json::json!({
+                "currentProtocolVersion": CURRENT_PROTOCOL_VERSION,
+                "demand": demand,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {path}"))?;
+        let status = response.status();
+        let capability = response
+            .headers()
+            .get(CONVERSATION_HEADER)
+            .map(|value| value.to_str().map(str::to_owned))
+            .transpose()?;
+        let text = response.text().await?;
+        let opened: OpenCurrentResponse = decode_json(status, &text, &path)?;
+        let capability = capability.context("current open omitted its reader capability")?;
+        ensure!(
+            opened.current_protocol_version == CURRENT_PROTOCOL_VERSION
+                && opened.reader_id == capability
+                && !capability.is_empty()
+                && !opened.current_owner_id.is_empty(),
+            "current open returned inconsistent protocol, owner, or reader identity"
+        );
+        Ok(CurrentRead {
+            http: self.clone(),
+            thread_id: thread_id.to_owned(),
+            owner_id: opened.current_owner_id,
+            capability,
+        })
     }
 
     pub async fn list_threads_page(

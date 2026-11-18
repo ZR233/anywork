@@ -810,13 +810,18 @@ enum _StorageStage {
 
 /// 一行逐 Thread 可靠持久化诊断，按“未知 vs 已观测”区分显示。
 String _persistenceThreadLine(ThreadPersistenceSnapshot thread) {
-  final state = _persistenceWatermark(
-    thread.stateDurableRevision,
-    thread.stateDirtyRevision,
-  );
+  final current = thread.current;
+  final state = switch (current) {
+    null => '?',
+    CurrentPersistenceSnapshot(lastError: final error?) => error,
+    CurrentPersistenceSnapshot(inFlight: true) => 'saving',
+    CurrentPersistenceSnapshot(dirty: true) => 'pending',
+    CurrentPersistenceSnapshot(savedRevision: final revision?) => '$revision',
+    _ => '?',
+  };
   final history = _persistenceWatermark(
     thread.historyDurableSequence,
     thread.historyAdmittedSequence,
   );
-  return '${thread.threadId} · state $state · history $history';
+  return '${thread.threadId} · current $state · history $history';
 }

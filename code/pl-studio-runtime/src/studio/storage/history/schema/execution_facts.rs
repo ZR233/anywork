@@ -4,6 +4,7 @@ use crate::studio::storage::history::{execution_lifecycle, turns};
 use crate::{ChatAtom, ChatSourceId};
 use crate::{ExecutionItem, ExecutionShape};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 pub(super) struct ExecutionFacts;
 impl MigrationName for ExecutionFacts {
@@ -368,19 +369,23 @@ async fn old_items(db: &impl ConnectionTrait) -> Result<()> {
                         .context("history database identity missing")?
                         .try_get::<String>("", "database_id")?;
                     if let Some(effect) = effect
-                        && let Ok(draft) =
-                            crate::studio::runtime::chat_item::completion_draft_reusing(
-                                &item,
-                                effect,
-                                &database,
-                                &original.contents,
-                            )
+                        && let Ok(draft) = crate::studio::runtime::chat_item::completion_draft(
+                            &item, effect, &database, None,
+                        )
                     {
                         let expected: serde_json::Value = serde_json::from_slice(&draft.payload)?;
                         covered = exact_shape
                             && expected["type"] == value["type"]
                             && expected["data"] == value["data"]
-                            && draft.contents == original.contents;
+                            && draft.contents.len() == original.contents.len()
+                            && draft.contents.iter().all(|(key, expected)| {
+                                original.contents.get(key).is_some_and(|actual| {
+                                    expected.descriptor.byte_length == actual.descriptor.byte_length
+                                        && expected.descriptor.media_type
+                                            == actual.descriptor.media_type
+                                        && expected.data == actual.data
+                                })
+                            });
                         if let ExecutionShape::Tool(tool) = item.state() {
                             // Plan completions intentionally carry the document, not the invocation.
                             // Only a real saved task can prove that those original arguments survive.
@@ -900,7 +905,9 @@ mod tests {
             assert_eq!(&bytes, expected);
         }
         assert!(
-            store.recovery_atom_starts(None, 128).await?.is_empty(),
+            execution_lifecycle::active(&store.reader().await?.unwrap().db, None, 128)
+                .await?
+                .is_empty(),
             "unknown raw start must not become a fabricated active/completed item"
         );
         let original = store

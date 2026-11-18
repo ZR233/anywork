@@ -16,12 +16,18 @@ impl ThreadHandle {
     /// Releases immutable exports only after the independent history consumer accepted them.
     /// No current save, dirty notification, execution permission or legacy cold fence is advanced.
     /// The retained window can also be released after the physical owner has closed.
-    pub fn release_history_through(&self, through: u64) -> Result<(), current::CurrentError> {
-        if through > self.snapshot().commit_sequence {
-            return Err(current::CurrentError::InvalidIdentity);
-        }
-        self.effect_window.release_through(through);
-        Ok(())
+    pub fn release_history_through(&self, through: u64) -> Result<(), ThreadError> {
+        self.effect_window.release_export_through(through)
+    }
+
+    /// Reads a bounded page of the Current owner's original immutable history exports.
+    /// The consumer releases them explicitly after its reliable queue accepts ownership.
+    pub fn history_export_page(
+        &self,
+        after: u64,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
+        self.effect_window.current_page(after, limit.get())
     }
 
     /// Continues a restored, paused current using the owner's currently configured services.
@@ -144,15 +150,16 @@ impl ThreadHandle {
         Self::resume(id, model, None)
     }
 
-    /// Starts the directly callable current owner without selecting it for old production callers.
+    /// Starts one fresh Current owner under a new runtime epoch. A resource-only owner may
+    /// install its model later; absence of a model does not make a new object a paused restore.
     pub fn start_current(
         id: String,
-        model: DynModelSession,
+        model: Option<DynModelSession>,
     ) -> Result<Self, current::CurrentError> {
         let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
         Self::spawn_owner(
             id,
-            Some(model),
+            model,
             InitialState::FreshCurrent(Box::new(current)),
             None,
         )
@@ -275,6 +282,7 @@ impl ThreadHandle {
             InitialState::Checkpoint(Some(_)) | InitialState::RestoredCurrent(_)
         );
         let current_paused = matches!(&initial, InitialState::RestoredCurrent(_));
+        let current_owner = !matches!(&initial, InitialState::Checkpoint(_));
         let (published, state, restored_history_fence, restored_current) = match initial {
             InitialState::Checkpoint(Some(checkpoint)) => {
                 let history_fence = checkpoint.history_fence;
@@ -404,6 +412,7 @@ impl ThreadHandle {
         owner.publish_snapshot();
         tokio::spawn(owner.run(receiver));
         Ok(Self {
+            current_owner,
             runtime_epoch,
             final_current: final_current_rx,
             current_dirty: current_dirty_rx,
@@ -643,6 +652,30 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Accepts a message and commits its producer-owned records in the same owner publication.
+    /// This does not request execution. A host can retain an explicit admission marker until its
+    /// independent Current save succeeds, even after the bounded message ledger retires the ID.
+    ///
+    /// # Errors
+    /// Rejects conflicting message identities, stale extension revisions and closed owners before
+    /// applying either mutation.
+    pub async fn send_message_with_extensions(
+        &self,
+        message: inbox::ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+    ) -> Result<u64, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Delivers a runtime message and durably requests execution if it remains unconsumed.
     /// A message consumed by an already active Turn does not trigger a second invocation.
     ///
@@ -703,7 +736,33 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         self.mailbox
             .send(super::mailbox::MailboxCommand::ContinueMessage(
-                message, options, reply,
+                message, options, None, reply,
+            ))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Continues with a message while retaining its exact receipt in a caller-owned extension.
+    /// A repeat reads that receipt before checking new admission or interrupting current work.
+    /// The caller deletes the record after its original delivery obligation is settled.
+    ///
+    /// # Errors
+    /// Rejects changed receipt identities and the same admission failures as
+    /// [`Self::send_message_and_continue`].
+    pub async fn send_message_and_continue_with_receipt(
+        &self,
+        message: inbox::ThreadMessage,
+        options: input::InputDriverOptions,
+        receipt_extension_id: String,
+    ) -> Result<u64, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::ContinueMessage(
+                message,
+                options,
+                Some(receipt_extension_id),
+                reply,
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -1112,6 +1171,20 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Installs the independent History export sink and its existing reliable-output budget.
+    /// Current capture and physical close never await this sink's archive receipt.
+    pub async fn attach_history(
+        &self,
+        store: super::super::history_sink::HistorySinkHandle,
+    ) -> Result<(), ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::AttachHistory(store, reply))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Continues new model/tool admission after a hard storage fault was recovered.
     ///
     /// `generation` is the fault generation the caller verified, taken from the reported typed
@@ -1237,6 +1310,11 @@ impl ThreadHandle {
     /// Reports whether the owner was released after its admitted effects became durable.
     fn durably_released(&self) -> bool {
         let snapshot = self.snapshot();
+        if self.current_owner {
+            // This acknowledges physical Core shutdown only. Current JSON and immutable History
+            // have independent host owners and report their own failures.
+            return snapshot.lifecycle == ThreadLifecycle::Closed;
+        }
         snapshot.lifecycle == ThreadLifecycle::Closed
             && snapshot.persistence.error.is_none()
             && (!snapshot.persistence.attached
@@ -1427,4 +1505,52 @@ async fn finish_tool_transfer<T>(
         };
     }
     result
+}
+
+#[cfg(test)]
+mod history_handoff_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn history_handoff_can_finish_before_current_snapshot_is_published() {
+        let handle = ThreadHandle::start_current("history-publication-race".into(), None)
+            .expect("fresh owner");
+        let snapshot = handle.snapshot();
+        let sequence = snapshot.commit_sequence + 1;
+        // Owner::publish exposes the export before publish_snapshot. Hold that
+        // exact gap without adding a hook to the production owner or public API.
+        let mut published = snapshot.clone();
+        published.commit_sequence = sequence;
+        let export = Arc::new(HistoryExport {
+            effect: Arc::new(ThreadEffectBatch {
+                thread_id: handle.thread_id.clone(),
+                sequence,
+                ..Default::default()
+            }),
+            state: published,
+            output_claim: None,
+        });
+        handle.effect_window.push_current(export.clone());
+        assert_eq!(handle.snapshot().commit_sequence, snapshot.commit_sequence);
+        let demand = std::num::NonZeroUsize::new(1).unwrap();
+        let page = handle
+            .history_export_page(snapshot.commit_sequence, demand)
+            .expect("published export");
+        assert!(Arc::ptr_eq(&page[0], &export));
+        handle
+            .release_history_through(sequence)
+            .expect("accepted history handoff");
+        handle
+            .release_history_through(sequence)
+            .expect("idempotent release");
+        assert!(
+            handle
+                .history_export_page(sequence, demand)
+                .expect("released cut")
+                .is_empty()
+        );
+        assert!(handle.release_history_through(sequence + 1).is_err());
+        assert!(handle.history_export_page(sequence + 1, demand).is_err());
+        handle.close().await.expect("close owner");
+    }
 }

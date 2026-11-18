@@ -187,7 +187,7 @@ mod tests {
             );
             assert_eq!(item.state(), &original);
             if let ExecutionShape::Raw(raw) = item.state() {
-                let draft = super::super::completion_draft(&item, 1, "database")?;
+                let draft = super::super::completion_draft(&item, 1, "database", None)?;
                 let envelope: serde_json::Value = serde_json::from_slice(draft.payload.as_ref())?;
                 assert_eq!(envelope["type"], "raw");
                 assert_eq!(

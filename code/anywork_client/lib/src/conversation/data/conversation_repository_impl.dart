@@ -8,8 +8,8 @@ import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
+import '../domain/conversation_errors.dart';
 import 'conversation_session_impl.dart';
-import 'conversation_content_impl.dart';
 import 'input_turn_facts.dart';
 
 final class ConversationRepositoryImpl
@@ -34,7 +34,6 @@ final class ConversationRepositoryImpl
   // 各自的共享 future 由 `_retiring` 持有到真实终态。
   final Set<ConversationSessionImpl> _retiringOwners = {};
   final Map<String, CloseReport> _reports = {};
-  final Set<ConversationContentImpl> _children = {};
   final LatestValue<String?> _visibleThreadId = LatestValue(null);
   String? _visibleThread;
   String? _requestedVisibleThread;
@@ -50,49 +49,56 @@ final class ConversationRepositoryImpl
   );
 
   @override
-  Future<TimelineReader> openTimelineReader(
-    String threadId, {
-    required ReadDemand demand,
-  }) {
+  Future<HistoryReader> openHistoryReader(String threadId) async {
     if (_closed) throw StateError('Conversation repository is closed');
-    final native = transport;
-    if (native is! TimelineTransport)
-      throw StateError('Timeline transport is unavailable');
-    return (native as TimelineTransport).openTimelineReader(
+    final reader = await transport.openHistoryReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
-      demand: demand,
+      historyProtocolVersion: historyProtocolVersion,
     );
+    if (reader.threadId != threadId ||
+        reader.metadata.readerId.isEmpty ||
+        reader.metadata.historyProtocolVersion != historyProtocolVersion) {
+      try {
+        reader.requestClose();
+        await reader.close();
+      } finally {
+        throw ProtocolVersionMismatch(
+          received: reader.metadata.historyProtocolVersion,
+          supported: historyProtocolVersion,
+          field: 'historyProtocolVersion',
+        );
+      }
+    }
+    return reader;
   }
 
   @override
-  Future<ConversationContent> openRecords({
-    required String threadId,
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) => _openMemberContent(threadId: threadId, scope: scope, demand: demand);
-
-  Future<ConversationContent> _openMemberContent({
-    required String threadId,
-    required ChatScope scope,
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
     required ReadDemand demand,
   }) async {
     if (_closed) throw StateError('Conversation repository is closed');
-    _children.removeWhere(
-      (owner) => owner.isClosed && owner.ownedAttemptCount == 0,
+    final reader = await transport.openCurrentReader(
+      threadId,
+      currentProtocolVersion: currentProtocolVersion,
+      demand: demand,
     );
-    final owner = ConversationContentImpl(
-      threadId: threadId,
-      scope: scope,
-      initialDemand: demand,
-      transport: transport,
-    );
-    _children.add(owner);
-    owner.setDemand(true);
-    // Opening is passive until its actual component consumer supplies demand;
-    // ready still means that consumer has accepted the first Set.
-    return owner;
+    if (reader.threadId != threadId ||
+        reader.metadata.readerId.isEmpty ||
+        reader.metadata.currentOwnerId.isEmpty ||
+        reader.metadata.currentProtocolVersion != currentProtocolVersion) {
+      try {
+        reader.requestClose();
+        await reader.close();
+      } finally {
+        throw ProtocolVersionMismatch(
+          received: reader.metadata.currentProtocolVersion,
+          supported: currentProtocolVersion,
+          field: 'currentProtocolVersion',
+        );
+      }
+    }
+    return reader;
   }
 
   @override
@@ -116,7 +122,8 @@ final class ConversationRepositoryImpl
     if (_closed) throw StateError('Conversation repository is closed');
     final owner = ConversationSessionImpl(
       threadId,
-      transport: transport,
+      currentTransport: transport,
+      stateDemand: const ReadDemand(maxItems: 128, maxBytes: 256 * 1024),
       directory: directory,
       inputFacts: _inputFacts,
       scope: _scope.child('conversation-session'),
@@ -284,15 +291,9 @@ final class ConversationRepositoryImpl
         entry.key: entry.value.close(budget: budget),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
-    final children = await Future.wait([
-      for (final owner in _children) owner.close(budget: budget),
-    ]);
     _releaseResolved();
     return CloseReport(
-      unresolved: [
-        for (final r in _reports.values) ...r.unresolved,
-        for (final r in children) ...r.unresolved,
-      ],
+      unresolved: [for (final r in _reports.values) ...r.unresolved],
     );
   }
 
@@ -305,15 +306,11 @@ final class ConversationRepositoryImpl
         entry.key: entry.value.retryCleanup(budget: budget),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
-    final children = await Future.wait([
-      for (final owner in _children) owner.retryCleanup(budget: budget),
-    ]);
     final scopeReport = await scopeCleanup;
     _releaseResolved();
     return CloseReport(
       unresolved: [
         for (final r in _reports.values) ...r.unresolved,
-        for (final r in children) ...r.unresolved,
         ...scopeReport.unresolved,
       ],
     );

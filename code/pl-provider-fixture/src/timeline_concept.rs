@@ -1201,7 +1201,7 @@ mod tests {
                 "type":"function_call", "call_id":id, "name":"exec", "arguments":"{}"
             }));
             body["input"].as_array_mut().unwrap().push(json!({
-                "type":"function_call_output", "call_id":id, "output":tool_running_receipt(id)
+                "type":"function_call_output", "call_id":id, "output":tool_running_receipt(&format!("accepted-{id}"))
             }));
         }
         assert_eq!(
@@ -1210,10 +1210,42 @@ mod tests {
                 .len(),
             4
         );
+        let call_ids = images
+            .iter()
+            .map(|image| image.call_id.as_str())
+            .collect::<Vec<_>>();
+        let mut wait_reply = Reply::Sse(responses_tool_calls(
+            "wait",
+            "fixture-model",
+            &[RealtimeToolCall {
+                item_id: "wait-item",
+                call_id: "wait-call",
+                name: TOOL_WAIT_NAME,
+                arguments: realtime_wait_arguments(&call_ids),
+            }],
+        ));
+        bind_reply_task_receipts(&mut wait_reply, &body);
+        let Reply::Sse(frames) = wait_reply else {
+            unreachable!()
+        };
+        let expected = json!({"taskIds": call_ids.iter().map(|id| format!("task:accepted-{id}"))
+            .collect::<Vec<_>>(), "timeoutMs": GUI_REALTIME_WAIT_TIMEOUT_MILLIS});
+        for arguments in frames.iter().filter_map(|frame| {
+            frame
+                .get("delta")
+                .and_then(Value::as_str)
+                .or_else(|| frame.get("item")?.get("arguments")?.as_str())
+        }) {
+            assert_eq!(
+                serde_json::from_str::<Value>(arguments).unwrap(),
+                expected,
+                "the simulated model must echo the accepted task identity in both delta and final frames"
+            );
+        }
         for (completed, index) in [2, 0, 1].into_iter().enumerate() {
             let image = &images[index];
             body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
-                {"type":"input_text","text":format!("Task task:{} for tool exec finished: Succeeded.", image.call_id)},
+                {"type":"input_text","text":format!("Task task:accepted-{} for tool exec finished: Succeeded.", image.call_id)},
                 {"type":"input_text","text":json!({"original":{"contentDigest":format!("sha256:{}",image.png_sha256)}}).to_string()},
                 source["input"][4]["content"][index * 2 + 1]
             ]}));
@@ -1225,7 +1257,7 @@ mod tests {
             );
         }
         body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
-            {"type":"input_text","text":"Task task:concept-image-failed for tool exec finished: Failed."},
+            {"type":"input_text","text":"Task task:accepted-concept-image-failed for tool exec finished: Failed."},
             {"type":"input_text","text":"Lua execution failed: image source is not a regular file"}
         ]}));
         assert_eq!(

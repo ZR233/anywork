@@ -172,6 +172,12 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
         }
         return StudioError::new(code, message, retryable).with_details(details);
     }
+    if let Some(error) = error.downcast_ref::<pl_core::thread::current::CurrentError>() {
+        return current_error(error);
+    }
+    if let Some(error) = error.downcast_ref::<crate::history::HistoryError>() {
+        return history_error(error);
+    }
     if error.downcast_ref::<StudioDatabaseError>().is_some()
         || error.downcast_ref::<std::io::Error>().is_some()
     {
@@ -346,6 +352,94 @@ fn remote_client_error(error: &pl_tool::remote::SshError) -> StudioError {
 ///
 /// The classification comes from the typed variant; no error text is parsed. Messages stay generic
 /// and the structured details carry only identities, field keys and sizes — never content.
+fn current_error(error: &pl_core::thread::current::CurrentError) -> StudioError {
+    use pl_core::thread::current::CurrentError as Current;
+    match error {
+        Current::Cancelled | Current::Closed => StudioError::new(
+            StudioErrorCode::Cancelled,
+            "Current observation is closed",
+            false,
+        ),
+        Current::CaptureTimedOut => StudioError::new(
+            StudioErrorCode::Busy,
+            "Current capture did not complete in time",
+            true,
+        ),
+        Current::PendingInteraction | Current::PendingPermission | Current::NotPaused => {
+            StudioError::new(
+                StudioErrorCode::Conflict,
+                "Current state requires an explicit decision before execution",
+                false,
+            )
+        }
+        Current::Final(error) => current_error(error),
+        Current::Owner(error) => thread_error(error).unwrap_or_else(StudioError::internal),
+        Current::Schema(_)
+        | Current::ThreadIdentity(_)
+        | Current::InvalidEpoch
+        | Current::InvalidIdentity
+        | Current::RecordConflict(_)
+        | Current::RevisionExhausted
+        | Current::ClockRange
+        | Current::InvalidToolPreview
+        | Current::OrphanToolPreview(_)
+        | Current::MissingStream
+        | Current::Context(_)
+        | Current::Model(_)
+        | Current::Encoding(_)
+        | Current::Resource(_) => StudioError::new(
+            StudioErrorCode::Storage,
+            "Current snapshot cannot be recovered",
+            false,
+        ),
+    }
+}
+
+fn history_error(error: &crate::history::HistoryError) -> StudioError {
+    use crate::StudioErrorReason;
+    use crate::history::HistoryError as History;
+    match error {
+        History::InvalidDemand(_) => {
+            StudioError::invalid_argument("History demand cannot fit a complete response")
+                .with_reason(StudioErrorReason::InvalidDemand, serde_json::Value::Null)
+        }
+        History::InvalidCursor => StudioError::new(
+            StudioErrorCode::StaleRevision,
+            "History cursor no longer belongs to this read scope",
+            false,
+        )
+        .with_reason(StudioErrorReason::StaleReadScope, serde_json::Value::Null),
+        History::NotFound(_) => StudioError::new(
+            StudioErrorCode::NotFound,
+            "History object is unavailable",
+            false,
+        ),
+        History::Closed => StudioError::new(
+            StudioErrorCode::Cancelled,
+            "History reader is closed",
+            false,
+        ),
+        History::Capacity => StudioError::new(
+            StudioErrorCode::Overloaded,
+            "History pending capacity is exhausted",
+            true,
+        ),
+        History::InvalidEvent(_) => {
+            StudioError::invalid_argument("History identity or request is invalid")
+        }
+        History::Conflict(_) => StudioError::new(
+            StudioErrorCode::Conflict,
+            "History identity conflicts with an existing object",
+            false,
+        ),
+        History::Integrity(_)
+        | History::Database(_)
+        | History::Json(_)
+        | History::Io(_)
+        | History::Storage(_) => StudioError::storage(),
+    }
+}
+
 fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
     use pl_core::chat::ChatError as Chat;
     match error {
@@ -533,6 +627,51 @@ fn update_error(error: &StudioUpdateError) -> StudioError {
 mod conversation_read_tests {
     use super::*;
     use pl_core::chat::ChatError;
+
+    #[test]
+    fn independent_read_failures_keep_recovery_and_cursor_meaning_without_exposing_payloads() {
+        use crate::history::HistoryError;
+        use pl_core::thread::current::CurrentError;
+        let private = "private-body-material";
+        for (failure, code, retryable, reason) in [
+            (
+                anyhow::Error::new(CurrentError::ThreadIdentity(private.into())),
+                StudioErrorCode::Storage,
+                false,
+                None,
+            ),
+            (
+                anyhow::Error::new(CurrentError::CaptureTimedOut),
+                StudioErrorCode::Busy,
+                true,
+                None,
+            ),
+            (
+                anyhow::Error::new(HistoryError::Integrity(private.into())),
+                StudioErrorCode::Storage,
+                true,
+                None,
+            ),
+            (
+                anyhow::Error::new(HistoryError::InvalidDemand(private.into())),
+                StudioErrorCode::InvalidArgument,
+                false,
+                Some("invalidDemand"),
+            ),
+            (
+                anyhow::Error::new(HistoryError::InvalidCursor),
+                StudioErrorCode::StaleRevision,
+                false,
+                Some("staleReadScope"),
+            ),
+        ] {
+            let mapped = studio_error_from_anyhow(failure.context(private));
+            assert_eq!(mapped.code, code);
+            assert_eq!(mapped.retryable, retryable);
+            assert_eq!(mapped.reason(), reason);
+            assert!(!serde_json::to_string(&mapped).unwrap().contains(private));
+        }
+    }
 
     #[test]
     fn retained_shared_failure_preserves_typed_mapping_and_original_identity() {

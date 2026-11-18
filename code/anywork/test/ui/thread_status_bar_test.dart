@@ -47,6 +47,7 @@ void main() {
         'thread-main',
       )!;
       await timelineReady(graph.timeline, session.threadId);
+      await _awaitCurrentReaders(graph, transport, session.threadId);
       await transport.firstSetAcknowledged.future;
       await session.source.waitFor((value) => value.hasSnapshot);
       final initial = session.state.workspace!;
@@ -181,6 +182,7 @@ void main() {
         clientId: 'status-cold-compact',
       );
       await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      graph.timeline.updateReadDemand(chatDemand);
       await pumpClientFuture(
         tester,
         (graph..setConversationPageVisible(true)).client.directoryCommands
@@ -194,6 +196,25 @@ void main() {
         tester,
         () => session.state.hasSnapshot,
         'session baseline',
+      );
+      await pumpClientFuture(
+        tester,
+        timelineReady(graph.timeline, 'thread-main'),
+        'timeline baseline',
+      );
+      final timelineReader =
+          graph.timeline.lease('thread-main')!.current
+              as RecordingCurrentReader;
+      final stateReader = _stateCurrentReader(transport);
+      await pumpClientUntil(
+        tester,
+        () => timelineReader.watchEntered.isCompleted,
+        'timeline Current watch',
+      );
+      await pumpClientUntil(
+        tester,
+        () => stateReader.watchEntered.isCompleted,
+        'session Current watch',
       );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -215,7 +236,7 @@ void main() {
       expect(transport.compactCalls, 1);
       await pumpClientFuture(
         tester,
-        transport.stateFeeds.last.emitStateAndWait(
+        _stateCurrentReader(transport).emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -287,7 +308,7 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        transport.stateFeeds.last.emitStateAndWait(
+        _stateCurrentReader(transport).emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -462,6 +483,7 @@ void main() {
         .timeout(const Duration(seconds: 10));
     final session = graph.client.conversations.existingSession('thread-main')!;
     await timelineReady(graph.timeline, session.threadId);
+    await _awaitCurrentReaders(graph, transport, session.threadId);
     await transport.firstSetAcknowledged.future;
     await session.source.waitFor((value) => value.hasSnapshot);
     final composer = graph.client.drafts.existingComposer('thread-main')!;
@@ -528,9 +550,9 @@ void main() {
     contextNotifications = 0;
     chromeNotifications = 0;
     startedItemsNotifications = 0;
-    final timelineConnections = transport.timelineReaders.length;
+    final timelineConnections = transport.currentReaders.length;
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -561,7 +583,7 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -594,7 +616,7 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -612,7 +634,7 @@ void main() {
         ),
       ),
     );
-    await transport.stateFeeds.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -628,7 +650,7 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -647,7 +669,7 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.timelineReaders, hasLength(timelineConnections));
+    expect(transport.currentReaders, hasLength(timelineConnections));
     expect(
       graph.client.conversations.existingSession('thread-main'),
       same(session),
@@ -682,16 +704,26 @@ void main() {
 }
 
 final class _StatusTransport extends RecordingDemoTransport {
-  _StatusTransport() {
-    timelineReaderFactory = (_, inner) async =>
-        _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
-  }
-
   final firstSetAcknowledged = Completer<void>();
   final compactStarted = Completer<void>();
   Completer<void>? compactGate;
   int compactCalls = 0;
   StreamController<ProductTopicFrame>? _lspFrames;
+
+  @override
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) async {
+    final reader = await super.openCurrentReader(
+      threadId,
+      currentProtocolVersion: currentProtocolVersion,
+      demand: demand,
+    );
+    if (!firstSetAcknowledged.isCompleted) firstSetAcknowledged.complete();
+    return reader;
+  }
 
   @override
   TestTopicFrames testProductTopicFrames(
@@ -740,26 +772,6 @@ final class _StatusTransport extends RecordingDemoTransport {
   }
 }
 
-/// Wait for the actual Set ACK before injecting State frames into the same feed.
-/// This observes transport ownership; it never publishes or reduces a projection.
-final class _SetAcknowledgedFeed extends RecordingTimelineReader {
-  _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
-
-  final Completer<void> acknowledged;
-  ViewCursor? _firstSet;
-  @override
-  Future<ViewUpdate> next({required ViewCursor after}) async {
-    if (_firstSet == after && !acknowledged.isCompleted) {
-      acknowledged.complete();
-    }
-    final response = await super.next(after: after);
-    if (response.history.placement == HistoryPlacement.set) {
-      _firstSet ??= response.next;
-    }
-    return response;
-  }
-}
-
 ThreadNotificationFrame _runtimeFrame(
   ConversationSession session,
   ThreadRuntimeView runtime,
@@ -778,3 +790,30 @@ ThreadNotificationFrame _runtimeFrame(
 }
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
+
+RecordingCurrentReader _stateCurrentReader(RecordingDemoTransport transport) =>
+    transport.currentReaders.lastWhere(
+      (reader) =>
+          reader.threadId == 'thread-main' && reader.demand.maxItems == 128,
+    );
+
+Future<void> _awaitCurrentReaders(
+  AppGraph graph,
+  RecordingDemoTransport transport,
+  String threadId,
+) async {
+  final session = graph.client.conversations.existingSession(threadId);
+  if (session == null) {
+    throw StateError('Thread session is not open: $threadId');
+  }
+  await session.source.waitFor((state) => state.hasSnapshot);
+  final timeline = graph.timeline.lease(threadId)?.current;
+  final state = transport.currentReaders.lastWhere(
+    (reader) => reader.threadId == threadId && reader.demand.maxItems == 128,
+  );
+  expect(timeline, isA<RecordingCurrentReader>());
+  await Future.wait([
+    (timeline as RecordingCurrentReader).watchEntered.future,
+    state.watchEntered.future,
+  ]);
+}

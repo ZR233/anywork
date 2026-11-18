@@ -1,6 +1,6 @@
 import '../../models.dart';
 
-const threadSchemaVersion = 17;
+const threadSchemaVersion = 18;
 
 sealed class ThreadStreamFrame {
   const ThreadStreamFrame();
@@ -9,11 +9,9 @@ sealed class ThreadStreamFrame {
 final class ThreadSnapshotFrame extends ThreadStreamFrame {
   const ThreadSnapshotFrame({
     required this.workspace,
-    required this.completedHistoryVersion,
     required this.schemaVersion,
   });
 
-  final int? completedHistoryVersion;
   final int? schemaVersion;
 
   /// 当前内存状态与实时事实；不携带 Timeline 条目，历史由分页 API 提供。
@@ -38,18 +36,6 @@ final class ThreadNotificationFrame extends ThreadStreamFrame {
   /// 本通知之前的状态水位；非空且与当前 revision 不一致表示缺口。
   final int? baseRevision;
   final ThreadWorkspaceUpdate update;
-}
-
-final class ThreadResyncRequiredFrame extends ThreadStreamFrame {
-  const ThreadResyncRequiredFrame({
-    required this.threadId,
-    required this.dropped,
-    this.epoch,
-  });
-
-  final String threadId;
-  final int dropped;
-  final int? epoch;
 }
 
 sealed class ThreadWorkspaceUpdate {

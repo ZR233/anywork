@@ -6,6 +6,9 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
 
+/// Flutter-local Flyer mutation placement. This is not a wire cursor or ACK.
+enum TimelineApplyPlacement { set, prepend, append }
+
 /// The component controller alone owns loaded immutable blocks. No tail folding.
 final class TimelineMessageController {
   TimelineMessageController(
@@ -23,6 +26,7 @@ final class TimelineMessageController {
   final TimelineExpansionIntent Function(String)? expansionForBlock;
   bool _disposed = false;
   bool _retired = false;
+  Future<void> _admission = Future.value();
   int get length => controller.messages.length;
 
   TimelineDisplayUnit _unitOf(Message message) =>
@@ -45,25 +49,36 @@ final class TimelineMessageController {
     );
   }
 
-  Future<void> applyBlocks(List<DisplayBlock> blocks, ChatPlacement placement) {
+  Future<void> applyBlocks(
+    List<DisplayBlock> blocks,
+    TimelineApplyPlacement placement,
+  ) {
     if (_disposed || _retired) throw const StaleConversationScope();
-    if (placement == ChatPlacement.append && blocks.isEmpty) {
+    if (placement == TimelineApplyPlacement.append && blocks.isEmpty) {
       return Future.value();
     }
+    return _serialize(() => _applyBlocks(blocks, placement));
+  }
+
+  Future<void> _applyBlocks(
+    List<DisplayBlock> blocks,
+    TimelineApplyPlacement placement,
+  ) {
+    if (_disposed || _retired) throw const StaleConversationScope();
     final messages = [for (final block in blocks) _message(block)];
-    final previousUnits = placement == ChatPlacement.set
+    final previousUnits = placement == TimelineApplyPlacement.set
         ? [for (final message in controller.messages) _unitOf(message)]
         : const <TimelineDisplayUnit>[];
     final Future<void> applied;
     switch (placement) {
-      case ChatPlacement.set:
+      case TimelineApplyPlacement.set:
         applied = controller.setMessages(messages, animated: false);
-      case ChatPlacement.prepend:
-      case ChatPlacement.append:
+      case TimelineApplyPlacement.prepend:
+      case TimelineApplyPlacement.append:
         if (messages.isNotEmpty) {
           applied = controller.insertAllMessages(
             messages,
-            index: placement == ChatPlacement.prepend ? 0 : null,
+            index: placement == TimelineApplyPlacement.prepend ? 0 : null,
             animated: false,
           );
         } else {
@@ -98,9 +113,143 @@ final class TimelineMessageController {
     });
   }
 
+  /// Replaces rows by stable row identity and appends genuinely new anchors.
+  ///
+  /// This is one controller admission and one serial Flyer mutation.
+  Future<void> replaceBlocks(List<DisplayBlock> blocks) {
+    if (_disposed || _retired) throw const StaleConversationScope();
+    return _serialize(() => _replaceBlocks(blocks));
+  }
+
+  /// Reconciles one replaceable History window by stable row identity.
+  ///
+  /// Existing rows are updated in place, genuinely new rows append in order,
+  /// and rows outside the accepted page are removed. This is not a Flyer Set.
+  Future<void> reconcileBlocks(List<DisplayBlock> blocks) {
+    if (_disposed || _retired) throw const StaleConversationScope();
+    return _serialize(() => _reconcileBlocks(blocks));
+  }
+
+  Future<void> _reconcileBlocks(List<DisplayBlock> blocks) async {
+    final desired = <String, DisplayBlock>{};
+    for (final block in blocks) {
+      if (block.id.isEmpty || desired.containsKey(block.id)) {
+        throw const ConversationContinuityError(
+          'Accepted History window has duplicate or empty row identities',
+        );
+      }
+      desired[block.id] = block;
+    }
+    for (final message in List.of(controller.messages)) {
+      if (desired.containsKey(message.id)) continue;
+      await controller.removeMessage(message, animated: false);
+      if (_disposed || _retired) return;
+      _retire(_unitOf(message));
+    }
+    final existing = {
+      for (final message in controller.messages) message.id: message,
+    };
+    for (var index = 0; index < blocks.length; index++) {
+      final block = blocks[index];
+      final old = existing[block.id];
+      if (old == null) {
+        final next = _message(block);
+        await controller.insertAllMessages(
+          [next],
+          index: index,
+          animated: false,
+        );
+        if (_disposed || _retired) return;
+        final unit = _unitOf(next);
+        unit.expansion.current = unit;
+        onUnitCreated?.call(unit);
+        continue;
+      }
+      if (controller.messages[index].id != block.id) {
+        throw const ConversationContinuityError(
+          'Stable History rows changed order',
+        );
+      }
+      final oldUnit = _unitOf(old);
+      if (sameDisplayBlock(oldUnit.block, block)) continue;
+      final next = _message(block);
+      if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
+        continue;
+      }
+      await controller.updateMessage(old, next);
+      if (_disposed || _retired) return;
+      final unit = _unitOf(next);
+      _replaceUnit(oldUnit, unit);
+    }
+  }
+
+  Future<void> _replaceBlocks(List<DisplayBlock> blocks) async {
+    final existingById = {
+      for (final message in controller.messages) message.id: message,
+    };
+    final appended = <Message>[];
+    for (final block in blocks) {
+      final next = _message(block);
+      final old = existingById[block.id];
+      if (old == null) {
+        appended.add(next);
+        continue;
+      }
+      final oldUnit = _unitOf(old);
+      if (sameDisplayBlock(oldUnit.block, block)) continue;
+      if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
+        continue;
+      }
+      await controller.updateMessage(old, next);
+      if (_disposed || _retired) return;
+      final unit = _unitOf(next);
+      _replaceUnit(oldUnit, unit);
+    }
+    if (appended.isNotEmpty) {
+      await _applyBlocks(
+        blocks.where((block) => existingById[block.id] == null).toList(),
+        TimelineApplyPlacement.append,
+      );
+    }
+  }
+
+  Future<void> trimNewest(int count) {
+    if (count <= 0) return Future.value();
+    return _serialize(() async {
+      for (var index = 0; index < count; index++) {
+        if (controller.messages.isEmpty) return;
+        final message = controller.messages.last;
+        await controller.removeMessage(message, animated: false);
+        if (_disposed || _retired) return;
+        _retire(_unitOf(message));
+      }
+    });
+  }
+
+  Future<void> _serialize(Future<void> Function() operation) {
+    final work = _admission.then((_) => operation());
+    _admission = work.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    return work;
+  }
+
+  bool _isFrozenBoundary(TimelineDisplayUnit unit) {
+    final body = unit.body;
+    return body is SingleDisplayBlock &&
+        body.record.contentSource is FrozenObservation;
+  }
+
   void _retire(TimelineDisplayUnit unit) {
     unit.expansion.retire();
     onUnitRetired?.call(unit);
+  }
+
+  /// A stable row keeps its disclosure identity while every body/query
+  /// capability from the superseded unit retires.
+  void _replaceUnit(TimelineDisplayUnit previous, TimelineDisplayUnit next) {
+    previous.expansion.replaceBody();
+    next.expansion.current = next;
+    onUnitRetired?.call(previous);
+    onUnitCreated?.call(next);
   }
 
   void retireDisplays() {

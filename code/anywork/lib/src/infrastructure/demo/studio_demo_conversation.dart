@@ -416,15 +416,12 @@ bool _demoHasActivity(ChatScope scope) => scope.parentId == null;
 ChatAtom _demoCopy(
   ChatAtom atom, {
   PayloadData? payload,
-  int? completionSeq,
   ChatSourceState? sourceState,
   ChatAtomLifecycle? lifecycle,
   List<ChatAtomContent>? contents,
   bool frozen = false,
 }) => ChatAtom(
   id: atom.id,
-  completionItemId: atom.completionItemId,
-  completionSeq: completionSeq ?? atom.completionSeq,
   source: atom.source,
   sourceOrder: atom.sourceOrder,
   kind: atom.kind,
@@ -535,22 +532,19 @@ final class _DemoFrozen {
   final ChatScope scope;
 }
 
+final class _DemoChange {
+  const _DemoChange(this.update);
+  final ThreadWorkspaceUpdate? update;
+}
+
 final class _DemoHistory {
   final List<DisplayBlock> displayBlocks = [];
   final Map<String, _DemoDisplayScript> displayScripts = {};
   final Map<String, String> displayMembership = {};
   final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
   final Map<String, int> displayMemberRevisions = {};
-  TailSnapshot? displayLiveSeed;
-  String? displayCurrentWorkId;
-  int displayRevision = 0;
-  int displayLayoutRevision = 0;
-  bool displayExecutionPresent = false;
-  int displayLastOrder = 0;
-  int displayReadyFrontier = 0;
-  int get displayHead => displayReadyFrontier;
-  // 原件按真实业务过滤；展示分组仅由 displayBlocks 持有。
-  final Map<String, CompletedEntry> completed = {};
+  int historyLastOrder = 0;
+  int get displayHead => displayBlocks.lastOrNull?.blockOrder ?? 0;
   final String epoch = newStudioCorrelationId();
   final Map<String, ChatAtom> activeAtoms = {};
   final Map<ChatSourceId, ChatSourceState> sourceStates = {};
@@ -558,26 +552,21 @@ final class _DemoHistory {
   int _facts = 0;
   ChatFactPosition _fact() =>
       ChatFactPosition(effectSeq: ++_facts, suborder: 0);
-  List<CompletedEntry> entries(Iterable<ChatAtom> atoms) => [
-    for (final atom in atoms)
-      CompletedEntry(
-        recordId: atom.completionItemId ?? atom.id,
-        completionSeq: atom.completionSeq!,
-        atom: atom,
-      ),
-  ];
   final List<_DemoFrozen> items = [];
   final Map<String, _DemoFrozen> byId = {};
   final Map<String, Map<String, _DemoBody>> bodies = {};
   final Map<String, _DemoBody> payloads = {};
   final Map<(String, String, String), _DemoBody> currentBodies = {};
+  final Map<String, List<Object?>> stateCollections = {};
+  final Map<String, int> stateCollectionVersions = {};
+  final Map<String, String> _stateCollectionSignatures = {};
   final Map<(String, String), int> positions = {};
   int _nextPosition = 0;
   _DemoBody? planDocument;
   int? planRevision;
   int interactionRevision = 0;
   String? _interactionSignature;
-  final Set<void Function()> changes = {};
+  final Set<void Function(_DemoChange)> changes = {};
   int revision = 0;
   int get head => items.lastOrNull?.order ?? 0;
   void prepareCurrent(ThreadWorkspace workspace) {
@@ -607,17 +596,12 @@ final class _DemoHistory {
     }
   }
 
-  void changed(ThreadWorkspace workspace) {
+  void changed(ThreadWorkspace workspace, {ThreadWorkspaceUpdate? update}) {
     revision++;
-    final executionPresent = workspace.runtime.execution != null;
-    if (displayExecutionPresent != executionPresent) {
-      displayExecutionPresent = executionPresent;
-      displayRevision++;
-      displayLayoutRevision++;
-    }
     prepareCurrent(workspace);
+    final change = _DemoChange(update);
     for (final wake in changes.toList()) {
-      wake();
+      wake(change);
     }
   }
 
@@ -634,13 +618,6 @@ final class _DemoHistory {
     }
   }
 
-  CompletedEntry displayFixture(_DemoItem fixture, ChatAtom atom) =>
-      CompletedEntry(
-        recordId: atom.completionItemId!,
-        completionSeq: atom.completionSeq!,
-        atom: atom,
-      );
-
   bool accept(ChatAtom message, ChatScope scope) {
     validateScope(scope);
     if (message.id.isEmpty) throw _demoQueryFailure('Empty message identity');
@@ -649,11 +626,7 @@ final class _DemoHistory {
     }
     final key = _demoScopeKey(scope);
     final old = byId[message.id];
-    message = _demoCopy(
-      message,
-      completionSeq: old?.order ?? head + 1,
-      frozen: true,
-    );
+    message = _demoCopy(message, frozen: true);
     if (old != null) {
       if (_demoScopeKey(old.scope) != key ||
           jsonEncode(chatAtomToJson(old.message)) !=
@@ -669,40 +642,12 @@ final class _DemoHistory {
     }
     final record = _DemoFrozen(message, head + 1, scope);
     if (message.payload case InlinePayload(:final bytes)) {
-      payloads[message.completionItemId ?? message.id] = _DemoBody()
+      payloads[message.id] = _DemoBody()
         ..append(bytes)
         ..sealed = true;
     }
     items.add(record);
     byId[message.id] = record;
-    return true;
-  }
-
-  bool acceptDisplay(CompletedEntry entry) {
-    if (completed.containsKey(entry.recordId) || entry.completionSeq <= head) {
-      throw _demoQueryFailure('Duplicate or unordered completion fixture');
-    }
-    completed[entry.recordId] = entry;
-    final atom = entry.atom;
-    if (!byId.containsKey(atom.id)) {
-      final record = _DemoFrozen(
-        atom,
-        entry.completionSeq,
-        ChatScope(
-          queryClass: ExactChatClass(
-            atom.kind == ChatAtomKind.inference ? 'execution' : 'conversation',
-          ),
-          parentId: _demoTurnParent(atom.turnId),
-        ),
-      );
-      items.add(record);
-      byId[atom.id] = record;
-    }
-    if (atom.payload case InlinePayload(:final bytes)) {
-      payloads[entry.recordId] = _DemoBody()
-        ..append(bytes)
-        ..sealed = true;
-    }
     return true;
   }
 
@@ -820,8 +765,6 @@ final class _DemoHistory {
     };
     final message = ChatAtom(
       id: item.id,
-      completionItemId: item.id,
-      completionSeq: frozen?.completionSeq ?? head + 1,
       source: active.source,
       sourceOrder: active.sourceOrder,
       kind: active.kind,
@@ -875,8 +818,6 @@ final class _DemoHistory {
       parentId: _demoTurnParent(item.turnId),
     );
     if (!accept(message, memberScope)) return;
-    final display = displayFixture(item, message);
-    completed[display.recordId] = display;
     updateDisplayMember(item.id);
     final ended = <ChatSourceId>[
       if (active.source is! ForegroundTurnChatSource) active.source,
@@ -902,8 +843,9 @@ final class _DemoHistory {
 
 // All cursors are issued by this original reader and bind its fixed initial cut.
 // Tokens are opaque to callers; retaining only issued boundaries is not history caching.
-final class _DemoReader implements ConversationReader {
-  _DemoReader(this._api, this.threadId, this._history, this.scope)
+
+final class _DemoReadSource {
+  _DemoReadSource(this._api, this.threadId, this._history, this.scope)
     : h0 = _history.head,
       itemH0 = _history.head;
   final DemoStudioTransport _api;
@@ -911,12 +853,9 @@ final class _DemoReader implements ConversationReader {
   final ChatScope scope;
   final int h0;
   final int itemH0;
-  @override
   final String threadId;
   final Map<String, (String, int, int)> _cursors = {};
   final Set<Future<void>> _accepted = {};
-  final Set<_DemoContentWatch> _watches = {};
-  final Set<_DemoDisplayMembers> _displayReads = {};
   bool _closed = false;
   Future<void>? _closing;
   String cursor(String kind, int revision, int boundary) {
@@ -960,82 +899,13 @@ final class _DemoReader implements ConversationReader {
       payload: DeferredPayload(
         reference: ContentRef(
           databaseId: _history.epoch,
-          target: ItemPayloadTarget(
-            itemId: message.completionItemId ?? message.id,
-          ),
+          target: ItemPayloadTarget(itemId: message.id),
         ),
         byteLength: length,
       ),
     );
   }
 
-  CompletedEntry fitEntry(CompletedEntry entry, int budget) => CompletedEntry(
-    recordId: entry.recordId,
-    completionSeq: entry.completionSeq,
-    atom: fit(entry.atom, budget),
-  );
-
-  List<CompletedEntry> source() =>
-      _history.entries(_history.index(scope).map((record) => record.message));
-
-  ChatBatch page(ReadDemand demand, {String? before}) {
-    _history.validateScope(scope);
-    _demoDemand(demand);
-    final end = before == null ? h0 + 1 : boundary(before, 'history', h0);
-    final records = source();
-    final selected = <CompletedEntry>[];
-    String? next;
-    for (var i = records.length - 1; i >= 0; i--) {
-      final entry = records[i];
-      if (entry.completionSeq >= end) continue;
-      final candidate = fitEntry(entry, 0);
-      final token = i == 0 ? null : cursor('history', h0, entry.completionSeq);
-      final trial = ChatBatch(
-        placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-        entries: [candidate, ...selected],
-        before: token,
-        throughSeq: h0,
-      );
-      if (_demoBatchBytes(trial) > demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: completion envelope does not fit',
-          );
-        }
-        break;
-      }
-      selected.insert(0, candidate);
-      next = token;
-      if (selected.length == demand.maxItems) break;
-    }
-    return ChatBatch(
-      placement: before == null ? ChatPlacement.set : ChatPlacement.prepend,
-      entries: selected,
-      before: next,
-      throughSeq: h0,
-    );
-  }
-
-  @override
-  Future<ThreadBusinessRefs> readBusinessRefs() =>
-      _read(() => _api._snapshotOf(_api._demoWorkspace(threadId)).businessRefs);
-
-  @override
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
-    required ReadDemand demand,
-  }) => _read(() {
-    _demoDemand(demand);
-    final entry = _history.completed[recordId];
-    if (entry == null) throw _demoMissing();
-    return fitEntry(entry, demand.maxBytes);
-  });
-
-  @override
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => _read(() => page(demand, before: before));
   // Scope selects chat members, not the lifetime of already issued Item refs.
   // A Main current tool ref remains readable after sealing into Children.
   bool _ownsItem(String id) =>
@@ -1048,72 +918,6 @@ final class _DemoReader implements ConversationReader {
     return _history.bodies[id] ?? const {};
   }
 
-  @override
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  }) => _read(() {
-    _demoDemand(demand);
-    final bodies = _itemBodies(itemId);
-    final entries = bodies.entries.toList();
-    final start = continuation == null
-        ? 0
-        : boundary(continuation, 'manifest:$itemId', 0);
-    final out = <ContentManifestEntry>[];
-    String? next;
-    if (_demoEncoded({'entries': [], 'continuation': null}) > demand.maxBytes) {
-      throw _demoQueryFailure('InvalidDemand: manifest envelope does not fit');
-    }
-    var at = start;
-    for (; at < entries.length && out.length < demand.maxItems; at++) {
-      final entry = entries[at];
-      final ref = ContentRef(
-        databaseId: _history.epoch,
-        target: BodyContentTarget(
-          owner: ItemContentOwner(itemId: itemId),
-          key: entry.key,
-        ),
-      );
-      final payload = utf8.encode(
-        jsonEncode({
-          'key': entry.key,
-          'byteLength': entry.value.length,
-          'generation': '${entry.value.generation}',
-          'mediaType': 'text/plain; charset=utf-8',
-        }),
-      );
-      final candidate = ContentManifestEntry(
-        key: entry.key,
-        payload: payload,
-        reference: ref,
-      );
-      final token = cursor('manifest:$itemId', 0, at + 1);
-      final bytes = _demoEncoded({
-        'entries': [
-          for (final e in [...out, candidate])
-            {
-              'key': e.key,
-              'payload': e.payload,
-              'reference': contentRefToJson(e.reference),
-            },
-        ],
-        'continuation': token,
-      });
-      if (bytes > demand.maxBytes) {
-        if (out.isEmpty) {
-          throw _demoQueryFailure('InvalidDemand: manifest entry does not fit');
-        }
-        break;
-      }
-      out.add(candidate);
-      next = token;
-    }
-    return ContentManifestPage(
-      entries: out,
-      continuation: at < entries.length ? next : null,
-    );
-  });
   _DemoBody _body(ContentRef reference) {
     if (reference.databaseId != _history.epoch) {
       throw _demoQueryFailure('Wrong Demo database');
@@ -1155,52 +959,40 @@ final class _DemoReader implements ConversationReader {
     }
   }
 
-  ContentWindow _window(ContentRef reference, ContentRange range) {
-    final body = _body(reference);
-    final bytes = body.range(range.offset, range.maxBytes);
-    return ContentWindow(
-      offset: range.offset,
-      bytes: bytes,
-      generation: '${body.generation}',
-      availableThrough: body.length,
-      sealed: body.sealed,
-    );
-  }
-
-  @override
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) => _read(() => _window(reference, range));
-  @override
-  ConversationContentWatch watchContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) {
-    if (_closed || _api._runtimeExiting) throw _conversationClosedFailure;
-    if (_watches.length >= 64) {
-      throw _demoQueryFailure('Demo content watch limit exceeded');
-    }
-    final watch = _DemoContentWatch(this, reference, range);
-    _watches.add(watch);
-    return watch;
-  }
-
-  @override
   Future<CurrentCollectionPage> pageCurrent({
     required CurrentCollectionRef reference,
     String? continuation,
     required ReadDemand demand,
   }) => _read(() {
     _demoDemand(demand);
-    if (!_demoHasActivity(scope) || reference.databaseId != _history.epoch) {
+    if (!_demoHasActivity(scope) || reference.ownerId != _history.epoch) {
       throw _demoMissing();
     }
     if (reference.collection != 'interactions' ||
         reference.revision != _history.interactionRevision) {
       throw _demoStale();
     }
-    final source = _collection(reference.collection);
+    final rows = _api._demoWorkspace(threadId).interactions.toList()
+      ..sort(
+        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
+          _history.positions[('interaction', b.id)]!,
+        ),
+      );
+    final source = <(String, int, Map<String, Object?>)>[
+      for (final row in rows)
+        (
+          row.id,
+          _history.positions[('interaction', row.id)]!,
+          {
+            'interactionId': row.id,
+            'scope': {'threadId': row.threadId, 'turnId': row.turnId},
+            'revision': row.revision,
+            'kind': row.kind.name,
+            'title': row.title,
+            'body': row.body,
+          },
+        ),
+    ];
     final start = continuation == null
         ? 0
         : boundary(continuation, reference.collection, reference.revision);
@@ -1225,7 +1017,7 @@ final class _DemoReader implements ConversationReader {
         break;
       }
       final bytes = utf8.encode(jsonEncode(row.$3));
-      PayloadData payload = InlinePayload(bytes: bytes);
+      CurrentPayloadData payload = InlineCurrentPayload(bytes: bytes);
       CurrentCollectionEntry candidate = CurrentCollectionEntry(
         id: row.$1,
         position: index,
@@ -1239,7 +1031,23 @@ final class _DemoReader implements ConversationReader {
             {
               'id': e.id,
               'position': e.position,
-              'payload': chatPayloadToJson(e.payload),
+              'payload': switch (e.payload) {
+                InlineCurrentPayload(:final bytes) => {
+                  'kind': 'inline',
+                  'bytes': bytes,
+                },
+                DeferredCurrentPayload(:final reference, :final byteLength) => {
+                  'kind': 'deferred',
+                  'reference': {
+                    'ownerId': reference.ownerId,
+                    'domain': reference.domain,
+                    'entityId': reference.entityId,
+                    'contentKey': reference.contentKey,
+                    'generation': reference.generation,
+                  },
+                  'byteLength': byteLength,
+                },
+              },
             },
         ],
         'continuation': token,
@@ -1250,17 +1058,13 @@ final class _DemoReader implements ConversationReader {
           key,
           () => _DemoBody()..append(bytes),
         );
-        payload = DeferredPayload(
-          reference: ContentRef(
-            databaseId: _history.epoch,
-            target: BodyContentTarget(
-              owner: CurrentContentOwner(
-                domain: reference.collection,
-                id: row.$1,
-                revision: reference.revision,
-              ),
-              key: 'payload',
-            ),
+        payload = DeferredCurrentPayload(
+          reference: CurrentContentRef(
+            ownerId: _history.epoch,
+            domain: 'collection:${reference.collection}',
+            entityId: '${row.$2}',
+            contentKey: 'entry',
+            generation: '${reference.revision}',
           ),
           byteLength: bytes.length,
         );
@@ -1289,547 +1093,13 @@ final class _DemoReader implements ConversationReader {
       continuation: more ? next : null,
     );
   });
-  Iterable<(String, int, Map<String, Object?>)> _collection(String name) sync* {
-    if (name != 'interactions') throw _demoMissing();
-    final ordered = _api._demoWorkspace(threadId).interactions.toList()
-      ..sort(
-        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
-          _history.positions[('interaction', b.id)]!,
-        ),
-      );
-    for (final value in ordered) {
-      yield (
-        value.id,
-        _history.positions[('interaction', value.id)]!,
-        {
-          'interactionId': value.id,
-          'scope': {'threadId': value.threadId, 'turnId': value.turnId},
-          'revision': value.revision,
-          'content': {
-            'kind': value.kind.name,
-            'data': {
-              ...switch (value.payload) {
-                UserInputInteractionPayload(:final questions) => {
-                  'questions': [
-                    for (final question in questions)
-                      {
-                        'id': question.id,
-                        'header': question.header,
-                        'question': question.question,
-                        'isOther': question.isOther,
-                        'isSecret': question.isSecret,
-                        'options': [
-                          for (final option in question.options)
-                            {
-                              'label': option.label,
-                              'description': option.description,
-                            },
-                        ],
-                      },
-                  ],
-                },
-                ToolApprovalInteractionPayload(
-                  :final toolName,
-                  :final arguments,
-                  :final workingDirectory,
-                  :final parentAgentId,
-                ) =>
-                  {
-                    'request': {
-                      'name': toolName,
-                      'arguments': arguments,
-                      'workingDirectory': workingDirectory,
-                      'parentAgentId': parentAgentId,
-                    },
-                  },
-                UnknownInteractionPayload() => throw _demoQueryFailure(
-                  'Unknown interaction content',
-                ),
-              },
-              'state': {
-                'kind': 'pending',
-                'data': {'operationId': value.id},
-              },
-            },
-          },
-          'createdAt': 0,
-          'updatedAt': value.revision,
-        },
-      );
-    }
-  }
 
-  @override
   void requestClose() {
-    if (_closed) return;
     _closed = true;
-    for (final watch in _watches.toList()) {
-      watch.requestClose();
-    }
-    for (final members in _displayReads.toList()) {
-      members.requestClose();
-    }
   }
 
-  @override
-  Future<void> close() {
+  Future<void> close() => _closing ??= () async {
     requestClose();
-    return _closing ??= () async {
-      // A failed watch must not prevent the other owned operations from joining.
-      await Future.wait([
-        ..._accepted,
-        for (final watch in _watches.toList()) watch.close(),
-        for (final members in _displayReads.toList()) members.close(),
-      ]);
-      _cursors.clear();
-      _api._ownedHistoryReaders.remove(this);
-    }().whenComplete(() => _closing = null);
-  }
-}
-
-final class _DemoContentWatch implements ConversationContentWatch {
-  _DemoContentWatch(this.reader, this.reference, this.range);
-  final _DemoReader reader;
-  final ContentRef reference;
-  final ContentRange range;
-  bool _dirty = true, _scheduled = false, _stopped = false, _paused = false;
-  String? _last;
-  Future<void>? _delivery;
-  Future<void>? _closing;
-  bool _joined = false;
-  late final StreamController<ContentWindow> _controller = StreamController(
-    sync: true,
-    onListen: () {
-      if (_stopped || reader._closed) return;
-      reader._history.changes.add(wake);
-      wake();
-    },
-    onPause: () {
-      _paused = true;
-    },
-    onResume: () {
-      _paused = false;
-      wake();
-    },
-    // Stream cancellation only stops delivery. The original watch remains
-    // registered until its explicit handle successfully joins.
-    onCancel: requestClose,
-  );
-  @override
-  Stream<ContentWindow> get windows => _controller.stream;
-  void wake() {
-    _dirty = true;
-    if (_paused || _stopped || _scheduled || !_controller.hasListener) return;
-    _scheduled = true;
-    _delivery = Future<void>.microtask(() {
-      _scheduled = false;
-      if (_paused || _stopped || !_dirty) return;
-      _dirty = false;
-      try {
-        final window = reader._window(reference, range);
-        final stamp =
-            '${window.generation}:${window.availableThrough}:${window.sealed}';
-        if (stamp != _last) {
-          _last = stamp;
-          _controller.add(window);
-        }
-        if (window.sealed) requestClose();
-      } catch (error, stack) {
-        _controller.addError(error, stack);
-        requestClose();
-      }
-    });
-  }
-
-  @override
-  void requestClose() {
-    if (_stopped) return;
-    _stopped = true;
-    reader._history.changes.remove(wake);
-    unawaited(_controller.close());
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    if (_joined) return Future.value();
-    return _closing ??= () async {
-      await _delivery;
-      _joined = true;
-      reader._watches.remove(this);
-    }().whenComplete(() => _closing = null);
-  }
-}
-
-int _demoBatchBytes(ChatBatch batch) => _demoEncoded({
-  'placement': batch.placement.name,
-  'entries': batch.entries.map(completedEntryToJson).toList(),
-  'before': batch.before,
-  'fromSeq': batch.fromSeq,
-  'throughSeq': batch.throughSeq,
-});
-
-class _DemoConversationFeed implements ConversationFeed {
-  _DemoConversationFeed(
-    this._api,
-    this.threadId,
-    this._history,
-    ChatScope scope,
-    this._demand,
-  ) : subscriptionId = 'demo:${newStudioCorrelationId()}',
-      reader = _DemoReader(_api, threadId, _history, scope) {
-    _demoDemand(_demand);
-    _initial = reader.page(_demand);
-    _completed = reader.h0;
-    _currentRevision = _history.revision;
-    // No await separates source registration and capture. Failed preparation
-    // has not admitted an owned resource; events.listen never creates the cut.
-    _api._ownedHistoryReaders.add(reader);
-    (_api._conversationFeeds[threadId] ??= {}).add(this);
-  }
-  final DemoStudioTransport _api;
-  final _DemoHistory _history;
-  final ReadDemand _demand;
-  @override
-  final String threadId;
-  @override
-  final String subscriptionId;
-  @override
-  final _DemoReader reader;
-  ChatBatch? _initial;
-  late int _completed, _currentRevision;
-  int _sent = 0, _acked = 0, _phase = 0;
-  bool _started = false,
-      _claimed = false,
-      _closed = false,
-      _ended = false,
-      _pendingCurrent = false;
-  Future<void>? _closing;
-  late final StreamController<ConversationFrame> _controller = StreamController(
-    onListen: () {
-      _started = true;
-      _flush();
-    },
-    onCancel: () {
-      if (!_ended) {
-        requestClose();
-        return close();
-      }
-    },
-  );
-  @override
-  Stream<ConversationFrame> get events {
-    if (_closed) throw _conversationClosedFailure;
-    if (_claimed) {
-      throw _demoQueryFailure('Conversation events already have a consumer');
-    }
-    _claimed = true;
-    return _controller.stream;
-  }
-
-  void _send(ConversationEvent event, {bool terminal = false}) {
-    if (!_started || _ended) return;
-    if (!terminal) _sent++;
-    _controller.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: _sent,
-        event: event,
-      ),
-    );
-    if (terminal) {
-      _ended = true;
-      _unregister();
-      unawaited(_controller.close());
-    }
-  }
-
-  ActivitySnapshot _activity() => ActivitySnapshot(
-    revision: _history.revision,
-    completedThrough: _completed,
-    executionPresent: _api._demoWorkspace(threadId).runtime.execution != null,
-    entries: [
-      for (final atom in _history.activeAtoms.values)
-        ActivityEntry(
-          identity: atom.tool != null
-              ? ForegroundToolActivityIdentity(callId: atom.tool!.callId)
-              : ModelPartActivityIdentity(atomId: atom.id),
-          atom: atom,
-        ),
-    ],
-  );
-
-  void _flush() {
-    if (_closed || _ended || !_started || _sent != _acked) return;
-    try {
-      if (_phase == 0) {
-        _phase = 1;
-        _send(ConversationChatEvent(batch: _initial!));
-        _initial = null;
-        return;
-      }
-      if (_phase == 1 && _demoHasActivity(reader.scope)) {
-        _phase = 2;
-        _send(ConversationActivityEvent(snapshot: _activity()));
-        return;
-      }
-      _phase = 2;
-      final head = _history.head;
-      if (_completed < head) {
-        final selected = <CompletedEntry>[];
-        var through = _completed;
-        for (final entry in reader.source()) {
-          if (entry.completionSeq <= _completed || entry.completionSeq > head) {
-            continue;
-          }
-          final candidate = reader.fitEntry(entry, 0);
-          final trial = ChatBatch(
-            placement: ChatPlacement.append,
-            entries: [...selected, candidate],
-            fromSeq: _completed,
-            throughSeq: entry.completionSeq,
-          );
-          if (selected.length == _demand.maxItems ||
-              _demoBatchBytes(trial) > _demand.maxBytes) {
-            if (selected.isEmpty) {
-              throw _demoQueryFailure(
-                'InvalidDemand: completion envelope does not fit',
-              );
-            }
-            break;
-          }
-          selected.add(candidate);
-          through = entry.completionSeq;
-        }
-        // Filtering can advance the global checked prefix with no visible entry.
-        if (selected.length < _demand.maxItems) through = head;
-        final from = _completed;
-        _completed = through;
-        _send(
-          ConversationChatEvent(
-            batch: ChatBatch(
-              placement: ChatPlacement.append,
-              entries: selected,
-              fromSeq: from,
-              throughSeq: through,
-            ),
-          ),
-        );
-        return;
-      }
-      if (_demoHasActivity(reader.scope) &&
-          (_pendingCurrent || _currentRevision != _history.revision)) {
-        _pendingCurrent = false;
-        _currentRevision = _history.revision;
-        _send(ConversationActivityEvent(snapshot: _activity()));
-      }
-    } catch (error) {
-      _send(
-        ConversationFailureEvent(
-          failure: _studioFailure(error) as StudioFailure,
-        ),
-        terminal: true,
-      );
-    }
-  }
-
-  void _contentChanged() {
-    if (_closed || _ended) return;
-    _pendingCurrent = true;
-    _flush();
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    if (_closed) throw _conversationClosedFailure;
-    if (deliverySequence < 0 || deliverySequence > _sent) {
-      throw _demoQueryFailure('ACK exceeds sent sequence');
-    }
-    if (deliverySequence <= _acked) return;
-    _acked = deliverySequence;
-    _flush();
-  }
-
-  void _unregister() {
-    _api._conversationFeeds[threadId]?.remove(this);
-    if (_api._conversationFeeds[threadId]?.isEmpty ?? false) {
-      _api._conversationFeeds.remove(threadId);
-    }
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    reader.requestClose();
-    _send(const ConversationClosedEvent(), terminal: true);
-    _closed = true;
-    _initial = null;
-    _unregister();
-    if (!_ended) {
-      _ended = true;
-      unawaited(_controller.close());
-    }
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    return _closing ??= () async {
-      await reader.close();
-      _api._ownedConversationFeeds.remove(this);
-    }().whenComplete(() => _closing = null);
-  }
-}
-
-/// The independent Demo state subscription. It carries only State, Failure and
-/// Closed frames with its own identity, sequence and ACK budget; content never
-/// flows here and state never flows through the content feed.
-final class _DemoConversationStateFeed implements ConversationStateFeed {
-  _DemoConversationStateFeed(this._api, this.threadId)
-    : subscriptionId = 'demo-state:${newStudioCorrelationId()}' {
-    _initialState = ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        schemaVersion: threadSchemaVersion,
-        completedHistoryVersion: completedHistoryVersion,
-        workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-      ),
-    );
-    // No await separates source registration and capture. Failed preparation
-    // has not admitted an owned resource; events.listen never creates the cut.
-    _api._ownedConversationStateFeeds.add(this);
-    (_api._conversationStateFeeds[threadId] ??= {}).add(this);
-  }
-
-  final DemoStudioTransport _api;
-  @override
-  final String threadId;
-  @override
-  final String subscriptionId;
-  ConversationStateEvent? _initialState;
-  int _sent = 0, _acked = 0;
-  bool _started = false,
-      _claimed = false,
-      _closed = false,
-      _ended = false,
-      _pending = false;
-  Future<void>? _closing;
-  late final StreamController<ConversationFrame> _controller = StreamController(
-    onListen: () {
-      _started = true;
-      _flush();
-    },
-    onCancel: () {
-      if (!_ended) {
-        requestClose();
-        return close();
-      }
-    },
-  );
-
-  @override
-  Stream<ConversationFrame> get events {
-    if (_closed) throw _conversationClosedFailure;
-    if (_claimed) {
-      throw _demoQueryFailure('Conversation state events already consumed');
-    }
-    _claimed = true;
-    return _controller.stream;
-  }
-
-  void _send(ConversationEvent event, {bool terminal = false}) {
-    if (!_started || _ended) return;
-    if (!terminal) _sent++;
-    _controller.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: _sent,
-        event: event,
-      ),
-    );
-    if (terminal) {
-      _ended = true;
-      _unregister();
-      unawaited(_controller.close());
-    }
-  }
-
-  // State changes coalesce into one snapshot per delivery credit, captured at
-  // the flush cut; the SDK gate keeps snapshot application monotonic.
-  void _flush() {
-    if (_closed || _ended || !_started || _sent != _acked) return;
-    try {
-      if (_initialState != null) {
-        final initial = _initialState!;
-        _initialState = null;
-        _send(initial);
-        return;
-      }
-      if (_pending) {
-        _pending = false;
-        _send(
-          ConversationStateEvent(
-            frame: ThreadSnapshotFrame(
-              schemaVersion: threadSchemaVersion,
-              completedHistoryVersion: completedHistoryVersion,
-              workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-            ),
-          ),
-        );
-      }
-    } catch (error) {
-      _send(
-        ConversationFailureEvent(
-          failure: _studioFailure(error) as StudioFailure,
-        ),
-        terminal: true,
-      );
-    }
-  }
-
-  void _stateChanged() {
-    if (_closed || _ended) return;
-    _pending = true;
-    _flush();
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    if (_closed) throw _conversationClosedFailure;
-    if (deliverySequence < 0 || deliverySequence > _sent) {
-      throw _demoQueryFailure('ACK exceeds sent state sequence');
-    }
-    if (deliverySequence <= _acked) return;
-    _acked = deliverySequence;
-    _flush();
-  }
-
-  void _unregister() {
-    _api._conversationStateFeeds[threadId]?.remove(this);
-    if (_api._conversationStateFeeds[threadId]?.isEmpty ?? false) {
-      _api._conversationStateFeeds.remove(threadId);
-    }
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    _send(const ConversationClosedEvent(), terminal: true);
-    _closed = true;
-    _initialState = null;
-    _unregister();
-    if (!_ended) {
-      _ended = true;
-      unawaited(_controller.close());
-    }
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    return _closing ??= () async {
-      _api._ownedConversationStateFeeds.remove(this);
-    }().whenComplete(() => _closing = null);
-  }
+    await Future.wait(_accepted.toList());
+  }();
 }

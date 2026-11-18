@@ -8,15 +8,18 @@ part of 'live_status_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+/// Current state and business facts are projected directly; the only local
+/// paging state is the explicitly requested activity-tools page.
 
 @ProviderFor(LiveStatusViewModel)
 final liveStatusViewModelProvider = LiveStatusViewModelFamily._();
 
-/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+/// Current state and business facts are projected directly; the only local
+/// paging state is the explicitly requested activity-tools page.
 final class LiveStatusViewModelProvider
     extends $NotifierProvider<LiveStatusViewModel, LiveStatusView?> {
-  /// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+  /// Current state and business facts are projected directly; the only local
+  /// paging state is the explicitly requested activity-tools page.
   LiveStatusViewModelProvider._({
     required LiveStatusViewModelFamily super.from,
     required String super.argument,
@@ -62,9 +65,10 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'd8f09286ae1e0eca4cdf0433dc818e20b06e7e98';
+    r'8950251dc9805bf785d774347945f769e6219d95';
 
-/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+/// Current state and business facts are projected directly; the only local
+/// paging state is the explicitly requested activity-tools page.
 
 final class LiveStatusViewModelFamily extends $Family
     with
@@ -84,7 +88,8 @@ final class LiveStatusViewModelFamily extends $Family
         isAutoDispose: true,
       );
 
-  /// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+  /// Current state and business facts are projected directly; the only local
+  /// paging state is the explicitly requested activity-tools page.
 
   LiveStatusViewModelProvider call(String threadId) =>
       LiveStatusViewModelProvider._(argument: threadId, from: this);
@@ -93,7 +98,8 @@ final class LiveStatusViewModelFamily extends $Family
   String toString() => r'liveStatusViewModelProvider';
 }
 
-/// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
+/// Current state and business facts are projected directly; the only local
+/// paging state is the explicitly requested activity-tools page.
 
 abstract class _$LiveStatusViewModel extends $Notifier<LiveStatusView?> {
   late final _$args = ref.$arg as String;

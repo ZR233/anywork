@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -7,8 +8,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../platform/local_file_dialogs.dart';
 import '../state/timeline_file_presentation.dart';
+import '../state/timeline_display_unit.dart';
 import 'file_reading_panel.dart';
-import 'timeline_content_connector.dart';
 import '../state/timeline_image_resources.dart';
 import '../state/chat_item_presentation.dart';
 import '../widgets/content_layout_witness.dart';
@@ -155,13 +156,11 @@ class TimelineAttachmentsConnector extends StatefulWidget {
     required this.resources,
     required this.readAttachment,
     required this.isActive,
-    this.readContent,
   });
   final ChatItemPresentation item;
   final TimelineImageResources resources;
   final Future<Uint8List> Function(String attachmentId)? readAttachment;
   final bool Function() isActive;
-  final ChatContentRead? readContent;
   @override
   State<TimelineAttachmentsConnector> createState() =>
       _TimelineAttachmentsConnectorState();
@@ -177,6 +176,10 @@ class _TimelineAttachmentsConnectorState
   final Set<String> _busyIds = {};
   final Map<String, String> _operationErrors = {};
   int _generation = 0;
+  TimelineExpansionIntent? _intent;
+  ChatBodyPresentation? _deferredBody;
+  int? _deferredGeneration;
+  bool _deferredStarted = false;
   @override
   void initState() {
     super.initState();
@@ -190,6 +193,9 @@ class _TimelineAttachmentsConnectorState
     _files = null;
     _error = null;
     _loading = false;
+    _deferredBody = null;
+    _deferredGeneration = null;
+    _deferredStarted = false;
     if (widget.item.presentationContract == 'builtin.show_files@1') {
       final body = widget.item.body('tool.output-artifacts');
       if (body?.inline != null) {
@@ -198,9 +204,11 @@ class _TimelineAttachmentsConnectorState
         } catch (error) {
           _error = error;
         }
-      } else if (body?.reference != null) {
+      } else if (body?.hasReference ?? false) {
         _loading = true;
-        _loadFiles(body!, _generation);
+        _deferredBody = body;
+        _deferredGeneration = _generation;
+        _startDeferred();
       } else {
         _error = const FormatException('缺少文件展示回执');
       }
@@ -215,6 +223,30 @@ class _TimelineAttachmentsConnectorState
     }
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = TimelineGroupBodyIntent.of(context);
+    final changed = !identical(next, _intent);
+    _intent = next;
+    if (changed && _deferredBody != null) _bind();
+    _startDeferred();
+  }
+
+  void _startDeferred() {
+    final body = _deferredBody;
+    final generation = _deferredGeneration;
+    final intent = _intent;
+    if (body == null ||
+        generation == null ||
+        _deferredStarted ||
+        intent?.readHistoryBody == null && intent?.readCurrentBody == null) {
+      return;
+    }
+    _deferredStarted = true;
+    unawaited(_loadFiles(body, generation, intent!));
+  }
+
   void _acceptFiles(String artifacts) {
     final files = TimelineFilesPresentation.fromArtifacts(artifacts);
     _files = files;
@@ -222,11 +254,31 @@ class _TimelineAttachmentsConnectorState
     widget.resources.retainItem(_imageOwner, _attachments);
   }
 
-  Future<void> _loadFiles(ChatBodyPresentation body, int generation) async {
-    bool current() => mounted && generation == _generation && widget.isActive();
+  Future<void> _loadFiles(
+    ChatBodyPresentation body,
+    int generation,
+    TimelineExpansionIntent intent,
+  ) async {
+    final generationToken = intent.bodyGeneration;
+    bool current() =>
+        mounted &&
+        generation == _generation &&
+        widget.isActive() &&
+        identical(generationToken, intent.bodyGeneration);
     try {
-      final read = widget.readContent;
-      if (read == null || !current()) throw StateError('文件展示回执读取尚未就绪');
+      Future<ContentWindow> Function(ContentRange range) read;
+      final historyReference = body.historyReference;
+      final currentReference = body.currentReference;
+      if (historyReference != null && intent.readHistoryBody != null) {
+        read = (range) =>
+            intent.readHistoryBody!(generationToken, historyReference, range);
+      } else if (currentReference != null && intent.readCurrentBody != null) {
+        read = (range) =>
+            intent.readCurrentBody!(generationToken, currentReference, range);
+      } else {
+        throw StateError('文件展示回执读取尚未就绪');
+      }
+      if (!current()) throw StateError('文件展示回执已失效');
       final bytes = BytesBuilder(copy: false);
       String? revision;
       while (bytes.length < body.byteLength) {
@@ -234,7 +286,6 @@ class _TimelineAttachmentsConnectorState
         final remaining = body.byteLength - offset;
         final limit = remaining < 65536 ? remaining : 65536;
         final window = await read(
-          body.reference!,
           ContentRange(offset: offset, maxBytes: limit),
         );
         if (!current()) return;

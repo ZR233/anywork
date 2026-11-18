@@ -37,6 +37,8 @@ ThreadSessionState applyThreadSnapshotState(
   );
   return current.copyWith(
     workspace: next,
+    interactionReadError: null,
+    interactionReadReference: null,
     directoryRow: directoryRow ?? current.directoryRow,
     hasSnapshot: true,
     baseRevision: snapshot.revision,
@@ -92,6 +94,16 @@ ThreadSessionState applyThreadNotificationState(
   };
   return current.copyWith(
     workspace: updated,
+    interactionReadReference:
+        updated.businessRefs.interactions != workspace.businessRefs.interactions
+        ? null
+        : current.interactionReadReference,
+    interactionReadError:
+        frame.update is ThreadBusinessRefsUpdate &&
+            updated.businessRefs.interactions !=
+                workspace.businessRefs.interactions
+        ? null
+        : current.interactionReadError,
     streamEpoch: frame.epoch ?? current.streamEpoch,
     baseRevision: frame.baseRevision ?? frame.revision - 1,
     sync: current.sync.connected(),

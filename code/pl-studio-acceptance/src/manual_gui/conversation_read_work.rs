@@ -11,15 +11,17 @@ use pl_model::model::{ModelInfo, ModelTransportProfile};
 use pl_model::protocol::ProtocolEndpoint;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
-    CHAT_BATCH_MAX_BYTES, CHAT_READ_MAX_ITEMS, ChatScope, HistoryPlacement, ReadDemand,
-    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-};
-use pl_studio_runtime::{
-    ConversationEvent, ConversationStateFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
-    config::{ConfigPaths, ConfigStore},
+    CHAT_BATCH_MAX_BYTES, CurrentFrame, ReadDemand, ThreadNotification, ThreadStatus,
+    ThreadWorkspaceMode,
 };
 use pl_studio_runtime::{
     CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
+};
+use pl_studio_runtime::{
+    CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+    config::{ConfigPaths, ConfigStore},
+    history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead, HistoryTurnState},
+    mode::ThreadModeId,
 };
 use serde::Serialize;
 use std::fs;
@@ -31,6 +33,12 @@ const MODEL: &str = "fixture-model";
 const ACCOUNT: &str = "read-fixture";
 const TURN_COUNT: usize = 24;
 const THREAD_COUNT: usize = 2;
+
+pub(super) struct CompletedTurnObservation {
+    pub turn_id: String,
+    pub route_revision: u64,
+    pub snapshot_revision: u64,
+}
 
 mod profile;
 
@@ -158,44 +166,260 @@ async fn seed_closed_home_async(home: &Path, working: &Path) -> Result<Vec<ReadC
 
 async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
     let fixture = FixtureServer::start(seed_script()).await?;
-    write_seed_config(home, &fixture.base_url())?;
-    let runtime = Box::pin(StudioRuntime::initialize(runtime_options(home))).await?;
-    let workspace = runtime.open_project(project).await?;
-    let mut thread_ids = Vec::new();
-    for index in 0..THREAD_COUNT {
-        thread_ids.push(Box::pin(seed_thread(&runtime, &workspace.id, index)).await?);
+    let seeded = async {
+        write_seed_config(home, &fixture.base_url())?;
+        let runtime = Box::pin(StudioRuntime::initialize(runtime_options(home))).await?;
+        let seeded = async {
+            let workspace = runtime.open_project(project).await?;
+            let mut thread_ids = Vec::new();
+            for index in 0..THREAD_COUNT {
+                thread_ids.push(Box::pin(seed_thread(&runtime, &workspace.id, index)).await?);
+            }
+            Ok::<_, anyhow::Error>(thread_ids)
+        }
+        .await;
+        let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
+        match (seeded, stopped) {
+            (Ok(ids), Ok(_)) => Ok(ids),
+            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(stop_error)) => {
+                Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
+            }
+        }
     }
-    runtime.shutdown_runtime().await?;
-    fixture.finish().await?;
-    Ok(thread_ids)
+    .await;
+    let fixture_exit = fixture.finish().await;
+    match (seeded, fixture_exit) {
+        (Ok(ids), Ok(_)) => Ok(ids),
+        (Err(error), Ok(_)) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(fixture_error)) => {
+            Err(error.context(format!("fixture shutdown also failed: {fixture_error:#}")))
+        }
+    }
 }
 
 async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) -> Result<String> {
     let created = Box::pin(create_seed_thread(runtime, workspace_id, index)).await?;
-    let mut subscription = runtime.open_conversation_state_feed(&created).await?;
-    // The initial snapshot belongs to this feed, not to each subsequent Turn.
-    let mut saw_snapshot = false;
-    let mut route_revision = Box::pin(wait_completed(
-        runtime,
-        &mut subscription,
-        &mut saw_snapshot,
-        &created,
-        &format!("read-input-{index}-00"),
-    ))
-    .await?;
-    for turn in 1..TURN_COUNT {
-        route_revision = Box::pin(seed_followup(
-            runtime,
-            &mut subscription,
-            &mut saw_snapshot,
+    let demand = current_demand();
+    let current = runtime
+        .open_current_reader(
             &created,
-            index,
-            turn,
-            route_revision,
-        ))
+            pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
+            demand,
+        )
         .await?;
+    let mut watch = match current.watch(None, demand).await {
+        Ok(watch) => watch,
+        Err(error) => {
+            return match current.close().await {
+                Ok(()) => Err(error),
+                Err(close_error) => {
+                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                }
+            };
+        }
+    };
+    let mut saw_baseline = false;
+    let outcome: Result<()> = async {
+        let first_input = format!("read-input-{index}-00");
+        let mut route_revision = Box::pin(wait_initial_turn(
+            runtime,
+            &current,
+            &mut watch,
+            &mut saw_baseline,
+            &created,
+            &first_input,
+        ))
+        .await?
+        .route_revision;
+        for turn in 1..TURN_COUNT {
+            let input_id = format!("read-input-{index}-{turn:02}");
+            runtime
+                .submit_prompt_command(
+                    created.clone(),
+                    SubmitPromptRequest {
+                        input: StudioPromptInput {
+                            input_id: input_id.clone(),
+                            text: format!("read-seed-{index}-{turn:02}"),
+                            attachment_draft_ids: Vec::new(),
+                        },
+                        expected_model_route_revision: route_revision,
+                    },
+                )
+                .await?;
+            route_revision = Box::pin(wait_notified_turn(
+                &current,
+                &mut watch,
+                &mut saw_baseline,
+                &created,
+                &input_id,
+            ))
+            .await?
+            .route_revision;
+        }
+        Ok(())
     }
-    Ok(created)
+    .await;
+    let closed_watch = watch.close().await;
+    let closed_current = current.close().await;
+    let mut close_errors = Vec::new();
+    if let Err(error) = closed_watch {
+        close_errors.push(format!("watch: {error:#}"));
+    }
+    if let Err(error) = closed_current {
+        close_errors.push(format!("reader: {error:#}"));
+    }
+    match outcome {
+        Ok(()) if close_errors.is_empty() => Ok(created),
+        Err(error) => {
+            let mut message = format!("{error:#}");
+            if !close_errors.is_empty() {
+                message.push_str(&format!(
+                    "; Current close also failed: {}",
+                    close_errors.join("; ")
+                ));
+            }
+            Err(anyhow::anyhow!(message))
+        }
+        Ok(()) => Err(anyhow::anyhow!(
+            "Current close failed: {}",
+            close_errors.join("; ")
+        )),
+    }
+}
+
+pub(super) async fn wait_initial_turn(
+    runtime: &StudioRuntime,
+    current: &CurrentReader,
+    watch: &mut CurrentWatch,
+    saw_baseline: &mut bool,
+    thread_id: &str,
+    input_id: &str,
+) -> Result<CompletedTurnObservation> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let result = async {
+        let Some(CurrentFrame::Reset { view }) =
+            tokio::time::timeout_at(deadline.into(), watch.next())
+                .await
+                .context("Current baseline timed out")??
+        else {
+            bail!("Current watch did not begin with Reset");
+        };
+        ensure!(
+            view.state.thread.id == thread_id,
+            "Current Reset belonged to another Thread"
+        );
+        *saw_baseline = true;
+        let history = runtime
+            .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let observed = match tokio::time::timeout_at(deadline.into(), async {
+            let completed = loop {
+                let page = history
+                    .turns_page(
+                        None,
+                        None,
+                        HistoryDemand {
+                            max_rows: 128,
+                            max_bytes: 1024 * 1024,
+                        },
+                    )
+                    .await?;
+                if let Some(head) = page.entries.iter().find_map(|entry| match &entry.head {
+                    HistoryRowHead::Turn(head)
+                        if head.input_id.as_deref() == Some(input_id)
+                            && head.state == HistoryTurnState::Completed =>
+                    {
+                        Some(head.clone())
+                    }
+                    _ => None,
+                }) {
+                    break head;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            };
+            let view = current.snapshot(current_demand()).await?;
+            Ok::<_, anyhow::Error>((completed, view))
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::Error::new(error).context("History completion timed out")),
+        };
+        history.close().await;
+        let (completed, view) = observed?;
+        ensure!(
+            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+                && view.state.thread.id == thread_id
+                && view.state.active_turn.is_none()
+                && view.state.thread.status == ThreadStatus::Idle,
+            "History completed Turn {} but Current is not idle",
+            completed.turn_id
+        );
+        let route_revision = view
+            .state
+            .model_route
+            .as_ref()
+            .map(|route| route.revision)
+            .context("completed Turn has no model route")?;
+        Ok(CompletedTurnObservation {
+            turn_id: completed.turn_id,
+            route_revision,
+            snapshot_revision: view.state.revision,
+        })
+    }
+    .await;
+    result.with_context(|| format!("initial Turn not observed for {input_id}"))
+}
+
+pub(super) async fn wait_notified_turn(
+    current: &CurrentReader,
+    watch: &mut CurrentWatch,
+    saw_baseline: &mut bool,
+    thread_id: &str,
+    input_id: &str,
+) -> Result<CompletedTurnObservation> {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let Some(frame) = watch.next().await? else {
+                bail!("Current watch ended before Turn completion");
+            };
+            match frame {
+                CurrentFrame::Reset { .. } => *saw_baseline = true,
+                CurrentFrame::Projection { .. } => {}
+                CurrentFrame::Notification { notification, .. } => {
+                    ensure!(*saw_baseline, "Current notification arrived before Reset");
+                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
+                        && turn.input_id.as_deref() == Some(input_id)
+                    {
+                        let view = current.snapshot(current_demand()).await?;
+                        ensure!(
+                            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+                                && view.state.thread.id == thread_id
+                                && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_))
+                                && view.state.active_turn.is_none()
+                                && view.state.thread.status == ThreadStatus::Idle,
+                            "TurnCompleted and Current State disagree"
+                        );
+                        let route_revision = view
+                            .state
+                            .model_route
+                            .as_ref()
+                            .map(|route| route.revision)
+                            .context("completed Turn has no model route")?;
+                        return Ok(CompletedTurnObservation {
+                            turn_id: turn.id,
+                            route_revision,
+                            snapshot_revision: view.state.revision,
+                        });
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .with_context(|| format!("notified Turn not observed for {input_id}"))?
 }
 
 async fn create_seed_thread(
@@ -213,9 +437,7 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::mode::ThreadModeId::simple()
-                    .label()
-                    .into(),
+                mode: ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -231,53 +453,50 @@ async fn create_seed_thread(
     Ok(created.thread.id)
 }
 
-async fn seed_followup(
-    runtime: &StudioRuntime,
-    subscription: &mut ConversationStateFeed,
-    saw_snapshot: &mut bool,
-    thread_id: &str,
-    index: usize,
-    turn: usize,
-    route_revision: u64,
-) -> Result<u64> {
-    let input_id = format!("read-input-{index}-{turn:02}");
-    runtime
-        .submit_prompt_command(
-            thread_id.to_owned(),
-            SubmitPromptRequest {
-                input: StudioPromptInput {
-                    input_id: input_id.clone(),
-                    text: format!("read-seed-{index}-{turn:02}"),
-                    attachment_draft_ids: Vec::new(),
-                },
-                expected_model_route_revision: route_revision,
-            },
-        )
-        .await?;
-    wait_completed(runtime, subscription, saw_snapshot, thread_id, &input_id).await
-}
-
 async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<usize>> {
     let runtime = Box::pin(StudioRuntime::initialize(runtime_options(home))).await?;
-    let mut totals = Vec::new();
-    for thread_id in thread_ids {
-        let total = Box::pin(count_main_items(&runtime, thread_id)).await?;
-        ensure!(
-            total > 40,
-            "seeded conversation {thread_id} is too small for a bounded first page: {total}"
-        );
-        totals.push(total);
+    let counted = async {
+        let mut totals = Vec::new();
+        for thread_id in thread_ids {
+            let total = Box::pin(count_main_items(&runtime, thread_id)).await?;
+            ensure!(
+                total > 40,
+                "seeded conversation {thread_id} is too small for a bounded first page: {total}"
+            );
+            totals.push(total);
+        }
+        Ok::<_, anyhow::Error>(totals)
     }
-    runtime.shutdown_runtime().await?;
-    Ok(totals)
+    .await;
+    let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
+    match (counted, stopped) {
+        (Ok(totals), Ok(_)) => Ok(totals),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(stop_error)) => {
+            Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
+        }
+    }
 }
 
 fn runtime_options(home: &Path) -> StudioRuntimeOptions {
-    StudioRuntimeOptions {
+    let mut options = StudioRuntimeOptions {
         studio_home: Some(home.to_owned()),
         host: StudioHostKind::Test,
         ..StudioRuntimeOptions::desktop()
-    }
+    };
+    options.skill_search.include_default_user_dir = false;
+    options
+}
+
+pub(super) fn require_stopped(
+    snapshot: pl_studio_runtime::StudioRuntimeSnapshot,
+) -> Result<pl_studio_runtime::StudioRuntimeSnapshot> {
+    ensure!(
+        snapshot.state.is_stopped(),
+        "runtime shutdown returned {:?} instead of stopped",
+        snapshot.state.kind()
+    );
+    Ok(snapshot)
 }
 
 fn init_git_project(project: &Path) -> Result<()> {
@@ -358,105 +577,58 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
     Ok(())
 }
 
-async fn wait_completed(
-    runtime: &StudioRuntime,
-    subscription: &mut ConversationStateFeed,
-    saw_snapshot: &mut bool,
-    thread_id: &str,
-    input_id: &str,
-) -> Result<u64> {
-    tokio::time::timeout(Duration::from_secs(60), async {
-        while let Some(update) = subscription.recv().await? {
-            match update {
-                ThreadSubscriptionUpdate::Snapshot {
-                    completed_history_version,
-                    ..
-                } => {
-                    ensure!(
-                        !*saw_snapshot,
-                        "Thread subscription repeated its initial State snapshot"
-                    );
-                    ensure!(
-                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
-                        "unsupported completed history version {completed_history_version}"
-                    );
-                    *saw_snapshot = true;
-                }
-                ThreadSubscriptionUpdate::Notification { notification } => {
-                    ensure!(
-                        *saw_snapshot,
-                        "Thread notification arrived before State snapshot"
-                    );
-                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
-                        && turn.input_id.as_deref() == Some(input_id)
-                    {
-                        let snapshot = runtime.thread_snapshot(thread_id).await?;
-                        ensure!(
-                            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                                && snapshot.thread.id == thread_id
-                                && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_))
-                                && snapshot.active_turn.is_none()
-                                && snapshot.thread.status == pl_studio_runtime::ThreadStatus::Idle,
-                            "completed Turn notification and schema-17 Thread State disagree: \
-                             input_id={input_id:?}, schema={}, thread_id={}, turn_state={:?}, \
-                             active_turn_present={}, thread_status={:?}, state_revision={}",
-                            snapshot.schema_version,
-                            snapshot.thread.id,
-                            turn.state,
-                            snapshot.active_turn.is_some(),
-                            snapshot.thread.status,
-                            snapshot.revision,
-                        );
-                        return snapshot
-                            .model_route
-                            .as_ref()
-                            .map(|route| route.revision)
-                            .context("completed Turn has no model route");
-                    }
-                }
-            }
-        }
-        anyhow::bail!("thread stream ended without a terminal Turn for {input_id}")
-    })
-    .await
-    .with_context(|| format!("terminal Turn not observed for {input_id}"))?
-}
-
 async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<usize> {
-    let demand = ReadDemand {
-        max_items: 32,
+    let demand = HistoryDemand {
+        max_rows: 32,
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
     let reader = runtime
-        .open_timeline_reader(
-            thread_id,
-            pl_studio_runtime::PRESENTATION_VERSION,
-            pl_studio_runtime::TIMELINE_READER_PROTOCOL_VERSION,
-            demand,
-        )
+        .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
         .await?;
-    let update = reader.next(reader.metadata().initial_cursor).await?;
-    ensure!(
-        update.history.placement == HistoryPlacement::Set,
-        "timeline did not begin with a cold Set"
-    );
-    let mut total = update.history.blocks.len();
-    let mut before = update.history.before;
-    while let Some(cursor) = before {
-        let page = reader.load_older(&cursor, demand).await?;
-        ensure!(
-            page.before.as_deref() != Some(cursor.as_str()),
-            "Main continuation did not advance"
-        );
-        total += page.blocks.len();
-        before = page.before;
+    let counted = async {
+        let mut cut = None;
+        let mut cursor = None;
+        let mut total = 0usize;
+        loop {
+            let page = reader
+                .timeline_page(cut.clone(), cursor.clone(), demand)
+                .await?;
+            for entry in &page.entries {
+                match &entry.head {
+                    HistoryRowHead::Single(_) | HistoryRowHead::Work(_) => {}
+                    _ => bail!("timeline Main contained a non-row head"),
+                }
+                total = total
+                    .checked_add(1)
+                    .context("history Main count overflow")?;
+            }
+            let Some(next) = page.next else {
+                break;
+            };
+            ensure!(
+                cursor.as_deref() != Some(next.as_str()),
+                "Main continuation did not advance"
+            );
+            cut = Some(page.cut);
+            cursor = Some(next);
+        }
+        Ok::<_, anyhow::Error>(total)
     }
-    reader.close().await?;
+    .await;
+    reader.close().await;
+    let total = counted?;
     ensure!(
-        total < CHAT_READ_MAX_ITEMS as usize,
-        "seeded conversation exceeded the public read item ceiling"
+        total > 40,
+        "seeded conversation is too small for a bounded first page: {total}"
     );
     Ok(total)
+}
+
+fn current_demand() -> ReadDemand {
+    ReadDemand {
+        max_items: 128,
+        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
+    }
 }
 
 #[cfg(test)]

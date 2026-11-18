@@ -205,7 +205,7 @@ impl StudioThreadFactory {
         Ok(())
     }
 
-    /// Qualify the checkpoint's permanent intent, then publish the durable close job's progress.
+    /// Qualify the current document's permanent intent, then publish the durable close job's progress.
     /// The Core owner's resource lifecycle cannot stand in for the execution-close ACK.
     pub(crate) async fn project_child_close(
         &self,
@@ -237,12 +237,14 @@ impl StudioThreadFactory {
     pub(crate) async fn child_close_storage(
         &self,
         thread: &crate::Thread,
-        checkpoint: &pl_core::thread::ThreadCheckpoint,
+        current: &pl_core::thread::current::ThreadCurrent,
     ) -> Result<crate::studio::ThreadStorageBinding, ThreadAssemblyError> {
+        if current.thread_id != thread.id {
+            return Err(ThreadAssemblyError::Identity(thread.id.clone()));
+        }
         crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             thread.clone(),
-            Some(checkpoint),
         )
         .await
         .map(|sink| sink.binding())

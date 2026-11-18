@@ -1,21 +1,15 @@
-//! 稳定 ConversationStore 的最新完成边界与当前状态；通知不拥有可靠保存队列。
-//! 完成历史仍由同一 Session 读取，执行驱动只推进此处的共享发布。
-use crate::ActivitySnapshot;
+//! The current owner's latest RAM projection. History has a separate owner and sequence.
 use crate::studio::thread_projection::CurrentState;
-use pl_core::chat::Session;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use tokio::sync::watch;
-
-pub(in crate::studio) const CURRENT_FRAME_BYTES: usize = 64 * 1024;
 
 #[derive(Clone)]
 pub(in crate::studio) struct ConversationSource {
-    pub presentation: crate::studio::thread_projection::presentation::PresentationHandle,
     pub serial: u64,
-    pub session: Session,
-    pub head: u64,
     pub current: Arc<CurrentState>,
-    pub activity: Arc<ActivitySnapshot>,
 }
 pub(in crate::studio::runtime) struct ConversationRegistration {
     pub source: Option<Arc<ConversationSource>>,
@@ -23,37 +17,50 @@ pub(in crate::studio::runtime) struct ConversationRegistration {
     pub owner_progress: watch::Receiver<super::Progress>,
 }
 pub(in crate::studio) struct ConversationPublication {
-    presentation: Mutex<crate::studio::thread_projection::presentation::PresentationHandle>,
     latest: Mutex<Option<Arc<ConversationSource>>>,
     progress: watch::Sender<Option<Arc<ConversationSource>>>,
     content_changed: watch::Sender<u64>,
+    metadata_revision: AtomicU64,
+    current_owner: Mutex<Option<String>>,
 }
 impl ConversationPublication {
-    pub(in crate::studio) fn subscribe_progress(
-        &self,
-    ) -> watch::Receiver<Option<Arc<ConversationSource>>> {
-        self.progress.subscribe()
+    /// Bind before exposing a successor feed. The owner lock also serializes late publication.
+    pub(in crate::studio) fn bind_current_owner(&self, owner_id: String) {
+        let mut owner = self
+            .current_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner.as_ref() == Some(&owner_id) {
+            return;
+        }
+        *owner = Some(owner_id);
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.metadata_changed();
+        self.progress.send_replace(None);
+    }
+    pub(in crate::studio) fn metadata_revision(&self) -> u64 {
+        self.metadata_revision.load(Ordering::Acquire)
+    }
+    pub(in crate::studio) fn metadata_changed(&self) {
+        let _ =
+            self.metadata_revision
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
+                    revision.checked_add(1)
+                });
     }
     pub(in crate::studio) fn new() -> Self {
         Self {
-            presentation: Mutex::new(Default::default()),
             latest: Mutex::new(None),
             progress: watch::channel(None).0,
             content_changed: watch::channel(0).0,
+            metadata_revision: AtomicU64::new(0),
+            current_owner: Mutex::new(None),
         }
     }
-    pub(in crate::studio) fn bind_presentation(
-        &self,
-        owner: crate::studio::thread_projection::presentation::PresentationHandle,
-    ) {
-        *self
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = owner;
-    }
-    pub(in crate::studio) fn content_changes(&self) -> watch::Receiver<u64> {
-        self.content_changed.subscribe()
-    }
+
     pub(in crate::studio) fn current(&self) -> Option<Arc<ConversationSource>> {
         self.latest
             .lock()
@@ -74,71 +81,22 @@ impl ConversationPublication {
             owner_progress,
         }
     }
-    pub(in crate::studio) fn publish(
-        &self,
-        session: &Session,
-        current: Arc<CurrentState>,
-    ) -> anyhow::Result<()> {
-        let source = self.prepare(session, session.head_seq(), current)?;
-        self.apply(source);
-        Ok(())
-    }
-
     pub(in crate::studio) fn prepare(
         &self,
-        session: &Session,
-        head: u64,
         current: Arc<CurrentState>,
     ) -> anyhow::Result<Arc<ConversationSource>> {
-        let latest = self
-            .latest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let serial = latest.as_ref().map_or(Ok(1), |source| {
-            source
-                .serial
-                .checked_add(1)
-                .filter(|serial| *serial < u64::MAX)
-                .ok_or_else(|| anyhow::anyhow!("activity revision exhausted"))
-        })?;
-        let projection = current.projection();
-        let entries = if projection.execution_present {
-            current.activity_entries().to_vec()
-        } else {
-            Vec::new()
-        };
-        let activity = Arc::new(ActivitySnapshot {
-            revision: serial,
-            completed_through: head,
-            execution_present: projection.execution_present,
-            entries,
-        });
-        anyhow::ensure!(
-            serde_json::to_vec(activity.as_ref())?.len() <= CURRENT_FRAME_BYTES,
-            "activity snapshot exceeds bounded publication budget"
-        );
-        let presentation = self
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .ensure_publication_capacity()?;
-        let source = Arc::new(ConversationSource {
-            presentation,
-            serial,
-            session: session.clone(),
-            head,
-            current,
-            activity,
-        });
-        Ok(source)
+        let serial = self
+            .content_changed
+            .borrow()
+            .checked_add(1)
+            .filter(|serial| *serial < u64::MAX)
+            .ok_or_else(|| anyhow::anyhow!("current publication revision exhausted"))?;
+        Ok(Arc::new(ConversationSource { serial, current }))
     }
-
-    /// 退出执行只清除执行可用性，保留同一 Store 的业务与展示切面。
-    /// 正常发布预留一个修订号，因此该同步收束段不会发生计数失败。
+    pub(in crate::studio) fn publish(&self, current: Arc<CurrentState>) -> anyhow::Result<()> {
+        self.apply(self.prepare(current)?);
+        Ok(())
+    }
     pub(in crate::studio) fn retire_execution(&self) {
         let Some(previous) = self
             .current()
@@ -149,42 +107,41 @@ impl ConversationPublication {
         let mut projection = previous.current.projection().clone();
         projection.execution_present = false;
         projection.active = None;
-        let current = crate::studio::thread_projection::CurrentState::with_projection(
+        let current = CurrentState::with_projection(
             previous.current.clone(),
             crate::studio::thread_projection::FrozenCurrentProjection::new(projection),
         );
-        let serial = previous
-            .serial
-            .checked_add(1)
-            .expect("publication reserved retirement revision");
         self.apply(Arc::new(ConversationSource {
-            presentation: previous.presentation.clone(),
-            serial,
-            session: previous.session.clone(),
-            head: previous.head,
+            serial: previous
+                .serial
+                .checked_add(1)
+                .expect("publication reserves retirement revision"),
             current,
-            activity: Arc::new(ActivitySnapshot {
-                revision: serial,
-                completed_through: previous.head,
-                execution_present: false,
-                entries: Vec::new(),
-            }),
         }));
     }
-
     pub(in crate::studio) fn apply(&self, source: Arc<ConversationSource>) {
-        source
-            .presentation
+        let owner = self
+            .current_owner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observe_execution(source.current.projection().execution_present)
-            .expect("pre-admission display plan reserved publication and retirement revisions");
-        let serial = source.serial;
-        *self
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner
+            .as_ref()
+            .is_some_and(|owner| owner != source.current.owner_id())
+        {
+            return;
+        }
+        let mut latest = self
             .latest
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source.clone());
-        self.progress.send_replace(Some(source));
-        self.content_changed.send_replace(serial);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if latest.as_ref().is_none_or(|old| {
+            old.current.owner_id() != source.current.owner_id()
+                || old.current.projection() != source.current.projection()
+        }) {
+            self.metadata_changed();
+        }
+        *latest = Some(source.clone());
+        self.progress.send_replace(Some(source.clone()));
+        self.content_changed.send_replace(source.serial);
     }
 }

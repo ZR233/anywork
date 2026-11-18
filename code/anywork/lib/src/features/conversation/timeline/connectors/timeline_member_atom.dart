@@ -10,9 +10,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../state/chat_item_presentation.dart';
-import '../state/content_reference_identity.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
+import '../state/timeline_display_unit.dart';
 import '../state/tool_presentation.dart';
 import '../view_models/conversation_current_owner.dart';
 import '../widgets/chat_item_view.dart';
@@ -25,7 +25,6 @@ import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
 import '../widgets/timeline_tool_blocks.dart';
 import '../widgets/timeline_wait_blocks.dart';
-import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
 
@@ -34,13 +33,16 @@ class TimelineMemberAtom extends StatefulWidget {
     super.key,
     required this.record,
     required this.displayId,
-    required this.content,
+    required this.threadId,
+    this.currentReader,
     this.retirement,
     required this.isActive,
     required this.images,
     required this.readAttachment,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.registerDisplay,
     this.executionPresent = true,
     this.disclosure,
@@ -48,13 +50,16 @@ class TimelineMemberAtom extends StatefulWidget {
   final DisplayRecord record;
   final String displayId;
   ChatAtom get atom => record.atom;
-  final ConversationQueries content;
+  final String threadId;
+  final CurrentReader? currentReader;
   final ValueListenable<bool>? retirement;
   final bool Function() isActive;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
+  final void Function(String, int)? onCurrentContentLayout;
+  final void Function(String)? onCurrentContentUnmounted;
   final VoidCallback Function(TimelineMemberDisplay)? registerDisplay;
   final bool executionPresent;
   final TimelineMemberDisclosure? disclosure;
@@ -64,10 +69,9 @@ class TimelineMemberAtom extends StatefulWidget {
 
 class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     implements TimelineMemberDisplay {
-  ConversationCurrentOwner? _localOwner;
-  ConversationCurrentOwner? get _owner =>
-      widget.disclosure?.owner ?? _localOwner;
-  set _owner(ConversationCurrentOwner? value) {
+  CurrentAtomBodyOwner? _localOwner;
+  CurrentAtomBodyOwner? get _owner => widget.disclosure?.owner ?? _localOwner;
+  set _owner(CurrentAtomBodyOwner? value) {
     final disclosure = widget.disclosure;
     if (disclosure == null) {
       _localOwner = value;
@@ -76,21 +80,13 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
   }
 
-  ConversationQueryScope? _scope;
   String? _observationError;
   Object _rangeQualification = Object();
-  final Set<TimelineCurrentWindowDisplay> _rangeDisplays = {};
   VoidCallback? _unregister;
   @override
   Iterable<TimelineCurrentWindowDisplay> get windows sync* {
     if (!_active) return;
     yield* _owner?.windows ?? const [];
-    yield* _rangeDisplays;
-  }
-
-  VoidCallback _registerRange(TimelineCurrentWindowDisplay display) {
-    _rangeDisplays.add(display);
-    return () => _rangeDisplays.remove(display);
   }
 
   bool _retired = false;
@@ -130,7 +126,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     _unregister = widget.registerDisplay?.call(this);
     widget.retirement?.addListener(_retiredParent);
     if (widget.atom.kind != ChatAtomKind.toolCall &&
-        widget.atom.payload == null) {
+        widget.record.currentContents.isNotEmpty) {
       _observe();
     }
   }
@@ -145,7 +141,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         _closeBodies();
       }
     } else if (widget.atom.kind != ChatAtomKind.toolCall &&
-        widget.atom.payload == null) {
+        widget.record.currentContents.isNotEmpty) {
       _observe();
     }
     if (mounted) setState(() {});
@@ -155,27 +151,18 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (!_active || _unavailable) {
       return;
     }
-    if (widget.record.contentSource is FrozenObservation &&
-        widget.atom.contents.any(
-          (content) => !isDisplayObservationReference(content.reference),
-        )) {
-      _observationError = '封存观察内容引用无效';
-      _closeBodies();
-      return;
-    }
     _observationError = null;
-    _owner ??= ConversationCurrentOwner(
-      widget.content,
-      isActive: () => _active,
-      frozen: widget.record.contentSource is FrozenObservation,
-    );
+    final reader = widget.currentReader;
+    if (reader == null) return;
+    _owner ??= CurrentAtomBodyOwner(reader, isActive: () => _active);
     _owner!.synchronizeSources([
-      for (final content in widget.atom.contents)
+      for (final content in widget.record.currentContents)
         if (widget.atom.kind != ChatAtomKind.reasoning ||
             content.role == ChatContentRole.reasoningSummary ||
             _expanded)
           CurrentWindowSource(
             id: widget.displayId,
+            role: content.role,
             reference: content.reference,
             text: '',
           ),
@@ -187,11 +174,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     setState(() {
       _expanded = expanded;
       if (expanded) {
-        if (widget.atom.payload == null) _observe();
+        if (widget.record.currentContents.isNotEmpty) _observe();
       } else {
         _retireRanges();
         if (widget.atom.kind == ChatAtomKind.reasoning &&
-            widget.atom.payload == null) {
+            widget.record.currentContents.isNotEmpty) {
           _observe();
         } else {
           _closeBodies();
@@ -202,11 +189,6 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   void _retireRanges() {
     _rangeQualification = Object();
-    _rangeDisplays.clear();
-    final scope = _scope;
-    _scope = null;
-    scope?.retire();
-    if (scope != null) unawaited(scope.close());
   }
 
   void _closeBodies() {
@@ -233,7 +215,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       _retireRanges();
       _closeBodies();
     }
-    if (widget.atom.payload != null) {
+    if (widget.record.currentContents.isEmpty) {
       _closeBodies();
     } else if (widget.atom.kind != ChatAtomKind.toolCall || _expanded) {
       // A content-source transition revoked the old owner above. Recreate the
@@ -251,12 +233,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   }
 
   bool _hasRole(CurrentWindowObservation observation, ChatContentRole role) =>
-      widget.atom.contents.any(
-        (content) =>
-            content.role == role &&
-            contentReferenceIdentity(content.reference) ==
-                contentReferenceIdentity(observation.reference),
-      );
+      observation.source.role == role;
 
   Widget _body(String id, String text) => TimelineMarkdown(
     id: id,
@@ -340,7 +317,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       final atom = widget.atom;
       final row = TimelineReasoningView(
         summary:
-            widget.record.contentSource is CurrentAtom &&
+            widget.record.contentSource is CurrentAtomSource &&
                 !widget.executionPresent &&
                 atom.lifecycle is ActiveChatAtom &&
                 summary.isEmpty
@@ -349,7 +326,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         startedAt: widget.record.displayStartedAt,
         finishedAt: widget.record.displayObservedThrough,
         running:
-            widget.record.contentSource is CurrentAtom &&
+            widget.record.contentSource is CurrentAtomSource &&
             widget.executionPresent &&
             atom.lifecycle is ActiveChatAtom,
         outcome: switch (atom.lifecycle) {
@@ -406,7 +383,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       }
     }
     if (atom.kind == ChatAtomKind.compaction &&
-        widget.record.contentSource is CurrentAtom &&
+        widget.record.contentSource is CurrentAtomSource &&
         atom.lifecycle is ActiveChatAtom) {
       return TimelineActivityClock(
         startedAt: widget.executionPresent ? atom.startedAt : null,
@@ -424,13 +401,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         ),
       );
     }
-    if (atom.payload != null) {
+    if (atom.payload != null || widget.record.historyEventId != null) {
       final qualification = _rangeQualification;
-      final presentation = ChatItemPresentation.decode(
-        atom,
-        record: widget.record,
-        displayId: widget.displayId,
-      );
+      final presentation = atom.payload != null
+          ? ChatItemPresentation.decode(
+              atom,
+              record: widget.record,
+              displayId: widget.displayId,
+            )
+          : ChatItemPresentation.forRecord(widget.record, id: widget.displayId);
       Widget render(ChatItemPresentation item) {
         bool qualified() =>
             (item.presentationContract == 'builtin.show_files@1'
@@ -443,6 +422,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           initiallyExpanded: _expanded,
           monotonicMicros: widget.monotonicMicros,
           onContentLayout: widget.onContentLayout,
+          onCurrentContentLayout: widget.onCurrentContentLayout,
+          onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
           onExpansionChanged: _expand,
           isDisplayActive: () => _active,
           attachmentBuilder: (item) => TimelineAttachmentsConnector(
@@ -450,54 +431,14 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
             resources: widget.images,
             readAttachment: widget.readAttachment,
             isActive: qualified,
-            readContent: (reference, range) {
-              if (!qualified()) {
-                return Future.error(const StaleConversationScope());
-              }
-              return (_scope ??= widget.content.openScope(
-                generation: 1,
-              )).readContent(reference: reference, range: range);
-            },
           ),
-          contentRangeBuilder: (id, key, label, reference, witness) {
-            final qualification = _rangeQualification;
-            bool active() =>
-                _readActive(key) &&
-                identical(qualification, _rangeQualification);
-            return TimelineContentRangeConnector(
-              key: ValueKey((id, key, qualification)),
-              itemId: id,
-              contentKey: key,
-              label: label,
-              reference: reference,
-              witness: witness,
-              isDisplayActive: active,
-              registerDisplay: _registerRange,
-              readContent: (reference, range) {
-                if (!active()) {
-                  return Future.error(const StaleConversationScope());
-                }
-                if (widget.record.contentSource is FrozenObservation &&
-                    !isDisplayObservationReference(reference)) {
-                  return Future.error(
-                    const ConversationContinuityError(
-                      'Invalid frozen observation content reference',
-                    ),
-                  );
-                }
-                return (_scope ??= widget.content.openScope(
-                  generation: 1,
-                )).readContent(reference: reference, range: range);
-              },
-            );
-          },
         );
       }
 
       return _response(
         TimelineCanonicalPayloadConnector(
           item: presentation,
-          content: widget.content,
+          threadId: widget.threadId,
           retirement: widget.retirement,
           isActive: () => _active,
           render: render,
@@ -524,7 +465,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
             },
           },
           executionPresent:
-              widget.record.contentSource is CurrentAtom &&
+              widget.record.contentSource is CurrentAtomSource &&
               widget.executionPresent,
           frozenObservation: widget.record.contentSource is FrozenObservation,
           arguments: '',
@@ -563,7 +504,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
 
   Widget _response(Widget body) {
     final atom = widget.atom;
-    if (widget.record.contentSource is CurrentAtom &&
+    if (widget.record.contentSource is CurrentAtomSource &&
         widget.executionPresent &&
         atom.kind == ChatAtomKind.text &&
         atom.lifecycle is ActiveChatAtom) {
@@ -579,15 +520,24 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   Widget _witness(TimelineCurrentWindowDisplay observation, Widget child) {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
+    final onCurrentLayout = widget.onCurrentContentLayout;
     if (clock == null ||
-        onLayout == null ||
+        (onLayout == null && onCurrentLayout == null) ||
         observation.window?.bytes.isEmpty != false) {
       return child;
     }
     return ContentLayoutWitness(
       itemId: widget.displayId,
       monotonicMicros: clock,
-      onContentLayout: onLayout,
+      onContentLayout: (itemId, micros) {
+        onLayout?.call(itemId, micros);
+        if (widget.record.contentSource is CurrentAtomSource) {
+          onCurrentLayout?.call(itemId, micros);
+        }
+      },
+      onContentUnmounted: widget.record.contentSource is CurrentAtomSource
+          ? widget.onCurrentContentUnmounted
+          : null,
       isDisplayActive: () => _active,
       child: child,
     );

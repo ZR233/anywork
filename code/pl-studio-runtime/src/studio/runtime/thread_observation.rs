@@ -7,23 +7,19 @@
 //! projection, so an ordinary commit neither parks this observer behind the owner's command queue
 //! nor waits for the disk. Durable history is read back once when the projection is installed on a
 //! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 mod billing;
 mod directory;
 pub(in crate::studio) mod publication;
 mod reports;
 mod slot;
+pub(super) mod state_resources;
 pub(super) use publication::{ConversationRegistration, ConversationSource};
 pub(super) use slot::ObservationSlot;
 
 use super::{ModelPerformanceOwner, StudioRuntime};
 use crate::studio::{ProductEventBus, StudioStore};
 use anyhow::{Context, Result, bail};
-use pl_core::chat::Session;
-use pl_core::thread::{
-    ThreadHandle, ThreadLifecycle, ThreadSnapshot, UsageSummary, cold::ThreadWrite,
-};
+use pl_core::thread::{HistoryExport, ThreadHandle, ThreadLifecycle, ThreadSnapshot, UsageSummary};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -36,8 +32,6 @@ use tokio::{
 use crate::studio::storage::thread_writer::{
     HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
 };
-// Read-only source types used with this owner's original report readability watch.
-pub(crate) use crate::studio::storage::{history::HistoryStore, thread_writer::HistoryStatus};
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
@@ -122,12 +116,6 @@ impl StateReceiver {
         Self { receiver, closed }
     }
 
-    /// Captures the queued observation prefix without consuming it or reserving capacity.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.receiver.len()
-    }
-
     pub(super) fn is_closed(&self) -> bool {
         self.closed.is_cancelled() || (self.receiver.is_closed() && self.receiver.is_empty())
     }
@@ -181,13 +169,12 @@ pub(in crate::studio) struct ThreadLiveFeed {
     conversation: Mutex<Arc<publication::ConversationPublication>>,
     /// Borrowed from this owner's original retained progress, including failures before publication.
     owner_progress: watch::Receiver<Progress>,
-    #[cfg(test)]
-    first_open_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     latest_runtime: Mutex<Option<RuntimeStateCut>>,
     /// Original State activity event retained for subscribers opening after its broadcast.
     latest_activity: Mutex<Option<StateActivityCut>>,
     /// 现役 State 协议的通知去重，不拥有业务内容或读取资格。
     latest_business_refs: Mutex<Option<crate::ThreadBusinessRefs>>,
+    state_resources: Mutex<state_resources::StateResources>,
 }
 
 impl ThreadLiveFeed {
@@ -200,49 +187,25 @@ impl ThreadLiveFeed {
     pub(in crate::studio::runtime) fn bind_conversation(
         &self,
         store: &crate::studio::conversation_store::ConversationStore,
+        owner_id: String,
     ) {
+        self.state_resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bind(owner_id.clone());
+        store.publication.bind_current_owner(owner_id);
         *self
             .conversation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = store.publication.clone();
     }
 
-    #[cfg(test)]
-    pub(in crate::studio) fn bind_test_presentation(
-        &self,
-        handle: crate::studio::thread_projection::presentation::PresentationHandle,
-    ) {
-        self.publication().bind_presentation(handle);
-    }
     pub(super) fn is_delivery_closed(&self) -> bool {
         self.delivery_closed.is_cancelled()
     }
 
     pub(super) async fn delivery_closed(&self) {
         self.delivery_closed.cancelled().await;
-    }
-
-    #[cfg(test)]
-    pub(super) fn arm_first_open_wait(&self) -> tokio::sync::oneshot::Receiver<()> {
-        let (entered, receiver) = tokio::sync::oneshot::channel();
-        *self.first_open_wait.lock().unwrap() = Some(entered);
-        receiver
-    }
-
-    #[cfg(test)]
-    pub(super) fn notify_first_open_wait(&self) {
-        if let Some(entered) = self.first_open_wait.lock().unwrap().take() {
-            let _ = entered.send(());
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn publish_test_conversation(
-        &self,
-        session: &pl_core::chat::Session,
-        current: Arc<crate::studio::thread_projection::CurrentState>,
-    ) -> Result<()> {
-        self.publish_conversation(session, current)
     }
 
     #[cfg(test)]
@@ -259,13 +222,12 @@ impl ThreadLiveFeed {
 
     fn publish_conversation(
         &self,
-        session: &pl_core::chat::Session,
         current: Arc<crate::studio::thread_projection::CurrentState>,
     ) -> Result<()> {
         let references = current.business_refs();
-        let sequence = current.projection().source_effect_seq;
+        let sequence = current.revision();
         // Install the resource owner before its reference can enter State.
-        self.publication().publish(session, current)?;
+        self.publication().publish(current)?;
         self.publish_business_refs(sequence, references);
         Ok(())
     }
@@ -299,30 +261,54 @@ impl ThreadLiveFeed {
             storage,
             last_turn,
             owner_progress,
-            #[cfg(test)]
-            first_open_wait: Default::default(),
             latest_runtime: Default::default(),
             latest_activity: Default::default(),
             latest_business_refs: Default::default(),
+            state_resources: Default::default(),
         }
     }
 
     pub(super) fn conversation(&self) -> ConversationRegistration {
         self.publication().capture(self.owner_progress.clone())
     }
+    pub(super) fn current_revision(&self) -> u64 {
+        self.publication().metadata_revision()
+    }
     pub(super) fn current_conversation(&self) -> Option<Arc<ConversationSource>> {
         self.publication().current()
     }
-    #[cfg(test)]
-    pub(super) fn content_changes(&self) -> watch::Receiver<u64> {
-        self.publication().content_changes()
-    }
-
     pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
         self.latest_runtime
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    pub(super) fn state_resources(&self) -> state_resources::StateResources {
+        self.state_resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn compact_runtime(
+        &self,
+        runtime: crate::ThreadRuntimeSnapshot,
+    ) -> Result<crate::ThreadRuntimeSnapshot> {
+        self.state_resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .runtime(runtime)
+    }
+
+    fn compact_activity(
+        &self,
+        activity: Option<crate::ThreadActivity>,
+    ) -> Result<Option<crate::ThreadActivity>> {
+        self.state_resources
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .activity(activity)
     }
 
     pub(super) fn state_activity(&self) -> Option<StateActivityCut> {
@@ -376,6 +362,7 @@ impl ThreadLiveFeed {
 
     /// Publishes the owner's newly derived typed storage state.
     fn publish_storage(&self, storage: Option<crate::ThreadStorageState>) {
+        self.publication().metadata_changed();
         self.storage.send_replace(storage);
     }
 
@@ -387,6 +374,7 @@ impl ThreadLiveFeed {
         // Demand is advisory, not the registration barrier. Facts and retained watches are updated
         // independently; no outward envelope (or its dedicated clone) is built without a receiver.
         let event = event();
+        self.publication().metadata_changed();
         if let ThreadLiveEvent::Activity {
             observation_revision,
             activity,
@@ -479,15 +467,6 @@ struct WorkerState {
     /// Explicit reconciliation is observation only, even when it catches a newly committed Turn.
     reconciliation_through: Arc<std::sync::atomic::AtomicU64>,
     observed_before_execution: bool,
-    #[cfg(test)]
-    pending_hook: Option<Arc<PendingPhaseHook>>,
-}
-impl WorkerState {
-    /// The pending-boundary phase hook of this owner, or the empty production slot.
-    #[cfg(test)]
-    fn pending_hook_slot(&self) -> PendingHookSlot {
-        self.pending_hook.clone()
-    }
 }
 pub(crate) struct Observation {
     owner: std::sync::Weak<crate::session::NativeResources>,
@@ -505,12 +484,6 @@ impl Drop for Observation {
 }
 
 impl Observation {
-    /// Subscribe to the original writer incarnation before reading terminal reports.
-    /// A Turn notification alone precedes persistence and is not a readability fence.
-    pub(crate) fn report_changes(&self) -> watch::Receiver<HistoryStatus> {
-        self.state.channel.subscribe()
-    }
-
     async fn join(&self) -> Result<()> {
         self.join_for_purpose(crate::thread_assembler::ClosePurpose::Preserve)
             .await
@@ -595,8 +568,6 @@ struct Shared {
     observations: Mutex<BTreeMap<String, Vec<std::sync::Weak<Observation>>>>,
     /// Stable passive slots survive absent → live → absent transitions.
     live: Mutex<BTreeMap<String, Arc<ObservationSlot>>>,
-    #[cfg(test)]
-    pending_hooks: Mutex<BTreeMap<String, Arc<PendingPhaseHook>>>,
 }
 #[derive(Clone)]
 pub(super) struct ThreadObservations(Arc<Shared>);
@@ -624,29 +595,7 @@ impl ThreadObservations {
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
-            #[cfg(test)]
-            pending_hooks: Mutex::new(BTreeMap::new()),
         }))
-    }
-
-    /// Installs the per-owner pending-boundary phase hook of one Thread's fault test.
-    #[cfg(test)]
-    fn install_pending_hook(&self, id: &str, hook: Arc<PendingPhaseHook>) {
-        self.0
-            .pending_hooks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_owned(), hook);
-    }
-
-    #[cfg(test)]
-    fn pending_hook(&self, id: &str) -> Option<Arc<PendingPhaseHook>> {
-        self.0
-            .pending_hooks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
     }
 
     /// The live feed of one observed Thread, if its projection owner was installed.
@@ -716,7 +665,7 @@ impl ThreadObservations {
         let draining = owner.clone();
         let synchronizing = owner.clone();
         let closing = owner.clone();
-        let message_store = self.0.projector.store.clone();
+        let messages = owner.clone();
         session.observe_assembly(
             move |id, thread, resources| {
                 if let Some(owner) = owner.upgrade() {
@@ -732,56 +681,72 @@ impl ThreadObservations {
                     let observations = ThreadObservations(owner);
                     if purpose == crate::thread_assembler::ClosePurpose::Preserve {
                         observations
-                        .synchronize(Some(&id))
+                            .synchronize(Some(&id))
+                            .await
+                            .map_err(|source| {
+                                crate::thread_assembler::ThreadAssemblyError::Resource {
+                                    operation: "drain Thread product observation",
+                                    source: source.into_boxed_dyn_error(),
+                                }
+                            })?;
+                    }
+                    observations
+                        .drain_for_purpose(&id, purpose)
                         .await
                         .map_err(|source| {
                             crate::thread_assembler::ThreadAssemblyError::Resource {
-                                operation: "drain Thread product observation",
+                                operation: "join Thread storage and observation workers",
                                 source: source.into_boxed_dyn_error(),
                             }
                         })?;
-                    }
-                    observations.drain_for_purpose(&id, purpose).await.map_err(|source| {
-                        crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "join Thread storage and observation workers",
-                            source: source.into_boxed_dyn_error(),
-                        }
-                    })?;
                     Ok(())
                 })
             },
-            // 一条已受理消息的持久身份：per-Thread 身份索引给出正文摘要与原始受理序号，因此离开
-            // 常驻窗口的重复投递会被裁决而不是再送一次。索引行缺少摘要（迁移回填）或时间线已提交
-            // 但索引无法证明正文的旧消息都按“不可验证”上报，让上层 fail-closed；查询失败同样上报，
-            // 绝不在无法证明身份时把投递当成新消息受理。
-            Some(Arc::new(move |thread_id: String, message_id: String| {
-                let store = message_store.clone();
+            Some(Arc::new(move |id, message_id| {
+                let owner = messages.clone();
                 Box::pin(async move {
-                    let identity_error = |source: anyhow::Error| {
-                        crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "read durable message identity",
-                            source: source.into_boxed_dyn_error(),
-                        }
-                    };
-                    // 该身份查询是冷读路径：没有活跃 writer 时 `history` 只是一个不做 IO 的句柄，
-                    // 不建库也不升级它；有活跃 writer 时它正是这个 Thread 的同一权威句柄，读会等
-                    // 本句柄 writer 完成建表与 identity meta，因此不会读到半初始化库。这里刻意不
-                    // 另开独立 HistoryStore，避免未启动的冷读绕过本句柄的初始化锁。
-                    let history = store.history(&thread_id).await.map_err(identity_error)?;
-                    if let Some(identity) =
-                        history.message_identity(&message_id).await.map_err(identity_error)?
-                    {
-                        return Ok(Some(match identity.digest {
-                            Some(digest) => {
-                                crate::thread_assembler::observation::DurableMessageIdentity::Proven {
-                                    sequence: identity.sequence,
-                                    digest,
-                                }
+                    let owner = owner
+                        .upgrade()
+                        .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
+                    let read = async {
+                        let paths = owner.projector.store.registered_session_paths(&id)?;
+                        let current = owner
+                            .projector
+                            .store
+                            .state_for(paths.workspace_id(), &id)?
+                            .load_current()
+                            .await?;
+                        let Some(current) = current else {
+                            return Ok(None);
+                        };
+                        let original = current
+                            .state
+                            .inbox
+                            .iter()
+                            .find(|record| record.message.id == message_id)
+                            .map(|record| (record.sequence, record.message.digest()));
+                        let accepted = original.or_else(|| {
+                            current
+                                .state
+                                .consumed_message_identities
+                                .iter()
+                                .find(|identity| identity.id == message_id)
+                                .map(|identity| (identity.sequence, identity.digest.clone()))
+                        });
+                        Ok::<_, anyhow::Error>(accepted.map(|(sequence, digest)| {
+                            crate::thread_assembler::observation::DurableMessageIdentity::Proven {
+                                sequence,
+                                digest,
                             }
-                            None => crate::thread_assembler::observation::DurableMessageIdentity::Unverifiable,
-                        }));
+                        }))
                     }
-                    Ok(None)
+                    .await;
+                    read.map_err(
+                        |source| crate::thread_assembler::ThreadAssemblyError::Resource {
+                            operation: "read saved Current message identity",
+                            source: source.into_boxed_dyn_error(),
+                        },
+                    )
                 })
             })),
             move |id, thread, purpose| {
@@ -797,29 +762,22 @@ impl ThreadObservations {
             move |id| {
                 let owner = synchronizing.clone();
                 Box::pin(async move {
-                    let owner = owner.upgrade().ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
-                    ThreadObservations(owner).synchronize(Some(&id)).await.map_err(|source| {
-                        crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "acknowledge parent report handoff",
-                            source: source.into_boxed_dyn_error(),
-                        }
-                    })
+                    let owner = owner
+                        .upgrade()
+                        .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
+                    ThreadObservations(owner)
+                        .synchronize(Some(&id))
+                        .await
+                        .map_err(
+                            |source| crate::thread_assembler::ThreadAssemblyError::Resource {
+                                operation: "acknowledge parent report handoff",
+                                source: source.into_boxed_dyn_error(),
+                            },
+                        )
                 })
             },
         )?;
         Ok(())
-    }
-
-    /// Releases the retained observation for a drained or evicted Thread.
-    ///
-    /// The observation worker owns a strong `ThreadHandle`; keeping its entry after the assembly
-    /// registry released the owner would keep every session that was ever activated resident. The
-    /// entry is removed once its final projection is durable, so a later re-activation installs a
-    /// fresh observation instead of reusing the released handle.
-    #[cfg(test)]
-    async fn drain(&self, id: &str) -> Result<()> {
-        self.drain_for_purpose(id, crate::thread_assembler::ClosePurpose::Preserve)
-            .await
     }
 
     fn cancel_for_deletion(&self, id: &str) {
@@ -930,8 +888,6 @@ impl ThreadObservations {
             channel,
             reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(recovered_through)),
             observed_before_execution,
-            #[cfg(test)]
-            pending_hook: self.pending_hook(&id),
         });
         // Seed the feed with the newest typed storage state the coordinator already reports, so a
         // subscriber that opens before this owner's first pass mirrors a real fact instead of an
@@ -1038,11 +994,19 @@ impl ThreadObservations {
         Ok(())
     }
 
-    /// Explicit parent continuation repairs terminal notifications even for unloaded children.
-    /// This prepares persisted schemas (including saved-representation versions) and reads
-    /// checkpoints plus durable history; no child owner, model or workspace is opened.
+    /// Explicit parent continuation repairs only Current-backed pending Native deliveries even for
+    /// unloaded children. It may prepare storage, but opens no child model, tool or workspace.
     pub(super) async fn reconcile_children(&self, parent: &str) -> Result<()> {
         let services = &self.0.projector;
+        let parent_record = services
+            .store
+            .read_thread(parent)
+            .await?
+            .context("missing parent Thread record")?;
+        services
+            .require_session(parent)?
+            .recover_saved_review_deliveries(&crate::Thread::from(parent_record))
+            .await?;
         for member in services.store.read_directory_tree(parent).await? {
             if !member.is_native() || member.parent_thread_id.as_deref() != Some(parent) {
                 continue;
@@ -1061,47 +1025,42 @@ impl ThreadObservations {
                 .is_some()
             {
                 self.synchronize(Some(&child.id)).await?;
+                services
+                    .require_session(&child.id)?
+                    .recover_saved_review_deliveries(&child)
+                    .await?;
                 continue;
             }
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+            // A complete Current can retain large domain state. Keep its
+            // recovery result on the heap across directory/delivery awaits.
+            let Some(current) = Box::pin(async {
+                crate::studio::thread_factory::recovery::load_current_for_recovery(
                     &services.store,
                     &child,
                 )
-                .await?
+                .await
+                .map(|current| current.map(Box::new))
+            })
+            .await?
             else {
                 continue;
             };
             // A cold child's interruption is a fact the list must publish: a restart otherwise loses
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
-            // reads only the saved checkpoint — no activation, no workspace, no model request.
+            // reads only the complete saved Current — no activation, no workspace, no model request.
             directory::publish_cold_scheduling_state(
                 services,
                 &child,
                 &member.agent,
-                &checkpoint.state,
+                &current.state.to_paused_snapshot(),
             )
             .await?;
-            // Match close/retry recovery: keep the owned delivery state out of the parent's
-            // subscription future, which also nests checkpoint migration and activation.
-            Box::pin(
-                services
-                    .sessions
-                    .upgrade()
-                    .context("Session table closed")?
-                    .materialize(
-                        &services
-                            .events
-                            .agent_execution_identity(&child.id)
-                            .context("missing child agent identity")?
-                            .0
-                            .session_id,
-                    )?
-                    .recover_saved_review_deliveries(&child),
-            )
-            .await?;
+            services
+                .require_session(&child.id)?
+                .recover_saved_review_deliveries(&child)
+                .await?;
         }
         Ok(())
     }
@@ -1206,6 +1165,7 @@ impl Drop for ProjectionLease {
 }
 
 struct LiveOwner {
+    history_reader: crate::history::HistoryReader,
     native_directory: Option<crate::studio::product_event_bus::NativeAgentObservation>,
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
@@ -1231,13 +1191,8 @@ struct LiveOwner {
     storage_published: Option<crate::ThreadStorageState>,
     /// The Thread's reliable admission channel, shared with the history writer.
     channel: Arc<HistoryChannel>,
-    chat: Session,
     thread: crate::Thread,
     feed: Arc<ThreadLiveFeed>,
-    /// The one committed batch this owner prepared but has not handed to the writer yet; see
-    /// [`PendingHandoff`].
-    #[cfg(test)]
-    pending_hook: PendingHookSlot,
 }
 
 /// Which path a retained handoff batch came from; a retry never re-decides it.
@@ -1259,7 +1214,7 @@ enum HandoffMode {
 /// and the handoff — a failure, a cancelled wait or an explicit retry re-enters this same batch
 /// instead of projecting the same commit a second time and bumping its content revisions.
 pub(in crate::studio) struct PendingHandoff {
-    pub(in crate::studio) write: Arc<ThreadWrite>,
+    pub(in crate::studio) write: Arc<HistoryExport>,
     pub(in crate::studio) prepared: Arc<crate::studio::thread_projection::PreparedEffect>,
     pub(in crate::studio) admitted: bool,
     /// Managed terminal delivery prepared from the same frozen report, still owned here until the
@@ -1272,22 +1227,6 @@ pub(in crate::studio) struct PendingHandoff {
 }
 
 impl PendingHandoff {
-    pub(in crate::studio) fn publishes_current(&self) -> bool {
-        self.mode == HandoffMode::Live
-    }
-
-    /// Retained size of the prepared content while its owner still owes the handoff.
-    ///
-    /// The same measurement the reliable channel charges when it takes the batch over, so the
-    /// Thread's existing budget covers the batch under exactly one owner at a time — never twice
-    /// outside the one synchronous handoff boundary, and never unbounded while a report awaits.
-    #[cfg(test)]
-    fn retained_bytes(&self) -> u64 {
-        self.prepared
-            .retained_bytes()
-            .saturating_add(self.extra_retained_bytes())
-    }
-
     /// Delivery changes owned here in addition to the shared prepared batch.
     pub(in crate::studio) fn extra_retained_bytes(&self) -> u64 {
         // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
@@ -1344,51 +1283,6 @@ impl PendingHandoff {
     }
 }
 
-/// The pending-boundary phase hook a fault test may install on exactly one owner; production code
-/// always passes the empty slot and no test-less build contains the control type.
-#[cfg(test)]
-type PendingHookSlot = Option<Arc<PendingPhaseHook>>;
-
-/// Test-only, per-owner one-shot control at the pending→report boundary of one `LiveOwner`.
-///
-/// `entered` fires for every batch that reaches the boundary (event semantics, so a retry of the
-/// same sequence is visible too); `control` parks the owner until the owning test releases it once
-/// with `Ok(())` or a failure message, after which the hook re-arms itself for the next entry. It
-/// only controls timing and injects one error; the real projection, report preparation, writer and
-/// synchronize keep running.
-#[cfg(test)]
-struct PendingPhaseHook {
-    entered: tokio::sync::mpsc::UnboundedSender<u64>,
-    control: watch::Sender<Option<Result<(), String>>>,
-}
-
-#[cfg(test)]
-type PendingPhaseControl = (
-    Arc<PendingPhaseHook>,
-    tokio::sync::mpsc::UnboundedReceiver<u64>,
-    watch::Sender<Option<Result<(), String>>>,
-);
-
-#[cfg(test)]
-impl PendingPhaseHook {
-    /// Returns the hook plus the test-owned entry stream and release control.
-    fn new() -> PendingPhaseControl {
-        let (entered, entered_rx) = tokio::sync::mpsc::unbounded_channel();
-        // The sender is the release control: cloning it back to the test keeps
-        // one authoritative channel, so a parked owner and its test observe the
-        // same release sequence instead of two disconnected watch ends.
-        let (control, _receiver) = watch::channel(None);
-        (
-            Arc::new(Self {
-                entered,
-                control: control.clone(),
-            }),
-            entered_rx,
-            control,
-        )
-    }
-}
-
 impl LiveOwner {
     async fn open(
         projector: &ObservationServices,
@@ -1402,7 +1296,6 @@ impl LiveOwner {
         let channel = state.channel.clone();
         let id = thread.id.as_str();
         let conversation = projector.store.conversation_store(id).await?;
-        let chat = conversation.session().clone();
         #[cfg(not(test))]
         let binding = projector
             .session_of(id)
@@ -1419,65 +1312,37 @@ impl LiveOwner {
         if let Some(binding) = &binding {
             conversation.attach_execution(binding).await?;
         }
-        feed.bind_conversation(&conversation);
+        conversation.attach_current(handle.clone()).await?;
+        feed.bind_conversation(&conversation, handle.runtime_epoch().to_string());
         let history = projector.store.history(id).await?;
-        let database_id = history
-            .conversation_database_id()
-            .await?
-            .context("execution history is not initialized")?;
-        // Initialize D/H only: the empty fixed interval cannot select payloads or current/context.
-        chat.completed_after(
-            pl_core::chat::ChatCompletionCursor::new(chat.epoch(), 0),
-            None,
-            Some(0),
-            pl_core::chat::ReadDemand::new(1, crate::CHAT_BATCH_MAX_BYTES as usize),
-            &super::conversation_reader::JsonBudget::new(database_id.clone(), String::new()),
-        )
-        .await?;
-        let usage = live_usage(projector, id, snapshot);
-        // Seed the bounded active slice once. The channel owns allocation continuity; only a
-        // retired identity referenced by a late reliable fact needs an exact durable lookup.
-        let effects = handle.effects().await?;
-        conversation
+        let history_reader = history.reader();
+        let usage = snapshot.usage_summary.clone();
+        let runtime_epoch = handle.runtime_epoch();
+        let initialized = conversation
             .initialize_projection(Arc::new({
-                let store = projector.store.clone();
                 let channel = channel.clone();
                 let thread = thread.clone();
                 let snapshot = snapshot.clone();
-                let chat = chat.clone();
                 let usage = usage.clone();
                 move || {
-                    let (
-                        store,
-                        channel,
-                        thread,
-                        snapshot,
-                        chat,
-                        usage,
-                        effects,
-                        database_id,
-                        history,
-                    ) = (
-                        store.clone(),
+                    let (channel, thread, snapshot, usage, history, runtime_epoch) = (
                         channel.clone(),
                         thread.clone(),
                         snapshot.clone(),
-                        chat.clone(),
                         usage.clone(),
-                        effects.clone(),
-                        database_id.clone(),
                         history.clone(),
+                        runtime_epoch,
                     );
                     Box::pin(async move {
                         let mut projection = LiveProjection::new();
-                        projection.bind_execution_history(channel.order_index(), history)?;
-                        projection.bind_conversation_identity(database_id)?;
-                        let (seed_items, hidden) =
-                            cold_seed(&store, &thread, &snapshot, &channel, &effects).await?;
-                        projection.seed(seed_items, hidden);
-                        projection
-                            .restore_current(&chat, &thread, &snapshot)
-                            .await?;
+                        projection.bind_execution_history(
+                            channel.order_index(),
+                            runtime_epoch,
+                            history,
+                        )?;
+                        // Current starts a new runtime epoch; it must not replay R1 history into
+                        // R2's live publication rights. Late facts query HistoryReader by owner.
+                        projection.restore_current(&thread, &snapshot).await?;
                         let baseline = projection.current_state();
                         Ok(RetainedProjection {
                             projection,
@@ -1488,8 +1353,32 @@ impl LiveOwner {
                     })
                 }
             }))
-            .await?;
-        let retained = ProjectionLease::claim(conversation.clone())?;
+            .await;
+        if let Err(error) = initialized {
+            return match conversation
+                .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+            {
+                Ok(()) => Err(error),
+                Err(close) => Err(error.context(format!(
+                    "closing current after projection initialization failure: {close:#}"
+                ))),
+            };
+        }
+        let retained = match ProjectionLease::claim(conversation.clone()) {
+            Ok(retained) => retained,
+            Err(error) => {
+                return match conversation
+                    .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
+                    .await
+                {
+                    Ok(()) => Err(error),
+                    Err(close) => Err(error.context(format!(
+                        "closing current after projection ownership failure: {close:#}"
+                    ))),
+                };
+            }
+        };
         // Publish the first activity only after this snapshot's admitted completions have been
         // folded below. Seeding the summary here would suppress that first shared content publish.
         let activity_published = None;
@@ -1513,16 +1402,18 @@ impl LiveOwner {
             &thread,
             &config.config,
         )?;
+        let compact_runtime = feed.compact_runtime(runtime.clone())?;
         feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: catalog.revision,
-            runtime: Arc::new(runtime.clone()),
+            runtime: Arc::new(compact_runtime),
             model_route: model_route.clone(),
         });
         let runtime_published = Some(runtime);
         let model_route_published = model_route;
         feed.publish_storage(storage_published.clone());
         let owner = Self {
+            history_reader,
             native_directory: state.native_directory.clone(),
             terminal_transfer: state.terminal_transfer.clone(),
             terminal_revocation: state.reconciliation_through.clone(),
@@ -1537,40 +1428,14 @@ impl LiveOwner {
             model_route_published,
             storage_published,
             channel,
-            chat,
             thread,
             feed,
-            #[cfg(test)]
-            pending_hook: state.pending_hook_slot(),
         };
         // The seeded facts are already resident, so the Thread's budget covers them from the moment
         // the owner is installed instead of only after its first commit.
         owner.publish_retained()?;
-        // A Thread re-activated after its last Turn finished has no live frame left for that fact:
-        // the authoritative snapshot carries only the active Turn and `turnCompleted` was broadcast
-        // once, to subscribers that may be long gone. This is the very cold-read path the owner is
-        // installed on, so the newest terminal Turn is read here once — bounded, without item bodies
-        // — and seeded into the same retained fact the live projection publishes. The live path can
-        // then only move it forward, so a seed can never hide a later finished Turn, and a late
-        // duplicate of a Turn already retained is dropped by the same identity/revision guard.
-        if let Some(turn) = projector
-            .store
-            .history(&owner.thread.id)
-            .await?
-            .newest_terminal_turn()
-            .await?
-        {
-            // The retained terminal may describe an older Turn while this installed snapshot
-            // already has newer work. Accept the current runtime cut, not a status inferred from
-            // that historical Turn, before any subscriber can observe its terminal fact.
-            owner.prepare_terminal_runtime(
-                projector,
-                snapshot,
-                turn.revision,
-                owner.thread.updated_at.max(turn.updated_at),
-            )?;
-            owner.feed.publish_last_turn(Arc::new(turn));
-        }
+        // Terminal Turn history is served by the independent HistoryReader. Replaying it into the
+        // new runtime epoch would recreate presentation restore and can publish an old run's fact.
         Ok(owner)
     }
 
@@ -1619,7 +1484,7 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
         thread_id: &str,
-        write: &Arc<ThreadWrite>,
+        write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         self.seed_durable_targets(services, thread_id, write)
@@ -1639,7 +1504,7 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
         thread_id: &str,
-        write: &ThreadWrite,
+        write: &HistoryExport,
     ) -> Result<()> {
         if write.effect.delivery_repairs.is_empty() && write.effect.interactions.is_empty() {
             return Ok(());
@@ -1667,7 +1532,7 @@ impl LiveOwner {
     async fn project_write(
         &mut self,
         services: &ObservationServices,
-        write: &Arc<ThreadWrite>,
+        write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let effect = &write.effect;
@@ -1682,7 +1547,7 @@ impl LiveOwner {
         let projected = self
             .retained
             .projection
-            .prepare(&self.thread, effect, &write.checkpoint.state, true)
+            .prepare(&self.thread, effect, &write.state, true)
             .await;
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
@@ -1723,7 +1588,11 @@ impl LiveOwner {
         tracing::debug!(
             target: "conversation_work",
             thread_id = self.thread.id,
-            source_effect_seq = effect.sequence,
+            current_revision = self
+                .retained
+                .projection
+                .current_state()
+                .map_or(0, |current| current.revision()),
             projection_handoff_elapsed_us = started.elapsed().as_micros() as u64,
             success = result.is_ok(),
             "live owner projection and handoff"
@@ -1745,88 +1614,34 @@ impl LiveOwner {
         self.prepare_terminal_delivery(services)?;
         self.prepare_handoff(services, snapshot)?;
         if let Some(binding) = &self.binding {
-            let prepared =
-                binding
-                    .conversation
-                    .admit_prepared(binding, &self.channel, &mut self.retained)?;
-            if self
-                .retained
-                .pending
-                .as_ref()
-                .is_some_and(PendingHandoff::publishes_current)
-            {
-                self.feed.publish_business_refs(
-                    prepared.sequence,
-                    crate::studio::thread_projection::project_business_refs(
-                        prepared.current.projection(),
-                    ),
-                );
-            }
+            binding
+                .conversation
+                .admit_prepared(binding, &self.channel, &mut self.retained)?;
         }
         #[cfg(test)]
         if self.binding.is_none() {
             let retained = &mut *self.retained;
             if let Some(pending) = retained.pending.as_mut() {
-                retained
-                    .projection
-                    .publish_prepared(&self.chat, &mut pending.prepared)
-                    .await?;
-                if let Some(current) = Arc::make_mut(&mut pending.prepared).current_state.take()
-                    && pending.publishes_current()
-                {
-                    self.feed.publish_conversation(&self.chat, current)?;
-                }
+                pending.admitted = true;
             }
         }
         self.publish_retained()?;
-        // Test-only fault boundary: a fault test that installed a hook parks the real batch right
-        // after its validated publication and before outward handover, and may fail it once. Production
-        // builds (and owners without a hook) pass straight through.
-        #[cfg(test)]
-        if let Some((hook, sequence)) = self.pending_hook.as_ref().zip(
-            self.retained
-                .pending
-                .as_ref()
-                .map(|pending| pending.write.effect.sequence),
-        ) {
-            let _ = hook.entered.send(sequence);
-            let mut release = hook.control.subscribe();
-            loop {
-                // The watch guard is a read lock on the same channel the arms
-                // below write through `send_replace`; cloning the decision in
-                // its own scope drops the guard before the match, so a parked
-                // owner never synchronously deadlocks its own release.
-                let decision = {
-                    let guard = release.borrow_and_update();
-                    guard.clone()
-                };
-                match decision {
-                    Some(Ok(())) => {
-                        hook.control.send_replace(None);
-                        break;
-                    }
-                    Some(Err(message)) => {
-                        hook.control.send_replace(None);
-                        return Err(anyhow::anyhow!(message));
-                    }
-                    None => {}
-                }
-                if release.changed().await.is_err() {
-                    break;
-                }
-            }
-        }
         if let (Some(exporter), Some(pending)) = (&services.run_export, &self.retained.pending)
             && (pending.mode == HandoffMode::Live
                 || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))
         {
+            let export_current = self
+                .retained
+                .projection
+                .current_state()
+                .context("export current owner is missing")?;
             Box::pin(exporter.admit_live_handoff(
                 &self.thread.id,
                 &pending.prepared.accounting,
-                &pending.prepared.current.lifecycle,
+                &pending.prepared.history_changes,
                 &self.retained.usage,
-                &self.chat,
-                self.retained.projection.conversation_database_id(),
+                export_current.as_ref(),
+                &self.history_reader,
             ))
             .await;
         }
@@ -1865,7 +1680,7 @@ impl LiveOwner {
         );
         let authority = Arc::new(
             crate::thread_assembler::review_dispatch::TerminalAuthority::capture(
-                &pending.write.checkpoint.state,
+                &pending.write.state,
             )?,
         );
         let bytes = self.channel.terminal_material_bytes(&authority, &original);
@@ -2081,12 +1896,27 @@ impl LiveOwner {
                 self.channel.handoff_ticket(),
             )
             .await?;
-            let history = services.store.history(&self.thread.id).await?;
-            let mut result = history.turn_result(&turn.turn_id).await?;
-            for record in prepared.completions.iter() {
-                let atom: crate::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-                if atom.turn_id.as_deref() == Some(turn.turn_id.as_str()) {
-                    result.observe_completion(record, &self.thread.id)?;
+            let mut result = turn_result(services, self, &turn.turn_id).await?;
+            for change in prepared.history_changes.iter().filter(|change| {
+                change.event.header.original.is_some()
+                    && change.event.header.turn_id.as_deref() == Some(turn.turn_id.as_str())
+            }) {
+                if matches!(
+                    change.entity.kind,
+                    crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
+                ) {
+                    let item = crate::studio::runtime::chat_item::frozen_execution_item(
+                        &change.event,
+                        &self.thread.id,
+                    )?;
+                    result.observe(&item);
+                    if let Some(finish) =
+                        crate::studio::thread_projection::committed_finish_execution(&item)?
+                    {
+                        result.finish = Some(finish);
+                    }
+                } else {
+                    result.observe_identity(&change.entity.entity_id);
                 }
             }
             result
@@ -2105,7 +1935,7 @@ impl LiveOwner {
         // below takes the slot's single strong reference and never copies the whole batch.
         let report = reports::terminal_message(
             &self.thread,
-            &write.checkpoint.state,
+            &write.state,
             &turn,
             write.effect.sequence,
             &result,
@@ -2149,7 +1979,7 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
         thread_id: &str,
-        write: &Arc<ThreadWrite>,
+        write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
         self.seed_durable_targets(services, thread_id, write)
@@ -2157,7 +1987,7 @@ impl LiveOwner {
         let projected = self
             .retained
             .projection
-            .prepare_committed(&self.thread, &write.effect, &write.checkpoint.state)
+            .prepare_committed(&self.thread, &write.effect, &write.state)
             .await;
         let prepared = match projected {
             Ok(prepared) => prepared,
@@ -2198,15 +2028,14 @@ impl LiveOwner {
     async fn stream(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
         self.retained
             .projection
-            .stream(&self.chat, &self.thread, snapshot, snapshot.commit_sequence)
+            .stream(&self.thread, snapshot)
             .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
         self.observe_runtime(snapshot).await?;
-        self.observe_activity(snapshot).await;
+        self.observe_activity(snapshot).await?;
         if let Some(current) = self.retained.projection.current_state() {
-            self.feed.publish_conversation(&self.chat, current)?;
+            self.feed.publish_conversation(current)?;
         }
-        self.publish_retained()?;
         Ok(())
     }
 
@@ -2222,7 +2051,7 @@ impl LiveOwner {
             &self.thread.id,
             snapshot,
             at,
-            &self.retained.usage,
+            &snapshot.usage_summary,
         )?;
         let mut model_route = crate::studio::model_route::projected(snapshot)?;
         let same_identity = match (self.model_route_published.as_ref(), model_route.as_ref()) {
@@ -2266,10 +2095,11 @@ impl LiveOwner {
         self.qualification_revision = qualification_revision;
         self.model_route_published.clone_from(&model_route);
         let runtime = self.runtime_published.insert(runtime);
+        let compact_runtime = self.feed.compact_runtime(runtime.clone())?;
         self.feed.publish(|| ThreadLiveEvent::Runtime {
             observation_revision: snapshot.observation_revision,
             catalog_revision: self.qualification_revision,
-            runtime: Arc::new(runtime.clone()),
+            runtime: Arc::new(compact_runtime),
             model_route,
         });
         Ok(())
@@ -2281,18 +2111,22 @@ impl LiveOwner {
     /// tool or an interaction change reaches it through the owner snapshot, never through `effect`.
     /// Shared producer versions cover body changes even when the bounded summary stays identical.
     /// The completion ceiling also advances independently of the activity summary.
-    async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) {
+    async fn observe_activity(&mut self, snapshot: &ThreadSnapshot) -> Result<()> {
         let activity = self.retained.projection.current_activity();
         let activity_changed = activity != self.activity_published;
         if !activity_changed {
-            return;
+            return Ok(());
         }
         self.activity_published = activity;
+        let compact_activity = self
+            .feed
+            .compact_activity(self.activity_published.clone())?;
         // One shared handle per published change: every subscriber clones that handle, never the body.
         self.feed.publish(|| ThreadLiveEvent::Activity {
             observation_revision: snapshot.observation_revision,
-            activity: self.activity_published.clone().map(Arc::new),
+            activity: compact_activity.map(Arc::new),
         });
+        Ok(())
     }
 
     /// Republishes the typed storage state this owner derives, only when it really changed.
@@ -2322,149 +2156,6 @@ impl Drop for LiveOwner {
     fn drop(&mut self) {
         if let Some(binding) = &self.binding {
             binding.conversation.detach_execution(binding);
-        }
-    }
-}
-
-/// The one cold read of a live projection: the durable facts of the work it is installed onto.
-///
-/// The current owner snapshot is deliberately compact — it no longer holds the process bodies a
-/// running Turn committed earlier — so a projection installed mid-Turn would be unable to resolve an
-/// identity a later effect still references. Reading the running and newest Turn's committed items
-/// once, together with the hidden dispositions of the inputs still in play, closes that gap without
-/// putting a history read on the commit or preview path.
-async fn cold_seed(
-    store: &StudioStore,
-    thread: &crate::Thread,
-    snapshot: &ThreadSnapshot,
-    channel: &HistoryChannel,
-    retained: &[Arc<pl_core::thread::ThreadEffectBatch>],
-) -> Result<(
-    Vec<crate::ExecutionItem>,
-    std::collections::BTreeSet<String>,
-)> {
-    use std::collections::BTreeSet;
-
-    // Capture before reading history: core may already have pruned the terminal Turn from
-    // its current snapshot, but the reliable queue still owns the recovery commit's references.
-    let pending = channel.unprojected_writes();
-    let mut turn_ids = BTreeSet::new();
-    let mut input_ids = BTreeSet::new();
-    let mut item_ids = BTreeSet::new();
-    for state in
-        std::iter::once(snapshot).chain(pending.iter().map(|write| &write.checkpoint.state))
-    {
-        for turn in state.turns.iter() {
-            turn_ids.insert(turn.turn_id.clone());
-            input_ids.extend(turn.input_id.iter().cloned());
-        }
-        input_ids.extend(state.inputs.iter().map(|record| record.input.id.clone()));
-        item_ids.extend(
-            state
-                .tasks
-                .values()
-                .map(|task| crate::studio::thread_projection::order::tool_id(&task.call_id)),
-        );
-        item_ids.extend(
-            state
-                .permissions
-                .values()
-                .map(|record| crate::studio::thread_projection::order::tool_id(&record.call_id)),
-        );
-        item_ids.extend(
-            state.inbox.iter().map(|record| {
-                crate::studio::thread_projection::order::message_id(&record.message.id)
-            }),
-        );
-    }
-    for write in &pending {
-        // Reuse the projection's identity enumeration, including tool results whose attempt
-        // already left the checkpoint. Do not maintain a second interpretation of effect kinds.
-        let referenced = crate::studio::thread_projection::project_effect_items(
-            thread,
-            &write.checkpoint.state,
-            &write.effect,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-        )?;
-        for item in referenced.items {
-            if !item.turn_id.is_empty() {
-                turn_ids.insert(item.turn_id.clone());
-            }
-            item_ids.insert(item.id);
-        }
-        input_ids.extend(referenced.unresolved_inputs);
-        item_ids.extend(referenced.unresolved_calls);
-    }
-    // Storage admission may lag behind core publication. These immutable effects remain in core
-    // until durable acknowledgement, including recovery facts absent from both the pruned snapshot
-    // and the admission queue. Enumerate their references before the first history read.
-    for effect in retained {
-        if let Some(turn) = &effect.turn {
-            turn_ids.insert(turn.turn_id.clone());
-            input_ids.extend(turn.input_id.iter().cloned());
-        }
-        if let Some(attempt) = &effect.attempt {
-            turn_ids.insert(attempt.turn_id.clone());
-        }
-        for change in effect.inputs.iter() {
-            use pl_core::thread::input::InputChange;
-            input_ids.insert(match change {
-                InputChange::Accepted(record) => record.input.id.clone(),
-                InputChange::Transition { id, .. } => id.clone(),
-            });
-        }
-        for task in effect.tasks.iter() {
-            turn_ids.insert(task.turn_id.clone());
-        }
-        item_ids.extend(
-            effect
-                .tasks
-                .iter()
-                .map(|record| &record.call_id)
-                .chain(effect.permissions.iter().map(|record| &record.call_id))
-                .chain(effect.deliveries.iter().map(|record| &record.call_id))
-                .chain(effect.delivery_repairs.iter().map(|record| &record.call_id))
-                .map(|id| crate::studio::thread_projection::order::tool_id(id)),
-        );
-        item_ids.extend(
-            effect.inbox.iter().map(|record| {
-                crate::studio::thread_projection::order::message_id(&record.message.id)
-            }),
-        );
-    }
-    item_ids.extend(input_ids.iter().cloned());
-    if turn_ids.is_empty() && item_ids.is_empty() {
-        return Ok((Vec::new(), BTreeSet::new()));
-    }
-    let history = store.history(&thread.id).await?;
-    history.prepare_activation().await?;
-    item_ids.extend(
-        turn_ids
-            .iter()
-            .map(|id| crate::studio::thread_projection::order::turn_id(id)),
-    );
-    let items = history.execution_seeds(item_ids).await?;
-    let hidden = history.hidden_input_identities(input_ids).await?;
-    Ok((items.into_values().collect(), hidden))
-}
-
-/// Cumulative usage the live projection folds further effects onto.
-///
-/// The history writer's reported summary is the value a hot increment, a reconnect and a cold
-/// restore agree on; a checkpoint that was loaded before any report seeds the same value.
-fn live_usage(
-    projector: &ObservationServices,
-    id: &str,
-    snapshot: &ThreadSnapshot,
-) -> UsageSummary {
-    let coordinator = projector.store.thread_persistence();
-    match coordinator.usage(id) {
-        Some(usage) => usage,
-        None => {
-            coordinator.seed_usage(id, snapshot.usage_summary.clone());
-            snapshot.usage_summary.clone()
         }
     }
 }
@@ -2576,11 +2267,52 @@ async fn run(
             .cloned();
         // The projection stays isolated behind `catch_unwind`, so a panicking projection is
         // still reported as an error instead of taking down the observation worker.
-        let result =
+        // A closed physical owner hands its final Current to the independent JSON writer before
+        // archive reconciliation. A failed History write cannot postpone that final save/join.
+        let mut current_close = if current.lifecycle == ThreadLifecycle::Closed {
+            if let Some(live) = worker.live.as_ref() {
+                Some(
+                    live.retained
+                        .store
+                        .close_current(
+                            &worker.thread,
+                            crate::thread_assembler::ClosePurpose::Preserve,
+                        )
+                        .await,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let mut result =
             std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
+        if current.lifecycle == ThreadLifecycle::Closed
+            && current_close.is_none()
+            && let Some(live) = worker.live.as_ref()
+        {
+            current_close = Some(
+                live.retained
+                    .store
+                    .close_current(
+                        &worker.thread,
+                        crate::thread_assembler::ClosePurpose::Preserve,
+                    )
+                    .await,
+            );
+        }
+        if let Some(Err(close)) = current_close {
+            result = Err(match result {
+                Ok(()) => close,
+                Err(archive) => {
+                    archive.context(format!("independent Current close also failed: {close:#}"))
+                }
+            });
+        }
         match result {
             Ok(()) => {
                 worker.continuous = true;
@@ -2617,17 +2349,46 @@ async fn run(
                                     } => (true, None),
                                     _ => (false, None),
                                 };
+                                let (history_cut, history_seq) =
+                                    match live.history_reader.capture_position().await {
+                                        Ok(position) => position,
+                                        Err(error) => {
+                                            worker.state.progress.send_modify(|progress| {
+                                                progress.error = Some(Arc::new(error.into()));
+                                                progress.finished = true;
+                                            });
+                                            return;
+                                        }
+                                    };
                                 exporter.record_thread_final_cut(
                                     crate::studio::runtime::run_export::RetiredThreadCut {
                                         thread_id: worker.id.clone(),
                                         through_effect_seq: current.commit_sequence,
-                                        session: live.chat.clone(),
+                                        history: live.history_reader.clone(),
+                                        history_cut,
+                                        history_seq,
                                         summary: live.retained.usage.clone(),
                                         status,
                                         aborted,
                                         error,
                                     },
                                 );
+                            }
+                            if let Some(live) = &worker.live
+                                && let Err(error) = live
+                                    .retained
+                                    .store
+                                    .close_current(
+                                        &worker.thread,
+                                        crate::thread_assembler::ClosePurpose::Preserve,
+                                    )
+                                    .await
+                            {
+                                worker.state.progress.send_modify(|progress| {
+                                    progress.error = Some(Arc::new(error));
+                                    progress.finished = true;
+                                });
+                                return;
                             }
                             worker
                                 .state
@@ -2651,6 +2412,16 @@ async fn run(
                 }
             }
             Err(error) => {
+                // Archive faults do not revoke the original Current publisher. Its latest RAM
+                // preview and State keep following this physical owner without a history read.
+                if let Some(live) = worker.live.as_mut() {
+                    if let Err(current_error) = live.stream(&current).await {
+                        worker.state.progress.send_modify(|progress| {
+                            progress.error = Some(Arc::new(current_error));
+                        });
+                    }
+                    live.observe_storage(&current, detail.as_ref());
+                }
                 worker.continuous = false;
                 worker.live_floor = worker.live_floor.max(current.commit_sequence);
                 worker
@@ -2701,6 +2472,14 @@ async fn run(
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
+                    let final_snapshot = worker.thread.snapshot();
+                    if final_snapshot.lifecycle == ThreadLifecycle::Closed {
+                        // Physical close can retire the subscription before this consumer takes
+                        // its last update. The original owner still retains its final snapshot;
+                        // process that real Closed state and complete Current/History shutdown.
+                        current = final_snapshot;
+                        continue;
+                    }
                     worker.continuous = false;
                     worker.live_floor = worker.live_floor.max(worker.thread.snapshot().commit_sequence);
                     worker.state.reconciliation_through.fetch_max(worker.live_floor, std::sync::atomic::Ordering::AcqRel);
@@ -2747,27 +2526,28 @@ async fn restore_finish(
     if result.finish.is_some() {
         return Ok(());
     }
-    let Some(tool) = result
+    let Some(_) = result
         .last_tool()
         .filter(|tool| tool.invocation().name() == pl_tool::finish_turn::TOOL_FINISH_TURN)
     else {
         return Ok(());
     };
-    let Some(saved) = services
-        .store
-        .history(id)
-        .await?
-        .tool_task(tool.invocation().tool_call_id())
+    let reader = services.store.open_history_reader(id).await?;
+    let Some(event) = reader
+        .review_finish_call(
+            turn.to_owned(),
+            None,
+            crate::history::HistoryDemand {
+                max_rows: 1,
+                max_bytes: 64 * 1024,
+            },
+        )
         .await?
     else {
         return Ok(());
     };
-    if saved.task.turn_id == turn {
-        result.finish = saved
-            .delivery
-            .as_ref()
-            .and_then(crate::studio::thread_projection::committed_finish);
-    }
+    let item = crate::studio::runtime::chat_item::read_execution_item(&reader, event, id).await?;
+    result.finish = crate::studio::thread_projection::committed_finish_execution(&item)?;
     Ok(())
 }
 
@@ -2829,12 +2609,56 @@ async fn turn_result(
         live.channel.handoff_ticket(),
     )
     .await?;
-    services
-        .store
-        .history(&live.thread.id)
-        .await?
-        .turn_result(turn_id)
-        .await
+    let history = services.store.history(&live.thread.id).await?;
+    let reader = history.reader();
+    let mut cursor = None;
+    let mut result = crate::studio::thread_projection::TurnResult::default();
+    loop {
+        let page = reader
+            .events_page(
+                crate::history::HistoryEventsQuery::Turn {
+                    turn_id: turn_id.to_owned(),
+                },
+                None,
+                cursor,
+                crate::history::HistoryDemand {
+                    max_rows: 512,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        for detail in page.entries {
+            let Some(original) = detail.header.original.as_ref() else {
+                continue;
+            };
+            if !matches!(
+                original.original_kind,
+                crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
+            ) {
+                if let Some(entity) = detail.header.entity_id {
+                    result.observe_identity(&entity);
+                }
+                continue;
+            }
+            let item = crate::studio::runtime::chat_item::read_execution_item(
+                &reader,
+                detail,
+                &live.thread.id,
+            )
+            .await?;
+            result.observe(&item);
+            if let Some(finish) =
+                crate::studio::thread_projection::committed_finish_execution(&item)?
+            {
+                result.finish = Some(finish);
+            }
+        }
+        let Some(next) = page.next else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    Ok(result)
 }
 
 /// Waits until the history writer's durable watermark covers the handoff ticket `sequence`.
@@ -2862,7 +2686,7 @@ async fn await_history_durable(channel: &HistoryChannel, id: &str, sequence: u64
 fn next_projection_write(
     pending: &Option<PendingHandoff>,
     channel: &HistoryChannel,
-) -> Option<Arc<ThreadWrite>> {
+) -> Option<Arc<HistoryExport>> {
     pending
         .as_ref()
         .map(|pending| Arc::clone(&pending.write))
@@ -2988,6 +2812,8 @@ impl ProjectionWorker {
         let live = live
             .as_mut()
             .expect("live projection owner was just installed");
+        live.stream(snapshot).await?;
+        live.observe_storage(snapshot, persistence);
         live.first_send &= *continuous;
         // The projection owner is the single producer of realtime content: it folds every admitted
         // fact exactly once, publishes it into the shared session and broadcasts the typed change,
@@ -3005,7 +2831,25 @@ impl ProjectionWorker {
             // Arc the queue admitted, so even a queue entry that already disappeared cannot make
             // this owner forget or re-project the commit it still owes.
             let retained_mode = live.retained.pending.as_ref().map(|pending| pending.mode);
-            let Some(write) = next_projection_write(&live.retained.pending, &live.channel) else {
+            let mut next = next_projection_write(&live.retained.pending, &live.channel);
+            if next.is_none()
+                && let Some(binding) = &live.binding
+            {
+                let after = live.channel.subscribe().borrow().admitted_sequence;
+                if let Some(export) = thread
+                    .history_export_page(after, std::num::NonZeroUsize::new(1).unwrap())?
+                    .into_iter()
+                    .next()
+                {
+                    let sequence = export.effect.sequence;
+                    binding.storage.admit_export(id, export.clone())?;
+                    // The reliable native queue now owns the original export even if its disk
+                    // writer fails. Current saving has no dependency on this acknowledgement.
+                    thread.release_history_through(sequence)?;
+                    next = next_projection_write(&live.retained.pending, &live.channel);
+                }
+            }
+            let Some(write) = next else {
                 break;
             };
             // Core admits effects before publishing its snapshot. Do not cross that publication
@@ -3081,4252 +2925,83 @@ impl ProjectionWorker {
 }
 
 #[cfg(test)]
-mod readiness_tests {
+mod live_feed_tests {
     use super::*;
-    use crate::studio::conversation_store::{ConversationStore, ReadRequest};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
-    async fn initialization_cancellation_retains_the_original_operation_and_typed_failure()
-    -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("history.sqlite");
-        let history = HistoryStore::open(&path, "store-readiness").await?;
-        let store = ConversationStore::new(history)?;
-        let attempts = Arc::new(AtomicUsize::new(0));
-        let release = Arc::new(Notify::new());
-        let expected = crate::StudioError::new(
-            crate::StudioErrorCode::StaleRevision,
-            "original initialization failure",
-            false,
-        )
-        .with_reason(
-            crate::StudioErrorReason::StaleReadScope,
-            serde_json::json!({"initialization":"original"}),
-        );
-        let factory = Arc::new({
-            let attempts = attempts.clone();
-            let release = release.clone();
-            let expected = expected.clone();
-            move || {
-                let (attempts, release, expected) =
-                    (attempts.clone(), release.clone(), expected.clone());
-                Box::pin(async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    release.notified().await;
-                    Err(anyhow::Error::new(expected))
-                })
-                    as futures::future::BoxFuture<'static, Result<RetainedProjection>>
-            }
-        });
-        let mut waiting = Box::pin(store.initialize_projection(factory.clone()));
-        assert!(futures::poll!(waiting.as_mut()).is_pending());
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        drop(waiting);
-        release.notify_one();
-        let reader = store.open_reader();
-        let failure = reader
-            .capture(ReadRequest::Current)
-            .await
-            .err()
-            .context("initializer unexpectedly succeeded")?;
-        assert_eq!(
-            crate::error_mapping::studio_error_from_anyhow(failure),
-            expected
-        );
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        release.notify_one();
-        let failure = store
-            .initialize_projection(factory)
-            .await
-            .err()
-            .context("retry unexpectedly succeeded")?;
-        assert_eq!(
-            crate::error_mapping::studio_error_from_anyhow(failure),
-            expected
-        );
-        assert_eq!(attempts.load(Ordering::SeqCst), 2);
-        assert!(!path.try_exists()?);
-        Ok(())
-    }
-}
+    async fn state_lag_resets_before_replay_and_closure_wins_over_buffered_frames() {
+        let (_, progress) = watch::channel(Progress::default());
+        let cancellation = CancellationToken::new();
+        let feed = ThreadLiveFeed::new(None, progress, cancellation.clone());
+        let mut slow = feed.subscribe();
+        let mut parked = feed.subscribe();
 
-#[cfg(test)]
-pub(in crate::studio) mod storage_fault_tests {
-    use super::*;
-    use crate::studio::storage::history::{EffectCommit, FactReceiptWrite};
-    use crate::studio::storage::thread_writer::ThreadStorageSink;
-    use crate::thread_assembler::{
-        StudioActivationFactory, StudioThreadSpec, ThreadActivation, ThreadAssemblyError,
-        ThreadPreparation,
-    };
-    use pl_core::{
-        context::{ContextContent, OpaquePayload},
-        model::{
-            DynModelSession, ModelError, ModelRequest, ModelSession, ModelStepOutput,
-            PreparedModelCall,
-        },
-        thread::{
-            ModelStepLimit, ThreadCheckpoint, ThreadEffectBatch, TurnInput, TurnOutcome,
-            TurnRecord, TurnState,
-            cold::{ColdStore, ColdStoreHandle},
-            input::{InputChange, InputRecord, InputState, ThreadInput},
-        },
-    };
-
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn recovery_projection_loads_references_pruned_from_the_current_snapshot() -> Result<()> {
-        recovery_projection(false).await?;
-        recovery_projection(true).await
-    }
-
-    /// 普通问答的交互构造：问题来自生产者格式，回答用真实的 `pl.studio.user-answer` 载荷。
-    fn qa_record(
-        call_id: &str,
-        revision: u64,
-        state: pl_core::thread::interactions::InteractionState,
-    ) -> Result<pl_core::thread::interactions::InteractionRecord> {
-        let questions = vec![crate::UserQuestion {
-            id: "provider".into(),
-            header: "Provider".into(),
-            question: "Which provider should the next release verify?".into(),
-            is_other: true,
-            is_secret: false,
-            options: None,
-        }];
-        Ok(pl_core::thread::interactions::InteractionRecord {
-            created_at: 10,
-            updated_at: 10 + i64::try_from(revision)?,
-            continuation_id: None,
-            request: pl_core::thread::interactions::InteractionRequest {
-                id: pl_core::tool::opaque::tool_interaction_id(call_id),
-                turn_id: "turn-qa".into(),
-                payload: OpaquePayload::new(
-                    "pl.tool.user-input",
-                    1,
-                    serde_json::to_string(&questions)?,
-                )?,
-            },
-            revision,
-            state,
-            extension_mutations: vec![],
-        })
-    }
-
-    async fn register_test_thread(store: &StudioStore, thread: &crate::Thread) -> Result<()> {
-        let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
-            crate::studio::store::directory::ProjectDirectoryRecord {
-                id: thread.workspace_id.clone(),
-                kind: crate::WorkspaceKind::Project,
-                name: "Test".into(),
-                path: "/tmp/project-test".into(),
-                ssh_alias: None,
-                created_at: 1,
-                updated_at: 1,
-                last_opened_at: None,
-                closed: false,
-            },
-        );
-        // 会话级事实只随 root 注册；child 会话由同一测试先注册的 parent 建立。
-        let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
-        if let Some(session) = session {
-            delta.session_upserts = vec![session];
+        for revision in 1_u64..=(u64::try_from(LIVE_FEED_FRAMES).unwrap() + 2) {
+            feed.publish_test_state_activity(revision, None);
         }
-        delta.agent_upserts = vec![agent];
-        store.persist_directory_summaries(&delta).await
-    }
-
-    async fn publish_test_directory(store: &StudioStore, events: &ProductEventBus) -> Result<()> {
-        let catalog = store.catalog();
-        let rows = catalog
-            .sessions()
-            .iter()
-            .flat_map(|session| {
-                catalog
-                    .agents_for_session(&session.session_id)
-                    .into_iter()
-                    .map(move |agent| crate::studio::records::row_projection(session, &agent))
-            })
-            .collect();
-        events.apply_thread_delta(rows, Vec::new()).await?;
-        Ok(())
-    }
-
-    fn bound_thread(thread_id: &str) -> crate::Thread {
-        let mut thread = crate::Thread::placeholder(thread_id);
-        thread.workspace_id = "project-test".into();
-        thread.agent_path = thread_id.to_owned();
-        thread.root_thread_id = thread_id.to_owned();
-        thread
-    }
-
-    /// History fault scenarios use the production ProjectionWorker and its real managed terminal
-    /// handoff. Only its already-committed core facts are constructed here; no report/exception is
-    /// preinserted and no substitute projection, terminal producer or receipt decoder is used.
-    async fn terminal_projection_fixture(
-        store: &StudioStore,
-        review: bool,
-    ) -> Result<(
-        crate::studio::storage::thread_writer::storage_fault_tests::CloseFactoryFixture,
-        ThreadObservations,
-        ProjectionWorker,
-        ThreadStorageSink,
-        crate::session::SessionTable,
-    )> {
-        use crate::studio::storage_fault_test_support::{close_factory, ticket};
-        let resources = close_factory(store)?;
-        let sessions = crate::session::SessionTable::new();
-        let threads = sessions.materialize(
-            &crate::SessionId::new("terminal-parent").expect("valid fixture session"),
-        )?;
-        resources.install(&threads)?;
-        let services = ObservationServices {
-            config: resources.config.clone(),
-            settings_updates: watch::channel(resources.config.read()?).1,
-            recovery: crate::studio::StudioRecoveryRegistry::new(),
-            store: store.clone(),
-            events: resources.events.clone(),
-            performance: ModelPerformanceOwner::new(
-                store.clone(),
-                resources.events.clone(),
-                "terminal-fault".into(),
-            ),
-            sessions: sessions.downgrade(),
-            writer: resources.writer.clone(),
-            run_export: None,
-        };
-        let observations = ThreadObservations::new(services.clone());
-        observations.install()?;
-        // A genuinely cold parent with a real checkpoint. Reception must use the production
-        // receive-only owner, not an executable fixture Entry or a fake ACK callback.
-        let parent = bound_thread("terminal-parent");
-        register_test_thread(store, &parent).await?;
-        let parent_sink = ThreadStorageSink::new(store.clone(), parent.clone(), None).await?;
-        let initial = ticket(&parent.id, 1);
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(
-            store
-                .thread_persistence()
-                .history_channel(&parent.id)
-                .order_index(),
-            store.history(&parent.id).await?,
-        )?;
-        let chat = store.chat_session(&parent.id).await?;
-        let (_, mut prepared) = projection
-            .prepare(&parent, &initial.effect, &initial.checkpoint.state, false)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        parent_sink.admit(&parent.id, initial)?;
-        let parent_channel = store.thread_persistence().history_channel(&parent.id);
-        assert!(parent_channel.prepare(prepared));
-        parent_sink.flush(&parent.id, 1).await?;
-        parent_channel.stop_and_join().await?;
-
-        let mut child = bound_thread(if review {
-            "terminal-review"
-        } else {
-            "terminal-child"
-        });
-        child.role = if review {
-            "custom-history-review"
-        } else {
-            "history-executor"
-        }
-        .into();
-        child.root_thread_id = parent.id.clone();
-        child.parent_thread_id = Some(parent.id.clone());
-        register_test_thread(store, &child).await?;
-        if review {
-            let mut target = bound_thread("unstarted-executor");
-            target.root_thread_id = parent.id.clone();
-            target.parent_thread_id = Some(parent.id);
-            target.role = "history-executor".into();
-            register_test_thread(store, &target).await?;
-        }
-        publish_test_directory(store, &resources.events).await?;
-        let sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&child.id);
-        let (progress, owner_progress) = watch::channel(Progress::default());
-        let mut worker = ProjectionWorker {
-            services,
-            id: child.id.clone(),
-            thread: ThreadHandle::resume_without_model(child.id.clone(), None)?,
-            state: Arc::new(WorkerState {
-                native_directory: resources.events.begin_native_observation(&child.id),
-                deletion: Default::default(),
-                join_failure: Default::default(),
-                terminal_transfer: Default::default(),
-                progress,
-                retry: Notify::new(),
-                channel,
-                reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-                observed_before_execution: true,
-                pending_hook: None,
-            }),
-            recovered_through: 0,
-            feed: Arc::new(ThreadLiveFeed::new(
-                None,
-                owner_progress,
-                Default::default(),
-            )),
-            live: None,
-            live_floor: 0,
-            continuous: true,
-        };
-        let initial = ticket(&child.id, 1);
-        sink.admit(&child.id, initial.clone())?;
-        worker
-            .project(&initial.checkpoint.state, false, None)
-            .await?;
-        sink.flush(&child.id, 1).await?;
-        // The strong table outlives the workers: services only keep a weak handle.
-        Ok((resources, observations, worker, sink, sessions))
-    }
-
-    #[tokio::test]
-    async fn execution_only_snapshot_republishes_the_same_agent_directory_row() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink, _sessions) =
-            terminal_projection_fixture(&store, false).await?;
-        let result = async {
-            // The history-only fixture registers durable rows after constructing its event bus.
-            // Admit those real catalog rows through the directory's ordinary bootstrap path.
-            let catalog = store.catalog();
-            let rows = catalog
-                .sessions()
-                .iter()
-                .flat_map(|session| {
-                    catalog
-                        .agents_for_session(&session.session_id)
-                        .into_iter()
-                        .map(move |agent| crate::studio::records::row_projection(session, &agent))
-                })
-                .collect();
-            worker
-                .services
-                .events
-                .apply_thread_delta(rows, Vec::new())
-                .await?;
-            worker.services.events.initialize_directories().await?;
-            let mut snapshot = crate::studio::storage_fault_test_support::ticket(&worker.id, 1)
-                .checkpoint
-                .state;
-            snapshot.execution = Some(pl_core::thread::ActiveExecution {
-                id: "execution:1".into(),
-                phase: pl_core::thread::ExecutionPhase::Stopping,
-                turn_id: None,
-            });
-            let projected = product_revision(&snapshot);
-            worker.project(&snapshot, true, None).await?;
-            let stopping = worker.services.events.read_agent_directory().await;
-            let row = stopping
-                .state
-                .value()
-                .context("loaded stopping directory")?
-                .agents
-                .iter()
-                .find(|row| row.thread_id == worker.id)
-                .context("the original agent row")?;
-            anyhow::ensure!(
-                matches!(&row.activity, crate::StudioAgentActivity::Native { execution: Some(execution), .. }
-                    if execution.id() == "execution:1"
-                        && execution.phase() == crate::AgentExecutionPhase::Stopping),
-                "the directory must first publish the exact stopping execution"
-            );
-
-            // finish_execution only clears the execution and publishes a snapshot: no new
-            // history commit or lifecycle transition is required to retire this identity.
-            snapshot.execution = None;
-            snapshot.observation_revision += 1;
-            let retired = product_revision(&snapshot);
-            worker
-                .project(&snapshot, retired != projected, None)
-                .await?;
-            let settled = worker.services.events.read_agent_directory().await;
-            let row = settled
-                .state
-                .value()
-                .context("loaded settled directory")?
-                .agents
-                .iter()
-                .find(|row| row.thread_id == worker.id)
-                .context("stopping must not remove the original agent row")?;
-            anyhow::ensure!(
-                matches!(row.activity, crate::StudioAgentActivity::Native { execution: None, can_stop: false, .. }),
-                "the same committed revision must publish execution retirement"
-            );
-            anyhow::ensure!(settled.state.revision() > stopping.state.revision());
-
-            // A preview-only owner snapshot is not another directory change.
-            snapshot.observation_revision += 1;
-            worker
-                .project(&snapshot, product_revision(&snapshot) != retired, None)
-                .await?;
-            let preview = worker.services.events.read_agent_directory().await;
-            anyhow::ensure!(preview.state.revision() == settled.state.revision());
-            // History preparation may finish after a newer observer was installed. Reopening this
-            // worker retains its original token instead of acquiring a new right to publish.
-            worker.live = None;
-            worker.services.events.begin_native_observation(&worker.id).context("replacement observer")?;
-            let replacement = worker.services.events.read_agent_directory().await;
-            snapshot.observation_revision += 1;
-            snapshot.execution = Some(pl_core::thread::ActiveExecution {
-                id: "late-execution".into(), phase: pl_core::thread::ExecutionPhase::Preparing, turn_id: None,
-            });
-            worker.project(&snapshot, true, None).await?;
-            anyhow::ensure!(worker.services.events.read_agent_directory().await == replacement,
-                "a late old observer must not replace a newer generation when opening history");
-            Ok(())
-        }
-        .await;
-        let channel = worker.state.channel.clone();
-        drop(worker);
-        drop(sink);
-        let cleanup = async {
-            channel.stop_and_join().await?;
-            observations.finish().await?;
-            resources.shutdown().await
-        }
-        .await;
-        result?;
-        cleanup
-    }
-
-    fn terminal_write(id: &str, review: bool) -> Result<ThreadWrite> {
-        use pl_core::{
-            context::{ContextContent, ContextRecord, ContextSource},
-            thread::{
-                ToolDelivery, ToolOutcome, TurnOutcome,
-                extensions::ExtensionRecord,
-                journal::ContextChange,
-                task::{TaskRecord, TaskStatus},
-            },
-        };
-        let mut write = crate::studio::storage_fault_test_support::ticket(id, 2);
-        let turn = TurnRecord {
-            turn_id: "terminal-turn".into(),
-            input_id: None,
-            state: TurnState::Finished(TurnOutcome::Completed),
-            model_steps: 0,
-            elapsed_ms: None,
-        };
-        let state = &mut write.checkpoint.state;
-        state.turns = Arc::from([turn.clone()]);
-        let effect = Arc::make_mut(&mut write.effect);
-        effect.turn = Some(turn);
-        if !review {
-            return Ok(write);
-        }
-        let workspace = crate::AgentWorkspaceAssignmentSnapshot {
-            mode: crate::AgentWorkspaceMode::Review,
-            project_root: "/proved-root".into(),
-            root: "/proved-root".into(),
-            writable_paths: Some(vec![]),
-            worktree: None,
-            review_target: Some(crate::AgentReviewTargetSnapshot {
-                agent_id: "unstarted-executor".into(),
-                feedback: Some(crate::AgentReviewFeedback::ToExecutor),
-                baseline: Some(crate::AgentReviewBaseline {
-                    turn_id: "executor-terminal".into(),
-                    input_id: None,
-                    terminal_sequence: 1,
-                    commit_sequence: 1,
-                    input_ordinal: 0,
-                    message_sequence: 0,
-                    consumed_messages: 0,
-                    wake_messages_through: 0,
-                    execution_sequence: 0,
-                    continuation_id: None,
-                }),
-            }),
-        };
-        let profile = crate::AgentProfileSnapshot {
-            profile_id: "custom-history-review".into(),
-            display_name: "History review".into(),
-            description: String::new(),
-            when_to_use: String::new(),
-            system_instructions: String::new(),
-            account_id: "unused".into(),
-            model_id: "unused".into(),
-            effort: None,
-            source: "fixture".into(),
-            revision: "frozen".into(),
-            content_hash: "immutable-profile".into(),
-            system: false,
-            enabled: true,
-            workspace_mode: crate::AgentWorkspaceMode::Review,
-        };
-        for (id, payload) in [
-            (
-                crate::studio::workspace_receipt::EXTENSION,
-                crate::studio::workspace_receipt::to_payload(&workspace)?,
-            ),
-            (
-                crate::studio::model_route::AGENT_PROFILE_EXTENSION,
-                crate::studio::model_route::encode_profile(&profile)?,
-            ),
-        ] {
-            state.extensions.insert(
-                id.into(),
-                ExtensionRecord {
-                    revision: 1,
-                    payload,
-                },
-            );
-        }
-        let saved = pl_tool::finish_turn::SavedFinishTurn {
-            message: "不可泄漏到父 compact 的完整 findings".into(),
-            review: Some(pl_tool::finish_turn::ReviewResult {
-                disposition: pl_tool::finish_turn::ReviewDisposition::NeedsChanges,
-                summary: "持久化边界需要返修".into(),
-                reviewed_version: "diff:history-fault-fixture".into(),
-            }),
-            feedback_message: Some("固定宿主 wrapper 与原始完整 findings".into()),
-        };
-        let tool = pl_tool::finish_turn::TOOL_FINISH_TURN;
-        let call = "terminal-finish";
-        let output = pl_core::tool::ToolOutput::new(
-            OpaquePayload::new("pl.tool.finish-turn", 2, serde_json::to_string(&saved)?)?,
-            vec![ContextContent::Text {
-                text: saved.message.into(),
-            }],
-        )
-        .ending_turn();
-        let delivery = ToolDelivery {
-            target: Default::default(),
-            call_id: call.into(),
-            tool_id: tool.into(),
-            delivered_context: output.context().to_vec(),
-            output,
-            outcome: ToolOutcome::Succeeded,
-        };
-        let task = TaskRecord {
-            parent_call_id: None,
-            invocation: None,
-            id: format!("task:{call}"),
-            call_id: call.into(),
-            tool_id: tool.into(),
-            turn_id: "terminal-turn".into(),
-            revision: 1,
-            status: TaskStatus::Succeeded,
-            cancel_requested: false,
-            acknowledgement: None,
-            started_sequence: Some(2),
-        };
-        state.live_calls.insert(call.into(), "terminal-turn".into());
-        state.tasks.insert(task.id.clone(), task.clone());
-        state.deliveries = Arc::from([delivery.clone()]);
-        let record = ContextRecord {
-            id: "terminal-call-record".into(),
-            turn_id: Some("terminal-turn".into()),
-            source: ContextSource::Assistant,
-            content: vec![],
-            tool_calls: vec![pl_core::model::ModelToolCall {
-                presentation_contract: None,
-                rejection: None,
-                call_id: call.into(),
-                tool_id: tool.into(),
-                arguments: OpaquePayload::text("{}"),
-            }],
-        };
-        let result = ContextRecord {
-            id: "terminal-result-record".into(),
-            turn_id: Some("terminal-turn".into()),
-            source: ContextSource::ToolResult {
-                call_id: call.into(),
-                tool_id: tool.into(),
-            },
-            content: delivery.delivered_context.clone(),
-            tool_calls: vec![],
-        };
-        state.context.revision = 1;
-        state.context.records = Arc::from([record.clone(), result.clone()]);
-        effect.context = Some(ContextChange::Append {
-            revision: 1,
-            records: Arc::from([record, result]),
-        });
-        effect.tasks = Arc::from([task]);
-        effect.deliveries = Arc::from([delivery]);
-        Ok(write)
-    }
-
-    async fn wait_terminal_receipt(store: &StudioStore, id: &str) -> Result<()> {
-        // Subscribe before the lookup: completion of an arbitrarily short SQL write cannot be lost.
-        let mut updates = store.thread_persistence().subscribe();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if store
-                    .history("terminal-parent")
-                    .await?
-                    .message_identity(id)
-                    .await?
-                    .is_some()
-                {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                updates.changed().await?;
-            }
-        })
-        .await
-        .context("automatic terminal parent arrival")?
-    }
-
-    #[tokio::test]
-    async fn terminal_projection_history_recovery_automatically_delivers_ordinary_and_review()
-    -> Result<()> {
-        use sea_orm::ConnectionTrait;
-        for review in [false, true] {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let (resources, observations, mut worker, sink, _sessions) =
-                terminal_projection_fixture(&store, review).await?;
-            let db = sea_orm::Database::connect(
-                crate::studio::paths::sqlite_file_options(
-                    &store
-                        .session_paths("project-test", &worker.id)?
-                        .history_database(),
-                    crate::studio::paths::SqliteFileMode::ReadWrite,
-                    |options| options,
-                )
-                .await?,
-            )
-            .await?;
-            db.execute_unprepared("CREATE TRIGGER reject_terminal BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'controlled terminal save rejection'); END").await?;
-            let write = terminal_write(&worker.id, review)?;
-            sink.admit(&worker.id, write.clone())?;
-            // This is the production projection/handoff. It must return before N can be saved.
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                worker.project(&write.checkpoint.state, false, None),
-            )
-            .await??;
-            drop(worker.live.take()); // 冷接收同一会话前归还稳定 Store 的唯一驱动。
-            assert!(worker.state.terminal_transfer.lock().unwrap().is_none());
-            assert!(
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    worker
-                        .services
-                        .require_session(&worker.id)?
-                        .join_review_delivery(&worker.id)
-                )
-                .await?
-                .is_err()
-            );
-            let id = crate::studio::agent_close::terminal_report_id(&worker.id, 2);
-            assert!(
-                store
-                    .history("terminal-parent")
-                    .await?
-                    .message_identity(&id)
-                    .await?
-                    .is_none()
-            );
-            assert!(
-                worker.state.channel.has_delivery_bytes(),
-                "blocked owner retains shared terminal material"
-            );
-            let generation = worker.state.channel.subscribe().borrow().fault_generation;
-            db.execute_unprepared("DROP TRIGGER reject_terminal")
-                .await?;
-            store
-                .thread_persistence()
-                .retry_history(&worker.id, generation)
-                .await?;
-            // No settle/collector/close/cold scan: only the original writer's recovery notification.
-            wait_terminal_receipt(&store, &id).await?;
-            tokio::time::timeout(
-                Duration::from_secs(10),
-                worker
-                    .services
-                    .require_session(&worker.id)?
-                    .join_review_delivery(&worker.id),
-            )
-            .await
-            .context("join repaired terminal operation")??;
-            if review {
-                let original = store
-                    .history(&worker.id)
-                    .await?
-                    .parent_report(2)
-                    .await?
-                    .context("original report")?;
-                assert!(!original.payload.content().contains("不可泄漏"));
-                let facts = store
-                    .history(&worker.id)
-                    .await?
-                    .review_delivery_exceptions("")
-                    .await?;
-                assert_eq!(facts.len(), 1);
-                assert!(
-                    facts[0]
-                        .message
-                        .payload
-                        .content()
-                        .contains("recoveryRequiresScheduling"),
-                    "{}",
-                    facts[0].message.payload.content()
+        match slow.try_recv() {
+            Err(broadcast::error::TryRecvError::Lagged(dropped)) => {
+                assert_eq!(
+                    dropped, 2,
+                    "exactly the two frames beyond the bound are lost"
                 );
-                wait_terminal_receipt(&store, &facts[0].message.id).await?;
             }
-            worker.state.channel.stop_and_join().await?;
-            tokio::time::timeout(Duration::from_secs(10), observations.finish())
-                .await
-                .context("finish repaired terminal observers")??;
-            resources.shutdown().await?;
+            other => panic!("expected an explicit lag reset, got {other:?}"),
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn terminal_projection_capacity_release_automatically_resumes_without_first_send()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink, _sessions) =
-            terminal_projection_fixture(&store, true).await?;
-        // Another Thread has accepted operation output, not a review-retention guard. The public
-        // ColdStore entry below is exactly the production OutputBudget::release backend boundary.
-        let output_thread = bound_thread("output-quota-thread");
-        register_test_thread(&store, &output_thread).await?;
-        let output_sink =
-            ThreadStorageSink::new(store.clone(), output_thread.clone(), None).await?;
-        let output_channel = store
-            .thread_persistence()
-            .history_channel(&output_thread.id);
-        let initial = crate::studio::storage_fault_test_support::ticket(&output_thread.id, 1);
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(
-            output_channel.order_index(),
-            store.history(&output_thread.id).await?,
-        )?;
-        let chat = store.chat_session(&output_thread.id).await?;
-        let (_, mut prepared) = projection
-            .prepare(
-                &output_thread,
-                &initial.effect,
-                &initial.checkpoint.state,
-                false,
-            )
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        output_sink.admit(&output_thread.id, initial)?;
-        assert!(output_channel.prepare(prepared));
-        wait_history_test_signal(output_channel.effects_released.subscribe(), 1).await?;
-        let write = terminal_write(&worker.id, true)?;
-        sink.admit(&worker.id, write.clone())?;
-        let mut output_sources = vec![(
-            output_thread.id.clone(),
-            output_sink.clone(),
-            output_channel.clone(),
-            0,
-        )];
-        for index in 1..4 {
-            let thread = bound_thread(&format!("output-quota-thread-{index}"));
-            register_test_thread(&store, &thread).await?;
-            let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-            let channel = store.thread_persistence().history_channel(&thread.id);
-            output_sources.push((thread.id, sink, channel, 0));
-        }
-        // Fund this effect's actual identities, publication and original report before
-        // occupying the remaining process allowance with unrelated producer output.
-        let (hook, mut entered, control) = PendingPhaseHook::new();
-        worker
-            .live
-            .as_mut()
-            .context("projection owner")?
-            .pending_hook = Some(hook);
-        let mut projecting = Box::pin(worker.project(&write.checkpoint.state, false, None));
-        let sequence = tokio::select! {
-            entered = entered.recv() => entered.context("retained terminal batch")?,
-            result = projecting.as_mut() => {
-                result?;
-                anyhow::bail!("terminal projection bypassed the pending boundary");
+        match slow.try_recv() {
+            Ok(ThreadLiveEvent::Activity {
+                observation_revision,
+                activity,
+            }) => {
+                assert_eq!(observation_revision, 3);
+                assert!(activity.is_none());
             }
-        };
-        assert_eq!(sequence, 2);
-        drop(projecting);
-        let services = worker.services.clone();
-        worker
-            .live
-            .as_mut()
-            .context("retained projection owner")?
-            .prepare_parent_report(&services)
-            .await?;
-        worker
-            .live
-            .as_mut()
-            .context("retained projection owner")?
-            .prepare_terminal_delivery(&services)?;
-        let occupied = store.thread_persistence().delivery_process_bytes();
-        let accepted = 256 * 1024 * 1024 - occupied - 1;
-        let operation = "retained-producer-output";
-        let mut remaining = accepted;
-        for (id, source, _, charged) in &mut output_sources {
-            let allowance = 64 * 1024 * 1024 - source.pressure(id).thread_bytes;
-            *charged = remaining.min(allowance);
-            assert_eq!(
-                source.reserve_operation_output(id, operation, *charged)?,
-                *charged
-            );
-            source.charge_operation_output(id, operation, *charged)?;
-            remaining -= *charged;
+            other => panic!("lag must reset to the oldest retained frame, got {other:?}"),
         }
-        assert_eq!(remaining, 0, "real Threads fund the process allowance");
-        control.send_replace(Some(Ok(())));
-        worker.project(&write.checkpoint.state, false, None).await?;
-        worker
-            .live
-            .as_mut()
-            .context("projection owner")?
-            .pending_hook = None;
-        drop(worker.live.take());
-        assert!(
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                worker
-                    .services
-                    .require_session(&worker.id)?
-                    .join_review_delivery(&worker.id)
-            )
-            .await?
-            .is_err()
-        );
-        assert!(worker.state.channel.has_delivery_bytes());
-        // All previous real wake sources must have returned Pending, AFTER writer ACK released N.
-        // This excludes a leftover writer/status event masking a missing release notification.
-        wait_history_test_signal(worker.state.channel.terminal_parked.subscribe(), 2).await?;
-        let mut capacity = store.thread_persistence().subscribe_delivery_capacity();
-        capacity.borrow_and_update();
-        let before_release = store.thread_persistence().delivery_process_bytes();
-        output_sink.release_operation_output(&output_thread.id, operation);
         assert_eq!(
-            store.thread_persistence().delivery_process_bytes(),
-            before_release - output_sources[0].3
+            feed.state_activity()
+                .expect("latest observation")
+                .observation_revision,
+            u64::try_from(LIVE_FEED_FRAMES).unwrap() + 2
         );
-        assert!(
-            capacity.has_changed()?,
-            "R1: cross-Thread operation output release did not publish capacity after the terminal producer parked"
-        );
-        let id = crate::studio::agent_close::terminal_report_id(&worker.id, 2);
-        wait_terminal_receipt(&store, &id).await?;
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            worker
-                .services
-                .require_session(&worker.id)?
-                .join_review_delivery(&worker.id),
-        )
-        .await
-        .context("join capacity-repaired terminal operation")??;
-        let facts = store
-            .history(&worker.id)
-            .await?
-            .review_delivery_exceptions("")
-            .await?;
-        assert_eq!(facts.len(), 1);
-        assert!(
-            facts[0]
-                .message
-                .payload
-                .content()
-                .contains("recoveryRequiresScheduling"),
-            "{}",
-            facts[0].message.payload.content()
-        );
-        wait_terminal_receipt(&store, &facts[0].message.id).await?;
-        assert!(
-            worker
-                .services
-                .session_of("unstarted-executor")
-                .and_then(|session| session.observed_thread("unstarted-executor"))
-                .is_none()
-        );
-        worker.state.channel.stop_and_join().await?;
-        for (id, source, channel, _) in output_sources {
-            source.release_operation_output(&id, operation);
-            channel.stop_and_join().await?;
-        }
-        tokio::time::timeout(Duration::from_secs(10), observations.finish())
-            .await
-            .context("finish capacity-repaired observers")??;
-        resources.shutdown().await?;
-        Ok(())
-    }
 
-    #[tokio::test]
-    async fn terminal_projection_cancelled_join_keeps_original_publication_owner() -> Result<()> {
-        use pl_core::context::{ContextContent, ContextRecord, ContextSource};
-        use pl_core::thread::journal::ContextChange;
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink, _sessions) =
-            terminal_projection_fixture(&store, true).await?;
-        let source = worker.services.require_session(&worker.id)?;
-        let parent_gate = source.agent_operation("terminal-parent").await;
-        let old_text: Arc<str> = "older context body; ".repeat(256 * 1024).into();
-        let old_context = Arc::downgrade(&old_text);
-        let record = ContextRecord {
-            id: "previous-context".into(),
-            turn_id: Some("previous-turn".into()),
-            source: ContextSource::Runtime {
-                source_id: "historical-context".into(),
-            },
-            content: vec![ContextContent::Text { text: old_text }],
-            tool_calls: vec![],
-        };
-        let mut prior = crate::studio::storage_fault_test_support::ticket(&worker.id, 2);
-        prior.checkpoint.state.context.revision = 1;
-        prior.checkpoint.state.context.records = Arc::from([record]);
-        Arc::make_mut(&mut prior.effect).context = Some(ContextChange::Append {
-            revision: 1,
-            records: prior.checkpoint.state.context.records.clone(),
-        });
-        sink.admit(&worker.id, prior.clone())?;
-        worker.project(&prior.checkpoint.state, false, None).await?;
-        wait_history_test_signal(worker.state.channel.effects_released.subscribe(), 2).await?;
-        let mut write = terminal_write(&worker.id, true)?;
-        write.checkpoint.state.commit_sequence = 3;
-        write.checkpoint.state_revision = 3;
-        write.checkpoint.history_fence = 3;
-        let terminal_context = write.checkpoint.state.context.records.clone();
-        write.checkpoint.state.context.records = prior
-            .checkpoint
-            .state
-            .context
-            .records
-            .iter()
-            .chain(terminal_context.iter())
-            .cloned()
-            .collect::<Vec<_>>()
-            .into();
-        write.checkpoint.state.context.revision = 2;
-        let effect = Arc::make_mut(&mut write.effect);
-        effect.sequence = 3;
-        effect.context = Some(ContextChange::Append {
-            revision: 2,
-            records: terminal_context,
-        });
-        assert!(
-            write.effect.encode()?.content().len() < 16 * 1024,
-            "terminal effect must stay small despite its older checkpoint context"
-        );
-        drop(prior);
-        sink.admit(&worker.id, write.clone())?;
-        let queued = worker
-            .state
-            .channel
-            .next_unprojected()
-            .context("queued terminal write")?;
-        let old_write = Arc::downgrade(&queued);
-        drop(queued);
-        // Parent publication is blocked at the real operation gate, but projection must hand off.
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            worker.project(&write.checkpoint.state, false, None),
-        )
-        .await??;
-        drop(write); // No caller-owned checkpoint may be mistaken for the producer's retention.
-        wait_history_test_signal(worker.state.channel.effects_released.subscribe(), 3).await?;
-        let mut replacement = crate::studio::storage_fault_test_support::ticket(&worker.id, 4);
-        Arc::make_mut(&mut replacement.effect).context =
-            Some(ContextChange::Replace(Default::default()));
-        sink.admit(&worker.id, replacement.clone())?;
-        worker
-            .project(&replacement.checkpoint.state, false, None)
-            .await?;
-        drop(replacement);
-        wait_history_test_signal(worker.state.channel.effects_released.subscribe(), 4).await?;
-        assert!(
-            old_write.upgrade().is_none(),
-            "R2: the terminal producer still pins the entire old ThreadWrite after the writer and caller released it"
-        );
-        assert!(
-            old_context.upgrade().is_none(),
-            "the producer must not retain unused historical context after replacement"
-        );
-        let held_bytes = worker.state.channel.retained_delivery_bytes();
-        assert!(
-            held_bytes > 0 && held_bytes < 128 * 1024,
-            "the retained budget must cover only the small report/authority and its bounded in-flight copies: {held_bytes}"
-        );
-        let mut caller = Box::pin(source.join_review_delivery(&worker.id));
-        assert!(futures::poll!(caller.as_mut()).is_pending());
-        drop(caller);
-        assert!(worker.state.channel.has_delivery_bytes());
-        let id = crate::studio::agent_close::terminal_report_id(&worker.id, 3);
-        let original = store
-            .history(&worker.id)
-            .await?
-            .parent_report(3)
-            .await?
-            .context("frozen original")?;
-        assert!(
-            store
-                .history("terminal-parent")
-                .await?
-                .message_identity(&id)
-                .await?
-                .is_none()
-        );
-        drop(worker.live.take());
-        drop(parent_gate);
-        wait_terminal_receipt(&store, &id).await?;
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            source.join_review_delivery(&worker.id),
-        )
-        .await??;
-        let receipt = store
-            .history("terminal-parent")
-            .await?
-            .message_identity(&id)
-            .await?
-            .context("original report ACK")?;
-        assert_eq!(receipt.digest.as_deref(), Some(original.digest().as_str()));
-        let facts = store
-            .history(&worker.id)
-            .await?
-            .review_delivery_exceptions("")
-            .await?;
-        assert_eq!(facts.len(), 1);
-        let exception: crate::thread_assembler::review_delivery::ReviewDeliveryException =
-            serde_json::from_str(facts[0].message.payload.content())?;
-        assert_eq!(
-            exception.target_agent_id, "unstarted-executor",
-            "use the original frozen authority after the old checkpoint was released"
-        );
-        assert!(
-            !worker.state.channel.has_delivery_bytes(),
-            "only actual joined completion releases the shared terminal material"
-        );
-        worker.state.channel.stop_and_join().await?;
-        observations.finish().await?;
-        resources.shutdown().await?;
-        Ok(())
-    }
-
-    async fn wait_history_test_signal(
-        mut signal: watch::Receiver<u64>,
-        through: u64,
-    ) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if *signal.borrow_and_update() >= through {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                signal.changed().await?;
-            }
-        })
-        .await
-        .context("controlled writer/park ownership boundary")?
-    }
-
-    #[tokio::test]
-    async fn terminal_projection_exception_cas_save_recovery_keeps_original_and_independent_ack()
-    -> Result<()> {
-        use sea_orm::ConnectionTrait;
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let (resources, observations, mut worker, sink, _sessions) =
-            terminal_projection_fixture(&store, true).await?;
-        let db = sea_orm::Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &store
-                    .session_paths("project-test", &worker.id)?
-                    .history_database(),
-                crate::studio::paths::SqliteFileMode::ReadWrite,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared("CREATE TRIGGER reject_review_exception BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled exception save rejection'); END").await?;
-        let write = terminal_write(&worker.id, true)?;
-        sink.admit(&worker.id, write.clone())?;
-        worker.project(&write.checkpoint.state, false, None).await?;
-        drop(worker.live.take());
-        let source = worker.services.require_session(&worker.id)?;
-        assert!(
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                source.join_review_delivery(&worker.id)
-            )
-            .await?
-            .is_err()
-        );
-        let carrier = source
-            .observed_thread(&worker.id)
-            .context("retained source storage owner")?
-            .snapshot()
-            .extensions
-            .values()
-            .find_map(|record| {
-                crate::thread_assembler::review_delivery::ReviewDeliveryFact::decode(
-                    &record.payload,
-                )
-                .ok()
-            })
-            .context("accepted exception CAS carrier")?;
-        let digest = carrier.message.digest();
-        let generation = worker.state.channel.subscribe().borrow().fault_generation;
-        // A blocked join/close cannot release the undurable operation or its writer.
-        assert!(source.join_review_delivery(&worker.id).await.is_err());
-        assert!(
-            worker.state.channel.stop_and_join().await.is_err(),
-            "blocked close must retain the undurable writer"
-        );
-        assert!(worker.state.channel.has_delivery_bytes());
-        db.execute_unprepared("DROP TRIGGER reject_review_exception")
-            .await?;
-        store
-            .thread_persistence()
-            .retry_history(&worker.id, generation)
-            .await?;
-        wait_terminal_receipt(&store, &carrier.message.id).await?;
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            source.join_review_delivery(&worker.id),
-        )
-        .await
-        .context("join repaired exception operation")??;
-        let saved = store
-            .history(&worker.id)
-            .await?
-            .review_delivery_exception(&carrier.message.id)
-            .await?
-            .context("durable original exception")?;
-        assert_eq!(
-            saved.message.digest(),
-            digest,
-            "recovery must not replace the original rejection with an invented reason"
-        );
-        tokio::time::timeout(Duration::from_secs(10), observations.finish())
-            .await
-            .context("finish repaired exception observers")??;
-        resources.shutdown().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn observation_join_retains_wait_ownership_and_worker_failure() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("observation-stop-ack");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let owner = ThreadHandle::resume_without_model(thread.id.clone(), None)?;
-        owner.close().await?;
-        let (progress, _) = watch::channel(Progress::default());
-        let publication = progress.clone();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let observation = Observation {
-            owner: std::sync::Weak::new(),
-            thread: owner.clone(),
-            feed: Arc::new(ThreadLiveFeed::new(
-                None,
-                progress.subscribe(),
-                Default::default(),
-            )),
-            state: Arc::new(WorkerState {
-                native_directory: None,
-                deletion: Default::default(),
-                join_failure: Default::default(),
-                terminal_transfer: Default::default(),
-                progress,
-                retry: Notify::new(),
-                channel: channel.clone(),
-                reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
-                observed_before_execution: false,
-                #[cfg(test)]
-                pending_hook: None,
-            }),
-            task: tokio::sync::Mutex::new(Some(tokio::spawn(async move {
-                let _ = released.await;
-                publication.send_modify(|progress| progress.finished = true);
-            }))),
-        };
-        let mut waiting = Box::pin(observation.join());
-        assert!(futures::poll!(waiting.as_mut()).is_pending());
-        drop(waiting);
-        assert!(
-            observation.task.lock().await.is_some(),
-            "cancellation cannot detach the observer's join handle"
-        );
-        release
-            .send(())
-            .map_err(|_| anyhow::anyhow!("controlled observer lost its owner"))?;
-        observation.join().await?;
-        assert!(observation.task.lock().await.is_none());
-        observation.join().await?;
-
-        let (progress, _) = watch::channel(Progress::default());
-        let failed = Observation {
-            owner: std::sync::Weak::new(),
-            thread: owner,
-            feed: Arc::new(ThreadLiveFeed::new(
-                None,
-                progress.subscribe(),
-                Default::default(),
-            )),
-            state: Arc::new(WorkerState {
-                native_directory: None,
-                deletion: Default::default(),
-                join_failure: Default::default(),
-                terminal_transfer: Default::default(),
-                progress,
-                retry: Notify::new(),
-                channel: channel.clone(),
-                reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
-                observed_before_execution: false,
-                #[cfg(test)]
-                pending_hook: None,
-            }),
-            task: tokio::sync::Mutex::new(Some(tokio::spawn(async {
-                panic!("controlled history observation exit");
-            }))),
-        };
-        assert!(failed.join().await.is_err());
-        assert!(failed.state.progress.borrow().finished);
-        assert!(failed.task.lock().await.is_none());
-        assert!(
-            failed.join().await.is_err(),
-            "retry cannot erase the failed observation ACK"
-        );
-        channel.stop_and_join().await?;
-        drop(sink);
-        Ok(())
-    }
-
-    /// 一个最小终态 Turn 提交：交接与报告路径的专项测试共用同一真实 effect/checkpoint。
-    fn terminal_turn_write(
-        thread: &crate::Thread,
-        turn_id: &str,
-    ) -> Result<(TurnRecord, ThreadWrite)> {
-        let turn = TurnRecord {
-            input_id: None,
-            turn_id: turn_id.into(),
-            state: TurnState::Interrupted,
-            model_steps: 0,
-            elapsed_ms: None,
-        };
-        let state = ThreadSnapshot {
-            commit_sequence: 1,
-            turns: Arc::from([turn.clone()]),
-            ..Default::default()
-        };
-        let write = ThreadWrite {
-            effect: Arc::new(ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 1,
-                committed_at: 1,
-                turn: Some(turn.clone()),
-                ..Default::default()
-            }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
-            output_claim: None,
-        };
-        Ok((turn, write))
-    }
-
-    #[tokio::test]
-    async fn a_state_receiver_registered_after_zero_demand_preparation_gets_a_gap() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("late-state-handoff");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let result = async {
-            let chat = store.chat_session(&thread.id).await?;
-            let (_, write) = terminal_turn_write(&thread, "late-state-turn")?;
-            let mut projection = LiveProjection::new();
-            projection
-                .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
-            let (_owner, owner_progress) = watch::channel(Progress::default());
-            let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
-            assert!(!feed.has_subscribers());
-            let (changes, mut prepared) = projection
-                .prepare(
-                    &thread,
-                    &write.effect,
-                    &write.checkpoint.state,
-                    feed.has_subscribers(),
-                )
-                .await?;
-            assert!(changes.is_none());
-
-            // Registration is deliberately after prepare's zero-demand decision, but before
-            // current publication and the original reliable handoff. Do not regenerate State.
-            let mut frames = feed.subscribe();
-            let mut last_turn = feed.last_turn();
-            projection.publish_prepared(&chat, &mut prepared).await?;
-            let pending = PendingHandoff {
-                admitted: false,
-                write: Arc::new(write.clone()),
-                prepared,
-                terminal: None,
-                changes,
-                mode: HandoffMode::Live,
-            };
-            sink.admit(&thread.id, write)?;
-            pending.hand_over(&channel, &feed)?;
-            assert!(matches!(
-                frames.try_recv()?,
-                ThreadLiveEvent::UnframedCommit { sequence: 1 }
-            ));
-            assert!(matches!(
-                frames.try_recv(),
-                Err(broadcast::error::TryRecvError::Empty)
-            ));
-            let terminal = last_turn
-                .borrow_and_update()
-                .clone()
-                .context("canonical terminal was lost")?;
-            assert_eq!(terminal.id, "late-state-turn");
-            assert_eq!(terminal.revision, 1);
-            assert!(terminal.state.is_terminal());
-            tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-            Ok::<_, anyhow::Error>(())
-        }
-        .await;
-        let close = channel.stop_and_join().await;
-        drop(sink);
-        result?;
-        close?;
-        Ok(())
-    }
-
-    /// 交接被拒时批次与原报告原样保留；behind 批次即使带 changes 也不获得实时发布资格。
-    ///
-    /// 真实 worker 级的保槽/重试/同步收束由下方真实观察回归覆盖；这里只补真实流程无法自然
-    /// 触达的两个交接边界：通道拒绝（未受理/已 durable）与 behind 模式的发布资格。
-    #[tokio::test]
-    async fn a_refused_or_behind_batch_keeps_retention_and_never_publishes_realtime() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("pending-handoff-manual");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
-        let (turn, write) = terminal_turn_write(&thread, "pending-handoff-turn")?;
-        let mut projection = LiveProjection::new();
-        projection
-            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
-        let (changes, mut prepared) = projection
-            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        let original_completions = prepared.completions.clone();
-        let result = projection
-            .turn_result(&turn.turn_id)
-            .cloned()
-            .unwrap_or_default();
-        let original_report =
-            reports::terminal_message(&thread, &write.checkpoint.state, &turn, 1, &result)?;
-        let mut prepared = prepared;
-        Arc::make_mut(&mut prepared).parent_report = Some(Arc::new(original_report.clone()));
-        let pending = PendingHandoff {
-            admitted: false,
-            write: Arc::new(write.clone()),
-            prepared,
-            terminal: None,
-            changes,
-            mode: HandoffMode::Behind,
-        };
-        let (_owner, owner_progress) = watch::channel(Progress::default());
-        let feed = ThreadLiveFeed::new(None, owner_progress, Default::default());
-        let mut frames = feed.subscribe();
-        let mut last_turn = feed.last_turn();
-        // 1) 通道尚未受理该提交：交接被拒，批次与原报告原样保留，预算可见。
-        assert!(pending.hand_over(&channel, &feed).is_err());
-        assert_eq!(channel.handoff_ticket(), 0);
-        assert!(Arc::ptr_eq(
-            &pending.prepared.completions,
-            &original_completions
-        ));
-        assert!(pending.retained_bytes() > 0);
-        // 2) 受理后同一批次交接：behind 即使带 changes 也不发实时帧，终态事实仍发布，
-        //    报告原件随真实 writer 落盘。
-        sink.admit(&thread.id, write.clone())?;
-        let report = pending.hand_over(&channel, &feed)?;
-        let report_id = report.as_ref().map(|message| message.id.clone());
-        assert_eq!(report_id.as_deref(), Some(original_report.id.as_str()));
+        let parked = tokio::spawn(async move { parked.recv().await });
+        cancellation.cancel();
         assert!(matches!(
-            frames.try_recv(),
-            Err(broadcast::error::TryRecvError::Empty)
+            parked.await.expect("receiver task finishes"),
+            Err(broadcast::error::RecvError::Closed)
         ));
-        let retained = last_turn
-            .borrow_and_update()
-            .clone()
-            .context("retained terminal turn")?;
-        assert_eq!(retained.id, turn.turn_id);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-        let saved = store
-            .history(&thread.id)
-            .await?
-            .parent_report(1)
-            .await?
-            .context("saved parent report")?;
-        assert_eq!(saved.id, original_report.id);
-        assert_eq!(saved.payload.content(), original_report.payload.content());
-        drop(sink);
-        Ok(())
-    }
-
-    /// A minimal model that returns one final text and no tool calls: the real core turn loop
-    /// completes the turn, commits its terminal effect and hands it to the real storage.
-    #[derive(Debug)]
-    struct FinalTextModel;
-
-    impl ModelSession for FinalTextModel {
-        async fn prepare(
-            &mut self,
-            request: ModelRequest,
-        ) -> Result<PreparedModelCall, ModelError> {
-            Ok(PreparedModelCall::new(async move {
-                Ok(ModelStepOutput {
-                    turn_action: Default::default(),
-                    attempt_id: request.attempt_id,
-                    base_context_revision: request.context.revision,
-                    content: vec![ContextContent::Text {
-                        text: Arc::from("child finished"),
-                    }],
-                    tool_calls: Vec::new(),
-                    private_context: None,
-                    usage: Default::default(),
-                })
-            }))
-        }
-
-        async fn close(&mut self) -> Result<(), ModelError> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    struct HeldFinalTextModel {
-        entered: Option<tokio::sync::oneshot::Sender<()>>,
-        release: Arc<Notify>,
-    }
-
-    impl ModelSession for HeldFinalTextModel {
-        async fn prepare(
-            &mut self,
-            request: ModelRequest,
-        ) -> Result<PreparedModelCall, ModelError> {
-            if let Some(entered) = self.entered.take() {
-                let _ = entered.send(());
-            }
-            self.release.notified().await;
-            FinalTextModel.prepare(request).await
-        }
-
-        async fn close(&mut self) -> Result<(), ModelError> {
-            Ok(())
-        }
-    }
-
-    /// Runs one real turn whose single model step is the final text; the turn must complete.
-    async fn run_final_turn(handle: &ThreadHandle, turn_id: &str) -> Result<()> {
-        let outcome = handle
-            .run_turn(TurnInput {
-                turn_id: turn_id.into(),
-                attempt_prefix: turn_id.into(),
-                content: vec![ContextContent::Text {
-                    text: Arc::from("finish the child turn"),
-                }],
-                max_model_steps: ModelStepLimit::Limited(1.try_into()?),
-                cancellation: tokio_util::sync::CancellationToken::new(),
-            })
-            .await?;
-        assert_eq!(outcome.outcome, TurnOutcome::Completed);
-        Ok(())
-    }
-
-    /// A registered child of a real parent thread, as the directory and the report path require.
-    fn child_thread(child_id: &str, parent_id: &str) -> crate::Thread {
-        let mut thread = crate::Thread::placeholder(child_id);
-        thread.workspace_id = "project-test".into();
-        thread.agent_path = child_id.to_owned();
-        thread.root_thread_id = parent_id.to_owned();
-        thread.parent_thread_id = Some(parent_id.to_owned());
-        thread
-    }
-
-    /// The observation services exactly as the runtime assembles them, on an isolated store.
-    struct ObservationFixture {
-        // RAII keep-alive for the fixture's store directory: never read, but
-        // dropping the fixture must not delete the store while it is in use.
-        _temp: tempfile::TempDir,
-        store: StudioStore,
-        services: ObservationServices,
-        session: crate::thread_assembler::SessionRuntime,
-        // Strong session table so the weak service handle stays resolvable for the fixture's
-        // lifetime; dropping a temporary table would close every session lookup.
-        _sessions: crate::session::SessionTable,
-        observations: ThreadObservations,
-        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        assert!(matches!(
+            slow.try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
     }
 
     #[tokio::test]
-    async fn full_delivery_does_not_block_thread_or_runtime_close() -> Result<()> {
-        for shutdown_runtime in [false, true] {
-            let prompt = "close-with-idle-delivery";
-            let env = crate::runtime_test_support::Environment::new(
-                vec![crate::runtime_test_support::prompt_step(
-                    prompt,
-                    0,
-                    pl_provider_fixture::gui_streaming_output_reply(2_000, 1),
-                )],
-                Vec::new(),
-            )
-            .await?;
-            let result = async {
-                let thread = env.start(crate::ThreadWorkspaceMode::Local, prompt).await?;
-                let id = &thread.thread.id;
-                let mut delivery = env
-                    .runtime
-                    .open_conversation_feed(
-                        id,
-                        crate::ChatScope::conversation(None),
-                        crate::ReadDemand {
-                            max_items: 37,
-                            max_bytes: 256 * 1024,
-                        },
-                    )
-                    .await?;
-                let source = env
-                    .runtime
-                    .thread_observations
-                    .live_feed(id)
-                    .context("original feed")?;
-                let mut changes = source.content_changes();
-                tokio::time::timeout(Duration::from_secs(20), async {
-                    // The latest-value observation has no consumer capacity. Wait only
-                    // for a real producer publication, never for a full display queue.
-                    changes
-                        .changed()
-                        .await
-                        .context("original source closed before progress")?;
-                    Ok::<_, anyhow::Error>(())
-                })
-                .await??;
-                let target = source
-                    .current_conversation()
-                    .context("filled source cut")?
-                    .current
-                    .projection()
-                    .source_effect_seq;
-                tokio::time::timeout(Duration::from_secs(20), async {
-                    if shutdown_runtime {
-                        env.runtime.shutdown_runtime().await?;
-                    } else {
-                        env.runtime.require_session(id)?.close(id).await?;
-                    }
-                    Ok::<_, anyhow::Error>(())
-                })
-                .await??;
-                assert!(source.delivery_closed.is_cancelled());
-                assert!(env.runtime.thread_observations.live_feed(id).is_none());
-                let saved = crate::runtime_test_support::saved(&env.home, id).await?;
-                assert!(saved.checkpoint.state.commit_sequence >= target);
-                assert_eq!(saved.checkpoint.state.lifecycle, ThreadLifecycle::Closed);
-                assert!(
-                    env.runtime
-                        .thread_observations
-                        .0
-                        .observations
-                        .lock()
-                        .unwrap()
-                        .get(id)
-                        .is_none()
-                );
-                delivery.close().await?;
-                delivery.reader().close().await?;
-                Ok(())
-            }
-            .await;
-            env.finish(result).await?;
-        }
-        Ok(())
-    }
-
-    async fn observation_fixture() -> Result<ObservationFixture> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
-        let events = ProductEventBus::new(store.clone(), writer.clone());
-        let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
-            crate::config::ConfigPaths::from_config_dir(
-                store.paths().home().join("isolated-observation-config"),
-            ),
-        ))?;
-        let performance = ModelPerformanceOwner::new(
-            store.clone(),
-            events.clone(),
-            crate::studio::ids::new_id("observation-fixture"),
-        );
-        let recovery = crate::studio::StudioRecoveryRegistry::new();
-        let source = crate::worker_assets::RemoteHelperSource::External;
-        let bots =
-            crate::bots::BotRuntime::new(store.paths().clone(), config.clone(), events.clone())?;
-        let worktrees =
-            crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner::new(writer.clone());
-        let factory = crate::studio::thread_factory::StudioThreadFactory::new(
-            crate::studio::thread_factory::StudioThreadServices {
-                store: store.clone(),
-                worktrees: worktrees.clone(),
-                recovery: recovery.clone(),
-                product_events: events.clone(),
-                config_runtime: config.clone(),
-                mcp_connector: pl_tool::mcp::McpConnector::default(),
-                lsp_runtime: pl_lsp::runtime::LspRuntimeRegistry::new(),
-                local_executor: pl_remote_helper::Executor::local()?,
-                skills: crate::studio::runtime::SkillCatalogRuntime::new(
-                    events.clone(),
-                    store.paths().home().join("isolated-observation-skills"),
-                    pl_remote_helper::Executor::local()?,
-                    Default::default(),
-                ),
-                thread_modes: config.thread_mode_manager(),
-                ssh_manager: Arc::new(crate::worker_assets::ssh_manager(&source)),
-                helper_source: source,
-                bots,
-                run_export: None,
-            },
-        );
-        let sessions = crate::session::SessionTable::new();
-        let threads = sessions.materialize(
-            &crate::SessionId::new("child-terminal-report-parent").expect("valid fixture session"),
-        )?;
-        threads.set_agent_services(
-            config.clone(),
-            store.clone(),
-            events.clone(),
-            factory.clone(),
-            performance.clone(),
-            recovery.clone(),
-        )?;
-        threads.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
-            config.clone(),
-            factory.clone(),
-        ))?;
-        let settings_updates = watch::channel(config.read()?).1;
-        let services = ObservationServices {
-            config,
-            settings_updates,
-            recovery,
-            store: store.clone(),
-            events,
-            performance,
-            sessions: sessions.downgrade(),
-            writer: writer.clone(),
-            run_export: None,
-        };
-        let observations = ThreadObservations::new(services.clone());
-        observations.install()?;
-        Ok(ObservationFixture {
-            _temp: temp,
-            store,
-            services,
-            session: threads,
-            _sessions: sessions,
-            observations,
-            writer,
-        })
-    }
-
-    /// Opens the production owner without a competing worker; writes still use the real admission
-    /// channel, projection, retained handoff and writer.
-    async fn state_observation_owner(
-        fixture: &ObservationFixture,
-        thread: &crate::Thread,
-        channel: &Arc<HistoryChannel>,
-        snapshot: Option<ThreadSnapshot>,
-    ) -> Result<(ThreadHandle, Arc<ThreadLiveFeed>, LiveOwner)> {
-        let handle = ThreadHandle::resume_without_model(thread.id.clone(), None)?;
-        let snapshot = snapshot.unwrap_or_else(|| handle.snapshot());
-        let (progress, owner_progress) = watch::channel(Progress::default());
-        let state = Arc::new(WorkerState {
-            native_directory: fixture.services.events.begin_native_observation(&thread.id),
-            deletion: Default::default(),
-            join_failure: Default::default(),
-            terminal_transfer: Default::default(),
-            progress,
-            retry: Notify::new(),
-            channel: channel.clone(),
-            reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            observed_before_execution: true,
-            pending_hook: None,
-        });
-        let feed = Arc::new(ThreadLiveFeed::new(
-            None,
-            owner_progress,
-            Default::default(),
-        ));
-        let live = LiveOwner::open(
-            &fixture.services,
-            &handle,
-            &snapshot,
-            thread.clone(),
-            feed.clone(),
-            state,
-            None,
-        )
-        .await?;
-        Ok((handle, feed, live))
-    }
-
-    /// Replay batches produced by a real Core background task through the production Store owner.
-    pub(in crate::studio) async fn real_background_receipts_do_not_read_history(
-        writes: &[ThreadWrite],
-    ) -> Result<()> {
-        use pl_core::{
-            chat::{ChatItemRequest, ReadDemand},
-            thread::journal::ContextChange,
-        };
-
-        let fixture = observation_fixture().await?;
-        let thread = bound_thread("concurrent-results");
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle, feed, mut owner) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        let binding = Arc::new(sink.binding());
-        let store = binding.conversation.clone();
-        store.attach_execution(&binding).await?;
-        owner.binding = Some(binding.clone());
-        let history = fixture.store.history(&thread.id).await?;
-        let writer = channel.hold_writer().await;
-        let mut acknowledgements = 0;
-
-        for original in writes {
-            sink.admit(&thread.id, original.clone())?;
-            let write = channel.next_unprojected().context("accepted Core batch")?;
-            let receipt_ids = if matches!(write.effect.context, Some(ContextChange::Append { .. }))
-            {
-                crate::studio::thread_projection::order::background_receipts(&write.effect)
-                    .filter(|(_, receipt)| receipt.is_some())
-                    .map(|(task, _)| {
-                        crate::studio::thread_projection::order::tool_background_started_id(
-                            &task.call_id,
-                        )
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            if receipt_ids.is_empty() {
-                owner
-                    .advance(
-                        &fixture.services,
-                        &thread.id,
-                        &write,
-                        &write.checkpoint.state,
-                    )
-                    .await?;
-                continue;
-            }
-
-            let reads = history.reader_calls();
-            let (mut entered, release) = history.arm_completion_read_gate().await;
-            let result = tokio::time::timeout(
-                Duration::from_secs(10),
-                owner.advance(
-                    &fixture.services,
-                    &thread.id,
-                    &write,
-                    &write.checkpoint.state,
-                ),
-            )
-            .await;
-            if result.is_err() {
-                drop(release);
-                anyhow::bail!("real background acknowledgement waited for history");
-            }
-            result??;
-            let session = store.session();
-            let budget =
-                super::super::conversation_reader::JsonBudget::new(String::new(), String::new());
-            for receipt_id in &receipt_ids {
-                let item = session
-                    .read_item(
-                        ChatItemRequest {
-                            epoch: session.epoch(),
-                            item_id: receipt_id.clone(),
-                            ceiling: None,
-                            demand: ReadDemand::new(1, 256 * 1024),
-                        },
-                        &budget,
-                    )
-                    .await?
-                    .context("real background receipt was not published")?;
-                assert_eq!(item.header.item_id, *receipt_id);
-            }
-            assert_eq!(history.reader_calls(), reads);
-            assert!(matches!(
-                entered.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ));
-            drop(release);
-            acknowledgements += receipt_ids.len();
-        }
-        assert_eq!(acknowledgements, 2);
-        drop(writer);
-        sink.flush(
-            &thread.id,
-            writes.last().context("real Core writes")?.effect.sequence,
-        )
-        .await?;
-        drop(owner);
-        drop(binding);
-        drop(store);
-        channel.stop_and_join().await?;
-        handle.close().await?;
-        drop(feed);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn conversation_store_keeps_original_arcs_across_prepare_failure_owner_change_and_commit()
-    -> Result<()> {
-        use crate::studio::storage::thread_writer::storage_fault_tests::visible_input_ticket;
-        use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
-        let fixture = observation_fixture().await?;
-        let thread = bound_thread("conversation-store-original");
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle_a, feed_a, mut owner_a) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        let binding_a = Arc::new(sink.binding());
-        let store = binding_a.conversation.clone();
-        store.attach_execution(&binding_a).await?;
-        owner_a.binding = Some(binding_a.clone());
-        let reader = store.open_reader();
-        assert!(Arc::ptr_eq(
-            &store,
-            &fixture.store.conversation_store(&thread.id).await?
-        ));
-        let path = fixture
-            .store
-            .session_paths(&thread.workspace_id, &thread.id)?
-            .history_database();
-        let blocker = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-        let transaction = blocker
-            .begin_with_options(TransactionOptions {
-                sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
-                ..Default::default()
-            })
-            .await?;
-        let history = fixture.store.history(&thread.id).await?;
-        let (mut forbidden_read, release_read) = history.arm_completion_read_gate().await;
-        sink.admit(
-            &thread.id,
-            visible_input_ticket(&thread.id, 1, "original-input")?,
-        )?;
-        let write = channel.next_unprojected().context("accepted original")?;
-        let (changes, prepared) = owner_a
-            .retained
-            .projection
-            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
-            .await?;
-        let frozen = prepared.clone();
-        owner_a.retained.pending = Some(PendingHandoff {
-            admitted: false,
-            write: write.clone(),
-            prepared,
-            terminal: None,
-            changes,
-            mode: HandoffMode::Live,
-        });
-        let before = reader.current_conversation().context("hydrated baseline")?;
-        let pending = owner_a.retained.pending.as_mut().unwrap();
-        let drafts = Arc::make_mut(&mut pending.prepared)
-            .completion_drafts
-            .as_mut()
+    async fn state_receiver_close_wins_over_buffered_content_and_wakes_parked_readers() {
+        let (events, receiver) = broadcast::channel(4);
+        let closed = CancellationToken::new();
+        events
+            .send(ThreadLiveEvent::UnframedCommit { sequence: 1 })
             .unwrap();
-        let mut conflict = drafts.first().context("completed input")?.clone();
-        conflict.payload = Arc::from(&b"conflicting original"[..]);
-        drafts.push(conflict);
-        assert!(
-            store
-                .admit_prepared(&binding_a, &channel, &mut owner_a.retained)
-                .is_err()
-        );
-        assert_eq!(store.session().head_seq(), 0);
-        assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
-        owner_a.retained.pending.as_mut().unwrap().prepared = frozen;
-        owner_a.publish_retained()?;
-        let funded = sink.pressure(&thread.id).thread_bytes;
-        owner_a.retained.pending.as_mut().unwrap().write = Arc::new(write.as_ref().clone());
-        let rejected = store
-            .admit_prepared(&binding_a, &channel, &mut owner_a.retained)
-            .err()
-            .context("a different write Arc must reject the handoff")?;
-        assert!(
-            rejected
-                .to_string()
-                .contains("original effect is not this channel's accepted write")
-        );
-        assert_eq!(
-            sink.pressure(&thread.id).thread_bytes,
-            funded,
-            "failed publication must restore the original Store and pending-batch charge"
-        );
-        assert_eq!(store.session().head_seq(), 0);
-        assert_eq!(reader.current_conversation().unwrap().serial, before.serial);
-        owner_a.retained.pending.as_mut().unwrap().write = write.clone();
-        let original = store.admit_prepared(&binding_a, &channel, &mut owner_a.retained)?;
-        let record = original
-            .completions
-            .first()
-            .context("published original")?
-            .clone();
-        assert_eq!(record.header.append_seq, 1);
-        assert_eq!(store.session().durable_seq(), 0);
-        assert!(
-            matches!(
-                forbidden_read.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-            ),
-            "ordinary admission queried the completion history"
-        );
-        release_read.send(()).ok();
-        drop(owner_a);
-        let (handle_b, feed_b, mut owner_b) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        let binding_b = Arc::new(sink.binding());
-        store.attach_execution(&binding_b).await?;
-        owner_b.binding = Some(binding_b.clone());
-        assert!(
-            store
-                .admit_prepared(&binding_a, &channel, &mut owner_b.retained)
-                .is_err(),
-            "detached binding published"
-        );
-        let retried = store.admit_prepared(&binding_b, &channel, &mut owner_b.retained)?;
-        assert!(Arc::ptr_eq(&original, &retried));
-        assert!(Arc::ptr_eq(&record, &retried.completions[0]));
-        assert_eq!(reader.current_conversation().unwrap().head, 1);
-        owner_b.handover_pending(&fixture.services)?;
-        drop(owner_b);
-        transaction.rollback().await?;
-        sink.flush(&thread.id, 1).await?;
-        assert_eq!(store.session().durable_seq(), 1);
-        let weak_record = Arc::downgrade(&record);
-        drop(original);
-        drop(retried);
-        assert!(
-            weak_record.upgrade().is_some(),
-            "reader's original was reclaimed early"
-        );
-        drop(record);
-        assert!(
-            weak_record.upgrade().is_none(),
-            "durable completion stayed in the Store"
-        );
-        drop(reader);
-        let weak_store = Arc::downgrade(&store);
-        drop(binding_a);
-        drop(binding_b);
-        drop(store);
-        channel.stop_and_join().await?;
-        drop(sink);
-        handle_a.close().await?;
-        handle_b.close().await?;
-        drop(feed_a);
-        drop(feed_b);
-        blocker.close().await?;
-        assert!(
-            weak_store.upgrade().is_none(),
-            "weak registry retained an idle conversation"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn conversation_store_fixed_admission_budget_and_durable_reclamation() -> Result<()> {
-        use crate::studio::conversation_store::{ReadCut, ReadRequest};
-        use crate::studio::storage::thread_writer::storage_fault_tests::visible_input_ticket;
-        let fixture = observation_fixture().await?;
-        let thread = bound_thread("store-admission-budget");
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle, feed, mut owner) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        let binding = Arc::new(sink.binding());
-        let store = binding.conversation.clone();
-        store.attach_execution(&binding).await?;
-        owner.binding = Some(binding.clone());
-        let reader = store.open_reader();
-        let history = fixture.store.history(&thread.id).await?;
-        let writer = channel.hold_writer().await;
-        let reads = history.reader_calls();
-        let mut elapsed = Vec::new();
-        let mut originals = Vec::new();
-        for sequence in 1..=64 {
-            sink.admit(
-                &thread.id,
-                visible_input_ticket(&thread.id, sequence, &format!("input-{sequence}"))?,
-            )?;
-            let write = channel.next_unprojected().context("accepted original")?;
-            let (changes, prepared) = owner
-                .retained
-                .projection
-                .prepare(&thread, &write.effect, &write.checkpoint.state, true)
-                .await?;
-            owner.retained.pending = Some(PendingHandoff {
-                admitted: false,
-                write,
-                prepared,
-                changes,
-                terminal: None,
-                mode: HandoffMode::Live,
-            });
-            owner.publish_retained()?;
-            let prepared = store.admit_prepared(&binding, &channel, &mut owner.retained)?;
-            elapsed.push(store.last_admission_locked_us());
-            originals.extend(prepared.completions.iter().map(Arc::downgrade));
-            let ReadCut::Ready {
-                source,
-                display: Some(_),
-                ..
-            } = reader
-                .capture(ReadRequest::Display {
-                    before: None,
-                    limit: 2,
-                    after: None,
-                    history_limit: 2,
-                })
-                .await?
-            else {
-                anyhow::bail!("ready capture used cold SQL")
-            };
-            assert_eq!(source.head, sequence);
-            assert_eq!(source.current.projection().source_effect_seq, sequence);
-            owner.handover_pending(&fixture.services)?;
-        }
-        assert_eq!(
-            history.reader_calls(),
-            reads,
-            "fresh admission or RAM capture accessed SQLite"
-        );
-        let queue_bytes = channel.subscribe().borrow().queued_bytes;
-        assert!(queue_bytes > 0 && queue_bytes < 64 * 1024 * 1024);
-        elapsed.sort_unstable();
-        println!(
-            "STORE_ADMISSION_PERF {}",
-            serde_json::json!({"samples":elapsed.len(), "sql":0, "read_port_calls":0, "locked_us_p50":elapsed[32], "locked_us_p95":elapsed[60], "locked_us_max":elapsed[63], "queued_bytes":queue_bytes})
-        );
-        drop(owner);
-        drop(reader);
-        drop(writer);
-        sink.flush(&thread.id, 64).await?;
-        assert_eq!(store.session().head_seq(), store.session().durable_seq());
-        assert!(
-            originals
-                .iter()
-                .all(|original| original.upgrade().is_none())
-        );
-        assert_eq!(channel.subscribe().borrow().queued_records, 0);
-        println!(
-            "STORE_DURABLE_ORIGINAL_BYTES=0 STORE_PENDING_RECORDS_AFTER_COMMIT=0 STORE_RESIDENT_BYTES={}",
-            channel.subscribe().borrow().queued_bytes
-        );
-        channel.stop_and_join().await?;
-        handle.close().await?;
-        drop(feed);
-        let weak = Arc::downgrade(&store);
-        drop(binding);
-        drop(store);
-        drop(sink);
-        assert!(weak.upgrade().is_none());
-        assert_eq!(channel.subscribe().borrow().queued_bytes, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn recovered_behind_terminal_qualifies_directory_before_retention() -> Result<()> {
-        use crate::ThreadStatus;
-
-        for (case, newer_running, explicitly_closed) in [
-            ("first-recovery", false, false),
-            ("newer-running", true, false),
-            ("explicit-close", false, true),
-        ] {
-            let fixture = observation_fixture().await?;
-            let parent = bound_thread("child-terminal-report-parent");
-            let mut thread = if explicitly_closed {
-                register_test_thread(&fixture.store, &parent).await?;
-                child_thread("recovered-directory", &parent.id)
-            } else {
-                bound_thread("recovered-directory")
-            };
-            thread.status = ThreadStatus::Running;
-            register_test_thread(&fixture.store, &thread).await?;
-            publish_test_directory(&fixture.store, &fixture.services.events).await?;
-            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-            let channel = fixture
-                .store
-                .thread_persistence()
-                .history_channel(&thread.id);
-            let running = TurnRecord {
-                input_id: None,
-                turn_id: "interrupted-by-restart".into(),
-                state: TurnState::Running,
-                model_steps: 0,
-                elapsed_ms: None,
-            };
-            let checkpoint = ThreadCheckpoint::capture_transfer(
-                thread.id.clone(),
-                1,
-                ThreadSnapshot {
-                    commit_sequence: 1,
-                    turns: Arc::from([running.clone()]),
-                    ..Default::default()
-                },
-            );
-            let initial = ThreadWrite {
-                effect: Arc::new(ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 1,
-                    committed_at: 1,
-                    turn: Some(running),
-                    ..Default::default()
-                }),
-                checkpoint: checkpoint.clone(),
-                output_claim: None,
-            };
-            // Only the running checkpoint is durable. No directory runtime patch or terminal has
-            // been published, and no observation driver exists to prepare the restart's write.
-            sink.admit(&thread.id, initial.clone())?;
-            let history = fixture.store.history(&thread.id).await?;
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(
-                history
-                    .conversation_database_id()
-                    .await?
-                    .context("running checkpoint database")?,
-            )?;
-            let mut prepared = projection
-                .prepare_committed(&thread, &initial.effect, &initial.checkpoint.state)
-                .await?;
-            projection
-                .publish_prepared(
-                    &fixture.store.chat_session(&thread.id).await?,
-                    &mut prepared,
-                )
-                .await?;
-            channel.prepare_with(None, prepared, || Ok(()))?;
-            sink.flush(&thread.id, 1).await?;
-            let (entered_model, model_entered) = tokio::sync::oneshot::channel();
-            let release = Arc::new(Notify::new());
-            let handle = if newer_running {
-                ThreadHandle::resume(
-                    thread.id.clone(),
-                    DynModelSession::new(HeldFinalTextModel {
-                        entered: Some(entered_model),
-                        release: release.clone(),
-                    }),
-                    Some(checkpoint),
-                )?
-            } else {
-                ThreadHandle::resume_without_model(thread.id.clone(), Some(checkpoint))?
-            };
-            handle
-                .attach_storage(ColdStoreHandle::new(sink.clone()))
-                .await?;
-            let recovery = channel.next_unprojected().context("Core recovery write")?;
-            let recovered_sequence = recovery.effect.sequence;
-            assert_eq!(
-                recovery.effect.turn.as_ref().unwrap().state,
-                TurnState::Interrupted
-            );
-            assert_eq!(recovery.checkpoint.state.observation_revision, 0);
-            assert!(handle.snapshot().observation_revision > 0);
-            let turn = if newer_running {
-                let running_handle = handle.clone();
-                let turn = tokio::spawn(async move {
-                    run_final_turn(&running_handle, "newer-than-recovery").await
-                });
-                tokio::time::timeout(Duration::from_secs(3), model_entered).await??;
-                Some(turn)
-            } else {
-                None
-            };
-            let current = handle.snapshot();
-            assert!(current.commit_sequence >= recovered_sequence);
-            let (progress, owner_progress) = watch::channel(Progress::default());
-            let (hook, mut entered, _) = PendingPhaseHook::new();
-            let state = Arc::new(WorkerState {
-                native_directory: fixture.services.events.begin_native_observation(&thread.id),
-                deletion: Default::default(),
-                join_failure: Default::default(),
-                terminal_transfer: Default::default(),
-                progress,
-                retry: Notify::new(),
-                channel: channel.clone(),
-                reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(
-                    current.commit_sequence,
-                )),
-                observed_before_execution: false,
-                pending_hook: Some(hook),
-            });
-            let feed = Arc::new(ThreadLiveFeed::new(
-                None,
-                owner_progress,
-                Default::default(),
-            ));
-            let mut worker = ProjectionWorker {
-                services: fixture.services.clone(),
-                id: thread.id.clone(),
-                thread: handle.clone(),
-                state,
-                recovered_through: current.commit_sequence,
-                feed: feed.clone(),
-                live: None,
-                live_floor: current.commit_sequence,
-                continuous: false,
-            };
-            let result: Result<()> = async {
-                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, ThreadStatus::Running);
-                assert!(fixture.store.history(&thread.id).await?.newest_terminal_turn().await?.is_none());
-                if explicitly_closed {
-                    fixture.store.save_agent_close(&crate::studio::store::agent_close::AgentCloseRecord {
-                        agent_id: thread.id.clone(), parent_id: parent.id.clone(),
-                        root_id: thread.root_thread_id.clone(), workspace_id: thread.workspace_id.clone(),
-                        revision: 1, force: false, worktree: None, git: None, execution_closed: true,
-                        worktree_cleanup: pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
-                        error: None,
-                    }).await?;
-                    fixture.services.events.commit_explicit_close(&thread.id).await?;
-                }
-                let expected = if explicitly_closed { ThreadStatus::Closed }
-                    else if newer_running { ThreadStatus::Running } else { ThreadStatus::Idle };
-                let mut projecting = Box::pin(worker.project(&current, false, None));
-                tokio::time::timeout(Duration::from_secs(3), async {
-                    tokio::select! {
-                        sequence = entered.recv() => {
-                            assert_eq!(sequence.context("behind handover gate")?, recovered_sequence);
-                            Ok(())
-                        }
-                        outcome = projecting.as_mut() => {
-                            outcome?;
-                            anyhow::bail!("recovery escaped its handover gate");
-                        }
-                    }
-                }).await??;
-                assert!(feed.last_turn().borrow().is_none());
-                assert!(fixture.store.history(&thread.id).await?.newest_terminal_turn().await?.is_none());
-                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, expected,
-                    "directory before first retained recovery terminal: {case}");
-                drop(projecting);
-                let live = worker.live.as_mut().unwrap();
-                let pending = live.retained.pending.as_ref().unwrap();
-                assert_eq!(pending.mode, HandoffMode::Behind);
-                assert!(Arc::ptr_eq(&pending.write, &recovery));
-                live.pending_hook = None;
-                worker.project(&current, false, None).await?;
-                assert_eq!(feed.last_turn().borrow().as_ref().unwrap().id, "interrupted-by-restart");
-                assert_eq!(feed.last_turn().borrow().as_ref().unwrap().revision, recovered_sequence);
-                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, expected);
-                // Even a qualified old transfer cannot take over the real live observation version.
-                assert!(fixture.services.events.patch_thread_runtime(
-                    worker.state.native_directory.as_ref(), ThreadStatus::Idle, 1,
-                    &recovery.checkpoint.state, None,
-                )?.is_none());
-                println!("RECOVERED_TERMINAL_CASE {case}: sequence={recovered_sequence} live_revision={} status={expected:?}", current.observation_revision);
-                Ok(())
-            }.await;
-            release.notify_one();
-            if let Some(turn) = turn {
-                turn.await??;
-            }
-            if let Some(live) = worker.live.as_mut() {
-                live.pending_hook = None;
-            }
-            worker.project(&handle.snapshot(), false, None).await?;
-            // Closing the real recovered Core can commit another continuation/checkpoint. Keep its
-            // original projection worker driving those snapshots until close's own flush completes.
-            let mut updates = handle.subscribe();
-            let mut closing = Box::pin(handle.close());
-            tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    tokio::select! { biased;
-                        result = closing.as_mut() => break result.context("recovered Core close"),
-                        snapshot = updates.next() => {
-                            let snapshot = snapshot.context("closing Core snapshot")?;
-                            worker.project(&snapshot, false, None).await?;
-                        }
-                    }
-                }
-            })
-            .await??;
-            worker.project(&handle.snapshot(), false, None).await?;
-            sink.flush(&thread.id, channel.handoff_ticket()).await?;
-            drop(worker);
-            drop(sink);
-            channel.stop_and_join().await?;
-            fixture.writer.shutdown().await?;
-            result?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn terminal_handoff_accepts_live_runtime_before_completion() -> Result<()> {
-        use crate::ThreadStatus;
-        use crate::studio::thread_projection::TurnEvent;
-
-        for (case, newer_running, replaced_owner, explicitly_closed, retry) in [
-            ("idle", false, false, false, false),
-            ("newer-running", true, false, false, false),
-            ("same-generation-covered", false, false, false, false),
-            ("replaced-owner", false, true, false, false),
-            ("explicit-close", false, false, true, false),
-            ("retry-newer-running", true, false, false, true),
-        ] {
-            let already_covered = case == "same-generation-covered";
-            let fixture = observation_fixture().await?;
-            let mut thread = if explicitly_closed {
-                let parent = bound_thread("terminal-handoff-parent");
-                register_test_thread(&fixture.store, &parent).await?;
-                child_thread("terminal-handoff-directory", &parent.id)
-            } else {
-                bound_thread("terminal-handoff-directory")
-            };
-            thread.status = ThreadStatus::Running;
-            register_test_thread(&fixture.store, &thread).await?;
-            publish_test_directory(&fixture.store, &fixture.services.events).await?;
-            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-            let channel = fixture
-                .store
-                .thread_persistence()
-                .history_channel(&thread.id);
-            let (hook, mut entered, control) = PendingPhaseHook::new();
-            let (handle, feed, mut live) =
-                state_observation_owner(&fixture, &thread, &channel, None).await?;
-            live.pending_hook = Some(hook);
-            let mut receiver = feed.subscribe();
-            let result: Result<()> = async {
-                let directory_status = || -> Result<ThreadStatus> {
-                    Ok(fixture.services.events.thread_snapshot(&thread.id)?
-                        .context("registered member")?.status)
-                };
-                let (mut turn, mut write) = terminal_turn_write(&thread, "terminal-handoff-turn")?;
-                turn.state = TurnState::Finished(TurnOutcome::Completed);
-                Arc::make_mut(&mut write.effect).turn = Some(turn.clone());
-                // Original-owner fixture cuts: the directory has already accepted a real-time
-                // Running observation. A transfer must clear its volatile revision, just as Core's
-                // production capture does; assigning a revision to the checkpoint would hide the bug.
-                let running = ThreadSnapshot {
-                    observation_revision: 1,
-                    turns: Arc::from([TurnRecord {
-                        state: TurnState::Running,
-                        ..turn.clone()
-                    }]),
-                    ..Default::default()
-                };
-                let terminal = ThreadSnapshot {
-                    observation_revision: 2,
-                    commit_sequence: write.effect.sequence,
-                    turns: Arc::from([turn]),
-                    ..Default::default()
-                };
-                write.checkpoint = ThreadCheckpoint::capture_transfer(
-                    thread.id.clone(),
-                    write.effect.sequence,
-                    terminal.clone(),
-                );
-                assert_eq!(write.checkpoint.state.observation_revision, 0);
-                let write = Arc::new(write);
-                sink.admit(&thread.id, write.as_ref().clone())?;
-                assert!(fixture.services.events.patch_thread_runtime(
-                    live.native_directory.as_ref(),
-                    ThreadStatus::Running,
-                    0,
-                    &running,
-                    None,
-                )?.is_some());
-
-                let current_observation = if replaced_owner {
-                    let current = fixture.services.events.begin_native_observation(&thread.id);
-                    assert!(fixture.services.events.patch_thread_runtime(
-                        current.as_ref(), ThreadStatus::Running, 0, &running, None,
-                    )?.is_some());
-                    current
-                } else {
-                    live.native_directory.clone()
-                };
-                if already_covered {
-                    let newer = ThreadSnapshot {
-                        observation_revision: terminal.observation_revision + 1,
-                        commit_sequence: terminal.commit_sequence + 1,
-                        ..running.clone()
-                    };
-                    assert!(fixture.services.events.patch_thread_runtime(
-                        current_observation.as_ref(), ThreadStatus::Running, 2, &newer, None,
-                    )?.is_some());
-                }
-                if explicitly_closed {
-                    let close = crate::studio::store::agent_close::AgentCloseRecord {
-                        agent_id: thread.id.clone(),
-                        parent_id: thread.parent_thread_id.clone().context("close parent")?,
-                        root_id: thread.root_thread_id.clone(),
-                        workspace_id: thread.workspace_id.clone(),
-                        revision: 1,
-                        force: false,
-                        worktree: None,
-                        git: None,
-                        execution_closed: true,
-                        worktree_cleanup:
-                            pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
-                        error: None,
-                    };
-                    fixture.store.save_agent_close(&close).await?;
-                    fixture.services.events.commit_explicit_close(&thread.id).await?;
-                }
-                if retry {
-                    control.send_replace(Some(Err("terminal directory retry fault".into())));
-                    let error = live
-                        .advance(&fixture.services, &thread.id, &write, &terminal)
-                        .await.unwrap_err();
-                    assert!(error.to_string().contains("terminal directory retry fault"));
-                    assert_eq!(entered.try_recv()?, write.effect.sequence);
-                    let pending = live.retained.pending.as_ref().unwrap();
-                    assert!(Arc::ptr_eq(&pending.write, &write));
-                    assert_eq!(pending.mode, HandoffMode::Live);
-                    assert_eq!(channel.handoff_ticket(), 0);
-                    assert!(feed.last_turn().borrow().is_none());
-                    // Retention is not permission to use a cut from before this terminal. Refuse
-                    // publication without losing the original batch, then retry with the newer cut.
-                    let error = live.finish_pending(&fixture.services, &running)
-                        .await.unwrap_err();
-                    assert!(error.to_string().contains(
-                        "terminal handoff requires its owner's snapshot",
-                    ));
-                    assert!(Arc::ptr_eq(
-                        &live.retained.pending.as_ref().unwrap().write,
-                        &write,
-                    ));
-                    assert_eq!(channel.handoff_ticket(), 0);
-                    assert!(feed.last_turn().borrow().is_none());
-                }
-                let mut current = terminal;
-                if newer_running {
-                    let mut turns = current.turns.to_vec();
-                    turns.push(TurnRecord {
-                        input_id: None,
-                        turn_id: "newer-running-turn".into(),
-                        state: TurnState::Running,
-                        model_steps: 0,
-                        elapsed_ms: None,
-                    });
-                    current.turns = turns.into();
-                    current.commit_sequence += 1;
-                    current.observation_revision += 1;
-                }
-                // No end-of-pass directory refresh: the retained terminal and State completion must
-                // already have their causal directory cut at the gate before outward handover.
-                let expected = if explicitly_closed {
-                    ThreadStatus::Closed
-                } else if newer_running || replaced_owner || already_covered {
-                    ThreadStatus::Running
-                } else {
-                    ThreadStatus::Idle
-                };
-                let mut projection = Box::pin(async {
-                    if retry {
-                        live.finish_pending(&fixture.services, &current).await
-                    } else {
-                        live.advance(&fixture.services, &thread.id, &write, &current).await
-                    }
-                });
-                tokio::time::timeout(Duration::from_secs(3), async {
-                    tokio::select! {
-                        sequence = entered.recv() => {
-                            assert_eq!(sequence.context("handover gate entered")?, write.effect.sequence);
-                            Ok(())
-                        }
-                        outcome = projection.as_mut() => {
-                            outcome?;
-                            anyhow::bail!("completion escaped the handover gate");
-                        }
-                    }
-                })
-                .await??;
-                assert!(feed.last_turn().borrow().is_none());
-                assert_eq!(directory_status()?, expected, "directory before completion: {case}");
-                control.send_replace(Some(Ok(())));
-                projection.await?;
-                assert!(live.retained.pending.is_none());
-                if replaced_owner {
-                    assert!(feed.is_delivery_closed());
-                    assert!(feed.last_turn().borrow().is_none());
-                } else {
-                    assert!(!feed.is_delivery_closed());
-                    assert_eq!(
-                        feed.last_turn().borrow().as_ref().context("retained completion")?.id,
-                        "terminal-handoff-turn",
-                    );
-                }
-                let mut completions = 0;
-                while let Ok(event) = receiver.try_recv() {
-                    if let ThreadLiveEvent::Committed { sequence, changes } = event {
-                        assert_eq!(sequence, write.effect.sequence);
-                        completions += changes.iter().filter(|change| matches!(change,
-                            LiveEvent::Turn { event: TurnEvent::Completed, .. }
-                        )).count();
-                    }
-                }
-                assert_eq!(completions, usize::from(!replaced_owner));
-                assert_eq!(
-                    fixture.services.events.native_observation_covers(
-                        live.native_directory.as_ref(), &current,
-                    ),
-                    !replaced_owner,
-                );
-                assert_eq!(directory_status()?, expected, "{case}");
-                // An unchanged Running status alone cannot prove acceptance of the newer cut. Its
-                // earlier observation must now be rejected; a revoked owner must not poison the new
-                // generation's lower revision either.
-                let earlier = ThreadSnapshot {
-                    observation_revision: current.observation_revision - 1,
-                    ..current.clone()
-                };
-                let patch = fixture.services.events.patch_thread_runtime(
-                    current_observation.as_ref(),
-                    ThreadStatus::Running,
-                    1,
-                    if replaced_owner { &running } else { &earlier },
-                    None,
-                )?;
-                assert_eq!(
-                    patch.is_some(), replaced_owner, "accepted observation watermark: {case}",
-                );
-                println!(
-                    "TERMINAL_DIRECTORY_CASE {case}: transfer=0 live={} completed={completions} status={expected:?}",
-                    current.observation_revision,
-                );
-                Ok(())
-            }
-            .await;
-            // All publication assertions precede this fixture-only durability cleanup.
-            sink.flush(&thread.id, channel.handoff_ticket()).await?;
-            drop(live);
-            handle.close().await?;
-            drop(sink);
-            channel.stop_and_join().await?;
-            fixture.writer.shutdown().await?;
-            result?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn terminal_seed_uses_current_runtime_and_preserves_close_through_handoffs() -> Result<()>
-    {
-        use crate::ThreadStatus;
-
-        for (newer_running, explicitly_closed) in [(false, false), (true, false), (false, true)] {
-            let fixture = observation_fixture().await?;
-            let mut thread = if explicitly_closed {
-                let parent = bound_thread("terminal-seed-parent");
-                register_test_thread(&fixture.store, &parent).await?;
-                child_thread("terminal-seed-directory", &parent.id)
-            } else {
-                bound_thread("terminal-seed-directory")
-            };
-            thread.status = ThreadStatus::Running;
-            register_test_thread(&fixture.store, &thread).await?;
-            publish_test_directory(&fixture.store, &fixture.services.events).await?;
-            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-            let channel = fixture
-                .store
-                .thread_persistence()
-                .history_channel(&thread.id);
-            let (handle, _, mut live) =
-                state_observation_owner(&fixture, &thread, &channel, None).await?;
-            let result: Result<()> = async {
-                let (_, write) = terminal_turn_write(&thread, "seeded-terminal")?;
-                let write = Arc::new(write);
-                sink.admit(&thread.id, write.as_ref().clone())?;
-                live.advance(
-                    &fixture.services,
-                    &thread.id,
-                    &write,
-                    &write.checkpoint.state,
-                )
-                .await?;
-                sink.flush(&thread.id, 1).await?;
-                drop(live);
-                let mut installed = write.checkpoint.state.clone();
-                if newer_running {
-                    let mut turns = installed.turns.to_vec();
-                    turns.push(TurnRecord {
-                        input_id: None,
-                        turn_id: "newer-running-turn".into(),
-                        state: TurnState::Running,
-                        model_steps: 0,
-                        elapsed_ms: None,
-                    });
-                    installed.turns = turns.into();
-                }
-                // Deliberately leave the opposite directory state to prove installation accepts
-                // its snapshot before exposing the durable terminal, without a worker's end pass.
-                fixture.services.events.patch_thread_runtime(
-                    fixture
-                        .services
-                        .events
-                        .begin_native_observation(&thread.id)
-                        .as_ref(),
-                    if newer_running {
-                        ThreadStatus::Idle
-                    } else {
-                        ThreadStatus::Running
-                    },
-                    1,
-                    &installed,
-                    None,
-                )?;
-                if explicitly_closed {
-                    fixture
-                        .store
-                        .save_agent_close(&crate::studio::store::agent_close::AgentCloseRecord {
-                            agent_id: thread.id.clone(),
-                            parent_id: thread.parent_thread_id.clone().context("close parent")?,
-                            root_id: thread.root_thread_id.clone(),
-                            workspace_id: thread.workspace_id.clone(),
-                            revision: 1,
-                            force: false,
-                            worktree: None,
-                            git: None,
-                            execution_closed: true,
-                            worktree_cleanup:
-                                pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
-                            error: None,
-                        })
-                        .await?;
-                    fixture
-                        .services
-                        .events
-                        .commit_explicit_close(&thread.id)
-                        .await?;
-                    fixture.services.events.patch_thread_runtime(
-                        fixture
-                            .services
-                            .events
-                            .begin_native_observation(&thread.id)
-                            .as_ref(),
-                        ThreadStatus::Closed,
-                        1,
-                        &ThreadSnapshot {
-                            lifecycle: ThreadLifecycle::Closed,
-                            ..installed.clone()
-                        },
-                        None,
-                    )?;
-                }
-                let expected = if explicitly_closed {
-                    ThreadStatus::Closed
-                } else if newer_running {
-                    ThreadStatus::Running
-                } else {
-                    ThreadStatus::Idle
-                };
-                let (reopened, feed, mut owner) =
-                    state_observation_owner(&fixture, &thread, &channel, Some(installed)).await?;
-                let retained = feed.last_turn().borrow().clone().context("terminal seed")?;
-                assert_eq!(retained.id, "seeded-terminal");
-                assert_eq!(
-                    fixture
-                        .services
-                        .events
-                        .thread_snapshot(&thread.id)
-                        .expect("valid Native directory")
-                        .expect("registered Native member")
-                        .status,
-                    expected
-                );
-                if explicitly_closed {
-                    let (_, mut next) = terminal_turn_write(&thread, "late-live-terminal")?;
-                    Arc::make_mut(&mut next.effect).sequence = 2;
-                    let mut snapshot = next.checkpoint.state.clone();
-                    snapshot.commit_sequence = 2;
-                    next.checkpoint =
-                        ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, snapshot);
-                    let next = Arc::new(next);
-                    sink.admit(&thread.id, next.as_ref().clone())?;
-                    owner
-                        .advance(&fixture.services, &thread.id, &next, &next.checkpoint.state)
-                        .await?;
-                    assert_eq!(
-                        feed.last_turn().borrow().as_ref().unwrap().id,
-                        "late-live-terminal"
-                    );
-                    assert_eq!(
-                        fixture
-                            .services
-                            .events
-                            .thread_snapshot(&thread.id)
-                            .expect("valid Native directory")
-                            .expect("registered Native member")
-                            .status,
-                        ThreadStatus::Closed
-                    );
-                    sink.flush(&thread.id, 2).await?;
-                }
-                drop(owner);
-                reopened.close().await?;
-                Ok(())
-            }
-            .await;
-            handle.close().await?;
-            drop(sink);
-            channel.stop_and_join().await?;
-            fixture.writer.shutdown().await?;
-            result?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_lagging_state_receiver_does_not_block_live_handoff_or_durability() -> Result<()> {
-        let fixture = observation_fixture().await?;
-        let thread = bound_thread("state-observation-lag");
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle, feed, mut live) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        assert!(live.native_directory.is_some());
-        let result = async {
-            let database_id = fixture
-                .store
-                .history(&thread.id)
-                .await?
-                .conversation_database_id()
-                .await?
-                .context("live owner database identity")?;
-            let mut slow = feed.subscribe();
-            let mut fast = feed.subscribe();
-            let mut cancelled_read = Box::pin(fast.recv());
-            assert!(futures::poll!(cancelled_read.as_mut()).is_pending());
-            drop(cancelled_read);
-            let count = u64::try_from(LIVE_FEED_FRAMES)? + 2;
-            let (mut committed, mut runtimes, mut activities) = (0, 0, 0);
-            let mut business_refs = 0;
-            // No conversation subscriber: only State is allowed to lag. The production reliable
-            // handoff still runs for every effect, independently of latest-only presentation.
-            for sequence in 1..=count {
-                let running = sequence % 2 != 0;
-                let turn_id = format!("state-turn-{}", sequence.div_ceil(2));
-                let turn = TurnRecord {
-                    input_id: None,
-                    turn_id: turn_id.clone(),
-                    state: if running {
-                        TurnState::Running
-                    } else {
-                        TurnState::Interrupted
-                    },
-                    model_steps: 0,
-                    elapsed_ms: None,
-                };
-                let snapshot = ThreadSnapshot {
-                    commit_sequence: sequence,
-                    observation_revision: sequence,
-                    turns: Arc::from([turn.clone()]),
-                    execution: running.then(|| pl_core::thread::ActiveExecution {
-                        id: format!("execution:{turn_id}"),
-                        phase: pl_core::thread::ExecutionPhase::Running,
-                        turn_id: Some(turn_id),
-                    }),
-                    ..Default::default()
-                };
-                let write = ThreadWrite {
-                    effect: Arc::new(ThreadEffectBatch {
-                        thread_id: thread.id.clone(),
-                        sequence,
-                        committed_at: i64::try_from(sequence)?,
-                        turn: Some(turn),
-                        ..Default::default()
-                    }),
-                    checkpoint: ThreadCheckpoint::capture_transfer(
-                        thread.id.clone(),
-                        sequence,
-                        snapshot.clone(),
-                    ),
-                    output_claim: None,
-                };
-                sink.admit(&thread.id, write)?;
-                let admitted = channel.next_unprojected().context("admitted owner write")?;
-                assert_eq!(admitted.effect.sequence, sequence);
-                // Only a deadlock referee: no read advances the slow cursor, and no timer or
-                // artificial send advances the production chain.
-                tokio::time::timeout(Duration::from_secs(3), async {
-                    live.advance(&fixture.services, &thread.id, &admitted, &snapshot)
-                        .await?;
-                    live.stream(&snapshot).await
-                })
-                .await
-                .context("State lag blocked a successor effect")??;
-                assert_eq!(channel.handoff_ticket(), sequence);
-                assert!(live.retained.pending.is_none());
-
-                // The fast receiver retains every fact and its original observation qualification.
-                loop {
-                    match fast.try_recv() {
-                        Ok(ThreadLiveEvent::Committed {
-                            sequence: delivered,
-                            ..
-                        }) => {
-                            assert_eq!(delivered, sequence);
-                            committed += 1;
-                        }
-                        Ok(ThreadLiveEvent::Runtime {
-                            observation_revision,
-                            ..
-                        }) => {
-                            assert_eq!(observation_revision, sequence);
-                            runtimes += 1;
-                        }
-                        Ok(ThreadLiveEvent::Activity {
-                            observation_revision,
-                            activity,
-                        }) => {
-                            assert_eq!(observation_revision, sequence);
-                            assert_eq!(activity.is_some(), running);
-                            activities += 1;
-                        }
-                        Ok(ThreadLiveEvent::BusinessRefs {
-                            sequence: delivered,
-                            references,
-                        }) => {
-                            assert_eq!(delivered, 1);
-                            assert_eq!(
-                                references,
-                                crate::ThreadBusinessRefs {
-                                    plan: None,
-                                    interactions: Some(crate::CurrentCollectionRef {
-                                        database_id: database_id.clone(),
-                                        collection: "interactions".into(),
-                                        revision: 0,
-                                    }),
-                                }
-                            );
-                            business_refs += 1;
-                        }
-                        Err(broadcast::error::TryRecvError::Empty) => break,
-                        other => anyhow::bail!("fast State receiver lost qualification: {other:?}"),
-                    }
-                }
-            }
-            assert_eq!((committed, runtimes, activities), (count, count, count));
-            assert_eq!(business_refs, 1);
-            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, count)).await??;
-            assert_eq!(
-                fixture.store.history(&thread.id).await?.watermark().await?,
-                count
-            );
-            // Inspect lag only after durability: polling slow cannot be what released handoff/save.
-            assert!(matches!(
-                slow.try_recv(),
-                Err(broadcast::error::TryRecvError::Lagged(dropped))
-                    if dropped == count * 3 + business_refs - u64::try_from(LIVE_FEED_FRAMES)?
-            ));
-
-            // Both consumer roles use this adapter. Close wakes both pending reads even while
-            // the feed's Sender stays alive, and takes priority over slow's remaining frames.
-            let mut other = feed.subscribe();
-            let mut first_wait = Box::pin(fast.recv());
-            let mut second_wait = Box::pin(other.recv());
-            assert!(futures::poll!(first_wait.as_mut()).is_pending());
-            assert!(futures::poll!(second_wait.as_mut()).is_pending());
-            feed.delivery_closed.cancel();
-            assert!(matches!(
-                first_wait.await,
-                Err(broadcast::error::RecvError::Closed)
-            ));
-            assert!(matches!(
-                second_wait.await,
-                Err(broadcast::error::RecvError::Closed)
-            ));
-            assert!(matches!(
-                slow.try_recv(),
-                Err(broadcast::error::TryRecvError::Closed)
-            ));
-            Ok(())
-        }
-        .await;
-        drop(live);
-        handle.close().await?;
-        drop(sink);
-        channel.stop_and_join().await?;
-        fixture.writer.shutdown().await?;
-        result
-    }
-
-    #[tokio::test]
-    async fn behind_handoff_saves_old_facts_without_republishing_a_newer_resource_cut() -> Result<()>
-    {
-        let fixture = observation_fixture().await?;
-        let mut thread = bound_thread("behind-business-cut");
-        thread.status = crate::ThreadStatus::Running;
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle, feed, mut live) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        let result = async {
-            let database = fixture
-                .store
-                .history(&thread.id)
-                .await?
-                .conversation_database_id()
-                .await?
-                .context("live owner database identity")?;
-            // Explicit original-owner fixture cuts: a newer public resident slice
-            // already exists while the older transfer still owes reliable saving.
-            let newer = ThreadSnapshot {
-                commit_sequence: 2,
-                observation_revision: 2,
-                interaction_collection_revision: 2,
-                turns: Arc::from([TurnRecord {
-                    input_id: None,
-                    turn_id: "newer-running-turn".into(),
-                    state: TurnState::Running,
-                    model_steps: 0,
-                    elapsed_ms: None,
-                }]),
-                ..Default::default()
-            };
-            let current = crate::studio::thread_projection::CurrentState::cold(
-                database,
-                thread.id.clone(),
-                2,
-                &newer,
-            )?;
-            feed.publish_test_conversation(&live.chat, current)?;
-            assert!(
-                fixture
-                    .services
-                    .events
-                    .patch_thread_runtime(
-                        live.native_directory.as_ref(),
-                        crate::ThreadStatus::Running,
-                        2,
-                        &newer,
-                        None,
-                    )?
-                    .is_some()
-            );
-            let published = feed.current_conversation().context("newer public cut")?;
-            let references = published.current.business_refs();
-            let mut receiver = feed.subscribe();
-
-            let (_, write) = terminal_turn_write(&thread, "old-behind-terminal")?;
-            let write = Arc::new(write);
-            sink.admit(&thread.id, write.as_ref().clone())?;
-            live.prepare_behind(&fixture.services, &thread.id, &write, &newer)
-                .await?;
-            assert_eq!(
-                fixture
-                    .services
-                    .events
-                    .thread_snapshot(&thread.id)
-                    .expect("valid Native directory")
-                    .expect("registered Native member")
-                    .status,
-                crate::ThreadStatus::Running
-            );
-            let after = feed.current_conversation().context("public cut retained")?;
-            assert!(Arc::ptr_eq(&published, &after));
-            assert_eq!(after.current.business_refs(), references);
-            assert!(matches!(
-                receiver.try_recv(),
-                Err(broadcast::error::TryRecvError::Empty)
-            ));
-            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, 1)).await??;
-            assert_eq!(
-                fixture.store.history(&thread.id).await?.watermark().await?,
-                1
-            );
-
-            live.stream(&newer).await?;
-            assert_eq!(
-                feed.current_conversation()
-                    .context("resident cut")?
-                    .current
-                    .business_refs(),
-                references
-            );
-            loop {
-                match receiver.try_recv() {
-                    Ok(ThreadLiveEvent::BusinessRefs { .. }) => {
-                        anyhow::bail!("unchanged resident resources were notified again")
-                    }
-                    Ok(_) => {}
-                    Err(broadcast::error::TryRecvError::Empty) => break,
-                    Err(error) => anyhow::bail!("State receiver lost qualification: {error}"),
-                }
-            }
-            Ok(())
-        }
-        .await;
-        drop(live);
-        handle.close().await?;
-        drop(sink);
-        channel.stop_and_join().await?;
-        fixture.writer.shutdown().await?;
-        result
-    }
-
-    #[tokio::test]
-    async fn question_cut_registration_during_pending_handoff_keeps_frozen_state() -> Result<()> {
-        use pl_core::thread::interactions::InteractionState;
-
-        let fixture = observation_fixture().await?;
-        let thread = bound_thread("state-pending-registration");
-        register_test_thread(&fixture.store, &thread).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
-        let channel = fixture
-            .store
-            .thread_persistence()
-            .history_channel(&thread.id);
-        let (handle, feed, mut live) =
-            state_observation_owner(&fixture, &thread, &channel, None).await?;
-        assert!(live.native_directory.is_some());
-        let result = async {
-            let call_id = "state-pending-question";
-            // The tool's existing body is fixture input; the question itself is introduced only by
-            // the real owner advance below, then frozen, charged and handed to the real writer.
-            live.retained.projection.seed(
-                vec![ExecutionItem::new(
-                    crate::studio::thread_projection::order::tool_id(call_id),
-                    thread.id.clone(),
-                    "state-pending-turn".into(),
-                    1,
-                    1,
-                    10,
-                    10,
-                    ExecutionShape::Tool(crate::ThreadToolItem::new(
-                        crate::ThreadToolInvocation::new(
-                            call_id.into(),
-                            "request_user_input".into(),
-                            "{\"questions\":[]}".into(),
-                        ),
-                        crate::ThreadToolState::Running(crate::RunningThreadTool::new(
-                            String::new(),
-                        )),
-                    )),
-                )],
-                Default::default(),
-            );
-            let (hook, mut entered, control) = PendingPhaseHook::new();
-            live.pending_hook = Some(hook);
-            let (_, mut write) = terminal_turn_write(&thread, "state-pending-turn")?;
-            let mut pending = qa_record(call_id, 1, InteractionState::Pending)?;
-            pending.request.turn_id = "state-pending-turn".into();
-            let local_interaction_id = pending.request.id.clone();
-            let interaction_id =
-                crate::thread_assembler::encode_interaction_key(&thread.id, &local_interaction_id);
-            let effect = Arc::make_mut(&mut write.effect);
-            effect.committed_at = 11;
-            effect.interactions = Arc::from([pending.clone()]);
-            write
-                .checkpoint
-                .state
-                .interactions
-                .insert(local_interaction_id, pending);
-            write.checkpoint.state.interaction_collection_revision = 1;
-            sink.admit(&thread.id, write)?;
-            let admitted = channel.next_unprojected().context("admitted question")?;
-            assert!(!feed.has_subscribers());
-            let mut advance = Box::pin(live.advance(
-                &fixture.services,
-                &thread.id,
-                &admitted,
-                &admitted.checkpoint.state,
-            ));
-            tokio::time::timeout(Duration::from_secs(3), async {
-                tokio::select! {
-                    sequence = entered.recv() => {
-                        assert_eq!(sequence.context("pending phase entered")?, 1);
-                        Ok(())
-                    }
-                    result = advance.as_mut() => {
-                        result?;
-                        anyhow::bail!("handoff escaped its pending gate")
-                    }
-                }
-            })
-            .await??;
-            assert_eq!(channel.handoff_ticket(), 0);
-            assert!(feed.last_turn().borrow().is_none());
-            // Register State before capturing the conversation cut, as the consumer does. Current
-            // is already published, but Committed and the terminal watch still owe reliable prepare.
-            let mut receiver = feed.subscribe();
-            let cut = feed.conversation();
-            let source = cut.source.as_ref().context("captured pending cut")?;
-            assert_eq!(source.current.projection().source_effect_seq, 1);
-            assert!(source.current.interactions().iter().any(|interaction| {
-                interaction.interaction_id == interaction_id
-                    && interaction.status() == crate::InteractionStatus::Pending
-            }));
-            assert!(matches!(
-                receiver.try_recv(),
-                Err(broadcast::error::TryRecvError::Empty)
-            ));
-            control.send_replace(Some(Ok(())));
-            tokio::time::timeout(Duration::from_secs(3), advance).await??;
-            match receiver.try_recv()? {
-                ThreadLiveEvent::Committed { sequence, changes } => {
-                    assert_eq!(sequence, 1);
-                    assert_eq!(
-                        changes
-                            .iter()
-                            .filter(|change| matches!(
-                                change,
-                                LiveEvent::Interaction(interaction)
-                                    if interaction.interaction_id == interaction_id
-                                        && interaction.status() == crate::InteractionStatus::Pending
-                            ))
-                            .count(),
-                        1
-                    );
-                }
-                other => {
-                    anyhow::bail!("late State registration lost its frozen question: {other:?}")
-                }
-            }
-            assert!(feed.last_turn().borrow().is_some());
-            tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, 1)).await??;
-            assert_eq!(
-                fixture.store.history(&thread.id).await?.watermark().await?,
-                1
-            );
-            Ok(())
-        }
-        .await;
-        drop(live);
-        handle.close().await?;
-        drop(sink);
-        channel.stop_and_join().await?;
-        fixture.writer.shutdown().await?;
-        result
-    }
-
-    /// A real parent activation: the parent gets a real handle with the real storage attached and
-    /// a route no turn ever calls, so the child's terminal report is delivered to a real receiver.
-    struct ParentActivation {
-        store: StudioStore,
-        sink: ThreadStorageSink,
-    }
-
-    impl std::fmt::Debug for ParentActivation {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            // The store owns live runtime state that must not be structurally
-            // printed; the fixture identity is all a failure report needs.
-            f.debug_struct("ParentActivation")
-                .field("store", &"StudioStore(..)")
-                .field("sink", &self.sink)
-                .finish()
-        }
-    }
-
-    fn activation_error(source: impl Into<anyhow::Error>) -> ThreadAssemblyError {
-        ThreadAssemblyError::Resource {
-            operation: "observation fixture activation",
-            source: source.into().into_boxed_dyn_error(),
-        }
-    }
-
-    impl StudioActivationFactory for ParentActivation {
-        async fn root_delegation(
-            &self,
-            identity: &ThreadActivation,
-        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
-            let _ = identity;
-            Ok(Default::default())
-        }
-
-        async fn prepare(
-            &self,
-            request: ThreadPreparation,
-        ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-            let id = request.identity.id().to_owned();
-            let model_info = pl_model::model::ModelInfo::compatible("observation-parent");
-            let route = pl_model::config::ResolvedModelRoute {
-                pricing_mode: Default::default(),
-                role: crate::config::root_agent_route_id(),
-                account_id: pl_model::config::AccountId::new("observation-fixture-account")
-                    .map_err(activation_error)?,
-                endpoint: pl_model::protocol::ProtocolEndpoint::compatible(
-                    "observation fixture",
-                    "http://127.0.0.1:0",
-                ),
-                context: model_info.resolve_context(None),
-                model: model_info,
-                effort: None,
-            };
-            let model = pl_model::runtime::ThreadModel::new(
-                pl_model::runtime::ModelRuntime::from_route(&route).map_err(activation_error)?,
-                None,
-            );
-            let resources_dir = self
-                .store
-                .session_resources_dir(&id)
-                .map_err(activation_error)?;
-            // The preflight selection and the prepared spec must agree: freeze
-            // the same default delegation selection the root preflight returns
-            // into the spec's initial extensions.
-            let mut initial_extensions = BTreeMap::new();
-            initial_extensions.insert(
-                crate::studio::delegation::EXTENSION.to_owned(),
-                crate::studio::delegation::encode(Default::default()).map_err(activation_error)?,
-            );
-            Ok(StudioThreadSpec {
-                workspace_usage: None,
-                preparation_guard: None,
-                context_preparation: None,
-                agent_controls: request.agent_controls,
-                execution: pl_core::thread::input::InputDriverOptions {
-                    max_model_steps: ModelStepLimit::Unlimited,
-                },
-                id,
-                parent_id: None,
-                route,
-                model_available: true,
-                model,
-                checkpoint: None,
-                initial_context: Vec::new(),
-                initial_runtime_facts: Vec::new(),
-                initial_extensions,
-                tools: Vec::new(),
-                resources: pl_core::context::ResourceAccess::new(
-                    crate::resource_store::FileResourceStore::new(resources_dir),
-                ),
-                capacity: Default::default(),
-                cold_store: Some(ColdStoreHandle::new(self.sink.clone())),
-            })
-        }
-    }
-
-    fn channel_gauge(channel: &HistoryChannel) -> u64 {
-        channel.subscribe().borrow().queued_bytes
-    }
-
-    /// The shared session's committed items of one turn: identity, order, revision and body.
-    async fn turn_items(
-        chat: &Session,
-        history: &crate::studio::storage::history::HistoryStore,
-        turn_id: &str,
-    ) -> Result<Vec<pl_core::chat::ChatPageItem>> {
-        let page = chat
-            .completed_after(
-                pl_core::chat::ChatCompletionCursor::new(chat.epoch(), 0),
-                None,
-                None,
-                pl_core::chat::ReadDemand::new(100, 256 * 1024),
-                &crate::studio::runtime::conversation_reader::JsonBudget::new(
-                    history
-                        .conversation_database_id()
-                        .await?
-                        .context("initialized history")?,
-                    String::new(),
-                ),
-            )
-            .await?;
-        let parent = pl_core::chat::ChatKey::new("turn", turn_id)?;
-        Ok(page
-            .items
-            .into_iter()
-            .filter(|item| item.header.parent_id.as_ref() == Some(&parent))
-            .collect())
-    }
-
-    /// 真实 worker 级回归：child 的真实终态提交在报告准备处受控失败后，批次保留、真实
-    /// synchronize 返回原错不假成功；受控放行后同一批次完成报告与交接，修订不变、报告原件
-    /// 落盘、发布资格与预算随保槽/释放收束，最后真实关闭并回收全部观察与写入资源。
-    #[tokio::test]
-    async fn a_child_terminal_report_failure_retains_the_batch_until_a_real_retry() -> Result<()> {
-        let fixture = observation_fixture().await?;
-        let child_id = "child-terminal-report";
-        let parent_id = "child-terminal-report-parent";
-        let parent = bound_thread(parent_id);
-        let child = child_thread(child_id, parent_id);
-        register_test_thread(&fixture.store, &parent).await?;
-        register_test_thread(&fixture.store, &child).await?;
-        publish_test_directory(&fixture.store, &fixture.services.events).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), child.clone(), None).await?;
-        let channel = fixture.store.thread_persistence().history_channel(child_id);
-
-        let (hook, entered_rx, control) = PendingPhaseHook::new();
-        fixture.observations.install_pending_hook(child_id, hook);
-        let entered = Arc::new(tokio::sync::Mutex::new(entered_rx));
-
-        // Real parent receiver, activated through the production path before the child runs.
-        let parent_sink =
-            ThreadStorageSink::new(fixture.store.clone(), parent.clone(), None).await?;
-        let mut activation =
-            crate::thread_assembler::ThreadActivation::native_test(parent_id, None);
-        activation.agent.session_id = fixture.session.id().clone();
-        let parent_handle = tokio::time::timeout(
-            Duration::from_secs(10),
-            fixture.session.activate(
-                activation,
-                ParentActivation {
-                    store: fixture.store.clone(),
-                    sink: parent_sink.clone(),
-                },
-            ),
-        )
-        .await??;
-
-        // Real child: a real handle with real storage, observed by the real worker before the
-        // turn, so every real commit of the turn is projected by the live path.
-        let handle = ThreadHandle::start(child_id.into(), DynModelSession::new(FinalTextModel))?;
-        handle
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-        // The observation worker lives in the member's real resource bundle; the test keeps a
-        // strong hold so the weak global index stays observable through the whole run.
-        let bundle = Arc::new(crate::session::NativeResources::default());
-        fixture
-            .observations
-            .observe(child_id.to_owned(), handle.clone(), bundle.clone());
-        let observation = fixture
-            .observations
-            .0
-            .observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(child_id)
-            .and_then(|entries| entries.last())
-            .and_then(std::sync::Weak::upgrade)
-            .context("child observation registered")?;
-        let mut progress = observation.state.progress.subscribe();
-
-        // Subscribed before the retry, so the retained batch's handover frame has a receiver.
-        let feed = fixture
-            .observations
-            .live_feed(child_id)
-            .context("child live feed")?;
-        let mut frames = feed.subscribe();
-        let mut last_turn = feed.last_turn();
-
-        run_final_turn(&handle, "child-terminal-turn").await?;
-        let terminal = handle.snapshot().commit_sequence;
-
-        // Pass every earlier batch at the phase boundary; the terminal batch stays parked.
-        loop {
-            let sequence = {
-                let mut entries = entered.lock().await;
-                tokio::time::timeout(Duration::from_secs(10), entries.recv())
-                    .await?
-                    .context("pending hook closed")?
-            };
-            if sequence == terminal {
-                break;
-            }
-            control.send_replace(Some(Ok(())));
-        }
-        // The parked batch is already folded into the shared session: freeze its observable facts.
-        let chat = fixture.store.chat_session(child_id).await?;
-        let first = turn_items(
-            &chat,
-            &fixture.store.history(child_id).await?,
-            "child-terminal-turn",
-        )
-        .await?;
-        assert!(!first.is_empty());
-        let earlier = channel.handoff_ticket();
-        assert!(earlier < terminal);
-        tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, earlier)).await??;
-        // Only the parked batch and this projection remain charged. Earlier
-        // writer batches cannot drain between the two budget observations.
-        let gauge_parked = channel_gauge(&channel);
-        assert!(gauge_parked > 0);
-
-        // Release the terminal batch with the controlled failure; the real worker reports it.
-        control.send_replace(Some(Err("controlled report failure".to_owned())));
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if progress.borrow_and_update().error.is_some() {
-                    break;
-                }
-                progress.changed().await.context("worker progress closed")?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
-        // The retained batch keeps its budget while the failure stands.
-        assert_eq!(channel_gauge(&channel), gauge_parked);
-
-        // The real synchronizer returns the original failure instead of clearing it or faking
-        // success from the already-applied earlier watermark.
-        let synchronized = tokio::time::timeout(
-            Duration::from_secs(10),
-            fixture.observations.synchronize(Some(child_id)),
-        )
-        .await?;
-        let failure =
-            synchronized.expect_err("synchronize must surface the retained observation error");
-        assert!(failure.to_string().contains("controlled report failure"));
-
-        // Allow one real retry: the same batch re-enters the boundary and proceeds.
-        let retry_pump = tokio::spawn({
-            let entered = entered.clone();
-            let control = control.clone();
-            async move {
-                let sequence = entered.lock().await.recv().await.context("retry entry")?;
-                control.send_replace(Some(Ok(())));
-                Ok::<_, anyhow::Error>(sequence)
-            }
-        });
-        // The retry synchronize only has to wake the worker; reading the still
-        // retained error immediately afterwards is its documented behavior.
-        let _ = tokio::time::timeout(
-            Duration::from_secs(10),
-            fixture.observations.synchronize(Some(child_id)),
-        )
-        .await?;
-        let retried = retry_pump.await??;
-        assert_eq!(retried, terminal);
-        // The real worker, not the test, clears the error: wait until its own
-        // progress reports the terminal watermark with no failure standing.
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let state = progress.borrow_and_update().clone();
-                if state.error.is_none() && state.applied >= terminal {
-                    break;
-                }
-                progress
-                    .changed()
-                    .await
-                    .context("worker progress closed before the retry settled")?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
-        // Only a synchronize after the real settlement succeeds.
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            fixture.observations.synchronize(Some(child_id)),
-        )
-        .await??;
-
-        // The same batch was handed over exactly once; the original report is durable with its
-        // integrity receipt, the session items are identical to the parked read, and the live
-        // publications carry the terminal facts.
-        assert_eq!(channel.handoff_ticket(), terminal);
-        assert!(channel.next_unprojected().is_none());
-        let history = fixture.store.history(child_id).await?;
-        assert_eq!(history.watermark().await?, terminal);
-        let report = history
-            .parent_report(terminal)
-            .await?
-            .context("original terminal report durable")?;
-        assert_eq!(
-            report.id,
-            crate::studio::agent_close::terminal_report_id(child_id, terminal)
-        );
-        let second = turn_items(
-            &chat,
-            &fixture.store.history(child_id).await?,
-            "child-terminal-turn",
-        )
-        .await?;
-        assert_eq!(second, first);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                // Earlier batches and status frames may have queued while subscribed; only the
-                // retained terminal batch's committed frame proves the live publication.
-                match frames.recv().await? {
-                    ThreadLiveEvent::Committed { sequence, .. } if sequence == terminal => break,
-                    _ => continue,
-                }
-            }
-            Ok::<_, tokio::sync::broadcast::error::RecvError>(())
-        })
-        .await??;
-        let retained_turn = last_turn
-            .borrow_and_update()
-            .clone()
-            .context("retained terminal turn")?;
-        assert_eq!(retained_turn.id, "child-terminal-turn");
-        // The receiver may already have consumed the original message. Both its pending
-        // queue and its consumed identity ledger prove delivery, including the exact digest.
-        let mut parent_state = parent_handle.subscribe();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let state = parent_state
-                    .next()
-                    .await
-                    .context("parent closed before original report delivery")?;
-                let delivered = state.inbox.iter().any(|record| record.message == report)
-                    || state.consumed_message_identities.iter().any(|identity| {
-                        identity.id == report.id && identity.digest == report.digest()
-                    });
-                if delivered {
-                    break;
-                }
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await??;
-
-        // Handoff releases the pending batch, but the managed terminal owner keeps its material
-        // charged until asynchronous delivery finishes. Observe that real release rather than
-        // assuming the handoff alone drained every report-related resident.
-        let mut budget = channel.subscribe();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                if budget.borrow_and_update().queued_bytes < gauge_parked {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                budget
-                    .changed()
-                    .await
-                    .context("terminal material release")?;
-            }
-        })
-        .await??;
-
-        // Real close: the close commits pass the boundary, the worker retires, and the
-        // observation, channel and writer all reach their real terminal states.
-        let close_pump = tokio::spawn({
-            let entered = entered.clone();
-            let control = control.clone();
-            async move {
-                while let Some(_sequence) = entered.lock().await.recv().await {
-                    control.send_replace(Some(Ok(())));
-                }
-            }
-        });
-        handle.close().await?;
-        fixture.observations.drain(child_id).await?;
-        // The registry keeps the hook registered, so the pump cannot observe channel closure;
-        // once the observation is joined no further entry can arrive and the parked pump stops.
-        close_pump.abort();
-        let _ = close_pump.await;
-        parent_handle.close().await?;
-        fixture.observations.drain(parent_id).await?;
-        drop(sink);
-        drop(parent_sink);
-        fixture.writer.shutdown().await?;
-        Ok(())
-    }
-
-    /// 取消等待不丢批次：真实 owner 在报告等待点被 poll 后丢弃调用 future，槽仍在；同一
-    /// owner 的真实报告准备与交接接续，修订不变，预算随报告增长并在交接后释放。
-    #[tokio::test]
-    async fn dropping_the_report_wait_keeps_the_pending_batch_and_its_revisions() -> Result<()> {
-        let fixture = observation_fixture().await?;
-        let child_id = "child-cancel-wait";
-        let parent_id = "child-cancel-wait-parent";
-        let parent = bound_thread(parent_id);
-        let child = child_thread(child_id, parent_id);
-        register_test_thread(&fixture.store, &parent).await?;
-        register_test_thread(&fixture.store, &child).await?;
-        let sink = ThreadStorageSink::new(fixture.store.clone(), child.clone(), None).await?;
-        let channel = fixture.store.thread_persistence().history_channel(child_id);
-        let (hook, mut entered_rx, control) = PendingPhaseHook::new();
-
-        // A real turn commits its real writes; no observation worker is installed, so this owner
-        // is the only projection consumer of the admitted queue.
-        let handle = ThreadHandle::start(child_id.into(), DynModelSession::new(FinalTextModel))?;
-        handle
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-        run_final_turn(&handle, "cancel-wait-turn").await?;
-        let terminal = handle.snapshot().commit_sequence;
-
-        let snapshot = handle.snapshot();
-        let (progress, _) = watch::channel(Progress {
-            applied: snapshot.commit_sequence,
-            ..Progress::default()
-        });
-        let state = Arc::new(WorkerState {
-            native_directory: fixture.services.events.begin_native_observation(&child.id),
-            deletion: Default::default(),
-            join_failure: Default::default(),
-            terminal_transfer: Default::default(),
-            progress,
-            retry: Notify::new(),
-            channel: channel.clone(),
-            reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(
-                snapshot.commit_sequence,
-            )),
-            observed_before_execution: false,
-            pending_hook: Some(hook),
-        });
-        let feed = Arc::new(ThreadLiveFeed::new(
-            None,
-            state.progress.subscribe(),
-            Default::default(),
-        ));
-        let mut live = LiveOwner::open(
-            &fixture.services,
-            &handle,
-            &snapshot,
-            child.clone(),
-            feed,
-            state,
-            None,
-        )
-        .await?;
-        // Earlier batches pass the boundary; each pre-armed release covers exactly one entry.
-        while let Some(write) = channel.next_unprojected() {
-            if write.effect.sequence == terminal {
-                break;
-            }
-            control.send_replace(Some(Ok(())));
-            live.advance(&fixture.services, child_id, &write, &snapshot)
-                .await?;
-            assert_eq!(entered_rx.try_recv()?, write.effect.sequence);
-        }
-        let write = channel
-            .next_unprojected()
-            .context("the terminal write is still admitted")?;
-        assert_eq!(write.effect.sequence, terminal);
-
-        // Park the real advance on the pending boundary, then cancel the calling future.
-        let mut parked = Box::pin(live.advance(&fixture.services, child_id, &write, &snapshot));
-        assert!(futures::poll!(parked.as_mut()).is_pending());
-        let entered = tokio::time::timeout(Duration::from_secs(10), async {
-            tokio::select! {
-                entered = entered_rx.recv() => entered.context("hook entered"),
-                result = parked.as_mut() => {
-                    result?;
-                    anyhow::bail!("report preparation completed before its hook");
-                }
-            }
-        })
-        .await??;
-        assert_eq!(entered, terminal);
-        assert!(futures::poll!(parked.as_mut()).is_pending());
-        drop(parked);
-
-        // The cancelled call leaves the batch retained; nothing re-projected it.
-        let pending = live
-            .retained
-            .pending
-            .as_ref()
-            .context("retained batch after cancellation")?;
-        assert_eq!(pending.write.effect.sequence, terminal);
-        assert_eq!(pending.mode, HandoffMode::Live);
-        let chat = fixture.store.chat_session(child_id).await?;
-        let first = turn_items(
-            &chat,
-            &fixture.store.history(child_id).await?,
-            "cancel-wait-turn",
-        )
-        .await?;
-        assert!(!first.is_empty());
-        // Compare the report's retained share independently of older writes.
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            sink.flush(child_id, channel.handoff_ticket()),
-        )
-        .await??;
-        let gauge_before = channel_gauge(&channel);
-        let pending_bytes = pending.retained_bytes();
-        assert!(pending_bytes > 0);
-
-        // 全部可失败报告准备已经在发布前完成；重试复用原报告且不重复计费。
-        live.prepare_parent_report(&fixture.services).await?;
-        let with_report = live
-            .retained
-            .pending
-            .as_ref()
-            .context("batch retained through report preparation")?
-            .retained_bytes();
-        assert_eq!(with_report, pending_bytes);
-        assert_eq!(channel_gauge(&channel), gauge_before);
-
-        // The same owner finishes the handoff; the hook consumes one pre-armed release.
-        control.send_replace(Some(Ok(())));
-        let report = live
-            .finish_pending(&fixture.services, &snapshot)
-            .await?
-            .context("original report handed over")?;
-        assert!(live.retained.pending.is_none());
-        let second = turn_items(
-            &chat,
-            &fixture.store.history(child_id).await?,
-            "cancel-wait-turn",
-        )
-        .await?;
-        assert_eq!(second, first);
-        tokio::time::timeout(Duration::from_secs(10), sink.flush(child_id, terminal)).await??;
-        let history = fixture.store.history(child_id).await?;
-        assert_eq!(history.watermark().await?, terminal);
-        assert_eq!(
-            history
-                .parent_report(terminal)
-                .await?
-                .context("original report durable")?
-                .id,
-            report.id
-        );
-        drop(live);
-        drop(sink);
-        channel.stop_and_join().await?;
-        fixture.writer.shutdown().await?;
-        Ok(())
-    }
-
-    /// 跨重开的普通问答：回答 effect 只带交互与隐藏 continuation。
-    ///
-    /// 回答时那条调用已经不在 Thread 状态里（工具成功的 Task 已是终态、Turn 已结束），新建的
-    /// LiveProjection 也没有它的正文。owner 必须按 identity 从可靠 history 补读那一条再投影，
-    /// 否则这份被采纳的回答会以 MissingDurableToolCall 失败、永不落盘。
-    #[tokio::test]
-    async fn a_question_answered_after_a_restart_is_projected_and_saved() -> Result<()> {
-        use pl_core::thread::interactions::{InteractionResponse, InteractionState};
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("qa-restart");
-        register_test_thread(&store, &thread).await?;
-        let history = store.history(&thread.id).await?;
-        let call_id = "call-restart";
-        let tool_id = crate::studio::thread_projection::order::tool_id(call_id);
-
-        // 1) 提问在重启之前就已落盘：工具条目（尚未带问答）+ pending 交互回执。
-        let pending = qa_record(call_id, 1, InteractionState::Pending)?;
-        let question = ExecutionItem::new(
-            tool_id.clone(),
-            thread.id.clone(),
-            "turn-qa".into(),
-            1,
-            2,
-            10,
-            11,
-            ExecutionShape::Tool(crate::ThreadToolItem::new(
-                crate::ThreadToolInvocation::new(
-                    call_id.into(),
-                    "request_user_input".into(),
-                    "{\"questions\":[]}".into(),
-                ),
-                crate::ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
-            )),
-        );
-        let mut current =
-            crate::studio::storage::history::conversation::current::PreparedCurrent::new(
-                crate::studio::thread_projection::FrozenCurrentProjection::new(
-                    crate::CurrentProjection::empty(1, crate::ThreadStatus::Idle),
-                ),
-                Arc::from([]),
-            );
-        let mut start = crate::studio::runtime::chat_item::atom(&question);
-        start.source_order = Some(question.ordinal);
-        start.started_at = Some(question.created_at);
-        start.lifecycle = crate::ChatAtomLifecycle::Active {
-            status: crate::ChatActiveStatus::Running,
-            started: Some(crate::ChatFactPosition {
-                effect_seq: 1,
-                suborder: 0,
-            }),
-        };
-        let mut life =
-            crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
-                &start, 1,
-            )?;
-        life.execution_order = Some(question.ordinal);
-        current.lifecycle = Arc::from([life]);
-        let task = pl_core::thread::task::TaskRecord {
-            id: format!("task:{call_id}"),
-            parent_call_id: None,
-            invocation: Some(pl_core::model::ModelToolCall {
-                call_id: call_id.into(),
-                tool_id: "request_user_input".into(),
-                arguments: pl_core::context::OpaquePayload::new(
-                    "fixture.qa-arguments",
-                    1,
-                    "{\"questions\":[]}",
-                )?,
-                presentation_contract: None,
-                rejection: None,
-            }),
-            call_id: call_id.into(),
-            tool_id: "request_user_input".into(),
-            turn_id: "turn-qa".into(),
-            revision: 1,
-            status: pl_core::thread::task::TaskStatus::Running,
-            cancel_requested: false,
-            acknowledgement: None,
-            started_sequence: Some(1),
-        };
-        history
-            .commit_effect(
-                1,
-                EffectCommit {
-                    current: &current,
-                    completions: &[],
-                    turns: &[],
-                    execution_order: question.ordinal,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[FactReceiptWrite {
-                        item_id: crate::studio::thread_projection::order::receipt_id(
-                            "interaction",
-                            &pending.request.id,
-                        ),
-                        revision: pending.revision,
-                        kind: "interaction",
-                        payload: serde_json::to_string(&pending)?,
-                    }],
-                    tasks: std::slice::from_ref(&task),
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-            )
-            .await?;
-
-        // 2) 重启：新投影没有任何驻留正文，Turn/Task 都不在（空且已剪枝的状态）。
-        // The fresh writer must adopt the same durable fence as the simulated restored owner,
-        // rather than retaining a pre-seed channel that still thinks sequence zero is durable.
-        let restored = ThreadCheckpoint::capture(
-            thread.id.clone(),
-            1,
-            ThreadSnapshot {
-                commit_sequence: 1,
-                interaction_collection_revision: 1,
-                ..Default::default()
-            },
-        )?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), Some(&restored)).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(
-            store
-                .thread_persistence()
-                .history_channel(&thread.id)
-                .order_index(),
-            store.history(&thread.id).await?,
-        )?;
-        let answered = qa_record(
-            call_id,
-            2,
-            InteractionState::Resolved(InteractionResponse {
-                payload: OpaquePayload::new(
-                    "pl.studio.user-answer",
-                    1,
-                    serde_json::to_string(
-                        &serde_json::json!({"answers": {"provider": {"answers": ["anthropic"]}}}),
-                    )?,
-                )?,
-                context: vec![],
-            }),
-        )?;
-        let answer_effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 2,
-            committed_at: 2,
-            interactions: [answered].into(),
-            ..Default::default()
-        };
-        let answered_state = ThreadSnapshot {
-            commit_sequence: 2,
-            // This fixture supplies the already-pruned business slice after resolution.
-            interaction_collection_revision: 3,
-            ..Default::default()
-        };
-
-        // The reliable identity miss resolves this exact durable body before projection.
-        let (_, mut prepared) = projection
-            .prepare(&thread, &answer_effect, &answered_state, true)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-
-        // 3) 走真实 writer：回答必须落盘在原条目上，身份/顺序/创建时间不变。
-        let answer_write = ThreadWrite {
-            effect: Arc::new(answer_effect),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, answered_state),
-            output_claim: None,
-        };
-        sink.admit(&thread.id, answer_write)?;
-        assert!(channel.prepare(prepared));
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
-        let saved = history
-            .execution_seeds([tool_id.clone()])
-            .await?
-            .remove(&tool_id)
-            .context("answered question item")?;
-        assert_eq!(saved.ordinal, 1);
-        assert_eq!(saved.created_at, 10);
-        let user_input = saved
-            .tool()
-            .and_then(|tool| tool.user_input())
-            .context("saved Q&A")?;
-        assert_eq!(user_input.answers()[0].answers(), ["anthropic"]);
-        Ok(())
-    }
-
-    /// 当前压缩回执必须同时穿过计量、时间线与真实 writer，不能在投影阶段阻塞保存。
-    #[tokio::test]
-    async fn a_current_compaction_receipt_is_projected_and_saved() -> Result<()> {
-        use pl_core::thread::{
-            ContextCompactionEvent, ContextCompactionOutcome, ContextReplacement,
-            ContextReplacementReason,
-            extensions::{ExtensionChange, ExtensionRecord},
-        };
-        use pl_model::{
-            protocol::{ProtocolKind, WireApi},
-            runtime::ModelCallBinding,
-        };
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("compaction-save");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
-        let receipt = crate::compaction::CompactionReceipt {
-            retained_through_record_id: None,
-            reasoning_effort_source: None,
-            context_summary: None,
-            inference_id: "compaction-1".into(),
-            binding: ModelCallBinding {
-                account_id: "account".into(),
-                model_id: "model".into(),
-                protocol: ProtocolKind::OpenAi,
-                wire_api: WireApi::Responses,
-                isolation: thread.id.clone(),
-                purpose: "compaction".into(),
-                context_window: Some(100_000),
-                max_context_window: Some(100_000),
-                auto_compact_limit: Some(80_000),
-            },
-            reasoning_effort: None,
-            context_window: Some(100_000),
-            turn_id: "pruned-turn".into(),
-            accounting: Default::default(),
-            model_observation: None,
-            timing: None,
-            implementation: Some("native".into()),
-            error: None,
-        };
-        let extension = ExtensionRecord {
-            revision: 1,
-            payload: receipt.clone().into_payload()?,
-        };
-        let state = ThreadSnapshot {
-            commit_sequence: 1,
-            extension_sequence: 1,
-            extensions: [(crate::compaction::LATEST_RECEIPT.into(), extension.clone())].into(),
-            ..Default::default()
-        };
-        let effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 1,
-            committed_at: 10,
-            // The model receipt supplies accounting; Core's operation fact supplies the atom.
-            // No start was saved in this fixture, so its true start must remain unknown.
-            context_compactions: [ContextCompactionEvent::Finished {
-                operation_id: "current-compaction".into(),
-                outcome: ContextCompactionOutcome::Changed {
-                    context_revision: state.context.revision,
-                },
-            }]
-            .into(),
-            extensions: [ExtensionChange::Put {
-                id: crate::compaction::LATEST_RECEIPT.into(),
-                record: extension,
-            }]
-            .into(),
-            replacements: [ContextReplacement {
-                reason: ContextReplacementReason::Compaction,
-                previous: Default::default(),
-                current: state.context.clone(),
-                previous_private_context: None,
-            }]
-            .into(),
-            ..Default::default()
-        };
-        let mut usage = Default::default();
-        crate::studio::thread_projection::fold_effect_accounting(&mut usage, &effect)?;
-        assert_eq!(usage.totals.inference_count, 1);
-        let mut projection = LiveProjection::new();
-        projection
-            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
-        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, true).await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        let write = ThreadWrite {
-            effect: Arc::new(effect),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
-            output_claim: None,
-        };
-        sink.admit(&thread.id, write)?;
-        assert!(channel.prepare(prepared));
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-        let history = store.history(&thread.id).await?;
-        let (_, _, items, _) = history
-            .agent_page(
-                false,
-                false,
-                None,
-                None,
-                None,
-                50,
-                &tokio_util::sync::CancellationToken::new(),
-            )
-            .await?;
-        let saved = &items
-            .iter()
-            .find(|entry| entry.atom.kind == crate::ChatAtomKind::Compaction)
-            .context("saved operation original")?
-            .atom;
-        assert!(
-            saved.turn_id.is_none(),
-            "an operation must not borrow the model receipt's Turn"
-        );
-        let checkpoint = history
-            .checkpoint()
-            .await?
-            .context("saved receipt checkpoint")?;
-        let saved_receipt = &checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT];
-        let decoded = crate::compaction::decode_receipt(
-            saved_receipt.payload.version(),
-            saved_receipt.payload.content(),
-        )?;
-        assert_eq!(
-            serde_json::to_value(decoded)?,
-            serde_json::to_value(&receipt)?
-        );
-        let record = pl_core::chat::ChatHistory::item(&history, &saved.id)
-            .await?
-            .context("saved operation atom")?;
-        let atom: crate::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-        assert_eq!(
-            atom.source,
-            crate::ChatSourceId::Operation {
-                operation_id: "current-compaction".into(),
-            }
-        );
+        let mut buffered = StateReceiver::new(receiver, closed.clone());
         assert!(matches!(
-            atom.lifecycle,
-            crate::ChatAtomLifecycle::Terminal {
-                started: None,
-                ended: Some(_),
-                outcome: crate::ChatTerminalOutcome::Completed,
-            }
+            buffered.recv().await,
+            Ok(ThreadLiveEvent::UnframedCommit { sequence: 1 })
         ));
-        Ok(())
-    }
 
-    async fn recovery_projection(delayed_admission: bool) -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = bound_thread("recovered-hidden-input");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store.chat_session(&thread.id).await?;
-        let input_id = "interaction:approved:continuation";
-        let turn = TurnRecord {
-            input_id: Some(input_id.into()),
-            turn_id: "interrupted-turn".into(),
-            state: TurnState::Running,
-            model_steps: 0,
-            elapsed_ms: None,
-        };
-        let input = InputRecord {
-            continuation: None,
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: input_id.into(),
-                payload: OpaquePayload::new(
-                    "pl.studio.interaction-continuation",
-                    1,
-                    r#"{"interactionId":"approved","presentation":"hidden"}"#,
-                )?,
-                context: Vec::new(),
-            },
-            accepted_sequence: 1,
-            ordinal: 1,
-            revision: 1,
-            delivery: Default::default(),
-            state: InputState::Consumed {
-                turn_id: turn.turn_id.clone(),
-                attempt_id: "attempt".into(),
-            },
-        };
-        let state = ThreadSnapshot {
-            commit_sequence: 1,
-            inputs: Arc::from([input.clone()]),
-            turns: Arc::from([turn.clone()]),
-            ..Default::default()
-        };
-        let write = ThreadWrite {
-            effect: Arc::new(ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 1,
-                committed_at: 1,
-                inputs: Arc::from([InputChange::Accepted(input)]),
-                turn: Some(turn.clone()),
-                ..Default::default()
-            }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 1, state),
-            output_claim: None,
-        };
-        sink.admit(&thread.id, write.clone())?;
-        let mut projection = LiveProjection::new();
-        projection
-            .bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
-        let (_, mut prepared) = projection
-            .prepare(&thread, &write.effect, &write.checkpoint.state, true)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        assert!(channel.prepare(prepared));
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-        let source_ids = [crate::ChatSourceId::ForegroundTurn {
-            turn_id: turn.turn_id.clone(),
-        }];
-        let original_source = store
-            .history(&thread.id)
-            .await?
-            .execution_sources(&source_ids, 1)
-            .await?
-            .pop()
-            .context("saved running source")?;
-        assert_eq!(
-            original_source.started,
-            Some(crate::ChatFactPosition {
-                effect_seq: 1,
-                suborder: 0,
-            })
-        );
-        assert!(original_source.ended.is_none());
-        drop(projection);
-
-        let interrupted = TurnRecord {
-            state: TurnState::Interrupted,
-            ..turn
-        };
-        let state = ThreadSnapshot {
-            commit_sequence: 2,
-            turns: Arc::from([interrupted.clone()]),
-            ..Default::default()
-        };
-        let recovery = ThreadWrite {
-            effect: Arc::new(ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 2,
-                committed_at: 2,
-                turn: Some(interrupted.clone()),
-                ..Default::default()
-            }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, state),
-            output_claim: None,
-        };
-        let current = recovery.checkpoint.pruned()?.state;
-        assert!(current.turns.is_empty());
-        // Admission can be delayed by storage pressure until after observer installation.
-        if !delayed_admission {
-            sink.admit(&thread.id, recovery.clone())?;
-        }
-        let retained = if delayed_admission {
-            assert!(channel.next_unprojected().is_none());
-            vec![recovery.effect.clone()]
-        } else {
-            Vec::new()
-        };
-        let (items, hidden) = cold_seed(&store, &thread, &current, &channel, &retained).await?;
-        let mut restored = LiveProjection::new();
-        restored.bind_execution_history(channel.order_index(), store.history(&thread.id).await?)?;
-        restored.seed(items, hidden);
-        restored.bind_conversation_identity(
-            store
-                .history(&thread.id)
-                .await?
-                .conversation_database_id()
-                .await?
-                .context("database")?,
-        )?;
-        restored.restore_current(&chat, &thread, &current).await?;
-        restored.stream(&chat, &thread, &current, 2).await?;
-        if delayed_admission {
-            sink.admit(&thread.id, recovery.clone())?;
-        }
-        let mut prepared = restored
-            .prepare_committed(&thread, &recovery.effect, &recovery.checkpoint.state)
-            .await?;
-        restored.publish_prepared(&chat, &mut prepared).await?;
-        assert!(channel.prepare(prepared));
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 2)).await??;
-        let history = store.history(&thread.id).await?;
-        assert_eq!(history.watermark().await?, 2);
-        assert!(history.execution_seeds([input_id.into()]).await?.is_empty());
-        assert!(
-            history
-                .hidden_input_identities([input_id.into()])
-                .await?
-                .contains(input_id)
-        );
-        let saved = history
-            .newest_terminal_turn()
-            .await?
-            .context("saved interrupted turn")?;
-        assert_eq!(saved.id, interrupted.turn_id);
-        assert!(matches!(saved.state, crate::TurnState::Cancelled(_)));
-        let recovered_source = history
-            .execution_sources(&source_ids, 2)
-            .await?
-            .pop()
-            .context("saved interrupted source")?;
-        assert_eq!(recovered_source.started, original_source.started);
-        assert_eq!(
-            recovered_source.ended,
-            Some(crate::ChatFactPosition {
-                effect_seq: 2,
-                suborder: 4,
-            })
-        );
-        assert_eq!(
-            recovered_source.lifecycle,
-            crate::ChatSourceLifecycle::Ended {
-                outcome: crate::ChatTerminalOutcome::Cancelled,
-            }
-        );
-        Ok(())
+        let mut parked = StateReceiver::new(events.subscribe(), closed.clone());
+        let task = tokio::spawn(async move { parked.recv().await });
+        let _ = events.send(ThreadLiveEvent::UnframedCommit { sequence: 2 });
+        closed.cancel();
+        assert!(matches!(
+            task.await.expect("parked State receiver task"),
+            Err(broadcast::error::RecvError::Closed)
+        ));
+        assert!(matches!(
+            StateReceiver::new(events.subscribe(), closed).try_recv(),
+            Err(broadcast::error::TryRecvError::Closed)
+        ));
     }
 }

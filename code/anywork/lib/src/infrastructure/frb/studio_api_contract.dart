@@ -356,7 +356,6 @@ class FrbStudioTransport
         AccountConfigurationPort,
         AccountModelsPort,
         AccountUsagePort,
-        TimelineTransport,
         AcpPort {
   FrbStudioTransport({
     required this.runtime,
@@ -1752,101 +1751,61 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(String threadId) {
-    final entry = contentScope.open<_FrbRawConversationState>(
-      'conversation-state',
-      (operation) async {
-        await _ensureReady();
-        final handle = await _bridgeCall(
-          () => frb_chat.openConversationStateFeed(threadId: threadId),
-        );
-        return _FrbRawConversationState(operation.resourceId, handle);
-      },
-    );
-    return _publishRaw(entry, (raw) {
-      raw.requestCleanup = entry.requestClose;
-      final feed = FrbConversationStateFeed._(entry, raw);
-      _validateConversationIdentity(
-        threadId,
-        feed.threadId,
-        feed.subscriptionId,
-      );
-      return feed;
-    });
-  }
-
-  @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<HistoryReader> openHistoryReader(
     String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) => _openConversationOwner(
-    threadId,
-    () => frb_chat.openConversationFeed(
-      threadId: threadId,
-      scope: frb_chat_types.BridgeChatScope(
-        queryClass: switch (scope.queryClass) {
-          ExactChatClass(:final value) =>
-            frb_chat_types.BridgeChatClassFilter.class_(value: value),
-          AllChatClasses() => const frb_chat_types.BridgeChatClassFilter.all(),
-        },
-        parentId: scope.parentId,
-      ),
-      demand: _readDemandToFrb(demand),
-    ),
-  );
-
-  @override
-  Future<TimelineReader> openTimelineReader(
-    String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required ReadDemand demand,
+    required int historyProtocolVersion,
   }) {
-    final membersScope = contentScope.child('timeline-members');
-    final entry = contentScope.open<_FrbRawTimelineReader>('timeline', (
+    final entry = contentScope.open<_FrbRawHistoryReader>('history', (
       operation,
     ) async {
       await _ensureReady();
       final handle = await _bridgeCall(
-        () => frb_timeline.openTimelineReader(
+        () => frb_timeline.openHistoryReader(
           threadId: threadId,
-          presentationVersion: presentationVersion,
-          readerProtocolVersion: readerProtocolVersion,
-          initialDemand: _readDemandToFrb(demand),
+          historyProtocolVersion: historyProtocolVersion,
         ),
       );
-      return _FrbRawTimelineReader(operation.resourceId, handle, membersScope);
-    }, onFailure: (_, _) => membersScope.requestClose());
+      return _FrbRawHistoryReader(operation.resourceId, handle);
+    });
     return _publishRaw(entry, (raw) {
-      final reader = FrbTimelineReader._(entry, raw);
-      // Conversion and identity calls run only after the raw handle is owned.
+      final reader = FrbHistoryReader._(entry, raw);
       reader.metadata;
       reader.threadId;
       return reader;
     });
   }
 
-  Future<FrbConversationFeed> _openConversationOwner(
-    String threadId,
-    Future<frb_chat.BridgeConversationFeed> Function() open,
-  ) {
-    final entry = contentScope.open<_FrbRawConversationFeed>('conversation', (
+  @override
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) {
+    final watchesScope = contentScope.child('current-watches');
+    final entry = contentScope.open<_FrbRawCurrentReader>('current', (
       operation,
     ) async {
       await _ensureReady();
-      final handle = await _bridgeCall(open);
-      return _FrbRawConversationFeed(operation.resourceId, handle);
-    });
-    return _publishRaw(entry, (raw) {
-      raw.requestCleanup = entry.requestClose;
-      final feed = FrbConversationFeed._(entry, raw);
-      _validateConversationIdentity(
-        threadId,
-        feed.threadId,
-        feed.subscriptionId,
+      final handle = await _bridgeCall(
+        () => frb_timeline.openCurrentReader(
+          threadId: threadId,
+          currentProtocolVersion: currentProtocolVersion,
+          demand: _readDemandToFrb(demand),
+        ),
       );
-      return feed;
+      return _FrbRawCurrentReader(
+        operation.resourceId,
+        handle,
+        watchesScope,
+        _ensureReady,
+      );
+    }, onFailure: (_, _) => watchesScope.requestClose());
+    return _publishRaw(entry, (raw) {
+      final reader = FrbCurrentReader._(entry, raw);
+      reader.metadata;
+      reader.threadId;
+      reader.initialView;
+      return reader;
     });
   }
 
@@ -2620,19 +2579,5 @@ StudioShutdownReport _shutdownReportFromFrb(
       frb_shutdown.BridgePendingPersistence_Drained() =>
         const DrainedStudioPendingPersistence(),
     },
-  );
-}
-
-void _validateConversationIdentity(
-  String requested,
-  String actual,
-  String subscriptionId,
-) {
-  if (requested == actual && subscriptionId.isNotEmpty) return;
-  throw const StudioFailure(
-    code: StudioFailureCode.internal,
-    message: 'Conversation feed identity does not match its request',
-    retryable: false,
-    correlationId: 'client-conversation-identity',
   );
 }

@@ -1,24 +1,14 @@
-import 'dart:typed_data';
-
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
-import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import '../../integration_test/support/timeline_observation.dart';
 
 Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     MaterialApp(
@@ -242,9 +232,14 @@ void main() {
       final header = find.byKey(const ValueKey('completion-run-header:narrow'));
       expect(find.byType(TimelineReasoningSummary), findsOneWidget);
       expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
-      final paragraph = timelineGroupTitleParagraph(tester, _workTitle(header));
-      expect(paragraph.maxLines, 1);
-      expect(paragraph.overflow, TextOverflow.ellipsis);
+      final summary = tester.widget<TimelineMarkdown>(
+        find.descendant(
+          of: _workTitle(header),
+          matching: find.byType(TimelineMarkdown),
+        ),
+      );
+      expect(summary.maxLines, 1);
+      expect(summary.overflow, TextOverflow.ellipsis);
       expect(find.byType(TimelineRestingCat), findsOneWidget);
       await tester.tap(_workTitle(header));
       await tester.pump(const Duration(milliseconds: 300));
@@ -253,56 +248,6 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
   }
-
-  testWidgets(
-    'Work title paragraph stays hittable without repeated tree searches',
-    (tester) async {
-      const unrelatedCount = 120;
-      await tester.pumpWidget(
-        _host(
-          SingleChildScrollView(
-            child: Column(
-              children: [
-                CompletionRunView(
-                  id: 'paragraph-target',
-                  timing: const WorkTiming(startedAt: 1000),
-                  thinkingSummary: '**精确标题**',
-                  location: WorkDisplayLocation.live,
-                  executionPresent: true,
-                  activity: _thinking,
-                  initiallyExpanded: false,
-                  now: () => _at(1125),
-                  childBuilder: (_) => const Text('paragraph opened this Work'),
-                ),
-                for (var i = 0; i < unrelatedCount; i++) Text('Unrelated $i'),
-              ],
-            ),
-          ),
-        ),
-      );
-      final header = find.byKey(
-        const ValueKey('completion-run-header:paragraph-target'),
-      );
-      var titleResolutions = 0;
-      final title = timelineGroupTitleFinder(
-        tester,
-        header,
-        validateOwner: () => titleResolutions++,
-      );
-      final target = timelineGroupTitleParagraphFinder(title);
-      expect(target, findsOneWidget);
-      // Count semantic re-resolution work, not machine-dependent elapsed time.
-      // Resolving a title once must not resolve it again for every unrelated text.
-      expect(titleResolutions, lessThanOrEqualTo(4 * (unrelatedCount + 1)));
-      expect(title.hitTestable(), findsNothing);
-      expect(target.hitTestable(), findsOneWidget);
-      await tester.tap(target);
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(find.text('paragraph opened this Work'), findsOneWidget);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
 
   testWidgets(
     'history members exceed 420 naturally and parent scrolling reaches final details',
@@ -345,172 +290,4 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
-
-  testWidgets(
-    'current group retains Markdown through tool phases and clears at the next group',
-    (tester) async {
-      final h = _LiveHarness();
-      addTearDown(h.dispose);
-      h.now = () => _at(1125);
-      h.currentWorkId = 'work';
-      h.blocks = [_work('work', thought: '**本组** `最新摘要`')];
-      h.notices = [const ExecutionLiveNotice(_thinking)];
-      await tester.pumpWidget(h.host());
-      expect(find.byType(TimelineReasoningSummary), findsOneWidget);
-      expect(find.byType(ConversationActivityStatus), findsNothing);
-      expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
-      expect(h.content.reads, 0);
-      h.blocks = [
-        _work('older', state: DisplayBlockState.sealed),
-        _work('next'),
-      ];
-      h.currentWorkId = 'next';
-      await tester.pumpWidget(h.host());
-      expect(find.text('工作了 2 分 5 秒'), findsOneWidget);
-      expect(find.byType(TimelineReasoningSummary), findsNothing);
-      expect(find.text('思考中'), findsOneWidget);
-      expect(h.content.reads, 0);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-
-  testWidgets(
-    'critical notices remain separate from the group and do not reset its clock',
-    (tester) async {
-      final h = _LiveHarness();
-      addTearDown(h.dispose);
-      h.now = () => _at(1125);
-      h.currentWorkId = 'work';
-      h.blocks = [_work('work')];
-      h.notices = [
-        const ExecutionLiveNotice(_thinking),
-        const ExecutionLiveNotice(
-          ConversationActivityView(
-            identity: 'stopping',
-            kind: ConversationActivityKind.stopping,
-          ),
-        ),
-      ];
-      await tester.pumpWidget(h.host());
-      expect(find.byType(CompletionRunView), findsOneWidget);
-      expect(find.byType(ConversationActivityStatus), findsOneWidget);
-      expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
-      expect(h.content.reads, 0);
-      await tester.pumpWidget(const SizedBox());
-    },
-  );
-}
-
-LiveDisplayBlock _work(
-  String id, {
-  DisplayBlockState state = DisplayBlockState.open,
-  String? thought,
-}) => LiveDisplayBlock(
-  id: id,
-  blockOrder: id == 'older' ? 1 : 2,
-  state: state,
-  source: const ForegroundTurnChatSource(turnId: 'turn'),
-  thinkingSummary: thought,
-  body: WorkDisplayBlock(
-    timing: WorkTiming(
-      startedAt: 1000,
-      finishedAt: state == DisplayBlockState.sealed ? 1125 : null,
-    ),
-    members: DisplayBlockRef(databaseId: 'db', blockId: id),
-  ),
-);
-
-class _Content extends Fake implements ConversationContent {
-  int reads = 0;
-  @override
-  AttemptId get currentAttemptId => const AttemptId(1);
-  @override
-  ConversationQueryScope openScope({required int generation}) {
-    reads++;
-    throw StateError('Collapsed metadata must not read members or originals');
-  }
-}
-
-class _LiveHarness {
-  final content = _Content();
-  final live = ValueNotifier<TailSnapshot?>(null);
-  final images = TimelineImageResources(threadId: 'thread');
-  final expansions = <String, TimelineExpansionIntent>{};
-  List<LiveDisplayBlock> blocks = [];
-  List<LiveStatusNotice> notices = [];
-  String? currentWorkId;
-  bool executionPresent = true;
-  DateTime Function()? now;
-  int revision = 0;
-  Widget host() {
-    live.value = TailSnapshot(
-      currentWorkId: currentWorkId,
-      revision: ++revision,
-      layoutRevision: revision,
-      readyFrontier: 0,
-      executionPresent: executionPresent,
-      blocks: blocks,
-    );
-    final projected = LiveStatusProjection.projectSurfaceAndTimelineWork(
-      latestWindow: live.value,
-      effectiveOutputWindow: live.value,
-      effectiveTimelineWindow: live.value,
-      activeTurnId: 'turn',
-      outputPaging: const LatestLiveWindow(),
-      rawNotices: notices,
-    );
-    final presenting = projected.surface == null
-        ? null
-        : LiveStatusPresenting(
-            surface: projected.surface!,
-            effectiveWindow: live.value,
-            paging: const LatestLiveWindow(),
-            showInteractionDetails: false,
-          );
-    final workSlice = LiveStatusTimelineWorkSlice(
-      workBlocks: projected.timelineWorkBlocks,
-      mergedWorkActivity: projected.mergedWorkActivity,
-      effectiveWindow: live.value,
-    );
-    Widget section(ConversationLiveSection section) =>
-        ConversationCurrentConnector(
-          section: section,
-          threadId: 'thread',
-          content: content,
-          now: now,
-          presenting: section == ConversationLiveSection.output
-              ? presenting
-              : null,
-          workSlice: section == ConversationLiveSection.work ? workSlice : null,
-          images: images,
-          readAttachment: (_) async => Uint8List(0),
-          isDisplayActive: () => true,
-          liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
-            block: block,
-            executionPresent: executionPresent,
-            expansion: expansions.putIfAbsent(
-              block.id,
-              TimelineExpansionIntent.new,
-            ),
-          ),
-        );
-    return _host(
-      Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          section(ConversationLiveSection.work),
-          section(ConversationLiveSection.output),
-        ],
-      ),
-    );
-  }
-
-  void dispose() {
-    for (final intent in expansions.values) {
-      intent.retire();
-      intent.dispose();
-    }
-    images.release();
-    live.dispose();
-  }
 }

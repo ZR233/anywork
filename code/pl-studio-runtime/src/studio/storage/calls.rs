@@ -451,8 +451,6 @@ struct CallsWriter {
     deleted_threads: Mutex<BTreeSet<String>>,
     last_error: Mutex<Option<String>>,
     statistics_gap: AtomicBool,
-    #[cfg(test)]
-    panic_next_mutation: AtomicBool,
 }
 
 /// 全局调用库句柄；clone 共享同一条队列、日志与后台 writer。
@@ -494,13 +492,6 @@ impl CallsStore {
     pub(crate) fn mark_statistics_gap(&self) {
         self.writer.statistics_gap.store(true, Ordering::Release);
         publish_status(&self.writer);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn panic_on_next_mutation(&self) {
-        self.writer
-            .panic_next_mutation
-            .store(true, Ordering::Release);
     }
 
     pub(crate) async fn open(path: &Path) -> Result<Self> {
@@ -600,8 +591,6 @@ impl CallsStore {
             deleted_threads: Mutex::new(BTreeSet::new()),
             statistics_gap: AtomicBool::new(false),
             last_error: Mutex::new(startup_error),
-            #[cfg(test)]
-            panic_next_mutation: AtomicBool::new(false),
         });
         Ok(Self {
             writer,
@@ -1300,10 +1289,6 @@ async fn apply_batch(
         }
     }
     for (index, entry) in pending.iter().enumerate() {
-        #[cfg(test)]
-        if shared.panic_next_mutation.swap(false, Ordering::AcqRel) {
-            panic!("injected call statistics consumer exit");
-        }
         let result = match &entry.mutation {
             CallMutation::Summary(summary) => {
                 if summary_conflicts.contains(&index) {
@@ -1819,7 +1804,7 @@ fn integer(value: u64) -> Result<i64> {
 }
 
 /// 只有数据库忙/锁/IO 类错误允许自动重试；结构或约束错误必须显式回给调用方。
-fn is_retryable_write(message: &str) -> bool {
+pub(crate) fn is_retryable_write(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("database is locked")
         || message.contains("database table is locked")

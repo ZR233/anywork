@@ -10,17 +10,27 @@ mod accounting;
 mod classifier;
 mod db;
 mod import;
+mod input;
 mod pending;
 mod reader;
 mod schema;
 mod store;
 mod token;
 mod types;
+mod upgrade;
 mod validate;
 
 pub use accounting::HistoryUsageFact;
+pub(crate) use accounting::PreparedHistoryUsage;
 pub use classifier::*;
 pub use import::*;
+pub(crate) use input::{
+    INPUT_FACT_BODY_KEY, InputAdmission, InputFact, PreparedInputFact, input_event, input_events,
+    prompt_request_digest, read_input_admission,
+};
 pub use reader::HistoryReader;
-pub use store::HistoryStore;
+pub use store::{HistoryStore, HistoryStoreShare};
+pub(crate) use types::milliseconds_from_seconds;
 pub use types::*;
+pub(crate) use upgrade::requires_history_upgrade;
+pub use upgrade::{UpgradeReport, UpgradeStatus, upgrade_history};

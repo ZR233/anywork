@@ -2,22 +2,22 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
-import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_owned_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_display.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_display_registry.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/app_localizations_en.dart';
 import 'package:anywork/src/l10n/app_localizations_zh.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+
+import '../support/pump_client_future.dart';
 
 Widget _host(Widget child, {Locale locale = const Locale('zh')}) => MaterialApp(
   theme: pureStudioTheme(),
@@ -64,313 +64,46 @@ Widget _titleView(TimelineToolPresentation item, {required Locale locale}) =>
 TimelineActivityRow _row(WidgetTester tester) =>
     tester.widget<TimelineActivityRow>(find.byType(TimelineActivityRow));
 
-Future<void> _expand(WidgetTester tester) async {
-  await tester.tap(
-    find
-        .ancestor(
-          of: find.byType(TimelineActivityRow),
-          matching: find.byType(InkWell),
-        )
-        .first,
-  );
-  await tester.pump();
-  await tester.pump(const Duration(milliseconds: 300));
-}
-
-Widget _deferredView(
-  TimelineDisplayUnit unit,
-  Future<ContentWindow> Function(ContentRef, ContentRange) read,
-) => _host(
-  ChatItemView(
-    key: const ValueKey('deferred-tool-owner'),
-    item: ChatItemPresentation.forUnit(unit),
-    contentRangeBuilder: (id, key, label, reference, witness) =>
-        TimelineContentRangeConnector(
-          itemId: id,
-          contentKey: key,
-          label: label,
-          reference: reference,
-          witness: witness,
-          readContent: read,
-        ),
-  ),
-);
-
-ContentWindow _fullWindow(String text) {
+ContentWindow _fullWindow(
+  String text, {
+  String generation = 'result-generation',
+}) {
   final bytes = utf8.encode(text);
   return ContentWindow(
     offset: 0,
     bytes: bytes,
-    generation: 'result-generation',
+    generation: generation,
     availableThrough: bytes.length,
     sealed: true,
   );
 }
 
-TimelineDisplayUnit _declared(
-  String contract,
-  String arguments,
-  String output, {
-  bool inlineOutput = true,
-  String database = 'db',
-  String? failure,
-}) {
-  Map<String, Object?> body(String key, String text) => {
-    'key': key,
-    'byteLength': utf8.encode(text).length,
-    'inline': utf8.encode(text),
-  };
-  const owner = ItemContentOwner(itemId: 'declared-tool');
-  final payload = utf8.encode(
-    jsonEncode({
-      'contract': 'anywork.chat/1',
-      'type': 'tool',
-      'data': {
-        'invocation': {
-          'toolCallId': 'call',
-          'name': 'untrusted name',
-          'presentationContract': contract,
-          'taskId': 'private-task',
-          'workingDirectory': '/private/cwd',
-        },
-        'state': {
-          'kind': failure == null ? 'succeeded' : 'failed',
-          if (failure == null)
-            'completedAt': 12
-          else ...{
-            'failedAt': 12,
-            'failure': {'kind': 'execution', 'message': failure},
-          },
-          'output': {'attachments': []},
-        },
-      },
-      'bodies': [
-        body('tool.arguments', arguments),
-        if (inlineOutput) body('tool.result', output),
-      ],
-    }),
-  );
-  return TimelineDisplayUnit(
-    block: DisplayBlock(
-      id: 'declared-tool',
-      blockOrder: 1,
-      body: SingleDisplayBlock(
-        visibility: SingleVisibility.content,
-        record: DisplayRecord(
-          atom: ChatAtom(
-            id: 'declared-tool',
-            completionItemId: 'declared-tool',
-            completionSeq: 1,
-            source: const BackgroundResultChatSource(messageId: 'message'),
-            sourceOrder: null,
-            kind: ChatAtomKind.toolCall,
-            delivery: ChatDeliveryKind.independent,
-            lifecycle: TerminalChatAtom(
-              started: null,
-              ended: null,
-              outcome: failure == null
-                  ? ChatTerminalOutcome.completed
-                  : ChatTerminalOutcome.failed,
-            ),
-            payload: InlinePayload(bytes: payload),
-            contents: [
-              ChatAtomContent(
-                role: ChatContentRole.toolArguments,
-                reference: ContentRef(
-                  databaseId: database,
-                  target: BodyContentTarget(
-                    owner: owner,
-                    key: 'tool.arguments',
-                  ),
-                ),
-              ),
-              ChatAtomContent(
-                role: ChatContentRole.toolOutput,
-                reference: ContentRef(
-                  databaseId: database,
-                  target: BodyContentTarget(owner: owner, key: 'tool.result'),
-                ),
-              ),
-            ],
-          ),
-          contentSource: CompletedOriginal(completionId: 'declared-tool'),
-        ),
-      ),
-    ),
-  );
+final class _FixtureCurrentBodyWatch implements CurrentBodyWatch {
+  final StreamController<ContentWindow> _output =
+      StreamController<ContentWindow>.broadcast(sync: true);
+  Future<void>? _closing;
+  bool requested = false;
+
+  @override
+  Stream<ContentWindow> get windows => _output.stream;
+
+  void add(ContentWindow window) => _output.add(window);
+
+  @override
+  void requestClose() {
+    if (requested) return;
+    requested = true;
+    unawaited(_output.close());
+  }
+
+  @override
+  Future<void> close() => _closing ??= () async {
+    requestClose();
+    await _output.done;
+  }();
 }
 
 void main() {
-  testWidgets('image tool exposes its original plain failure diagnostic', (
-    tester,
-  ) async {
-    const message = 'image source is not a regular file';
-    final unit = _declared(
-      'builtin.view_image@1',
-      '{"path":"."}',
-      message,
-      failure: message,
-    );
-    final requests = <String>[];
-    await tester.pumpWidget(
-      _deferredView(unit, (reference, range) async {
-        requests.add((reference.target as BodyContentTarget).key);
-        return _fullWindow(message);
-      }),
-    );
-    await tester.pumpAndSettle();
-    await _expand(tester);
-    await tester.pumpAndSettle();
-    expect(requests, ['tool.result']);
-    expect(find.text(message), findsOneWidget);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox.shrink());
-    unit.expansion.dispose();
-  });
-
-  testWidgets(
-    'true deferred workflow and spawn receipts keep pending rows neutral until qualified acceptance or rejection',
-    (tester) async {
-      for (final (contract, args, accepted, rejected) in [
-        (
-          'builtin.workflow_transition@1',
-          '{"expectedRunId":"run","expectedRevision":1,"expectedStateId":"implement","targetStateId":"verify","completion":{"reason":"ready","summary":"finished","evidence":[]}}',
-          '{"accepted":true,"code":"applied","snapshot":{"runId":"private-run"}}',
-          '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private-run"},"recoveryAction":"Read canonical workflow state"}',
-        ),
-        (
-          'builtin.spawn_agent@1',
-          '{"profileId":"directory-executor","taskSummary":"Inspect the real schema","message":"Preserve failures"}',
-          '{"agentId":"private-agent","profileId":"directory-executor","delegation":{},"messageAccepted":true}',
-          '{"agentId":"private-agent","profileId":"directory-executor","delegation":{},"messageAccepted":false}',
-        ),
-      ]) {
-        for (final isAccepted in [true, false]) {
-          final result = isAccepted ? accepted : rejected;
-          final unit = _declared(contract, args, result, inlineOutput: false);
-          final pending = Completer<ContentWindow>();
-          final requests = <String>[];
-          await tester.pumpWidget(
-            _deferredView(unit, (reference, range) {
-              requests.add((reference.target as BodyContentTarget).key);
-              return pending.future;
-            }),
-          );
-          await tester.pumpAndSettle();
-          final details = tester.widget<TimelineToolDetails>(
-            find.byType(TimelineToolDetails),
-          );
-          expect(
-            details.item.output,
-            isEmpty,
-            reason:
-                'This must be a genuine deferred result, not an inline copy',
-          );
-          expect(_row(tester).label, contains('结果待确认'));
-          expect(_row(tester).isIssue, isFalse);
-          expect(requests, isEmpty);
-          await _expand(tester);
-          expect(requests, [
-            'tool.result',
-          ], reason: 'Input windows cannot update the acceptance projection');
-          expect(_row(tester).label, contains('结果待确认'));
-          pending.complete(_fullWindow(result));
-          await tester.pumpAndSettle();
-          expect(_row(tester).label, isNot(contains('结果待确认')));
-          expect(_row(tester).isIssue, !isAccepted);
-          if (isAccepted) {
-            expect(_row(tester).label, isNot(contains('未接纳')));
-          } else {
-            expect(_row(tester).label, contains('未接纳'));
-            expect(find.textContaining('未接纳'), findsWidgets);
-            if (contract == 'builtin.workflow_transition@1') {
-              expect(
-                _visible(tester),
-                contains('Read canonical workflow state'),
-              );
-            }
-          }
-          expect(_visible(tester), isNot(contains('private-run')));
-          expect(_visible(tester), isNot(contains('private-agent')));
-          expect(tester.takeException(), isNull);
-          await tester.pumpWidget(const SizedBox.shrink());
-          unit.expansion.dispose();
-        }
-      }
-    },
-  );
-
-  testWidgets(
-    'actual deferred reads cannot revive old acceptance after reference replacement or disposal',
-    (tester) async {
-      const args =
-          '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}';
-      const rejected =
-          '{"accepted":false,"code":"staleRevision","recoveryAction":"Old result must stay retired"}';
-      const accepted =
-          '{"accepted":true,"code":"applied","snapshot":{"runId":"private-run"}}';
-      final reads = <String, Completer<ContentWindow>>{};
-      Future<ContentWindow> read(ContentRef reference, ContentRange _) => reads
-          .putIfAbsent(reference.databaseId, Completer<ContentWindow>.new)
-          .future;
-      final a = _declared(
-        'builtin.workflow_transition@1',
-        args,
-        rejected,
-        inlineOutput: false,
-        database: 'old-ref',
-      );
-      final b = _declared(
-        'builtin.workflow_transition@1',
-        args,
-        accepted,
-        inlineOutput: false,
-        database: 'new-ref',
-      );
-      final c = _declared(
-        'builtin.workflow_transition@1',
-        args,
-        rejected,
-        inlineOutput: false,
-        database: 'last-ref',
-      );
-      await tester.pumpWidget(_deferredView(a, read));
-      await tester.pumpAndSettle();
-      await _expand(tester);
-      final owner = tester.state(find.byType(TimelineToolDetails));
-      expect(reads.keys, ['old-ref']);
-      await tester.pumpWidget(_deferredView(b, read));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(tester.state(find.byType(TimelineToolDetails)), same(owner));
-      expect(_row(tester).label, contains('结果待确认'));
-      expect(reads.keys, contains('new-ref'));
-      reads['new-ref']!.complete(_fullWindow(accepted));
-      await tester.pumpAndSettle();
-      expect(_row(tester).label, isNot(contains('结果待确认')));
-      reads['old-ref']!.complete(_fullWindow(rejected));
-      await tester.pumpAndSettle();
-      expect(_row(tester).isIssue, isFalse);
-      expect(_visible(tester), isNot(contains('Old result must stay retired')));
-      await tester.pumpWidget(_deferredView(c, read));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      expect(tester.state(find.byType(TimelineToolDetails)), same(owner));
-      expect(
-        _row(tester).label,
-        contains('结果待确认'),
-        reason: 'A new reference must clear the admitted lightweight fact',
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-      reads['last-ref']!.complete(_fullWindow(rejected));
-      await tester.pumpAndSettle();
-      expect(tester.takeException(), isNull);
-      for (final unit in [a, b, c]) {
-        unit.expansion.dispose();
-      }
-    },
-  );
-
   testWidgets(
     'acceptance owner ignores partial, unsealed and retired callbacks across local identity generations',
     (tester) async {
@@ -472,6 +205,100 @@ void main() {
     },
   );
 
+  testWidgets(
+    'Current body owner renders only its entity reference and closes its watch',
+    (tester) async {
+      const reference = CurrentContentRef(
+        ownerId: 'owner',
+        domain: 'thread',
+        entityId: 'atom',
+        contentKey: 'body',
+        generation: '1',
+      );
+      final watch = _FixtureCurrentBodyWatch();
+      final intent = TimelineExpansionIntent();
+      final visibility = Object();
+      intent.setBodyVisible(visibility, true);
+      final unit = TimelineDisplayUnit(
+        expansion: intent,
+        block: DisplayBlock(
+          id: 'atom',
+          blockOrder: 1,
+          body: SingleDisplayBlock(
+            visibility: HistorySingleVisibility.content,
+            record: DisplayRecord(
+              atom: ChatAtom(
+                id: 'atom',
+                source: const ForegroundTurnChatSource(turnId: 'turn'),
+                sourceOrder: 1,
+                kind: ChatAtomKind.text,
+                delivery: ChatDeliveryKind.foreground,
+                lifecycle: const ActiveChatAtom(
+                  started: null,
+                  status: ChatActiveStatus.running,
+                ),
+                turnId: 'turn',
+                contentPresent: true,
+                contents: const [],
+              ),
+              contentSource: const CurrentAtomSource(),
+              currentContents: const [
+                CurrentAtomContent(
+                  role: ChatContentRole.body,
+                  reference: reference,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      intent.current = unit;
+      CurrentContentRef? watchedReference;
+      ContentRange? watchedRange;
+      Object? watchedGeneration;
+      intent.watchCurrentBody = (generation, actualReference, range) {
+        watchedGeneration = generation;
+        watchedReference = actualReference;
+        watchedRange = range;
+        return watch;
+      };
+
+      await tester.pumpWidget(
+        _host(
+          TimelineGroupBodyIntent(
+            intent: intent,
+            child: TimelineOwnedBodyConnector(
+              itemId: 'atom',
+              contentKey: 'body',
+              label: 'body',
+              currentReference: reference,
+              disclosed: true,
+              witness: (_, child) => child,
+            ),
+          ),
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => watchedReference != null && watch._output.hasListener,
+        'Current body watch listening',
+      );
+      expect(watchedReference, reference);
+      expect(watchedGeneration, same(intent.bodyGeneration));
+      expect(watchedRange?.offset, 0);
+
+      watch.add(_fullWindow('current body', generation: '1'));
+      await tester.pumpAndSettle();
+      expect(find.text('current body'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+      expect(watch.requested, isTrue);
+      intent.setBodyVisible(visibility, false);
+      intent.dispose();
+      intent.retirement.dispose();
+    },
+  );
+
   test('truncated structured search, plan and workflow windows never fall back to raw text', () {
     for (final (contract, complete, secret) in [
       (
@@ -527,64 +354,6 @@ void main() {
       isA<ToolDetailText>(),
     );
   });
-
-  testWidgets(
-    'actual truncated declared structured windows show unavailable details and leave acceptance pending',
-    (tester) async {
-      for (final (contract, args, full) in [
-        (
-          'builtin.search_session_note@1',
-          '{"query":"match"}',
-          '{"matches":[{"line":2,"text":"match","before":[],"after":[]}],"contentHash":"private-search-hash","count":1}',
-        ),
-        (
-          'builtin.plan_current@1',
-          '{}',
-          '{"state":"approved","document":{"markdown":"# Plan","contentHash":"private-plan-hash"},"allowedTransitions":[]}',
-        ),
-        (
-          'builtin.workflow_transition@1',
-          '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}',
-          '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private-run"},"recoveryAction":"Read canonical state"}',
-        ),
-      ]) {
-        final unit = _declared(contract, args, full, inlineOutput: false);
-        final partial = utf8.encode(full.substring(0, full.length - 1));
-        await tester.pumpWidget(
-          _deferredView(
-            unit,
-            (_, range) async => ContentWindow(
-              offset: range.offset,
-              bytes: partial.sublist(range.offset),
-              generation: 'g',
-              availableThrough: partial.length,
-              sealed: true,
-            ),
-          ),
-        );
-        await tester.pumpAndSettle();
-        await _expand(tester);
-        expect(
-          find.textContaining('窗口不完整或格式错误'),
-          findsWidgets,
-          reason: contract,
-        );
-        expect(_visible(tester), isNot(contains('private-')), reason: contract);
-        expect(
-          _visible(tester),
-          isNot(contains('contentHash')),
-          reason: contract,
-        );
-        if (contract == 'builtin.workflow_transition@1') {
-          expect(_row(tester).label, contains('结果待确认'));
-          expect(_row(tester).isIssue, isFalse);
-        }
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-        unit.expansion.dispose();
-      }
-    },
-  );
 
   testWidgets(
     'successful tool transport cannot hide a rejected workflow mutation or pretend it was applied',
@@ -1268,139 +1037,6 @@ void main() {
       expect(text, contains('https://source.example'));
       expect(text, isNot(contains('taskId')));
       expect(find.byType(TimelineToolDetailPanel), findsOneWidget);
-    },
-  );
-
-  testWidgets(
-    'declared commands and web queries read only output; write file omits success receipt',
-    (tester) async {
-      for (final (contract, args, result, roles, expected) in [
-        (
-          'builtin.exec@2',
-          '{"command":"printf declared"}',
-          '{"stdout":{"content":"declared output"},"stderr":{"content":""},"exitCode":0,"taskId":"private"}',
-          [ChatContentRole.toolOutput.name],
-          'declared output',
-        ),
-        (
-          'builtin.search_session_note@1',
-          '{"query":"declared query"}',
-          '{"matches":[{"line":3,"text":"query result"}]}',
-          [ChatContentRole.toolOutput.name],
-          'query result',
-        ),
-        (
-          'builtin.web_search@1',
-          '{"open":[{"ref_id":"https://api.flutter.dev/flutter/material/ExpansionTile-class.html"}]}',
-          'ExpansionTile class\nA single-line ListTile with an expansion arrow icon.',
-          [ChatContentRole.toolOutput.name],
-          'A single-line ListTile with an expansion arrow icon.',
-        ),
-        (
-          'builtin.deepseek_web_search@1',
-          '{"queries":["Flutter widgets"]}',
-          'Sources:\n- [Actual source](https://example.com/source) — Actual snippet',
-          [ChatContentRole.toolOutput.name],
-          'Actual snippet',
-        ),
-        (
-          'builtin.deepseek_web_fetch@1',
-          '{"url":"https://example.com/source"}',
-          'Fetched https://example.com/source (HTTP 200)\n\nActual page body',
-          [ChatContentRole.toolOutput.name],
-          'Actual page body',
-        ),
-        (
-          'builtin.write_file@1',
-          '{"path":"test.txt","content":"user file content","mode":"overwrite"}',
-          '{"success":true,"taskId":"private"}',
-          [ChatContentRole.toolArguments.name],
-          'user file content',
-        ),
-        (
-          'builtin.workflow_transition@1',
-          '{"completion":{"reason":"ready","summary":"finished","evidence":[]}}',
-          '{"accepted":false,"code":"staleRevision","snapshot":{"runId":"private"},"recoveryAction":"Inspect canonical state and retry"}',
-          [ChatContentRole.toolOutput.name],
-          'Inspect canonical state and retry',
-        ),
-      ]) {
-        final unit = _declared(contract, args, result);
-        final requested = <String>[];
-        final reads = <String>[];
-        await tester.pumpWidget(
-          _host(
-            ChatItemView(
-              key: ValueKey(contract),
-              item: ChatItemPresentation.forUnit(unit),
-              contentRangeBuilder: (id, key, label, reference, witness) {
-                requested.add(key);
-                final bytes = utf8.encode(
-                  key == ChatContentRole.toolArguments.name ? args : result,
-                );
-                return TimelineContentRangeConnector(
-                  itemId: id,
-                  contentKey: key,
-                  label: label,
-                  reference: reference,
-                  witness: witness,
-                  readContent: (_, range) async {
-                    reads.add(key);
-                    return ContentWindow(
-                      offset: range.offset,
-                      bytes: bytes.sublist(range.offset),
-                      generation: 'g',
-                      availableThrough: bytes.length,
-                      sealed: true,
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        );
-        await tester.pumpAndSettle();
-        expect(reads, isEmpty);
-        await tester.tap(
-          find
-              .ancestor(
-                of: find.byType(TimelineActivityRow),
-                matching: find.byType(InkWell),
-              )
-              .first,
-        );
-        await tester.pumpAndSettle();
-        expect(requested.toSet(), roles.toSet(), reason: contract);
-        expect(
-          reads,
-          roles,
-          reason: '$contract must not reread on acceptance projection rebuild',
-        );
-        expect(_visible(tester), contains(expected), reason: contract);
-        expect(
-          _visible(tester),
-          isNot(contains('private-task')),
-          reason: contract,
-        );
-        expect(
-          _visible(tester),
-          isNot(contains('/private/cwd')),
-          reason: contract,
-        );
-        expect(
-          _visible(tester),
-          isNot(contains('"command"')),
-          reason: contract,
-        );
-        expect(
-          _visible(tester),
-          isNot(contains('"success"')),
-          reason: contract,
-        );
-        expect(tester.takeException(), isNull, reason: contract);
-        await tester.pumpWidget(const SizedBox.shrink());
-        unit.expansion.dispose();
-      }
     },
   );
 }

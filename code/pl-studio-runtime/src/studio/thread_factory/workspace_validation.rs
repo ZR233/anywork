@@ -516,25 +516,22 @@ impl StudioThreadFactory {
                             "review target ownership chain leaves its parent/root/project",
                         ));
                     }
-                    let history =
-                        self.services
-                            .store
-                            .history(&next.agent_id)
-                            .await
-                            .map_err(|error| {
-                                super::errors::resource_error("read review owner history", error)
-                            })?;
-                    let (checkpoint, _) = history
-                        .read_only_checkpoint_with_latest_turn()
-                        .await
-                        .map_err(|error| {
-                            super::errors::resource_error("read canonical review owner", error)
-                        })?
-                        .ok_or(ReviewWorkspaceError::Unconfirmed(
-                            "review target ownership chain has no canonical checkpoint",
-                        ))?;
+                    let next_owner_thread = self.thread_record(&next.agent_id).await?;
+                    let next_protocol: crate::Thread = next_owner_thread.into();
+                    let current = super::recovery::load_current_read_only(
+                        &self.services.store,
+                        &next_protocol,
+                    )
+                    .await
+                    .map_err(|error| {
+                        super::errors::resource_error("read canonical review owner", error)
+                    })?
+                    .ok_or(ReviewWorkspaceError::Unconfirmed(
+                        "review target ownership chain has no current",
+                    ))?;
+                    let snapshot = current.state.to_paused_snapshot();
                     let next_assignment =
-                        crate::studio::workspace_receipt::from_snapshot(&checkpoint.state)
+                        crate::studio::workspace_receipt::from_snapshot(&snapshot)
                             .map_err(|error| {
                                 super::errors::resource_error(
                                     "decode review owner assignment",

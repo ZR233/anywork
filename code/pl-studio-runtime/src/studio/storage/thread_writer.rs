@@ -1,20 +1,8 @@
-//! Per-Thread ordered persistence owner: each effect and its checkpoint commit in one transaction.
+//! Per-Thread reliable owner of independent immutable History exports.
 //!
-//! Admission never blocks the executor. Effects are history facts, so every admitted batch is
-//! written to `history.sqlite` in sequence order, each against the effect-matched
-//! transfer state it arrived with. The matching checkpoint is not scheduled on its own: the writer
-//! holds `write.checkpoint` as the candidate for exactly that effect and commits it together with
-//! the effect's history facts, the latest context increment and the history watermark in one
-//! `history.sqlite` transaction (`design/15` §15.5). A bounded coalescing window selects only the
-//! prepared prefix of the original queue. A failed transaction keeps that prefix frozen for retry;
-//! no second obligation queue or independently scheduled checkpoint exists.
-//!
-//! Publication order is fixed: every blob the checkpoint names must be durable first, and only then
-//! is the transaction that writes the pruned checkpoint and advances the watermark committed. The
-//! writer folds each effect's cumulative usage accounting exactly once, sets it on that effect's
-//! checkpoint as `state.usage_summary`, and only publishes the running summary once the transaction
-//! succeeded — so hot reads, reconnects and cold restores observe one cumulative value and a saved
-//! checkpoint never carries a summary its own commit did not include.
+//! The original projection freezes each product event once. This queue retains the exact export
+//! and candidate across admission, writing, cancellation and retry. The writer appends schema-25
+//! events and bodies; it neither captures, saves nor acknowledges Current.
 
 use crate::ExecutionItem;
 use std::{
@@ -28,19 +16,17 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
-    ThreadCheckpoint, ThreadSnapshot, UsageSummary,
-    cold::{ColdStore, ColdStoreError, StorageIdleStatus, StoragePressure, ThreadWrite},
+    HistoryExport, UsageSummary,
+    cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
 };
 
 use tokio::time::Instant;
 
+use crate::history::{HistoryClassifier, HistoryStore};
 use crate::studio::StudioStore;
+use crate::studio::storage::calls::is_retryable_write;
 use crate::studio::storage::coordinator::{
     PendingSequenceRange, ThreadPersistenceMetrics, ThreadPersistenceReport,
-};
-use crate::studio::storage::history::{
-    AccountingCommit, EffectCommit, InputIdentityWrite, MessageIdentityWrite, SessionAccounting,
-    is_retryable_write,
 };
 use crate::studio::thread_projection::PreparedEffect;
 
@@ -154,17 +140,9 @@ pub(in crate::studio) struct RuntimeOrderIndex {
     process_bytes: Arc<AtomicU64>,
     capacity_changed: Mutex<Option<tokio::sync::watch::Sender<u64>>>,
     #[cfg(test)]
-    materialize_gate: Mutex<Option<MaterializeGate>>,
-    #[cfg(test)]
     confirm_saved_entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     #[cfg(test)]
     confirm_saved_calls: AtomicU64,
-}
-
-#[cfg(test)]
-struct MaterializeGate {
-    entered: tokio::sync::oneshot::Sender<()>,
-    release: std::sync::mpsc::Receiver<()>,
 }
 
 struct OrderIndexState {
@@ -327,8 +305,6 @@ impl RuntimeOrderIndex {
             process_bytes,
             capacity_changed: Mutex::new(None),
             #[cfg(test)]
-            materialize_gate: Mutex::new(None),
-            #[cfg(test)]
             confirm_saved_entered: Mutex::new(None),
             #[cfg(test)]
             confirm_saved_calls: AtomicU64::new(0),
@@ -346,11 +322,6 @@ impl RuntimeOrderIndex {
             .assigned
             .get(item_id)
             .map(|entry| entry.ordinal)
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn assign(&self, item_id: &str) -> Result<u64> {
-        self.allocate(item_id, None, None)
     }
 
     pub(in crate::studio) fn reserve_observed(
@@ -442,12 +413,6 @@ impl RuntimeOrderIndex {
             .map_err(|_| ExecutionIndexBudgetFull { scope: "process" })?;
         self.bytes.fetch_add(bytes, Ordering::AcqRel);
         Ok(())
-    }
-
-    fn seed(&self, ceiling: u64, durable: u64) {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        state.ceiling = state.ceiling.max(ceiling);
-        state.durable = state.durable.max(durable);
     }
 
     /// Reserve only the explicit execution boundaries, before Core may reserve provider parts.
@@ -561,54 +526,6 @@ impl RuntimeOrderIndex {
             .pending
             .last()
             .is_some_and(|(effect, _)| *effect > state.durable)
-    }
-
-    pub(in crate::studio) fn materialize(
-        &self,
-        item: &crate::ExecutionItem,
-        effect: u64,
-    ) -> Result<()> {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        ensure!(
-            item.ordinal <= i64::MAX as u64,
-            "execution ordinal space is exhausted"
-        );
-        if let Some(entry) = state.assigned.get(&item.id) {
-            ensure!(entry.ordinal == item.ordinal, "execution ordinal conflict");
-        }
-        let mut staged = BTreeMap::new();
-        Self::stage_materialization(
-            &state,
-            &mut staged,
-            &ExecutionMaterialization {
-                item_id: &item.id,
-                ordinal: Some(item.ordinal),
-                revision: item.revision,
-                created_at: item.created_at,
-                updated_at: item.updated_at,
-                turn_id: &item.turn_id,
-                terminal: item.is_terminal(),
-            },
-            item.ordinal,
-            effect,
-        )?;
-        #[cfg(test)]
-        {
-            let gate = self.materialize_gate.lock().unwrap().take();
-            if let Some(gate) = gate {
-                let _ = gate.entered.send(());
-                gate.release
-                    .recv_timeout(Duration::from_secs(10))
-                    .expect("materialization regression gate was not released");
-            }
-        }
-        let ceiling = state.ceiling.max(item.ordinal);
-        let released = self.commit_execution_batch(&mut state, staged, ceiling)?;
-        drop(state);
-        if released > 0 {
-            self.notify_capacity();
-        }
-        Ok(())
     }
 
     /// Assigns placement and funds all stamps in one commit. No body or codec runs
@@ -1021,7 +938,7 @@ struct QueuedEffect {
     sequence: u64,
     /// Starts the private batching deadline; later arrivals never reset it.
     admitted_at: Instant,
-    write: Arc<ThreadWrite>,
+    write: Arc<HistoryExport>,
     /// Encoded size of `write.effect`, measured once at admission.
     bytes: u64,
     /// The product content the Thread's single live projection owner prepared for this commit.
@@ -1055,13 +972,9 @@ impl HistoryStage {
 struct Progress {
     stopped: bool,
     deleting: bool,
-    /// Highest effect sequence whose history/checkpoint transaction completed.
+    /// Highest effect sequence whose History transaction completed.
     durable: u64,
-    /// Highest checkpoint revision already committed with its effect.
-    published_revision: u64,
-    /// Checkpoint revision of the effect whose atomic history+checkpoint write is in progress.
-    saving_revision: u64,
-    /// Admitted effects awaiting their ordered history/checkpoint transaction.
+    /// Admitted effects awaiting their ordered History transaction.
     ///
     /// An entry leaves the queue only once the durable store committed it *and* the Thread's single
     /// live projection owner took it over, so this queue is the one reliable handoff between a core
@@ -1074,7 +987,7 @@ struct Progress {
     effect_bytes: u64,
     /// Conservatively charged entries in `pending_saved_at`.
     queue_metadata_bytes: u64,
-    /// Counts queued checkpoint timestamps so the maximum age is available without a queue scan.
+    /// Counts original effect timestamps so the maximum age needs no queue scan.
     pending_saved_at: BTreeMap<i64, u64>,
     pending_accounting: Option<PendingAccounting>,
     /// Retained bytes of the prepared batches the queue still holds.
@@ -1246,20 +1159,10 @@ enum Step {
     Coalescing(Instant),
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("{source}")]
-struct ClassifiedWriteError {
-    kind: crate::HistoryFault,
-    #[source]
-    source: anyhow::Error,
-}
-
-fn classified(kind: crate::HistoryFault, source: impl Into<anyhow::Error>) -> anyhow::Error {
-    ClassifiedWriteError {
-        kind,
-        source: source.into(),
-    }
-    .into()
+#[cfg(test)]
+struct MaterializeGate {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
 }
 
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
@@ -1279,10 +1182,9 @@ pub(crate) struct HistoryChannel {
     #[cfg(test)]
     resident_gate: Mutex<Option<MaterializeGate>>,
     #[cfg(test)]
-    sql_pending: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    #[cfg(test)]
     delivery_admission_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     progress: Mutex<Progress>,
+    history_classifier: Mutex<Option<HistoryClassifier>>,
     changed: Arc<tokio::sync::Notify>,
     step_lock: tokio::sync::Mutex<()>,
     /// Every writer incarnation's physical workers remain registered until actually joined.
@@ -1358,10 +1260,6 @@ impl Drop for ReviewDeliveryRetention {
 }
 
 impl HistoryChannel {
-    #[cfg(test)]
-    pub(in crate::studio) async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.step_lock.lock().await
-    }
     /// Called under the registry lock; this only pins an atomic logical source,
     /// and never acquires progress or index.
     pub(crate) fn pin_review_delivery(
@@ -1705,10 +1603,9 @@ impl HistoryChannel {
             #[cfg(test)]
             resident_gate: Mutex::new(None),
             #[cfg(test)]
-            sql_pending: Mutex::new(None),
-            #[cfg(test)]
             delivery_admission_entered: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
+            history_classifier: Mutex::new(None),
             changed: Arc::new(tokio::sync::Notify::new()),
             step_lock: tokio::sync::Mutex::new(()),
             workers: tokio::sync::Mutex::new(Vec::new()),
@@ -1946,19 +1843,15 @@ impl HistoryChannel {
     /// this same queue — so an unknown or already durable sequence is refused rather than stored in a
     /// second, unordered slot. Returns whether the batch was attached.
     pub(in crate::studio) fn prepare(&self, prepared: Arc<PreparedEffect>) -> bool {
-        self.prepare_with(None, prepared, || Ok(())).is_ok()
+        self.accept_prepared(None, prepared).is_ok()
     }
 
     /// 在唯一可靠记录上校验原批次及预算，再同步发布并接收同一原件。
-    pub(in crate::studio) fn prepare_with(
+    pub(in crate::studio) fn accept_prepared(
         &self,
-        original: Option<&Arc<ThreadWrite>>,
+        original: Option<&Arc<HistoryExport>>,
         prepared: Arc<PreparedEffect>,
-        publish: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
-        if prepared.completion_drafts.is_some() {
-            anyhow::bail!("reliable channel refused prepared effect");
-        }
         // Measure before taking the lock: the batch is immutable, and the owner's one estimate
         // (see `PreparedEffect::retained_bytes`) walks text lengths instead of encoding a payload
         // inside the critical section.
@@ -1987,7 +1880,7 @@ impl HistoryChannel {
                 Arc::ptr_eq(existing, &prepared),
                 "prepared effect identity differs"
             );
-            return publish();
+            return Ok(());
         }
         if progress.next_unprojected_offset() != Some(index) {
             anyhow::bail!("reliable channel refused prepared effect");
@@ -2015,7 +1908,6 @@ impl HistoryChannel {
             }
             anyhow::bail!("reliable channel refused prepared effect");
         }
-        publish()?;
         if transferred > 0 || progress.projection_pending.is_some() {
             progress.projection_bytes -= transferred;
             progress.projection_pending = None;
@@ -2045,7 +1937,7 @@ impl HistoryChannel {
     /// admission order: this is the next fact it owes a projection, and `None` while every admitted
     /// effect is already prepared. Nothing waits for a GUI — a Thread without subscribers still
     /// drains the queue, because the writer cannot save a fact no projection holds.
-    pub(in crate::studio) fn next_unprojected(&self) -> Option<Arc<ThreadWrite>> {
+    pub(in crate::studio) fn next_unprojected(&self) -> Option<Arc<HistoryExport>> {
         let progress = self
             .progress
             .lock()
@@ -2054,24 +1946,6 @@ impl HistoryChannel {
             .next_unprojected_offset()
             .and_then(|offset| progress.effects.get(offset))
             .map(|queued| queued.write.clone())
-    }
-
-    /// Captures the bounded, ordered projection backlog for one observer initialization.
-    /// Only immutable handles are cloned under the queue lock; history reads happen afterwards.
-    pub(in crate::studio) fn unprojected_writes(&self) -> Vec<Arc<ThreadWrite>> {
-        let progress = self
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let offset = progress
-            .next_unprojected_offset()
-            .unwrap_or(progress.effects.len());
-        progress
-            .effects
-            .iter()
-            .skip(offset)
-            .map(|queued| queued.write.clone())
-            .collect()
     }
 
     /// Publishes the failure of one admitted fact's projection.
@@ -2099,7 +1973,6 @@ impl HistoryChannel {
             progress.fault = Some(crate::HistoryFault::WriteFailed);
             progress.error = Some(message);
             progress.fault_recovered = false;
-            progress.saving_revision = 0;
             if published {
                 self.diagnose(
                     &progress,
@@ -2359,14 +2232,14 @@ impl HistoryChannel {
     ) {
         let head = progress.effects.front();
         let execution_id = head
-            .and_then(|effect| effect.write.checkpoint.state.execution.as_ref())
+            .and_then(|effect| effect.write.state.execution.as_ref())
             .map(|execution| execution.id.as_str());
         // The reliable queue carries execution identity, not live provider request/generation
         // metadata. Attempt IDs and the execution counter cannot substitute for those identities.
         tracing::warn!(
             target: "conversation_work",
             operation = "history_persistence",
-            thread_id = ?head.map(|effect| effect.write.checkpoint.thread_id.as_str()),
+            thread_id = ?head.map(|effect| effect.write.effect.thread_id.as_str()),
             execution_id = ?execution_id,
             request_id = ?Option::<&str>::None,
             generation = ?Option::<u32>::None,
@@ -2403,8 +2276,6 @@ impl std::fmt::Debug for HistoryChannel {
 struct Inner {
     store: StudioStore,
     thread: crate::Thread,
-    #[cfg(test)]
-    chat: pl_core::chat::Session,
     conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     /// This writer incarnation's coordinator identity; see [`NEXT_WRITER_INCARNATION`].
     owner: usize,
@@ -2413,7 +2284,7 @@ struct Inner {
     /// The history database is the single ordinal/identity allocator, so the writer opens it once
     /// instead of per effect; the pool has one connection, so every batch stays a short
     /// single-writer transaction and two consecutive effects cannot interleave their allocations.
-    history: tokio::sync::OnceCell<crate::studio::storage::history::HistoryStore>,
+    history: tokio::sync::OnceCell<HistoryStore>,
     channel: Arc<HistoryChannel>,
     changed: Arc<tokio::sync::Notify>,
     history_observer_stop: tokio::sync::watch::Sender<bool>,
@@ -2434,13 +2305,13 @@ pub(crate) struct ThreadStorageSink(Arc<Inner>);
 pub(crate) struct ThreadStorageBinding {
     pub(crate) conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     pub(crate) incarnation: usize,
-    pub(crate) storage: pl_core::thread::cold::ColdStoreHandle,
+    pub(crate) storage: ThreadStorageSink,
     pub(crate) channel: Arc<HistoryChannel>,
 }
 
 impl ThreadStorageBinding {
     pub(crate) fn new(
-        storage: pl_core::thread::cold::ColdStoreHandle,
+        storage: ThreadStorageSink,
         channel: Arc<HistoryChannel>,
         conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     ) -> Self {
@@ -2517,7 +2388,7 @@ fn output_transfer_plan(
 /// live subscription's ordinal reservation share one ordered writer identity — one SQLite write
 /// connection — instead of two independent writers racing for `history.sqlite`'s write lock. Reads
 /// stay on their own read-only connections in WAL, so they are never queued behind this one.
-async fn history_store(inner: &Inner) -> Result<crate::studio::storage::history::HistoryStore> {
+async fn history_store(inner: &Inner) -> Result<HistoryStore> {
     let opened = inner
         .history
         .get_or_try_init(|| async { inner.store.history(&inner.thread.id).await })
@@ -2526,7 +2397,7 @@ async fn history_store(inner: &Inner) -> Result<crate::studio::storage::history:
 }
 
 /// Publishes the current queue state so `wait_for_drain` and the product snapshot never report a
-/// Thread as finished while an effect (and therefore its checkpoint) is still queued.
+/// Thread as finished while an admitted History export is still queued.
 fn report(inner: &Inner, progress: &Progress) {
     report_with_calls(inner, progress, Some(inner.store.calls()));
 }
@@ -2553,8 +2424,7 @@ fn report_with_calls(
     let pending_bytes = progress
         .effect_bytes
         .saturating_add(progress.queue_metadata_bytes);
-    // 每个待写 effect 自带它的候选 checkpoint，并与其在同一个事务落盘：队列非空就意味着历史与
-    // checkpoint 都还 dirty，最老待写年龄因此只来自队列里每条 effect 自己的 saved_at。
+    // Only admitted History exports contribute here. Current has its own writer and dirty bit.
     let pending_operations = progress.effects.len() as u64;
     let now = crate::studio::unix_seconds();
     let oldest_pending_age_millis =
@@ -2571,17 +2441,9 @@ fn report_with_calls(
         .back()
         .map(|queued| queued.sequence)
         .unwrap_or(0);
-    let dirty_revision = progress
-        .effects
-        .back()
-        .map(|queued| queued.write.checkpoint.state_revision)
-        .unwrap_or(progress.published_revision);
     let metrics = ThreadPersistenceMetrics {
         fault_generation: progress.fault_generation,
         fault: progress.fault,
-        state_dirty_revision: dirty_revision,
-        state_saving_revision: progress.saving_revision,
-        state_durable_revision: progress.published_revision,
         history_admitted_sequence: max_admitted.max(progress.durable),
         history_durable_sequence: progress.durable,
         pending_operations,
@@ -2595,7 +2457,6 @@ fn report_with_calls(
         inner.owner,
         ThreadPersistenceReport {
             pending,
-            pending_checkpoint: false,
             error: progress.error.clone(),
             metrics,
         },
@@ -2604,10 +2465,7 @@ fn report_with_calls(
 }
 
 fn clear_recovered_fault(progress: &mut Progress) -> bool {
-    if progress.retry_requested
-        && progress.durable >= progress.fault_target
-        && progress.published_revision >= progress.fault_target
-    {
+    if progress.retry_requested && progress.durable >= progress.fault_target {
         progress.error = None;
         progress.fault = None;
         progress.retry_requested = false;
@@ -2621,15 +2479,7 @@ fn clear_recovered_fault(progress: &mut Progress) -> bool {
 }
 
 impl ThreadStorageSink {
-    pub(in crate::studio) fn chat_session(&self) -> pl_core::chat::Session {
-        self.0.conversation.session().clone()
-    }
-
-    pub(crate) async fn new(
-        store: StudioStore,
-        thread: crate::Thread,
-        restored_checkpoint: Option<&ThreadCheckpoint>,
-    ) -> Result<Self> {
+    pub(crate) async fn new(store: StudioStore, thread: crate::Thread) -> Result<Self> {
         let catalog = store.catalog();
         let registered = catalog
             .agent_by_thread(&thread.id)
@@ -2644,6 +2494,9 @@ impl ThreadStorageSink {
             "Thread {} Project identity is not registered in workspaces",
             thread.id
         );
+        // Complete any one-shot format upgrade before reserving a new writer
+        // incarnation. Maintenance must never retire this initializer's channel.
+        let history = store.history(&thread.id).await?;
         let owner = NEXT_WRITER_INCARNATION.fetch_add(1, Ordering::Relaxed);
         let registration = store.thread_persistence().claim(&thread.id, owner)?;
         let channel = registration.channel.clone();
@@ -2656,8 +2509,6 @@ impl ThreadStorageSink {
             }
         }
         let conversation = store.conversation_store(&thread.id).await?;
-        #[cfg(test)]
-        let chat = conversation.session().clone();
         let mut workers = channel.workers.lock().await;
         ensure!(
             !channel.stopping.is_cancelled(),
@@ -2666,52 +2517,11 @@ impl ThreadStorageSink {
         // A preceding incarnation may still be finishing one write. Observe its committed
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
-        let history = store.history(&thread.id).await?;
-        // Execution owns schema/identity preparation. The first projection must already have a
-        // real database identity, without making Chat opens or individual effects create one.
-        history.prepare_write().await?;
-        let durable = history.watermark().await?;
-        // Seed the Runtime's execution-order index from the same durable store this writer owns:
-        // `history_items`'s maximum ordinal is the ceiling no new execution identity may reuse.
-        // Registering here (idempotently, max-raising) covers both this incarnation and any
-        // replacement that follows, before the first admission or preview can allocate.
-        channel.order_index.seed(
-            history
-                .latest_execution_ordinal()
-                .await
-                .context("reading the durable execution-order ceiling")?,
-            durable,
-        );
-        let restored_fence = restored_checkpoint.map_or(0, |checkpoint| checkpoint.history_fence);
-        ensure!(
-            durable == restored_fence,
-            "Thread {} history watermark {durable} does not match checkpoint fence {restored_fence}",
-            thread.id
-        );
-        // An unfinished Turn may publish another Running record after reopening. Its execution
-        // boundary already exists: recover that exact placement before synchronous admission can
-        // reserve new provider identities. Only checkpoint-owned live Turns remain resident.
-        if let Some(checkpoint) = restored_checkpoint {
-            for turn in checkpoint
-                .state
-                .turns
-                .iter()
-                .filter(|turn| turn.state == pl_core::thread::TurnState::Running)
-            {
-                let id = crate::studio::thread_projection::order::turn_id(&turn.turn_id);
-                if channel.order_index.assigned(&id).is_none()
-                    && let Some(item) = history.execution_item(&id).await?
-                {
-                    channel.order_index.materialize(&item, 0)?;
-                }
-            }
-        }
+        let durable = 0;
         let (history_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
         let inner = Arc::new(Inner {
             store,
             thread,
-            #[cfg(test)]
-            chat,
             conversation,
             owner,
             history: tokio::sync::OnceCell::new(),
@@ -2726,14 +2536,9 @@ impl ThreadStorageSink {
         {
             let mut progress = lock_progress(&inner);
             progress.durable = progress.durable.max(durable);
-            progress.published_revision = progress
-                .published_revision
-                .max(restored_checkpoint.map_or(0, |checkpoint| checkpoint.state_revision));
             report(&inner, &progress);
         }
-        if let Ok(history) = history_store(&inner).await {
-            publish_accounting(&inner, &history).await;
-        }
+        publish_accounting(&inner, &history).await;
         drop(writer_lease);
         let observer = Arc::downgrade(&inner);
         let observer_stop = channel.stopping.clone();
@@ -2861,9 +2666,7 @@ impl ThreadStorageSink {
                         if !is_retryable_write(&message)
                             || now.saturating_duration_since(since) >= RETRYABLE_BUSY_WINDOW
                         {
-                            let kind = error
-                                .downcast_ref::<ClassifiedWriteError>()
-                                .map_or(crate::HistoryFault::WriteFailed, |typed| typed.kind);
+                            let kind = crate::HistoryFault::WriteFailed;
                             record_error(
                                 &inner,
                                 kind,
@@ -2891,7 +2694,7 @@ impl ThreadStorageSink {
 
     pub(crate) fn binding(&self) -> ThreadStorageBinding {
         ThreadStorageBinding::new(
-            pl_core::thread::cold::ColdStoreHandle::new(self.clone()),
+            self.clone(),
             self.0.channel.clone(),
             self.0.conversation.clone(),
         )
@@ -2963,7 +2766,7 @@ async fn step(inner: &Inner) -> Result<Step> {
         let committed = progress.effects.pop_front().expect("checked queue head");
         let bytes = committed.bytes;
         let prepared_bytes = committed.prepared_bytes;
-        progress.release_saved_at(committed.write.checkpoint.saved_at);
+        progress.release_saved_at(committed.write.effect.committed_at);
         progress.prepared_bytes = progress.prepared_bytes.saturating_sub(prepared_bytes);
         progress.effect_bytes -= bytes;
         released_bytes = released_bytes
@@ -2996,42 +2799,79 @@ async fn step(inner: &Inner) -> Result<Step> {
 }
 
 /// Seeds the absolute accounting projection at reopen; normal commits return their own result.
-async fn publish_accounting(
-    inner: &Inner,
-    history: &crate::studio::storage::history::HistoryStore,
-) {
-    #[cfg(feature = "benchmarks")]
-    inner
-        .store
-        .calls()
-        .observation()
-        .increment(BenchMetric::AccountingRead);
-    match history.accounting().await {
-        Ok(Some(accounting)) => submit_accounting(inner, accounting),
-        Ok(None) => {}
-        Err(error) => {
-            tracing::warn!(%error, "读取累计统计投影失败");
+async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
+    let result = async {
+        let reader = history.reader();
+        let Some(accounting) = reader.accounting(None).await? else {
+            return Ok(());
+        };
+        let mut costs = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = reader
+                .costs_page(
+                    None,
+                    cursor,
+                    crate::history::HistoryDemand {
+                        max_rows: 512,
+                        max_bytes: 1024 * 1024,
+                    },
+                )
+                .await?;
+            for entry in page.entries {
+                let crate::history::HistoryRowHead::Cost(cost) = entry.head else {
+                    continue;
+                };
+                costs.push(cost);
+            }
+            let Some(next) = page.next else {
+                break;
+            };
+            cursor = Some(next);
         }
+        let revision = accounting
+            .updated_at
+            .max(costs.iter().map(|cost| cost.updated_at).max().unwrap_or(0))
+            as u64;
+        let mut purposes =
+            std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
+        for cost in costs {
+            purposes
+                .entry(cost.purpose)
+                .or_default()
+                .push(crate::RuntimeCostAmount {
+                    currency: cost.currency,
+                    amount: cost.cost_total,
+                });
+        }
+        submit_accounting(
+            inner,
+            super::calls::SessionUsageProjection {
+                root_thread_id: inner.thread.root_thread_id.clone(),
+                thread_id: inner.thread.id.clone(),
+                revision,
+                has_unpriced_usage: accounting.has_unpriced_usage,
+                purpose_costs: purposes
+                    .into_iter()
+                    .map(
+                        |(purpose, estimated_costs)| super::calls::PurposeUsageProjection {
+                            purpose,
+                            estimated_costs,
+                        },
+                    )
+                    .collect(),
+            },
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(%error, "读取独立累计统计投影失败");
     }
 }
 
 /// Retain only the latest committed absolute projection; retries never re-read the checkpoint.
-fn submit_accounting(inner: &Inner, accounting: SessionAccounting) {
-    use super::calls::{PurposeUsageProjection, SessionUsageProjection};
-    let projection = SessionUsageProjection {
-        root_thread_id: inner.thread.root_thread_id.clone(),
-        thread_id: inner.thread.id.clone(),
-        revision: accounting.revision,
-        has_unpriced_usage: accounting.has_unpriced_usage,
-        purpose_costs: accounting
-            .purpose_costs
-            .into_iter()
-            .map(|(purpose, estimated_costs)| PurposeUsageProjection {
-                purpose,
-                estimated_costs,
-            })
-            .collect(),
-    };
+fn submit_accounting(inner: &Inner, projection: super::calls::SessionUsageProjection) {
     {
         let mut progress = lock_progress(inner);
         if progress
@@ -3094,110 +2934,6 @@ async fn accounting_retry_due(inner: &Inner) {
     }
 }
 
-/// Atomically writes one effect's history, its latest context increment and its checkpoint.
-///
-/// The writer consumes the same prepared completions and accounting as the live owner, without
-/// projecting or extracting them again. Only this batch's persisted completion prefix is confirmed;
-/// committed usage and compact accounting are published only after the transaction succeeds.
-#[cfg(test)]
-async fn persist_effect(
-    inner: &Inner,
-    sequence: u64,
-    write: &ThreadWrite,
-    projected: &PreparedEffect,
-    encoded_effect_bytes: u64,
-) -> Result<()> {
-    batch::persist_one(inner, sequence, write, projected, encoded_effect_bytes).await
-}
-
-/// Minimal durable identities of the messages one effect admitted.
-///
-/// The writer stores them in the same transaction as the effect's history, so a delivery that left
-/// core's resident window can still be adjudicated from the per-Thread index. The digest comes from
-/// core's own message digest over the frozen source/body/context fields, which is exactly what the
-/// host recomputes when it repeats a delivery, so an identical repeat returns the original sequence
-/// and a different body is rejected instead of delivered twice.
-fn admitted_message_identities(
-    effect: &pl_core::thread::ThreadEffectBatch,
-) -> Vec<MessageIdentityWrite> {
-    effect
-        .inbox
-        .iter()
-        .map(|record| MessageIdentityWrite {
-            message_id: record.message.id.clone(),
-            item_id: crate::studio::thread_projection::order::message_id(&record.message.id),
-            sequence: record.sequence,
-            digest: Some(record.message.digest()),
-        })
-        .collect()
-}
-
-/// Minimal identities of every input this commit must be able to answer for.
-///
-/// A terminal input keeps its receipt so a repeated submission is answered after the resident
-/// identity window (and the attachment drafts it referenced) are gone. A still-pending continuation
-/// control is written too: its admission is the whole point of the operation, so the receipt has to
-/// be readable before the input is consumed, while consuming and discarding later only move its
-/// state forward in the same row.
-///
-/// A control input has no host prompt body, so its request digest binds the Thread and the
-/// continuation it was admitted for instead of a payload that does not exist.
-fn durable_input_identities(thread_id: &str, snapshot: &ThreadSnapshot) -> Vec<InputIdentityWrite> {
-    use pl_core::thread::input::{InputPurpose, InputState};
-    snapshot
-        .inputs
-        .iter()
-        .filter(|record| {
-            record.state != InputState::Pending
-                || record.input.purpose == InputPurpose::Continuation
-        })
-        .map(|record| {
-            let control = record
-                .continuation
-                .as_ref()
-                .filter(|_| record.input.purpose == InputPurpose::Continuation);
-            let mut entry = crate::studio::storage::state::InputIdentityEntry::new(
-                pl_core::thread::input::input_identity(record),
-                record.accepted_sequence,
-            );
-            if control.is_some() {
-                // The frozen route revision and the admission revision belong to the first
-                // admission; the write path preserves them, so only a first write fills them in.
-                entry.expected_model_route_revision = frozen_route_revision(snapshot);
-                entry.continuation_admission_revision = Some(record.revision);
-            }
-            InputIdentityWrite {
-                entry,
-                request_digest: match control {
-                    Some(continuation) => Some(
-                        crate::studio::thread_projection::continuation_request_digest(
-                            thread_id,
-                            &continuation.point_id,
-                            frozen_route_revision(snapshot),
-                        ),
-                    ),
-                    None => crate::studio::thread_projection::saved_prompt_request_digest(
-                        &record.input.payload,
-                    ),
-                },
-                presentation: crate::studio::thread_projection::input_presentation(record),
-            }
-        })
-        .collect()
-}
-
-/// Route revision this Thread had when the control input was first written.
-///
-/// A control input is only admitted after the caller's frozen revision matched the saved one under
-/// the same lifecycle lock, so the value the identity index keeps is the request's own frozen fact;
-/// it is never rewritten by a later commit.
-fn frozen_route_revision(snapshot: &ThreadSnapshot) -> Option<u64> {
-    crate::studio::model_route::route_record(snapshot, false)
-        .ok()
-        .flatten()
-        .map(|(record, _)| record.revision)
-}
-
 #[derive(Clone, Copy)]
 enum FaultTarget {
     Queued,
@@ -3231,7 +2967,6 @@ fn record_error(
         progress.fault_recovered = false;
         // A failed publication is no longer being serialized; the retained checkpoint stays queued
         // for retry, and the metric must not keep reporting it as actively saving.
-        progress.saving_revision = 0;
         progress.in_flight_bytes = 0;
         inner.channel.diagnose(
             &progress,
@@ -3266,8 +3001,6 @@ fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
                 "database_error"
             } else if cause.is::<sea_orm::sqlx::Error>() {
                 "sql_driver_error"
-            } else if cause.is::<ClassifiedWriteError>() {
-                "classified_history_error"
             } else {
                 "redacted_error"
             }
@@ -3284,7 +3017,6 @@ fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
 fn note_absorbed_conflict(inner: &Inner) {
     let mut progress = lock_progress(inner);
     progress.in_flight_bytes = 0;
-    progress.saving_revision = 0;
     report(inner, &progress);
 }
 
@@ -3378,8 +3110,8 @@ impl ThreadStorageSink {
     }
 }
 
-impl ColdStore for ThreadStorageSink {
-    fn reserve_observed_item(
+impl ThreadStorageSink {
+    pub(crate) fn reserve_observed_item(
         &self,
         thread_id: &str,
         attempt_id: &str,
@@ -3420,11 +3152,14 @@ impl ColdStore for ThreadStorageSink {
         })
     }
 
-    fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+    pub(crate) fn subscribe_pressure(
+        &self,
+        thread_id: &str,
+    ) -> Option<tokio::sync::watch::Receiver<()>> {
         (thread_id == self.0.thread.id).then(|| self.0.channel.pressure_changed.subscribe())
     }
 
-    fn reserve_operation_output(
+    pub(crate) fn reserve_operation_output(
         &self,
         thread_id: &str,
         operation_id: &str,
@@ -3447,7 +3182,7 @@ impl ColdStore for ThreadStorageSink {
             })
     }
 
-    fn charge_operation_output(
+    pub(crate) fn charge_operation_output(
         &self,
         thread_id: &str,
         operation_id: &str,
@@ -3464,30 +3199,32 @@ impl ColdStore for ThreadStorageSink {
             .charge_operation_output(operation_id, accepted_bytes)
     }
 
-    fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
+    pub(crate) fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
         if thread_id == self.0.thread.id {
             self.0.channel.release_operation_output(operation_id);
         }
     }
 
-    fn pressure(&self, thread_id: &str) -> StoragePressure {
+    pub(crate) fn pressure(&self, thread_id: &str) -> StoragePressure {
         self.storage_status(thread_id, false).pressure
     }
 
-    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+    pub(crate) fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
         self.storage_status(thread_id, true)
     }
 
-    fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
+    pub(crate) fn admit_export(
+        &self,
+        thread_id: &str,
+        write: Arc<HistoryExport>,
+    ) -> Result<(), ColdStoreError> {
         if self.0.channel.stopping.is_cancelled() {
             return Err(cold_error("history writer is stopped"));
         }
         if thread_id != self.0.thread.id
             || write.effect.thread_id != thread_id
-            || write.checkpoint.thread_id != thread_id
+            || write.effect.thread_id != thread_id
             || write.effect.sequence == 0
-            || write.effect.sequence != write.checkpoint.state_revision
-            || write.checkpoint.history_fence != write.effect.sequence
         {
             // A contract failure is terminal for this sink and never a transient conflict: publish it
             // so `pressure().error` — the one report core mirrors into its own storage latch — agrees
@@ -3655,7 +3392,7 @@ impl ColdStore for ThreadStorageSink {
                 _conversation: Some(self.0.conversation.clone()),
                 sequence,
                 admitted_at,
-                write: Arc::new(write.clone()),
+                write: write.clone(),
                 bytes,
                 // The projection owner takes this entry over from the same queue, in this order.
                 prepared: None,
@@ -3663,78 +3400,22 @@ impl ColdStore for ThreadStorageSink {
             });
             progress.refresh_head_stage(admitted_at);
             progress.effect_bytes += bytes;
-            progress.admit_saved_at(write.checkpoint.saved_at);
+            progress.admit_saved_at(write.effect.committed_at);
             self.0.channel.commit_residents(&progress, &index);
             drop(index);
         }
         // 首次受理从 checkpoint 继承已折叠的累计摘要，然后只折叠本 incarnation 的新 effect。
-        if progress.usage.applied_sequence == 0
-            && write.checkpoint.state.usage_summary.applied_sequence > 0
-        {
-            progress.usage = write.checkpoint.state.usage_summary.clone();
+        if progress.usage.applied_sequence == 0 && write.state.usage_summary.applied_sequence > 0 {
+            progress.usage = write.state.usage_summary.clone();
         }
-        progress.pressure_paused = write.checkpoint.state.persistence.pressure_paused;
+        progress.pressure_paused = write.state.persistence.pressure_paused;
         report(&self.0, &progress);
         drop(progress);
         self.0.changed.notify_one();
         Ok(())
     }
 
-    async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id,
-            flush_requests = 1,
-            "thread flush requested"
-        );
-        if thread_id != self.0.thread.id {
-            return Err(ColdStoreError {
-                source: Box::new(std::io::Error::other("Thread persistence owner mismatch")),
-            });
-        }
-        // 固定目标只需等待它自己的 effect durable：checkpoint 与该 effect 在同一事务落盘，所以
-        // durable 前进即意味着目标 checkpoint 也已提交，不再有独立的发布水位要等。
-        self.0.channel.request_flush(sequence);
-        let coordinator = self.0.store.thread_persistence().clone();
-        let mut progress = coordinator.subscribe();
-        // 第二个失败来源是可靠受理通道自己的状态：一个投影无法完成的事实永远到不了协调器的
-        // 水位，只有通道会带着投影的真实原因报告它。只等协调器会把这种失败变成永久挂起，
-        // 因此两处都必须唤醒这次屏障。
-        let mut status = self.0.channel.subscribe();
-        loop {
-            {
-                let local = lock_progress(&self.0);
-                // The effect and its checkpoint commit atomically, so durable covers both: a released
-                // owner never leaves an effect whose checkpoint is not yet committed behind.
-                if local.durable >= sequence {
-                    return Ok(());
-                }
-                if let Some(error) = local.error.clone() {
-                    return Err(ColdStoreError {
-                        source: Box::new(std::io::Error::other(error)),
-                    });
-                }
-            }
-            tokio::select! {
-                changed = progress.changed() => {
-                    changed.map_err(|_| ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "Thread persistence progress channel closed",
-                        )),
-                    })?;
-                }
-                changed = status.changed() => {
-                    changed.map_err(|_| ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "Thread history status channel closed",
-                        )),
-                    })?;
-                }
-            }
-        }
-    }
-
-    fn read_tool_task(
+    pub(crate) fn read_tool_task(
         &self,
         thread_id: &str,
         task_id: &str,
@@ -3748,87 +3429,30 @@ impl ColdStore for ThreadStorageSink {
             if thread_id != owner {
                 return Err(cold_error("Thread persistence owner mismatch"));
             }
-            store
-                .history(&owner)
+            let paths = store
+                .registered_session_paths(&owner)
+                .map_err(|error| cold_error(&error.to_string()))?;
+            let state = store
+                .state_for(paths.workspace_id(), &owner)
+                .map_err(|error| cold_error(&error.to_string()))?;
+            let current = state
+                .load_current()
                 .await
                 .map_err(|error| cold_error(&error.to_string()))?
-                .tool_task(&task_id)
-                .await
-                .map_err(|error| cold_error(&error.to_string()))
+                .ok_or_else(|| cold_error("complete current is missing"))?;
+            Ok(current.state.tasks.get(&task_id).cloned().map(|task| {
+                pl_core::thread::cold::DurableToolTask {
+                    delivery: current
+                        .state
+                        .deliveries
+                        .iter()
+                        .find(|delivery| delivery.call_id == task.call_id)
+                        .cloned(),
+                    task,
+                }
+            }))
         }
     }
-}
-
-/// Durable receipts for the terminal interaction/permission facts one effect committed.
-///
-/// The receipt payload is the committed core record itself (its stable serde encoding is the
-/// source of the digest) and its revision is the record's own revision, so a repeated terminal
-/// command can be answered with the same receipt while a conflicting payload for one revision
-/// fails the effect transaction instead of overwriting the accepted fact.
-fn fact_receipts(
-    effect: &pl_core::thread::ThreadEffectBatch,
-    prepared: &PreparedEffect,
-) -> Result<Vec<crate::studio::storage::history::FactReceiptWrite>> {
-    let mut receipts = Vec::new();
-    for fact in prepared.review_delivery.iter() {
-        receipts.push(crate::studio::storage::history::FactReceiptWrite {
-            item_id: fact.message.id.clone(),
-            revision: 1,
-            kind: "reviewDeliveryException",
-            payload: serde_json::to_string(fact)?,
-        });
-    }
-    if let Some(message) = &prepared.parent_report {
-        receipts.push(crate::studio::storage::history::FactReceiptWrite {
-            item_id: message.id.clone(),
-            revision: 1,
-            kind: "parentReport",
-            payload: serde_json::to_string(message)?,
-        });
-    }
-    for record in effect.interactions.iter() {
-        receipts.push(crate::studio::storage::history::FactReceiptWrite {
-            item_id: crate::studio::thread_projection::order::receipt_id(
-                "interaction",
-                &record.request.id,
-            ),
-            revision: record.revision,
-            kind: "interaction",
-            payload: serde_json::to_string(record)?,
-        });
-    }
-    for record in effect.permissions.iter() {
-        receipts.push(crate::studio::storage::history::FactReceiptWrite {
-            item_id: crate::studio::thread_projection::order::receipt_id("permission", &record.id),
-            revision: record.revision,
-            kind: "permission",
-            payload: serde_json::to_string(record)?,
-        });
-    }
-    Ok(receipts)
-}
-
-fn rolled_back_turns(snapshot: &ThreadSnapshot) -> std::collections::BTreeSet<String> {
-    let mut removed = std::collections::BTreeSet::new();
-    for replacement in snapshot.context_replacements.iter() {
-        if replacement.reason != pl_core::thread::ContextReplacementReason::Rewind {
-            continue;
-        }
-        let retained = replacement
-            .current
-            .records
-            .iter()
-            .filter_map(|record| record.turn_id.as_ref())
-            .collect::<std::collections::BTreeSet<_>>();
-        for record in replacement.previous.records.iter() {
-            if let Some(turn) = &record.turn_id
-                && !retained.contains(turn)
-            {
-                removed.insert(turn.clone());
-            }
-        }
-    }
-    removed
 }
 
 fn storage_error(message: &str) -> Arc<ColdStoreError> {
@@ -3861,1091 +3485,96 @@ fn cold_error(message: &str) -> ColdStoreError {
     }
 }
 
-#[cfg(test)]
-mod batch_tests {
-    //! Exercise the production selector/worker with explicit gates, not arrival timing or load.
-
-    use super::storage_fault_tests::{
-        live_projection, register_test_thread, test_thread, ticket, visible_input_ticket,
-    };
-    use super::*;
-    use pl_core::{
-        chat::{ChatBudget, ChatItemHeader, ChatQuery, ContentDescriptor, PayloadMode, ReadDemand},
-        context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
-        thread::journal::ContextChange,
-    };
-    use sea_orm::{ConnectionTrait, Database};
-
-    pub(super) struct Budget;
-    impl ChatBudget for Budget {
-        fn fixed_bytes(&self) -> usize {
-            256
-        }
-        fn item_bytes(&self, header: &ChatItemHeader, mode: PayloadMode) -> usize {
-            256 + header.item_id.len()
-                + match mode {
-                    PayloadMode::Inline => header.byte_length as usize,
-                    PayloadMode::Deferred => 0,
-                }
-        }
-        fn manifest_bytes(&self, _: &ContentDescriptor) -> usize {
-            256
-        }
-    }
-
-    struct Fixture {
-        _temp: tempfile::TempDir,
-        store: StudioStore,
-        sink: ThreadStorageSink,
-        projection: crate::studio::thread_projection::LiveProjection,
-    }
-
-    impl Fixture {
-        async fn new(id: &str) -> Result<Self> {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-            let projection = live_projection(&sink).await?;
-            Ok(Self {
-                _temp: temp,
-                store,
-                sink,
-                projection,
-            })
-        }
-
-        async fn handoff(&mut self, write: &ThreadWrite) -> Result<Arc<PreparedEffect>> {
-            self.sink.admit(&self.sink.0.thread.id, write.clone())?;
-            let mut prepared = self
-                .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.checkpoint.state)
-                .await?;
-            self.projection
-                .publish_prepared(&self.sink.0.chat, &mut prepared)
-                .await?;
-            ensure!(
-                self.sink.0.channel.prepare(prepared.clone()),
-                "handoff refused"
-            );
-            Ok(prepared)
-        }
-
-        fn select(&self, now: Instant) -> batch::Selection {
-            batch::select(&mut lock_progress(&self.sink.0), now, 0, false)
-        }
-
-        async fn finish(self, sequence: u64) -> Result<()> {
-            self.sink.flush(&self.sink.0.thread.id, sequence).await?;
-            self.sink.0.channel.stop_and_join().await
-        }
-    }
-
-    fn ready(selection: batch::Selection) -> Vec<batch::Effect> {
-        match selection {
-            batch::Selection::Ready(effects) => effects,
-            _ => panic!("expected a frozen prepared prefix"),
-        }
-    }
-
-    #[tokio::test]
-    async fn new_execution_writer_prepares_identity_before_the_first_projection() -> Result<()> {
-        let id = "writer-prepares-identity";
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread(id)).await?;
-        let history_path = store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        assert!(!history_path.try_exists()?);
-
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let history = store.history(id).await?;
-        let database_id = history
-            .conversation_database_id()
-            .await?
-            .context("execution writer must prepare a real history identity before any effect")?;
-        assert!(!database_id.is_empty());
-        assert!(history_path.try_exists()?);
-        assert_eq!(history.watermark().await?, 0);
-        assert!(history.checkpoint().await?.is_none());
-
-        let channel = sink.0.channel.clone();
-        let gate = channel.step_lock.lock().await;
-        let mut projection = live_projection(&sink).await?;
-        let write = visible_input_ticket(id, 1, "first-execution-input")?;
-        sink.admit(id, write.clone())?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        assert_eq!(prepared.current.projection().source_effect_seq, 1);
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        assert!(channel.prepare(prepared));
-        drop(gate);
-        sink.flush(id, 1).await?;
-        assert_eq!(
-            history.conversation_database_id().await?.as_deref(),
-            Some(database_id.as_str())
-        );
-        channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn continuous_arrival_keeps_the_original_deadline_and_retry_boundary() -> Result<()> {
-        let mut fixture = Fixture::new("batch-deadline").await?;
-        let channel = fixture.sink.0.channel.clone();
-        let gate = channel.step_lock.lock().await;
-        let now = Instant::now();
-        let first = fixture.handoff(&ticket("batch-deadline", 1)).await?;
-        // Inject an observation clock, without sleeps or enabling Tokio's optional test-util feature.
-        lock_progress(&fixture.sink.0)
-            .effects
-            .front_mut()
-            .unwrap()
-            .admitted_at = now;
-        assert!(
-            matches!(fixture.select(now), batch::Selection::Wait(d) if d == now + Duration::from_millis(20))
-        );
-        fixture.handoff(&ticket("batch-deadline", 2)).await?;
-        assert!(
-            matches!(fixture.select(now + Duration::from_millis(19)), batch::Selection::Wait(d) if d == now + Duration::from_millis(20))
-        );
-        fixture.handoff(&ticket("batch-deadline", 3)).await?;
-        let selected = ready(fixture.select(now + Duration::from_millis(20)));
-        assert_eq!(
-            selected
-                .iter()
-                .map(|effect| effect.sequence)
-                .collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
-        assert!(Arc::ptr_eq(&selected[0].prepared, &first));
-        fixture.handoff(&ticket("batch-deadline", 4)).await?;
-        let retried = ready(fixture.select(now + Duration::from_secs(1)));
-        assert_eq!(
-            retried.len(),
-            3,
-            "later admission must not widen a frozen transaction"
-        );
-        for (original, retry) in selected.iter().zip(&retried) {
-            assert!(Arc::ptr_eq(&original.write, &retry.write));
-            assert!(Arc::ptr_eq(&original.prepared, &retry.prepared));
-        }
-        drop(gate);
-        fixture.finish(4).await
-    }
-
-    #[tokio::test]
-    async fn barriers_pressure_and_prepared_gaps_end_the_window() -> Result<()> {
-        for mode in ["flush", "handoff-barrier", "pressure", "queue-full", "gap"] {
-            let mut fixture = Fixture::new(&format!("batch-cut-{mode}")).await?;
-            let id = fixture.sink.0.thread.id.clone();
-            let channel = fixture.sink.0.channel.clone();
-            let gate = channel.step_lock.lock().await;
-            fixture.handoff(&ticket(&id, 1)).await?;
-            let now = lock_progress(&fixture.sink.0)
-                .effects
-                .front()
-                .unwrap()
-                .admitted_at;
-            assert!(matches!(fixture.select(now), batch::Selection::Wait(_)));
-            match mode {
-                "flush" => {
-                    let flush = fixture.sink.flush(&id, 1);
-                    tokio::pin!(flush);
-                    assert!(futures::poll!(&mut flush).is_pending());
-                    // Dropping the barrier future leaves its fixed target installed.
-                }
-                "handoff-barrier" => {
-                    let barrier = channel.await_handoff_durable(&id, 1);
-                    tokio::pin!(barrier);
-                    assert!(futures::poll!(&mut barrier).is_pending());
-                }
-                "pressure" => lock_progress(&fixture.sink.0).pressure_paused = true,
-                "queue-full" => {
-                    lock_progress(&fixture.sink.0).fault = Some(crate::HistoryFault::QueueFull)
-                }
-                "gap" => fixture.sink.admit(&id, ticket(&id, 2))?,
-                _ => unreachable!(),
-            }
-            let selected = ready(fixture.select(now));
-            assert_eq!(selected.len(), 1, "{mode}");
-            drop(gate);
-            fixture.sink.flush(&id, 1).await?;
-            if mode == "gap" {
-                assert_eq!(lock_progress(&fixture.sink.0).durable, 1);
-                // The next handoff is deliberately produced only after the preceding prefix is durable.
-                fixture.handoff(&ticket(&id, 2)).await?;
-                fixture.finish(2).await?;
-            } else {
-                fixture.finish(1).await?;
-            }
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn count_and_encoded_byte_limits_cut_a_batch_without_starving_large_effects() -> Result<()>
-    {
-        let mut fixture = Fixture::new("batch-count").await?;
-        let channel = fixture.sink.0.channel.clone();
-        let gate = channel.step_lock.lock().await;
-        let now = Instant::now();
-        for sequence in 1..=64 {
-            fixture.handoff(&ticket("batch-count", sequence)).await?;
-            if sequence == 63 {
-                assert!(matches!(fixture.select(now), batch::Selection::Wait(_)));
-            }
-        }
-        assert_eq!(ready(fixture.select(now)).len(), 64);
-        drop(gate);
-        fixture.finish(64).await?;
-
-        let mut fixture = Fixture::new("batch-large").await?;
-        let channel = fixture.sink.0.channel.clone();
-        let gate = channel.step_lock.lock().await;
-        let mut large = ticket("batch-large", 1);
-        let extension = pl_core::thread::extensions::ExtensionRecord {
-            revision: 1,
-            payload: pl_core::context::OpaquePayload::text("large".repeat(256 * 1024)),
-        };
-        large
-            .checkpoint
-            .state
-            .extensions
-            .insert("test.large".into(), extension.clone());
-        Arc::make_mut(&mut large.effect).extensions =
-            Arc::from([pl_core::thread::extensions::ExtensionChange::Put {
-                id: "test.large".into(),
-                record: extension,
-            }]);
-        fixture.handoff(&large).await?;
-        let now = lock_progress(&fixture.sink.0)
-            .effects
-            .front()
-            .unwrap()
-            .admitted_at;
-        assert!(
-            lock_progress(&fixture.sink.0)
-                .effects
-                .front()
-                .unwrap()
-                .bytes
-                > 1024 * 1024
-        );
-        assert_eq!(ready(fixture.select(now)).len(), 1);
-        fixture.handoff(&ticket("batch-large", 2)).await?;
-        assert_eq!(ready(fixture.select(now)).len(), 1);
-        drop(gate);
-        fixture.finish(2).await
-    }
-
-    fn billed_context_write(
-        id: &str,
-        sequence: u64,
-        prior: &[ContextRecord],
-    ) -> Result<ThreadWrite> {
-        use crate::studio::thread_projection::AuxiliaryBillingReceipt;
-        use crate::{
-            InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount,
-            UsageReport,
-        };
-        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
-        let mut write = visible_input_ticket(id, sequence, &format!("input-{sequence}"))?;
-        let record = ContextRecord {
-            id: format!("context-{sequence}"),
-            turn_id: None,
-            source: ContextSource::User,
-            content: vec![ContextContent::Text {
-                text: format!("body-{sequence}").into(),
-            }],
-            tool_calls: vec![],
-        };
-        let mut records = prior.to_vec();
-        records.push(record.clone());
-        write.checkpoint.state.context = ContextSnapshot {
-            revision: sequence - 1,
-            records: records.into(),
-        };
-        let interaction = pl_core::thread::interactions::InteractionRecord {
-            created_at: 1,
-            updated_at: 1,
-            continuation_id: None,
-            request: pl_core::thread::interactions::InteractionRequest {
-                id: format!("question-{sequence}"),
-                turn_id: "visible-turn".into(),
-                // Opaque producer facts retain terminal receipts even without a product renderer.
-                payload: pl_core::context::OpaquePayload::new("test.batch-question", 1, "{}")?,
-            },
-            revision: 2,
-            state: pl_core::thread::interactions::InteractionState::Cancelled,
-            extension_mutations: vec![],
-        };
-        // This terminal fact has left current state; its exact receipt remains an effect obligation.
-        // The product current owner must not be asked to render an unregistered interaction format.
-        let billing = InferenceBillingRecord {
-            inference_id: format!("bill-{sequence}"),
-            purpose: Some(format!("purpose-{sequence}")),
-            account_id: "account".into(),
-            account_display_name: None,
-            model_id: Some("model".into()),
-            model_observation: None,
-            effort: None,
-            context_window: None,
-            accounting: InferenceAccounting {
-                usage: UsageReport {
-                    input_tokens: Some(sequence),
-                    ..Default::default()
-                },
-                pricing: PricingOutcome::Estimated {
-                    cost: RuntimeCostAmount {
-                        currency: "USD".into(),
-                        amount: sequence as f64,
-                    },
-                    cache_savings: None,
-                },
-                ..Default::default()
-            },
-            prompt_generation: None,
-            prompt_cache_policy: None,
-            prefix_changed_reason: None,
-            orchestration: Default::default(),
-            timing: None,
-            recorded_at: 1,
-        };
-        let extension = ExtensionRecord {
-            revision: 1,
-            payload: AuxiliaryBillingReceipt {
-                billing,
-                succeeded: true,
-            }
-            .into_payload()?,
-        };
-        let extension_id = format!("studio.auxiliary-billing.batch-{sequence}");
-        write
-            .checkpoint
-            .state
-            .extensions
-            .insert(extension_id.clone(), extension.clone());
-        let effect = Arc::make_mut(&mut write.effect);
-        effect.interactions = Arc::from([interaction]);
-        effect.context = Some(ContextChange::Append {
-            revision: sequence - 1,
-            records: Arc::from([record]),
-        });
-        effect.extensions = Arc::from([ExtensionChange::Put {
-            id: extension_id,
-            record: extension,
-        }]);
-        Ok(write)
-    }
-
-    #[tokio::test]
-    async fn physical_batch_rolls_back_all_effects_and_replays_the_same_frozen_records()
-    -> Result<()> {
-        let id = "batch-atomic-retry";
-        let mut fixture = Fixture::new(id).await?;
-        fixture.handoff(&ticket(id, 1)).await?;
-        fixture.sink.flush(id, 1).await?;
-        let history = fixture.store.history(id).await?;
-        let path = fixture
-            .store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-        "CREATE TRIGGER reject_second_effect BEFORE UPDATE OF applied_write_seq ON history_meta \
-         WHEN NEW.applied_write_seq=3 BEGIN SELECT RAISE(ABORT, 'reject second batch member'); END",
-    )
-    .await?;
-        db.execute_unprepared(
-        "CREATE TABLE batch_current_applied(sequence INTEGER NOT NULL); \
-         CREATE TRIGGER observe_batch_current AFTER UPDATE ON completion_boundary_archive_view_state \
-         BEGIN INSERT INTO batch_current_applied(sequence) \
-         VALUES(json_extract(CAST(NEW.payload AS TEXT), '$.sourceEffectSeq')); END",
-    )
-    .await?;
-        let channel = fixture.sink.0.channel.clone();
-        let gate = channel.step_lock.lock().await;
-        let second = billed_context_write(id, 2, &[])?;
-        let third = billed_context_write(id, 3, &second.checkpoint.state.context.records)?;
-        let prepared_second = fixture.handoff(&second).await?;
-        let prepared_third = fixture.handoff(&third).await?;
-        let display_second = prepared_second.display.as_ref().unwrap().clone();
-        let display_third = prepared_third.display.as_ref().unwrap().clone();
-        assert!(Arc::ptr_eq(
-            &display_second,
-            prepared_second.current.display.as_ref().unwrap()
-        ));
-        channel.request_flush(3);
-        let frozen = ready(fixture.select(Instant::now()));
-        assert_eq!(frozen.len(), 2);
-        drop(gate);
-        let mut status = channel.subscribe();
-        tokio::time::timeout(
-            crate::runtime_test_support::integration_test_deadline()?,
-            async {
-                while status.borrow_and_update().fault.is_none() {
-                    status.changed().await?;
-                }
-                Ok::<_, tokio::sync::watch::error::RecvError>(())
-            },
-        )
-        .await??;
-        assert_eq!(
-            history.watermark().await?,
-            1,
-            "the first batch member must roll back too"
-        );
-        assert_eq!(
-            crate::studio::storage::history::conversation::display::watermarks(&db).await?,
-            (0, 1)
-        );
-        assert!(
-            crate::studio::storage::history::conversation::display::history_heads(&db, 2, None, 8)
-                .await?
-                .is_empty()
-        );
-        assert_eq!(
-            history
-                .checkpoint()
-                .await?
-                .unwrap()
-                .state
-                .context
-                .records
-                .len(),
-            0
-        );
-        assert!(history.input_identity("input-2").await?.is_none());
-        assert!(history.input_identity("input-3").await?.is_none());
-        for sequence in [2, 3] {
-            let receipt_id = crate::studio::thread_projection::order::receipt_id(
-                "interaction",
-                &format!("question-{sequence}"),
-            );
-            assert!(history.latest_fact_receipt(&receipt_id).await?.is_none());
-        }
-        let accounting = history.accounting().await?.unwrap();
-        assert_eq!(accounting.revision, 1);
-        assert!(accounting.purpose_costs.is_empty());
-        assert_eq!(fixture.sink.0.chat.durable_seq(), 0);
-        assert_eq!(lock_progress(&fixture.sink.0).usage.applied_sequence, 1);
-
-        let gate = channel.step_lock.lock().await;
-        let mut fourth = ticket(id, 4);
-        fourth.checkpoint.state.context = third.checkpoint.state.context.clone();
-        fixture.sink.admit(id, fourth.clone())?;
-        let retried = ready(fixture.select(Instant::now()));
-        assert_eq!(
-            retried.len(),
-            2,
-            "new queued work cannot alter the failed transaction"
-        );
-        assert!(Arc::ptr_eq(&retried[0].prepared, &prepared_second));
-        assert!(Arc::ptr_eq(&retried[1].prepared, &prepared_third));
-        db.execute_unprepared("DROP TRIGGER reject_second_effect")
-            .await?;
-        // Lose the local queue acknowledgement after the physical commit, then replay that exact batch.
-        let confirmations = channel
-            .order_index
-            .confirm_saved_calls
-            .load(Ordering::Relaxed);
-        batch::persist(&fixture.sink.0, &retried).await?;
-        batch::persist(&fixture.sink.0, &retried).await?;
-        crate::studio::storage::history::conversation::display::verify(&db, &display_second)
-            .await?;
-        crate::studio::storage::history::conversation::display::verify(&db, &display_third).await?;
-        assert_eq!(
-            crate::studio::storage::history::conversation::display::watermarks(&db).await?,
-            (display_third.ready_frontier, 3)
-        );
-        assert_eq!(
-            channel
-                .order_index
-                .confirm_saved_calls
-                .load(Ordering::Relaxed),
-            confirmations + 2,
-            "each successful physical batch confirms and prunes the order index once"
-        );
-        assert_eq!(channel.subscribe().borrow().queued_records, 3);
-        assert_eq!(fixture.sink.0.chat.durable_seq(), 2);
-        assert_eq!(
-            pl_core::chat::ChatHistory::publication_seed(&history)
-                .await?
-                .head_seq,
-            2
-        );
-        let checkpoint = history.checkpoint().await?.unwrap();
-        assert_eq!(
-            checkpoint.state.context.records,
-            third.checkpoint.state.context.records
-        );
-        assert_eq!(checkpoint.state.usage_summary.applied_sequence, 3);
-        assert_eq!(checkpoint.state.usage_summary.totals.inference_count, 2);
-        assert!(history.input_identity("input-2").await?.is_some());
-        assert!(history.input_identity("input-3").await?.is_some());
-        for write in [&second, &third] {
-            let record = &write.effect.interactions[0];
-            let receipt_id = crate::studio::thread_projection::order::receipt_id(
-                "interaction",
-                &record.request.id,
-            );
-            let receipt = history.latest_fact_receipt(&receipt_id).await?.unwrap();
-            assert_eq!(receipt.kind, "interaction");
-            assert_eq!(receipt.payload, serde_json::to_string(record)?);
-        }
-        assert_eq!(history.accounting().await?.unwrap().purpose_costs.len(), 2);
-        let _cold = history
-            .cold_conversation(
-                ChatQuery::new("conversation", None),
-                ReadDemand::new(8, 1024 * 1024),
-                &Budget,
-            )
-            .await?
-            .unwrap();
-        assert_eq!(
-            history
-                .conversation_current()
-                .await?
-                .unwrap()
-                .source_effect_seq,
-            3
-        );
-        let applied = db
-            .query_all_raw(sea_orm::Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "SELECT sequence FROM batch_current_applied ORDER BY rowid",
-            ))
-            .await?
-            .iter()
-            .map(|row| row.try_get::<i64>("", "sequence"))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        assert_eq!(
-            applied,
-            Vec::<i64>::new(),
-            "ordered domain mutations remain complete, but neither the batch nor its replay updates archived current"
-        );
-        let generation = status.borrow().fault_generation;
-        drop(gate);
-        fixture
-            .store
-            .thread_persistence()
-            .retry_history(id, generation)
-            .await?;
-        assert_eq!(lock_progress(&fixture.sink.0).durable, 3);
-        fixture.handoff(&fourth).await?;
-        fixture.finish(4).await
-    }
-}
-
-#[cfg(test)]
-mod watchdog_tests {
-    //! Drive the original detector with a monotonic Tokio observation clock and real storage owners.
-
-    use super::storage_fault_tests::{
-        live_projection, register_test_thread, test_thread, ticket, visible_input_ticket,
-    };
-    use super::*;
-    use pl_core::thread::cold::ColdStore;
-    use sea_orm::{ConnectionTrait, Database, TransactionTrait};
-
-    #[tokio::test]
-    async fn unprepared_head_stalls_despite_later_admissions_and_notifications() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "projection-watchdog";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = sink.0.channel.clone();
-        let lease = channel.step_lock.lock().await;
-        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
-        assert!(channel.subscribe().borrow().fault.is_none());
-        let first = visible_input_ticket(id, 1, "first")?;
-        sink.admit(id, first.clone())?;
-        let admitted_at = lock_progress(&sink.0).effects.front().unwrap().admitted_at;
-        for sequence in 2..=4 {
-            sink.admit(
-                id,
-                visible_input_ticket(id, sequence, &format!("later-{sequence}"))?,
-            )?;
-            channel.changed.notify_one();
-            channel.status.send_modify(|_| {});
-            let _ = sink.pressure(id);
-            channel.detect_stall_at(admitted_at + Duration::from_secs(59));
-            assert!(channel.subscribe().borrow().fault.is_none());
-        }
-        let retained = sink.pressure(id).thread_bytes;
-        channel.detect_stall_at(admitted_at + NO_PROGRESS_WINDOW);
-        let failed = channel.subscribe().borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
-        assert_eq!(failed.committed_sequence, 0);
-        assert_eq!(failed.queued_records, 4);
-        assert_eq!(sink.pressure(id).thread_bytes, retained);
-        assert!(sink.flush(id, 1).await.is_err());
-        channel.detect_stall_at(admitted_at + NO_PROGRESS_WINDOW * 2);
-        assert_eq!(
-            channel.subscribe().borrow().fault_generation,
-            failed.fault_generation
-        );
-
-        let mut projection = live_projection(&sink).await?;
-        let mut deferred_head = None;
-        for sequence in 1..=4 {
-            let write = lock_progress(&sink.0).effects[(sequence - 1) as usize]
-                .write
-                .clone();
-            let mut prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                .await?;
-            projection
-                .publish_prepared(&sink.0.chat, &mut prepared)
-                .await?;
-            if sequence == 1 {
-                deferred_head = Some(prepared);
-                continue;
-            }
-            if sequence == 2 {
-                assert!(
-                    !channel.prepare(prepared.clone()),
-                    "a prepared tail cannot skip the head"
-                );
-                assert_eq!(lock_progress(&sink.0).prepared_through(), 0);
-                assert!(channel.prepare(deferred_head.take().unwrap()));
-            }
-            assert!(channel.prepare(prepared));
-            assert_eq!(lock_progress(&sink.0).prepared_through(), sequence);
-        }
-        assert_eq!(channel.subscribe().borrow().fault, failed.fault);
-        drop(lease);
-        store
-            .thread_persistence()
-            .retry_history(id, failed.fault_generation)
-            .await?;
-        sink.flush(id, 4).await?;
-        assert_eq!(store.history(id).await?.watermark().await?, 4);
-        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
-        assert!(channel.subscribe().borrow().fault.is_none());
-
-        // A known projection failure keeps its source and generation even after the stall window.
-        let lease = channel.step_lock.lock().await;
-        let fifth = visible_input_ticket(id, 5, "explicit-failure")?;
-        sink.admit(id, fifth.clone())?;
-        channel.fail_projection(5, "controlled projection failure".to_owned());
-        let explicit = channel.subscribe().borrow().clone();
-        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW * 2);
-        assert_eq!(*channel.subscribe().borrow(), explicit);
-        assert!(sink.flush(id, 5).await.is_err());
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.checkpoint.state)
-            .await?;
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        assert!(channel.prepare(prepared));
-        drop(lease);
-        store
-            .thread_persistence()
-            .retry_history(id, explicit.fault_generation)
-            .await?;
-        sink.flush(id, 5).await?;
-        channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn pending_sql_retains_writer_and_obligations_until_the_call_returns() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "sql-watchdog";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = sink.0.channel.clone();
-        let lease = channel.step_lock.lock().await;
-        let mut projection = live_projection(&sink).await?;
-        let write = visible_input_ticket(id, 1, "sql-input")?;
-        sink.admit(id, write.clone())?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        assert!(channel.prepare(prepared));
-        assert_eq!(
-            lock_progress(&sink.0).stage,
-            Some(HistoryStage::WriterQueue)
-        );
-        let retained = sink.pressure(id).thread_bytes;
-
-        let path = store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        let blocker = db.begin().await?;
-        blocker
-            .execute_unprepared("UPDATE history_meta SET applied_write_seq = applied_write_seq")
-            .await?;
-        let (entered, pending) = tokio::sync::oneshot::channel();
-        *channel.sql_pending.lock().unwrap() = Some(entered);
-        channel.request_flush(1);
-        drop(lease);
-        pending.await?;
-        let started = {
-            let progress = lock_progress(&sink.0);
-            assert_eq!(progress.stage, Some(HistoryStage::SqlCommit));
-            assert_eq!(progress.prepared_through(), 1);
-            progress.last_progress_at.unwrap()
-        };
-        channel.detect_stall_at(started + Duration::from_secs(59));
-        assert!(channel.subscribe().borrow().fault.is_none());
-        channel.detect_stall_at(started + NO_PROGRESS_WINDOW);
-        let failed = channel.subscribe().borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
-        assert_eq!(failed.committed_sequence, 0);
-        assert_eq!(failed.queued_records, 1);
-        assert_eq!(sink.pressure(id).thread_bytes, retained);
-        assert!(
-            channel.step_lock.try_lock().is_err(),
-            "SQL still owns the writer"
-        );
-        assert!(
-            channel
-                .workers
-                .lock()
-                .await
-                .iter()
-                .any(|worker| !worker.is_finished())
-        );
-        assert!(sink.flush(id, 1).await.is_err());
-        assert_eq!(store.history(id).await?.watermark().await?, 0);
-
-        let mut released = channel.effects_released.subscribe();
-        blocker.rollback().await?;
-        while *released.borrow_and_update() < 1 {
-            released.changed().await?;
-        }
-        assert_eq!(store.history(id).await?.watermark().await?, 1);
-        assert_eq!(channel.subscribe().borrow().fault, failed.fault);
-        assert!(!lock_progress(&sink.0).fault_recovered);
-        // The real call may finish after the watchdog fired. Its success is not automatic recovery.
-        store
-            .thread_persistence()
-            .retry_history(id, failed.fault_generation)
-            .await?;
-        sink.flush(id, 1).await?;
-        channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[test]
-    fn diagnostic_reasons_are_bounded_categories_without_private_source_text() {
-        let error = anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "token=secret private provider response",
-        ))
-        .context("authorization: secret")
-        .context("private request")
-        .context("private response")
-        .context("private path");
-        assert_eq!(safe_error_reasons(&error), vec!["redacted_error"; 4]);
-        let io = anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "token=secret private provider response",
-        ));
-        assert_eq!(safe_error_reasons(&io), vec!["io_permission_denied"]);
-    }
-
-    #[derive(Clone, Default)]
-    struct DiagnosticEvents(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
-
-    #[derive(Default)]
-    struct DiagnosticFields(BTreeMap<String, String>);
-
-    impl tracing::field::Visit for DiagnosticFields {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0.insert(field.name().to_owned(), format!("{value:?}"));
-        }
-    }
-
-    impl tracing::Subscriber for DiagnosticEvents {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.target() == "conversation_work"
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut fields = DiagnosticFields::default();
-            event.record(&mut fields);
-            self.0.lock().unwrap().push(fields.0);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
-    #[test]
-    fn diagnostic_event_correlates_only_the_head_execution_and_redacts_causes() -> Result<()> {
-        use pl_core::thread::{ActiveExecution, ExecutionPhase};
-
-        let capture = DiagnosticEvents::default();
-        let channel = HistoryChannel::new(Arc::new(AtomicU64::new(0)));
-        let mut progress = Progress::default();
-        for (sequence, execution_id) in [(1, "execution-head"), (2, "execution-tail")] {
-            let mut write = ticket("diagnostic-thread", sequence);
-            write.checkpoint.state.execution = Some(ActiveExecution {
-                id: execution_id.to_owned(),
-                phase: ExecutionPhase::Running,
-                turn_id: None,
-            });
-            let bytes = serde_json::to_vec(&write.effect)?.len() as u64;
-            progress.effects.push_back(QueuedEffect {
-                _conversation: None,
-                sequence,
-                admitted_at: Instant::now(),
-                write: Arc::new(write),
-                bytes,
-                prepared: None,
-                prepared_bytes: 0,
-            });
-            progress.effect_bytes += bytes;
-        }
-        progress.refresh_head_stage(Instant::now());
-        let error = anyhow::Error::new(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "SYNTHETIC-SECRET-TOKEN private-provider-response",
-        ))
-        .context("SYNTHETIC-PRIVATE-REQUEST");
-        let reasons = safe_error_reasons(&error);
-        // No enclosing span: background writers must correlate the event from their own head.
-        tracing::subscriber::with_default(capture.clone(), || {
-            channel.diagnose(
-                &progress,
-                Instant::now(),
-                "history_store",
+impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
+        match crate::studio::thread_projection::PreparedAccounting::prepare(effect) {
+            Ok(accounting) => accounting.fold_into(summary),
+            Err(error) => record_error(
+                &self.0,
                 crate::HistoryFault::WriteFailed,
-                &reasons,
-            );
-            Arc::make_mut(&mut progress.effects.front_mut().unwrap().write)
-                .checkpoint
-                .state
-                .execution = None;
-            channel.diagnose(
-                &progress,
-                Instant::now(),
-                "history_store",
-                crate::HistoryFault::WriteFailed,
-                &reasons,
-            );
-        });
-        let events = capture.0.lock().unwrap();
-        assert_eq!(
-            events.len(),
-            2,
-            "the real diagnostic callsite must emit both events"
-        );
-        assert_eq!(events[0]["execution_id"], "Some(\"execution-head\")");
-        assert_eq!(events[1]["execution_id"], "None");
-        for event in events.iter() {
-            assert_eq!(event["thread_id"], "Some(\"diagnostic-thread\")");
-            assert_eq!(event["effect"], "Some(1)");
-            assert_eq!(event["request_id"], "None");
-            assert_eq!(event["generation"], "None");
-            assert_eq!(event["stage"], "Some(\"projection_prepare\")");
-            assert_eq!(event["fault_generation"], "0");
-            assert_eq!(
-                event["reason_chain"],
-                "[\"redacted_error\", \"io_permission_denied\"]"
-            );
-            let text = format!("{event:?}");
-            for private in [
-                "SYNTHETIC-SECRET-TOKEN",
-                "private-provider-response",
-                "SYNTHETIC-PRIVATE-REQUEST",
-                "execution-tail",
-            ] {
-                assert!(!text.contains(private), "diagnostic leaked {private}");
-            }
-            eprintln!("HISTORY_DIAGNOSTIC {text}");
+                FaultTarget::NextWrite,
+                error.to_string(),
+                &["accounting_contract"],
+            ),
         }
-        Ok(())
+    }
+    fn reserve_observed_item(
+        &self,
+        thread: &str,
+        attempt: &str,
+        item: &str,
+    ) -> Result<(), ColdStoreError> {
+        ThreadStorageSink::reserve_observed_item(self, thread, attempt, item)
+    }
+    fn reserve_operation_output(
+        &self,
+        thread: &str,
+        operation: &str,
+        max: u64,
+    ) -> Result<u64, ColdStoreError> {
+        ThreadStorageSink::reserve_operation_output(self, thread, operation, max)
+    }
+    fn charge_operation_output(
+        &self,
+        thread: &str,
+        operation: &str,
+        bytes: u64,
+    ) -> Result<(), ColdStoreError> {
+        ThreadStorageSink::charge_operation_output(self, thread, operation, bytes)
+    }
+    fn release_operation_output(&self, thread: &str, operation: &str) {
+        ThreadStorageSink::release_operation_output(self, thread, operation)
+    }
+    fn pressure(&self, thread: &str) -> StoragePressure {
+        ThreadStorageSink::pressure(self, thread)
+    }
+    fn idle_status(&self, thread: &str) -> StorageIdleStatus {
+        ThreadStorageSink::idle_status(self, thread)
+    }
+    fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        ThreadStorageSink::subscribe_pressure(self, thread)
+    }
+    fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.admit_export(thread, export)
+    }
+    fn read_tool_task(
+        &self,
+        thread: &str,
+        task: &str,
+    ) -> impl std::future::Future<
+        Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>,
+    > + Send {
+        ThreadStorageSink::read_tool_task(self, thread, task)
     }
 }
 
 #[cfg(test)]
 pub(crate) mod storage_fault_tests {
     use super::*;
-    use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
     use pl_core::{
         context::{ContextContent, OpaquePayload},
-        model::{
-            DynModelSession, ModelError, ModelRequest, ModelSession, ModelStepOutput,
-            ModelToolCall, PreparedModelCall,
-        },
         thread::{
-            ModelStepLimit, ThreadEffectBatch, ThreadHandle, ThreadSnapshot, TurnInput,
-            TurnOutcome, TurnRecord, TurnState,
-            cold::ColdStoreHandle,
+            ThreadEffectBatch, ThreadSnapshot, TurnOutcome, TurnRecord, TurnState,
+            current::RuntimeEpoch,
+            history_sink::HistorySink,
             input::{InputChange, InputRecord, InputState, ThreadInput},
-            task::TaskStatus,
-        },
-        tool::{
-            ToolOutput,
-            opaque::{CallContext, Registration, ToolError},
         },
     };
-    use sea_orm::{ConnectionTrait, Database};
-    use tokio::sync::{Notify, mpsc};
-    use tokio_util::sync::CancellationToken;
 
-    #[derive(Debug)]
-    struct ConcurrentModel(Arc<AtomicUsize>);
-
-    impl ModelSession for ConcurrentModel {
-        async fn prepare(
-            &mut self,
-            request: ModelRequest,
-        ) -> Result<PreparedModelCall, ModelError> {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(PreparedModelCall::new(async move {
-                Ok(ModelStepOutput {
-                    turn_action: Default::default(),
-                    attempt_id: request.attempt_id,
-                    base_context_revision: request.context.revision,
-                    content: vec![ContextContent::Text {
-                        text: Arc::from("running both tools"),
-                    }],
-                    tool_calls: ["first", "second"]
-                        .into_iter()
-                        .map(|id| ModelToolCall {
-                            rejection: None,
-                            presentation_contract: None,
-                            call_id: id.to_owned(),
-                            tool_id: id.to_owned(),
-                            arguments: OpaquePayload::text(id),
-                        })
-                        .collect(),
-                    private_context: None,
-                    usage: Default::default(),
-                })
-            }))
-        }
-
-        async fn close(&mut self) -> Result<(), ModelError> {
-            Ok(())
-        }
-    }
-
-    #[derive(Debug)]
-    struct ConcurrentTool {
-        definition: ToolDefinition,
-        started: mpsc::UnboundedSender<String>,
-        release: Arc<Notify>,
-        executions: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl Tool for ConcurrentTool {
-        type Input = OpaquePayload;
-        type Context = CallContext;
-        type Output = ToolOutput;
-        type Error = ToolError;
-
-        fn definition(&self) -> &ToolDefinition {
-            &self.definition
-        }
-
-        async fn execute(
-            &self,
-            input: OpaquePayload,
-            context: CallContext,
-        ) -> Result<ToolOutput, ToolError> {
-            self.executions
-                .lock()
-                .unwrap()
-                .push(context.call_id.clone());
-            self.started.send(context.call_id).unwrap();
-            self.release.notified().await;
-            Ok(ToolOutput::new(
-                input.clone(),
-                vec![ContextContent::Text {
-                    text: Arc::from(input.content()),
-                }],
-            ))
-        }
-    }
-
-    pub(crate) fn ticket(thread_id: &str, sequence: u64) -> ThreadWrite {
-        let state = ThreadSnapshot {
-            commit_sequence: sequence,
-            ..Default::default()
-        };
-        ThreadWrite {
+    pub(crate) fn ticket(thread_id: &str, sequence: u64) -> Arc<HistoryExport> {
+        Arc::new(HistoryExport {
             effect: Arc::new(ThreadEffectBatch {
                 thread_id: thread_id.to_owned(),
                 sequence,
                 committed_at: 1,
                 ..Default::default()
             }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread_id.to_owned(), sequence, state),
-            output_claim: None,
-        }
-    }
-
-    fn ticket_referencing_attachment(
-        thread_id: &str,
-        attachment: &crate::studio::AttachmentRecord,
-    ) -> Result<ThreadWrite> {
-        let mut write = ticket(thread_id, 1);
-        let input = InputRecord {
-            continuation: None,
-            accepted_sequence: 1,
-            delivery: Default::default(),
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: "attached-input".to_owned(),
-                payload: OpaquePayload::new(
-                    "pl.studio.prompt",
-                    1,
-                    serde_json::json!({
-                        "text": "attached",
-                        "presentation": "visible",
-                        "attachments": [attachment],
-                    })
-                    .to_string(),
-                )?,
-                context: Vec::new(),
+            state: ThreadSnapshot {
+                commit_sequence: sequence,
+                ..Default::default()
             },
-            ordinal: 1,
-            revision: 1,
-            state: InputState::Pending,
-        };
-        write.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Ok(write)
+            output_claim: None,
+        })
     }
 
     pub(super) fn test_thread(thread_id: &str) -> crate::Thread {
@@ -4981,241 +3610,6 @@ pub(crate) mod storage_fault_tests {
         store.persist_directory_summaries(&delta).await
     }
 
-    impl crate::studio::ProductEventBus {
-        pub(crate) async fn commit_test_thread(&self, thread: &crate::Thread) -> Result<()> {
-            let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
-                crate::studio::store::directory::ProjectDirectoryRecord {
-                    id: thread.workspace_id.clone(),
-                    kind: crate::WorkspaceKind::Project,
-                    name: "Test".into(),
-                    path: thread.workspace_path.clone(),
-                    ssh_alias: None,
-                    created_at: 1,
-                    updated_at: 1,
-                    last_opened_at: None,
-                    closed: false,
-                },
-            );
-            let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
-            delta.session_upserts.extend(session);
-            delta.agent_upserts.push(agent);
-            self.commit_directory(delta).await?;
-            Ok(())
-        }
-    }
-
-    async fn sink(thread_id: &str) -> Result<(tempfile::TempDir, StudioStore, ThreadStorageSink)> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = test_thread(thread_id);
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
-        spawn_live_projection(&sink);
-        Ok((temp, store, sink))
-    }
-
-    #[tokio::test]
-    async fn late_reliable_summary_publishes_without_another_billing() -> Result<()> {
-        use crate::studio::agent_host::ThreadWriteBehindWriter;
-        use crate::studio::runtime::ModelPerformanceOwner;
-        use crate::studio::thread_projection::AuxiliaryBillingReceipt;
-        use crate::{
-            FirstOutputSource, InferenceAccounting, InferenceBillingRecord, InferenceTiming,
-            PricingOutcome, RuntimeCostAmount, UsageReport,
-        };
-        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = test_thread("late-summary");
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let product_writer = ThreadWriteBehindWriter::new(store.clone());
-        let events = crate::studio::ProductEventBus::new(store.clone(), product_writer.clone());
-        let mut cost_events = events.subscribe_topic(&crate::StudioProductTopic::SessionCosts {
-            root_thread_id: thread.root_thread_id.clone(),
-        });
-        let owner = ModelPerformanceOwner::new(store.clone(), events, "late-summary-owner".into());
-        owner.initialize_projection().await;
-        let feed = owner.subscribe_statistics();
-        let initial = feed.next().await?.context("missing initial statistics")?;
-        feed.acknowledge(initial.delivery_sequence)?;
-
-        let billing = InferenceBillingRecord {
-            inference_id: "title-call".into(),
-            purpose: Some("title".into()),
-            account_id: "account".into(),
-            account_display_name: Some("Account".into()),
-            model_id: Some("model".into()),
-            model_observation: None,
-            effort: None,
-            context_window: None,
-            accounting: InferenceAccounting {
-                usage: UsageReport {
-                    input_tokens: Some(10),
-                    output_tokens: Some(2),
-                    cache_read_tokens: Some(0),
-                    total_tokens: Some(12),
-                    ..Default::default()
-                },
-                pricing: PricingOutcome::Estimated {
-                    cost: RuntimeCostAmount {
-                        currency: "USD".into(),
-                        amount: 1.25,
-                    },
-                    cache_savings: None,
-                },
-                ..Default::default()
-            },
-            prompt_generation: None,
-            prompt_cache_policy: None,
-            prefix_changed_reason: None,
-            orchestration: Default::default(),
-            timing: Some(InferenceTiming {
-                first_output_source: FirstOutputSource::CompletedToolInput,
-                ttft_millis: Some(100),
-                decode_millis: Some(0),
-                response_millis: 100,
-            }),
-            recorded_at: crate::studio::unix_seconds(),
-        };
-        let extension = ExtensionRecord {
-            revision: 1,
-            payload: AuxiliaryBillingReceipt {
-                billing: billing.clone(),
-                succeeded: true,
-            }
-            .into_payload()?,
-        };
-        let mut write = ticket(&thread.id, 1);
-        Arc::make_mut(&mut write.effect).extensions = vec![ExtensionChange::Put {
-            id: "studio.auxiliary-billing.title".into(),
-            record: extension.clone(),
-        }]
-        .into();
-        write.checkpoint.state.extension_sequence = 1;
-        write
-            .checkpoint
-            .state
-            .extensions
-            .insert("studio.auxiliary-billing.title".into(), extension);
-
-        // Block the actual ordered history writer, not a replacement saver or artificial delay.
-        let history_gate = sink.0.channel.step_lock.lock().await;
-        sink.admit(&thread.id, write.clone())?;
-        let mut live = live_projection(&sink).await?;
-        let (_, mut prepared) = live
-            .prepare(&thread, &write.effect, &write.checkpoint.state, false)
-            .await?;
-        live.publish_prepared(&sink.0.chat, &mut prepared).await?;
-        assert!(sink.0.channel.prepare(prepared.clone()));
-        for fact in prepared.accounting.facts.iter() {
-            owner.record_auxiliary_inference(
-                &thread.root_thread_id,
-                &thread.id,
-                &fact.record,
-                fact.status,
-            )?;
-        }
-        let billing_publication = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let header = feed.next().await?.context("statistics feed closed")?;
-                feed.acknowledge(header.delivery_sequence)?;
-                if owner.snapshot().await.history.len() == 1 {
-                    break Ok::<_, anyhow::Error>(header);
-                }
-            }
-        })
-        .await
-        .context("Billing performance publication timed out")??;
-        assert_eq!(store.history(&thread.id).await?.watermark().await?, 0);
-        assert!(
-            owner
-                .session_costs_snapshot(&thread.id)
-                .await
-                .cost
-                .is_none()
-        );
-        let before_costs = owner.snapshot().await;
-        assert_eq!(
-            billing_publication.history_count,
-            before_costs.history.len() as u64
-        );
-        assert_eq!(before_costs.history[0].completion_tokens, Some(2));
-        assert_eq!(
-            before_costs.history[0].first_output_source,
-            FirstOutputSource::CompletedToolInput
-        );
-        assert_eq!(before_costs.history[0].decode_millis, Some(0));
-
-        drop(history_gate);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-        // A late cost-only Summary must publish its scoped fact, not manufacture a global
-        // performance revision solely to wake this test. Observe the actual consumer topic.
-        let costs_publication = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let crate::StudioProductEventKind::SessionCostsChanged(state) =
-                    cost_events.recv().await?.kind
-                    && state
-                        .cost
-                        .as_ref()
-                        .and_then(|cost| cost.estimated_costs.first())
-                        .is_some_and(|cost| cost.amount == 1.25)
-                {
-                    break Ok::<_, anyhow::Error>(state);
-                }
-            }
-        })
-        .await
-        .context("late Summary scoped cost publication timed out")??;
-        assert_eq!(costs_publication.root_thread_id, thread.root_thread_id);
-        assert!(!costs_publication.read_failed);
-        assert_eq!(
-            owner.session_costs_snapshot(&thread.id).await,
-            costs_publication
-        );
-        let after_costs = owner.snapshot().await;
-        assert!(
-            Arc::ptr_eq(&after_costs.history, &before_costs.history),
-            "cost-only publication must retain the frozen history material"
-        );
-        assert!(
-            Arc::ptr_eq(&after_costs.summaries, &before_costs.summaries),
-            "cost-only publication must retain the frozen summary material"
-        );
-        assert_eq!(after_costs.history, before_costs.history);
-        assert_eq!(
-            store
-                .history(&thread.id)
-                .await?
-                .checkpoint()
-                .await?
-                .unwrap()
-                .state
-                .usage_summary
-                .totals
-                .inference_count,
-            1
-        );
-
-        // Repeating the same reliable fact and billing does not add another contribution.
-        let admitted = store.calls().admitted_ticket();
-        sink.admit(&thread.id, write)?;
-        owner.record_auxiliary_inference(
-            &thread.root_thread_id,
-            &thread.id,
-            &billing,
-            super::super::calls::CallStatus::Committed,
-        )?;
-        assert_eq!(store.calls().admitted_ticket(), admitted);
-        sink.0.channel.stop_and_join().await?;
-        feed.close().await?;
-        owner.close().await?;
-        product_writer.shutdown().await?;
-        store.close().await?;
-        Ok(())
-    }
-
     pub(crate) struct CloseFactoryFixture {
         pub(crate) factory: crate::studio::StudioThreadFactory,
         pub(in crate::studio) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
@@ -5224,6 +3618,7 @@ pub(crate) mod storage_fault_tests {
         store: StudioStore,
         worktrees: crate::studio::agent_host::worktree_lease::WorktreeLeaseOwner,
     }
+
     impl CloseFactoryFixture {
         pub(crate) async fn unpublished_workspace(
             &self,
@@ -5248,9 +3643,11 @@ pub(crate) mod storage_fault_tests {
             preparation.retain(&usage);
             Ok(preparation)
         }
+
         pub(crate) fn workspace_is_busy(&self, id: &str) -> bool {
             self.worktrees.ensure_thread_workspace_idle(id).is_err()
         }
+
         pub(crate) fn install(
             &self,
             owner: &crate::thread_assembler::SessionRuntime,
@@ -5270,6 +3667,7 @@ pub(crate) mod storage_fault_tests {
             )?;
             Ok(())
         }
+
         pub(crate) async fn shutdown(&self) -> Result<()> {
             self.writer.shutdown().await?;
             Ok(())
@@ -5321,1022 +3719,609 @@ pub(crate) mod storage_fault_tests {
         })
     }
 
-    #[tokio::test]
-    async fn close_intent_preserves_inherited_and_actual_assignment_for_subdirectory_projects()
-    -> Result<()> {
-        use crate::agent::worktree::{WorktreeManager, WorktreeOwnership};
-        use crate::studio::agent_host::worktree_lease::{
-            WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
-            WorktreeLeaseState,
-        };
-        use crate::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
-        async fn register(
-            store: &StudioStore,
-            thread: &crate::Thread,
-            project_root: &std::path::Path,
-        ) -> Result<()> {
-            let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
-                crate::studio::store::directory::ProjectDirectoryRecord {
-                    id: thread.workspace_id.clone(),
-                    kind: crate::WorkspaceKind::Project,
-                    name: "Subdirectory Project".into(),
-                    path: project_root.to_string_lossy().into_owned(),
-                    ssh_alias: None,
-                    created_at: 1,
-                    updated_at: 1,
-                    last_opened_at: None,
-                    closed: false,
-                },
-            );
-            let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
-            if let Some(session) = session {
-                delta.session_upserts.push(session);
-            }
-            delta.agent_upserts.push(agent);
-            store.persist_directory_summaries(&delta).await
-        }
-        let temp = tempfile::tempdir()?;
-        let repository = temp.path().join("repository");
-        let project_root = repository.join("subdirectory");
-        tokio::fs::create_dir_all(&project_root).await?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let mut root = test_thread("root-local");
-        root.workspace_path = project_root.to_string_lossy().into_owned();
-        register(&store, &root, &project_root).await?;
-        let mut root_worktree = test_thread("root-worktree");
-        root_worktree.workspace_mode = crate::ThreadWorkspaceMode::Worktree;
-        let root_site = WorktreeManager::allocate_path(
-            &repository,
-            &root_worktree.id,
-            &WorktreeOwnership::Session {
-                thread_id: root_worktree.id.clone(),
-            },
-        );
-        root_worktree.workspace_path = root_site.to_string_lossy().into_owned();
-        register(&store, &root_worktree, &project_root).await?;
-        let child_site = WorktreeManager::allocate_path(
-            &repository,
-            &root.id,
-            &WorktreeOwnership::Child {
-                child_id: "worktree-owner".into(),
-            },
-        );
-        let child_receipt = AgentWorktreeSnapshot {
-            repository_root: repository.to_string_lossy().into_owned(),
-            path: child_site.to_string_lossy().into_owned(),
-            base_commit: "a".repeat(40),
-        };
-        let mut cases = Vec::new();
-        for (id, parent, mode, assigned, receipt, reviewed) in [
-            (
-                "worktree-owner",
-                &root,
-                AgentWorkspaceMode::Worktree,
-                &child_site,
-                Some(child_receipt.clone()),
-                None,
-            ),
-            (
-                "review-owner",
-                &root,
-                AgentWorkspaceMode::Review,
-                &child_site,
-                Some(child_receipt.clone()),
-                Some(crate::AgentReviewTargetSnapshot {
-                    baseline: None,
-                    feedback: None,
-                    agent_id: "worktree-owner".into(),
-                }),
-            ),
-            (
-                "directory-owner",
-                &root,
-                AgentWorkspaceMode::Directory,
-                &project_root,
-                None,
-                None,
-            ),
-            (
-                "session-directory-owner",
-                &root_worktree,
-                AgentWorkspaceMode::Directory,
-                &root_site,
-                None,
-                None,
-            ),
-        ] {
-            tokio::fs::create_dir_all(assigned).await?;
-            let mut thread = test_thread(id);
-            thread.parent_thread_id = Some(parent.id.clone());
-            thread.root_thread_id = parent.id.clone();
-            thread.workspace_path = parent.workspace_path.clone();
-            thread.workspace_mode = parent.workspace_mode;
-            register(&store, &thread, &project_root).await?;
-            let assignment = AgentWorkspaceAssignmentSnapshot {
-                mode,
-                project_root: project_root.to_string_lossy().into_owned(),
-                root: assigned.to_string_lossy().into_owned(),
-                writable_paths: None,
-                worktree: receipt,
-                review_target: reviewed,
-            };
-            cases.push((thread, assignment));
-        }
-        store
-            .persist_directory_summaries(
-                &crate::studio::store::directory::DirectoryDelta::upsert_project(
-                    crate::studio::store::directory::ProjectDirectoryRecord {
-                        id: "project-test".into(),
-                        kind: crate::WorkspaceKind::Project,
-                        name: "Subdirectory Project".into(),
-                        path: project_root.to_string_lossy().into_owned(),
-                        ssh_alias: None,
-                        created_at: 1,
-                        updated_at: 1,
-                        last_opened_at: None,
-                        closed: false,
-                    },
-                ),
-            )
-            .await?;
-        let project = store.read_project("project-test").await?.unwrap();
-        let fixture = close_factory(&store)?;
-        for (owner, kind, root_id, path) in [
-            (
-                "worktree-owner",
-                WorktreeLeaseOwnerKind::Child,
-                root.id.as_str(),
-                child_site.clone(),
-            ),
-            (
-                root_worktree.id.as_str(),
-                WorktreeLeaseOwnerKind::Session,
-                root_worktree.id.as_str(),
-                root_site.clone(),
-            ),
-        ] {
-            let mut lease = WorktreeLease {
-                revision: 1,
-                state: WorktreeLeaseState::Prepared,
-                owner_kind: kind,
-                owner_thread_id: owner.into(),
-                root_thread_id: root_id.into(),
-                workspace_id: "project-test".into(),
-                ssh_alias: None,
-                repository_root: repository.to_string_lossy().into_owned(),
-                path: path.to_string_lossy().into_owned(),
-                base_commit: "a".repeat(40),
-            };
-            fixture.worktrees.record_durable(lease.clone()).await?;
-            lease.transition(WorktreeLeaseState::Active);
-            fixture.worktrees.record_durable(lease).await?;
-        }
-        for (thread, assignment) in cases {
-            let catalog = store.catalog();
-            let registered_agent = catalog
-                .get_agent(&thread.id)
-                .expect("registered projection agent");
-            let registered_session = catalog
-                .get_session(&registered_agent.session_id)
-                .expect("registered projection session");
-            store
-                .prepare_session_manifest(&registered_session, &registered_agent, |id| {
-                    catalog.get_agent(id)
-                })
-                .await?;
-            let execution = std::path::Path::new(&assignment.root)
-                .join(pl_tool::workspace::SessionFiles::new(&thread.id).root());
-            tokio::fs::create_dir_all(&execution).await?;
-            tokio::fs::write(execution.join("owned"), b"exact owner").await?;
-            let identity =
-                WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, assignment.root.clone())?;
-            store.bind_workspace_identity(&thread.id, &identity).await?;
-            let core =
-                pl_core::thread::ThreadHandle::resume_without_model(thread.id.clone(), None)?;
-            core.mutate_extensions(vec![
-                pl_core::thread::extensions::ExtensionMutation::Put {
-                    id: crate::studio::workspace_receipt::EXTENSION.into(),
-                    expected_revision: None,
-                    payload: crate::studio::workspace_receipt::to_payload(&assignment)
-                        .map_err(anyhow::Error::msg)?,
-                },
-                pl_core::thread::extensions::ExtensionMutation::Put {
-                    id: "studio.project".into(),
-                    expected_revision: None,
-                    payload: pl_core::context::OpaquePayload::new(
-                        "pl.studio.project",
-                        1,
-                        serde_json::to_string(&project)?,
-                    )?,
-                },
-            ])
-            .await?;
-            let close = fixture
-                .factory
-                .begin_child_close(&thread, Some(&core.snapshot()), false)
-                .await?;
-            if assignment.mode == AgentWorkspaceMode::Worktree {
-                let owned = close.worktree.as_ref().context("actual owned worktree")?;
-                assert_eq!(owned.lease.path, assignment.root);
-                assert_eq!(owned.identity, identity);
-                assert_ne!(thread.workspace_path, owned.lease.path);
-            } else {
-                assert!(
-                    close.worktree.is_none(),
-                    "directory/review must not acquire deletion ownership"
-                );
-            }
-            assert_eq!(
-                tokio::fs::read(execution.join("owned")).await?,
-                b"exact owner"
-            );
-            let repeated = fixture
-                .factory
-                .begin_child_close(&thread, None, false)
-                .await?;
-            assert_eq!(close, repeated);
-            core.close().await?;
-        }
-        fixture.shutdown().await?;
-        Ok(())
+    pub(crate) fn spawn_live_projection_for_thread(
+        store: StudioStore,
+        id: &str,
+    ) -> tokio::task::JoinHandle<()> {
+        let catalog = store.catalog();
+        let agent = catalog.get_agent(id).expect("registered projection agent");
+        let session = catalog
+            .get_session(&agent.session_id)
+            .expect("registered projection session");
+        let thread = crate::studio::records::thread_projection(&session, &agent, |id| {
+            catalog.get_agent(id).map(|agent| agent.thread_id)
+        })
+        .expect("Native projection");
+        spawn_projection(store, thread)
     }
 
-    #[tokio::test]
-    async fn unknown_old_close_candidates_preserve_source_and_refuse_new_delete_authority()
-    -> Result<()> {
-        use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let parent = test_thread("legacy-parent");
-        register_test_thread(&store, &parent).await?;
-        let mut child = test_thread("legacy-child");
-        child.parent_thread_id = Some(parent.id.clone());
-        child.root_thread_id = parent.id.clone();
-        child.workspace_path = parent.workspace_path.clone();
-        register_test_thread(&store, &child).await?;
-        let source = store
-            .registered_session_paths(&child.id)?
-            .root()
-            .join("retained-evidence");
-        tokio::fs::create_dir_all(source.parent().unwrap()).await?;
-        tokio::fs::write(&source, b"original history and attachments").await?;
-        let payload = r#"{"unknownOriginalCloseFacts":true}"#;
-        let hash = pl_core::context::content_hash(payload.as_bytes());
-        store.database().execute_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
-            "INSERT INTO studio_objects(owner_kind,owner_id,object_kind,schema_version,revision,payload_json,payload_hash,updated_at) VALUES ('thread',?,'agentRetirement',99,1,?,?,1)",
-            [child.id.clone().into(), payload.to_owned().into(), hash.clone().into()])).await?;
-        let fixture = close_factory(&store)?;
-        assert!(
-            store
-                .ensure_agent_execution_allowed(&child.id)
-                .await
-                .is_err()
-        );
-        assert!(
-            fixture
-                .factory
-                .begin_child_close(&child, None, true)
-                .await
-                .is_err()
-        );
-        assert!(store.agent_close(&child.id).await?.is_none());
-        let row = store.database().query_one_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
-            "SELECT schema_version,payload_json,payload_hash FROM studio_objects WHERE owner_id=? AND object_kind='agentRetirement'",
-            [child.id.into()])).await?.context("preserved unknown object")?;
-        assert_eq!(row.try_get::<i64>("", "schema_version")?, 99);
-        assert_eq!(row.try_get::<String>("", "payload_json")?, payload);
-        assert_eq!(row.try_get::<String>("", "payload_hash")?, hash);
-        assert_eq!(
-            tokio::fs::read(source).await?,
-            b"original history and attachments"
-        );
-        fixture.shutdown().await?;
-        Ok(())
-    }
-
-    /// Replaces the former whole-resource retirement case with the actual close/storage contract:
-    /// save ACKs, live borrowers, content protection, retained history/refs and replacement safety.
-    #[tokio::test]
-    async fn close_worktree_preserves_original_history_refs_and_terminal_replacements() -> Result<()>
-    {
-        use crate::agent::worktree::{
-            ExecutorWorktreeBackend, WorktreeCreateSpec, WorktreeManager, WorktreeOwnership,
-        };
-        use crate::studio::agent_host::worktree_lease::{
-            WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
-            WorktreeLeaseState,
-        };
-        use pl_core::context::ResourceReader;
-        use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle, extensions::ExtensionMutation};
-        use pl_tool::collaboration::control::AgentWorktreeCleanup;
-
-        async fn git(root: &std::path::Path, args: &[&str]) -> Result<String> {
-            let output = tokio::process::Command::new("git")
-                .args(args)
-                .current_dir(root)
-                .output()
-                .await?;
-            anyhow::ensure!(
-                output.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-        }
-        let temp = tempfile::tempdir()?;
-        let repository = temp.path().join("repository");
-        tokio::fs::create_dir_all(&repository).await?;
-        git(&repository, &["init", "--quiet"]).await?;
-        git(&repository, &["config", "user.name", "Close fixture"]).await?;
-        git(
-            &repository,
-            &["config", "user.email", "close@example.invalid"],
-        )
-        .await?;
-        tokio::fs::write(repository.join(".gitignore"), b".anywork/\n").await?;
-        tokio::fs::write(repository.join("tracked"), b"committed").await?;
-        git(&repository, &["add", ".gitignore", "tracked"]).await?;
-        git(
-            &repository,
-            &["commit", "--quiet", "-m", "fixture baseline"],
-        )
-        .await?;
-        let repository = dunce::canonicalize(repository)?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let mut parent = test_thread("close-parent");
-        parent.workspace_path = repository.to_string_lossy().into_owned();
-        register_test_thread(&store, &parent).await?;
-        let mut child = test_thread("close-owned-child");
-        child.parent_thread_id = Some(parent.id.clone());
-        child.root_thread_id = parent.id.clone();
-        child.workspace_path = parent.workspace_path.clone();
-        register_test_thread(&store, &child).await?;
-        let fixture = close_factory(&store)?;
-        let manager = WorktreeManager::new(
-            repository.clone(),
-            Arc::new(ExecutorWorktreeBackend::new(
-                pl_remote_helper::Executor::local()?,
-            )),
-        );
-        let ownership = WorktreeOwnership::Child {
-            child_id: child.id.clone(),
-        };
-        let head = manager.resolve_head(&repository).await?;
-        let mut lease = WorktreeLease {
-            revision: 1,
-            state: WorktreeLeaseState::Prepared,
-            owner_kind: WorktreeLeaseOwnerKind::Child,
-            owner_thread_id: child.id.clone(),
-            root_thread_id: parent.id.clone(),
-            workspace_id: child.workspace_id.clone(),
-            ssh_alias: None,
-            repository_root: parent.workspace_path.clone(),
-            path: WorktreeManager::allocate_path(&repository, &parent.id, &ownership)
-                .to_string_lossy()
-                .into_owned(),
-            base_commit: head.clone(),
-        };
-        fixture.worktrees.record_durable(lease.clone()).await?;
-        let handle = manager
-            .create(WorktreeCreateSpec {
-                repo_root: repository.clone(),
-                root_thread_id: parent.id.clone(),
-                ownership,
-                base_commit: head,
-            })
-            .await?;
-        lease.transition(WorktreeLeaseState::Active);
-        fixture.worktrees.record_durable(lease.clone()).await?;
-        let identity = WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, lease.path.clone())?;
-        store.bind_workspace_identity(&child.id, &identity).await?;
-        store
-            .bind_workspace_identity(
-                &parent.id,
-                &WorkspaceIdentity::canonical(
-                    WorkspaceEndpoint::Local,
-                    parent.workspace_path.clone(),
-                )?,
-            )
-            .await?;
-        let assignment = crate::AgentWorkspaceAssignmentSnapshot {
-            mode: crate::AgentWorkspaceMode::Worktree,
-            project_root: parent.workspace_path.clone(),
-            root: lease.path.clone(),
-            writable_paths: None,
-            review_target: None,
-            worktree: Some(crate::AgentWorktreeSnapshot {
-                repository_root: lease.repository_root.clone(),
-                path: lease.path.clone(),
-                base_commit: lease.base_commit.clone(),
-            }),
-        };
-        let core = ThreadHandle::resume_without_model(child.id.clone(), None)?;
-        let sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
-        spawn_live_projection(&sink);
-        core.attach_storage(ColdStoreHandle::new(sink)).await?;
-        core.mutate_extensions(vec![ExtensionMutation::Put {
-            id: crate::studio::workspace_receipt::EXTENSION.into(),
-            expected_revision: None,
-            payload: crate::studio::workspace_receipt::to_payload(&assignment)
-                .map_err(anyhow::Error::msg)?,
-        }])
-        .await?;
-        let resources =
-            crate::resource_store::FileResourceStore::new(store.session_resources_dir(&child.id)?);
-        let reference = resources
-            .retain_bytes(
-                Arc::from(&b"reliable original attachment"[..]),
-                "text/plain",
-            )
-            .await?;
-        let independent_files =
-            repository.join(pl_tool::workspace::SessionFiles::new(&parent.id).root());
-        tokio::fs::create_dir_all(&independent_files).await?;
-        tokio::fs::write(
-            independent_files.join("retained"),
-            b"independent session files",
-        )
-        .await?;
-        let borrower = fixture
-            .worktrees
-            .reserve_workspace("active-reviewer", WorkspaceEndpoint::Local)?;
-        fixture
-            .worktrees
-            .assign_workspace(&borrower, identity.clone())?;
-        fixture
-            .factory
-            .begin_child_close(&child, Some(&core.snapshot()), false)
-            .await?;
-        crate::studio::agent_close::commit(&core).await?;
-        core.close().await?;
-        store
-            .thread_persistence()
-            .history_channel(&child.id)
-            .stop_and_join()
-            .await?;
-        let history = store.history(&child.id).await?;
-        let saved = serde_json::to_vec(&history.checkpoint().await?)?;
-        fixture.factory.finish_child_execution(&child).await?;
-        let (blocked, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(blocked.execution_closed);
-        assert!(
-            error
-                .context("active borrower must block")?
-                .message
-                .contains("active-reviewer")
-        );
-        assert!(matches!(
-            blocked.worktree_cleanup,
-            AgentWorktreeCleanup::Failed { .. }
-        ));
-        drop(borrower);
-        tokio::fs::write(handle.path.join("tracked"), b"uncommitted child work").await?;
-        let (dirty, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(error.is_some());
-        assert!(matches!(
-            dirty.worktree_cleanup,
-            AgentWorktreeCleanup::Failed { .. }
-        ));
-        assert!(tokio::fs::try_exists(&handle.path).await?);
-        git(&handle.path, &["add", "tracked"]).await?;
-        git(
-            &handle.path,
-            &["commit", "--quiet", "-m", "undelivered child work"],
-        )
-        .await?;
-        let before_refusal_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
-        // Detached creation owns no branch. An independently created business ref must survive
-        // close even when the child checks it out after its ownership was frozen.
-        let retained_branch = "retained-business";
-        git(&handle.path, &["switch", "-c", retained_branch]).await?;
-        let (_, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(
-            error
-                .context("undelivered HEAD must block default close")?
-                .message
-                .contains("not contained")
-        );
-        assert!(
-            store.agent_close(&child.id).await?.unwrap().git.is_none(),
-            "content refusal must precede the destructive grant, preserving a force retry"
-        );
-        fixture
-            .factory
-            .begin_child_close(&child, None, true)
-            .await?;
-        git(&repository, &["worktree", "lock", &lease.path]).await?;
-        let (_, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(
-            error
-                .context("Git lock must still block force")?
-                .message
-                .contains("locked")
-        );
-        assert!(
-            !store
-                .agent_close(&child.id)
-                .await?
-                .unwrap()
-                .git
-                .unwrap()
-                .removal_started,
-            "a confirmed Git refusal plus the original remaining site permits a fresh attempt"
-        );
-        // A previous attempt's expected HEAD is content authorization, not permanent identity.
-        tokio::fs::write(
-            handle.path.join("tracked"),
-            b"advanced after confirmed refusal",
-        )
-        .await?;
-        git(&handle.path, &["add", "tracked"]).await?;
-        git(
-            &handle.path,
-            &["commit", "--quiet", "-m", "advance after refused removal"],
-        )
-        .await?;
-        let retained_head = git(&handle.path, &["rev-parse", "HEAD"]).await?;
-        assert_ne!(retained_head, before_refusal_head);
-        git(&repository, &["worktree", "unlock", &lease.path]).await?;
-        let (removed, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(error.is_none(), "{error:?}");
-        assert_eq!(
-            removed.worktree_cleanup,
-            AgentWorktreeCleanup::Removed {
-                path: lease.path.clone()
-            }
-        );
-        assert!(!tokio::fs::try_exists(&handle.path).await?);
-        assert_eq!(
-            git(&repository, &["rev-parse", retained_branch]).await?,
-            retained_head
-        );
-        assert_eq!(serde_json::to_vec(&history.checkpoint().await?)?, saved);
-        assert_eq!(
-            &*resources.read(reference, Default::default()).await?,
-            b"reliable original attachment"
-        );
-        assert_eq!(
-            tokio::fs::read(independent_files.join("retained")).await?,
-            b"independent session files"
-        );
-        git(
-            &repository,
-            &["worktree", "add", &lease.path, retained_branch],
-        )
-        .await?;
-        let (repeated, error) = fixture
-            .factory
-            .finish_child_worktree_cleanup(&child)
-            .await?;
-        assert!(
-            error.is_some(),
-            "a terminal grant must not delete a replacement"
-        );
-        assert_eq!(repeated.worktree_cleanup, removed.worktree_cleanup);
-        assert!(tokio::fs::try_exists(&handle.path).await?);
-        fixture
-            .factory
-            .restore_workspace_admission(
-                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
-            )
-            .await?;
-        assert!(tokio::fs::try_exists(&handle.path).await?);
-        assert!(
-            store
-                .ensure_agent_execution_allowed(&child.id)
-                .await
-                .is_err()
-        );
-        assert!(history.checkpoint().await?.is_some());
-        // A fresh process hydrates the top-level lease after it reads the close record. The old
-        // preserved ownership must not resurrect a physical borrow once this result is terminal.
-        let restarted = close_factory(&store)?;
-        restarted
-            .factory
-            .restore_workspace_admission(
-                crate::studio::agent_host::worktree_lease::load_leases(&store).await?,
-            )
-            .await?;
-        let container = WorkspaceIdentity::canonical(
-            WorkspaceEndpoint::Local,
-            repository.to_string_lossy().into_owned(),
-        )?;
-        let seal = restarted.worktrees.try_seal_workspace(
-            "new-container-owner",
-            container.clone(),
-            &std::collections::BTreeSet::new(),
-        )?;
-        restarted
-            .worktrees
-            .release_workspace_seal("new-container-owner", &container)?;
-        drop(seal);
-        assert!(
-            store
-                .ensure_agent_execution_allowed(&child.id)
-                .await
-                .is_err()
-        );
-        restarted.shutdown().await?;
-        fixture.shutdown().await?;
-        Ok(())
-    }
-
-    /// Physical binding persistence and live admission share exact identities. The domain seal's
-    /// producer still owns the grant ACK proof; this component does not execute a full close/Git.
-    #[tokio::test]
-    async fn saved_workspace_identity_keeps_preparers_and_pending_cleanup_until_release()
-    -> Result<()> {
-        use crate::studio::agent_host::{
-            ThreadWriteBehindWriter,
-            worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity, WorktreeLeaseOwner},
-        };
-        use std::collections::BTreeSet;
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let root = temp.path().join("repository");
-        let workspace = root.join(".anywork/worktrees/root-a/child-w");
-        tokio::fs::create_dir_all(&workspace).await?;
-        let canonical = dunce::canonicalize(&workspace)?;
-        let identity = WorkspaceIdentity::canonical(
-            WorkspaceEndpoint::Local,
-            canonical.to_string_lossy().into_owned(),
-        )?;
-        store.bind_workspace_identity("child-w", &identity).await?;
-        let writer = ThreadWriteBehindWriter::new(store.clone());
-        let owner = WorktreeLeaseOwner::new(writer.clone());
-        let preparing = owner.reserve_workspace("root-b-preparer", WorkspaceEndpoint::Local)?;
-        let foreign_owner = WorktreeLeaseOwner::new(writer.clone());
-        let foreign =
-            foreign_owner.reserve_workspace("foreign-preparer", WorkspaceEndpoint::Local)?;
-        assert!(
-            owner.assign_workspace(&foreign, identity.clone()).is_err(),
-            "equal serials from different runtime owners must not alias"
-        );
-        drop(foreign);
-        let closing = BTreeSet::from(["child-w".into(), "review-r".into()]);
-        assert!(
-            owner
-                .try_seal_workspace("child-w", identity.clone(), &closing)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("root-b-preparer")
-        );
-        // An assigned ancestor root does not borrow every worktree below its pool forever.
-        owner.assign_workspace(
-            &preparing,
-            WorkspaceIdentity::canonical(
-                WorkspaceEndpoint::Local,
-                dunce::canonicalize(&root)?.to_string_lossy().into_owned(),
-            )?,
-        )?;
-        let external = owner.reserve_workspace("other-project-root", WorkspaceEndpoint::Local)?;
-        owner.assign_workspace(&external, identity.clone())?;
-        assert!(
-            owner
-                .try_seal_workspace("child-w", identity.clone(), &closing)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("other-project-root")
-        );
-        drop(external);
-        let binding = owner.reserve_workspace("review-r", WorkspaceEndpoint::Local)?;
-        owner.assign_workspace(&binding, identity.clone())?;
-        let observer_owner = binding.clone();
-        owner.preserve_workspace_resources("review-r", identity.clone());
-        let seal = owner.try_seal_workspace("child-w", identity.clone(), &closing)?;
-        seal.durable()?;
-        drop(binding); // Forgetting the binding does not join the actual observer owner.
-        assert!(owner.ensure_thread_workspace_idle("review-r").is_err());
-        assert!(owner.begin_workspace_removal("child-w", &identity).is_err());
-        drop(observer_owner);
-        owner.ensure_thread_workspace_idle("review-r")?;
-        // A real failed cleanup obligation still blocks independently of active runtime tokens.
-        assert!(
-            owner
-                .begin_workspace_removal("child-w", &identity)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("review-r")
-        );
-        owner.release_workspace_resources("review-r", &identity)?;
-        // The physical seal is distinct from the agent execution seal and ends at a reliable
-        // terminal result; retained SessionFiles alone must not keep a stopped review active.
-        let removal = owner.begin_workspace_removal("child-w", &identity)?;
-        assert!(
-            owner
-                .reserve_workspace("new-preparer", WorkspaceEndpoint::Local)
-                .is_err()
-        );
-        drop(removal);
-        drop(seal);
-        let rejected = owner.reserve_workspace("late-borrower", WorkspaceEndpoint::Local)?;
-        assert!(owner.assign_workspace(&rejected, identity.clone()).is_err());
-        drop(rejected);
-        let reopened = StudioStore::open(store.paths().database()).await?;
-        let frozen = reopened.workspace_identity("child-w").await?.unwrap();
-        assert_eq!(frozen, identity);
-        assert!(
-            reopened
-                .bind_workspace_identity(
-                    "child-w",
-                    &WorkspaceIdentity::canonical(
-                        WorkspaceEndpoint::Local,
-                        dunce::canonicalize(&root)?.to_string_lossy().into_owned()
-                    )?
-                )
-                .await
-                .is_err()
-        );
-        // Alias and credential spelling do not split one endpoint/path into two physical sites.
-        let first = pl_tool::remote::SshServerProfile {
-            alias: "one".into(),
-            host_name: "host.example".into(),
-            port: 22,
-            username: "user".into(),
-            identity_file: Some("key-one".into()),
-        };
-        let second = pl_tool::remote::SshServerProfile {
-            alias: "two".into(),
-            identity_file: Some("key-two".into()),
-            ..first.clone()
-        };
-        let ssh_a = WorkspaceIdentity::canonical(
-            WorkspaceEndpoint::from_profile(Some(&first)),
-            "/repo/.anywork/worktrees/root-a/remote-w".into(),
-        )?;
-        let ssh_b = WorkspaceIdentity::canonical(
-            WorkspaceEndpoint::from_profile(Some(&second)),
-            ssh_a.root.clone(),
-        )?;
-        let remote_borrower = owner.reserve_workspace("remote-root-b", ssh_b.endpoint.clone())?;
-        owner.assign_workspace(&remote_borrower, ssh_b.clone())?;
-        assert!(
-            owner
-                .try_seal_workspace("remote-w", ssh_a.clone(), &BTreeSet::new())
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("remote-root-b")
-        );
-        drop(remote_borrower);
-        let pending = owner.try_seal_workspace("remote-w", ssh_a.clone(), &BTreeSet::new())?;
-        drop(pending); // Losing the waiting handle cannot adjudicate an unconfirmed product write.
-        let late = owner.reserve_workspace("remote-late", ssh_b.endpoint.clone())?;
-        assert!(owner.assign_workspace(&late, ssh_b.clone()).is_err());
-        // This fixture sent no grant and started no removal, so explicitly release its known seal.
-        owner.release_workspace_seal("remote-w", &ssh_a)?;
-        owner.assign_workspace(&late, ssh_b)?;
-        // Ordinary archive/failed preparation holds a reversible removal, not a permanent seal.
-        let independent = WorkspaceIdentity::canonical(
-            WorkspaceEndpoint::Local,
-            root.join("independent").to_string_lossy().into_owned(),
-        )?;
-        let temporary = owner.reserve_workspace("ordinary-preparer", WorkspaceEndpoint::Local)?;
-        owner.assign_workspace(&temporary, independent.clone())?;
-        let still_owned = temporary.clone();
-        assert!(
-            owner
-                .begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))
-                .is_err()
-        );
-        drop(still_owned);
-        let cleanup =
-            owner.begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))?;
-        assert!(
-            owner
-                .reserve_workspace("during-cleanup", WorkspaceEndpoint::Local)
-                .is_err()
-        );
-        drop(cleanup);
-        owner.assign_workspace(&temporary, independent.clone())?;
-        let cleanup =
-            owner.begin_workspace_cleanup("ordinary-preparer", &independent, Some(&temporary))?;
-        cleanup.complete();
-        drop(temporary);
-        let restored = owner.reserve_workspace("ordinary-restored", WorkspaceEndpoint::Local)?;
-        owner.assign_workspace(&restored, independent)?;
-        writer.shutdown().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cancelled_sink_initialization_releases_its_claim_before_worker_registration()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = test_thread("cancelled-sink-initialization");
-        register_test_thread(&store, &thread).await?;
+    fn spawn_projection(store: StudioStore, thread: crate::Thread) -> tokio::task::JoinHandle<()> {
         let channel = store.thread_persistence().history_channel(&thread.id);
-        let (entered, waiting) = tokio::sync::oneshot::channel();
-        let (_release, released) = tokio::sync::oneshot::channel();
-        *channel.initialization_gate.lock().unwrap() = Some((entered, released));
-        let opening_store = store.clone();
-        let opening_thread = thread.clone();
-        let opening = tokio::spawn(async move {
-            ThreadStorageSink::new(opening_store, opening_thread, None).await
-        });
-        waiting.await?;
-        opening.abort();
-        assert!(opening.await.unwrap_err().is_cancelled());
-        channel.stop_and_join().await?;
-        let replacement = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        assert!(!Arc::ptr_eq(&channel, &replacement.0.channel));
-        assert!(Arc::ptr_eq(
-            &replacement.0.channel,
-            &store.thread_persistence().history_channel(&thread.id)
-        ));
-        replacement.0.channel.stop_and_join().await?;
-        Ok(())
+        tokio::spawn(async move {
+            let mut projection = crate::studio::thread_projection::LiveProjection::new();
+            projection
+                .bind_execution_history(
+                    channel.order_index(),
+                    RuntimeEpoch::new(),
+                    store.history(&thread.id).await.expect("history owner"),
+                )
+                .expect("one projection binding");
+            let mut failed = std::collections::BTreeSet::new();
+            let mut updates = channel.subscribe();
+            loop {
+                if channel.stopping.is_cancelled() {
+                    return;
+                }
+                if let Some(write) = channel.next_unprojected() {
+                    let sequence = write.effect.sequence;
+                    if failed.contains(&sequence) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        continue;
+                    }
+                    if !write.effect.delivery_repairs.is_empty()
+                        && crate::studio::thread_projection::seed_repaired_targets(
+                            &mut projection,
+                            &store.history(&thread.id).await.expect("history owner"),
+                            &write.effect,
+                        )
+                        .await
+                        .is_err()
+                    {
+                        failed.insert(sequence);
+                        channel.fail_projection(sequence, "repair seeding failed".into());
+                        continue;
+                    }
+                    match projection
+                        .prepare_committed(&thread, &write.effect, &write.state)
+                        .await
+                    {
+                        Ok(prepared) => {
+                            if let Err(error) = channel.accept_prepared(Some(&write), prepared) {
+                                failed.insert(sequence);
+                                channel.fail_projection(
+                                    sequence,
+                                    format!("fixture History handoff failed: {error:#}"),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            failed.insert(sequence);
+                            channel.fail_projection(sequence, error.to_string());
+                        }
+                    }
+                    continue;
+                }
+                tokio::select! {
+                    changed = updates.changed() => if changed.is_err() { return; },
+                    () = channel.stopping.cancelled() => return,
+                }
+            }
+        })
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_replacement_claim_cannot_lose_its_channel_to_predecessor_release() -> Result<()> {
-        for retain_pending in [false, true] {
+    async fn saved_current(
+        store: &StudioStore,
+        thread: &crate::Thread,
+    ) -> Result<Option<pl_core::thread::current::ThreadCurrent>> {
+        let paths = store.registered_session_paths(&thread.id)?;
+        store
+            .state_for(paths.workspace_id(), &thread.id)?
+            .load_current()
+            .await
+    }
+
+    pub(super) async fn live_projection(
+        sink: &ThreadStorageSink,
+    ) -> Result<crate::studio::thread_projection::LiveProjection> {
+        let current = saved_current(&sink.0.store, &sink.0.thread).await?;
+        let epoch = match current {
+            Some(current) => current.saved_runtime_epoch,
+            None => RuntimeEpoch::new(),
+        };
+        let mut projection = crate::studio::thread_projection::LiveProjection::new();
+        projection.bind_execution_history(
+            sink.0.channel.order_index(),
+            epoch,
+            sink.0.store.history(&sink.0.thread.id).await?,
+        )?;
+        Ok(projection)
+    }
+
+    pub(crate) async fn save_terminal_report(
+        store: &StudioStore,
+        thread: &crate::Thread,
+        message: pl_core::thread::inbox::ThreadMessage,
+    ) -> Result<()> {
+        let saved = saved_current(store, thread).await?;
+        // This is a new History producer incarnation. Its handoff sequence starts at one;
+        // an independent Current revision cannot seed History admission or durability.
+        let sequence = 1;
+        let mut snapshot = saved
+            .as_ref()
+            .map_or_else(ThreadSnapshot::default, |current| {
+                current.state.to_paused_snapshot()
+            });
+        snapshot.commit_sequence = sequence;
+        let turn = TurnRecord {
+            turn_id: "original-terminal-turn".into(),
+            input_id: None,
+            state: TurnState::Finished(TurnOutcome::Completed),
+            model_steps: 0,
+            elapsed_ms: None,
+        };
+        snapshot.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
+        snapshot.turns = Arc::from([turn.clone()]);
+        let terminal = Arc::new(HistoryExport {
+            effect: Arc::new(ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence,
+                committed_at: 1,
+                turn: Some(turn),
+                ..Default::default()
+            }),
+            state: snapshot,
+            output_claim: None,
+        });
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
+        let mut projection = crate::studio::thread_projection::LiveProjection::new();
+        projection.bind_execution_history(
+            sink.0.channel.order_index(),
+            RuntimeEpoch::new(),
+            store.history(&thread.id).await?,
+        )?;
+        let prepared = projection
+            .prepare_committed(thread, &terminal.effect, &terminal.state)
+            .await?;
+        let mut handed = (*prepared).clone();
+        handed.parent_report = Some(Arc::new(message));
+        let handed = Arc::new(handed);
+        sink.admit(&thread.id, terminal)?;
+        sink.0.channel.accept_prepared(None, handed)?;
+        sink.0
+            .channel
+            .await_handoff_durable(&thread.id, sequence)
+            .await?;
+        sink.0.channel.stop_and_join().await
+    }
+
+    pub(crate) fn visible_input_ticket(
+        thread_id: &str,
+        sequence: u64,
+        input_id: &str,
+    ) -> Result<Arc<HistoryExport>> {
+        let mut write = (*ticket(thread_id, sequence)).clone();
+        let input = InputRecord {
+            continuation: None,
+            accepted_sequence: sequence,
+            delivery: Default::default(),
+            input: ThreadInput {
+                purpose: pl_core::thread::input::InputPurpose::Message,
+                id: input_id.to_owned(),
+                payload: OpaquePayload::new(
+                    "pl.studio.prompt",
+                    1,
+                    serde_json::json!({
+                        "text": "hello",
+                        "presentation": "visible",
+                        "attachments": [],
+                    })
+                    .to_string(),
+                )?,
+                context: vec![ContextContent::Text {
+                    text: "hello".into(),
+                }],
+            },
+            ordinal: sequence,
+            revision: sequence,
+            state: InputState::Consumed {
+                turn_id: "visible-turn".into(),
+                attempt_id: "attempt".into(),
+            },
+        };
+        write.state.inputs = Arc::from([input.clone()]);
+        Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
+        Ok(Arc::new(write))
+    }
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::storage_fault_tests::{
+        live_projection, register_test_thread, test_thread, ticket, visible_input_ticket,
+    };
+    use super::*;
+    use crate::history::{HistoryDemand, HistoryEventsQuery};
+    use pl_core::thread::history_sink::HistorySink;
+    use sea_orm::{ConnectionTrait, Database};
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        store: StudioStore,
+        sink: ThreadStorageSink,
+        projection: crate::studio::thread_projection::LiveProjection,
+    }
+
+    impl Fixture {
+        async fn new(id: &str) -> Result<Self> {
             let temp = tempfile::tempdir()?;
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let thread = test_thread("overlapping-channel-release");
-            register_test_thread(&store, &thread).await?;
-            let previous = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-            let previous_channel = previous.0.channel.clone();
-            let write_gate = if retain_pending {
-                Some(previous_channel.step_lock.lock().await)
-            } else {
-                None
-            };
-            if retain_pending {
-                previous.admit(&thread.id, ticket(&thread.id, 1))?;
-            }
-            let wake = previous.0.changed.clone();
-            let (waiting, release) = store.thread_persistence().arm_release_gate();
-            let stopped_writer = if retain_pending {
-                let writer = previous_channel
-                    .workers
-                    .lock()
-                    .await
-                    .pop()
-                    .context("registered predecessor writer")?;
-                writer.abort();
-                Some(writer)
-            } else {
-                None
-            };
-            drop(previous);
-            wake.notify_one();
-            tokio::time::timeout(Duration::from_secs(5), waiting).await??;
-            drop(write_gate);
-            let replacement = tokio::time::timeout(
-                Duration::from_secs(5),
-                ThreadStorageSink::new(store.clone(), thread.clone(), None),
-            )
-            .await;
-            release.send(())?;
-            if let Some(writer) = stopped_writer {
-                assert!(writer.await.unwrap_err().is_cancelled());
-            }
-            let replacement = replacement??;
-            if !retain_pending {
-                previous_channel.stop_and_join().await?;
-            }
-            assert!(
-                Arc::ptr_eq(
-                    &replacement.0.channel,
-                    &store.thread_persistence().history_channel(&thread.id)
-                ),
-                "predecessor release must not remove the new incarnation's channel"
-            );
-            assert!(
-                replacement.0.channel.subscribe().borrow().fault.is_none(),
-                "a predecessor cannot publish WriterUnavailable after its successor initialized"
-            );
-            spawn_live_projection(&replacement);
-            if !retain_pending {
-                replacement.admit(&thread.id, ticket(&thread.id, 1))?;
-            }
-            tokio::time::timeout(Duration::from_secs(5), replacement.flush(&thread.id, 1))
-                .await??;
-            assert_eq!(store.history(&thread.id).await?.watermark().await?, 1);
-            replacement.0.channel.stop_and_join().await?;
+            register_test_thread(&store, &test_thread(id)).await?;
+            let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
+            let projection = live_projection(&sink).await?;
+            Ok(Self {
+                _temp: temp,
+                store,
+                sink,
+                projection,
+            })
         }
+
+        async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
+            let id = self.sink.0.thread.id.clone();
+            self.sink.admit(&id, write.clone())?;
+            let prepared = self
+                .projection
+                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
+                .await?;
+            ensure!(
+                self.sink.0.channel.prepare(prepared.clone()),
+                "handoff refused"
+            );
+            Ok(prepared)
+        }
+
+        fn select(&self, now: Instant) -> batch::Selection {
+            batch::select(&mut lock_progress(&self.sink.0), now, 0, false)
+        }
+
+        async fn finish(&mut self, sequence: u64) -> Result<()> {
+            self.sink
+                .0
+                .channel
+                .await_handoff_durable(&self.sink.0.thread.id, sequence)
+                .await?;
+            self.sink.0.channel.stop_and_join().await
+        }
+    }
+
+    fn ready(selection: batch::Selection) -> Vec<batch::Effect> {
+        match selection {
+            batch::Selection::Ready(effects) => effects,
+            _ => panic!("expected a frozen prepared prefix"),
+        }
+    }
+
+    fn sqlite_literal(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+
+    fn normalized_event_body(bytes: &[u8]) -> Option<serde_json::Value> {
+        fn strip_admission_ids(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        strip_admission_ids(value);
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    values.remove("bodyId");
+                    for value in values.values_mut() {
+                        strip_admission_ids(value);
+                    }
+                }
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_)
+                | serde_json::Value::String(_) => {}
+            }
+        }
+
+        let mut value = serde_json::from_slice(bytes).ok()?;
+        strip_admission_ids(&mut value);
+        Some(value)
+    }
+
+    #[tokio::test]
+    async fn rejecting_one_prepared_event_exposes_no_prefix_of_its_effect() -> Result<()> {
+        let mut fixture = Fixture::new("whole-effect-admission").await?;
+        let channel = fixture.sink.0.channel.clone();
+        let lease = channel.step_lock.lock().await;
+        let write = visible_input_ticket("whole-effect-admission", 1, "input")?;
+        fixture
+            .sink
+            .admit(&fixture.sink.0.thread.id, write.clone())?;
+        let prepared = fixture
+            .projection
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
+            .await?;
+        let mut rejected = (*prepared).clone();
+        let first = Arc::make_mut(&mut rejected.history_changes)
+            .first_mut()
+            .context("input completion")?;
+        // Basic run/source candidates are valid. A later canonical candidate is rejected.
+        first.event.header.event_id.clear();
+        assert!(channel.prepare(Arc::new(rejected)));
+        channel.request_flush(1);
+        let selected = ready(fixture.select(Instant::now()));
+        let history = history_store(&fixture.sink.0).await?;
+        let reader = history.reader();
+        assert_eq!(reader.capture_position().await?.1, 0);
+
+        assert!(batch::persist(&fixture.sink.0, &selected).await.is_err());
+        assert_eq!(
+            reader.capture_position().await?.1,
+            0,
+            "a rejected effect leaked its run/source prefix"
+        );
+        assert!(channel.history_classifier.lock().unwrap().is_none());
+        assert_eq!(
+            channel.subscribe().borrow().queued_records,
+            1,
+            "rejection discarded the reliable effect"
+        );
+        reader.close().await;
+        drop(lease);
+        channel.stop_and_join_for_deletion().await?;
         Ok(())
     }
 
     #[tokio::test]
-    async fn a_cancelled_replacement_cannot_acknowledge_its_predecessors_pending_facts()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let thread = test_thread("cancelled-queue-adoption");
-        register_test_thread(&store, &thread).await?;
-        let previous = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        let channel = previous.0.channel.clone();
-        let write_gate = channel.step_lock.lock().await;
-        previous.admit(&thread.id, ticket(&thread.id, 1))?;
-        let mut previous_flush = Box::pin(previous.flush(&thread.id, 1));
-        assert!(futures::poll!(previous_flush.as_mut()).is_pending());
-        let (entered, waiting) = tokio::sync::oneshot::channel();
-        let (_release, released) = tokio::sync::oneshot::channel();
-        *channel.initialization_gate.lock().unwrap() = Some((entered, released));
-        let opening_store = store.clone();
-        let opening_thread = thread.clone();
-        let opening = tokio::spawn(async move {
-            ThreadStorageSink::new(opening_store, opening_thread, None).await
-        });
-        waiting.await?;
-        let writer = channel
-            .workers
-            .lock()
-            .await
-            .pop()
-            .context("registered writer")?;
-        writer.abort();
-        assert!(writer.await.unwrap_err().is_cancelled());
-        opening.abort();
-        assert!(opening.await.unwrap_err().is_cancelled());
-        assert!(
-            store.thread_persistence().snapshot().pending_commits > 0,
-            "an initializer cannot acknowledge queue adoption merely by claiming its identity"
-        );
-        assert!(store.thread_persistence().wait_for_drain().await.is_err());
-        assert_eq!(store.history(&thread.id).await?.watermark().await?, 0);
-        assert!(
-            matches!(
-                futures::poll!(previous_flush.as_mut()),
-                std::task::Poll::Ready(Err(_))
-            ),
-            "the old sink's pending flush must receive the unavailable-writer failure"
-        );
-        drop(previous_flush);
-        let unavailable = channel.subscribe().borrow().clone();
-        assert_eq!(
-            unavailable.fault,
-            Some(crate::HistoryFault::WriterUnavailable)
-        );
-        assert!(unavailable.error.is_some());
-        assert_eq!(unavailable.committed_sequence, 0);
-        assert_eq!(unavailable.queued_records, 1);
-        drop(write_gate);
-        drop(previous);
+    async fn queue_retention_is_charged_once_and_released_only_after_flush() -> Result<()> {
+        let mut fixture = Fixture::new("queue-retention").await?;
+        let id = fixture.sink.0.thread.id.clone();
+        let process = fixture.sink.0.channel.process_bytes.clone();
+        let baseline = process.load(Ordering::Acquire);
+        let write = visible_input_ticket(&id, 1, "queue-input")?;
+        fixture.sink.admit(&id, write.clone())?;
+        let admitted = process.load(Ordering::Acquire);
+        let status = fixture.sink.0.channel.subscribe().borrow().clone();
+        assert_eq!(status.queued_records, 1);
+        assert!(status.queued_bytes > 0);
+        assert!(admitted > baseline);
 
-        let replacement = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
-        assert!(Arc::ptr_eq(&channel, &replacement.0.channel));
-        spawn_live_projection(&replacement);
+        let prepared = fixture.handoff(&write).await?;
+        assert!(prepared.retained_bytes() > 0);
+        let handed_off = process.load(Ordering::Acquire);
+        assert!(
+            handed_off <= admitted,
+            "projection handoff must transfer, not add, the reliable charge"
+        );
+        assert_eq!(
+            fixture.sink.0.channel.subscribe().borrow().queued_records,
+            1,
+            "the original admission remains queued until the database commit"
+        );
+
+        fixture.finish(1).await?;
+        let resident_index = fixture.sink.0.channel.order_index.retained_bytes();
+        assert_eq!(process.load(Ordering::Acquire), baseline + resident_index);
+        assert_eq!(
+            fixture.sink.0.channel.subscribe().borrow().queued_records,
+            0
+        );
+        assert_eq!(
+            fixture.sink.0.channel.subscribe().borrow().queued_bytes,
+            resident_index,
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reprojecting_an_unchanged_effect_keeps_semantics_before_admission() -> Result<()> {
+        let mut fixture = Fixture::new("stable-payload").await?;
+        let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
+        let first = fixture
+            .projection
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
+            .await?;
+        let second = fixture
+            .projection
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
+            .await?;
+        assert_eq!(first.history_changes.len(), second.history_changes.len());
+        for (first, second) in first
+            .history_changes
+            .iter()
+            .zip(second.history_changes.iter())
+        {
+            // Body UUIDs are minted at admission. Fresh projection passes must retain the same
+            // event semantics, while the SQL retry regression below protects the frozen identity.
+            assert_eq!(first.event.header.event_id, second.event.header.event_id);
+            assert_eq!(first.entity.entity_id, second.entity.entity_id);
+            assert_eq!(first.entity.state, second.entity.state);
+            assert_eq!(first.placement, second.placement);
+            assert_eq!(first.event.bodies.len(), second.event.bodies.len());
+            for (first, second) in first.event.bodies.iter().zip(second.event.bodies.iter()) {
+                assert_eq!(first.body_key, second.body_key);
+                assert_eq!(first.role, second.role);
+                match (
+                    normalized_event_body(&first.bytes),
+                    normalized_event_body(&second.bytes),
+                ) {
+                    (Some(first), Some(second)) => assert_eq!(first, second),
+                    _ => assert_eq!(first.bytes, second.bytes),
+                }
+            }
+        }
+        fixture.sink.0.channel.stop_and_join_for_deletion().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopped_statistics_consumer_does_not_block_writer_shutdown() -> Result<()> {
+        let fixture = Fixture::new("statistics-gap").await?;
+        let calls_before = fixture.store.calls().metrics();
+        let materials_before = fixture.store.calls().subscribe_materials().borrow().clone();
+        fixture.store.calls().stop_best_effort();
+        submit_accounting(
+            &fixture.sink.0,
+            super::super::calls::SessionUsageProjection {
+                root_thread_id: "statistics-gap".into(),
+                thread_id: "statistics-gap".into(),
+                revision: 1,
+                has_unpriced_usage: false,
+                purpose_costs: Vec::new(),
+            },
+        );
+        assert!(lock_progress(&fixture.sink.0).pending_accounting.is_some());
         tokio::time::timeout(
             Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history(&thread.id, unavailable.fault_generation),
+            fixture.sink.0.channel.stop_and_join(),
         )
         .await??;
-        tokio::time::timeout(Duration::from_secs(5), replacement.flush(&thread.id, 1)).await??;
-        assert_eq!(store.history(&thread.id).await?.watermark().await?, 1);
-        let recovered = channel.subscribe().borrow().clone();
-        assert_eq!(recovered.committed_sequence, 1);
-        assert_eq!(recovered.queued_records, 0);
-        assert!(recovered.fault.is_none());
-        assert!(recovered.error.is_none());
+        assert!(lock_progress(&fixture.sink.0).pending_accounting.is_none());
+        assert!(fixture.store.calls().statistics_gap());
+        assert_eq!(fixture.sink.0.channel.subscribe().borrow().fault, None);
+        let mut expected_metrics = calls_before;
+        expected_metrics.statistics_gap = true;
+        assert_eq!(fixture.store.calls().metrics(), expected_metrics);
+        let mut expected_materials = materials_before;
+        expected_materials.statistics_gap = true;
+        expected_materials.versions.status += 1;
         assert_eq!(
-            replacement.pressure(&thread.id).recovered_generation,
-            Some(unavailable.fault_generation)
+            *fixture.store.calls().subscribe_materials().borrow(),
+            expected_materials
         );
-        store.thread_persistence().wait_for_drain().await?;
-        replacement.0.channel.stop_and_join().await?;
+        fixture
+            .store
+            .thread_persistence()
+            .report_calls(fixture.store.calls());
+        assert!(
+            fixture
+                .store
+                .thread_persistence()
+                .queue_snapshot()
+                .statistics_gap
+        );
         Ok(())
     }
 
     #[tokio::test]
-    async fn stopped_writer_joins_survive_cancelled_waiters_and_history_reopens() -> Result<()> {
-        let id = "retirement-writer-join";
-        let (_temp, store, sink) = sink(id).await?;
-        let channel = sink.0.channel.clone();
-        let write_gate = channel.step_lock.lock().await;
-        sink.admit(id, ticket(id, 1))?;
-        assert!(channel.stop_and_join().await.is_err());
+    async fn sql_failure_rolls_back_and_retries_the_same_frozen_events_and_bodies() -> Result<()> {
+        let id = "batch-atomic-retry";
+        let mut fixture = Fixture::new(id).await?;
+        let first = visible_input_ticket(id, 1, "input-1")?;
+        fixture.handoff(&first).await?;
+        fixture.sink.0.channel.await_handoff_durable(id, 1).await?;
+
+        let path = fixture
+            .store
+            .session_paths("project-test", id)?
+            .history_database();
+        let db = Database::connect(
+            crate::studio::paths::sqlite_file_options(
+                &path,
+                crate::studio::paths::SqliteFileMode::Create,
+                |options| options,
+            )
+            .await?,
+        )
+        .await?;
+        let second = visible_input_ticket(id, 2, "input-2")?;
+        let third = visible_input_ticket(id, 3, "input-3")?;
+        let prepared_second = fixture.handoff(&second).await?;
+        let prepared_third = fixture.handoff(&third).await?;
+        let rejected_event = prepared_third.history_changes[0]
+            .event
+            .header
+            .event_id
+            .clone();
+        db.execute_unprepared(&format!(
+            "CREATE TRIGGER reject_third_effect BEFORE INSERT ON history_events \
+             WHEN NEW.event_id = {} BEGIN \
+             SELECT RAISE(ABORT, 'reject third batch member'); END",
+            sqlite_literal(&rejected_event)
+        ))
+        .await?;
+
+        let channel = fixture.sink.0.channel.clone();
+        let mut status = channel.subscribe();
+        channel.request_flush(3);
+        while status.borrow_and_update().fault.is_none() {
+            status.changed().await?;
+        }
+        let generation = status.borrow().fault_generation;
         assert!(
-            !channel.stopping.is_cancelled(),
-            "pending facts must keep their writer"
+            fixture
+                .store
+                .history(id)
+                .await?
+                .status()
+                .write_error
+                .is_some()
         );
-        drop(write_gate);
-        tokio::time::timeout(Duration::from_secs(5), sink.flush(id, 1)).await??;
-        let history = store.history(id).await?;
-        let saved = history.checkpoint().await?.context("durable checkpoint")?;
+
+        let gate = channel.step_lock.lock().await;
+        let fourth = ticket(id, 4);
+        fixture.sink.admit(id, fourth.clone())?;
+        let retried = ready(fixture.select(Instant::now()));
+        assert_eq!(
+            retried.len(),
+            2,
+            "new queued work cannot alter the failed transaction"
+        );
+        assert!(Arc::ptr_eq(&retried[0].prepared, &prepared_second));
+        assert!(Arc::ptr_eq(&retried[1].prepared, &prepared_third));
+
+        let originals: Vec<_> = [&prepared_second, &prepared_third]
+            .into_iter()
+            .flat_map(|prepared| prepared.history_changes.iter())
+            .map(|change| {
+                let event_id = change.event.header.event_id.clone();
+                let body_id = change
+                    .event
+                    .payload_body_id
+                    .clone()
+                    .or_else(|| change.event.bodies.first().map(|body| body.body_id.clone()))
+                    .expect("visible history change has a body");
+                (event_id, body_id)
+            })
+            .collect();
+        db.execute_unprepared("DROP TRIGGER reject_third_effect")
+            .await?;
+        drop(gate);
+        fixture
+            .store
+            .thread_persistence()
+            .retry_history(id, generation)
+            .await?;
+        while status.borrow_and_update().error.is_some() {
+            status.changed().await?;
+        }
+        assert_eq!(lock_progress(&fixture.sink.0).durable, 3);
+
+        let reader = fixture.store.history(id).await?.reader();
+        for (event_id, body_id) in originals {
+            let event = reader
+                .read_event(
+                    event_id,
+                    HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 64 * 1024,
+                    },
+                )
+                .await?;
+            assert_eq!(
+                event.payload_ref.expect("event body").body_id,
+                body_id,
+                "retry must commit the accepted immutable body identity"
+            );
+        }
+        fixture.handoff(&fourth).await?;
+        fixture.finish(4).await?;
+        db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopped_writer_joins_workers_and_history_reopens_with_a_new_owner() -> Result<()> {
+        let id = "retirement-writer-join";
+        let mut fixture = Fixture::new(id).await?;
+        let channel = fixture.sink.0.channel.clone();
+        let write = ticket(id, 1);
+        fixture.handoff(&write).await?;
+        channel.await_handoff_durable(id, 1).await?;
+
         let (release, released) = tokio::sync::oneshot::channel();
         channel.workers.lock().await.push(tokio::spawn(async move {
             let _ = released.await;
@@ -6355,207 +4340,93 @@ pub(crate) mod storage_fault_tests {
             .map_err(|_| anyhow::anyhow!("controlled worker lost its owner"))?;
         tokio::time::timeout(Duration::from_secs(5), channel.stop_and_join()).await??;
         assert!(channel.workers.lock().await.is_empty());
-        channel.stop_and_join().await?;
         assert!(
-            sink.admit(id, ticket(id, 2)).is_err(),
+            fixture.sink.admit(id, ticket(id, 2)).is_err(),
             "old sinks cannot resume writing"
         );
-        assert_eq!(history.watermark().await?, saved.history_fence);
-        let reopened = ThreadStorageSink::new(store.clone(), test_thread(id), Some(&saved)).await?;
-        spawn_live_projection(&reopened);
+
+        let store = fixture.store.clone();
+        let reopened = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
         assert!(!Arc::ptr_eq(&channel, &reopened.0.channel));
-        reopened.admit(id, ticket(id, 2))?;
-        tokio::time::timeout(Duration::from_secs(5), reopened.flush(id, 2)).await??;
-        assert_eq!(history.watermark().await?, 2);
+        let mut projection = live_projection(&reopened).await?;
+        let next = ticket(id, 1);
+        reopened.admit(id, next.clone())?;
+        let prepared = projection
+            .prepare_committed(&reopened.0.thread, &next.effect, &next.state)
+            .await?;
+        reopened.0.channel.prepare(prepared);
+        reopened.0.channel.await_handoff_durable(id, 1).await?;
+        let page = store
+            .history(id)
+            .await?
+            .reader()
+            .events_page(
+                HistoryEventsQuery::AllEvents,
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: 64,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        assert!(page.entries.len() >= 2);
         reopened.0.channel.stop_and_join().await?;
         Ok(())
     }
 
-    #[tokio::test]
-    async fn review_exception_cas_is_atomic_and_budget_survives_writer_replacement() -> Result<()> {
-        use crate::thread_assembler::{
-            agent_review::{ReviewDeliverySource, ReviewForward, ReviewForwardReason},
-            review_delivery::ReviewDeliveryException,
-        };
-        use pl_core::thread::extensions::ExtensionMutation;
-        let id = "review-cas-history";
-        let (_temp, store, sink) = sink(id).await?;
-        let thread = ThreadHandle::resume_without_model(id.into(), None)?;
-        thread
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-        thread
-            .mutate_extensions(vec![ExtensionMutation::Put {
-                id: "fixture-original-source".into(),
-                expected_revision: None,
-                payload: OpaquePayload::text("original durable source"),
-            }])
-            .await?;
-        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
-        let history = store.history(id).await?;
-        let terminal = history.watermark().await?;
-        let body_budget = 256 * 1024;
-        let retained = store
-            .thread_persistence()
-            .retain_review_delivery(id, body_budget)?;
-        let fact = ReviewDeliveryException::from_forward(
-            id,
-            "saved-turn",
-            None,
-            terminal,
-            "executor",
-            ReviewDeliverySource::Reconciliation,
-            &ReviewForward::Unconfirmed {
-                message_id: crate::thread_assembler::agent_review::review_message_id(
-                    id,
-                    "saved-turn",
-                    terminal,
-                ),
-                reason: ReviewForwardReason::RecoveryRequiresScheduling,
-            },
-        )
-        .context("exception fixture")?
-        .into_fact()?;
-        let path = store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared("CREATE TRIGGER reject_review_cas BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='reviewDeliveryException' BEGIN SELECT RAISE(ABORT,'controlled review CAS failure'); END").await?;
-        let mut status = sink.0.channel.subscribe();
-        let records = thread
-            .mutate_extensions(vec![ExtensionMutation::Put {
-                id: fact.extension_id(),
-                expected_revision: None,
-                payload: fact.encode()?,
-            }])
-            .await?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replacement_claim_cannot_lose_its_channel_to_predecessor_release() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let thread = test_thread("overlapping-channel-release");
+        register_test_thread(&store, &thread).await?;
+        let previous = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
+        let previous_channel = previous.0.channel.clone();
+        let (waiting, release) = store.thread_persistence().arm_release_gate();
+        let writer = previous_channel
+            .workers
+            .lock()
+            .await
+            .pop()
+            .context("registered predecessor writer")?;
+        writer.abort();
+
+        let wake = previous.0.changed.clone();
+        drop(previous);
+        wake.notify_one();
+        tokio::time::timeout(Duration::from_secs(5), waiting).await??;
+
+        let opening = tokio::spawn({
+            let store = store.clone();
+            let thread = thread.clone();
+            async move { ThreadStorageSink::new(store, thread).await }
+        });
+        release
+            .send(())
+            .map_err(|_| anyhow::anyhow!("predecessor release gate was dropped"))?;
+        match writer.await {
+            Ok(()) => {}
+            Err(error) => assert!(error.is_cancelled()),
+        }
+        let replacement = tokio::time::timeout(Duration::from_secs(5), opening).await???;
         assert!(
-            history
-                .review_delivery_exception(&fact.message.id)
-                .await?
-                .is_none()
+            Arc::ptr_eq(
+                &replacement.0.channel,
+                &store.thread_persistence().history_channel(&thread.id),
+            ),
+            "predecessor release must not remove the successor's channel"
         );
-        assert_eq!(history.watermark().await?, terminal);
-        assert!(
-            !history
-                .checkpoint()
-                .await?
-                .unwrap()
-                .state
-                .extensions
-                .contains_key(&fact.extension_id())
-        );
-        assert!(thread.flush().await.is_err());
-        let failed = status.borrow().clone();
-        db.execute_unprepared("DROP TRIGGER reject_review_cas")
-            .await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history(id, failed.fault_generation),
-        )
-        .await??;
-        tokio::time::timeout(Duration::from_secs(5), thread.flush()).await??;
-        assert_eq!(
-            history
-                .review_delivery_exception(&fact.message.id)
-                .await?
-                .unwrap()
-                .message
-                .digest(),
-            fact.message.digest()
-        );
-        assert!(
-            history
-                .checkpoint()
-                .await?
-                .unwrap()
-                .state
-                .extensions
-                .contains_key(&fact.extension_id())
-        );
-        thread
-            .mutate_extensions(vec![ExtensionMutation::Delete {
-                id: fact.extension_id(),
-                expected_revision: records[&fact.extension_id()].revision,
-            }])
-            .await?;
-        thread.close().await?;
-        sink.0.channel.stop_and_join().await?;
-        let checkpoint = history
-            .checkpoint()
-            .await?
-            .context("closed CAS source checkpoint")?;
-        assert!(
-            !checkpoint
-                .state
-                .extensions
-                .contains_key(&fact.extension_id())
-        );
-        let reopened =
-            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
-        spawn_live_projection(&reopened);
-        assert!(!Arc::ptr_eq(&sink.0.channel, &reopened.0.channel));
-        assert!(sink.0.channel.shares_delivery_budget(&reopened.0.channel));
-        assert!(reopened.pressure(id).thread_bytes >= body_budget);
-        let before = reopened.0.channel.process_bytes.load(Ordering::Acquire);
-        assert!(
-            store
-                .thread_persistence()
-                .retain_review_delivery(id, MAX_HISTORY_THREAD_BYTES)
-                .is_err()
-        );
-        assert_eq!(
-            reopened.0.channel.process_bytes.load(Ordering::Acquire),
-            before
-        );
-        drop(retained);
-        assert!(!reopened.0.channel.has_delivery_bytes());
-        let resumed = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
-        resumed
-            .attach_storage(ColdStoreHandle::new(reopened.clone()))
-            .await?;
-        resumed.close().await?;
-        reopened.0.channel.stop_and_join().await?;
-        assert_eq!(
-            history
-                .review_delivery_exception(&fact.message.id)
-                .await?
-                .unwrap()
-                .message
-                .digest(),
-            fact.message.digest()
-        );
-        assert!(
-            store
-                .thread_persistence()
-                .retained_history_channel(id)
-                .is_none()
-        );
+        assert!(replacement.0.channel.subscribe().borrow().fault.is_none());
+        replacement.0.channel.stop_and_join().await?;
+        assert!(!Arc::ptr_eq(&previous_channel, &replacement.0.channel));
         Ok(())
     }
 
     #[tokio::test]
     async fn worker_join_failure_remains_a_failure_after_retry() -> Result<()> {
-        let (_temp, _store, sink) = sink("retirement-worker-failure").await?;
-        let channel = sink.0.channel.clone();
+        let fixture = Fixture::new("retirement-worker-failure").await?;
+        let channel = fixture.sink.0.channel.clone();
         channel.workers.lock().await.push(tokio::spawn(async {
             panic!("controlled storage worker failure");
         }));
@@ -6567,202 +4438,390 @@ pub(crate) mod storage_fault_tests {
         );
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod batch_window_tests {
+    use super::storage_fault_tests::{live_projection, register_test_thread, test_thread, ticket};
+    use super::*;
+    use pl_core::thread::history_sink::HistorySink;
+
+    struct Fixture {
+        _temp: tempfile::TempDir,
+        sink: ThreadStorageSink,
+        projection: crate::studio::thread_projection::LiveProjection,
+    }
+
+    impl Fixture {
+        async fn new(id: &str) -> Result<Self> {
+            let temp = tempfile::tempdir()?;
+            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+            register_test_thread(&store, &test_thread(id)).await?;
+            let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
+            let projection = live_projection(&sink).await?;
+            Ok(Self {
+                _temp: temp,
+                sink,
+                projection,
+            })
+        }
+
+        async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
+            let id = self.sink.0.thread.id.clone();
+            self.sink.admit(&id, write.clone())?;
+            let prepared = self
+                .projection
+                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
+                .await?;
+            ensure!(
+                self.sink.0.channel.prepare(prepared.clone()),
+                "handoff refused"
+            );
+            Ok(prepared)
+        }
+
+        fn select(&self, now: Instant) -> batch::Selection {
+            batch::select(&mut lock_progress(&self.sink.0), now, 0, false)
+        }
+
+        async fn finish(self, sequence: u64) -> Result<()> {
+            self.sink
+                .0
+                .channel
+                .await_handoff_durable(&self.sink.0.thread.id, sequence)
+                .await?;
+            self.sink.0.channel.stop_and_join().await
+        }
+    }
+
+    fn ready(selection: batch::Selection) -> Vec<batch::Effect> {
+        match selection {
+            batch::Selection::Ready(effects) => effects,
+            _ => panic!("expected a frozen prepared prefix"),
+        }
+    }
 
     #[tokio::test]
-    async fn explicit_close_intent_is_atomic_retryable_and_survives_owner_shutdown() -> Result<()> {
-        use pl_core::thread::extensions::ExtensionMutation;
-        let id = "close-intent-storage";
-        let (_temp, store, sink) = sink(id).await?;
-        let thread = ThreadHandle::resume_without_model(id.into(), None)?;
-        thread
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-        let route = pl_model::config::ModelRouteConfig {
-            account_id: pl_model::config::AccountId::new("frozen-account")?,
-            model_id: "frozen-model".into(),
-            effort: None,
-        };
-        thread
-            .mutate_extensions(vec![ExtensionMutation::Put {
-                id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
-                expected_revision: None,
-                payload: crate::studio::model_route::encode(&route)?,
-            }])
-            .await?;
-        thread.flush().await?;
-        let history = store.history(id).await?;
-        let before = history.checkpoint().await?.context("saved baseline")?;
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &store.session_paths("project-test", id)?.history_database(),
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_close_intent BEFORE UPDATE ON session_checkpoint
-            BEGIN SELECT RAISE(ABORT, 'controlled close intent rejection'); END",
-        )
-        .await?;
-        let rejected = tokio::time::timeout(
-            Duration::from_secs(5),
-            crate::studio::agent_close::commit(&thread),
-        )
-        .await?;
+    async fn continuous_arrival_keeps_the_original_deadline_and_retry_boundary() -> Result<()> {
+        let mut fixture = Fixture::new("batch-deadline").await?;
+        let channel = fixture.sink.0.channel.clone();
+        let gate = channel.step_lock.lock().await;
+        let now = Instant::now();
+        let first = fixture.handoff(&ticket("batch-deadline", 1)).await?;
+        lock_progress(&fixture.sink.0)
+            .effects
+            .front_mut()
+            .unwrap()
+            .admitted_at = now;
         assert!(
-            rejected.is_err(),
-            "a rejected checkpoint cannot acknowledge explicit closure"
+            matches!(fixture.select(now), batch::Selection::Wait(deadline)
+                if deadline == now + Duration::from_millis(20))
         );
-        let unchanged = history.checkpoint().await?.context("retained checkpoint")?;
+        fixture.handoff(&ticket("batch-deadline", 2)).await?;
+        assert!(
+            matches!(fixture.select(now + Duration::from_millis(19)), batch::Selection::Wait(deadline)
+                if deadline == now + Duration::from_millis(20))
+        );
+        fixture.handoff(&ticket("batch-deadline", 3)).await?;
+        let selected = ready(fixture.select(now + Duration::from_millis(20)));
         assert_eq!(
-            serde_json::to_vec(&unchanged)?,
-            serde_json::to_vec(&before)?
+            selected
+                .iter()
+                .map(|effect| effect.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2, 3]
         );
-        assert_eq!(history.watermark().await?, before.history_fence);
-        assert!(!crate::studio::agent_close::is_explicitly_closed(
-            &unchanged.state
-        )?);
-        let generation = sink.0.channel.subscribe().borrow().fault_generation;
-        db.execute_unprepared("DROP TRIGGER reject_close_intent")
-            .await?;
+        assert!(Arc::ptr_eq(&selected[0].prepared, &first));
+        fixture.handoff(&ticket("batch-deadline", 4)).await?;
+        let retried = ready(fixture.select(now + Duration::from_secs(1)));
+        assert_eq!(
+            retried.len(),
+            3,
+            "later admission must not widen a frozen transaction"
+        );
+        for (original, retry) in selected.iter().zip(&retried) {
+            assert!(Arc::ptr_eq(&original.write, &retry.write));
+            assert!(Arc::ptr_eq(&original.prepared, &retry.prepared));
+        }
+        drop(gate);
+        fixture.finish(4).await
+    }
+
+    #[tokio::test]
+    async fn barriers_pressure_and_prepared_gaps_end_the_window() -> Result<()> {
+        for mode in ["flush", "handoff-barrier", "pressure", "queue-full", "gap"] {
+            let mut fixture = Fixture::new(&format!("batch-cut-{mode}")).await?;
+            let id = fixture.sink.0.thread.id.clone();
+            let channel = fixture.sink.0.channel.clone();
+            let gate = channel.step_lock.lock().await;
+            fixture.handoff(&ticket(&id, 1)).await?;
+            let now = lock_progress(&fixture.sink.0)
+                .effects
+                .front()
+                .unwrap()
+                .admitted_at;
+            assert!(matches!(fixture.select(now), batch::Selection::Wait(_)));
+            match mode {
+                "flush" => {
+                    channel.request_flush(1);
+                }
+                "handoff-barrier" => {
+                    let barrier = channel.await_handoff_durable(&id, 1);
+                    tokio::pin!(barrier);
+                    assert!(futures::poll!(&mut barrier).is_pending());
+                }
+                "pressure" => lock_progress(&fixture.sink.0).pressure_paused = true,
+                "queue-full" => {
+                    lock_progress(&fixture.sink.0).fault = Some(crate::HistoryFault::QueueFull)
+                }
+                "gap" => fixture.sink.admit(&id, ticket(&id, 2))?,
+                _ => unreachable!(),
+            }
+            let selected = ready(fixture.select(now));
+            assert_eq!(selected.len(), 1, "{mode}");
+            drop(gate);
+            channel.await_handoff_durable(&id, 1).await?;
+            if mode == "gap" {
+                assert_eq!(lock_progress(&fixture.sink.0).durable, 1);
+                fixture.handoff(&ticket(&id, 2)).await?;
+                fixture.finish(2).await?;
+            } else {
+                fixture.finish(1).await?;
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn count_and_encoded_byte_limits_cut_a_batch_without_starving_large_effects() -> Result<()>
+    {
+        let mut fixture = Fixture::new("batch-count").await?;
+        let channel = fixture.sink.0.channel.clone();
+        let gate = channel.step_lock.lock().await;
+        let now = Instant::now();
+        for sequence in 1..=64 {
+            fixture.handoff(&ticket("batch-count", sequence)).await?;
+            if sequence == 63 {
+                assert!(matches!(fixture.select(now), batch::Selection::Wait(_)));
+            }
+        }
+        assert_eq!(ready(fixture.select(now)).len(), 64);
+        drop(gate);
+        fixture.finish(64).await?;
+
+        let mut fixture = Fixture::new("batch-large").await?;
+        let channel = fixture.sink.0.channel.clone();
+        let gate = channel.step_lock.lock().await;
+        let mut large = (*ticket("batch-large", 1)).clone();
+        let extension = pl_core::thread::extensions::ExtensionRecord {
+            revision: 1,
+            payload: pl_core::context::OpaquePayload::text("large".repeat(256 * 1024)),
+        };
+        large
+            .state
+            .extensions
+            .insert("test.large".into(), extension.clone());
+        Arc::make_mut(&mut large.effect).extensions =
+            Arc::from([pl_core::thread::extensions::ExtensionChange::Put {
+                id: "test.large".into(),
+                record: extension,
+            }]);
+        fixture.handoff(&Arc::new(large)).await?;
+        let now = lock_progress(&fixture.sink.0)
+            .effects
+            .front()
+            .unwrap()
+            .admitted_at;
+        assert!(
+            lock_progress(&fixture.sink.0)
+                .effects
+                .front()
+                .unwrap()
+                .bytes
+                > 1024 * 1024
+        );
+        assert_eq!(ready(fixture.select(now)).len(), 1);
+        fixture.handoff(&ticket("batch-large", 2)).await?;
+        assert_eq!(ready(fixture.select(now)).len(), 1);
+        drop(gate);
+        fixture.finish(2).await
+    }
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::storage_fault_tests::{
+        live_projection, register_test_thread, test_thread, visible_input_ticket,
+    };
+    use super::*;
+    use pl_core::thread::history_sink::HistorySink;
+
+    #[tokio::test]
+    async fn unprepared_head_stalls_despite_later_admissions_and_notifications() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "projection-watchdog";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
+        let channel = sink.0.channel.clone();
+        let lease = channel.step_lock.lock().await;
+        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
+        assert!(channel.subscribe().borrow().fault.is_none());
+        sink.admit(id, visible_input_ticket(id, 1, "first")?)?;
+        let admitted_at = lock_progress(&sink.0).effects.front().unwrap().admitted_at;
+        for sequence in 2..=4 {
+            sink.admit(
+                id,
+                visible_input_ticket(id, sequence, &format!("later-{sequence}"))?,
+            )?;
+            channel.changed.notify_one();
+            channel.status.send_modify(|_| {});
+            let _ = sink.pressure(id);
+            channel.detect_stall_at(admitted_at + Duration::from_secs(59));
+            assert!(channel.subscribe().borrow().fault.is_none());
+        }
+        let retained = sink.pressure(id).thread_bytes;
+        channel.detect_stall_at(admitted_at + NO_PROGRESS_WINDOW);
+        let failed = channel.subscribe().borrow().clone();
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
+        assert_eq!(failed.committed_sequence, 0);
+        assert_eq!(failed.queued_records, 4);
+        assert_eq!(sink.pressure(id).thread_bytes, retained);
+
+        let mut projection = live_projection(&sink).await?;
+        let mut deferred_head = None;
+        for sequence in 1..=4 {
+            let write = lock_progress(&sink.0).effects[(sequence - 1) as usize]
+                .write
+                .clone();
+            let prepared = projection
+                .prepare_committed(&sink.0.thread, &write.effect, &write.state)
+                .await?;
+            if sequence == 1 {
+                deferred_head = Some(prepared);
+                continue;
+            }
+            if sequence == 2 {
+                assert!(
+                    !channel.prepare(prepared.clone()),
+                    "a prepared tail cannot skip the head"
+                );
+                assert_eq!(lock_progress(&sink.0).prepared_through(), 0);
+                assert!(channel.prepare(deferred_head.take().unwrap()));
+            }
+            assert!(channel.prepare(prepared));
+            assert_eq!(lock_progress(&sink.0).prepared_through(), sequence);
+        }
+        assert_eq!(channel.subscribe().borrow().fault, failed.fault);
+        drop(lease);
         store
             .thread_persistence()
-            .retry_history(id, generation)
+            .retry_history(id, failed.fault_generation)
             .await?;
-        crate::studio::agent_close::commit(&thread).await?;
-        thread.close().await?;
-        let saved = history.checkpoint().await?.context("closed checkpoint")?;
-        assert_eq!(
-            saved.state.lifecycle,
-            pl_core::thread::ThreadLifecycle::Closed
-        );
-        assert!(crate::studio::agent_close::is_explicitly_closed(
-            &saved.state
-        )?);
-        assert_eq!(
-            saved.state.extensions[crate::studio::model_route::MODEL_ROUTE_EXTENSION],
-            before.state.extensions[crate::studio::model_route::MODEL_ROUTE_EXTENSION]
-        );
-        assert_eq!(saved.history_fence, history.watermark().await?);
-        drop(history);
-        let reloaded = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-            &store,
-            &test_thread(id),
-        )
-        .await?
-        .context("reopened canonical checkpoint")?;
-        assert!(crate::studio::agent_close::is_explicitly_closed(
-            &reloaded.state
-        )?);
-        assert_eq!(reloaded.history_fence, saved.history_fence);
-        assert_eq!(
-            reloaded.state.extensions[crate::studio::agent_close::EXTENSION],
-            saved.state.extensions[crate::studio::agent_close::EXTENSION]
-        );
-        db.close().await?;
+        channel.await_handoff_durable(id, 4).await?;
+        assert_eq!(channel.subscribe().borrow().committed_sequence, 4);
+        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
+        assert!(channel.subscribe().borrow().fault.is_none());
+
+        let lease = channel.step_lock.lock().await;
+        let fifth = visible_input_ticket(id, 5, "explicit-failure")?;
+        sink.admit(id, fifth.clone())?;
+        channel.fail_projection(5, "controlled projection failure".to_owned());
+        let explicit = channel.subscribe().borrow().clone();
+        channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW * 2);
+        assert_eq!(*channel.subscribe().borrow(), explicit);
+        let prepared = projection
+            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)
+            .await?;
+        assert!(channel.prepare(prepared));
+        drop(lease);
+        store
+            .thread_persistence()
+            .retry_history(id, explicit.fault_generation)
+            .await?;
+        channel.await_handoff_durable(id, 5).await?;
+        channel.stop_and_join().await?;
         Ok(())
     }
+}
 
-    #[tokio::test]
-    async fn a_reopened_studio_sink_accepts_a_thread_with_durable_history() -> Result<()> {
-        let id = "reopened-durable-thread";
-        let temp = tempfile::tempdir()?;
-        // Native paths remain literal, including URI-looking characters and deep data roots.
-        let database = temp
-            .path()
-            .join("存储 %2F #")
-            .join("nested".repeat(16))
-            .join("data/studio.sqlite");
-        let store = StudioStore::open(&database).await?;
-        let thread = test_thread(id);
-        register_test_thread(&store, &thread).await?;
-        let original = ThreadStorageSink::new(store.clone(), thread, None).await?;
-        spawn_live_projection(&original);
-        let write = ticket(id, 1);
-        let checkpoint = write.checkpoint.clone();
-        original.admit(id, write)?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            original.flush(id, 1),
-            || channel_facts(&original),
-        )
-        .await??;
-        drop(original);
-        drop(store);
+#[cfg(test)]
+mod execution_index_tests {
+    use super::storage_fault_tests::{
+        register_test_thread, test_thread, ticket, visible_input_ticket,
+    };
+    use super::*;
+    use pl_core::thread::history_sink::HistorySink;
+    use pl_core::{
+        context::{ContextRecord, ContextSource},
+        thread::{
+            journal::ContextChange,
+            task::{TaskAcknowledgement, TaskRecord, TaskStatus},
+        },
+    };
 
-        let reopened_store = StudioStore::open(&database).await?;
+    #[test]
+    fn fresh_background_ack_is_completion_checked_without_resolving_history() -> Result<()> {
+        let process = Arc::new(AtomicU64::new(0));
+        let index = RuntimeOrderIndex::new(process, 0);
+        let call_id = "background-call";
+        let task = TaskRecord {
+            id: format!("task:{call_id}"),
+            parent_call_id: None,
+            invocation: None,
+            call_id: call_id.into(),
+            tool_id: "exec".into(),
+            turn_id: "turn".into(),
+            revision: 2,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: Some(TaskAcknowledgement {
+                record_id: "receipt".into(),
+                context_revision: 4,
+            }),
+            started_sequence: Some(1),
+        };
+        let receipt = ContextRecord {
+            id: "receipt".into(),
+            turn_id: Some("turn".into()),
+            source: ContextSource::ToolResult {
+                call_id: call_id.into(),
+                tool_id: "exec".into(),
+            },
+            content: vec![pl_core::context::ContextContent::Text {
+                text: "accepted".into(),
+            }],
+            tool_calls: Vec::new(),
+        };
+        let effect = pl_core::thread::ThreadEffectBatch {
+            thread_id: "thread".into(),
+            sequence: 2,
+            committed_at: 2,
+            context: Some(ContextChange::Append {
+                revision: 4,
+                records: Arc::from([receipt]),
+            }),
+            tasks: Arc::from([task]),
+            ..Default::default()
+        };
+        index.reserve_boundaries(&effect, 0)?;
+        let background =
+            crate::studio::thread_projection::order::tool_background_started_id(call_id);
+        assert!(index.assigned(&background).is_some());
+        assert!(index.completion_checked(&background));
         assert!(
-            ThreadStorageSink::new(reopened_store.clone(), test_thread(id), None,)
-                .await
-                .is_err(),
-            "history ahead of the checkpoint must not silently skip effects"
+            !index.is_sealed(&background),
+            "an ACK receipt does not claim a terminal completion"
         );
-        let reopened =
-            ThreadStorageSink::new(reopened_store, test_thread(id), Some(&checkpoint)).await?;
-        spawn_live_projection(&reopened);
-        let resumed = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
-        resumed
-            .attach_storage(ColdStoreHandle::new(reopened.clone()))
-            .await?;
-        assert_eq!(reopened.pressure(id).durable_sequence, 1);
-        await_durable(
-            Duration::from_secs(5),
-            "reopened durable barrier",
-            resumed.flush(),
-            || String::from("the reopened owner never reached its durable ticket"),
-        )
-        .await??;
-        resumed.close().await?;
-        let saved = reopened
-            .0
-            .store
-            .history(id)
-            .await?
-            .checkpoint()
-            .await?
-            .context("owner shutdown checkpoint")?;
-        assert_eq!(
-            saved.state.lifecycle,
-            pl_core::thread::ThreadLifecycle::Closed
-        );
-        assert!(
-            !crate::studio::agent_close::is_explicitly_closed(&saved.state)?,
-            "ordinary shutdown must not seal future execution"
-        );
-        let restored = ThreadHandle::resume_without_model(id.into(), Some(saved))?;
-        assert_eq!(
-            restored.snapshot().lifecycle,
-            pl_core::thread::ThreadLifecycle::Open
-        );
-        assert!(!crate::studio::agent_close::is_explicitly_closed(
-            &restored.snapshot()
-        )?);
-        restored.close().await?;
         Ok(())
-    }
-
-    /// The projection an observation worker would own: empty until the test hands it the admitted
-    /// facts, which it folds and hands back to the reliable channel exactly like the production owner.
-    pub(super) async fn live_projection(
-        sink: &ThreadStorageSink,
-    ) -> Result<crate::studio::thread_projection::LiveProjection> {
-        let mut projection = crate::studio::thread_projection::LiveProjection::new();
-        projection.bind_execution_history(
-            sink.0.channel.order_index(),
-            sink.0.store.history(&sink.0.thread.id).await?,
-        )?;
-        Ok(projection)
     }
 
     #[test]
     fn execution_index_retires_sources_and_charges_pending_until_real_confirmation() -> Result<()> {
         let process = Arc::new(AtomicU64::new(0));
-        let index = Arc::new(RuntimeOrderIndex::new(process.clone(), 30));
+        let index = RuntimeOrderIndex::new(process.clone(), 0);
         let observed = index.reserve_observed("attempt-one", "observed")?;
-        assert_eq!(observed, 31);
+        assert_eq!(observed, 1);
         let reserved_bytes = index.retained_bytes();
         assert!(reserved_bytes > "observed".len() as u64);
         assert_eq!(process.load(Ordering::Acquire), reserved_bytes);
@@ -6790,7 +4849,7 @@ pub(crate) mod storage_fault_tests {
         );
         let order = index.reserve_observed("attempt-two", "completed")?;
         assert_eq!(
-            order, 32,
+            order, 2,
             "retiring a source cannot rewind the scalar ceiling"
         );
         let item = crate::ExecutionItem::new(
@@ -6803,7 +4862,7 @@ pub(crate) mod storage_fault_tests {
             20,
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
-        index.materialize(&item, 7)?;
+        index.materialize_execution_batch([ExecutionMaterialization::from_item(&item)], 7)?;
         index.mark_completion("completed", true);
         index.finish_source("attempt-two");
         index.retain::<()>(&Default::default(), Vec::new());
@@ -6817,31 +4876,28 @@ pub(crate) mod storage_fault_tests {
         );
         index.confirm_saved(7);
         assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        assert!(!index.is_sealed("completed"));
-        assert!(!index.is_terminal("completed"));
-        assert_eq!(index.assign("next")?, 33);
-        drop(index);
-        assert_eq!(process.load(Ordering::Acquire), 0);
         Ok(())
     }
 
     #[test]
     fn execution_index_budget_rejects_without_allocating_or_rewinding() -> Result<()> {
         let process = Arc::new(AtomicU64::new(0));
-        let index = RuntimeOrderIndex::new(process.clone(), 10);
-        index
-            .other_thread_bytes
-            .store(MAX_HISTORY_THREAD_BYTES, Ordering::Release);
-        let rejected = index.reserve_observed("attempt", "rejected").unwrap_err();
-        assert!(rejected.is::<ExecutionIndexBudgetFull>());
-        assert_eq!(index.assigned("rejected"), None);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        index.other_thread_bytes.store(0, Ordering::Release);
-        assert_eq!(index.reserve_observed("attempt", "accepted")?, 11);
-        index.finish_source("attempt");
-        index.retain::<()>(&Default::default(), Vec::new());
-        assert_eq!(process.load(Ordering::Acquire), 0);
+        let index = RuntimeOrderIndex::new(process.clone(), 0);
+        let first = index.allocate("first", None, None)?;
+        let second = index.allocate("second", None, None)?;
+        assert_eq!((first, second), (1, 2));
+        let retained = index.retained_bytes();
+        process.store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+        let rejected = index.allocate("third", None, None).unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("process execution identity budget is full")
+        );
+        assert_eq!(index.retained_bytes(), retained);
+        assert_eq!(index.assigned("third"), None);
+        process.store(retained, Ordering::Release);
+        assert_eq!(index.allocate("third", None, None)?, 3);
         Ok(())
     }
 
@@ -6849,3095 +4905,48 @@ pub(crate) mod storage_fault_tests {
     fn execution_index_materialize_budget_rejection_leaves_no_partial_identity_or_stamp()
     -> Result<()> {
         let process = Arc::new(AtomicU64::new(0));
-        let index = RuntimeOrderIndex::new(process.clone(), 40);
-        let id = "materialize-budget";
-        let probe = RuntimeOrderIndex::new(Arc::new(AtomicU64::new(0)), 40);
-        probe.assign(id)?;
-        let placement_bytes = probe.retained_bytes();
-        let item = crate::ExecutionItem::new(
-            id.into(),
+        let index = RuntimeOrderIndex::new(process.clone(), 0);
+        let first = index.reserve_observed("attempt", "observed")?;
+        assert_eq!(first, 1);
+        let retained = index.retained_bytes();
+        let large = crate::ExecutionItem::new(
+            "observed".into(),
             "thread".into(),
-            "original-turn".into(),
-            41,
+            "turn".into(),
+            first,
             9,
             10,
             20,
-            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "completed", 20)),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
-        // There is room for placement alone, but not its stamp. Both must be funded before
-        // insertion; rejecting the stamp must not leave an unowned retained=true entry.
-        index.other_thread_bytes.store(
-            MAX_HISTORY_THREAD_BYTES - placement_bytes,
-            Ordering::Release,
-        );
-        let error = index.materialize(&item, 7).unwrap_err();
-        assert!(error.is::<ExecutionIndexBudgetFull>());
-        assert_eq!(index.assigned(id), None);
-        assert_eq!(index.inner.lock().unwrap().ceiling, 40);
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-
-        index.other_thread_bytes.store(0, Ordering::Release);
-        index.materialize(&item, 7)?;
-        index.retain::<()>(&Default::default(), Vec::new());
-        let pending = index.pending_placement(id, "thread").unwrap();
-        let resident_bytes = index.retained_bytes();
-        let mut growing = item.clone();
-        growing.turn_id.push_str("-additional-stamp-bytes");
-        growing.revision += 1;
-        index
-            .other_thread_bytes
-            .store(MAX_HISTORY_THREAD_BYTES - resident_bytes, Ordering::Release);
-        let error = index.materialize(&growing, 8).unwrap_err();
-        assert!(error.is::<ExecutionIndexBudgetFull>());
-        assert_eq!(index.pending_placement(id, "thread"), Some(pending));
-        assert_eq!(index.inner.lock().unwrap().assigned[id].effect, Some(7));
-        assert_eq!(index.retained_bytes(), resident_bytes);
-        assert_eq!(process.load(Ordering::Acquire), resident_bytes);
-        index.confirm_saved(7);
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        // A committed database prefix can precede its local acknowledgement.
-        // Replacing that pending key must charge only the actual replacement.
-        index.other_thread_bytes.store(0, Ordering::Release);
-        index.materialize(&item, 9)?;
-        index.retain::<()>(&Default::default(), Vec::new());
-        index.seed(item.ordinal, 9);
-        index.materialize(&item, 10)?;
-        index.retain::<()>(&Default::default(), Vec::new());
-        index.confirm_saved(10);
-        assert!(index.inner.lock().unwrap().assigned.is_empty());
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn execution_index_materialize_and_real_save_confirmation_are_atomic() -> Result<()> {
-        for materialize_first in [true, false] {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let id = if materialize_first {
-                "materialize-first"
-            } else {
-                "confirmation-first"
-            };
-            register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-            let lease = sink.0.channel.step_lock.lock().await;
-            let chat = store.chat_session(id).await?;
-            let mut projection = live_projection(&sink).await?;
-            let old_write = visible_input_ticket(id, 1, "racing-identity")?;
-            let old_prepared =
-                drive_live_projection(&mut projection, &chat, &sink, id, old_write.clone()).await?;
-            drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 2)).await?;
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            let index = sink.0.channel.order_index();
-            {
-                let state = index.inner.lock().unwrap();
-                let entry = &state.assigned["racing-identity"];
-                assert!(!entry.retained);
-                assert_eq!(entry.effect, Some(1));
-                assert_eq!(state.durable, 0);
-            }
-            // This is the old placement a later reliable fact captured through live.resolve.
-            let old_placement = index.pending_placement("racing-identity", id).unwrap();
-            let mut next_item = crate::ExecutionItem::completed_user_message(
-                "racing-identity".into(),
-                id.into(),
-                String::new(),
-                String::new(),
-                vec![],
-                old_placement.created_at,
-            );
-            next_item.ordinal = old_placement.ordinal;
-            next_item.created_at = old_placement.created_at;
-            next_item.revision = old_placement.revision + 1;
-            next_item.updated_at += 1;
-
-            if materialize_first {
-                let (entered, materialize_entered) = tokio::sync::oneshot::channel();
-                let (release, materialize_release) = std::sync::mpsc::channel();
-                *index.materialize_gate.lock().unwrap() = Some(MaterializeGate {
-                    entered,
-                    release: materialize_release,
-                });
-                let materializing = tokio::task::spawn_blocking({
-                    let index = index.clone();
-                    let item = next_item.clone();
-                    move || index.materialize(&item, 3)
-                });
-                tokio::time::timeout(Duration::from_secs(5), materialize_entered).await??;
-                assert!(
-                    matches!(
-                        index.inner.try_lock(),
-                        Err(std::sync::TryLockError::WouldBlock)
-                    ),
-                    "allocation and stamp/effect update must stay in one critical section"
-                );
-                let (entered, confirmation_entered) = tokio::sync::oneshot::channel();
-                *index.confirm_saved_entered.lock().unwrap() = Some(entered);
-                let saving = tokio::task::spawn_blocking({
-                    let inner = sink.0.clone();
-                    let write = old_write.clone();
-                    let prepared = old_prepared.clone();
-                    move || {
-                        tokio::runtime::Handle::current().block_on(persist_effect(
-                            &inner,
-                            1,
-                            &write,
-                            &prepared,
-                            encoded_bytes(&write.effect),
-                        ))
-                    }
-                });
-                tokio::time::timeout(Duration::from_secs(5), confirmation_entered).await??;
-                assert_eq!(
-                    store.history(id).await?.watermark().await?,
-                    1,
-                    "the real transaction committed before it tried to reclaim the old identity"
-                );
-                assert!(
-                    !saving.is_finished(),
-                    "confirmation must wait for the materialization lock"
-                );
-                release.send(())?;
-                tokio::time::timeout(Duration::from_secs(5), materializing).await???;
-                tokio::time::timeout(Duration::from_secs(5), saving).await???;
-            } else {
-                persist_effect(
-                    &sink.0,
-                    1,
-                    &old_write,
-                    &old_prepared,
-                    encoded_bytes(&old_write.effect),
-                )
-                .await?;
-                assert_eq!(index.assigned("racing-identity"), None);
-                assert_eq!(index.retained_bytes(), 0);
-                // Confirmation won the lock before this call. Recreate the captured placement,
-                // never allocate a different ordinal for this later reliable fact.
-                index.materialize(&next_item, 3)?;
-            }
-            let pending = index.pending_placement("racing-identity", id).unwrap();
-            assert_eq!(pending.ordinal, old_placement.ordinal);
-            assert_eq!(pending.revision, next_item.revision);
-            assert_eq!(pending.created_at, old_placement.created_at);
-            assert_eq!(pending.updated_at, next_item.updated_at);
-            assert_eq!(
-                index.inner.lock().unwrap().assigned["racing-identity"].effect,
-                Some(3)
-            );
-            assert!(index.pending("racing-identity"));
-            assert_eq!(chat.durable_seq(), 1);
-            let mut next_write = visible_input_ticket(id, 3, "racing-identity")?;
-            let input = Arc::make_mut(&mut next_write.checkpoint.state.inputs)
-                .first_mut()
-                .unwrap();
-            input.accepted_sequence = 1;
-            input.ordinal = 1;
-            Arc::make_mut(&mut next_write.effect).inputs = Arc::from([InputChange::Transition {
-                id: input.input.id.clone(),
-                revision: input.revision,
-                state: input.state.clone(),
-            }]);
-            let next_current = projection
-                .prepare_committed(
-                    &sink.0.thread,
-                    &next_write.effect,
-                    &next_write.checkpoint.state,
-                )
-                .await?;
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            // The later fact has also left the live window; only its new unsaved obligation
-            // must keep the reconstructed identity resident until the writer reaches it.
-            index.retain::<()>(&Default::default(), vec!["racing-identity".into()]);
-            let mut next_prepared = next_current;
-            projection
-                .publish_prepared(&chat, &mut next_prepared)
-                .await?;
-            sink.admit(id, next_write)?;
-            assert!(sink.0.channel.prepare(next_prepared));
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            let mut effects_released = sink.0.channel.effects_released.subscribe();
-            drop(lease);
-            tokio::time::timeout(Duration::from_secs(5), async {
-                sink.flush(id, 3).await?;
-                // The durable report precedes process-budget decharge. Observe the same
-                // writer's real release before checking that its retained bytes are zero.
-                effects_released
-                    .wait_for(|sequence| *sequence >= 3)
-                    .await
-                    .context("writer release observation closed before the saved target")?;
-                Ok::<_, anyhow::Error>(())
-            })
-            .await??;
-            let history = store.history(id).await?;
-            let saved = pl_core::chat::ChatHistory::item(&history, "racing-identity")
-                .await?
-                .context("immutable admitted input")?;
-            assert_eq!(saved, *old_prepared.completions[0]);
-            assert_eq!(history.watermark().await?, 3);
-            assert_eq!(index.retained_bytes(), 0);
-            // Saving releases the writer/index, not the still-live current projection owner.
-            assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
-            drop(projection);
-            sink.0.channel.release_projection_retention();
-            assert_eq!(sink.pressure(id).thread_bytes, 0);
-            assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
-            sink.0.channel.stop_and_join().await?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn execution_index_channel_replacement_carries_only_live_or_pending_obligations() -> Result<()>
-    {
-        let process = Arc::new(AtomicU64::new(0));
-        let (capacity, mut capacity_changes) = tokio::sync::watch::channel(0_u64);
-        let channel = HistoryChannel::with_capacity(process.clone(), capacity.clone());
-        let producer = channel.order_index();
-        assert_eq!(producer.reserve_observed("running", "part")?, 1);
-        let replacement = channel.next_storage_channel();
-        assert!(Arc::ptr_eq(&producer, &replacement.order_index()));
-        assert_eq!(replacement.order_index.assign("next")?, 2);
-        let weak = Arc::downgrade(&producer);
-        drop(producer);
-        drop(channel);
-        drop(replacement);
-        assert!(
-            weak.upgrade().is_none(),
-            "no registry may keep the last owner alive"
-        );
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        assert!(capacity_changes.has_changed()?);
-        capacity_changes.borrow_and_update();
-        let closed = HistoryChannel::new(process.clone());
-        let finished_projection = closed.order_index();
-        assert_eq!(finished_projection.assign("finished-scope")?, 1);
-        let weak = Arc::downgrade(&closed.order_index);
-        // 稳定 Store 的投影仍持分配器时，替换 writer 必须复用同一索引。
-        let retained = closed.next_storage_channel();
-        assert!(Arc::ptr_eq(&finished_projection, &retained.order_index));
-        drop(retained);
-        drop(finished_projection);
-        let reopened = closed.next_storage_channel();
-        assert!(!Arc::ptr_eq(&closed.order_index, &reopened.order_index));
-        assert_eq!(reopened.order_index.retained_bytes(), 0);
-        assert_eq!(reopened.order_index.assign("new-scope")?, 2);
-        drop(closed);
-        assert!(weak.upgrade().is_none());
-        drop(reopened);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_many_completed_scopes_return_the_reliable_budget_to_baseline()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "index-bounded";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let mut projection = live_projection(&sink).await?;
-        let chat = store.chat_session(id).await?;
-        let index = sink.0.channel.order_index();
-        for sequence in 1..=20 {
-            // Mirror LiveOwner::observe_storage using only the writer's real durable watermark.
-            projection.confirm_sources(store.history(id).await?.watermark().await?);
-            let mut write = ticket(id, sequence);
-            let mut records = Vec::new();
-            for part in 0..80 {
-                let input =
-                    visible_input_ticket(id, sequence, &format!("turn-{sequence}-part-{part}"))?;
-                let mut record = input.checkpoint.state.inputs[0].clone();
-                record.state = InputState::Consumed {
-                    turn_id: format!("turn-{sequence}"),
-                    attempt_id: format!("attempt-{sequence}"),
-                };
-                records.push(record);
-            }
-            let turn = turn_record(
-                &format!("turn-{sequence}"),
-                &records[0].input.id,
-                TurnState::Finished(TurnOutcome::Completed),
-            );
-            write.checkpoint.state.turns = Arc::from([turn.clone()]);
-            Arc::make_mut(&mut write.effect).turn = Some(turn);
-            write.checkpoint.state.inputs = records.clone().into();
-            Arc::make_mut(&mut write.effect).inputs = records
-                .into_iter()
-                .map(InputChange::Accepted)
-                .collect::<Vec<_>>()
-                .into();
-            drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            sink.flush(id, sequence).await?;
-            // Durable display heads/members are owned by SQLite now. As LiveOwner does
-            // on storage acknowledgement, retire that exact prefix before measuring
-            // the next resident scope; a writer flush alone does not notify this fixture.
-            let before_confirm = projection.retained_bytes();
-            projection.confirm_sources(store.history(id).await?.watermark().await?);
-            assert!(
-                projection.retained_bytes() < before_confirm,
-                "the durable display prefix must release its retained members"
-            );
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            assert!(index.inner.lock().unwrap().assigned.len() <= 81);
-            assert!(index.retained_bytes() < 32 * 1024);
-            assert!(
-                sink.pressure(id).thread_bytes < 128 * 1024,
-                "scope {sequence}: projection={}, thread={}",
-                projection.retained_bytes(),
-                sink.pressure(id).thread_bytes
-            );
-        }
-        drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 21)).await?;
-        sink.0
-            .channel
-            .set_projection_retention(ProjectionRetention {
-                resident_bytes: projection.retained_bytes(),
-                pending: None,
-            })?;
-        sink.flush(id, 21).await?;
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
-        drop(projection);
-        sink.0.channel.release_projection_retention();
-        assert_eq!(sink.pressure(id).thread_bytes, 0);
-        assert_eq!(sink.0.channel.process_bytes.load(Ordering::Acquire), 0);
-        assert_eq!(chat.head_seq(), 1620);
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_late_reliable_input_restores_placement_without_resealing() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "index-late";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let mut accepted = visible_input_ticket(id, 1, "late-input")?;
-        let input = Arc::make_mut(&mut accepted.checkpoint.state.inputs)
-            .first_mut()
-            .unwrap();
-        input.state = InputState::Pending;
-        Arc::make_mut(&mut accepted.effect).inputs =
-            Arc::from([InputChange::Accepted(input.clone())]);
-        let first = drive_live_projection(&mut projection, &chat, &sink, id, accepted).await?;
-        sink.flush(id, 1).await?;
-        let history = store.history(id).await?;
-        let original = pl_core::chat::ChatHistory::item(&history, "late-input")
-            .await?
-            .unwrap();
-        assert_eq!(original.header.parent_id, None);
-        let checkpoint = history.checkpoint().await?.unwrap();
-        sink.0.channel.stop_and_join().await?;
-        drop(projection);
-        drop(sink);
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
-        let mut projection = live_projection(&sink).await?;
-        assert_eq!(sink.0.channel.order_index.retained_bytes(), 0);
-        let mut late = visible_input_ticket(id, 2, "late-input")?;
-        let input = Arc::make_mut(&mut late.checkpoint.state.inputs)
-            .first_mut()
-            .unwrap();
-        input.state = InputState::Consumed {
-            turn_id: "later-turn".into(),
-            attempt_id: "later-attempt".into(),
-        };
-        input.accepted_sequence = 1;
-        input.ordinal = 1;
-        Arc::make_mut(&mut late.effect).inputs = Arc::from([InputChange::Transition {
-            id: input.input.id.clone(),
-            revision: input.revision,
-            state: input.state.clone(),
-        }]);
-        let prepared = drive_live_projection(&mut projection, &chat, &sink, id, late).await?;
-        assert!(
-            prepared.completions.is_empty(),
-            "a later execution binding cannot reseal completion"
-        );
-        assert!(
-            prepared
-                .current
-                .lifecycle
-                .iter()
-                .all(|fact| fact.identity != "late-input")
-        );
-        assert_eq!(first.completions[0].header.item_id, "late-input");
-        sink.flush(id, 2).await?;
-        assert_eq!(chat.head_seq(), 1);
-        assert_eq!(
-            pl_core::chat::ChatHistory::item(&history, "late-input").await?,
-            Some(original)
-        );
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stall_clock_belongs_to_the_writable_prefix_and_survives_later_admissions() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "writable-stall-clock";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let lease = sink.0.channel.step_lock.lock().await;
-        let first = visible_input_ticket(id, 1, "first")?;
-        sink.admit(id, first.clone())?;
-        assert_eq!(
-            lock_progress(&sink.0).stage,
-            Some(HistoryStage::ProjectionPrepare)
-        );
-        sink.0.channel.detect_stall();
-        assert!(sink.0.channel.subscribe().borrow().fault.is_none());
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &first.effect, &first.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        assert!(sink.0.channel.prepare(prepared));
-        assert!(lock_progress(&sink.0).last_progress_at.unwrap().elapsed() < NO_PROGRESS_WINDOW);
-        let stalled_at = Instant::now() - NO_PROGRESS_WINDOW;
-        lock_progress(&sink.0).last_progress_at = Some(stalled_at);
-        let second = visible_input_ticket(id, 2, "second")?;
-        sink.admit(id, second.clone())?;
-        assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &second.effect, &second.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        assert!(sink.0.channel.prepare(prepared));
-        assert_eq!(
-            lock_progress(&sink.0).stage,
-            Some(HistoryStage::WriterQueue)
-        );
-        assert_eq!(lock_progress(&sink.0).last_progress_at, Some(stalled_at));
-        let retained = sink.pressure(id).thread_bytes;
-        sink.0.channel.detect_stall();
-        let failed = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
-        assert_eq!(lock_progress(&sink.0).prepared_through(), 2);
-        assert_eq!(sink.pressure(id).thread_bytes, retained);
-        assert!(sink.flush(id, 2).await.is_err());
-        sink.0.channel.detect_stall();
-        assert_eq!(
-            sink.0.channel.subscribe().borrow().fault_generation,
-            failed.fault_generation
-        );
-        drop(lease);
-        store
-            .thread_persistence()
-            .retry_history(id, failed.fault_generation)
-            .await?;
-        sink.flush(id, 2).await?;
-        assert_eq!(store.history(id).await?.watermark().await?, 2);
-        assert!(lock_progress(&sink.0).last_progress_at.is_none());
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_retired_pending_survives_a_rejected_writer_transaction() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "index-failed";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 1)).await?;
-        sink.flush(id, 1).await?;
-        let lease = sink.0.channel.step_lock.lock().await;
-        let write = visible_input_ticket(id, 2, "pending-retired")?;
-        let prepared =
-            drive_live_projection(&mut projection, &chat, &sink, id, write.clone()).await?;
-        drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 3)).await?;
-        sink.0
-            .channel
-            .set_projection_retention(ProjectionRetention {
-                resident_bytes: projection.retained_bytes(),
-                pending: None,
-            })?;
-        let index = sink.0.channel.order_index();
-        assert!(index.pending("pending-retired"));
-        let path = store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_index_save BEFORE UPDATE OF applied_write_seq ON history_meta
-             BEGIN SELECT RAISE(ABORT, 'controlled index save rejection'); END",
-        )
-        .await?;
-        assert!(
-            persist_effect(&sink.0, 2, &write, &prepared, encoded_bytes(&write.effect))
-                .await
-                .is_err()
-        );
-        let charged = index.retained_bytes();
-        assert!(charged > 0);
-        assert_eq!(chat.durable_seq(), 0);
-        assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 2);
-        assert!(sink.pressure(id).thread_bytes >= charged);
-        assert!(index.pending("pending-retired"));
-        assert!(index.is_sealed("pending-retired"));
-        db.execute_unprepared("DROP TRIGGER reject_index_save")
-            .await?;
-        persist_effect(&sink.0, 2, &write, &prepared, encoded_bytes(&write.effect)).await?;
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(chat.durable_seq(), 1);
-        drop(lease);
-        sink.flush(id, 3).await?;
-        assert_eq!(sink.pressure(id).thread_bytes, projection.retained_bytes());
-        drop(projection);
-        sink.0.channel.release_projection_retention();
-        assert_eq!(sink.pressure(id).thread_bytes, 0);
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_writer_replacement_and_cold_reopen_preserve_the_right_ceiling()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let database = temp.path().join("data/studio.sqlite");
-        let id = "index-reopened";
-        let store = StudioStore::open(&database).await?;
-        register_test_thread(&store, &test_thread(id)).await?;
-        let original = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let mut projection = live_projection(&original).await?;
-        let chat = store.chat_session(id).await?;
-        let first = drive_live_projection(
-            &mut projection,
-            &chat,
-            &original,
-            id,
-            visible_input_ticket(id, 1, "durable-execution")?,
-        )
-        .await?;
-        original.flush(id, 1).await?;
-        let checkpoint = store.history(id).await?.checkpoint().await?.unwrap();
-        let index = original.0.channel.order_index();
-        let weak = Arc::downgrade(&index);
-        let reserved = index.reserve_observed("still-running", "unmaterialized-part")?;
-        assert!(reserved > first.execution_order);
-        let replacement =
-            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
-        assert!(Arc::ptr_eq(&index, &replacement.0.channel.order_index()));
-        assert_eq!(
-            replacement
-                .0
-                .channel
-                .order_index
-                .assign("replacement-next")?,
-            reserved + 1
-        );
-        replacement.0.channel.stop_and_join().await?;
-        drop(projection);
-        drop(index);
-        drop(first);
-        drop(original);
-        drop(replacement);
-        drop(chat);
-        drop(store);
-        assert!(
-            weak.upgrade().is_none(),
-            "closed owners cannot leave a process registry behind"
-        );
-        let reopened_store = StudioStore::open(&database).await?;
-        let reopened =
-            ThreadStorageSink::new(reopened_store, test_thread(id), Some(&checkpoint)).await?;
-        let reopened_index = reopened.0.channel.order_index();
-        assert_eq!(reopened_index.retained_bytes(), 0);
-        assert_eq!(
-            reopened_index.assign("cold-next")?,
-            2,
-            "cold reopen derives its ceiling from durable execution rows, not abandoned reservations"
-        );
-        reopened.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    /// Takes the admitted facts over exactly as the Thread's live projection owner does.
-    ///
-    /// The Studio runtime installs that owner during Thread assembly, and the history writer refuses
-    /// to save a fact no projection holds. These tests exercise the writer on its own, so they drive
-    /// the same production projection against the same reliable admission channel: one projection per
-    /// commit, published shape unchanged, only the caller differs.
-    pub(crate) fn spawn_live_projection(sink: &ThreadStorageSink) {
-        drop(spawn_projection(
-            sink.0.store.clone(),
-            sink.0.thread.clone(),
-        ));
-    }
-
-    /// Drives the real projection for an assembler-installed sink without downcasting its erased
-    /// ColdStoreHandle or retaining that writer incarnation after its core/observer have ended.
-    pub(crate) fn spawn_live_projection_for_thread(
-        store: StudioStore,
-        id: &str,
-    ) -> tokio::task::JoinHandle<()> {
-        let catalog = store.catalog();
-        let agent = catalog.get_agent(id).expect("registered projection agent");
-        let session = catalog
-            .get_session(&agent.session_id)
-            .expect("registered projection session");
-        let thread = crate::studio::records::thread_projection(&session, &agent, |id| {
-            catalog.get_agent(id).map(|agent| agent.thread_id)
-        })
-        .expect("Native projection");
-        spawn_projection(store, thread)
-    }
-
-    fn spawn_projection(store: StudioStore, thread: crate::Thread) -> tokio::task::JoinHandle<()> {
-        let channel = store.thread_persistence().history_channel(&thread.id);
-        let chat = store
-            .thread_persistence()
-            .conversation_store(&thread.id)
-            .expect("initialized writer Store");
-        let chat = chat.session().clone();
-        tokio::spawn(async move {
-            let mut projection = crate::studio::thread_projection::LiveProjection::new();
-            projection
-                .bind_execution_history(
-                    channel.order_index(),
-                    store
-                        .history(&thread.id)
-                        .await
-                        .expect("initialized execution history"),
-                )
-                .expect("one projection binding");
-            let mut failed = std::collections::BTreeSet::new();
-            // Wake on the channel's own status watch, never on the channel's `Notify`: the history
-            // writer is the one task that waits on that `Notify`, and a second waiter would consume
-            // the single wakeup permit a recovery notification hands out.
-            let mut updates = channel.subscribe();
-            loop {
-                if channel.stopping.is_cancelled() {
-                    return;
-                }
-                if let Some(write) = channel.next_unprojected() {
-                    let sequence = write.effect.sequence;
-                    if failed.contains(&sequence) {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                        continue;
-                    }
-                    // A reliable-output repair can name an identity this bounded window released; the
-                    // production observation owner reads that committed body back and folds it in, so
-                    // the harness drives the same step instead of skipping a fact the writer must save.
-                    if !write.effect.delivery_repairs.is_empty() {
-                        let seeded = match store.history(&thread.id).await {
-                            Ok(history) => crate::studio::thread_projection::seed_repaired_targets(
-                                &mut projection,
-                                &history,
-                                &write.effect,
-                            )
-                            .await
-                            .map_err(|error| error.to_string()),
-                            Err(error) => Err(error.to_string()),
-                        };
-                        if let Err(error) = seeded {
-                            failed.insert(sequence);
-                            channel.fail_projection(sequence, error);
-                            continue;
-                        }
-                    }
-                    let published = async {
-                        let mut prepared = projection
-                            .prepare_committed(&thread, &write.effect, &write.checkpoint.state)
-                            .await?;
-                        projection.publish_prepared(&chat, &mut prepared).await?;
-                        Ok::<_, crate::studio::thread_projection::ProjectionError>(prepared)
-                    }
-                    .await;
-                    match published {
-                        Ok(prepared) => {
-                            channel.prepare(prepared);
-                        }
-                        // The writer never projects, so failing here is what the running Studio sees
-                        // from its observation worker: the fact is reported and the barrier fails
-                        // closed with the projection's own reason.
-                        Err(error) => {
-                            failed.insert(sequence);
-                            channel.fail_projection(sequence, error.to_string());
-                        }
-                    }
-                    continue;
-                }
-                tokio::select! {
-                    changed = updates.changed() => if changed.is_err() { return; },
-                    () = channel.stopping.cancelled() => return,
-                }
-            }
-        })
-    }
-
-    /// Save the original terminal report in the same real effect/checkpoint transaction as Studio.
-    /// No parent owner is needed; recovery must later prove its independently missing receipt.
-    pub(crate) async fn save_terminal_report(
-        store: &StudioStore,
-        thread: &crate::Thread,
-        message: pl_core::thread::inbox::ThreadMessage,
-    ) -> Result<()> {
-        let checkpoint = store.history(&thread.id).await?.checkpoint().await?;
-        let sink =
-            ThreadStorageSink::new(store.clone(), thread.clone(), checkpoint.as_ref()).await?;
-        let sequence = checkpoint
-            .as_ref()
-            .map_or(1, |checkpoint| checkpoint.history_fence + 1);
-        let mut terminal = ticket(&thread.id, sequence);
-        if let Some(checkpoint) = checkpoint {
-            terminal.checkpoint.state = checkpoint.state;
-            terminal.checkpoint.state.commit_sequence = sequence;
-        }
-        let turn = TurnRecord {
-            turn_id: "original-terminal-turn".into(),
-            input_id: None,
-            state: TurnState::Finished(TurnOutcome::Completed),
-            model_steps: 0,
-            elapsed_ms: None,
-        };
-        terminal.checkpoint.state.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
-        terminal.checkpoint.state.turns = Arc::from([turn.clone()]);
-        Arc::make_mut(&mut terminal.effect).turn = Some(turn);
-        let mut projection = live_projection(&sink).await?;
-        let mut prepared = projection
-            .prepare_committed(thread, &terminal.effect, &terminal.checkpoint.state)
-            .await?;
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        Arc::get_mut(&mut prepared)
-            .context("new prepared effect unexpectedly shared")?
-            .parent_report = Some(Arc::new(message));
-        sink.admit(&thread.id, terminal)?;
-        sink.0.channel.prepare(prepared);
-        sink.flush(&thread.id, sequence).await?;
-        sink.0.channel.stop_and_join().await
-    }
-
-    /// One ticket whose effect commits a visible prompt item, i.e. the shortest effect that projects
-    /// a durable body the writer must confirm.
-    pub(crate) fn visible_input_ticket(
-        thread_id: &str,
-        sequence: u64,
-        input_id: &str,
-    ) -> Result<ThreadWrite> {
-        let mut write = ticket(thread_id, sequence);
-        let input = InputRecord {
-            continuation: None,
-            accepted_sequence: sequence,
-            delivery: Default::default(),
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: input_id.to_owned(),
-                payload: OpaquePayload::new(
-                    "pl.studio.prompt",
-                    1,
-                    serde_json::json!({"text":"hello","presentation":"visible","attachments":[]})
-                        .to_string(),
-                )?,
-                context: vec![ContextContent::Text {
-                    text: "hello".into(),
-                }],
-            },
-            ordinal: sequence,
-            revision: sequence,
-            state: InputState::Consumed {
-                turn_id: "visible-turn".into(),
-                attempt_id: "attempt".into(),
-            },
-        };
-        write.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Ok(write)
-    }
-
-    /// A commit the Thread's projection owner has not handed over is never written.
-    ///
-    /// This is what makes "the owner released this effect from its window" imply "the projection
-    /// published it": the durable watermark cannot move past a fact no projection took over, so a
-    /// released commit is always one the product already has. The sink below is built without the
-    /// test projection, so nothing takes the fact over until the test hands it in itself.
-    #[tokio::test]
-    async fn a_commit_without_a_projection_handoff_is_never_saved() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("no-handoff")).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread("no-handoff"), None).await?;
-        let calls_before = store.calls().metrics();
-        let materials_before = store.calls().subscribe_materials().borrow().clone();
-        let write = ticket("no-handoff", 1);
-        sink.admit("no-handoff", write.clone())?;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(200), sink.flush("no-handoff", 1))
-                .await
-                .is_err(),
-            "an unprojected commit must not reach a durable barrier"
-        );
-        let unprojected = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(unprojected.committed_sequence, 0);
-        assert_eq!(unprojected.queued_records, 1);
-        assert_eq!(store.history("no-handoff").await?.watermark().await?, 0);
-
-        let chat = store.chat_session("no-handoff").await?;
-        let mut projection = live_projection(&sink).await?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        sink.0.channel.prepare(prepared);
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("no-handoff", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        assert_eq!(store.history("no-handoff").await?.watermark().await?, 1);
-        assert_eq!(store.calls().metrics(), calls_before);
-        assert_eq!(
-            *store.calls().subscribe_materials().borrow(),
-            materials_before
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn hidden_consumed_input_keeps_turn_history_complete_after_body_pruning() -> Result<()> {
-        let (_temp, store, sink) = sink("hidden-input").await?;
-        let input_id = "interaction:confirmed:continuation";
-        let turn_id = "turn-after-confirmation";
-        let mut accepted = ticket("hidden-input", 1);
-        let input = InputRecord {
-            continuation: None,
-            accepted_sequence: 1,
-            delivery: Default::default(),
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: input_id.into(),
-                payload: OpaquePayload::new(
-                    "pl.studio.interaction-continuation",
-                    1,
-                    serde_json::json!({"interactionId":"confirmed","presentation":"hidden"})
-                        .to_string(),
-                )?,
-                context: vec![ContextContent::Text {
-                    text: "answer".into(),
-                }],
-            },
-            ordinal: 1,
-            revision: 2,
-            state: InputState::Consumed {
-                turn_id: turn_id.into(),
-                attempt_id: "attempt-1".into(),
-            },
-        };
-        accepted.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut accepted.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        sink.admit("hidden-input", accepted)?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("hidden-input", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let history = store.history("hidden-input").await?;
-        assert!(history.execution_seeds([input_id.into()]).await?.is_empty());
-        assert!(history.input_identity(input_id).await?.is_some());
-
-        let mut later = ticket("hidden-input", 2);
-        let turn = TurnRecord {
-            elapsed_ms: None,
-            input_id: Some(input_id.into()),
-            turn_id: turn_id.into(),
-            state: TurnState::Running,
-            model_steps: 0,
-        };
-        later.checkpoint.state.turns = Arc::from([turn.clone()]);
-        Arc::make_mut(&mut later.effect).turn = Some(turn);
-        sink.admit("hidden-input", later)?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 2),
-            sink.flush("hidden-input", 2),
-            || channel_facts(&sink),
-        )
-        .await??;
-        assert_eq!(history.watermark().await?, 2);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn missing_visible_input_item_still_blocks_history() -> Result<()> {
-        // A Thread re-activated after its durable timeline lost a visible input body. The projection
-        // that installs now has never folded that input — it is a fresh owner, exactly like a Thread
-        // whose earlier incarnation committed the input — so the effect that still references it must
-        // fail closed instead of committing a timeline with a hole.
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("missing-visible")).await?;
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread("missing-visible"), None).await?;
-        let mut accepted = ticket("missing-visible", 1);
-        let input = InputRecord {
-            continuation: None,
-            accepted_sequence: 1,
-            delivery: Default::default(),
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: "visible-input".into(),
-                payload: OpaquePayload::new(
-                    "pl.studio.prompt",
-                    1,
-                    serde_json::json!({"text":"hello","presentation":"visible","attachments":[]})
-                        .to_string(),
-                )?,
-                context: vec![ContextContent::Text {
-                    text: "hello".into(),
-                }],
-            },
-            ordinal: 1,
-            revision: 2,
-            state: InputState::Consumed {
-                turn_id: "visible-turn".into(),
-                attempt_id: "attempt".into(),
-            },
-        };
-        accepted.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut accepted.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        // The incarnation that committed the input projects and hands it over normally.
-        let chat = store.chat_session("missing-visible").await?;
-        sink.admit("missing-visible", accepted.clone())?;
-        let mut owner = live_projection(&sink).await?;
-        let mut prepared = owner
-            .prepare_committed(&sink.0.thread, &accepted.effect, &accepted.checkpoint.state)
-            .await?;
-        owner.publish_prepared(&chat, &mut prepared).await?;
-        sink.0.channel.prepare(prepared);
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("missing-visible", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let history = store.history("missing-visible").await?;
-        let path = store
-            .session_paths("project-test", "missing-visible")?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared("DELETE FROM conversation_items WHERE item_id='visible-input'")
-            .await?;
-
-        // The owner this Thread gets on re-activation never folded the input, and the durable row
-        // the projection would resolve it from is gone.
-        spawn_live_projection(&sink);
-        let mut later = ticket("missing-visible", 2);
-        let turn = TurnRecord {
-            elapsed_ms: None,
-            input_id: Some("visible-input".into()),
-            turn_id: "visible-turn".into(),
-            state: TurnState::Running,
-            model_steps: 0,
-        };
-        later.checkpoint.state.turns = Arc::from([turn.clone()]);
-        Arc::make_mut(&mut later.effect).turn = Some(turn);
-        sink.admit("missing-visible", later)?;
-        let error = await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 2),
-            sink.flush("missing-visible", 2),
-            || channel_facts(&sink),
-        )
-        .await
-        .context("a torn projection must fail the durable barrier instead of hanging")?
-        .expect_err("a visible input without its item must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("missing the committed input item")
-        );
-        assert_eq!(history.watermark().await?, 1);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn unconsumed_input_survives_failed_preparation_and_a_new_turn() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "unconsumed-retry";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let mut input = consumed_visible_input("pending-input", "second-turn", 1)?;
-        input.state = InputState::Pending;
-        let mut accepted = ticket(id, 1);
-        accepted.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut accepted.effect).inputs =
-            Arc::from([InputChange::Accepted(input.clone())]);
-        drive_live_projection(&mut projection, &chat, &sink, id, accepted).await?;
-        // Both runs publish a Turn before model preparation consumes anything. The first one
-        // failed preparation, so the same pending identity legitimately enters the second run.
-        for (sequence, turn_id, turn_state) in [
-            (2, "first-turn", TurnState::Running),
-            (
-                3,
-                "first-turn",
-                TurnState::Failed {
-                    description: "model preparation rejected media".into(),
-                    model_failure: None,
-                },
-            ),
-            (4, "second-turn", TurnState::Running),
-        ] {
-            let mut turn = turn_record(turn_id, "pending-input", turn_state);
-            if sequence == 3 {
-                turn.elapsed_ms = Some(1);
-            }
-            let mut write = ticket(id, sequence);
-            write.checkpoint.state.inputs = Arc::from([input.clone()]);
-            write.checkpoint.state.turns = Arc::from([turn.clone()]);
-            Arc::make_mut(&mut write.effect).turn = Some(turn);
-            drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
-            await_durable(
-                Duration::from_secs(5),
-                &format!("commit {}", sequence),
-                sink.flush(id, sequence),
-                || channel_facts(&sink),
-            )
-            .await??;
-            let saved = store
-                .history(id)
-                .await?
-                .execution_seeds(["pending-input".into()])
-                .await?;
-            assert!(saved["pending-input"].turn_id.is_empty());
-        }
-        input.state = InputState::Consumed {
-            turn_id: "second-turn".into(),
-            attempt_id: "attempt".into(),
-        };
-        input.revision += 1;
-        let mut consumed = ticket(id, 5);
-        consumed.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut consumed.effect).inputs = Arc::from([InputChange::Transition {
-            id: input.input.id.clone(),
-            revision: input.revision,
-            state: input.state.clone(),
-        }]);
-        drive_live_projection(&mut projection, &chat, &sink, id, consumed).await?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 5),
-            sink.flush(id, 5),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let history = store.history(id).await?;
-        let saved = history.execution_seeds(["pending-input".into()]).await?;
-        assert_eq!(saved["pending-input"].turn_id, "second-turn");
-        assert_eq!(history.watermark().await?, 5);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        Ok(())
-    }
-
-    /// One visible, already-consumed input record owned by `turn_id`.
-    ///
-    /// This is exactly what core's consuming commit leaves behind: the input is `Consumed`, so it has
-    /// a visible timeline item whose `turn_id` is the Turn it opened.
-    fn consumed_visible_input(id: &str, turn_id: &str, sequence: u64) -> Result<InputRecord> {
-        Ok(InputRecord {
-            continuation: None,
-            accepted_sequence: sequence,
-            delivery: Default::default(),
-            input: ThreadInput {
-                purpose: pl_core::thread::input::InputPurpose::Message,
-                id: id.to_owned(),
-                payload: OpaquePayload::new(
-                    "pl.studio.prompt",
-                    1,
-                    serde_json::json!({"text":"hello","presentation":"visible","attachments":[]})
-                        .to_string(),
-                )?,
-                context: vec![ContextContent::Text {
-                    text: "hello".into(),
-                }],
-            },
-            ordinal: sequence,
-            revision: sequence,
-            state: InputState::Consumed {
-                turn_id: turn_id.to_owned(),
-                attempt_id: "attempt".to_owned(),
-            },
-        })
-    }
-
-    /// One Turn record naming `input_id` as the input that opened it.
-    fn turn_record(turn_id: &str, input_id: &str, state: TurnState) -> TurnRecord {
-        TurnRecord {
-            elapsed_ms: None,
-            input_id: Some(input_id.to_owned()),
-            turn_id: turn_id.to_owned(),
-            state,
-            model_steps: 0,
-        }
-    }
-
-    /// One provider output item with a single text part, as a model receipt reports it.
-    ///
-    /// The multi-item stress response is exactly a long list of these: one stable identity per
-    /// provider item, all delivered inside one model step.
-    fn provider_presentation_part(
-        index: usize,
-    ) -> pl_model::completion::CompletionPresentationItem {
-        use pl_model::completion::{
-            CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
-            CompletionPresentationPartKind,
-        };
-        CompletionPresentationItem {
-            provider_item_id: format!("stress-item-{index}"),
-            output_index: Some(index as u32),
-            kind: CompletionPresentationItemKind::Text(pl_model::trace::TraceTextChannel::Final),
-            parts: vec![CompletionPresentationPart {
-                content_index: 0,
-                provider_part_id: Some(format!("stress-part-{index}")),
-                kind: CompletionPresentationPartKind::OutputText,
-                text: format!("chunk-{index}"),
-            }],
-        }
-    }
-
-    /// The snapshot attempt and the matching effect update for one committed step of `parts` parts.
-    ///
-    /// The receipt is the model crate's own `pl.model.assistant` frame — the same payload a real
-    /// adapter writes — so the projection itemizes it through its public receipt reader instead of a
-    /// test-only shape.
-    fn committed_parts_attempt(
-        turn_id: &str,
-        attempt_id: &str,
-        parts: usize,
-    ) -> Result<(
-        pl_core::thread::RequestAttempt,
-        pl_core::thread::journal::AttemptUpdate,
-    )> {
-        committed_presentation_attempt(
-            turn_id,
-            attempt_id,
-            (0..parts).map(provider_presentation_part).collect(),
-        )
-    }
-
-    fn committed_presentation_attempt(
-        turn_id: &str,
-        attempt_id: &str,
-        presentation_items: Vec<pl_model::completion::CompletionPresentationItem>,
-    ) -> Result<(
-        pl_core::thread::RequestAttempt,
-        pl_core::thread::journal::AttemptUpdate,
-    )> {
-        let receipt = pl_model::runtime::ModelResponseReceipt {
-            binding: pl_model::runtime::ModelCallBinding {
-                account_id: "fixture".into(),
-                model_id: "fixture-model".into(),
-                protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
-                wire_api: pl_model::protocol::WireApi::ChatCompletions,
-                isolation: "test".into(),
-                purpose: "test".into(),
-                context_window: None,
-                max_context_window: None,
-                auto_compact_limit: None,
-            },
-            response: pl_model::completion::CompletionResponse {
-                replay: None,
-                response_id: None,
-                content: None,
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-                responses_context_items: Vec::new(),
-                presentation_items,
-                orchestration: Default::default(),
-                timing: None,
-                accounting: Default::default(),
-                model: "fixture-model".into(),
-                model_observation: None,
-                observation: Default::default(),
-            },
-        };
-        // The durable assistant frame is exactly this pair of receipt and tool bindings.
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct Frame<'a> {
-            receipt: &'a pl_model::runtime::ModelResponseReceipt,
-            bindings: Vec<ModelToolCall>,
-        }
-        let frame = OpaquePayload::new(
-            "pl.model.assistant",
-            // 与 pl-model 当前 `pl.model.assistant` 帧版本一致（该常量不对外重导出）。
-            5,
-            serde_json::to_string(&Frame {
-                receipt: &receipt,
-                bindings: Vec::new(),
-            })?,
-        )?;
-        let output = ModelStepOutput {
-            turn_action: Default::default(),
-            attempt_id: attempt_id.to_owned(),
-            base_context_revision: 0,
-            content: vec![ContextContent::Opaque { payload: frame }],
-            tool_calls: Vec::new(),
-            private_context: None,
-            usage: Default::default(),
-        };
-        let tools: Arc<[pl_core::model::ModelToolDeclaration]> =
-            Arc::from(Vec::<pl_core::model::ModelToolDeclaration>::new());
-        let attempt = pl_core::thread::RequestAttempt::new(
-            turn_id.to_owned(),
-            attempt_id.to_owned(),
-            0,
-            pl_core::thread::AttemptStatus::Committed,
-        );
-        let update = pl_core::thread::journal::AttemptUpdate {
-            request_metadata: None,
-            usage_binding: None,
-            tool_projection: None,
-            turn_id: turn_id.to_owned(),
-            attempt_id: attempt_id.to_owned(),
-            retry_of: None,
-            input_revision: 0,
-            tools,
-            outcome: pl_core::thread::AttemptOutcome::Committed(output),
-            input_estimate: None,
-        };
-        Ok((attempt, update))
-    }
-
-    /// Hands one admitted fact to the production live projection and to the writer, exactly as the
-    /// Thread's observation worker does: admit, take the owed fact over, project it, hand the batch
-    /// back. The writer saves only what this owner handed over, so a `flush` afterwards is the same
-    /// durable barrier the product uses.
-    async fn drive_live_projection(
-        projection: &mut crate::studio::thread_projection::LiveProjection,
-        chat: &pl_core::chat::Session,
-        sink: &ThreadStorageSink,
-        thread_id: &str,
-        write: ThreadWrite,
-    ) -> Result<crate::studio::thread_projection::PreparedEffect> {
-        sink.admit(thread_id, write)?;
-        let write = sink
-            .0
-            .channel
-            .next_unprojected()
-            .context("the admitted fact is owed a projection")?;
-        let (_, mut prepared) = projection
-            .prepare(&sink.0.thread, &write.effect, &write.checkpoint.state, true)
-            .await?;
-        assert!(prepared.completion_drafts.is_some());
-        assert!(!sink.0.channel.prepare(prepared.clone()));
-        projection.publish_prepared(chat, &mut prepared).await?;
-        assert!(prepared.completion_drafts.is_none());
-        assert!(sink.0.channel.prepare(prepared.clone()));
-        Ok((*prepared).clone())
-    }
-
-    /// Manual comparison of the same production admission/projection/writer workload on both revisions.
-    /// This is deliberately excluded from ordinary CI: it emits measurements, not timing assertions.
-    #[tokio::test]
-    #[ignore = "manual before/after history write measurement"]
-    async fn measure_history_write_cost() -> Result<()> {
-        use crate::studio::storage::history::conversation::record_read_tests::sqlite_work::Sampler;
-        use sea_orm::{DbBackend, Statement};
-        async fn occupied(db: &sea_orm::DatabaseConnection) -> Result<i64> {
-            let mut values = Vec::new();
-            for pragma in ["page_count", "freelist_count", "page_size"] {
-                let row = db
-                    .query_one_raw(Statement::from_string(
-                        DbBackend::Sqlite,
-                        format!("PRAGMA {pragma}"),
-                    ))
-                    .await?
-                    .context("missing SQLite page counter")?;
-                values.push(row.try_get_by_index::<i64>(0)?);
-            }
-            Ok((values[0] - values[1]) * values[2])
-        }
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "history-write-measurement";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let history = store.history(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let (writer, reader) = history.measurement_connections().await?;
-        let gate = sink.0.channel.step_lock.lock().await;
-        let sqlite_version = writer
-            .query_one_raw(Statement::from_string(
-                DbBackend::Sqlite,
-                "SELECT sqlite_version() AS version",
-            ))
-            .await?
-            .context("SQLite version")?
-            .try_get::<String>("", "version")?;
-        let before_pages = occupied(&writer).await?;
-        let writer_sample = Sampler::all_statements(&writer).await?;
-        let reader_sample = Sampler::all_statements(&reader).await?;
-        let body = "测量正文".repeat(2048);
-        let effects = 32u64;
-        let mut original_bytes = 0usize;
-        let mut phase_bytes = 0usize;
-        let mutable_bytes = 0usize;
-        let mut prepared_bytes = 0u64;
-        let mut originals = Vec::new();
-        for seq in 1..=effects {
-            let mut write = visible_input_ticket(id, seq, &format!("input-{seq}"))?;
-            let mut input = write.checkpoint.state.inputs[0].clone();
-            input.input.payload = OpaquePayload::new(
-                "pl.studio.prompt",
-                1,
-                serde_json::json!({"text":body,"presentation":"visible","attachments":[]})
-                    .to_string(),
-            )?;
-            input.input.context = vec![ContextContent::Text {
-                text: body.clone().into(),
-            }];
-            write.checkpoint.state.inputs = Arc::from([input.clone()]);
-            Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-            let prepared = drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
-            prepared_bytes += prepared.retained_bytes();
-            for fact in prepared.current.lifecycle.iter() {
-                phase_bytes += serde_json::to_vec(&fact.kind)?.len()
-                    + serde_json::to_vec(&fact.delivery)?.len();
-                if let Some(value) = fact.text_channel {
-                    phase_bytes += serde_json::to_vec(&value)?.len();
-                }
-                if let Some(value) = fact.outcome {
-                    phase_bytes += serde_json::to_vec(&value)?.len();
-                }
-                if let crate::ChatSourceId::InboxMessage {
-                    source_id,
-                    message_id,
-                } = &fact.source
-                {
-                    phase_bytes += serde_json::to_vec(&(source_id, message_id))?.len();
-                }
-            }
-            for item in prepared.completions.iter() {
-                original_bytes += item.payload.len()
-                    + item.header.metadata.len()
-                    + item
-                        .contents
-                        .values()
-                        .map(|content| content.data.len())
-                        .sum::<usize>();
-                originals.push(Arc::downgrade(item));
-            }
-        }
-        let queue_peak = sink.pressure(id).thread_bytes;
-        let resident_before = projection.retained_bytes();
-        drop(gate);
-        sink.flush(id, effects).await?;
-        let writer_work = writer_sample.finish(&writer).await?;
-        let reader_work = reader_sample.finish(&reader).await?;
-        let occupied_growth = occupied(&writer).await? - before_pages;
-        let retained_originals = originals
-            .iter()
-            .filter(|item| item.strong_count() > 0)
-            .count();
-        let metrics = serde_json::json!({
-            "sqliteVersion":sqlite_version,
-            "effects":effects,"bodyBytesPerEffect":body.len(),
-            "sqlStatements":writer_work.statements + reader_work.statements,
-            "writerStatements":writer_work.statements,"readerStatements":reader_work.statements,
-            "vmSteps":writer_work.vm_steps + reader_work.vm_steps,
-            "fullscanSteps":writer_work.fullscan_steps + reader_work.fullscan_steps,
-            "canonicalPayloadMetadataContentBytes":original_bytes,
-            "extraMutableItemJsonBytes":mutable_bytes,"phaseOrLifecycleJsonBytes":phase_bytes,
-            "sumPreparedBudgetBytes":prepared_bytes,"queueBudgetPeakBytes":queue_peak,
-            "queueBudgetAfterDurableBytes":sink.pressure(id).thread_bytes,
-            "projectionBudgetBeforeDurableBytes":resident_before,
-            "projectionBudgetAfterDurableBytes":projection.retained_bytes(),
-            "retainedCanonicalRecordsAfterDurable":retained_originals,
-            "occupiedDatabasePageGrowthBytes":occupied_growth,
-        });
-        eprintln!("HISTORY_WRITE_METRICS {metrics}");
-        ensure!(
-            retained_originals == 0,
-            "durable original records remained resident"
-        );
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    /// A delayed Running acknowledgement must not retire provider observations published after
-    /// its batch was prepared. The writer step lock fixes the interleaving without timing sleeps.
-    #[tokio::test]
-    async fn running_save_ack_preserves_later_failed_and_current_observations() -> Result<()> {
-        use pl_core::{
-            chat::{PresentationPart, presentation_item_id},
-            model::{
-                ActiveModelProgress, ModelProgressSender, ModelTextChannel, ObservedItemKind,
-                ObservedPart, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
-            },
-            thread::{AttemptOutcome, AttemptStatus},
-        };
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "running-save-ack";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let (mut attempt, mut update) = committed_parts_attempt("turn", "attempt", 0)?;
-        attempt.status = AttemptStatus::Running;
-        update.outcome = AttemptOutcome::Running;
-        let mut write = ticket(id, 1);
-        write.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut write.effect).attempt = Some(update);
-        let mut state = write.checkpoint.state.clone();
-
-        let locked = sink.0.channel.step_lock.lock().await;
-        drive_live_projection(&mut projection, &chat, &sink, id, write).await?;
-        let sender = ModelProgressSender::detached(1024);
-        let part = |text: &str| {
-            ObservedPart::new(ObservedPartIdentity::Provider(ProviderPartIdentity {
-                item_id: Arc::from("same-provider-id"),
-                output_index: Some(0),
-                item_kind: ObservedItemKind::Text(ModelTextChannel::Final),
-                part: ObservedPartKind::OutputText,
-                content_index: 0,
-            }))
-            .authorized(text)
-        };
-        sender.edit_parts(|parts| parts.push(part("failed body")));
-        sender.begin_recovery(5, Arc::from("connection interrupted"))?;
-        sender.edit_parts(|parts| parts.push(part("current body")));
-        state.model_progress = Some(ActiveModelProgress {
-            attempt_id: "attempt".into(),
-            progress: sender.latest(),
-        });
-        projection.stream(&chat, &sink.0.thread, &state, 1).await?;
-        let failed_id = presentation_item_id(
-            "attempt",
-            0,
-            "same-provider-id",
-            Some(PresentationPart::OutputText(0)),
-        );
-        let current_id = presentation_item_id(
-            "attempt",
-            1,
-            "same-provider-id",
-            Some(PresentationPart::OutputText(0)),
-        );
-        // The two observations are facts of this Runtime projection owner now: the completion
-        // session never saw them, and their bodies stay the shared blocks `stream` stored.
-        let failed_body = preview_body(&projection, &failed_id);
-        let current_body = preview_body(&projection, &current_id);
-        drop(locked);
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush(id, 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-
-        // No further provider update is needed to keep either identity live after the save ack:
-        // the delayed Running write owns neither observation, so both previews remain this owner's
-        // resident facts with their bodies unchanged.
-        assert_eq!(
-            preview_body(&projection, &failed_id),
-            failed_body,
-            "the delayed Running acknowledgement must not retire the failed observation"
-        );
-        assert_eq!(
-            preview_body(&projection, &current_id),
-            current_body,
-            "the delayed Running acknowledgement must not retire the current observation"
-        );
-        assert!(
-            store
-                .history(id)
-                .await?
-                .execution_seeds([failed_id.clone(), current_id.clone()])
-                .await?
-                .is_empty(),
-            "Running saved only its prepared start facts, not these later observations"
-        );
-        let mut stale = state.clone();
-        stale.model_progress.as_mut().unwrap().attempt_id = "retired-before-current".into();
-        projection.stream(&chat, &sink.0.thread, &stale, 1).await?;
-        assert_eq!(
-            preview_body(&projection, &current_id),
-            current_body,
-            "an unrelated retired source cannot erase the current source's preview"
-        );
-        Arc::make_mut(&mut state.attempts)[0].status = AttemptStatus::Cancelled;
-        projection.stream(&chat, &sink.0.thread, &state, 1).await?;
-        assert!(projection.preview_fields(&failed_id).is_none());
-        assert!(projection.preview_fields(&current_id).is_none());
-        projection.stream(&chat, &sink.0.thread, &state, 1).await?;
-        assert!(
-            projection.preview_fields(&current_id).is_none(),
-            "a delayed frame from an ended attempt cannot recreate its preview"
-        );
-        Ok(())
-    }
-
-    /// The body text one preview currently holds, straight from the projection's shared blocks.
-    fn preview_body(
-        projection: &crate::studio::thread_projection::LiveProjection,
-        id: &str,
-    ) -> String {
-        let fields = projection
-            .preview_fields(id)
-            .expect("the observation stays a resident preview of this owner");
-        fields
-            .values()
-            .map(|block| block.text())
-            .collect::<Vec<_>>()
-            .join("")
-    }
-
-    #[tokio::test]
-    async fn parent_message_keeps_identity_until_consumed_and_saved() -> Result<()> {
-        use pl_core::thread::inbox::{InboxRecord, ThreadMessage};
-
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let parent = test_thread("parent");
-        register_test_thread(&store, &parent).await?;
-        let id = "child-message";
-        let mut thread = test_thread(id);
-        thread.root_thread_id = parent.id.clone();
-        thread.parent_thread_id = Some(parent.id.clone());
-        register_test_thread(&store, &thread).await?;
-        let sink = ThreadStorageSink::new(store.clone(), thread, None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let record = InboxRecord {
-            sequence: 1,
-            message: ThreadMessage {
-                kind: pl_core::context::AgentMessageKind::Report,
-                id: "initial:spawn".into(),
-                source_id: "agent:parent".into(),
-                payload: OpaquePayload::text("implement the assigned task"),
-                context: Vec::new(),
-            },
-        };
-        let item_id = crate::studio::thread_projection::order::message_id(&record.message.id);
-        let mut accepted = ticket(id, 1);
-        accepted.checkpoint.state.inbox = Arc::from([record.clone()]);
-        Arc::make_mut(&mut accepted.effect).inbox = Arc::from([record.clone()]);
-        sink.admit(id, accepted.clone())?;
-        let (_, mut accepted_batch) = projection
-            .prepare(
-                &sink.0.thread,
-                &accepted.effect,
-                &accepted.checkpoint.state,
-                true,
-            )
-            .await?;
-        projection
-            .publish_prepared(&chat, &mut accepted_batch)
-            .await?;
-        assert!(sink.0.channel.prepare(accepted_batch.clone()));
-        let original = accepted_batch
-            .completions
-            .iter()
-            .find(|item| item.header.item_id == item_id)
-            .context("accepted parent original")?
-            .clone();
-        let mut repeat = accepted_batch.clone();
-        projection.publish_prepared(&chat, &mut repeat).await?;
-        assert!(Arc::ptr_eq(&accepted_batch, &repeat));
-        assert!(
-            repeat
-                .completions
-                .iter()
-                .any(|record| Arc::ptr_eq(record, &original))
-        );
-
-        let (attempt, update) = committed_parts_attempt("child-turn", "child-attempt", 1)?;
-        let mut consumed = ticket(id, 2);
-        consumed.checkpoint.state.consumed_messages = 1;
-        consumed.checkpoint.state.inbox = Arc::from([record]);
-        consumed.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut consumed.effect).attempt = Some(update);
-        Arc::make_mut(&mut consumed.effect).consumed_messages = Some(1);
-        drive_live_projection(&mut projection, &chat, &sink, id, consumed).await?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 2),
-            sink.flush(id, 2),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let history = store.history(id).await?;
-        let saved = history.execution_seeds([item_id.clone()]).await?;
-        let item = saved.get(&item_id).context("saved parent message")?;
-        assert_eq!(
-            item.ordinal,
-            serde_json::from_slice::<crate::ChatAtom>(&original.header.metadata)?
-                .source_order
-                .context("known original source order")?
-        );
-        assert_eq!(item.turn_id, "child-turn");
-        assert_eq!(item.id, original.header.item_id);
-        assert!(matches!(item.state(), crate::ExecutionShape::Text(text)
-            if text.channel() == crate::ThreadTextChannel::ParentAgent
-                && text.text() == "implement the assigned task"));
-        assert_eq!(history.watermark().await?, 2);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-
-        // A saved but unconsumed follow-up has no Turn. Reinstall the projection from its
-        // durable identity before consuming it, as activation does for an idle child.
-        let mut followup = ticket(id, 3);
-        followup.checkpoint.state.consumed_messages = 1;
-        let mut record = accepted.checkpoint.state.inbox[0].clone();
-        record.sequence = 2;
-        record.message.id = "followup".into();
-        followup.checkpoint.state.inbox = Arc::from([record.clone()]);
-        Arc::make_mut(&mut followup.effect).inbox = Arc::from([record.clone()]);
-        drive_live_projection(&mut projection, &chat, &sink, id, followup).await?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 3),
-            sink.flush(id, 3),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let followup_id = crate::studio::thread_projection::order::message_id(&record.message.id);
-        let saved = history.execution_seeds([followup_id.clone()]).await?;
-        let original = saved[&followup_id].clone();
-        projection = live_projection(&sink).await?;
-        projection.seed(saved.into_values().collect(), Default::default());
-        let (attempt, update) = committed_parts_attempt("next-turn", "next-attempt", 1)?;
-        let mut consumed = ticket(id, 4);
-        consumed.checkpoint.state.consumed_messages = 2;
-        consumed.checkpoint.state.inbox = Arc::from([record]);
-        consumed.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut consumed.effect).attempt = Some(update);
-        Arc::make_mut(&mut consumed.effect).consumed_messages = Some(2);
-        drive_live_projection(&mut projection, &chat, &sink, id, consumed).await?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 4),
-            sink.flush(id, 4),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let saved = history.execution_seeds([followup_id.clone()]).await?;
-        assert_eq!(saved[&followup_id].ordinal, original.ordinal);
-        assert_eq!(saved[&followup_id].turn_id, "next-turn");
-        assert_eq!(
-            saved[&followup_id].revision, original.revision,
-            "binding supplements execution ownership without rewriting the original completion"
-        );
-        assert_eq!(history.watermark().await?, 4);
-        Ok(())
-    }
-
-    /// A live Turn survives a retained window smaller than the response it produced.
-    ///
-    /// The live projection is a bounded observation owner: it releases a Turn's oldest facts by
-    /// ordinal once that Turn commits more identities than `LIVE_ITEM_WINDOW`. A Turn's own input is
-    /// the identity core keeps referencing from *every* later effect of that Turn — above all its
-    /// terminal one, whose checkpoint has already pruned the consumed body and carries only the
-    /// minimal `turns[].input_id` — while it is also the oldest fact the Turn ever created. Numbering
-    /// the window purely by ordinal therefore evicted exactly that identity, the terminal effect then
-    /// resolved the pruned input as a hole and the durable barrier failed closed with
-    /// `MissingDurableInput`: the multi-item stress fault. The window must bound only *optional*
-    /// retained history; the minimal identity a live Turn still references is not optional.
-    ///
-    /// Keeping an identity without keeping its content version is not enough: the Turn's own item is
-    /// re-projected by the same later effects, so a window that released it made the re-projection
-    /// restart at revision 1, and the durable row rejected the new payload as a revision conflict.
-    /// Identity and version have to survive together.
-    ///
-    /// This drives the production `advance` path over the same reliable handoff the observation
-    /// worker uses, with no GUI subscriber: the projection publishes into the shared session and
-    /// hands the batch to the writer exactly like the owner. The pressure is a real provider receipt
-    /// with more presentation parts than the window holds, not a fabricated per-Turn input queue.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn execution_index_delivery_admission_releases_registry_before_channel_accounting()
-    -> Result<()> {
-        for cold in [false, true] {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let id = if cold {
-                "cold-pin-lock-order"
-            } else {
-                "review-pin-lock-order"
-            };
-            register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-            let (entered, entering) = std::sync::mpsc::channel();
-            *sink.0.channel.delivery_admission_entered.lock().unwrap() = Some(entered);
-            tokio::task::block_in_place(|| -> Result<()> {
-                // The writer already owns progress. Admission reaches accounting only after it
-                // pinned the actual registry source; it must not still own the registry here.
-                let progress = lock_progress(&sink.0);
-                let admission = std::thread::spawn({
-                    let coordinator = store.thread_persistence().clone();
-                    let channel = sink.0.channel.clone();
-                    move || -> Result<Box<dyn std::any::Any + Send>> {
-                        if cold {
-                            Ok(Box::new(
-                                coordinator.retain_terminal_material(id, &channel, 1024, None)?,
-                            ))
-                        } else {
-                            Ok(Box::new(coordinator.retain_review_delivery(id, 1024)?))
-                        }
-                    }
-                });
-                entering.recv_timeout(Duration::from_secs(5))?;
-                assert_eq!(
-                    sink.0.channel.delivery_admissions.load(Ordering::Acquire),
-                    1
-                );
-                let (probed, probe) = std::sync::mpsc::channel();
-                let registry = std::thread::spawn({
-                    let coordinator = store.thread_persistence().clone();
-                    move || {
-                        let channel = coordinator.history_channel(id);
-                        let _ = probed.send(channel);
-                    }
-                });
-                let registry_source = probe.recv_timeout(Duration::from_secs(5));
-                if registry_source.is_ok() {
-                    // This is the real progress -> registry writer report, while delivery's
-                    // accounting is blocked on the progress lock above.
-                    report(&sink.0, &progress);
-                }
-                // Also release the blocked participants before reporting a regression failure.
-                drop(progress);
-                let retained = admission
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("delivery admission panicked"))??;
-                registry
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("registry probe panicked"))?;
-                let source = registry_source?;
-                assert!(Arc::ptr_eq(&source, &sink.0.channel));
-                assert_eq!(
-                    sink.0.channel.delivery_admissions.load(Ordering::Acquire),
-                    0
-                );
-                assert_eq!(sink.0.channel.retained_delivery_bytes(), 1024);
-                drop(retained);
-                assert_eq!(sink.0.channel.retained_delivery_bytes(), 0);
-                Ok(())
-            })?;
-            sink.0.channel.stop_and_join().await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_unchanged_projection_reports_stay_quiet_but_retry_and_handoff_wake()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "projection-watch";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = &sink.0.channel;
-        let lease = channel.step_lock.lock().await;
-        let mut status = channel.subscribe();
-        let mut pressure = channel.pressure_changed.subscribe();
-        let mut capacity = store.thread_persistence().subscribe_delivery_capacity();
-        let steady = ProjectionRetention {
-            resident_bytes: 256,
-            pending: None,
-        };
-        channel.set_projection_retention(steady)?;
-        let settled = sink.idle_status(id);
-        assert_eq!(settled.pressure.thread_bytes, 256);
-        assert_eq!(settled.reclaimable_thread_bytes, Some(256));
-        let admission = channel.pin_review_delivery(store.thread_persistence().clone(), id.into());
-        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
-        drop(admission);
-        sink.reserve_operation_output(id, "empty-output", 1024)?;
-        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
-        sink.release_operation_output(id, "empty-output");
-        let delivery = store.thread_persistence().retain_review_delivery(id, 128)?;
-        let delivering = sink.idle_status(id);
-        assert_eq!(delivering.reclaimable_thread_bytes, None);
-        assert!(delivering.pressure.thread_bytes >= 384);
-        drop(delivery);
-        channel
-            .order_index
-            .reserve_observed("attempt", "live-item")?;
-        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
-        channel.order_index.finish_source("attempt");
-        channel
-            .order_index
-            .retain::<()>(&Default::default(), vec!["live-item".into()]);
-        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, Some(256));
-        assert!(status.has_changed()? && pressure.has_changed()?);
-        status.borrow_and_update();
-        pressure.borrow_and_update();
-        capacity.borrow_and_update();
-        for _ in 0..8 {
-            channel.set_projection_retention(steady)?;
-            assert!(!status.has_changed()?);
-            assert!(!pressure.has_changed()?);
-            assert!(!capacity.has_changed()?);
-        }
-        let full = ProjectionRetention {
-            resident_bytes: MAX_HISTORY_THREAD_BYTES + 1,
-            pending: None,
-        };
-        assert!(channel.set_projection_retention(full).is_err());
-        status.borrow_and_update();
-        pressure.borrow_and_update();
-        for _ in 0..8 {
-            assert!(channel.set_projection_retention(full).is_err());
-            assert!(!status.has_changed()?);
-            assert!(!pressure.has_changed()?);
-        }
-        channel.release_projection_retention();
-        assert!(status.has_changed()? && pressure.has_changed()? && capacity.has_changed()?);
-        status.borrow_and_update();
-        pressure.borrow_and_update();
-        let write = ticket(id, 1);
-        sink.admit(id, write.clone())?;
-        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
-        let mut projection = live_projection(&sink).await?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        assert!(prepared.turns.is_empty() && prepared.completions.is_empty());
-        // The real handoff also retains current metadata. Isolate the accounting charge without
-        // changing the batch submitted below, so omitting accounting still fails this assertion.
-        let mut accounting_only = prepared.as_ref().clone();
-        accounting_only.current_state = None;
-        let mut without_accounting = accounting_only.clone();
-        without_accounting.accounting = Arc::new(
-            crate::studio::thread_projection::PreparedAccounting::prepare(
-                &ThreadEffectBatch::default(),
-            )?,
-        );
-        assert_eq!(
-            accounting_only.retained_bytes() - without_accounting.retained_bytes(),
-            accounting_only.accounting.retained_bytes()
-                - without_accounting.accounting.retained_bytes(),
-            "empty content handoffs must still charge the complete accounting contribution"
-        );
-        assert!(
-            prepared.retained_bytes() > accounting_only.retained_bytes(),
-            "the original handoff also keeps its current metadata charged"
-        );
-        status.borrow_and_update();
-        assert!(channel.prepare(prepared.clone()));
-        assert!(
-            status.has_changed()?,
-            "a new content-empty handoff must wake the observer"
-        );
-        status.borrow_and_update();
-        assert!(channel.prepare(prepared));
-        assert!(
-            !status.has_changed()?,
-            "repeating the same handoff is not a new event"
-        );
-        channel.fail_projection(1, "controlled projection report failure".into());
-        let generation = status.borrow_and_update().fault_generation;
-        pressure.borrow_and_update();
-        channel.fail_projection(1, "controlled projection report failure".into());
-        assert!(!status.has_changed()? && !pressure.has_changed()?);
-        channel.retry(generation)?;
-        assert!(status.has_changed()? && pressure.has_changed()?);
-        drop(lease);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let snapshot = status.borrow_and_update().clone();
-                if snapshot.committed_sequence == 1 && snapshot.error.is_none() {
-                    break Ok::<_, anyhow::Error>(());
-                }
-                status.changed().await?;
-            }
-        })
-        .await??;
-        channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_multi_item_effect_rejection_keeps_projection_and_stamps_atomic()
-    -> Result<()> {
-        assert_empty_multi_item_prepare_is_atomic(false).await
-    }
-
-    #[tokio::test]
-    async fn execution_index_empty_prepare_rejects_unfunded_stamp_without_reserving_shells()
-    -> Result<()> {
-        assert_empty_multi_item_prepare_is_atomic(true).await
-    }
-
-    async fn assert_empty_multi_item_prepare_is_atomic(stamp_shortfall: bool) -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "batch-projection-budget";
-        let attempt_id = "batch-attempt";
-        let turn_id = "batch-turn";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let empty_projection_bytes = projection.retained_bytes();
-        let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, 2)?;
-        let mut write = ticket(id, 1);
-        write.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut write.effect).attempt = Some(update);
-        sink.admit(id, write)?;
-        let owed = sink.0.channel.next_unprojected().unwrap();
-        let candidates = crate::studio::thread_projection::project_effect_items(
-            &sink.0.thread,
-            &owed.checkpoint.state,
-            &owed.effect,
-            &Default::default(),
-            &Default::default(),
-            &Default::default(),
-        )?
-        .items;
-        let ids = candidates
-            .iter()
-            .map(|item| item.id.clone())
-            .collect::<Vec<_>>();
-        assert_eq!(ids.len(), 3);
-        let index = sink.0.channel.order_index();
-        let probe = RuntimeOrderIndex::new(Arc::new(AtomicU64::new(0)), 0);
-        // This separate, disposable index measures the established shell charge only. The
-        // production index below remains empty until its one actual prepare call.
-        probe.assign(&ids[0])?;
-        let first_shell = probe.retained_bytes();
-        for identity in &ids[1..] {
-            probe.assign(identity)?;
-        }
-        let shells = probe.retained_bytes();
-        let stamps = candidates
-            .iter()
-            .map(|item| item.turn_id.len() as u64)
-            .sum::<u64>();
-        assert!(stamps > 1);
-        let available = if stamp_shortfall {
-            shells + stamps - 1
-        } else {
-            first_shell
-        };
-        if stamp_shortfall {
-            assert!(
-                available >= shells,
-                "every shell fits before testing the final stamp"
-            );
-            assert!(
-                available < shells + stamps,
-                "the complete stamp delta does not fit"
-            );
-        }
-        let queued = sink.pressure(id).thread_bytes;
-        sink.0
-            .channel
-            .set_projection_retention(ProjectionRetention {
-                resident_bytes: MAX_HISTORY_THREAD_BYTES - queued - available,
-                pending: None,
-            })?;
-        let process = sink.0.channel.process_bytes.load(Ordering::Acquire);
-        let thread_bytes = sink.pressure(id).thread_bytes;
-        let index_bytes = index.retained_bytes();
-        let index_state = {
-            let state = index.inner.lock().unwrap();
-            (
-                state.ceiling,
-                state.durable,
-                state.resident_blocked,
-                state.assigned.len(),
-            )
-        };
-        let projection_bytes = projection.retained_bytes();
-        let completion_head = chat.head_seq();
-        assert_eq!(index_bytes, 0);
-        assert_eq!(index_state, (0, 0, false, 0));
-        assert_eq!(
-            projection_bytes, empty_projection_bytes,
-            "read-only candidate lookup must not mutate the hydrated empty projection"
-        );
-        assert_eq!(completion_head, 0);
-        let failure = projection
-            .prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, true)
-            .await
-            .err()
-            .context("the empty-index prepare must reject the insufficient batch budget")?;
-        assert!(failure.to_string().contains("budget"), "{failure}");
-        assert_eq!(index.retained_bytes(), index_bytes);
-        {
-            let state = index.inner.lock().unwrap();
-            assert_eq!(
-                (
-                    state.ceiling,
-                    state.durable,
-                    state.resident_blocked,
-                    state.assigned.len()
-                ),
-                index_state
-            );
-        }
-        assert_eq!(
-            sink.0.channel.process_bytes.load(Ordering::Acquire),
-            process
-        );
-        assert_eq!(sink.pressure(id).thread_bytes, thread_bytes);
-        assert_eq!(projection.retained_bytes(), projection_bytes);
-        assert!(projection.turn_result(turn_id).is_none());
-        assert_eq!(chat.head_seq(), completion_head);
-        assert!(Arc::ptr_eq(
-            &sink.0.channel.next_unprojected().unwrap(),
-            &owed
-        ));
-
-        // Restore headroom and retry the same owed write, without any separate identity
-        // reservation. Nothing from the rejected prepare may consume an ordinal or revision.
-        sink.0.channel.release_projection_retention();
-        let (_, mut prepared) = projection
-            .prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, true)
-            .await?;
-        assert!(prepared.completion_drafts.is_some());
-        assert!(prepared.completions.is_empty());
-        assert_eq!(chat.head_seq(), 0);
-        assert!(!sink.0.channel.prepare(prepared.clone()));
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        let actual_ids = prepared
-            .completions
-            .iter()
-            .map(|record| record.header.item_id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual_ids, ids.iter().cloned().collect());
-        let orders = prepared
-            .current
-            .lifecycle
-            .iter()
-            .filter_map(|fact| fact.source_order)
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(orders, [1, 2, 3].into_iter().collect());
-        assert_eq!(index.inner.lock().unwrap().ceiling, 3);
-        assert_eq!(prepared.completions.len(), 3);
-        assert_eq!(
-            prepared
-                .completions
-                .iter()
-                .filter(|record| record.header.query_class == "execution")
-                .count(),
-            1
-        );
-        for (offset, completion) in prepared.completions.iter().enumerate() {
-            assert_eq!(completion.header.append_seq, offset as u64 + 1);
-        }
-        let published = prepared.clone();
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        assert!(Arc::ptr_eq(&published, &prepared));
-        assert_eq!(
-            chat.head_seq(),
-            3,
-            "publication retry cannot append duplicate identities"
-        );
-        assert!(sink.0.channel.prepare(prepared));
-        sink.flush(id, 1).await?;
-        assert_eq!(chat.head_seq(), 3);
-        assert_eq!(
-            store.history(id).await?.latest_execution_ordinal().await?,
-            3
-        );
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn execution_index_channel_resident_commits_serialize_provider_allocation() -> Result<()>
-    {
-        // Admission, direct preparation, and transfer of an already charged pending batch.
-        for mode in 0..3 {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let id = format!("resident-commit-{mode}");
-            register_test_thread(&store, &test_thread(&id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(&id), None).await?;
-            let chat = store.chat_session(&id).await?;
-            let mut projection = live_projection(&sink).await?;
-            let write = visible_input_ticket(&id, 1, "input")?;
-            let lease = sink.0.channel.step_lock.lock().await;
-            let prepared = if mode == 0 {
-                let probe = RuntimeOrderIndex::new(Arc::new(AtomicU64::new(0)), 0);
-                probe.reserve_boundaries(&write.effect, 0)?;
-                let resident_bytes = MAX_HISTORY_THREAD_BYTES
-                    - encoded_bytes(&write.effect)
-                    - PENDING_AGE_METADATA_BYTES
-                    - probe.retained_bytes();
-                sink.0
-                    .channel
-                    .set_projection_retention(ProjectionRetention {
-                        resident_bytes,
-                        pending: None,
-                    })?;
-                None
-            } else {
-                sink.admit(&id, write.clone())?;
-                let mut prepared = projection
-                    .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                    .await?;
-                projection.publish_prepared(&chat, &mut prepared).await?;
-                let bytes = prepared.retained_bytes();
-                sink.0
-                    .channel
-                    .set_projection_retention(ProjectionRetention {
-                        resident_bytes: MAX_HISTORY_THREAD_BYTES
-                            - sink.pressure(&id).thread_bytes
-                            - bytes,
-                        pending: (mode == 2).then_some(PendingProjectionRetention {
-                            sequence: 1,
-                            prepared_bytes: bytes,
-                        }),
-                    })?;
-                Some(prepared)
-            };
-            let (entered, entered_rx) = tokio::sync::oneshot::channel();
-            let (release, release_rx) = std::sync::mpsc::channel();
-            *sink.0.channel.resident_gate.lock().unwrap() = Some(MaterializeGate {
-                entered,
-                release: release_rx,
-            });
-            let mutation = {
-                let sink = sink.clone();
-                let write = write.clone();
-                let prepared = prepared.clone();
-                let id = id.clone();
-                tokio::task::spawn_blocking(move || -> Result<()> {
-                    if let Some(prepared) = prepared {
-                        ensure!(
-                            sink.0.channel.prepare(prepared),
-                            "prepared handoff rejected"
-                        );
-                    } else {
-                        sink.admit(&id, write)?;
-                    }
-                    Ok(())
-                })
-            };
-            tokio::time::timeout(
-                crate::runtime_test_support::integration_test_deadline()?,
-                entered_rx,
-            )
-            .await??;
-            let (attempting, attempted) = tokio::sync::oneshot::channel();
-            let provider = {
-                let sink = sink.clone();
-                let id = id.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = attempting.send(());
-                    sink.reserve_observed_item(&id, "provider-attempt", "provider-part")
-                })
-            };
-            attempted.await?;
-            assert!(
-                sink.0.channel.order_index.inner.try_lock().is_err(),
-                "the resident mutation must exclude identity allocation until its commit"
-            );
-            release.send(())?;
-            mutation.await??;
-            assert!(provider.await?.is_err());
-            assert_eq!(sink.pressure(&id).thread_bytes, MAX_HISTORY_THREAD_BYTES);
-            assert_eq!(sink.0.channel.order_index.assigned("provider-part"), None);
-            {
-                let progress = lock_progress(&sink.0);
-                assert_eq!(progress.effects.len(), 1);
-                assert_eq!(progress.projection_pending, None);
-                assert_eq!(progress.effects[0].sequence, 1);
-                if let Some(prepared) = &prepared {
-                    assert!(Arc::ptr_eq(
-                        progress.effects[0].prepared.as_ref().unwrap(),
-                        prepared
-                    ));
-                } else {
-                    assert!(progress.effects[0].prepared.is_none());
-                }
-            }
-            // Rejecting the optional provider reservation leaves the original fact fully owed.
-            sink.0.channel.release_projection_retention();
-            if prepared.is_none() {
-                drive_live_projection(&mut projection, &chat, &sink, &id, write).await?;
-            }
-            drop(lease);
-            let generation = sink.0.channel.subscribe().borrow().fault_generation;
-            store
-                .thread_persistence()
-                .retry_history(&id, generation)
-                .await?;
-            sink.flush(&id, 1).await?;
-            assert_eq!(store.history(&id).await?.watermark().await?, 1);
-            sink.0.channel.stop_and_join().await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_terminal_transfer_rejection_retains_source_and_releases_capacity()
-    -> Result<()> {
-        use pl_core::thread::inbox::ThreadMessage;
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "terminal-transfer-budget";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let write = visible_input_ticket(id, 1, "input")?;
-        sink.admit(id, write.clone())?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        Arc::get_mut(&mut prepared).unwrap().parent_report = Some(Arc::new(ThreadMessage {
-            kind: pl_core::context::AgentMessageKind::Report,
-            id: "terminal-report".into(),
-            source_id: "agent:worker".into(),
-            payload: OpaquePayload::text("the original completed report"),
-            context: Vec::new(),
-        }));
-        let source = PendingProjectionRetention {
-            sequence: 1,
-            prepared_bytes: prepared.retained_bytes(),
-        };
-        let report_bytes = prepared.parent_report_retained_bytes();
-        let material_bytes = report_bytes + 1024;
-        let resident =
-            MAX_HISTORY_THREAD_BYTES - sink.pressure(id).thread_bytes - source.prepared_bytes;
-        let mut before = ProjectionRetention {
-            resident_bytes: resident,
-            pending: Some(source),
-        };
-        sink.0.channel.set_projection_retention(before)?;
-        let transfer = |before: ProjectionRetention| ProjectionTransfer {
-            source,
-            after: ProjectionRetention {
-                resident_bytes: before.resident_bytes,
-                pending: Some(PendingProjectionRetention {
-                    sequence: 1,
-                    prepared_bytes: source.prepared_bytes - report_bytes,
-                }),
-            },
-        };
-        let process_before = sink.0.channel.process_bytes.load(Ordering::Acquire);
-        assert!(
-            store
-                .thread_persistence()
-                .retain_terminal_material(
-                    id,
-                    &sink.0.channel,
-                    material_bytes,
-                    Some(transfer(before))
-                )
-                .is_err()
-        );
-        assert_eq!(sink.pressure(id).thread_bytes, MAX_HISTORY_THREAD_BYTES);
-        assert_eq!(
-            sink.0.channel.process_bytes.load(Ordering::Acquire),
-            process_before
-        );
-        assert_eq!(sink.0.channel.retained_delivery_bytes(), 0);
-        assert_eq!(lock_progress(&sink.0).projection_pending, Some(source));
-        assert!(prepared.parent_report.is_some());
-        assert!(
-            sink.0
-                .channel
-                .order_index
-                .reserve_observed("attempt", "blocked-part")
-                .is_err()
-        );
-        assert_eq!(sink.0.channel.order_index.assigned("blocked-part"), None);
-
-        before.resident_bytes -= material_bytes;
-        sink.0.channel.set_projection_retention(before)?;
-        sink.0
-            .channel
-            .process_bytes
-            .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-        assert!(
-            store
-                .thread_persistence()
-                .retain_terminal_material(
-                    id,
-                    &sink.0.channel,
-                    material_bytes,
-                    Some(transfer(before))
-                )
-                .is_err()
-        );
-        assert_eq!(
-            sink.0.channel.process_bytes.load(Ordering::Acquire),
-            MAX_HISTORY_PROCESS_BYTES
-        );
-        assert_eq!(lock_progress(&sink.0).projection_pending, Some(source));
-        assert_eq!(sink.0.channel.retained_delivery_bytes(), 0);
-        sink.0
-            .channel
-            .process_bytes
-            .store(process_before, Ordering::Release);
-        let retained = store.thread_persistence().retain_terminal_material(
-            id,
-            &sink.0.channel,
-            material_bytes,
-            Some(transfer(before)),
-        )?;
-        Arc::get_mut(&mut prepared).unwrap().parent_report = None;
-        assert_eq!(
-            lock_progress(&sink.0).projection_pending,
-            transfer(before).after.pending
-        );
-        assert_eq!(sink.0.channel.retained_delivery_bytes(), material_bytes);
-        assert!(sink.pressure(id).thread_bytes <= MAX_HISTORY_THREAD_BYTES);
-        // The real managed guard releases through the coordinator callback, not a report write.
-        drop(retained);
-        assert_eq!(sink.0.channel.retained_delivery_bytes(), 0);
-        sink.0
-            .channel
-            .order_index
-            .reserve_observed("attempt", "released-part")?;
-        assert!(sink.0.channel.prepare(prepared));
-        sink.0.channel.release_projection_retention();
-        sink.flush(id, 1).await?;
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_cold_terminal_material_uses_new_admission_and_managed_release()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "cold-material-budget";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = &sink.0.channel;
-        let process_before = channel.process_bytes.load(Ordering::Acquire);
-        channel.set_projection_retention(ProjectionRetention {
-            resident_bytes: MAX_HISTORY_THREAD_BYTES - 512,
-            pending: None,
-        })?;
-        assert!(
-            store
-                .thread_persistence()
-                .retain_terminal_material(id, channel, 1024, None)
-                .is_err()
-        );
-        assert_eq!(channel.retained_delivery_bytes(), 0);
-        assert_eq!(
-            channel.process_bytes.load(Ordering::Acquire),
-            process_before
-        );
-        assert_eq!(
-            sink.pressure(id).thread_bytes,
-            MAX_HISTORY_THREAD_BYTES - 512
-        );
-        {
-            let progress = lock_progress(&sink.0);
-            assert_eq!(progress.projection_pending, None);
-            assert!(progress.effects.is_empty());
-        }
-        channel.set_projection_retention(ProjectionRetention {
-            resident_bytes: MAX_HISTORY_THREAD_BYTES - 1024,
-            pending: None,
-        })?;
-        let material = store
-            .thread_persistence()
-            .retain_terminal_material(id, channel, 1024, None)?;
-        assert_eq!(channel.retained_delivery_bytes(), 1024);
-        assert_eq!(
-            channel.process_bytes.load(Ordering::Acquire),
-            process_before + 1024
-        );
-        assert_eq!(sink.pressure(id).thread_bytes, MAX_HISTORY_THREAD_BYTES);
-        assert!(
-            channel
-                .order_index
-                .reserve_observed("attempt", "part")
-                .is_err()
-        );
-        assert_eq!(channel.order_index.assigned("part"), None);
-        drop(material);
-        assert_eq!(channel.retained_delivery_bytes(), 0);
-        assert_eq!(
-            channel.process_bytes.load(Ordering::Acquire),
-            process_before
-        );
-        channel.order_index.reserve_observed("attempt", "part")?;
-        channel.release_projection_retention();
-        channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[test]
-    fn execution_index_admission_boundaries_reject_atomically_and_stay_charged() -> Result<()> {
-        let process = Arc::new(AtomicU64::new(0));
-        let index = RuntimeOrderIndex::new(process.clone(), 0);
-        let mut write = visible_input_ticket("boundary-budget", 1, "input")?;
-        Arc::make_mut(&mut write.effect).turn =
-            Some(turn_record("turn", "input", TurnState::Running));
-        assert!(
-            index
-                .reserve_boundaries(&write.effect, MAX_HISTORY_THREAD_BYTES - 1)
-                .is_err()
-        );
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        assert!(index.inner.lock().unwrap().assigned.is_empty());
-        assert_eq!(index.inner.lock().unwrap().ceiling, 0);
         process.store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-        assert!(index.reserve_boundaries(&write.effect, 0).is_err());
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), MAX_HISTORY_PROCESS_BYTES);
-        assert!(index.inner.lock().unwrap().assigned.is_empty());
-        assert_eq!(index.inner.lock().unwrap().ceiling, 0);
-        process.store(0, Ordering::Release);
-        index.reserve_boundaries(&write.effect, 0)?;
-        let bytes = index.retained_bytes();
-        assert!(bytes > 0);
-        assert_eq!(process.load(Ordering::Acquire), bytes);
-        // Processing an older checkpoint cannot retire an admitted but unprojected boundary.
-        index.retain::<()>(&Default::default(), Vec::new());
-        assert!(index.retained_bytes() > 0 && index.retained_bytes() < bytes);
-        assert_eq!(index.inner.lock().unwrap().assigned.len(), 2);
-        index.confirm_saved(1);
-        assert_eq!(index.retained_bytes(), 0);
-        assert_eq!(process.load(Ordering::Acquire), 0);
-        assert_eq!(index.assign("next")?, 3);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_running_turn_recovers_its_boundary_before_cold_admission() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "turn-cold-boundary";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let mut opening = visible_input_ticket(id, 1, "input")?;
-        let running = turn_record("visible-turn", "input", TurnState::Running);
-        opening.checkpoint.state.turns = Arc::from([running.clone()]);
-        Arc::make_mut(&mut opening.effect).turn = Some(running.clone());
-        let original = drive_live_projection(&mut projection, &chat, &sink, id, opening).await?;
-        sink.flush(id, 1).await?;
-        let turn_id = crate::studio::thread_projection::order::turn_id("visible-turn");
-        let original_turn = original
-            .turns
-            .iter()
-            .find(|write| write.turn.id == "visible-turn")
-            .unwrap();
-        let history = store.history(id).await?;
-        let source_ids = [crate::ChatSourceId::ForegroundTurn {
-            turn_id: "visible-turn".into(),
-        }];
-        let original_source = history
-            .execution_sources(&source_ids, 1)
-            .await?
-            .pop()
-            .context("saved running source")?;
-        assert_eq!(
-            original_source.started,
-            Some(crate::ChatFactPosition {
-                effect_seq: 1,
-                suborder: 0,
-            })
-        );
-        assert!(original_source.ended.is_none());
-        let checkpoint = history.checkpoint().await?.context("running checkpoint")?;
-        sink.0.channel.stop_and_join().await?;
-        drop(projection);
-        drop(sink);
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread(id), Some(&checkpoint)).await?;
-        assert_eq!(
-            sink.0.channel.order_index.assigned(&turn_id),
-            Some(original_turn.turn_order)
-        );
-        let mut projection = live_projection(&sink).await?;
-        let mut update = ticket(id, 2);
-        projection.bind_conversation_identity(
-            history
-                .conversation_database_id()
-                .await?
-                .context("database")?,
-        )?;
-        projection
-            .restore_current(&chat, &sink.0.thread, &checkpoint.state)
-            .await?;
-        update.checkpoint.state.turns = Arc::from([running.clone()]);
-        Arc::make_mut(&mut update.effect).turn = Some(running);
-        let prepared = drive_live_projection(&mut projection, &chat, &sink, id, update).await?;
-        assert_eq!(prepared.execution_order, original_turn.turn_order);
-        sink.flush(id, 2).await?;
-        assert_eq!(
-            history.execution_item(&turn_id).await?.unwrap().ordinal,
-            original_turn.turn_order
-        );
-        assert_eq!(
-            history.execution_sources(&source_ids, 2).await?,
-            vec![original_source],
-            "cold activation must retain the original source start, not start the Turn again"
-        );
-        sink.0.channel.stop_and_join().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_turn_start_precedes_provider_reservations_before_projection()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "turn-start-order";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let chat = store.chat_session(id).await?;
-        let mut projection = live_projection(&sink).await?;
-        let turn_id = "turn";
-        let input_id = "input";
-        let attempt_id = "attempt";
-        let input = consumed_visible_input(input_id, turn_id, 1)?;
-        let running = turn_record(turn_id, input_id, TurnState::Running);
-        let mut opening = ticket(id, 1);
-        opening.checkpoint.state.inputs = Arc::from([input.clone()]);
-        opening.checkpoint.state.turns = Arc::from([running.clone()]);
-        Arc::make_mut(&mut opening.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Arc::make_mut(&mut opening.effect).turn = Some(running.clone());
-        // Core can already produce observations while the one projection owner still owes the
-        // admitted Turn start. Its provider reservation must not precede that Turn's first item.
-        sink.admit(id, opening.clone())?;
-        let part_id = crate::studio::thread_projection::order::presentation_id(
-            attempt_id,
-            0,
-            "stress-item-0",
-            Some(crate::studio::thread_projection::order::PresentationPart::OutputText(0)),
-        );
-        sink.reserve_observed_item(id, attempt_id, &part_id)?;
-        let opening_batch =
-            drive_live_projection(&mut projection, &chat, &sink, id, opening).await?;
-        sink.flush(id, 1).await?;
-        let first = serde_json::from_slice::<crate::ChatAtom>(
-            &opening_batch.completions[0].header.metadata,
-        )?
-        .source_order
-        .context("original execution order")?;
-        let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, 1)?;
-        let mut step = ticket(id, 2);
-        step.checkpoint.state.turns = Arc::from([running]);
-        step.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut step.effect).attempt = Some(update);
-        let batch = drive_live_projection(&mut projection, &chat, &sink, id, step).await?;
-        sink.flush(id, 2).await?;
+        let rejected = index
+            .materialize_execution_batch([ExecutionMaterialization::from_item(&large)], u64::MAX)
+            .unwrap_err();
         assert!(
-            batch
-                .current
-                .lifecycle
-                .iter()
-                .find(|fact| fact.identity == part_id)
-                .unwrap()
-                .source_order
-                .unwrap()
-                > first
+            rejected
+                .to_string()
+                .contains("process execution identity budget is full")
         );
-        let finished = turn_record(
-            turn_id,
-            input_id,
-            TurnState::Finished(TurnOutcome::Completed),
-        );
-        let mut terminal = ticket(id, 3);
-        terminal.checkpoint.state.turns = Arc::from([finished.clone()]);
-        Arc::make_mut(&mut terminal.effect).turn = Some(finished);
-        drive_live_projection(&mut projection, &chat, &sink, id, terminal).await?;
-        sink.flush(id, 3).await?;
-        // The next checkpoint releases the finished source and its actual references. Real save
-        // confirmation must allow the entire index to retire without losing the durable boundary.
-        drive_live_projection(&mut projection, &chat, &sink, id, ticket(id, 4)).await?;
-        sink.flush(id, 4).await?;
-        assert_eq!(sink.0.channel.order_index.retained_bytes(), 0);
-        let head = chat.head_seq();
-        let mut late = ticket(id, 5);
-        let mut input = consumed_visible_input(input_id, turn_id, 1)?;
-        input.revision = 5;
-        late.checkpoint.state.inputs = Arc::from([input.clone()]);
-        Arc::make_mut(&mut late.effect).inputs = Arc::from([InputChange::Transition {
-            id: input_id.into(),
-            revision: input.revision,
-            state: input.state,
-        }]);
-        let late_batch = drive_live_projection(&mut projection, &chat, &sink, id, late).await?;
-        assert!(late_batch.completions.is_empty());
-        assert!(late_batch.completions.is_empty());
-        sink.flush(id, 5).await?;
-        assert_eq!(chat.head_seq(), head);
-        let history = store.history(id).await?;
-        assert_eq!(
-            history.execution_item(input_id).await?.unwrap().ordinal,
-            first
-        );
-        let checkpoint = history.checkpoint().await?.context("saved late fact")?;
-        drop(projection);
-        // Run the actual Core close, whose Closing/Closed commits are additional reliable facts,
-        // with the same channel/writer and one replacement projection owner.
-        let observer = spawn_projection(store.clone(), test_thread(id));
-        let core = ThreadHandle::resume_without_model(id.into(), Some(checkpoint))?;
-        core.attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-        tokio::time::timeout(Duration::from_secs(10), core.close()).await??;
-        let closed = history.checkpoint().await?.context("saved Core close")?;
-        assert_eq!(
-            closed.state.lifecycle,
-            pl_core::thread::ThreadLifecycle::Closed
-        );
-        assert!(closed.history_fence > 5);
-        assert_eq!(history.watermark().await?, closed.history_fence);
-        assert_eq!(
-            history.execution_item(input_id).await?.unwrap().ordinal,
-            first
-        );
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        sink.0.channel.stop_and_join().await?;
-        tokio::time::timeout(Duration::from_secs(5), observer).await??;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_live_turn_input_survives_a_window_smaller_than_its_parts() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("window-input")).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread("window-input"), None).await?;
-        let thread_id = "window-input";
-        let turn_id = "long-turn";
-        let attempt_id = "long-attempt";
-        let input_id = "input-under-the-window";
-        let chat = store.chat_session(thread_id).await?;
-        let mut projection = live_projection(&sink).await?;
-
-        // Commit 1: the Turn's own opening input. Every later commit's checkpoint has pruned the
-        // consumed body from `state.inputs` and keeps only the minimal `turns[].input_id`.
-        let input = consumed_visible_input(input_id, turn_id, 1)?;
-        let mut opening = ticket(thread_id, 1);
-        opening.checkpoint.state.inputs = Arc::from([input.clone()]);
-        opening.checkpoint.state.turns =
-            Arc::from([turn_record(turn_id, input_id, TurnState::Running)]);
-        Arc::make_mut(&mut opening.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Arc::make_mut(&mut opening.effect).turn =
-            Some(turn_record(turn_id, input_id, TurnState::Running));
-        drive_live_projection(&mut projection, &chat, &sink, thread_id, opening).await?;
-
-        // Commit 2: one model step whose receipt itemizes more provider parts than the window holds.
-        // That pushes the Turn's own oldest facts out of the ordinal window.
-        let parts = crate::studio::thread_projection::LIVE_ITEM_WINDOW + 8;
-        let (attempt, update) = committed_parts_attempt(turn_id, attempt_id, parts)?;
-        let mut step = ticket(thread_id, 2);
-        step.checkpoint.state.turns =
-            Arc::from([turn_record(turn_id, input_id, TurnState::Running)]);
-        step.checkpoint.state.attempts = Arc::from([attempt.clone()]);
-        Arc::make_mut(&mut step.effect).attempt = Some(update);
-        drive_live_projection(&mut projection, &chat, &sink, thread_id, step).await?;
-
-        // Commit 3: the Turn's terminal effect. Its checkpoint names the input without carrying its
-        // body, and it re-projects the Turn item, so both the input identity and the Turn's content
-        // version have to resolve from the projection's own memory.
-        let finished = || {
-            turn_record(
-                turn_id,
-                input_id,
-                TurnState::Finished(TurnOutcome::Completed),
-            )
-        };
-        let mut terminal = ticket(thread_id, 3);
-        terminal.checkpoint.state.turns = Arc::from([finished()]);
-        terminal.checkpoint.state.attempts = Arc::from([attempt]);
-        Arc::make_mut(&mut terminal.effect).turn = Some(finished());
-        drive_live_projection(&mut projection, &chat, &sink, thread_id, terminal).await?;
-
-        // Every fact is handed over, so the durable barrier reaches the terminal commit with no
-        // fault, and the rows a long Turn produced are complete instead of a hole or a revision
-        // conflict.
-        await_durable(
-            Duration::from_secs(30),
-            &format!("commit {}", 3),
-            sink.flush(thread_id, 3),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let history = store.history(thread_id).await?;
-        assert_eq!(history.watermark().await?, 3);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        assert!(history.input_identity(input_id).await?.is_some());
-        let turn_item_id = crate::studio::thread_projection::order::turn_id(turn_id);
-        let last_part_id = crate::studio::thread_projection::order::presentation_id(
-            attempt_id,
-            0,
-            &format!("stress-item-{}", parts - 1),
-            Some(crate::studio::thread_projection::order::PresentationPart::OutputText(0)),
-        );
-        let mut rows = history
-            .execution_seeds([
-                input_id.to_owned(),
-                turn_item_id.clone(),
-                last_part_id.clone(),
-            ])
-            .await?;
-        let input_row = rows
-            .remove(input_id)
-            .expect("the live Turn's consumed input stays a complete durable row");
-        match input_row.state() {
-            crate::ExecutionShape::Text(text) => assert_eq!(text.text(), "hello"),
-            other => panic!("the input row keeps its visible body, got {other:?}"),
-        }
-        let turn_row = rows
-            .remove(&turn_item_id)
-            .expect("the Turn row is re-projected onto its own content version");
-        match turn_row.state() {
-            crate::ExecutionShape::Turn(turn) => {
-                assert!(matches!(turn.state(), crate::TurnState::Completed(_)))
-            }
-            other => panic!("the Turn row keeps its Turn state, got {other:?}"),
-        }
-        let part_row = rows
-            .remove(&last_part_id)
-            .expect("the receipt's provider parts are durable rows");
-        match part_row.state() {
-            crate::ExecutionShape::Text(text) => {
-                assert_eq!(text.text(), format!("chunk-{}", parts - 1).as_str())
-            }
-            other => panic!("the provider part keeps its text, got {other:?}"),
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_cold_owner_seeds_the_same_terminal_turn_the_live_projection_publishes() -> Result<()>
-    {
-        // A Thread re-activated after its last Turn finished has no live frame left for that fact:
-        // the authoritative snapshot carries only the active Turn and `turnCompleted` is broadcast
-        // once. The owner therefore seeds its retained last-Turn fact from durable history on the
-        // install path. This drives that cold read over real committed rows and proves it agrees with
-        // the live projection the frame would have used — same identity, same revision, same state —
-        // while a Turn that is still running (or not yet durable) is never reported as finished.
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("cold-turn")).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread("cold-turn"), None).await?;
-        let thread_id = "cold-turn";
-        let turn_id = "terminal-turn";
-        let input_id = "cold-input";
-        let chat = store.chat_session(thread_id).await?;
-        let mut projection = live_projection(&sink).await?;
-
-        // A Thread whose history was never written reads as "no finished Turn" instead of creating a
-        // database, so this cold read can never make the live path wait on the writer.
-        assert!(
-            store
-                .history_for("project-test", "never-written")
-                .await?
-                .newest_terminal_turn()
-                .await?
-                .is_none()
-        );
-
-        // Commit 1: the Turn opens and is durable, but it is still running — the cold seed must not
-        // mistake the newest Turn row for a finished one.
-        let input = consumed_visible_input(input_id, turn_id, 1)?;
-        let mut opening = ticket(thread_id, 1);
-        opening.checkpoint.state.inputs = Arc::from([input.clone()]);
-        opening.checkpoint.state.turns =
-            Arc::from([turn_record(turn_id, input_id, TurnState::Running)]);
-        Arc::make_mut(&mut opening.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Arc::make_mut(&mut opening.effect).turn =
-            Some(turn_record(turn_id, input_id, TurnState::Running));
-        drive_live_projection(&mut projection, &chat, &sink, thread_id, opening).await?;
-        await_durable(
-            Duration::from_secs(30),
-            &format!("commit {}", 1),
-            sink.flush(thread_id, 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        assert!(
-            store
-                .history(thread_id)
-                .await?
-                .newest_terminal_turn()
-                .await?
-                .is_none()
-        );
-        let history = store.history(thread_id).await?;
-        let admitted = history.latest_turn_at(1).await?.context("admitted Turn")?;
-        assert_eq!(admitted.id, turn_id);
-        assert!(!admitted.state.is_terminal());
-        assert!(history.latest_turn_at(0).await.is_err());
-        assert!(history.latest_turn_at(2).await.is_err());
-
-        // Intervening commits advance the execution clock without changing the Turn item.
-        // A terminal frame must outrank running frames even when its item content version is small.
-        for sequence in 2..=10 {
-            let mut intermediate = ticket(thread_id, sequence);
-            intermediate.checkpoint.state.turns =
-                Arc::from([turn_record(turn_id, input_id, TurnState::Running)]);
-            drive_live_projection(&mut projection, &chat, &sink, thread_id, intermediate).await?;
-        }
-        // Commit 11: the Turn finishes. The live projection of that same effect is the fact the frame
-        // carried; the durable row the writer commits has to recover the identical Turn.
-        let finished = || {
-            turn_record(
-                turn_id,
-                input_id,
-                TurnState::Finished(TurnOutcome::Completed),
-            )
-        };
-        let mut terminal = ticket(thread_id, 11);
-        terminal.checkpoint.state.turns = Arc::from([finished()]);
-        Arc::make_mut(&mut terminal.effect).turn = Some(finished());
-        let prepared =
-            drive_live_projection(&mut projection, &chat, &sink, thread_id, terminal).await?;
-        let live = crate::studio::thread_projection::prepared_terminal_turn(&prepared)
-            .context("the live projection must carry the finished Turn")?;
-        await_durable(
-            Duration::from_secs(30),
-            &format!("commit {}", 11),
-            sink.flush(thread_id, 11),
-            || channel_facts(&sink),
-        )
-        .await??;
-
-        let cold = store
-            .history(thread_id)
-            .await?
-            .newest_terminal_turn()
-            .await?
-            .context("the durable history must carry the finished Turn")?;
-        assert_eq!(
-            live.revision, 11,
-            "terminal frame must use the execution clock"
-        );
-        assert_eq!(cold.id, live.id);
-        assert_eq!(cold.revision, live.revision);
-        assert_eq!(cold.state, live.state);
-        let saved = history.checkpoint().await?.context("durable checkpoint")?;
-        assert!(saved.state.turns.is_empty(), "terminal Turns must retire");
-        assert_eq!(
-            history.latest_turn_at(saved.history_fence).await?,
-            Some(live.clone())
-        );
-
-        // A later running admission must outrank the saved terminal. Evaluation cannot use the
-        // terminal-only seed as a shortcut, even while that older terminal remains readable.
-        let next_id = "newer-running-turn";
-        let next_input = consumed_visible_input("newer-input", next_id, 12)?;
-        let mut next = ticket(thread_id, 12);
-        next.checkpoint.state.inputs = Arc::from([next_input.clone()]);
-        next.checkpoint.state.turns =
-            Arc::from([turn_record(next_id, "newer-input", TurnState::Running)]);
-        Arc::make_mut(&mut next.effect).inputs = Arc::from([InputChange::Accepted(next_input)]);
-        Arc::make_mut(&mut next.effect).turn =
-            Some(turn_record(next_id, "newer-input", TurnState::Running));
-        drive_live_projection(&mut projection, &chat, &sink, thread_id, next).await?;
-        await_durable(
-            Duration::from_secs(30),
-            &format!("commit {}", 12),
-            sink.flush(thread_id, 12),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let latest = history.latest_turn_at(12).await?.context("latest Turn")?;
-        assert_eq!(latest.id, next_id);
-        assert!(!latest.state.is_terminal());
-        assert_eq!(history.newest_terminal_turn().await?, Some(cold));
-        assert!(history.latest_turn_at(11).await.is_err());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn retained_budget_counts_the_bodies_the_live_projection_holds() {
-        // A running Turn retains tool arguments, terminal results, attachment metadata and opaque
-        // payloads. Charging only text and reasoning would leave the largest resident bodies outside
-        // the Thread's reliable budget, so the estimate has to cover every category payload.
-        let arguments = "a".repeat(4096);
-        let result = "r".repeat(8192);
-        let artifact = "z".repeat(2048);
-        let raw_content = "p".repeat(1024);
-        let failure = "f".repeat(256);
-        let attachment = crate::ThreadAttachment {
-            id: "artifact-attachment".to_owned(),
-            modality: crate::AttachmentModality::File,
-            media_type: "application/octet-stream".to_owned(),
-            filename: Some("artifact.bin".to_owned()),
-            width: None,
-            height: None,
-            byte_size: 64 * 1024 * 1024,
-        };
-        let tool = crate::ExecutionItem::new(
-            "tool-item".to_owned(),
-            "retained-budget".to_owned(),
-            "turn".to_owned(),
-            1,
-            1,
-            1,
-            1,
-            crate::ExecutionShape::Tool(crate::ThreadToolItem::new(
-                crate::ThreadToolInvocation::new(
-                    "call".to_owned(),
-                    "shell".to_owned(),
-                    arguments.clone(),
-                ),
-                crate::ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
-                    1,
-                    crate::ThreadToolOutput::new(
-                        result.clone(),
-                        vec![attachment.clone()],
-                        vec![serde_json::json!({"stdout": artifact.clone()})],
-                        Some(0),
-                    ),
-                )),
-            )),
-        );
-        let raw = crate::ExecutionItem::new(
-            "raw-item".to_owned(),
-            "retained-budget".to_owned(),
-            "turn".to_owned(),
-            2,
-            1,
-            1,
-            1,
-            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
-                vec![crate::ThreadRawPayload {
-                    format: "pl.model.receipt".to_owned(),
-                    version: 1,
-                    content: raw_content.clone(),
-                }],
-                String::new(),
-                1,
-            )),
-        );
-        let failed_text = crate::ExecutionItem::new(
-            "failed-text".to_owned(),
-            "retained-budget".to_owned(),
-            "turn".to_owned(),
-            3,
-            1,
-            1,
-            1,
-            crate::ExecutionShape::Text(crate::ThreadTextItem::new(
-                crate::ThreadTextChannel::Commentary,
-                "visible".to_owned(),
-                vec![attachment],
-                crate::ThreadContentLifecycle::failed(1, failure.clone()),
-            )),
-        );
-        let bytes = crate::studio::thread_projection::retained_bytes(&[tool, raw, failed_text]);
-        let bodies =
-            (arguments.len() + result.len() + artifact.len() + raw_content.len() + failure.len())
-                as u64;
-        assert!(
-            bytes >= bodies,
-            "retained budget {bytes} must cover the {bodies} resident body bytes"
-        );
-    }
-
-    #[tokio::test]
-    async fn projection_gauge_is_part_of_the_thread_budget() -> Result<()> {
-        let (_temp, _store, sink) = sink("projection-budget").await?;
-        // The projection owner keeps a Turn's retained bodies and its report accumulator resident
-        // after their batch became durable. The Thread's budget therefore reads the owner's absolute
-        // gauge, and releasing the owner's tables releases the budget with them.
-        sink.0
-            .channel
-            .set_projection_retention(ProjectionRetention {
-                resident_bytes: 8192,
-                pending: None,
-            })?;
-        assert_eq!(sink.pressure("projection-budget").thread_bytes, 8192);
-        assert_eq!(sink.0.channel.subscribe().borrow().queued_bytes, 8192);
-        sink.0
-            .channel
-            .set_projection_retention(ProjectionRetention::default())?;
-        assert_eq!(sink.pressure("projection-budget").thread_bytes, 0);
-        assert_eq!(sink.0.channel.subscribe().borrow().queued_bytes, 0);
+        assert_eq!(index.retained_bytes(), retained);
+        assert_eq!(index.assigned("observed"), Some(first));
+        assert!(!index.completion_checked("observed"));
+        process.store(retained, Ordering::Release);
         Ok(())
     }
 
     #[tokio::test]
     async fn operation_output_reservation_returns_to_baseline_across_rounds() -> Result<()> {
-        // Idle operations must not spend their hypothetical maximum output. More than sixteen
-        // parallel tools with tiny output must run without exhausting the 256 MiB process budget.
-        let (_temp, _store, sink) = sink("operation-budget").await?;
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "operation-budget";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
         let baseline = channel.process_bytes.load(Ordering::Acquire);
         for index in 0..32 {
             assert_eq!(
-                channel.reserve_operation_output(&format!("idle-{index}"), 16 * 1024 * 1024),
+                channel.reserve_operation_output(&format!("idle-{index}"), 16 * 1024 * 1024,),
                 Some(16 * 1024 * 1024)
             );
         }
@@ -9947,2736 +4956,144 @@ pub(crate) mod storage_fault_tests {
         }
         for round in 0..4_u64 {
             let operation = format!("task:call-{round}");
-            let granted = channel
-                .reserve_operation_output(&operation, 4096)
-                .expect("the empty budget funds the reservation");
-            assert_eq!(granted, 4096);
             assert_eq!(
-                channel.process_bytes.load(Ordering::Acquire),
-                baseline,
-                "a ceiling without produced bytes consumes no resident budget"
+                channel.reserve_operation_output(&operation, 4096),
+                Some(4096)
             );
+            assert_eq!(channel.process_bytes.load(Ordering::Acquire), baseline);
             channel.charge_operation_output(&operation, 1024)?;
-            channel.charge_operation_output(&operation, 1024)?;
+            channel.charge_operation_output(&operation, 2048)?;
             assert!(channel.charge_operation_output(&operation, 4097).is_err());
             assert_eq!(
                 channel.process_bytes.load(Ordering::Acquire),
-                baseline + 1024
+                baseline + 2048
             );
             channel.release_operation_output(&operation);
             channel.release_operation_output(&operation);
             assert_eq!(
                 channel.process_bytes.load(Ordering::Acquire),
                 baseline,
-                "a finished call releases all accepted bytes"
+                "a finished call releases all accepted bytes exactly once"
             );
         }
+        channel.stop_and_join().await?;
         Ok(())
     }
 
-    /// The whole reserve/complete/refuse/recover cycle of parallel in-flight operations.
-    ///
-    /// Four Threads reserve the process budget down to its last byte, which is exactly the state
-    /// where charging an admitted fact *next to* the reservation that produced it would need space
-    /// that does not exist: every result would be refused, no result could be handed over, and the
-    /// reservations would be held forever waiting for the queue they themselves block. The rule under
-    /// test is the transfer instead — the bytes a reservation covers become the fact's own charge, so
-    /// a fully reserved process still hands its facts over — together with the boundaries that stay
-    /// real: an uncovered fact is refused with typed backpressure instead of being admitted over budget,
-    /// the refused fact is handed over unchanged once its Thread's ceiling comes back, and the
-    /// process gauge returns to the baseline once everything is durable.
     #[tokio::test]
-    async fn parallel_reservations_transfer_into_their_facts_without_deadlock() -> Result<()> {
-        // No test projection here: nothing takes the admitted facts over until the test hands them
-        // in itself, so the durable watermark cannot drain the queue while the reservations are
-        // still charged and every step below is deterministic.
+    async fn rejected_terminal_transfer_retains_the_source_without_partial_charge() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let operations = (0..4)
-            .map(|index| format!("task:parallel-{index}"))
-            .collect::<Vec<_>>();
-        let mut sinks = Vec::new();
-        // Each Thread first admits its input identity, then charges output up to its own limit.
-        // This funds both the existing boundaries and the output instead of placing the entire
-        // process allowance on one Thread or inventing uncharged identities at the full limit.
-        for (index, operation) in operations.iter().enumerate() {
-            let id = format!("output-transfer-{index}");
-            register_test_thread(&store, &test_thread(&id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(&id), None).await?;
-            sink.admit(
-                &id,
-                visible_input_ticket(&id, 1, &format!("input-{index}"))?,
-            )?;
-            let reservation = MAX_HISTORY_THREAD_BYTES - sink.pressure(&id).thread_bytes;
-            let granted = sink
-                .0
-                .channel
-                .reserve_operation_output(operation, reservation)
-                .expect("the Thread can register its remaining allowance");
-            assert_eq!(granted, reservation);
-            sink.0
-                .channel
-                .charge_operation_output(operation, reservation)?;
-            assert_eq!(sink.pressure(&id).thread_bytes, MAX_HISTORY_THREAD_BYTES);
-            sinks.push(sink);
-        }
-        let sink = &sinks[0];
+        let id = "terminal-transfer-budget";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
-        let process_bytes = channel.process_bytes.clone();
-        let baseline = 0;
+        let lease = channel.step_lock.lock().await;
+        sink.admit(id, visible_input_ticket(id, 1, "input")?)?;
+        let source = PendingProjectionRetention {
+            sequence: 1,
+            prepared_bytes: 200,
+        };
+        channel.set_projection_retention(ProjectionRetention {
+            resident_bytes: 100,
+            pending: Some(source),
+        })?;
+        let transfer = ProjectionTransfer {
+            source,
+            after: ProjectionRetention {
+                resident_bytes: 100,
+                pending: Some(PendingProjectionRetention {
+                    sequence: 1,
+                    prepared_bytes: 120,
+                }),
+            },
+        };
+        let pressure_before = sink.pressure(id);
+        let process_before = channel.process_bytes.load(Ordering::Acquire);
+        channel
+            .process_bytes
+            .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
+        assert!(channel.retain_terminal_bytes(1, transfer).is_err());
+        assert_eq!(lock_progress(&sink.0).projection_pending, Some(source));
+        assert_eq!(channel.retained_delivery_bytes(), 0);
+        assert_eq!(sink.pressure(id).thread_bytes, pressure_before.thread_bytes);
         assert_eq!(
             channel.process_bytes.load(Ordering::Acquire),
-            MAX_HISTORY_PROCESS_BYTES,
-            "the reservations alone fill the process budget"
+            MAX_HISTORY_PROCESS_BYTES
         );
-        assert!(
-            channel
-                .reserve_operation_output("task:one-too-many", MAX_HISTORY_THREAD_BYTES)
-                .is_none(),
-            "a call that the reliable budget cannot fund is backpressure, never a silent grant"
-        );
+        channel
+            .process_bytes
+            .store(process_before, Ordering::Release);
+        channel.release_projection_retention();
+        drop(lease);
+        channel.stop_and_join_for_deletion().await?;
+        Ok(())
+    }
 
-        // Every call returns: its result is admitted while the process budget is still full, which
-        // only works because the reservation it was made under is transferred onto the fact.
-        for (index, operation) in operations.iter().enumerate() {
-            let sink = &sinks[index];
-            let mut write = visible_input_ticket(&sink.0.thread.id, 2, &format!("input-{index}"))?;
-            let input = Arc::make_mut(&mut write.checkpoint.state.inputs)
-                .first_mut()
-                .unwrap();
-            input.accepted_sequence = 1;
-            input.ordinal = 1;
-            Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Transition {
-                id: input.input.id.clone(),
-                revision: input.revision,
-                state: input.state.clone(),
-            }]);
-            write.output_claim = Some(operation.clone());
-            sink.admit(&sink.0.thread.id, write)
-                .expect("the reservation funds the fact it was made for");
-        }
-        assert_eq!(
-            channel.process_bytes.load(Ordering::Acquire),
-            MAX_HISTORY_PROCESS_BYTES,
-            "transferring a reservation onto a fact adds no second charge for the same output"
-        );
-
-        // The next continuous fact has no reservation and is refused while there is no headroom and
-        // no projection can free any: typed backpressure, nothing dropped, ticket untouched.
-        let uncovered = visible_input_ticket(&sink.0.thread.id, 3, "input-uncovered")?;
+    #[tokio::test]
+    async fn full_process_budget_rejects_the_continuous_ticket_without_appending_it() -> Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let id = "admission-backpressure";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
+        let channel = &sink.0.channel;
+        let lease = channel.step_lock.lock().await;
+        channel
+            .process_bytes
+            .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
         let error = sink
-            .admit(&sink.0.thread.id, uncovered.clone())
-            .expect_err("an unfunded fact cannot be admitted into a full budget");
+            .admit(id, ticket(id, 1))
+            .expect_err("full reliable budget is admission backpressure");
         assert!(
             error
                 .source
                 .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
         );
-        let refused = channel.subscribe().borrow().clone();
-        assert!(refused.fault.is_none() && refused.error.is_none());
-        // Overlapping owners must not invent a fault from the same shared capacity refusal.
-        let overlapping =
-            ThreadStorageSink::new(store.clone(), sink.0.thread.clone(), None).await?;
-
-        // Recovery: the first call ends, so its remaining ceiling comes back and the very same
-        // ticket is admitted unchanged; the rest of the calls end too.
-        channel.release_operation_output(&operations[0]);
-        sink.admit(&sink.0.thread.id, uncovered)?;
-        for (sink, operation) in sinks.iter().zip(&operations).skip(1) {
-            sink.0.channel.release_operation_output(operation);
-        }
-
-        // The Thread's own projection owner hands the admitted facts over in admission order, which
-        // is what lets the writer save them; every fact becomes durable without a fault retry.
-        for (index, sink) in sinks.iter().enumerate() {
-            let mut projection = live_projection(sink).await?;
-            while let Some(write) = sink.0.channel.next_unprojected() {
-                let mut prepared = projection
-                    .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                    .await?;
-                projection
-                    .publish_prepared(&sink.0.chat, &mut prepared)
-                    .await?;
-                assert!(sink.0.channel.prepare(prepared));
-            }
-            // A real subsequent checkpoint releases the last input reference. Its pending
-            // identity charge still survives until the writer confirms the actual transaction.
-            let target = if index == 0 { 4 } else { 3 };
-            drive_live_projection(
-                &mut projection,
-                &sink.0.chat,
-                sink,
-                &sink.0.thread.id,
-                ticket(&sink.0.thread.id, target),
-            )
-            .await?;
-        }
-        // The original writer drains every fact without an explicit fault-recovery request.
-        let mut drained = channel.subscribe();
-        await_durable(
-            Duration::from_secs(10),
-            "parallel reservations durable after backpressure",
-            async {
-                loop {
-                    let status = drained.borrow_and_update().clone();
-                    if status.committed_sequence == 4 && status.queued_records == 0 {
-                        break;
-                    }
-                    drained.changed().await?;
-                }
-                Ok::<(), anyhow::Error>(())
-            },
-            || channel_facts(sink),
-        )
-        .await??;
-        assert!(lock_progress(&sink.0).fault.is_none());
-        assert_eq!(lock_progress(&sink.0).fault_generation, 0);
-        assert!(
-            store.thread_persistence().snapshot().error.is_none(),
-            "all live writer reports stay healthy after ordinary backpressure"
-        );
-        for (index, sink) in sinks.iter().enumerate() {
-            let target = if index == 0 { 4 } else { 3 };
-            sink.flush(&sink.0.thread.id, target).await?;
-            assert_eq!(
-                store.history(&sink.0.thread.id).await?.watermark().await?,
-                target
-            );
-            let drained = sink.0.channel.subscribe().borrow().clone();
-            assert!(drained.error.is_none() && drained.fault.is_none());
-            sink.0.channel.stop_and_join().await?;
-        }
-        assert_eq!(
-            process_bytes.load(Ordering::Acquire),
-            baseline,
-            "once every fact is durable and every call ended, the process gauge is back to baseline"
-        );
-        drop(overlapping);
-        Ok(())
-    }
-
-    #[derive(Clone, Default)]
-    struct AdmissionRefusals(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
-
-    #[derive(Default)]
-    struct AdmissionFields(BTreeMap<String, String>);
-
-    impl tracing::field::Visit for AdmissionFields {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0.insert(field.name().to_owned(), format!("{value:?}"));
-        }
-    }
-
-    impl tracing::Subscriber for AdmissionRefusals {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.target() == "conversation_work"
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            let mut fields = AdmissionFields::default();
-            event.record(&mut fields);
-            if fields.0.contains_key("rejection_kind") {
-                self.0.lock().unwrap().push(fields.0);
-            }
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-
-    impl AdmissionRefusals {
-        fn matching_events(
-            &self,
-            kind: &str,
-            thread: &str,
-            sequence: u64,
-        ) -> BTreeMap<String, String> {
-            let events = self.0.lock().unwrap();
-            let event = events.first().expect("refusal diagnostic").clone();
-            assert!(events.iter().all(|next| next == &event));
-            assert_eq!(event["operation"], "\"history_admission\"");
-            assert_eq!(event["rejection_kind"], format!("{kind:?}"));
-            assert_eq!(event["thread_id"], format!("{thread:?}"));
-            assert_eq!(event["write_seq"], sequence.to_string());
-            assert!(!format!("{event:?}").contains("SYNTHETIC-PRIVATE-CHECKPOINT"));
-            eprintln!("HISTORY_ADMISSION_REFUSAL {event:?}");
-            event
-        }
-    }
-
-    #[tokio::test]
-    async fn queue_pressure_keeps_the_original_ticket_until_retry_and_commit() -> Result<()> {
-        for kind in ["thread_bytes", "process_budget"] {
-            let id = format!("queue-pressure-{kind}");
-            let (_temp, store, sink) = sink(&id).await?;
-            let channel = &sink.0.channel;
-            for sequence in 1..=2 {
-                let writer = channel.step_lock.lock().await;
-                let mut write = ticket(&id, sequence);
-                write.checkpoint.state.persistence.error =
-                    Some("SYNTHETIC-PRIVATE-CHECKPOINT".to_owned());
-                let baseline = channel.process_bytes.load(Ordering::Acquire);
-                let index_baseline = channel.order_index.retained_bytes();
-                // Supply only occupied-budget environment, never replace the production classifier.
-                // Both limits are full in the Thread case to pin the original short-circuit priority.
-                if kind == "thread_bytes" {
-                    channel
-                        .order_index
-                        .bytes
-                        .store(MAX_HISTORY_THREAD_BYTES, Ordering::Release);
-                }
-                channel
-                    .process_bytes
-                    .store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);
-                let capture = AdmissionRefusals::default();
-                tracing::subscriber::with_default(capture.clone(), || {
-                    for _ in 0..3 {
-                        let error = sink.admit(&id, write.clone()).unwrap_err();
-                        assert!(
-                            error
-                                .source
-                                .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
-                        );
-                        assert_eq!(channel.subscribe().borrow().fault_generation, 0);
-                    }
-                });
-                assert_eq!(capture.0.lock().unwrap().len(), 3);
-                let event = capture.matching_events(kind, &id, sequence);
-                assert_eq!(event["fault_generation"], "0");
-                assert_eq!(event["queued_effects"], "0");
-                assert_eq!(
-                    event["queued_thread_bytes"],
-                    if kind == "thread_bytes" {
-                        MAX_HISTORY_THREAD_BYTES
-                    } else {
-                        index_baseline
-                    }
-                    .to_string()
-                );
-                assert_eq!(
-                    event["process_bytes_observed"],
-                    MAX_HISTORY_PROCESS_BYTES.to_string()
-                );
-                let increment = encoded_bytes(&write.effect) + PENDING_AGE_METADATA_BYTES;
-                assert_eq!(event["thread_bytes_increment"], increment.to_string());
-                assert_eq!(event["process_bytes_increment"], increment.to_string());
-                assert_eq!(
-                    channel.process_bytes.load(Ordering::Acquire),
-                    MAX_HISTORY_PROCESS_BYTES
-                );
-                let fault = channel.subscribe().borrow().clone();
-                assert!(fault.fault.is_none() && fault.error.is_none());
-                assert_eq!(fault.admitted_sequence, sequence - 1);
-                assert_eq!(fault.queued_records, 0);
-                channel
-                    .order_index
-                    .bytes
-                    .store(index_baseline, Ordering::Release);
-                channel.process_bytes.store(baseline, Ordering::Release);
-                sink.admit(&id, write)?;
-                let flush = sink.flush(&id, sequence);
-                tokio::pin!(flush);
-                assert!(futures::poll!(&mut flush).is_pending());
-                drop(writer);
-                tokio::time::timeout(Duration::from_secs(5), flush).await??;
-                assert_eq!(store.history(&id).await?.watermark().await?, sequence);
-                let recovered = channel.subscribe().borrow().clone();
-                assert_eq!(recovered.queued_records, 0);
-                assert_eq!(recovered.fault, None);
-                assert_eq!(channel.process_bytes.load(Ordering::Acquire), baseline);
-            }
-            channel.stop_and_join().await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn admission_requires_the_continuous_tail_but_keeps_replay_semantics() -> Result<()> {
-        let id = "continuous-admission";
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = &sink.0.channel;
-        let writer = channel.step_lock.lock().await;
-        let first = ticket(id, 1);
-        sink.admit(id, first.clone())?;
-        sink.admit(id, first.clone())?;
-        assert_eq!(channel.subscribe().borrow().queued_records, 1);
-
-        let third = ticket(id, 3);
-        sink.admit(id, third.clone())
-            .expect_err("a new record cannot cross an unsaved sequence gap");
-        let fault = channel.subscribe().borrow().clone();
-        assert_eq!(fault.fault, Some(crate::HistoryFault::WriteFailed));
-        assert_eq!(fault.queued_records, 1);
-
-        sink.admit(id, ticket(id, 2))?;
-        sink.admit(id, third)?;
-        let mut projection = live_projection(&sink).await?;
-        while let Some(write) = channel.next_unprojected() {
-            let mut prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                .await?;
-            projection
-                .publish_prepared(&sink.0.chat, &mut prepared)
-                .await?;
-            assert!(channel.prepare(prepared));
-        }
-        drop(writer);
-        store
-            .thread_persistence()
-            .retry_history(id, fault.fault_generation)
-            .await?;
-        sink.flush(id, 3).await?;
-        assert_eq!(store.history(id).await?.watermark().await?, 3);
-        sink.admit(id, first)?;
-        assert_eq!(channel.subscribe().borrow().queued_records, 0);
-        channel.stop_and_join().await
-    }
-
-    #[tokio::test]
-    async fn record_capacity_refuses_only_the_next_continuous_ticket_and_drains() -> Result<()> {
-        let id = "record-capacity";
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let channel = &sink.0.channel;
-        let writer = channel.step_lock.lock().await;
-        let mut projection = live_projection(&sink).await?;
-        for sequence in 1..=MAX_HISTORY_BATCHES as u64 {
-            let write = ticket(id, sequence);
-            sink.admit(id, write.clone())?;
-            let mut prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                .await?;
-            projection
-                .publish_prepared(&sink.0.chat, &mut prepared)
-                .await?;
-            assert!(channel.prepare(prepared));
-        }
-        let refused = ticket(id, MAX_HISTORY_BATCHES as u64 + 1);
-        let before = sink.pressure(id);
-        let queued_before = {
-            let progress = lock_progress(&sink.0);
-            progress.effect_bytes
-                + progress.queue_metadata_bytes
-                + channel.order_index.retained_bytes()
-        };
-        let capture = AdmissionRefusals::default();
-        tracing::subscriber::with_default(capture.clone(), || {
-            for _ in 0..3 {
-                let error = sink
-                    .admit(id, refused.clone())
-                    .expect_err("the first ticket beyond the real record limit must be refused");
-                assert!(
-                    error
-                        .source
-                        .is::<pl_core::thread::cold::StorageAdmissionBackpressure>()
-                );
-                assert_eq!(channel.subscribe().borrow().fault_generation, 0);
-            }
-        });
-        assert_eq!(capture.0.lock().unwrap().len(), 3);
-        let event = capture.matching_events("slot", id, refused.effect.sequence);
-        assert_eq!(event["queued_effects"], MAX_HISTORY_BATCHES.to_string());
-        assert_eq!(event["queued_thread_bytes"], queued_before.to_string());
-        assert_eq!(
-            event["process_bytes_observed"],
-            before.store_bytes.to_string()
-        );
-        let increment = encoded_bytes(&refused.effect) + PENDING_AGE_METADATA_BYTES;
-        assert_eq!(event["thread_bytes_increment"], increment.to_string());
-        assert_eq!(event["process_bytes_increment"], increment.to_string());
-        assert_eq!(sink.pressure(id).thread_bytes, before.thread_bytes);
-        assert_eq!(sink.pressure(id).store_bytes, before.store_bytes);
-        let full = channel.subscribe().borrow().clone();
-        assert!(full.fault.is_none() && full.error.is_none());
-        assert_eq!(full.queued_records, MAX_HISTORY_BATCHES as u64);
-        assert!(
-            channel.next_unprojected().is_none(),
-            "capacity refusal must not append or duplicate the original ticket"
-        );
-        drop(writer);
-
-        let mut capacity = channel.subscribe();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while capacity.borrow_and_update().queued_records >= MAX_HISTORY_BATCHES as u64 {
-                capacity.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        sink.admit(id, refused.clone())?;
-        let write = channel
-            .next_unprojected()
-            .context("the exact refused ticket becomes the next continuous handoff")?;
-        assert_eq!(write.effect.sequence, refused.effect.sequence);
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection
-            .publish_prepared(&sink.0.chat, &mut prepared)
-            .await?;
-        assert!(channel.prepare(prepared));
-        sink.flush(id, refused.effect.sequence).await?;
-        assert_eq!(
-            store.history(id).await?.watermark().await?,
-            refused.effect.sequence
-        );
-        assert_eq!(channel.subscribe().borrow().queued_records, 0);
-        channel.stop_and_join().await
-    }
-
-    #[test]
-    fn pending_age_index_tracks_the_oldest_timestamp_without_sequence_order() {
-        let mut progress = Progress::default();
-        progress.admit_saved_at(80);
-        progress.admit_saved_at(10);
-        progress.admit_saved_at(50);
-        assert_eq!(progress.pending_saved_at.first_key_value(), Some((&10, &1)));
-        assert_eq!(
-            progress.queue_metadata_bytes,
-            3 * PENDING_AGE_METADATA_BYTES
-        );
-        progress.release_saved_at(10);
-        assert_eq!(progress.pending_saved_at.first_key_value(), Some((&50, &1)));
-        progress.release_saved_at(80);
-        progress.release_saved_at(50);
-        assert!(progress.pending_saved_at.is_empty());
-        assert_eq!(progress.queue_metadata_bytes, 0);
-    }
-
-    #[tokio::test]
-    async fn sqlite_rejection_retains_the_real_writer_queue_until_recovery() -> Result<()> {
-        let (_temp, store, sink) = sink("sqlite-rejection").await?;
-        sink.admit("sqlite-rejection", ticket("sqlite-rejection", 1))?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("sqlite-rejection", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let path = store
-            .session_paths("project-test", "sqlite-rejection")?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
-             BEGIN SELECT RAISE(ABORT, 'controlled writer rejection'); END",
-        )
-        .await?;
-        let mut status = sink.0.channel.subscribe();
-        sink.admit("sqlite-rejection", ticket("sqlite-rejection", 2))?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        let failed = status.borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
-        assert_eq!(failed.queued_records, 1);
-        assert_eq!(
-            store.history("sqlite-rejection").await?.watermark().await?,
-            1
-        );
-        assert!(sink.flush("sqlite-rejection", 2).await.is_err());
-        db.execute_unprepared("DROP TRIGGER reject_history").await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("sqlite-rejection", failed.fault_generation),
-        )
-        .await??;
-        assert_eq!(
-            store.history("sqlite-rejection").await?.watermark().await?,
-            2
-        );
-        let recovered = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(recovered.queued_records, 0);
-        assert_eq!(recovered.fault, None);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fresh_background_ack_and_unacknowledged_provenance_do_not_read_history() -> Result<()>
-    {
-        use pl_core::{
-            context::{ContextRecord, ContextSnapshot, ContextSource},
-            thread::{
-                journal::ContextChange,
-                task::{TaskAcknowledgement, TaskRecord},
-            },
-        };
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let id = "fresh-background";
-        register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-        let history = store.history(id).await?;
-        let chat = store.chat_session(id).await?;
-        let index = sink.0.channel.order_index();
-        let mut projection = live_projection(&sink).await?;
-        let mut task = TaskRecord {
-            id: "task:call".into(),
-            parent_call_id: None,
-            invocation: None,
-            call_id: "call".into(),
-            tool_id: "tool".into(),
-            turn_id: "turn".into(),
-            revision: 1,
-            status: TaskStatus::Running,
-            cancel_requested: false,
-            acknowledgement: None,
-            started_sequence: Some(1),
-        };
-        let mut context = ContextSnapshot {
-            revision: 1,
-            records: Arc::from([ContextRecord {
-                id: "assistant".into(),
-                turn_id: Some("turn".into()),
-                source: ContextSource::Assistant,
-                content: vec![],
-                tool_calls: vec![ModelToolCall {
-                    rejection: None,
-                    presentation_contract: None,
-                    call_id: "call".into(),
-                    tool_id: "tool".into(),
-                    arguments: OpaquePayload::text("arguments"),
-                }],
-            }]),
-        };
-        let mut initial = ticket(id, 1);
-        initial.checkpoint.state.context = context.clone();
-        initial
-            .checkpoint
-            .state
-            .tasks
-            .insert(task.id.clone(), task.clone());
-        Arc::make_mut(&mut initial.effect).context = Some(ContextChange::Replace(context.clone()));
-        Arc::make_mut(&mut initial.effect).tasks = Arc::from([task.clone()]);
-        drive_live_projection(&mut projection, &chat, &sink, id, initial).await?;
-        sink.flush(id, 1).await?;
-        let gate = sink.0.channel.step_lock.lock().await;
-        let (mut entered, release) = history.arm_completion_read_gate().await;
-        let reads = history.reader_calls();
-        let mut running = ticket(id, 2);
-        running.checkpoint.state.context = context.clone();
-        running
-            .checkpoint
-            .state
-            .tasks
-            .insert(task.id.clone(), task.clone());
-        Arc::make_mut(&mut running.effect).tasks = Arc::from([task.clone()]);
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            drive_live_projection(&mut projection, &chat, &sink, id, running),
-        )
-        .await??;
-        assert_eq!(history.reader_calls(), reads, "known ack=None provenance");
-        task.revision = 2;
-        task.acknowledgement = Some(TaskAcknowledgement {
-            record_id: "receipt".into(),
-            context_revision: 2,
-        });
-        let receipt = ContextRecord {
-            id: "receipt".into(),
-            turn_id: Some("turn".into()),
-            source: ContextSource::ToolResult {
-                call_id: "call".into(),
-                tool_id: "tool".into(),
-            },
-            content: vec![ContextContent::Text {
-                text: Arc::from("task is running"),
-            }],
-            tool_calls: vec![],
-        };
-        let mut records = context.records.to_vec();
-        records.push(receipt.clone());
-        context.revision = 2;
-        context.records = records.into();
-        let mut ack = ticket(id, 3);
-        ack.checkpoint.state.context = context;
-        ack.checkpoint
-            .state
-            .tasks
-            .insert(task.id.clone(), task.clone());
-        Arc::make_mut(&mut ack.effect).context = Some(ContextChange::Append {
-            revision: 2,
-            records: Arc::from([receipt]),
-        });
-        Arc::make_mut(&mut ack.effect).tasks = Arc::from([task]);
-        let ack_id = crate::studio::thread_projection::order::tool_background_started_id("call");
-        let ceiling = index.inner.lock().unwrap().ceiling;
-        assert!(index.reserve_boundaries(&ack.effect, u64::MAX).is_err());
-        assert_eq!(index.assigned(&ack_id), None);
-        assert_eq!(index.inner.lock().unwrap().ceiling, ceiling);
-        sink.admit(id, ack.clone())?;
-        sink.admit(id, ack)?;
-        let owed = sink
-            .0
-            .channel
-            .next_unprojected()
-            .context("fresh acknowledgement")?;
-        assert!(index.completion_checked(&ack_id) && !index.is_sealed(&ack_id));
-        projection.fail_after_project = true;
-        let error = tokio::time::timeout(
-            Duration::from_secs(5),
-            projection.prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false),
-        )
-        .await?
-        .err()
-        .context("preparation must fail after materialization")?;
-        assert!(error.to_string().contains("injected failure"));
-        let ordinal = index
-            .assigned(&ack_id)
-            .context("materialized acknowledgement")?;
-        assert!(!index.is_new_reservation(&ack_id, 3));
-        assert!(index.completion_checked(&ack_id) && !index.is_sealed(&ack_id));
-        let (_, mut prepared) = tokio::time::timeout(
-            Duration::from_secs(5),
-            projection.prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false),
-        )
-        .await??;
-        assert_eq!(index.assigned(&ack_id), Some(ordinal));
-        assert_eq!(history.reader_calls(), reads);
-        assert!(matches!(
-            entered.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
-        ));
-        // This test-only recovery publisher deliberately validates history. The production
-        // ConversationStore admission is covered separately with real Core acknowledgements.
-        drop(release);
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        assert_eq!(prepared.completions.len(), 1);
-        let original = prepared.completions[0].clone();
-        assert_eq!(original.header.item_id, ack_id);
-        let head = chat.head_seq();
-        assert!(sink.0.channel.prepare(prepared));
-        // Published originals and the original prepared batch survive a failed save and owner handoff.
-        let path = store
-            .session_paths("project-test", id)?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-        db.execute_unprepared("CREATE TRIGGER reject_fresh_ack BEFORE UPDATE OF applied_write_seq ON history_meta BEGIN SELECT RAISE(ABORT,'controlled ack save failure'); END").await?;
-        let mut status = sink.0.channel.subscribe();
-        drop(gate);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            anyhow::Ok(())
-        })
-        .await??;
-        assert!(sink.flush(id, 3).await.is_err());
-        drop(projection);
-        let replacement = live_projection(&sink).await?;
-        assert_eq!(chat.head_seq(), head);
-        db.execute_unprepared("DROP TRIGGER reject_fresh_ack")
-            .await?;
-        let generation = status.borrow().fault_generation;
-        store
-            .thread_persistence()
-            .retry_history(id, generation)
-            .await?;
-        sink.flush(id, 3).await?;
-        assert_eq!(chat.head_seq(), head);
-        assert_eq!(
-            pl_core::chat::ChatHistory::item(&history, &ack_id).await?,
-            Some((*original).clone())
-        );
-        assert_eq!(index.assigned(&ack_id), None);
-        assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 0);
-        assert_eq!(lock_progress(&sink.0).effect_bytes, 0);
-        // Drop the replacement owner after the shared pending batch reaches its durable barrier.
-        drop(replacement);
-        sink.0.channel.release_projection_retention();
-        db.close().await?;
-        sink.0.channel.stop_and_join().await?;
-        eprintln!("BACKGROUND_ACK_READ_PORTS running=0 acknowledgement=0 materializedRetry=0");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn execution_index_durable_background_ack_replayed_with_other_drafts_after_reclamation()
-    -> Result<()> {
-        use pl_core::{
-            context::{ContextRecord, ContextSnapshot, ContextSource},
-            thread::{
-                journal::ContextChange,
-                task::{TaskAcknowledgement, TaskRecord},
-            },
-        };
-        for cold_projection in [false, true] {
-            let temp = tempfile::tempdir()?;
-            let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-            let id = if cold_projection {
-                "ack-cold-replay"
-            } else {
-                "ack-reclaimed-replay"
-            };
-            register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
-            let chat = store.chat_session(id).await?;
-            let history = store.history(id).await?;
-            let index = sink.0.channel.order_index();
-            let mut projection = live_projection(&sink).await?;
-            let call_id = "background-call";
-            let tool_id = "background-tool";
-            let turn_id = "background-turn";
-            let receipt_id = "task-receipt";
-            let task = TaskRecord {
-                parent_call_id: None,
-                invocation: None,
-                id: format!("task:{call_id}"),
-                call_id: call_id.into(),
-                tool_id: tool_id.into(),
-                turn_id: turn_id.into(),
-                revision: 2,
-                status: TaskStatus::Running,
-                cancel_requested: false,
-                started_sequence: Some(1),
-                acknowledgement: Some(TaskAcknowledgement {
-                    record_id: receipt_id.into(),
-                    context_revision: 1,
-                }),
-            };
-            let context = ContextSnapshot {
-                revision: 1,
-                records: Arc::from([
-                    ContextRecord {
-                        id: "assistant-call".into(),
-                        turn_id: Some(turn_id.into()),
-                        source: ContextSource::Assistant,
-                        content: vec![],
-                        tool_calls: vec![ModelToolCall {
-                            rejection: None,
-                            presentation_contract: None,
-                            call_id: call_id.into(),
-                            tool_id: tool_id.into(),
-                            arguments: OpaquePayload::text("background arguments"),
-                        }],
-                    },
-                    ContextRecord {
-                        id: receipt_id.into(),
-                        turn_id: Some(turn_id.into()),
-                        source: ContextSource::ToolResult {
-                            call_id: call_id.into(),
-                            tool_id: tool_id.into(),
-                        },
-                        content: vec![ContextContent::Text {
-                            text: Arc::from(format!(
-                                "Task {} is running. Its result will be delivered when execution finishes.",
-                                task.id
-                            )),
-                        }],
-                        tool_calls: vec![],
-                    },
-                ]),
-            };
-            assert!(context.pending_calls()?.is_empty());
-            let mut initial = ticket(id, 1);
-            initial.checkpoint.state.context = context.clone();
-            initial.checkpoint.state.tasks = BTreeMap::from([(task.id.clone(), task.clone())]);
-            Arc::make_mut(&mut initial.effect).context =
-                Some(ContextChange::Replace(context.clone()));
-            Arc::make_mut(&mut initial.effect).tasks = Arc::from([task.clone()]);
-            let first =
-                drive_live_projection(&mut projection, &chat, &sink, id, initial.clone()).await?;
-            sink.flush(id, 1).await?;
-            // 此夹具从后台 ACK 开始，补入生产中更早的模型完成已保存的同一 invocation。
-            // 只改测试种子，不增加运行期从上下文扫描参数的后备路径。
-            let saved_path = store
-                .session_paths("project-test", id)?
-                .root()
-                .join("history.sqlite");
-            let saved_db =
-                Database::connect(format!("sqlite://{}?mode=rw", saved_path.display())).await?;
-            saved_db.execute_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
-                "UPDATE history_tool_tasks SET task_payload=json_set(task_payload,'$.invocation',json(?)) WHERE call_id=?",
-                vec![serde_json::to_string(&context.records[0].tool_calls[0])?.into(),call_id.into()])).await?;
-            saved_db.close().await?;
-
-            let ack_id =
-                crate::studio::thread_projection::order::tool_background_started_id(call_id);
-            let tool_item_id = crate::studio::thread_projection::order::tool_id(call_id);
-            let original_ack = pl_core::chat::ChatHistory::item(&history, &ack_id)
-                .await?
-                .context("the matching context fact must really save its background ACK")?;
-            assert_eq!(first.completions.len(), 1);
-            assert_eq!(original_ack.header.append_seq, 1);
-            assert_eq!(chat.durable_seq(), 1);
-            let payload: serde_json::Value = serde_json::from_slice(&original_ack.payload)?;
-            assert_eq!(payload["type"], "tool");
-            assert_eq!(payload["data"]["state"]["kind"], "backgroundStarted");
-            assert_eq!(
-                index.assigned(&ack_id),
-                None,
-                "the real writer confirmation must retire the ACK index entry"
-            );
-            assert!(!index.is_sealed(&ack_id));
-            let original_tool = history
-                .execution_item(&tool_item_id)
-                .await?
-                .context("saved running tool")?;
-            if cold_projection {
-                drop(projection);
-                sink.0.channel.release_projection_retention();
-                projection = live_projection(&sink).await?;
-                assert_eq!(
-                    projection.retained_bytes(),
-                    crate::studio::thread_projection::LiveProjection::new().retained_bytes()
-                );
-            }
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            let ceiling = index.inner.lock().unwrap().ceiling;
-            let before_head = chat.head_seq();
-            let mut replay = visible_input_ticket(id, 2, "after-ack-a")?;
-            let mut inputs = vec![
-                replay.checkpoint.state.inputs[0].clone(),
-                visible_input_ticket(id, 2, "after-ack-b")?
-                    .checkpoint
-                    .state
-                    .inputs[0]
-                    .clone(),
-            ];
-            for (offset, input) in inputs.iter_mut().enumerate() {
-                input.state = InputState::Pending;
-                input.ordinal += offset as u64;
-            }
-            replay.checkpoint.state.inputs = inputs.clone().into();
-            replay.checkpoint.state.context = context.clone();
-            replay.checkpoint.state.tasks = initial.checkpoint.state.tasks.clone();
-            let effect = Arc::make_mut(&mut replay.effect);
-            effect.inputs = inputs
-                .into_iter()
-                .map(InputChange::Accepted)
-                .collect::<Vec<_>>()
-                .into();
-            effect.tasks = Arc::from([task.clone()]);
-            effect.context = Some(ContextChange::Replace(context.clone()));
-            // This is the same acknowledged task and its exact ToolResult context, together
-            // with two new completed inputs. No marker or ACK shell is manually installed.
-            assert_eq!(
-                effect.tasks[0].acknowledgement,
-                initial.effect.tasks[0].acknowledgement
-            );
-            assert!(matches!(&effect.context,
-                Some(ContextChange::Replace(replayed)) if replayed == &context));
-            let lease = sink.0.channel.step_lock.lock().await;
-            sink.admit(id, replay)?;
-            assert_eq!(index.inner.lock().unwrap().ceiling, ceiling + 2);
-            assert_eq!(index.assigned(&ack_id), None);
-            let owed = sink
-                .0
-                .channel
-                .next_unprojected()
-                .context("replayed ACK fact is owed")?;
-            let reads_before_recovery = history.reader_calls();
-            let before_index = index.retained_bytes();
-            let before_process = sink.0.channel.process_bytes.load(Ordering::Acquire);
-            let before_thread = sink.pressure(id).thread_bytes;
-            let before_projection = projection.retained_bytes();
-            let (_, mut prepared) = projection
-                .prepare(&sink.0.thread, &owed.effect, &owed.checkpoint.state, false)
-                .await?;
-            assert!(
-                history.reader_calls() > reads_before_recovery,
-                "Replace and reclaimed ACK still validate history"
-            );
-            let new_ids = ["after-ack-a".to_owned(), "after-ack-b".to_owned()]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>();
-            let drafts = prepared
-                .completion_drafts
-                .as_ref()
-                .context("publication still owed")?;
-            assert_eq!(
-                drafts.len(),
-                2,
-                "a saved ACK must be excluded even without a resident marker"
-            );
-            assert_eq!(
-                drafts
-                    .iter()
-                    .map(|draft| draft.item_id.clone())
-                    .collect::<std::collections::BTreeSet<_>>(),
-                new_ids
-            );
-            assert_eq!(index.assigned(&ack_id), None);
-            assert_eq!(index.inner.lock().unwrap().ceiling, ceiling + 2);
-            let after_index = index.retained_bytes();
-            assert_eq!(
-                sink.0.channel.process_bytes.load(Ordering::Acquire),
-                before_process - before_index + after_index
-            );
-            let tool = index
-                .pending_placement(&tool_item_id, id)
-                .context("reused original tool placement")?;
-            assert_eq!(tool.ordinal, original_tool.ordinal);
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: Some(PendingProjectionRetention {
-                        sequence: prepared.sequence,
-                        prepared_bytes: prepared.retained_bytes(),
-                    }),
-                })?;
-            assert_eq!(
-                sink.pressure(id).thread_bytes,
-                before_thread - before_projection - before_index
-                    + after_index
-                    + projection.retained_bytes()
-                    + prepared.retained_bytes()
-            );
-            projection.publish_prepared(&chat, &mut prepared).await?;
-            assert_eq!(prepared.completions.len(), 2);
-            assert_eq!(
-                prepared
-                    .completions
-                    .iter()
-                    .map(|item| item.header.item_id.clone())
-                    .collect::<std::collections::BTreeSet<_>>(),
-                new_ids
-            );
-            for (offset, item) in prepared.completions.iter().enumerate() {
-                assert_eq!(item.header.append_seq, before_head + offset as u64 + 1);
-                assert_ne!(item.header.item_id, ack_id);
-            }
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: Some(PendingProjectionRetention {
-                        sequence: prepared.sequence,
-                        prepared_bytes: prepared.retained_bytes(),
-                    }),
-                })?;
-            assert!(sink.0.channel.prepare(prepared));
-            sink.0
-                .channel
-                .set_projection_retention(ProjectionRetention {
-                    resident_bytes: projection.retained_bytes(),
-                    pending: None,
-                })?;
-            drop(lease);
-            sink.flush(id, 2).await?;
-            assert_eq!(chat.head_seq(), before_head + 2);
-            assert_eq!(chat.durable_seq(), before_head + 2);
-            assert_eq!(history.watermark().await?, 2);
-            assert_eq!(
-                pl_core::chat::ChatHistory::item(&history, &ack_id).await?,
-                Some(original_ack)
-            );
-            assert_eq!(index.assigned(&ack_id), None);
-            assert_eq!(index.inner.lock().unwrap().ceiling, ceiling + 2);
-            sink.0.channel.release_projection_retention();
-            sink.0.channel.stop_and_join().await?;
-        }
-        Ok(())
-    }
-
-    /// Observes accepted Core batches while preserving the real sink's admission and pressure rules.
-    #[derive(Debug)]
-    struct RecordingSink {
-        inner: ThreadStorageSink,
-        writes: Arc<Mutex<BTreeMap<u64, ThreadWrite>>>,
-    }
-
-    impl ColdStore for RecordingSink {
-        fn fold_usage(
-            &self,
-            summary: &mut pl_core::thread::UsageSummary,
-            effect: &ThreadEffectBatch,
-        ) {
-            self.inner.fold_usage(summary, effect);
-        }
-
-        fn reserve_observed_item(
-            &self,
-            thread_id: &str,
-            attempt_id: &str,
-            item_id: &str,
-        ) -> Result<(), ColdStoreError> {
-            self.inner
-                .reserve_observed_item(thread_id, attempt_id, item_id)
-        }
-
-        fn reserve_operation_output(
-            &self,
-            thread_id: &str,
-            operation_id: &str,
-            max_bytes: u64,
-        ) -> Result<u64, ColdStoreError> {
-            self.inner
-                .reserve_operation_output(thread_id, operation_id, max_bytes)
-        }
-
-        fn charge_operation_output(
-            &self,
-            thread_id: &str,
-            operation_id: &str,
-            accepted_bytes: u64,
-        ) -> Result<(), ColdStoreError> {
-            self.inner
-                .charge_operation_output(thread_id, operation_id, accepted_bytes)
-        }
-
-        fn release_operation_output(&self, thread_id: &str, operation_id: &str) {
-            self.inner.release_operation_output(thread_id, operation_id);
-        }
-
-        fn pressure(&self, thread_id: &str) -> StoragePressure {
-            self.inner.pressure(thread_id)
-        }
-
-        fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-            self.inner.subscribe_pressure(thread_id)
-        }
-
-        fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            self.inner.admit(thread_id, write.clone())?;
-            self.writes
-                .lock()
-                .unwrap()
-                .entry(write.effect.sequence)
-                .or_insert(write);
-            Ok(())
-        }
-
-        async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-            self.inner.flush(thread_id, sequence).await
-        }
-
-        async fn read_tool_task(
-            &self,
-            thread_id: &str,
-            task_id: &str,
-        ) -> Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError> {
-            self.inner.read_tool_task(thread_id, task_id).await
-        }
-    }
-
-    #[tokio::test]
-    async fn concurrent_tool_results_survive_a_real_writer_failure_without_reexecution()
-    -> Result<()> {
-        let (_temp, store, sink) = sink("concurrent-results").await?;
-        let requests = Arc::new(AtomicUsize::new(0));
-        let thread = ThreadHandle::start(
-            "concurrent-results".into(),
-            DynModelSession::new(ConcurrentModel(requests.clone())),
-        )?;
-        let (started, mut starts) = mpsc::unbounded_channel();
-        let executions = Arc::new(Mutex::new(Vec::new()));
-        let releases: Vec<_> = (0..2).map(|_| Arc::new(Notify::new())).collect();
-        thread
-            .register_tools(
-                ["first", "second"]
-                    .into_iter()
-                    .zip(releases.iter())
-                    .map(|(id, release)| {
-                        Ok(Registration::prepare(
-                            id.into(),
-                            OpaquePayload::text(format!("Tool {id}")),
-                        )?
-                        .attach(ToolHandle::new(ConcurrentTool {
-                            definition: ToolDefinition::text(id, format!("Tool {id}"))?,
-                            started: started.clone(),
-                            release: release.clone(),
-                            executions: executions.clone(),
-                        })))
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-            )
-            .await?;
-        let captured = Arc::new(Mutex::new(BTreeMap::new()));
-        thread
-            .attach_storage(ColdStoreHandle::new(RecordingSink {
-                inner: sink.clone(),
-                writes: captured.clone(),
-            }))
-            .await?;
-        let turn = TurnInput {
-            turn_id: "both-running".into(),
-            attempt_prefix: "both-running".into(),
-            content: vec![ContextContent::Text {
-                text: Arc::from("start"),
-            }],
-            max_model_steps: ModelStepLimit::Limited(1.try_into()?),
-            cancellation: CancellationToken::new(),
-        };
-        let runner = tokio::spawn({
-            let thread = thread.clone();
-            async move { thread.run_turn(turn).await }
-        });
-        tokio::time::timeout(Duration::from_secs(10), async {
-            let mut started = [starts.recv().await, starts.recv().await];
-            started.sort();
-            assert_eq!(started, [Some("first".into()), Some("second".into())]);
-        })
-        .await?;
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), runner)
-                .await???
-                .outcome,
-            TurnOutcome::StepLimit
-        );
-        let writes = captured
-            .lock()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        assert_eq!(writes.first().map(|write| write.effect.sequence), Some(1));
-        thread.flush().await?;
-        crate::studio::runtime::thread_observation::storage_fault_tests::real_background_receipts_do_not_read_history(&writes).await?;
-        let baseline = store
-            .history("concurrent-results")
-            .await?
-            .watermark()
-            .await?;
-        let chat = store.chat_session("concurrent-results").await?;
-        let started_head = chat.head_seq();
-        let history = store.history("concurrent-results").await?;
-        for call_id in ["first", "second"] {
-            let receipt_id =
-                crate::studio::thread_projection::order::tool_background_started_id(call_id);
-            let receipt = pl_core::chat::ChatHistory::item(&history, &receipt_id)
-                .await?
-                .context("acknowledged background call must publish its own completion")?;
-            let payload: serde_json::Value = serde_json::from_slice(&receipt.payload)?;
-            assert_eq!(payload["type"], "tool");
-            assert_eq!(payload["data"]["state"]["kind"], "backgroundStarted");
-            assert_eq!(
-                payload["data"]["invocation"]["taskId"],
-                format!("task:{call_id}")
-            );
-            assert!(
-                pl_core::chat::ChatHistory::item(
-                    &history,
-                    &crate::studio::thread_projection::order::tool_id(call_id),
-                )
-                .await?
-                .is_none(),
-                "a running background result is not a completion"
-            );
-        }
-        let path = store
-            .session_paths("project-test", "concurrent-results")?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
-             BEGIN SELECT RAISE(ABORT, 'controlled concurrent rejection'); END",
-        )
-        .await?;
-
-        for release in &releases {
-            release.notify_one();
-        }
-        let mut snapshots = thread.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let snapshot = snapshots.next().await.unwrap();
-                if snapshot.terminal_tasks.len()
-                    + snapshot
-                        .tasks
-                        .values()
-                        .filter(|task| task.status != TaskStatus::Running)
-                        .count()
-                    == 2
-                {
-                    break;
-                }
-            }
-        })
-        .await?;
-        let mut status = sink.0.channel.subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        let failed = status.borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
-        assert!(failed.queued_records >= 2);
-        assert_eq!(
-            store
-                .history("concurrent-results")
-                .await?
-                .watermark()
-                .await?,
-            baseline
-        );
-        assert_eq!(requests.load(Ordering::Relaxed), 1);
-        assert_eq!(*executions.lock().unwrap(), ["first", "second"]);
-
-        db.execute_unprepared("DROP TRIGGER reject_history").await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("concurrent-results", failed.fault_generation),
-        )
-        .await??;
-        thread.flush().await?;
-        let history = store.history("concurrent-results").await?;
-        assert_eq!(
-            history.watermark().await?,
-            thread.snapshot().commit_sequence
-        );
-        for id in ["first", "second"] {
-            let fact = history.tool_task(&format!("task:{id}")).await?.unwrap();
-            assert_eq!(fact.task.call_id, id);
-            assert_eq!(fact.delivery.unwrap().call_id, id);
-            let completion = pl_core::chat::ChatHistory::item(
-                &history,
-                &crate::studio::thread_projection::order::tool_id(id),
-            )
-            .await?
-            .context("finished background call must publish its separate final result")?;
-            assert!(completion.header.append_seq > started_head);
-        }
-        assert_eq!(requests.load(Ordering::Relaxed), 1);
-        assert_eq!(executions.lock().unwrap().len(), 2);
-        thread.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn committed_batch_is_replayed_after_ack_is_lost() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("lost-ack")).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread("lost-ack"), None).await?;
-        // The Thread's projection owner hands the batch over before the writer may write it. The test
-        // drives that one write directly, under the step lock, so it can lose the acknowledgement while
-        // the queue entry stays — exactly the retry the writer has to make idempotent.
-        let write = visible_input_ticket("lost-ack", 1, "replayed-completion")?;
-        let bytes = encoded_bytes(&write.effect);
-        let chat = store.chat_session("lost-ack").await?;
-        let mut projection = live_projection(&sink).await?;
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        let locked = sink.0.channel.step_lock.lock().await;
-        sink.admit("lost-ack", write.clone())?;
-        assert!(sink.0.channel.prepare(prepared.clone()));
-        assert!(sink.0.channel.prepare(prepared.clone()));
-        assert!(
-            !sink.0.channel.prepare(Arc::new((*prepared).clone())),
-            "a second preparation must not replace the frozen queued batch"
-        );
-        persist_effect(&sink.0, 1, &write, &prepared, bytes).await?;
-        assert_eq!(
-            lock_progress(&sink.0).effect_bytes,
-            bytes,
-            "a committed but unacknowledged queue entry still owns its effect bytes"
-        );
-        assert_eq!(chat.durable_seq(), 1);
-        assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
-        assert_eq!(
-            pl_core::chat::ChatHistory::publication_seed(&store.history("lost-ack").await?)
-                .await?
-                .head_seq,
-            1,
-            "retry must not append a second completion"
-        );
-        assert_eq!(sink.0.channel.subscribe().borrow().queued_records, 1);
-        sink.0.channel.mark_unavailable(|| true);
-        let unavailable = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            unavailable.fault,
-            Some(crate::HistoryFault::WriterUnavailable)
-        );
-        assert!(sink.flush("lost-ack", 1).await.is_err());
-        drop(locked);
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("lost-ack", unavailable.fault_generation),
-        )
-        .await??;
-        assert_eq!(store.history("lost-ack").await?.watermark().await?, 1);
-        let status = sink.0.channel.subscribe().borrow().clone();
+        let status = channel.subscribe().borrow().clone();
+        assert_eq!(status.admitted_sequence, 0);
         assert_eq!(status.queued_records, 0);
-        assert_eq!(status.fault, None);
-        assert_eq!(lock_progress(&sink.0).effect_bytes, 0);
-        let mut persistence = store.thread_persistence().subscribe();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let row = store
-                    .thread_persistence()
-                    .queue_snapshot()
-                    .threads
-                    .into_iter()
-                    .find(|row| row.thread_id == "lost-ack")
-                    .context("missing live Thread persistence row")?;
-                if row.history_admitted_sequence == Some(1)
-                    && row.history_durable_sequence == Some(1)
-                {
-                    break Ok::<_, anyhow::Error>(());
-                }
-                persistence.changed().await?;
-            }
-        })
-        .await??;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn completion_confirmation_does_not_acknowledge_a_later_published_batch() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("completion-prefix")).await?;
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread("completion-prefix"), None).await?;
-        let chat = store.chat_session("completion-prefix").await?;
-        let lease = sink.0.channel.step_lock.lock().await;
-        let mut projection = live_projection(&sink).await?;
-        let mut batches = Vec::new();
-        for (sequence, input_id) in [(1, "first-completion"), (2, "later-completion")] {
-            let write = visible_input_ticket("completion-prefix", sequence, input_id)?;
-            let mut prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-                .await?;
-            projection.publish_prepared(&chat, &mut prepared).await?;
-            sink.admit("completion-prefix", write.clone())?;
-            assert!(sink.0.channel.prepare(prepared.clone()));
-            batches.push((write, prepared));
-        }
-        assert_eq!(chat.head_seq(), 2);
-        assert_eq!(chat.durable_seq(), 0);
-        persist_effect(
-            &sink.0,
-            1,
-            &batches[0].0,
-            &batches[0].1,
-            encoded_bytes(&batches[0].0.effect),
-        )
-        .await?;
-        assert_eq!(
-            chat.durable_seq(),
-            1,
-            "the Session head is not a save receipt"
-        );
-        let history = store.history("completion-prefix").await?;
-        assert!(
-            pl_core::chat::ChatHistory::item(&history, "later-completion")
-                .await?
-                .is_none()
-        );
-        let visible = chat
-            .page(
-                pl_core::chat::ChatPageRequest::latest(
-                    pl_core::chat::ChatQuery::new("conversation", None),
-                    pl_core::chat::ReadDemand::new(10, 1024 * 1024),
-                ),
-                &super::batch_tests::Budget,
-            )
-            .await?;
-        assert_eq!(
-            visible
-                .items
-                .iter()
-                .map(|item| item.header.item_id.as_str())
-                .collect::<Vec<_>>(),
-            ["first-completion", "later-completion"],
-            "a later published completion stays queryable while only the first is durable"
-        );
+        assert!(status.fault.is_none() && status.error.is_none());
+        assert!(channel.next_unprojected().is_none());
+        channel.process_bytes.store(0, Ordering::Release);
         drop(lease);
-        sink.flush("completion-prefix", 2).await?;
-        assert_eq!(chat.durable_seq(), 2);
-        Ok(())
-    }
-
-    /// A rejected commit rolls back the effect's history, its latest context and its checkpoint
-    /// together, so the writer never advances the history watermark to a revision whose checkpoint
-    /// the very same transaction failed to store — the atomicity the old split write could not give.
-    #[tokio::test]
-    async fn a_rejected_atomic_commit_never_advances_history_without_its_checkpoint() -> Result<()>
-    {
-        let (_temp, store, sink) = sink("atomic-failure").await?;
-        // Commit one effect first so the history database exists, then reject the second one's whole
-        // transaction from the watermark update that every atomic commit performs.
-        sink.admit("atomic-failure", ticket("atomic-failure", 1))?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("atomic-failure", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let path = store
-            .session_paths("project-test", "atomic-failure")?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_watermark BEFORE UPDATE OF applied_write_seq ON history_meta \
-             BEGIN SELECT RAISE(ABORT, 'controlled atomic rejection'); END",
-        )
-        .await?;
-        let mut status = sink.0.channel.subscribe();
-        let chat = store.chat_session("atomic-failure").await?;
-        sink.admit(
-            "atomic-failure",
-            visible_input_ticket("atomic-failure", 2, "pending-completion")?,
-        )?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        let failed = status.borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
-        // Nothing of the rejected revision is durable: the watermark stays on the previously
-        // committed effect and the effect is retained in order for retry.
-        assert_eq!(failed.committed_sequence, 1);
-        assert_eq!(failed.queued_records, 1);
-        assert_eq!(store.history("atomic-failure").await?.watermark().await?, 1);
-        assert_eq!(chat.head_seq(), 1);
-        assert_eq!(chat.durable_seq(), 0);
-        assert!(
-            pl_core::chat::ChatHistory::item(
-                &store.history("atomic-failure").await?,
-                "pending-completion",
-            )
-            .await?
-            .is_none(),
-            "rejected transaction must roll back timeline_records too"
-        );
-        let pending_budget = sink.0.channel.subscribe().borrow().queued_bytes;
-        assert!(
-            pending_budget > 0,
-            "pending completion stays in the reliable budget"
-        );
-        assert!(sink.flush("atomic-failure", 2).await.is_err());
-        db.execute_unprepared("DROP TRIGGER reject_watermark")
-            .await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("atomic-failure", failed.fault_generation),
-        )
-        .await??;
-        assert_eq!(store.history("atomic-failure").await?.watermark().await?, 2);
-        assert_eq!(chat.durable_seq(), 1);
-        assert!(
-            pl_core::chat::ChatHistory::item(
-                &store.history("atomic-failure").await?,
-                "pending-completion",
-            )
-            .await?
-            .is_some()
-        );
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
+        channel.stop_and_join().await?;
         Ok(())
     }
 
     #[tokio::test]
-    async fn missing_blob_blocks_checkpoint_until_the_same_attachment_is_durable() -> Result<()> {
-        use pl_core::context::ResourceReader as _;
-        use sha2::Digest as _;
-
-        let (temp, store, sink) = sink("blob-fence").await?;
-        let session = store.session_paths("project-test", "blob-fence")?;
-        let source = temp.path().join("attachment-draft");
-        let bytes = b"restored";
-        tokio::fs::write(&source, bytes).await?;
-        let draft = crate::studio::store::attachment::AttachmentDraftObject {
-            draft_id: "draft-1".to_owned(),
-            modality: crate::StudioAttachmentModality::File,
-            media_type: "text/plain".to_owned(),
-            filename: "attachment.txt".to_owned(),
-            storage_path: source,
-            byte_size: bytes.len() as u64,
-            content_sha256: hex::encode(sha2::Sha256::digest(bytes)),
-            width: None,
-            height: None,
-            initial_remote_url: None,
-        };
-        let attachment = store
-            .promote_attachment_drafts("blob-fence", &[draft])
-            .await?
-            .pop()
-            .context("promoted attachment is missing")?;
-        let reference = store.retain_attachment_resource(&attachment).await?;
-        let blob = session.root().join(&attachment.blob_relative_path);
-        assert_eq!(
-            blob,
-            session.resources_dir().join(&attachment.content_sha256),
-            "attachment and tool references share the same retained object"
-        );
-        tokio::fs::remove_file(&blob).await?;
-        let resources = crate::resource_store::FileResourceStore::new(session.resources_dir());
-        match resources
-            .read(
-                reference.clone(),
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await
-            .expect_err("removing the shared CAS object makes both references unavailable")
-        {
-            pl_core::context::ResourceReadError::Unavailable { source } => assert!(matches!(
-                source.downcast_ref::<crate::resource_store::ResourceStoreError>(),
-                Some(crate::resource_store::ResourceStoreError::Io { source, .. })
-                    if source.kind() == std::io::ErrorKind::NotFound
-            )),
-            other => {
-                anyhow::bail!("missing shared bytes produced the wrong resource failure: {other}")
-            }
-        }
-        store.record_attachments(vec![attachment.clone()]).await?;
-        let mut status = sink.0.channel.subscribe();
-        sink.admit(
-            "blob-fence",
-            ticket_referencing_attachment("blob-fence", &attachment)?,
-        )?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while status.borrow_and_update().fault.is_none() {
-                status.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        let failed = status.borrow().clone();
-        assert_eq!(failed.fault, Some(crate::HistoryFault::BlobFailed));
-        // The blob fence runs before the atomic commit, so the missing blob blocks both the effect's
-        // history and its checkpoint: the watermark stays untouched until the blob is durable.
-        assert_eq!(failed.committed_sequence, 0);
-        assert_eq!(failed.queued_records, 1);
-        assert!(sink.flush("blob-fence", 1).await.is_err());
-        tokio::fs::create_dir_all(blob.parent().expect("blob has a parent")).await?;
-        tokio::fs::write(&blob, bytes).await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("blob-fence", failed.fault_generation),
-        )
-        .await??;
-        assert_eq!(store.history("blob-fence").await?.watermark().await?, 1);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        assert_eq!(
-            resources
-                .read(reference, tokio_util::sync::CancellationToken::new())
-                .await?
-                .as_ref(),
-            bytes,
-            "restoring the same CAS object repairs tool reads as well as the attachment fence"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn closing_the_chat_and_sink_does_not_release_pending_history() -> Result<()> {
-        let (_temp, store, sink) = sink("closed-view").await?;
-        sink.admit("closed-view", ticket("closed-view", 1))?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("closed-view", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        let chat = store.chat_session("closed-view").await?;
-        let path = store
-            .session_paths("project-test", "closed-view")?
-            .root()
-            .join("history.sqlite");
-        let db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &path,
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared(
-            "CREATE TRIGGER reject_history BEFORE UPDATE OF applied_write_seq ON history_meta \
-             BEGIN SELECT RAISE(ABORT, 'controlled closed-view rejection'); END",
-        )
-        .await?;
-        let channel = store.thread_persistence().history_channel("closed-view");
-        let mut updates = channel.subscribe();
-        sink.admit("closed-view", ticket("closed-view", 2))?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while updates.borrow_and_update().fault.is_none() {
-                updates.changed().await?;
-            }
-            Ok::<_, tokio::sync::watch::error::RecvError>(())
-        })
-        .await??;
-        let generation = updates.borrow().fault_generation;
-        drop(chat);
-        drop(sink);
-        assert_eq!(channel.subscribe().borrow().queued_records, 1);
-        assert_eq!(store.history("closed-view").await?.watermark().await?, 1);
-        db.execute_unprepared("DROP TRIGGER reject_history").await?;
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            store
-                .thread_persistence()
-                .retry_history("closed-view", generation),
-        )
-        .await??;
-        assert_eq!(store.history("closed-view").await?.watermark().await?, 2);
-        assert_eq!(channel.subscribe().borrow().queued_records, 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stopped_statistics_consumer_never_blocks_history_or_checkpoint() -> Result<()> {
-        let (temp, store, sink) = sink("statistics-gap").await?;
-        let calls_before = store.calls().metrics();
-        let materials_before = store.calls().subscribe_materials().borrow().clone();
-        store.calls().stop_best_effort();
-        sink.admit("statistics-gap", ticket("statistics-gap", 1))?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("statistics-gap", 1),
-            || channel_facts(&sink),
-        )
-        .await??;
-        assert_eq!(store.history("statistics-gap").await?.watermark().await?, 1);
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        assert_eq!(store.calls().metrics(), calls_before);
-        assert_eq!(
-            *store.calls().subscribe_materials().borrow(),
-            materials_before
-        );
-        assert!(!store.thread_persistence().queue_snapshot().statistics_gap);
-
-        // A real committed absolute Summary still has a handoff obligation. The history owner
-        // keeps its bounded retries through shutdown, without a per-Thread calls observer.
-        let accounting = store
-            .history("statistics-gap")
-            .await?
-            .accounting()
-            .await?
-            .context("committed accounting")?;
-        submit_accounting(&sink.0, accounting);
-        assert!(lock_progress(&sink.0).pending_accounting.is_some());
-        tokio::time::timeout(Duration::from_secs(5), sink.0.channel.stop_and_join()).await??;
-        assert!(lock_progress(&sink.0).pending_accounting.is_none());
-        assert!(store.calls().statistics_gap());
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        store.thread_persistence().report_calls(store.calls());
-        assert!(store.thread_persistence().queue_snapshot().statistics_gap);
-        // Later material-free work cannot erase a real rejection.
-        store
-            .calls()
-            .record_effect(&ticket("statistics-gap", 2).effect);
-        assert!(store.calls().statistics_gap());
-        drop(sink);
-        store.close().await?;
-        let reopened = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let history = reopened.history("statistics-gap").await?;
-        assert_eq!(history.watermark().await?, 1);
-        assert_eq!(
-            history
-                .checkpoint()
-                .await?
-                .context("checkpoint")?
-                .history_fence,
-            1
-        );
-        reopened.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn crashed_statistics_consumer_does_not_block_history_and_restarts() -> Result<()> {
-        let (_temp, store, sink) = sink("statistics-crash").await?;
-        let calls = store.calls();
-        let summary = |revision| super::super::calls::SessionUsageProjection {
-            root_thread_id: "statistics-crash".into(),
-            thread_id: "statistics-crash".into(),
-            revision,
-            has_unpriced_usage: false,
-            purpose_costs: vec![],
-        };
-        calls.panic_on_next_mutation();
-        calls.replace_session_usage(summary(1))?;
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if calls
-                    .last_error()
-                    .is_some_and(|message| message.contains("terminated unexpectedly"))
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .context("call writer did not report the injected worker exit")?;
-        assert!(calls.statistics_gap());
-        let dropped_ticket = calls.admitted_ticket();
-        calls.replace_session_usage(summary(2))?;
-        let resumed_ticket = calls.admitted_ticket();
-        assert!(resumed_ticket > dropped_ticket);
-
-        sink.admit("statistics-crash", ticket("statistics-crash", 1))?;
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 1),
-            sink.flush("statistics-crash", 1),
-            || channel_facts(&sink),
-        )
-        .await
-        .context("history flush stalled after the call writer exit")??;
-        assert_eq!(
-            store.history("statistics-crash").await?.watermark().await?,
-            1
-        );
-        assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if calls.processed_ticket() >= resumed_ticket {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .context("call writer did not advance the resumed ticket")?;
-        assert!(calls.statistics_gap());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn recovery_rechecks_new_faults_and_stop_after_the_channel_clears() -> Result<()> {
-        for stopping in [false, true] {
-            let id = if stopping {
-                "recovery-stop"
-            } else {
-                "recovery-new-generation"
-            };
-            let (_temp, store, sink) = sink(id).await?;
-            let channel = &sink.0.channel;
-            // Recovery generations belong to real faults, not temporary capacity pressure.
-            assert!(sink.admit(id, ticket("wrong-owner", 1)).is_err());
-            let first = ticket(id, 1);
-            let failed = channel.subscribe().borrow().clone();
-            let generation = failed.fault_generation;
-            sink.admit(id, first)?;
-            let (entered, release) = store.thread_persistence().pause_retry_before_reports();
-            let coordinator = store.thread_persistence().clone();
-            let recovery =
-                tokio::spawn(async move { coordinator.retry_history(id, generation).await });
-            tokio::time::timeout(Duration::from_secs(5), entered).await??;
-            if stopping {
-                // Keep this owner's pre-commit report visible while its observer is
-                // being cancelled. The worker's final report must discharge it.
-                store.thread_persistence().report(
-                    id,
-                    sink.0.owner,
-                    ThreadPersistenceReport {
-                        pending: Some(PendingSequenceRange { first: 1, last: 1 }),
-                        pending_checkpoint: false,
-                        error: failed.error,
-                        metrics: ThreadPersistenceMetrics {
-                            fault_generation: generation,
-                            fault: failed.fault,
-                            state_dirty_revision: 1,
-                            history_admitted_sequence: 1,
-                            pending_operations: 1,
-                            ..Default::default()
-                        },
-                    },
-                    Some(store.calls()),
-                );
-                channel.stop_and_join().await?;
-            } else {
-                assert!(sink.admit(id, ticket("wrong-owner", 2)).is_err());
-            }
-            release
-                .send(())
-                .map_err(|_| anyhow::anyhow!("recovery check lost its owner"))?;
-            let error = tokio::time::timeout(Duration::from_secs(5), recovery)
-                .await??
-                .expect_err("a changed recovery boundary must not return success");
-            if stopping {
-                assert!(error.to_string().contains("stopping"));
-            } else {
-                assert!(error.to_string().contains("generation changed"));
-                let next = channel.subscribe().borrow().fault_generation;
-                assert!(next > generation);
-                sink.admit(id, ticket(id, 2))?;
-                tokio::time::timeout(
-                    Duration::from_secs(5),
-                    store.thread_persistence().retry_history(id, next),
-                )
-                .await??;
-                channel.stop_and_join().await?;
-            }
-            assert!(store.thread_persistence().snapshot().error.is_none());
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn empty_queue_retry_does_not_clear_a_ticket_contract_failure() -> Result<()> {
-        for durable in [0, 1] {
-            let (_temp, store, sink) = sink("ticket-contract").await?;
-            if durable != 0 {
-                sink.admit("ticket-contract", ticket("ticket-contract", durable))?;
-                sink.flush("ticket-contract", durable).await?;
-            }
-            assert!(
-                sink.admit("ticket-contract", ticket("another-thread", durable + 1))
-                    .is_err()
-            );
-            let failed = sink.0.channel.subscribe().borrow().clone();
-            assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
-            assert_eq!(failed.queued_records, 0);
-            sink.0.channel.retry(failed.fault_generation)?;
-            // Exercise the worker after the retry, with equal old watermarks but no
-            // successful write that could repair the rejected ticket's contract.
-            assert!(matches!(step(&sink.0).await?, Step::Idle));
-            let pressure = sink.pressure("ticket-contract");
-            assert!(pressure.error.is_some());
-            assert_eq!(
-                pressure.fault,
-                Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
-            );
-            assert_eq!(pressure.recovered_generation, None);
-            assert_eq!(
-                store.history("ticket-contract").await?.watermark().await?,
-                durable
-            );
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stale_fault_generation_cannot_resume_a_new_ticket_failure() -> Result<()> {
-        let (_temp, store, sink) = sink("fault-generation").await?;
-        for sequence in [1, 2] {
-            let write = ticket("fault-generation", sequence);
-            assert!(
-                sink.admit("fault-generation", ticket("wrong-owner", sequence))
-                    .is_err()
-            );
-            let failed = sink.0.channel.subscribe().borrow().clone();
-            assert_eq!(failed.fault_generation, sequence);
-            if sequence == 2 {
-                assert!(sink.0.channel.retry(1).is_err());
-                assert_eq!(sink.0.channel.subscribe().borrow().fault_generation, 2);
-            }
-            sink.admit("fault-generation", write)?;
-            tokio::time::timeout(
-                Duration::from_secs(5),
-                store
-                    .thread_persistence()
-                    .retry_history("fault-generation", sequence),
-            )
-            .await??;
-        }
-        assert_eq!(
-            store.history("fault-generation").await?.watermark().await?,
-            2
-        );
-        Ok(())
-    }
-
-    /// The continue entry the UI reads is exactly the Thread owner's readiness, with nothing else
-    /// able to light it.
-    ///
-    /// The writer reports watermarks and the typed fault generation, but no readiness of its own:
-    /// the owner can still owe a newer fault while a writer has long since written an older retry, so
-    /// the projection takes the owner's single verdict — byte for byte — instead of combining
-    /// anything a writer reports. `resume_required` stays a separate fact: readiness never releases
-    /// the latch by itself.
-    #[test]
-    fn can_resume_is_exactly_the_owners_readiness() {
-        use crate::studio::thread_projection::storage_state;
-
-        let mut owner = ThreadSnapshot::default();
-        owner.persistence.resume_required = true;
-        owner.persistence.fault_generation = 2;
-
-        // A writer that is already past this generation's fault — it reports the same generation with
-        // no error and fully admitted watermarks — still cannot offer a continue the owner refuses.
-        let writer = crate::ThreadPersistenceSnapshot {
-            fault_generation: 2,
-            history_admitted_sequence: Some(9),
-            history_durable_sequence: Some(9),
-            last_error: None,
-            ..crate::ThreadPersistenceSnapshot::default()
-        };
-        let storage = storage_state(&owner, &writer);
-        assert!(storage.resume_required);
-        assert!(
-            !storage.can_resume,
-            "only the owner's own generation-matched readiness may enable the continue"
-        );
-        assert_eq!(
-            storage.accepted_sequence,
-            Some(9),
-            "the writer's own watermarks still reach the UI as facts"
-        );
-
-        // The owner's verified readiness is the fact, whatever else the writer reports.
-        owner.persistence.resume_ready = true;
-        assert!(storage_state(&owner, &writer).can_resume);
-    }
-
-    /// One `(identity, content version)` pair is one canonical payload, even when the same fact is
-    /// projected a second time.
-    ///
-    /// The projection owner folds an admitted fact once, but the same effect can legitimately reach
-    /// the projection again — a commit the owner's snapshot already carried, a durable step retried
-    /// after a real writer failure, or a re-subscription. Every pass must deliver the *same bytes*
-    /// for a `(item_id, revision)` pair: a pass that restamped the projection clock would hand the
-    /// durable writer two different payloads under one version, which the store's own revision fence
-    /// rejects as a real save fault instead of the idempotent rewrite it is. This pins that a repeat
-    /// projection reuses the version, placement and timestamps of the payload it already delivered.
-    #[tokio::test]
-    async fn reprojecting_an_unchanged_effect_keeps_one_canonical_payload() -> Result<()> {
+    async fn fault_generation_rejects_a_retry_for_the_previous_failure() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("stable-payload")).await?;
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread("stable-payload"), None).await?;
-        let chat = store.chat_session("stable-payload").await?;
-        // The commit sequence is deliberately far above the item's own content version, so a sequence
-        // leaking into the version shows up as a value change instead of a coincidence.
-        let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
-        let mut projection = live_projection(&sink).await?;
-        let mut first = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut first).await?;
-        let mut second = first.clone();
-        projection.publish_prepared(&chat, &mut second).await?;
-        assert!(Arc::ptr_eq(&first, &second));
-        assert!(Arc::ptr_eq(&first.completions, &second.completions));
-        assert!(Arc::ptr_eq(
-            first.display.as_ref().context("original display")?,
-            second.display.as_ref().context("replayed display")?,
-        ));
-        assert_eq!(first.completions.len(), 1);
-        assert!(Arc::ptr_eq(&first.completions[0], &second.completions[0]));
-        Ok(())
-    }
-
-    /// Cold reads preserve the exact published original across the real writer acknowledgement.
-    #[tokio::test]
-    async fn the_durable_original_keeps_the_published_bytes_across_a_cold_read() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        register_test_thread(&store, &test_thread("revision-fence")).await?;
-        let sink =
-            ThreadStorageSink::new(store.clone(), test_thread("revision-fence"), None).await?;
-        let chat = store.chat_session("revision-fence").await?;
-        // The commit sequence is deliberately far above the item's first content version: the
-        // projection decides the content version, and the writer has to store that exact value.
-        let write = visible_input_ticket("revision-fence", 9, "revision-input")?;
-        // No test projection task here: the test hands the one fact over itself, exactly like the
-        // Thread's observation worker, so the publish/hand-off/confirm order is deterministic.
-        let mut projection = live_projection(&sink).await?;
-        // Advance through real, contiguous empty commits; a large write sequence cannot be
-        // invented independently of the checkpoint's history fence.
-        for sequence in 1..9 {
-            let seed = ticket("revision-fence", sequence);
-            let mut prepared = projection
-                .prepare_committed(&sink.0.thread, &seed.effect, &seed.checkpoint.state)
-                .await?;
-            projection.publish_prepared(&chat, &mut prepared).await?;
-            sink.admit("revision-fence", seed)?;
-            sink.0.channel.prepare(prepared);
-        }
-        let mut prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
-            .await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        // The completion records were published atomically before this handoff: the accepted input
-        // is complete at acceptance, so the frozen batch carries it and nothing republishes per
-        // item.
-        sink.admit("revision-fence", write)?;
-        sink.0.channel.prepare(prepared.clone());
-        await_durable(
-            Duration::from_secs(5),
-            &format!("commit {}", 9),
-            sink.flush("revision-fence", 9),
-            || channel_facts(&sink),
-        )
-        .await??;
-
-        assert_eq!(prepared.completions.len(), 1);
-        let published = &prepared.completions[0];
-        assert_eq!(published.header.item_id, "revision-input");
-        let path = store
-            .session_paths("project-test", "revision-fence")?
-            .root()
-            .join("history.sqlite");
-        let cold =
-            crate::studio::storage::history::HistoryStore::open(&path, "revision-fence").await?;
-        let durable = pl_core::chat::ChatHistory::item(&cold, "revision-input")
-            .await?
-            .context("cold original")?;
-        assert_eq!(&durable, published.as_ref());
-        Ok(())
-    }
-
-    /// Archive retry for an already complete capture, using the real content-addressed store.
-    #[derive(Debug)]
-    struct CaptureArchiveObligation {
-        archive: crate::resource_store::FileResourceStore,
-        capture_file: std::path::PathBuf,
-        call_id: String,
-        committed_len: u64,
-        pending: Vec<u8>,
-        retries: Arc<AtomicUsize>,
-    }
-
-    impl pl_core::thread::cold::OutputRetryObligation for CaptureArchiveObligation {
-        fn identity(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn retry(&self) -> pl_core::thread::cold::OutputRetryFuture<'_> {
-            Box::pin(async move {
-                self.retries.fetch_add(1, Ordering::SeqCst);
-                let reference = self
-                    .archive
-                    .retain_command_capture(&self.capture_file)
-                    .await
-                    .map_err(|error| pl_core::thread::cold::ColdStoreError {
-                        source: Box::new(error),
-                    })?;
-                Ok(pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(
-                    pl_core::thread::cold::OutputRepair {
-                        call_id: self.call_id.clone(),
-                        reference,
-                    },
-                ))
-            })
-        }
-        fn received_bytes(&self) -> u64 {
-            self.committed_len.saturating_add(self.pending.len() as u64)
-        }
-        fn location(&self) -> String {
-            self.capture_file.display().to_string()
-        }
-        fn kind(&self) -> pl_core::thread::cold::StorageFaultKind {
-            pl_core::thread::cold::StorageFaultKind::WriteFailed
-        }
-    }
-
-    /// A completed capture whose desktop archive failed, retaining the confirmed source.
-    #[derive(Debug)]
-    struct FailedArchiveTool {
-        definition: ToolDefinition,
-        archive: crate::resource_store::FileResourceStore,
-        capture_file: std::path::PathBuf,
-        committed_len: u64,
-        pending: Vec<u8>,
-        retries: Arc<AtomicUsize>,
-        created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>>,
-    }
-
-    impl Tool for FailedArchiveTool {
-        type Input = OpaquePayload;
-        type Context = CallContext;
-        type Output = ToolOutput;
-        type Error = ToolError;
-
-        fn definition(&self) -> &ToolDefinition {
-            &self.definition
-        }
-
-        async fn execute(
-            &self,
-            input: OpaquePayload,
-            context: CallContext,
-        ) -> Result<ToolOutput, ToolError> {
-            let obligation = Arc::new(CaptureArchiveObligation {
-                archive: self.archive.clone(),
-                capture_file: self.capture_file.clone(),
-                call_id: context.call_id.clone(),
-                committed_len: self.committed_len,
-                pending: self.pending.clone(),
-                retries: self.retries.clone(),
-            });
-            self.created.lock().unwrap().push(obligation.clone());
-            let source = pl_core::thread::cold::ColdStoreError {
-                source: Box::new(std::io::Error::other("capture archive failed")),
-            };
-            let fault = pl_core::thread::cold::OutputStorageFault::new(
-                pl_core::thread::cold::StorageFaultKind::WriteFailed,
-                Arc::new(source),
-            )
-            .with_obligation(obligation);
-            Err(ToolError::new(fault).with_output(ToolOutput::new(
-                input.clone(),
-                vec![ContextContent::Text {
-                    text: Arc::from("accepted so far"),
-                }],
-            )))
-        }
-    }
-
-    #[derive(Debug)]
-    struct CaptureModel;
-
-    impl ModelSession for CaptureModel {
-        async fn prepare(
-            &mut self,
-            request: ModelRequest,
-        ) -> Result<PreparedModelCall, ModelError> {
-            Ok(PreparedModelCall::new(async move {
-                Ok(ModelStepOutput {
-                    turn_action: Default::default(),
-                    attempt_id: request.attempt_id,
-                    base_context_revision: request.context.revision,
-                    content: vec![ContextContent::Text {
-                        text: Arc::from("calling capture"),
-                    }],
-                    tool_calls: vec![ModelToolCall {
-                        rejection: None,
-                        presentation_contract: None,
-                        call_id: "capture-1".to_owned(),
-                        tool_id: "capture".to_owned(),
-                        arguments: OpaquePayload::text("capture"),
-                    }],
-                    private_context: None,
-                    usage: Default::default(),
-                })
-            }))
-        }
-
-        async fn close(&mut self) -> Result<(), ModelError> {
-            Ok(())
-        }
-    }
-
-    /// The owner facts one stuck wait is diagnosed from, so a timeout names a stage instead of a bare
-    /// deadline and a real owner bug is not masked by a longer one.
-    fn stage_facts(snapshot: &ThreadSnapshot) -> String {
-        format!(
-            "fault={:?} generation={} phase={:?} obligations={} resume_required={} resume_ready={} \
-             commit={} durable={}",
-            snapshot.persistence.fault,
-            snapshot.persistence.fault_generation,
-            snapshot.persistence.execution_phase,
-            snapshot.persistence.output_obligations.len(),
-            snapshot.persistence.resume_required,
-            snapshot.persistence.resume_ready,
-            snapshot.commit_sequence,
-            snapshot.persistence.durable_sequence,
-        )
-    }
-
-    /// A best-effort snapshot of the reliable channel taken when one durable barrier expires.
-    ///
-    /// It reports the watermarks, the queue, the published fault and the oldest effect no projection
-    /// has taken over yet, so an expired budget is accompanied by the facts the wait was measured
-    /// against instead of only `deadline has elapsed`. The values are read from live state and may
-    /// already reflect concurrent progress: they are not an atomic snapshot of one instant, and
-    /// `unprojected` names only the earliest effect that is unprepared at the moment of the read.
-    /// Neither its presence nor its absence decides on its own whether a stall came from scheduling,
-    /// IO, a lock or a logic defect — those fields are evidence for a later judgement, not a verdict.
-    fn channel_facts(sink: &ThreadStorageSink) -> String {
+        let id = "fault-generation";
+        register_test_thread(&store, &test_thread(id)).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
-        let facts = {
-            let status = channel.subscribe();
-            let status = status.borrow();
-            format!(
-                "durable={} admitted={} queued={} ({} bytes) fault={:?} generation={} error={:?}",
-                status.committed_sequence,
-                status.admitted_sequence,
-                status.queued_records,
-                status.queued_bytes,
-                status.fault,
-                status.fault_generation,
-                status.error,
-            )
-        };
-        let unprojected = channel
-            .next_unprojected()
-            .map(|write| write.effect.sequence);
-        format!("{facts} unprojected={unprojected:?}")
-    }
-
-    /// Awaits the supplied future under the caller's timeout budget.
-    ///
-    /// On expiry, appends the caller-provided diagnostic text without inferring a cause.
-    async fn await_durable<T>(
-        budget: Duration,
-        stage: &str,
-        future: impl std::future::Future<Output = T>,
-        describe: impl FnOnce() -> String,
-    ) -> Result<T> {
-        match tokio::time::timeout(budget, future).await {
-            Ok(value) => Ok(value),
-            Err(_) => anyhow::bail!("`{stage}` did not land: {}", describe()),
-        }
-    }
-
-    /// Waits until the authoritative snapshot satisfies `predicate`, tagging `stage` on timeout.
-    ///
-    /// The subscription yields the current snapshot first, so a boundary that already landed is observed
-    /// without waiting for an unrelated new frame — the exact shape of the earlier hang — and the timeout
-    /// reports the stage and the last owner facts so the production cause is located, not hidden.
-    async fn await_stage(
-        thread: &ThreadHandle,
-        stage: &str,
-        predicate: impl Fn(&ThreadSnapshot) -> bool,
-    ) -> Result<ThreadSnapshot> {
-        let mut snapshots = thread.subscribe();
-        let reached = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let snapshot = snapshots.next().await.expect("thread stays observable");
-                if predicate(&snapshot) {
-                    return snapshot;
-                }
-            }
-        })
-        .await;
-        reached.map_err(|_| {
-            anyhow::anyhow!(
-                "stage `{stage}` was not reached: {}",
-                stage_facts(&thread.snapshot())
-            )
-        })
-    }
-
-    /// The reference a repaired capture stored reaches the durable tool result, not just memory.
-    ///
-    /// A retry archives the same confirmed bytes and attaches its durable reference exactly once.
-    #[tokio::test]
-    async fn a_confirmed_capture_archive_retry_reaches_the_durable_tool_result() -> Result<()> {
-        use pl_core::context::ResourceReader;
-        use pl_core::thread::cold::OutputRetryObligation as _;
-
-        let (temp, store, sink) = sink("archive-repair").await?;
-        let resources_root = temp.path().join("resources");
-        std::fs::create_dir_all(&resources_root)?;
-        let archive = crate::resource_store::FileResourceStore::new(resources_root);
-
-        let capture_file = temp.path().join("capture.fragment");
-        let committed = b"accepted line one\n".to_vec();
-        let pending = b"accepted line two".to_vec();
-        let mut expected = committed.clone();
-        expected.extend_from_slice(&pending);
-        std::fs::write(&capture_file, &expected)?;
-
-        let retries = Arc::new(AtomicUsize::new(0));
-        let created: Arc<Mutex<Vec<Arc<CaptureArchiveObligation>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let thread =
-            ThreadHandle::start("archive-repair".into(), DynModelSession::new(CaptureModel))?;
-        thread
-            .register_tools(vec![
-                Registration::prepare("capture".into(), OpaquePayload::text("Tool capture"))?
-                    .attach(ToolHandle::new(FailedArchiveTool {
-                        definition: ToolDefinition::text("capture", "Tool capture")?,
-                        archive: archive.clone(),
-                        capture_file: capture_file.clone(),
-                        committed_len: committed.len() as u64,
-                        pending: pending.clone(),
-                        retries: retries.clone(),
-                        created: created.clone(),
-                    })),
-            ])
-            .await?;
-        thread
-            .attach_storage(ColdStoreHandle::new(sink.clone()))
-            .await?;
-
-        let runner = tokio::spawn({
-            let thread = thread.clone();
-            async move {
-                thread
-                    .run_turn(TurnInput {
-                        turn_id: "capture-turn".into(),
-                        attempt_prefix: "capture".into(),
-                        content: vec![ContextContent::Text {
-                            text: Arc::from("run capture"),
-                        }],
-                        max_model_steps: ModelStepLimit::Limited(
-                            std::num::NonZeroU32::new(1).expect("positive model step limit"),
-                        ),
-                        cancellation: CancellationToken::new(),
-                    })
-                    .await
-            }
-        });
-        let faulted = await_stage(&thread, "typed storage fault latch", |snapshot| {
-            snapshot.persistence.resume_required
-        })
-        .await?;
+        record_error(
+            &sink.0,
+            crate::HistoryFault::WriteFailed,
+            FaultTarget::NextWrite,
+            "first failure".into(),
+            &["redacted_error"],
+        );
+        let first = channel.subscribe().borrow().fault_generation;
+        record_error(
+            &sink.0,
+            crate::HistoryFault::WriteFailed,
+            FaultTarget::NextWrite,
+            "newer failure".into(),
+            &["redacted_error"],
+        );
+        let second = channel.subscribe().borrow().fault_generation;
+        assert!(second > first);
+        assert!(channel.retry(first).is_err());
         assert_eq!(
-            faulted.persistence.fault,
-            Some(pl_core::thread::cold::StorageFaultKind::WriteFailed)
+            channel.subscribe().borrow().fault_generation,
+            second,
+            "a stale acknowledgement cannot resume the newer failure"
         );
-        let generation = faulted.persistence.fault_generation;
-        assert_eq!(
-            faulted.persistence.output_obligations.len(),
-            1,
-            "the failed capture owes exactly one archive obligation"
-        );
-        assert!(
-            !faulted.persistence.resume_ready,
-            "a failed archive must not offer a continue before its bytes are stored"
-        );
-
-        // The requirement is that the owed obligation blocks continuation, not that the Turn reaches
-        // one particular phase: with a one-step limit the Turn may simply end after the fault, and no
-        // later phase frame is guaranteed to be published. Stopping the driver and refusing the
-        // explicit continue while the obligation is still owed proves the real boundary.
-        drop(runner);
-        assert!(
-            !thread.snapshot().persistence.output_obligations.is_empty(),
-            "the failed capture is still owed before the retry: {}",
-            stage_facts(&thread.snapshot())
-        );
-        assert!(
-            thread.resume_storage(generation).await.is_err(),
-            "the pause stays closed until the archive obligation is re-stored"
-        );
-
-        thread.retry_output_storage().await?;
-        thread.flush().await?;
-        assert_eq!(
-            retries.load(Ordering::SeqCst),
-            1,
-            "the real repair and archive run exactly once for the failed capture"
-        );
-
-        let history = store.history("archive-repair").await?;
-        let fact = history
-            .tool_task("task:capture-1")
-            .await?
-            .context("the committed tool task is durable")?;
-        let delivery = fact.delivery.context("the committed delivery is durable")?;
-        let reference = delivery
-            .delivered_context
-            .iter()
-            .find_map(|content| match content {
-                ContextContent::Resource { reference } => Some(reference.clone()),
-                _ => None,
-            })
-            .context("the repaired reference is recorded on the committed delivery")?;
-        assert!(
-            reference.id().starts_with("pl.studio.resource:"),
-            "the delivery records the real content-addressed archive reference"
-        );
-        let stored_bytes =
-            ResourceReader::read(&archive, reference.clone(), CancellationToken::new()).await?;
-        assert_eq!(
-            stored_bytes.as_ref(),
-            expected.as_slice(),
-            "the archive stores the accepted bytes verbatim, once, without the partial write"
-        );
-        let output = &delivery.delivered_context;
-        let referenced = serde_json::to_value(&reference)?;
-        assert_eq!(
-            output.iter().filter(|content|matches!(content,ContextContent::Resource { reference:actual } if serde_json::to_value(actual).ok().as_ref()==Some(&referenced))).count(),
-            1,
-            "the durable item carries the repaired reference exactly once"
-        );
-
-        // Off-window stage: the bounded live window is not a save authority. A window that never saw
-        // the commit — no GUI open, a slow reader, or a rolled-over window — must still project the
-        // repair from the already-committed body, so the canonical item and its content version come
-        // from the single projection owner and the durable row is a pure confirmation. A second,
-        // already-committed tool identity with no reference yet is written through the writer's own
-        // durable commit path, then repaired by a fresh window that has to read it back.
-        // The durable identity the single projection owner derives from the call id, kept identical to
-        // `order::tool_id` so the owner's own history lookup finds exactly this committed row.
-        // This is a separate cold fixture, not an out-of-band mutation of the live writer's
-        // database: its artificial sequence must not invalidate the live recovery checkpoint.
-        let history = crate::studio::storage::history::HistoryStore::open(
-            &temp.path().join("off-window.sqlite"),
-            "archive-repair",
-        )
-        .await?;
-        history.prepare_model_access().await?;
-        let fixture_db = Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &temp.path().join("off-window.sqlite"),
-                crate::studio::paths::SqliteFileMode::ReadOnly,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        let database_id: String = fixture_db
-            .query_one_raw(sea_orm::Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "SELECT database_id FROM history_meta WHERE id=1",
-            ))
-            .await?
-            .context("off-window history identity")?
-            .try_get("", "database_id")?;
-        let off_write = ticket("archive-repair", 1_000_000);
-        let mut current_owner = crate::studio::thread_projection::LiveProjection::new();
-        let current_channel = HistoryChannel::new(Arc::new(AtomicU64::new(0)));
-        current_owner.bind_execution_history(current_channel.order_index(), history.clone())?;
-        let frozen_current = current_owner
-            .prepare_committed(
-                &test_thread("archive-repair"),
-                &off_write.effect,
-                &off_write.checkpoint.state,
-            )
-            .await?;
-        let off_window_id = format!("tool:{}:capture-2", "capture-2".len());
-        let off_window_item = crate::ExecutionItem::new(
-            off_window_id.clone(),
-            "archive-repair".to_owned(),
-            "capture-turn".to_owned(),
-            41,
-            1,
-            1,
-            1,
-            crate::ExecutionShape::Tool(crate::ThreadToolItem::new(
-                crate::ThreadToolInvocation::new(
-                    "capture-2".to_owned(),
-                    "capture".to_owned(),
-                    "{}".to_owned(),
-                ),
-                crate::ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
-                    1,
-                    crate::ThreadToolOutput::new(
-                        "accepted so far".to_owned(),
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                    ),
-                )),
-            )),
-        );
-        let cold_chat = pl_core::chat::Session::new(
-            history.clone(),
-            pl_core::chat::TimelineEpoch::new("off-window-repair")?,
-        );
-        let original_completion = cold_chat
-            .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
-                &off_window_item,
-                1_000_000,
-                &database_id,
-            )?])
-            .await?;
-        history
-            .commit_effect(
-                1_000_000,
-                EffectCommit {
-                    turns: &[],
-                    execution_order: off_window_item.ordinal,
-                    completions: &original_completion,
-                    current: &frozen_current.current,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[pl_core::thread::task::TaskRecord {
-                        id: "task:capture-2".into(),
-                        parent_call_id: None,
-                        invocation: Some(ModelToolCall {
-                            call_id: "capture-2".into(),
-                            tool_id: "capture".into(),
-                            arguments: OpaquePayload::text("{}"),
-                            presentation_contract: None,
-                            rejection: None,
-                        }),
-                        call_id: "capture-2".into(),
-                        tool_id: "capture".into(),
-                        turn_id: "capture-turn".into(),
-                        revision: 1,
-                        status: TaskStatus::Succeeded,
-                        cancel_requested: false,
-                        acknowledgement: None,
-                        started_sequence: Some(999_999),
-                    }],
-                    deliveries: &[pl_core::thread::ToolDelivery {
-                        target: pl_core::thread::ToolDeliveryTarget::CallResult,
-                        call_id: "capture-2".into(),
-                        tool_id: "capture".into(),
-                        output: pl_core::tool::ToolOutput::new(
-                            OpaquePayload::text("accepted so far"),
-                            vec![],
-                        ),
-                        delivered_context: vec![],
-                        outcome: pl_core::thread::ToolOutcome::Succeeded,
-                    }],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-            )
-            .await?;
-        cold_chat.confirm_durable(original_completion.last().unwrap().header.append_seq)?;
-        let repair_only = ThreadEffectBatch {
-            thread_id: "archive-repair".to_owned(),
-            sequence: 1_000_001,
-            committed_at: 1,
-            delivery_repairs: Arc::from([pl_core::thread::cold::OutputRepair {
-                call_id: "capture-2".to_owned(),
-                reference: reference.clone(),
-            }]),
-            ..Default::default()
-        };
-        let off_window_channel = HistoryChannel::new(Arc::new(AtomicU64::new(0)));
-        off_window_channel.order_index.seed(
-            history.latest_execution_ordinal().await?,
-            history.watermark().await?,
-        );
-        let mut off_window = crate::studio::thread_projection::LiveProjection::new();
-        off_window.bind_execution_history(off_window_channel.order_index(), history.clone())?;
-        crate::studio::thread_projection::seed_repaired_targets(
-            &mut off_window,
-            &history,
-            &repair_only,
-        )
-        .await?;
-        assert!(
-            off_window.holds_terminal_tool(&off_window_id),
-            "the off-window repair reads the committed body back before projecting it"
-        );
-        let chat = cold_chat;
-        let mut packaged = off_window
-            .prepare_committed(
-                &test_thread("archive-repair"),
-                &repair_only,
-                &ThreadSnapshot::default(),
-            )
-            .await?;
-        off_window.publish_prepared(&chat, &mut packaged).await?;
-        assert!(
-            packaged.completions.is_empty(),
-            "a repaired execution result cannot reseal its changed payload into completion history"
-        );
-        assert_eq!(
-            pl_core::chat::ChatHistory::item(&history, &off_window_id).await?,
-            Some((*original_completion[0]).clone())
-        );
-        assert!(
-            packaged
-                .current
-                .lifecycle
-                .iter()
-                .all(|fact| fact.identity != off_window_id
-                    || fact.source_order == Some(off_window_item.ordinal))
-        );
-        let repackaged = off_window_channel
-            .order_index()
-            .pending_placement(&off_window_id, "archive-repair")
-            .context("original repaired placement")?;
-        assert_eq!(repackaged.ordinal, off_window_item.ordinal);
-        history
-            .commit_effect(
-                repair_only.sequence,
-                EffectCommit {
-                    turns: &packaged.turns,
-                    execution_order: packaged.execution_order,
-                    completions: &packaged.completions,
-                    current: &packaged.current,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &repair_only.delivery_repairs,
-                    attempt: None,
-                },
-            )
-            .await?;
-        let recovered = history
-            .execution_item(&off_window_id)
-            .await?
-            .context("saved tool original")?;
-        let repackaged_output = match recovered.state() {
-            crate::ExecutionShape::Tool(tool) => tool.terminal_output(),
-            _ => None,
-        }
-        .context("the off-window supplement keeps the terminal tool result")?;
-        assert_eq!(
-            repackaged_output
-                .output_artifacts()
-                .iter()
-                .filter(|artifact| *artifact == &referenced)
-                .count(),
-            1,
-            "the off-window projection appends the reference exactly once"
-        );
-
-        // The caller can only continue once the obligation and its repair really landed.
-        thread.resume_storage(generation).await?;
-        assert!(!thread.snapshot().persistence.resume_required);
-
-        // A repeated retry reproduces the same bytes and the same reference instead of appending twice.
-        let obligation = created
-            .lock()
-            .unwrap()
-            .first()
-            .cloned()
-            .expect("the tool created its obligation");
-        let again = obligation.retry().await?;
-        let pl_core::thread::cold::OutputRetryOutcome::StoredWithRepair(repaired) = again else {
-            anyhow::bail!("the repeated retry must name the same repaired reference");
-        };
-        assert_eq!(repaired.reference, reference);
-        assert_eq!(
-            std::fs::read(&capture_file)?,
-            expected,
-            "repeating archive retention preserves the confirmed source bytes"
-        );
-        assert_eq!(retries.load(Ordering::SeqCst), 2);
-        thread.close().await?;
+        channel.stop_and_join_for_deletion().await?;
         Ok(())
     }
 }

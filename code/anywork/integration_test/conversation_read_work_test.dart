@@ -7,6 +7,7 @@ import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
@@ -84,11 +85,24 @@ void main() {
     }
   });
 
-  for (final fixture in cases) {
+  for (var caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+    final fixture = cases[caseIndex];
     final name = fixture['name'] as String;
     final threadId = fixture['threadId'] as String;
     final total = fixture['mainItems'] as int;
     final switchThreadId = fixture['switchThreadId'] as String?;
+    final switchCaseIndex = switchThreadId == null
+        ? null
+        : cases.indexWhere(
+            (candidate) => candidate['threadId'] == switchThreadId,
+          );
+    if (switchThreadId != null &&
+        (switchCaseIndex == null || switchCaseIndex < 0)) {
+      throw StateError('Switch Thread is missing from prepared read cases');
+    }
+    // The closed fixture writes 24 turns per Thread; its final provider answer
+    // is therefore the deterministic visible text for thread `<caseIndex>`.
+    final expectedSeedAnswer = 'read-answer-$caseIndex-23';
     testWidgets('$name: bounded cold read, actual layout and independent page', (
       tester,
     ) async {
@@ -117,14 +131,16 @@ void main() {
             ),
           );
           TimelineDisplayLease? lease() => graph.timeline.lease(threadId);
-          await _until(
+          final seedSingle = await _showVisibleSeedSingle(
             tester,
-            () => lease()?.firstContentLayout != null,
-            'same-generation actual content layout',
+            () => lease(),
+            expectedSeedAnswer,
+            '$name deterministic seed Single',
           );
           final display = lease()!;
           final observed = TimelineObservation(tester, () => display);
           final first = display.firstContentLayout!;
+          expect(first.itemId, isNotEmpty);
           expect(display.appliedSets, 1);
           expect(display.loadedCount, greaterThan(0));
           expect(display.loadedCount, lessThan(total));
@@ -171,28 +187,40 @@ void main() {
             'afterPageControllerMessages': display.loadedCount,
             'selectionId': first.selectionId,
             'firstContentLayoutMicros': first.elapsedMicros,
+            'seedSingleId': seedSingle.id,
+            'seedExpectedAnswer': expectedSeedAnswer,
           });
           if (switchThreadId != null) {
             developer.Timeline.instantSync('conversation.switch.start');
             await graph.client.directoryCommands.selectThread(switchThreadId);
             await _until(
               tester,
-              () =>
-                  display.isReleased &&
-                  graph.timeline.lease(switchThreadId)?.firstContentLayout !=
-                      null,
-              'B content and A resource release',
+              () => display.isReleased,
+              'A resource release before B read',
+            );
+            await _showVisibleSeedSingle(
+              tester,
+              () => graph.timeline.lease(switchThreadId),
+              'read-answer-${switchCaseIndex!}-23',
+              '$name switch Thread deterministic seed Single',
             );
             final intermediate = graph.timeline.lease(switchThreadId)!;
+            expect(intermediate.firstContentLayout, isNotNull);
             await graph.client.directoryCommands.selectThread(threadId);
             await _until(
               tester,
-              () =>
-                  intermediate.isReleased &&
-                  lease()?.firstContentLayout != null,
-              'new A content and B resource release',
+              () => intermediate.isReleased,
+              'B resource release before returning to A',
+            );
+            final reopenedSeed = await _showVisibleSeedSingle(
+              tester,
+              () => lease(),
+              expectedSeedAnswer,
+              '$name reopened A deterministic seed Single',
             );
             final reopened = lease()!;
+            expect(reopened.firstContentLayout, isNotNull);
+            expect(reopenedSeed.id, seedSingle.id);
             expect(reopened.generation, greaterThan(display.generation));
             expect(reopened.appliedSets, 1);
             expect(reopened.controller.messages.map((item) => item.id), ids);
@@ -311,4 +339,53 @@ Future<void> _until(
     await tester.pump(const Duration(milliseconds: 16));
     expect(tester.takeException(), isNull);
   }
+}
+
+Future<TimelineDisplayUnit> _showVisibleSeedSingle(
+  WidgetTester tester,
+  TimelineDisplayLease? Function() borrowLease,
+  String expectedText,
+  String description,
+) async {
+  await _until(tester, () {
+    final display = borrowLease();
+    return display != null &&
+        display.appliedSets > 0 &&
+        display.loadedCount > 0;
+  }, '$description initial History set');
+  final observed = TimelineObservation(tester, () => borrowLease()!);
+  late TimelineDisplayUnit seed;
+  await _until(tester, () {
+    final candidates = observed.singleBlocks
+        .where(
+          (unit) =>
+              unit.atom?.kind == ChatAtomKind.text &&
+              unit.atom?.source is ForegroundTurnChatSource,
+        )
+        .toList();
+    if (candidates.isEmpty) return false;
+    seed = candidates.last;
+    return true;
+  }, '$description model text row');
+
+  final row = observed.itemRow(seed.id);
+  await observed.until(
+    () => row.evaluate().isNotEmpty,
+    '$description row built',
+  );
+  await observed.reveal(row, seed.id);
+  final seedText = find.descendant(
+    of: row,
+    matching: find.textContaining(expectedText, findRichText: true),
+  );
+  await observed.until(
+    () => seedText.hitTestable().evaluate().isNotEmpty,
+    '$description expected text visible',
+  );
+  await _until(
+    tester,
+    () => borrowLease()?.firstContentLayout != null,
+    '$description same-generation content layout',
+  );
+  return seed;
 }

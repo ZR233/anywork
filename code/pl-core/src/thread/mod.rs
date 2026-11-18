@@ -13,6 +13,7 @@ mod continuation;
 pub mod current;
 pub mod extensions;
 mod facts;
+pub mod history_sink;
 pub mod inbox;
 pub mod input;
 pub mod interactions;

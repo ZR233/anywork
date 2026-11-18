@@ -98,6 +98,51 @@ pub(super) async fn event(db: &impl ConnectionTrait, id: &str) -> Result<Option<
     .map(decode)
     .transpose()
 }
+
+pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT COALESCE(MAX(seq),0) AS seq FROM history_events",
+            vec![],
+        ))
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("history head query returned no row".into()))?;
+    u64::try_from(row.try_get::<i64>("", "seq")?)
+        .map_err(|_| HistoryError::Integrity("negative history head".into()))
+}
+
+pub(super) async fn original_by_entity(
+    db: &impl ConnectionTrait,
+    entity: &str,
+    through: u64,
+) -> Result<Option<Record>> {
+    db.query_one_raw(statement(
+        &format!(
+            "SELECT {COLUMNS} FROM history_events \
+             WHERE entity_id=? AND query_class IS NOT NULL AND seq<=? ORDER BY seq DESC LIMIT 1"
+        ),
+        vec![entity.into(), number(through)?.into()],
+    ))
+    .await?
+    .map(decode)
+    .transpose()
+}
+
+pub(super) async fn latest_original(
+    db: &impl ConnectionTrait,
+    through: u64,
+) -> Result<Option<Record>> {
+    db.query_one_raw(statement(
+        &format!(
+            "SELECT {COLUMNS} FROM history_events \
+             WHERE query_class IS NOT NULL AND seq<=? ORDER BY seq DESC LIMIT 1"
+        ),
+        vec![number(through)?.into()],
+    ))
+    .await?
+    .map(decode)
+    .transpose()
+}
 pub(super) async fn head(db: &impl ConnectionTrait, row: &str, cut: u64) -> Result<Option<Record>> {
     db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![row.into(), number(cut)?.into()])).await?.map(decode).transpose()
 }
@@ -192,12 +237,38 @@ pub(super) async fn candidates(
         .collect()
 }
 
+pub(super) async fn candidates_in_order(
+    db: &impl ConnectionTrait,
+    query: &Query,
+    cut: u64,
+    pivot: Option<u64>,
+    limit: usize,
+    ascending: bool,
+) -> Result<Vec<Record>> {
+    let (sql, values) = candidate_sql_order(query, cut, pivot, limit, COLUMNS, ascending)?;
+    db.query_all_raw(statement(&sql, values))
+        .await?
+        .into_iter()
+        .map(decode)
+        .collect()
+}
+
 fn candidate_sql(
     query: &Query,
     cut: u64,
     before: Option<u64>,
     limit: usize,
     columns: &str,
+) -> Result<(String, Vec<Value>)> {
+    candidate_sql_order(query, cut, before, limit, columns, false)
+}
+fn candidate_sql_order(
+    query: &Query,
+    cut: u64,
+    before: Option<u64>,
+    limit: usize,
+    columns: &str,
+    ascending: bool,
 ) -> Result<(String, Vec<Value>)> {
     let (condition, mut values) = selection(query)?;
     // These are fixed protocol queries over named partial indexes. SQLite otherwise may prefer
@@ -223,10 +294,18 @@ fn candidate_sql(
     let mut sql = format!("SELECT {columns} FROM {table} WHERE {condition} AND seq<=?");
     values.push(number(cut)?.into());
     if let Some(before) = before {
-        sql.push_str(" AND seq<?");
+        sql.push_str(if ascending {
+            " AND seq>?"
+        } else {
+            " AND seq<?"
+        });
         values.push(number(before)?.into());
     }
-    sql.push_str(" ORDER BY seq DESC LIMIT ?");
+    sql.push_str(if ascending {
+        " ORDER BY seq ASC LIMIT ?"
+    } else {
+        " ORDER BY seq DESC LIMIT ?"
+    });
     values.push((limit as i64).into());
     Ok((sql, values))
 }

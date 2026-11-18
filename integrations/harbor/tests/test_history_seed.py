@@ -30,8 +30,52 @@ def source_home(tmp_path, archive):
     )
     with sqlite3.connect(session / "history.sqlite") as db:
         db.executescript(
-            "CREATE TABLE history_meta(id,schema_version); INSERT INTO history_meta VALUES(1,24);"
+            "CREATE TABLE history_store_meta(singleton,schema_version,database_id,thread_id); "
+            "INSERT INTO history_store_meta VALUES(1,25,'db-thread','thread');"
         )
+    state = {
+        "lifecycle": {"kind": "closed"},
+        "execution": None,
+        "continuation": None,
+        "inputs": [],
+        "inputOrdinal": 0,
+        "terminalInputs": [],
+        "context": {"revision": 0, "records": []},
+        "privateContext": None,
+        "tasks": {},
+        "taskStartOrdinal": 0,
+        "toolPreviews": {},
+        "deliveries": [],
+        "discoveredTools": [],
+        "runtimeFacts": [],
+        "extensions": {},
+        "extensionSequence": 0,
+        "inbox": [],
+        "inboxSequence": 0,
+        "consumedMessages": 0,
+        "wakeMessagesThrough": 0,
+        "consumedMessageIdentities": [],
+        "interactions": {},
+        "permissions": {},
+        "lastAttemptUsage": None,
+        "lastAttemptUsageOrigin": None,
+        "usageSummary": json.loads((archive / "result.json").read_text())["usage"]["byThread"][0][
+            "summary"
+        ],
+    }
+    (session / "current.json").write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "threadId": "thread",
+                "savedRuntimeEpoch": "d9891310-2ef9-4dbf-a5ad-0c0042eb14a9",
+                "snapshotRevision": 1,
+                "savedAt": 1,
+                "state": state,
+                "modelCall": None,
+            }
+        )
+    )
     config = Path(__file__).resolve().parents[1] / "profiles/fixture.toml"
     shutil.copy2(config, home / "config.toml")
     with sqlite3.connect(data / "studio.sqlite") as db:
@@ -143,6 +187,31 @@ def test_wal_snapshot_keeps_committed_samples_without_modifying_source(
         assert not list((output / "data").rglob("*-wal"))
         validate_seed(output, config=home / "config.toml", expected_version="1.0.0-test")
         assert tree_hashes(output / "data") == seed["files"]
+
+
+@pytest.mark.parametrize("fault", ["legacy_history", "missing_current", "mismatched_current"])
+def test_seed_refuses_old_or_unqualified_session_without_changing_source(
+    source_home, archive, tmp_path, fault
+):
+    home, development = source_home
+    session = next((home / "data/workspaces").glob("*/sessions/*"))
+    current = session / "current.json"
+    if fault == "legacy_history":
+        with sqlite3.connect(session / "history.sqlite") as db:
+            db.executescript(
+                "DROP TABLE history_store_meta; CREATE TABLE history_meta(id,schema_version); "
+                "INSERT INTO history_meta VALUES(1,24);"
+            )
+    elif fault == "missing_current":
+        current.unlink()
+    else:
+        value = json.loads(current.read_text())
+        value["threadId"] = "other-thread"
+        current.write_text(json.dumps(value))
+    before = tree_hashes(home / "data")
+    with pytest.raises((ValueError, FileNotFoundError, sqlite3.OperationalError)):
+        freeze(home, archive, development, tmp_path / "refused-seed")
+    assert tree_hashes(home / "data") == before
 
 
 def test_seed_output_cannot_recursively_copy_its_own_source(source_home, archive):

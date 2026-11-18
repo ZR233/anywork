@@ -67,8 +67,6 @@ impl<'a> AdmittedActivity<'a> {
                 let Some(part) = progress.progress.parts().get(location.index) else {
                     continue;
                 };
-                #[cfg(test)]
-                part_cost::activity();
                 // A whole-snapshot replacement can reuse a position, length and content version.
                 // A location is only a hint until the typed identity agrees in this generation.
                 let Some((current_id, _, _)) = super::live::observation_preview(
@@ -107,10 +105,6 @@ fn activity_parts<'a>(
                 .into_iter()
                 .flatten(),
         )
-        .inspect(|_| {
-            #[cfg(test)]
-            part_cost::activity();
-        })
 }
 
 /// 当前执行活动的权威小摘要；`None` 表示该 Thread 当前没有活动。
@@ -172,6 +166,7 @@ fn project_activity_using(
     };
     let step = associated.map_or("preparing", |attempt| attempt.attempt_id.as_str());
     let body = ThreadActivity {
+        deferred: Vec::new(),
         thread_id: thread_id.to_owned(),
         identity: ThreadActivity::identity(origin.source_id, step, kind),
         revision: 0,
@@ -1338,31 +1333,6 @@ fn activity_bytes(activity: &ThreadActivity) -> u64 {
             .saturating_add(tool.name.len() as u64);
     }
     bytes
-}
-
-#[cfg(test)]
-pub(super) mod part_cost {
-    use std::cell::Cell;
-
-    thread_local! {
-        static VISITS: Cell<Option<(usize, usize)>> = const { Cell::new(None) };
-    }
-
-    pub fn begin() {
-        VISITS.set(Some((0, 0)));
-    }
-
-    pub fn model() {
-        VISITS.update(|value| value.map(|(model, activity)| (model + 1, activity)));
-    }
-
-    pub fn activity() {
-        VISITS.update(|value| value.map(|(model, activity)| (model, activity + 1)));
-    }
-
-    pub fn finish() -> (usize, usize) {
-        VISITS.take().expect("part observation was started")
-    }
 }
 
 #[cfg(test)]

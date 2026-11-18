@@ -7,7 +7,10 @@ use crate::{
     UserQuestion,
 };
 use crate::{ExecutionItem, ExecutionShape};
+mod history;
 use anyhow::{Result, ensure};
+pub(in crate::studio) use history::{freeze_history_observation, freeze_history_original};
+pub(crate) use history::{frozen_execution_item, read_execution_item};
 use pl_core::{
     chat::{
         ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatKey, ContentData,
@@ -27,7 +30,6 @@ pub(crate) use atom::atom;
 use descriptor::{
     PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,
 };
-pub(in crate::studio) use restore::{execution_item, execution_state};
 
 /// 仅用于执行投影的正文位置比较；不进入 Core、存储记录或产品 DTO。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -94,21 +96,17 @@ pub(crate) fn atom_content_role_by_key(key: &str) -> Option<crate::ChatContentRo
     atom_content_role(&parsed)
 }
 
-/// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
-#[cfg(test)]
+/// Freezes one terminal canonical item together with an optional original producer body.
+///
+/// `original_body` supplies a real partial body only when the terminal typed state cannot carry it
+/// (for example an interrupted tool). It is inserted into the same body map before the original
+/// manifest/byte-length freeze, and never replaces an authoritative result already projected from
+/// the terminal item.
 pub(crate) fn completion_draft(
     item: &ExecutionItem,
     source_effect_seq: u64,
     database_id: &str,
-) -> Result<ChatDraft> {
-    completion_draft_reusing(item, source_effect_seq, database_id, &ChatContents::new())
-}
-
-pub(crate) fn completion_draft_reusing(
-    item: &ExecutionItem,
-    source_effect_seq: u64,
-    database_id: &str,
-    previous: &ChatContents,
+    original_body: Option<(BodyKey, Arc<ContentBlock>)>,
 ) -> Result<ChatDraft> {
     ensure!(
         item.is_terminal(),
@@ -133,6 +131,13 @@ pub(crate) fn completion_draft_reusing(
     } else {
         content_fields(item.state())?
     };
+    if let Some((field, block)) = original_body
+        && !bodies.contains_key(&field)
+    {
+        // A terminal tool state that cannot carry output still owns its original producer body.
+        // An authoritative result already present above always wins over this partial cut.
+        bodies.insert(field, block);
+    }
     freeze(
         item,
         CompletionStamp {
@@ -143,7 +148,6 @@ pub(crate) fn completion_draft_reusing(
         database_id,
         serde_json::to_value(descriptor)?,
         &mut bodies,
-        previous,
         None,
     )
 }
@@ -191,7 +195,6 @@ pub(crate) fn background_started_draft(
         database_id,
         value,
         &mut bodies,
-        &ChatContents::new(),
         None,
     )
 }
@@ -200,14 +203,6 @@ struct CompletionStamp<'a> {
     id: &'a str,
     source_effect_seq: u64,
     sealed_at: i64,
-}
-
-pub(in crate::studio) struct ObservationStamp<'a> {
-    pub thread_id: &'a str,
-    pub database_id: &'a str,
-    pub owner: &'a ContentOwner,
-    pub boundary: crate::ChatFactPosition,
-    pub captured_at: i64,
 }
 
 pub(in crate::studio) fn validate_observation(
@@ -223,56 +218,6 @@ pub(in crate::studio) fn validate_observation(
     );
     serde_json::to_value(descriptor::observation_descriptor(state, thread_id)?)?;
     Ok(())
-}
-
-pub(in crate::studio) fn observation_payload(
-    state: &ExecutionShape,
-    atom: &crate::ChatAtom,
-    contents: &[Arc<ChatContent>],
-    stamp: ObservationStamp<'_>,
-) -> Result<Vec<u8>> {
-    validate_observation(state, atom, stamp.thread_id)?;
-    ensure!(
-        !stamp.database_id.is_empty(),
-        "observation requires its database identity"
-    );
-    ensure!(
-        matches!(stamp.owner, ContentOwner::DisplayObservation { block_id, member_key }
-            if !block_id.is_empty() && !member_key.is_empty()),
-        "observation requires its assigned display namespace"
-    );
-    let owner_key = crate::studio::conversation_identity::content_owner_key(stamp.owner)?;
-    let mut bodies = Vec::with_capacity(atom.contents.len());
-    for body in &atom.contents {
-        let ContentTarget::Body { owner, key } = &body.reference.target else {
-            anyhow::bail!("observation body has no display owner");
-        };
-        ensure!(
-            owner == stamp.owner && body.reference.database_id == stamp.database_id,
-            "observation body escaped its display namespace"
-        );
-        let content = contents
-            .iter()
-            .find(|content| {
-                content.descriptor.key.owner == owner_key && content.descriptor.key.key == *key
-            })
-            .ok_or_else(|| anyhow::anyhow!("observation lost its owned content"))?;
-        // Observations always expose their sealed namespace, even for short bodies.
-        bodies.push(body_envelope(
-            content,
-            stamp.database_id,
-            stamp.owner,
-            false,
-        )?);
-    }
-    let descriptor =
-        serde_json::to_value(descriptor::observation_descriptor(state, stamp.thread_id)?)?;
-    let mut envelope = payload_envelope(state, descriptor, bodies, stamp.boundary.effect_seq)?;
-    envelope["capturedAt"] = stamp.captured_at.into();
-    if let Some(turn_id) = &atom.turn_id {
-        envelope["turnId"] = turn_id.clone().into();
-    }
-    Ok(serde_json::to_vec(&envelope)?)
 }
 
 fn body_envelope(
@@ -333,7 +278,6 @@ fn freeze(
     database_id: &str,
     descriptor: serde_json::Value,
     bodies: &mut BTreeMap<BodyKey, Arc<ContentBlock>>,
-    previous: &ChatContents,
     metadata: Option<crate::ChatAtom>,
 ) -> Result<ChatDraft> {
     let CompletionStamp {
@@ -362,49 +306,14 @@ fn freeze(
             owner: owner_key.clone(),
             key: key.clone(),
         };
-        let old = previous.get(&content_key);
-        let mut generation = old.map_or(1, |content| content.descriptor.generation);
-        let mut body_block = block.clone();
-        let shared = old.filter(|content| {
-            matches!(&content.data, ContentData::Text(text) if ContentBlock::text_eq(text.block(), block))
-        });
-        if let Some(old) = old.filter(|_| shared.is_none()) {
-            let candidate = ContentData::text(block.clone());
-            let old_bytes = old.data.len();
-            let prefix_matches = old_bytes <= block.len()
-                && (0..old_bytes).step_by(4096).all(|offset| {
-                    old.data
-                        .range(offset as u64, 4096.min(old_bytes - offset))
-                        .ok()
-                        .zip(
-                            candidate
-                                .range(offset as u64, 4096.min(old_bytes - offset))
-                                .ok(),
-                        )
-                        .is_some_and(|(left, right)| left.as_bytes() == right.as_bytes())
-                });
-            if prefix_matches {
-                if let ContentData::Text(text) = &old.data
-                    && let Some(suffix) = block.suffix_since(old_bytes)
-                {
-                    body_block = ContentBlock::append(text.block(), &suffix);
-                }
-            } else {
-                generation = generation
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("content generation exhausted"))?;
-            }
-        }
-        let content = shared.cloned().unwrap_or_else(|| {
-            Arc::new(ChatContent {
-                descriptor: ContentDescriptor {
-                    key: content_key,
-                    byte_length,
-                    generation,
-                    media_type: Some("text/plain; charset=utf-8".into()),
-                },
-                data: ContentData::text(body_block),
-            })
+        let content = Arc::new(ChatContent {
+            descriptor: ContentDescriptor {
+                key: content_key,
+                byte_length,
+                generation: 1,
+                media_type: Some("text/plain; charset=utf-8".into()),
+            },
+            data: ContentData::text(block.clone()),
         });
         let body = body_envelope(&content, database_id, &owner, true)?;
         contents.insert(content.descriptor.key.clone(), content);
@@ -854,7 +763,7 @@ mod tests {
                 11,
                 state,
             );
-            assert!(completion_draft(&item, 1, "database").is_err());
+            assert!(completion_draft(&item, 1, "database", None).is_err());
         }
     }
 
@@ -892,7 +801,7 @@ mod tests {
                 11,
                 state,
             );
-            assert!(completion_draft(&item, 1, "database").is_err());
+            assert!(completion_draft(&item, 1, "database", None).is_err());
         }
         Ok(())
     }
@@ -980,7 +889,7 @@ mod tests {
             Some(ready.clone()),
         );
         assert!(atom(&terminal).wait.is_none());
-        let draft = completion_draft(&terminal, 4, "database")?;
+        let draft = completion_draft(&terminal, 4, "database", None)?;
         let metadata: serde_json::Value = serde_json::from_slice(&draft.metadata)?;
         assert!(metadata.get("wait").is_none());
         let decoded: ChatAtom = serde_json::from_value(metadata)?;
@@ -1088,7 +997,7 @@ mod tests {
                 ] {
                     let projected_atom = if expected_outcome.is_some() {
                         serde_json::from_slice::<ChatAtom>(
-                            &completion_draft(&item, 4, "database")?.metadata,
+                            &completion_draft(&item, 4, "database", None)?.metadata,
                         )?
                     } else {
                         atom(&item)
@@ -1140,7 +1049,7 @@ mod tests {
     -> Result<()> {
         let body = "汉📖".repeat(4000);
         let item = text("text", body.clone());
-        let draft = completion_draft(&item, 7, "database")?;
+        let draft = completion_draft(&item, 7, "database", None)?;
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
         assert_eq!(envelope["contract"], "anywork.chat/1");
         assert_eq!(envelope["type"], "text");
@@ -1196,7 +1105,7 @@ mod tests {
             content.data.range((body.len() - 7) as u64, 7)?.as_bytes(),
             "汉📖".as_bytes()
         );
-        assert_eq!(completion_draft(&item, 7, "database")?, draft);
+        assert_eq!(completion_draft(&item, 7, "database", None)?, draft);
         Ok(())
     }
 
@@ -1250,7 +1159,7 @@ mod tests {
     #[test]
     fn short_body_boundary_is_exact_and_retains_the_manifest() -> Result<()> {
         for len in [0, 4096, 4097] {
-            let draft = completion_draft(&text("short", "x".repeat(len)), 3, "database")?;
+            let draft = completion_draft(&text("short", "x".repeat(len)), 3, "database", None)?;
             let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
             let body = &envelope["bodies"][0];
             assert_eq!(body.get("inline").is_some(), len <= 4096);
@@ -1263,7 +1172,7 @@ mod tests {
                 );
             }
         }
-        assert!(completion_draft(&text("missing-db", "body".into()), 1, "").is_err());
+        assert!(completion_draft(&text("missing-db", "body".into()), 1, "", None).is_err());
         Ok(())
     }
 
@@ -1289,7 +1198,7 @@ mod tests {
                     )),
                 )),
             );
-            let draft = completion_draft(&item, 3, "database")?;
+            let draft = completion_draft(&item, 3, "database", None)?;
             assert_eq!(draft.query_class, "conversation");
             let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
             assert_eq!(
@@ -1329,7 +1238,6 @@ mod tests {
                 "database",
                 serde_json::to_value(descriptor::item_descriptor(&shell)?)?,
                 &mut blocks,
-                &ChatContents::new(),
                 None,
             )?;
             let metadata: ChatAtom = serde_json::from_slice(&draft.metadata)?;
@@ -1353,7 +1261,7 @@ mod tests {
             ),
         ));
         let metadata: ChatAtom =
-            serde_json::from_slice(&completion_draft(&item, 1, "database")?.metadata)?;
+            serde_json::from_slice(&completion_draft(&item, 1, "database", None)?.metadata)?;
         assert_eq!(metadata.content_present, Some(true));
         Ok(())
     }

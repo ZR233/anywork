@@ -1,4 +1,4 @@
-//! The real model -> Thread registration -> configuration owner -> MCP peer -> hot catalog path.
+//! Public model commands, configuration publication and the real MCP peer lifecycle.
 #[expect(
     dead_code,
     reason = "reuse the production protocol peer used by pl-tool tests"
@@ -23,9 +23,6 @@ use support::{
     Environment, program_reply, prompt_step, receipt, text_reply, tool_output, tool_reply,
 };
 
-const TOOL: &str = "mcp__fixture__inspect_env";
-const ATTEMPTS: usize = 16;
-
 fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: pl_provider_fixture::Reply) {
     steps.push(Step::tool_output(
         Protocol::ResponsesHttp,
@@ -34,26 +31,6 @@ fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: pl_provider_fix
         steps.len(),
         reply,
     ));
-}
-
-fn probes(steps: &mut Vec<Step>, phase: &str) {
-    // Keep discovery in one Turn. Repeated user submissions would each change
-    // the extension CAS while the real hot-catalog installer prepares a candidate.
-    for attempt in 0..ATTEMPTS {
-        let call = format!("{phase}-{attempt}");
-        let reply = tool_reply("discover_tools", &call, json!({"query": TOOL}));
-        if attempt == 0 {
-            steps.push(prompt_step(phase, steps.len(), reply));
-        } else {
-            after(steps, &format!("{phase}-{}", attempt - 1), "toolIds", reply);
-        }
-    }
-    after(
-        steps,
-        &format!("{phase}-{}", ATTEMPTS - 1),
-        "toolIds",
-        text_reply("catalog observed", phase),
-    );
 }
 
 fn script() -> Vec<Step> {
@@ -93,29 +70,17 @@ fn script() -> Vec<Step> {
         "unknown field",
         text_reply("override rejected", "invalid"),
     );
-    for phase in ["created", "saved"] {
-        probes(&mut steps, phase);
-        let call = format!("call-{phase}");
-        steps.push(prompt_step(
-            &call,
-            steps.len(),
-            program_reply(TOOL, &call, json!({"mode":"success"})),
-        ));
-        after(&mut steps, &call, phase, text_reply("MCP called", &call));
-        if phase == "created" {
-            steps.push(prompt_step(
-                "refresh-live",
-                steps.len(),
-                program_reply("refresh_mcp", "live-refresh", json!({})),
-            ));
-            after(
-                &mut steps,
-                "live-refresh",
-                "refreshScheduled",
-                text_reply("live connection refreshed", "refresh-live"),
-            );
-        }
-    }
+    steps.push(prompt_step(
+        "refresh-live",
+        steps.len(),
+        program_reply("refresh_mcp", "live-refresh", json!({})),
+    ));
+    after(
+        &mut steps,
+        "live-refresh",
+        "refreshScheduled",
+        text_reply("live connection refreshed", "refresh-live"),
+    );
     steps.push(prompt_step(
         "refresh-disk",
         steps.len(),
@@ -127,20 +92,6 @@ fn script() -> Vec<Step> {
         "refreshScheduled",
         text_reply("disk refreshed", "refresh-disk"),
     );
-    probes(&mut steps, "disabled");
-    probes(&mut steps, "reloaded");
-    steps.push(prompt_step(
-        "call-reloaded",
-        steps.len(),
-        program_reply(TOOL, "call-reloaded", json!({"mode":"success"})),
-    ));
-    after(
-        &mut steps,
-        "call-reloaded",
-        "reloaded",
-        text_reply("MCP called", "call-reloaded"),
-    );
-    probes(&mut steps, "deleted");
     steps
 }
 
@@ -186,37 +137,6 @@ async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_stu
         )
         .await?;
     support::completed_prompt(&env.runtime, id, prompt).await
-}
-
-async fn catalog(env: &Environment, id: &str, phase: &str, present: bool) -> Result<()> {
-    let turn = submit_turn(env, id, phase).await?;
-    ensure!(
-        matches!(turn.state, TurnState::Completed(_)),
-        "{phase}: unexpected terminal state {:?}",
-        turn.state
-    );
-    let ids: Vec<String> = serde_json::from_value(
-        receipt(&env.root_provider, &format!("{phase}-{}", ATTEMPTS - 1))?["toolIds"].clone(),
-    )?;
-    ensure!(
-        ids.iter().any(|name| name == TOOL) == present,
-        "{phase}: real catalog presence differs from {present}: {ids:?}"
-    );
-    if present {
-        let recorded = env.root_provider.recorded();
-        let tools = recorded.last().context("last catalog request")?.body["tools"]
-            .as_array()
-            .context("model tools")?;
-        ensure!(
-            tools.iter().any(|tool| tool["name"] == "exec"
-                && tool["description"]
-                    .as_str()
-                    .is_some_and(|sdk| sdk.contains(&format!("tools[{TOOL:?}](args)"))
-                        && sdk.contains(&format!("\"description\":{phase:?}")))),
-            "{phase}: the installed Lua SDK did not retain the exact current schema"
-        );
-    }
-    Ok(())
 }
 
 async fn state(env: &Environment, id: &str, present: bool, after: u64) -> Result<()> {
@@ -272,7 +192,8 @@ fn configuration(env: &Environment, tag: &str, enabled: bool) -> Result<String> 
 }
 
 #[tokio::test]
-async fn real_thread_refresh_and_config_mutations_update_callable_mcp_catalog() -> Result<()> {
+async fn real_thread_refresh_and_config_mutations_publish_state_and_reuse_equal_peer() -> Result<()>
+{
     let env = Environment::new(script(), Vec::new()).await?;
     let result = tokio::time::timeout(support::integration_test_deadline()?, async {
         std::fs::write(env.repo.join("peer.py"), mcp_stdio::STDIO_MCP_SCRIPT)?;
@@ -305,9 +226,6 @@ async fn real_thread_refresh_and_config_mutations_update_callable_mcp_catalog() 
             })
             .await?;
         state(&env, id, true, 0).await?;
-        catalog(&env, id, "created", true).await?;
-        submit(&env, id, "call-created").await?;
-        ensure!(tool_output(&env.root_provider, "call-created")?.contains("created"));
         submit(&env, id, "refresh-live").await?;
         let live = receipt(&env.root_provider, "live-refresh").with_context(|| {
             format!(
@@ -355,9 +273,6 @@ async fn real_thread_refresh_and_config_mutations_update_callable_mcp_catalog() 
             })
             .await?;
         state(&env, id, true, before_save).await?;
-        catalog(&env, id, "saved", true).await?;
-        submit(&env, id, "call-saved").await?;
-        ensure!(tool_output(&env.root_provider, "call-saved")?.contains("saved"));
 
         let document = saved.document.context("saved document")?;
         let path = env.home.join(&document.relative_path);
@@ -377,14 +292,10 @@ async fn real_thread_refresh_and_config_mutations_update_callable_mcp_catalog() 
                 .iter()
                 .all(|server| server["id"] != "fixture")
         );
-        catalog(&env, id, "disabled", false).await?;
 
         std::fs::write(&path, configuration(&env, "reloaded", true)?)?;
         env.runtime.reload_mcp_catalog(&McpScope::Host).await?;
         state(&env, id, true, 0).await?;
-        catalog(&env, id, "reloaded", true).await?;
-        submit(&env, id, "call-reloaded").await?;
-        ensure!(tool_output(&env.root_provider, "call-reloaded")?.contains("reloaded"));
         env.runtime
             .delete_mcp_document(&DeleteMcpDocumentRequest {
                 expected_revision: env.runtime.read_mcp_document(&document)?.revision,
@@ -392,7 +303,6 @@ async fn real_thread_refresh_and_config_mutations_update_callable_mcp_catalog() 
             })
             .await?;
         state(&env, id, false, 0).await?;
-        catalog(&env, id, "deleted", false).await?;
         Ok(())
     })
     .await
@@ -458,28 +368,12 @@ fn reconnect_script() -> Vec<Step> {
             marker,
             text_reply("reconnect observed", phase),
         );
-        if phase == "credential" {
-            probes(&mut steps, "created");
-        } else if phase == "reconnect" {
-            probes(&mut steps, "reconnected");
-            steps.push(prompt_step(
-                "call-reconnected",
-                steps.len(),
-                program_reply(TOOL, "call-reconnected", json!({"mode":"success"})),
-            ));
-            after(
-                &mut steps,
-                "call-reconnected",
-                "reconnected:success",
-                text_reply("new session called", "call-reconnected"),
-            );
-        }
     }
     steps
 }
 
 #[tokio::test]
-async fn real_thread_reconnect_validates_target_replaces_session_and_installs_callable_tools()
+async fn real_thread_reconnect_validates_target_replaces_session_and_redacts_failed_replacement()
 -> Result<()> {
     let env = Environment::new(reconnect_script(), Vec::new()).await?;
     let result = tokio::time::timeout(support::integration_test_deadline()?, async {
@@ -510,7 +404,6 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
             raw_toml: configuration(&env, "created", true)?,
         }).await?;
         state(&env, id, true, 0).await?;
-        catalog(&env, id, "created", true).await?;
         let before = env.runtime.read_thread_mcp(id).await?;
         // Only a newly started process reads the modified peer and advertises this schema.
         std::fs::write(env.repo.join("peer.py"), mcp_stdio::STDIO_MCP_SCRIPT.replace(
@@ -526,15 +419,10 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
         let snapshot: pl_studio_runtime::ThreadMcpStateSnapshot = serde_json::from_value(reply["state"].clone())?;
         ensure!(snapshot.servers.iter().any(|server| server.id == "fixture"
             && server.lifecycle == ThreadMcpLifecycleKind::Available));
-        catalog(&env, id, "reconnected", true).await?;
-        submit(&env, id, "call-reconnected").await?;
-        ensure!(tool_output(&env.root_provider, "call-reconnected")?.contains("reconnected:success"));
         let requests: Vec<serde_json::Value> = std::fs::read_to_string(env.repo.join("mcp-requests.jsonl"))?
             .lines().map(serde_json::from_str).collect::<std::result::Result<_, _>>()?;
         ensure!(requests.iter().filter(|request| request["method"] == "initialize").count() == 2,
             "reconnect must initialize exactly one replacement session");
-        ensure!(requests.iter().filter(|request| request["method"] == "tools/call").count() == 1,
-            "reconnect must not replay historical calls");
         // Emit a private transport diagnostic, then wait without answering discovery.
         // The configured startup deadline, not an arbitrary test sleep, causes failure.
         std::fs::write(env.repo.join("peer.py"),

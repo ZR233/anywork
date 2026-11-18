@@ -409,7 +409,7 @@ mod review_archive_tests {
     use anyhow::Context;
     use pl_core::{
         context::OpaquePayload,
-        thread::{ThreadHandle, cold::ColdStoreHandle, inbox::ThreadMessage},
+        thread::{ThreadHandle, inbox::ThreadMessage},
     };
 
     #[tokio::test]
@@ -699,8 +699,7 @@ mod review_archive_tests {
             },
         )
         .await?;
-        let checkpoint = store.history(id).await?.checkpoint().await?;
-        let sink = ThreadStorageSink::new(store.clone(), protocol, checkpoint.as_ref()).await?;
+        let sink = ThreadStorageSink::new(store.clone(), protocol).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), id);
         let mut prepared = spec(
             id.into(),
@@ -718,10 +717,14 @@ mod review_archive_tests {
             crate::studio::workspace_receipt::EXTENSION.into(),
             crate::studio::workspace_receipt::to_payload(assignment).map_err(anyhow::Error::msg)?,
         );
-        prepared.checkpoint = checkpoint;
-        prepared.cold_store = Some(ColdStoreHandle::new(sink));
+        prepared.current = None;
+        prepared.history_sink = Some(sink);
         let thread = owner.assemble(prepared).await?;
         thread.flush().await?;
+        let channel = store.thread_persistence().history_channel(id);
+        channel
+            .await_handoff_durable(id, channel.handoff_ticket())
+            .await?;
         Ok((thread, projection, body))
     }
 
@@ -761,16 +764,13 @@ mod review_archive_tests {
         let (target, target_projection, _) =
             restore_delivery(&owner, &store, &physical.events, "target", &assignment).await?;
         let snapshot = target.snapshot();
-        let turn = store
-            .history("target")
-            .await?
-            .latest_turn_at(snapshot.commit_sequence)
-            .await?
-            .unwrap();
+        let terminal_sequence = 1;
+        let turn_id = "original-terminal-turn";
+        let input_id = None;
         let baseline = crate::AgentReviewBaseline {
-            turn_id: turn.id,
-            input_id: turn.input_id,
-            terminal_sequence: turn.revision,
+            turn_id: turn_id.into(),
+            input_id,
+            terminal_sequence,
             commit_sequence: snapshot.commit_sequence,
             input_ordinal: snapshot.input_ordinal,
             message_sequence: snapshot.inbox_sequence,
@@ -866,25 +866,6 @@ mod review_archive_tests {
         assert_eq!(before.inputs, after.inputs);
         assert_eq!(before.inbox_sequence, after.inbox_sequence);
         assert!(after.tasks.is_empty());
-        assert_eq!(
-            store
-                .history("reviewer")
-                .await?
-                .terminal_report_sequences(0)
-                .await?,
-            vec![1]
-        );
-        assert_eq!(
-            store
-                .history("reviewer")
-                .await?
-                .parent_report(1)
-                .await?
-                .unwrap()
-                .payload
-                .content(),
-            original_body
-        );
         owner.close_tree("root", &[]).await?;
         target_projection.await?;
         reviewer_projection.await?;

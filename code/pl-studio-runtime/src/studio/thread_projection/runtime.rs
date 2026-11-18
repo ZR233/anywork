@@ -170,6 +170,7 @@ fn project_with_mode(
         .collect();
     Ok(ThreadRuntimeSnapshot {
         thread_id: thread_id.into(),
+        deferred: Vec::new(),
         // The execution identity is a fact of this Thread's own state, so the same per-Thread
         // projection that publishes usage also publishes what a precise stop would target.
         execution: state.execution.as_ref().map(|execution| {
@@ -245,15 +246,4 @@ fn protocol_costs(costs: &[pl_core::thread::UsageCost]) -> Vec<crate::RuntimeCos
             amount: cost.amount,
         })
         .collect()
-}
-
-/// Cold/recovery extraction boundary. The normal live/durable handoff shares PreparedAccounting.
-pub(in crate::studio) fn fold_effect_accounting(
-    summary: &mut pl_core::thread::UsageSummary,
-    effect: &pl_core::thread::ThreadEffectBatch,
-) -> Result<(), ProjectionError> {
-    if effect.sequence > summary.applied_sequence {
-        super::PreparedAccounting::prepare(effect)?.fold_into(summary);
-    }
-    Ok(())
 }

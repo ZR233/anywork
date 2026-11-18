@@ -17,6 +17,7 @@ pub(crate) use agents::archive_tests::spawn_failed_archive_fixture;
 pub(crate) use agents::archive_tests::spec as archive_test_spec;
 pub(crate) mod delegation_models;
 pub(crate) mod observation;
+mod pending_delivery;
 pub(crate) mod review_delivery;
 pub(crate) mod review_dispatch;
 pub use activation::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
@@ -71,8 +72,8 @@ use pl_core::{
     context::ResourceAccess,
     model::ModelFactory,
     thread::{
-        ContextCapacity, ThreadCheckpoint, ThreadError, ThreadHandle, ThreadLifecycle,
-        cold::ColdStoreHandle,
+        ContextCapacity, ThreadError, ThreadHandle, ThreadLifecycle,
+        current::{CurrentError, ThreadCurrent},
     },
     tool::opaque::Registration,
 };
@@ -103,7 +104,11 @@ pub struct StudioThreadSpec {
     /// False publishes the owner without a physical model until a later deferred update succeeds.
     pub model_available: bool,
     pub model: ThreadModel,
-    pub checkpoint: Option<ThreadCheckpoint>,
+    /// Complete current facts restored from `current.json`. New Threads start with no value.
+    ///
+    /// The assembler hands this exact object to Core, preserving saved model-call, tool-preview and
+    /// context facts; it never converts through a legacy checkpoint.
+    pub current: Option<ThreadCurrent>,
     /// Initial instructions and records for a new Thread only; never used to re-render recovery.
     pub initial_context: Vec<pl_core::context::ContextRecord>,
     /// Latest host facts queued after assembly. Recovery may supply them; they never re-render
@@ -113,13 +118,13 @@ pub struct StudioThreadSpec {
     pub tools: Vec<Registration>,
     pub resources: ResourceAccess,
     pub capacity: ContextCapacity,
-    pub cold_store: Option<ColdStoreHandle>,
+    pub(crate) history_sink: Option<crate::studio::storage::thread_writer::ThreadStorageSink>,
 }
 
 impl StudioThreadSpec {
     fn frozen_delegation(&self) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
-        let selection = match &self.checkpoint {
-            Some(checkpoint) => crate::studio::delegation::saved(&checkpoint.state),
+        let selection = match &self.current {
+            Some(current) => crate::studio::delegation::saved(&current.state.to_paused_snapshot()),
             None => self
                 .initial_extensions
                 .get(crate::studio::delegation::EXTENSION)
@@ -161,11 +166,11 @@ impl std::fmt::Debug for StudioThreadSpec {
             .field("id", &self.id)
             .field("parent_id", &self.parent_id)
             .field(
-                "checkpoint_revision",
+                "current_revision",
                 &self
-                    .checkpoint
+                    .current
                     .as_ref()
-                    .map(|checkpoint| checkpoint.state_revision),
+                    .map(|current| current.snapshot_revision),
             )
             .field("tools", &self.tools.len())
             .finish_non_exhaustive()
@@ -252,6 +257,8 @@ pub enum ThreadAssemblyError {
     Model(#[from] pl_core::model::ModelError),
     #[error("Thread setup or close failed")]
     Thread(#[from] ThreadError),
+    #[error("Thread current setup failed")]
+    Current(#[from] CurrentError),
     #[error("Thread {id} setup failed ({setup}); cleanup also failed ({cleanup})")]
     Cleanup {
         id: String,
@@ -794,7 +801,7 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        if spec.checkpoint.is_some() && !spec.initial_context.is_empty() {
+        if spec.current.is_some() && !spec.initial_context.is_empty() {
             return Err(ThreadAssemblyError::InitialContextOnRecovery);
         }
         pl_core::context::ContextSnapshot {
@@ -804,9 +811,9 @@ impl SessionRuntime {
         .validate_complete()
         .map_err(ThreadError::from)?;
         if spec
-            .checkpoint
+            .current
             .as_ref()
-            .is_some_and(|checkpoint| checkpoint.thread_id != spec.id)
+            .is_some_and(|current| current.thread_id != spec.id)
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
@@ -842,23 +849,31 @@ impl SessionRuntime {
         spec.tools.append(&mut spec.agent_controls);
         // Model opening is still owned by the managed preparation, including the unpublished
         // use. If it fails, install a cleanup-only Thread so every allocated tool is closed/joined.
-        // Successful restoration keeps core's normal model-at-resume contract for pending inputs.
+        // Core consumes the complete current directly. The fresh path starts a new runtime epoch;
+        // the restored path activates only the frozen logical data under a new paused owner.
         let (thread, opening_failure) = if spec.model_available {
             match ModelFactory::new(spec.model).open_session().await {
-                Ok(model) => (
-                    ThreadHandle::resume(spec.id.clone(), model, spec.checkpoint)?,
-                    None,
-                ),
-                Err(error) => (
-                    ThreadHandle::resume_without_model(spec.id.clone(), spec.checkpoint)?,
-                    Some(ThreadAssemblyError::from(error)),
-                ),
+                Ok(model) => {
+                    let thread = match spec.current {
+                        Some(current) => ThreadHandle::restore_current(current, Some(model))?,
+                        None => ThreadHandle::start_current(spec.id.clone(), Some(model))?,
+                    };
+                    (thread, None)
+                }
+                Err(error) => {
+                    let thread = match spec.current {
+                        Some(current) => ThreadHandle::restore_current(current, None)?,
+                        None => ThreadHandle::start_current(spec.id.clone(), None)?,
+                    };
+                    (thread, Some(ThreadAssemblyError::from(error)))
+                }
             }
         } else {
-            (
-                ThreadHandle::resume_without_model(spec.id.clone(), spec.checkpoint)?,
-                None,
-            )
+            let thread = match spec.current {
+                Some(current) => ThreadHandle::restore_current(current, None)?,
+                None => ThreadHandle::start_current(spec.id.clone(), None)?,
+            };
+            (thread, None)
         };
         let resources = self
             .0
@@ -917,7 +932,7 @@ impl SessionRuntime {
             if let Some(error) = opening_failure {
                 return Err(error);
             }
-            if let Some(store) = spec.cold_store {
+            if let Some(store) = spec.history_sink {
                 self.attach_execution_storage(&spec.id, store).await?;
             }
             if !spec.initial_extensions.is_empty() {
@@ -1046,7 +1061,7 @@ impl SessionRuntime {
             .get(&caller.caller)
             .cloned()
             .ok_or(ThreadAssemblyError::Closed)?;
-        if spec.parent_id.as_deref() != Some(caller_thread.as_str()) || spec.checkpoint.is_some() {
+        if spec.parent_id.as_deref() != Some(caller_thread.as_str()) || spec.current.is_some() {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
         self.assemble(spec).await
@@ -2263,13 +2278,10 @@ mod s2_close_regression_tests {
     use pl_core::{
         context::ContextContent,
         model::{DynModelSession, ModelError, ModelRequest, ModelSession, PreparedModelCall},
-        thread::{
-            ModelStepLimit, ThreadLifecycle, TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
-        },
+        thread::{ModelStepLimit, ThreadLifecycle, TurnInput},
     };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::sync::{Semaphore, oneshot};
+    use tokio::sync::oneshot;
     use tokio_util::sync::CancellationToken;
 
     #[derive(Debug)]
@@ -2579,33 +2591,6 @@ mod s2_close_regression_tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct GatedFinalSave {
-        closing: Arc<AtomicBool>,
-        entered: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-        release: Arc<Semaphore>,
-    }
-    impl ColdStore for GatedFinalSave {
-        fn pressure(&self, _: &str) -> StoragePressure {
-            StoragePressure::default()
-        }
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            if write.checkpoint.state.lifecycle == ThreadLifecycle::Closed {
-                self.closing.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        }
-        async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
-            if self.closing.load(Ordering::SeqCst) {
-                if let Some(entered) = self.entered.lock().unwrap().take() {
-                    let _ = entered.send(());
-                }
-                self.release.acquire().await.unwrap().forget();
-            }
-            Ok(())
-        }
-    }
-
     fn register_member(
         owner: &SessionRuntime,
         id: &str,
@@ -2665,7 +2650,7 @@ mod s2_close_regression_tests {
     }
 
     #[tokio::test]
-    async fn s2_close_cancels_parent_before_blocked_child_and_preserves_other_session() {
+    async fn s2_close_cancels_parent_before_child_shutdown_and_preserves_other_session() {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let owner = SessionRuntime::open(crate::SessionId::new("session-a").unwrap());
             let other = SessionRuntime::open(crate::SessionId::new("session-b").unwrap());
@@ -2692,34 +2677,16 @@ mod s2_close_regression_tests {
             let unrelated_run = start_turn(unrelated);
             let unrelated_cancel = model_started.await.unwrap();
             let child = ThreadHandle::resume_without_model("child-thread".into(), None).unwrap();
-            let (entered, child_waiting) = oneshot::channel();
-            let store = GatedFinalSave {
-                closing: Arc::new(AtomicBool::new(false)),
-                entered: Arc::new(Mutex::new(Some(entered))),
-                release: Arc::new(Semaphore::new(0)),
-            };
-            child
-                .attach_storage(ColdStoreHandle::new(store.clone()))
-                .await
-                .unwrap();
             register_member(&owner, "child-thread", Some("parent-thread"), child);
-            let close = owner.close_session();
-            tokio::pin!(close);
-            tokio::select! {
-                result = &mut close => panic!("child save barrier was skipped: {result:?}"),
-                result = child_waiting => result.unwrap(),
-            }
+            let report = owner.close_session().await;
             assert!(
                 parent_cancel.is_cancelled(),
-                "parent execution must be cancelled before waiting for child save"
+                "closing Session A must cancel its parent execution"
             );
             assert!(
                 !unrelated_cancel.is_cancelled(),
                 "Session A cannot cancel Session B"
             );
-            assert!(futures::poll!(&mut close).is_pending());
-            store.release.add_permits(8);
-            let report = close.await;
             assert!(report.is_empty(), "{report:?}");
             assert!(parent_run.await.unwrap().is_err());
             assert!(!unrelated_cancel.is_cancelled());

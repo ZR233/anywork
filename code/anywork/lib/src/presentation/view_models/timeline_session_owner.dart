@@ -14,6 +14,8 @@ import '../../features/conversation/timeline/live_status/live_status_state.dart'
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
+import '../../features/conversation/timeline/state/timeline_history_projection.dart';
+import '../../features/conversation/timeline/state/timeline_current_projection.dart';
 import '../../features/conversation/timeline/state/timeline_view_state.dart';
 import '../../features/conversation/timeline/state/timeline_ui_controllers.dart';
 import '../../features/conversation/timeline/view_models/timeline_message_controller.dart';
@@ -38,13 +40,14 @@ final class _TimelineApplyFailure implements Exception {
 }
 
 /// One presentation generation. Only its component controller owns loaded messages.
-final class TimelineDisplayLease
-    implements TimelineUiControllers, ConversationQueries {
-  TimelineDisplayLease({
+final class TimelineDisplayLease implements TimelineUiControllers {
+  TimelineDisplayLease._({
+    required this._read,
     required this.threadId,
     required this.generation,
     required this.demand,
-    required this.reader,
+    required this.history,
+    required this.current,
     this.selectionId,
     this.selectionStartedMicros,
   }) : _controller = InMemoryChatController(),
@@ -56,15 +59,19 @@ final class TimelineDisplayLease
       onUnitRetired: _retireUnit,
       expansionForBlock: expansionForBlock,
     );
+    _historyQueries = openHistoryScope();
+    _currentQueries = openCurrentScope();
   }
 
   final ClientResourceId resourceId = _newTimelineResourceId();
+  final _TimelineRead _read;
 
-  @override
   final String threadId;
   final int generation;
   final ReadDemand demand;
-  final TimelineReader reader;
+  late final int _historyRowLimit = max(demand.maxItems * 8, 128);
+  final HistoryReader history;
+  final CurrentReader current;
   LiveStatusView? liveStatus;
   final int? selectionId;
   final int? selectionStartedMicros;
@@ -77,15 +84,27 @@ final class TimelineDisplayLease
   final Set<TimelineGroupDisplay> _groupDisplays = {};
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
+  final ValueNotifier<Object?> currentCollectionError = ValueNotifier(null);
+  final ValueNotifier<int> renderedCurrentAtoms = ValueNotifier(0);
 
   /// Published only by this display's serial admission, never directly by the transport.
-  final ValueNotifier<TailSnapshot?> live = ValueNotifier(null);
+  final ValueNotifier<CurrentAtomSnapshot?> live = ValueNotifier(null);
   final Map<String, TimelineExpansionIntent> _expansions = {};
-  final Set<ConversationQueryScope> _ownedQueries = {};
-  final Map<ConversationQueryScope, Future<void>> _closingQueries = {};
-  final Map<ConversationQueryScope, (Object, StackTrace?)> _queryCleanupErrors =
-      {};
-  ConversationQueryScope? _queries;
+  final Set<Object> _ownedQueries = {};
+  final Map<Object, Future<void>> _closingQueries = {};
+  final Map<Object, (Object, StackTrace?)> _queryCleanupErrors = {};
+  HistoryReadScope? _historyQueries;
+  CurrentReadScope? _currentQueries;
+  CurrentProjection? _latestCurrentProjection;
+  CurrentRevision? _latestCurrentRevision;
+  CurrentCollectionRef? _atomCollection;
+  // One bounded collection page. Continuations are intentionally not
+  // concatenated into a second full Current state.
+  List<CurrentAtom> _loadedCurrentAtoms = const [];
+  Future<void>? _currentAtomsLoading;
+  CurrentCollectionRef? _currentAtomsLoadingRef;
+  final Set<String> _renderedCurrentAtomIds = {};
+  HistoryCut? _historyCut;
   String? _before;
   int? _firstOrder;
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
@@ -94,6 +113,9 @@ final class TimelineDisplayLease
   bool _retired = false;
   bool _disposed = false;
   int _mutations = 0;
+  int _modeIntent = 0;
+  int _liveWindowGeneration = 0;
+  bool _liveReturnPending = false;
   Object? get queryCleanupError {
     if (_queryCleanupErrors.isEmpty) return null;
     if (_queryCleanupErrors.length == 1) {
@@ -107,9 +129,8 @@ final class TimelineDisplayLease
     unresolved: [
       for (final scope in _ownedQueries) ...[
         // A retained scope's live snapshot supersedes an earlier close report.
-        if (scope is ConversationReadScope) ...scope.cleanupReport.unresolved,
         if (_queryCleanupErrors[scope] case (final CloseReport report, _)) ...[
-          if (scope is! ConversationReadScope) ...report.unresolved,
+          ...report.unresolved,
         ] else if (_queryCleanupErrors[scope] case (final error, final stack))
           UnresolvedResource(
             resourceId: resourceId,
@@ -131,7 +152,6 @@ final class TimelineDisplayLease
     ],
   );
   final Set<TimelineChildrenDisplay> _childrenDisplays = {};
-  final Set<TimelineCurrentDisplay> _currentDisplays = {};
   TimelineContentLayout? _firstContentLayout;
   int _appliedSets = 0;
   int _appliedPrepends = 0;
@@ -141,8 +161,16 @@ final class TimelineDisplayLease
   int get appliedSets => _appliedSets;
   int get appliedPrepends => _appliedPrepends;
   int get appliedAppends => _appliedAppends;
-  TimelineExpansionIntent expansionForBlock(String blockId) =>
-      _expansions.putIfAbsent(blockId, TimelineExpansionIntent.new);
+  Set<String> get renderedCurrentAtomIds =>
+      Set.unmodifiable(_renderedCurrentAtomIds);
+  TimelineExpansionIntent expansionForBlock(String blockId) {
+    final existing = _expansions[blockId];
+    if (existing != null && !existing.isRetired) return existing;
+    final next = TimelineExpansionIntent();
+    _expansions[blockId] = next;
+    return next;
+  }
+
   bool isBlockExpanded(String blockId) =>
       _expansions[blockId]?.expanded ?? false;
   void setBlockExpanded(String blockId, bool expanded) {
@@ -150,59 +178,84 @@ final class TimelineDisplayLease
     expansionForBlock(blockId).expanded = expanded;
   }
 
-  TimelineDisplayUnit liveUnit(LiveDisplayBlock block, bool executionPresent) {
-    final unit = TimelineDisplayUnit.live(
-      block: block,
-      executionPresent: executionPresent,
-      expansion: expansionForBlock(block.id),
-    );
-    unit.expansion.current = unit;
-    _bindUnit(unit);
-    return unit;
+  int enterHistoryMode() {
+    if (_retired) throw StateError('Timeline display is retired');
+    _mode = TimelineDisplayMode.history;
+    _liveReturnPending = false;
+    _renderedCurrentAtomIds.clear();
+    renderedCurrentAtoms.value++;
+    return ++_modeIntent;
   }
 
-  void _requireSealedMembers(Iterable<String> blockIds) {
-    for (final id in blockIds) {
-      _expansions[id]?.members?.requireSealed();
+  int requestLiveWindow() {
+    if (_retired) throw StateError('Timeline display is retired');
+    _liveReturnPending = true;
+    _renderedCurrentAtomIds.clear();
+    renderedCurrentAtoms.value++;
+    return ++_modeIntent;
+  }
+
+  Future<void> freezeForHistory() async {
+    if (_retired || _mode != TimelineDisplayMode.history) return;
+    final blocks = <DisplayBlock>[];
+    for (final message in _controller?.messages ?? const <Message>[]) {
+      final unit =
+          message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
+      if (unit == null) continue;
+      final body = unit.body;
+      final frozen = switch (body) {
+        SingleDisplayBlock(:final record, :final visibility) =>
+          record.immutableRecord == null
+              ? body
+              : SingleDisplayBlock(
+                  record: record.immutableRecord!,
+                  visibility: visibility,
+                ),
+        WorkDisplayBlock() => body,
+      };
+      blocks.add(
+        DisplayBlock(id: unit.id, blockOrder: unit.blockOrder, body: frozen),
+      );
+    }
+    if (blocks.isNotEmpty) {
+      await _mutate(() => _presentation!.replaceBlocks(blocks));
+    }
+    if (_retired) return;
+    for (final intent in _expansions.values) {
+      final unit = intent.current;
+      final body = unit?.body;
+      if (body is WorkDisplayBlock) {
+        intent.members?.rebase(
+          body.members,
+          groupClosed: body.groupClosed,
+          force: true,
+        );
+      }
     }
   }
 
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
+    required bool groupClosed,
     required ReadDemand demand,
   }) async {
-    final scope = queries;
-    if (scope is! TimelineQueryScope) {
+    final scope = _historyQueries;
+    if (scope == null || _retired) {
       throw const StaleConversationScope();
     }
-    final members = await scope.openDisplayMembers(
+    return HistoryGroupMembers.open(
+      scope,
       reference: reference,
+      groupClosed: groupClosed,
       demand: demand,
+      currentAtoms: () {
+        final direct = _latestCurrentProjection?.atoms ?? const <CurrentAtom>[];
+        return direct.isNotEmpty ? direct : _loadedCurrentAtoms;
+      },
+      currentOwnerId: () => _mode == TimelineDisplayMode.live
+          ? _latestCurrentRevision?.ownerId
+          : null,
     );
-    if (_retired || !scope.isActive) {
-      members.requestClose();
-      await members.close();
-      throw const StaleConversationScope();
-    }
-    return members;
-  }
-
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    ReadDemand? demand,
-  }) async {
-    final scope = queries;
-    if (scope is! TimelineQueryScope) {
-      throw const StaleConversationScope();
-    }
-    final page = await scope.loadLiveOlder(
-      before: before,
-      demand: demand ?? this.demand,
-    );
-    if (_retired || !scope.isActive) {
-      throw const StaleConversationScope();
-    }
-    return page;
   }
 
   Iterable<TimelineGroupDisplay> get groupDisplays => _retired
@@ -214,44 +267,71 @@ final class TimelineDisplayLease
     // The same disclosure capability crosses live/history parents. Its queries
     // and callbacks are installed once, independent of header replacements.
     if (intent.isDisplayActive != null) return;
-    ConversationQueryScope? bodyScope;
-    Object? bodyGeneration;
-    intent.retireBody = () {
-      final original = bodyScope;
-      bodyScope = null;
-      bodyGeneration = null;
-      if (original == null) return;
-      unawaited(_settleQueries(original));
-    };
-    intent.readBody = (generation, reference, range) async {
+    intent.readHistoryBody = (generation, reference, range) async {
+      final scope = _historyQueries;
       if (_retired ||
           intent.current == null ||
           !intent.bodyActive ||
-          !identical(generation, intent.bodyGeneration)) {
+          !identical(generation, intent.bodyGeneration) ||
+          scope == null ||
+          !scope.isActive) {
         throw const StaleConversationScope();
       }
-      if (!identical(bodyGeneration, generation)) {
-        intent.retireBody!();
-        bodyScope = openDetailQueries();
-        bodyGeneration = generation;
-      }
-      final original = bodyScope;
-      if (original == null || !original.isActive) {
-        throw const StaleConversationScope();
-      }
-      final value = await original.readContent(
+      final value = await scope.readBody(
         reference: reference,
-        range: range,
+        offset: range.offset,
+        maxBytes: range.maxBytes,
       );
       if (_retired ||
           intent.current == null ||
           !intent.bodyActive ||
           !identical(generation, intent.bodyGeneration) ||
-          !identical(bodyScope, original) ||
-          !original.isActive) {
+          !scope.isActive) {
+        throw const StaleConversationScope();
+      }
+      return ContentWindow(
+        offset: value.offset,
+        bytes: value.bytes,
+        generation:
+            '${reference.bodyId}:${reference.byteStart}:${reference.byteLength}',
+        availableThrough: value.totalLength,
+        sealed: true,
+      );
+    };
+    intent.readCurrentBody = (generation, reference, range) async {
+      final scope = _currentQueries;
+      if (_retired ||
+          _mode != TimelineDisplayMode.live ||
+          intent.current == null ||
+          !intent.bodyActive ||
+          !identical(generation, intent.bodyGeneration) ||
+          scope == null ||
+          !scope.isActive) {
+        throw const StaleConversationScope();
+      }
+      final value = await scope.readBody(reference: reference, range: range);
+      if (_retired ||
+          _mode != TimelineDisplayMode.live ||
+          intent.current == null ||
+          !intent.bodyActive ||
+          !identical(generation, intent.bodyGeneration) ||
+          !scope.isActive) {
         throw const StaleConversationScope();
       }
       return value;
+    };
+    intent.watchCurrentBody = (generation, reference, range) {
+      final scope = _currentQueries;
+      if (_retired ||
+          _mode != TimelineDisplayMode.live ||
+          intent.current == null ||
+          !intent.bodyActive ||
+          !identical(generation, intent.bodyGeneration) ||
+          scope == null ||
+          !scope.isActive) {
+        throw const StaleConversationScope();
+      }
+      return scope.watchBody(reference: reference, range: range);
     };
     intent.isDisplayActive = () => !_retired && intent.current != null;
     intent.registerDisplay = (display) {
@@ -259,11 +339,15 @@ final class TimelineDisplayLease
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openDisplayMembers = (reference, demand) {
+    intent.openDisplayMembers = (reference, demand, groupClosed) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openDisplayMembers(reference: reference, demand: demand);
+      return openDisplayMembers(
+        reference: reference,
+        groupClosed: groupClosed,
+        demand: demand,
+      );
     };
   }
 
@@ -285,27 +369,13 @@ final class TimelineDisplayLease
     return () => _childrenDisplays.remove(display);
   }
 
-  Iterable<TimelineCurrentDisplay> get currentDisplays sync* {
-    if (_retired) return;
-    for (final display in _currentDisplays) {
-      if (display.isCurrent) yield display;
-    }
-  }
-
-  /// Borrows one mounted resource. Enumeration never opens its read scope.
-  void Function() registerCurrentDisplay(TimelineCurrentDisplay display) {
-    if (_retired) return () {};
-    _currentDisplays.add(display);
-    return () => _currentDisplays.remove(display);
-  }
-
-  void _recordBatch(ChatPlacement placement) {
+  void _recordBatch(TimelineApplyPlacement placement) {
     switch (placement) {
-      case ChatPlacement.set:
+      case TimelineApplyPlacement.set:
         _appliedSets++;
-      case ChatPlacement.prepend:
+      case TimelineApplyPlacement.prepend:
         _appliedPrepends++;
-      case ChatPlacement.append:
+      case TimelineApplyPlacement.append:
         _appliedAppends++;
     }
   }
@@ -327,49 +397,28 @@ final class TimelineDisplayLease
   int get loadedCount => _controller?.messages.length ?? 0;
   Future<void> get released => _released.future;
 
-  @override
-  ConversationQueryScope openScope({required int generation}) {
+  HistoryReadScope openHistoryScope({int? generation}) {
     if (_retired) throw const StaleConversationScope();
-    _ownedQueries.removeWhere((scope) {
-      if (scope is! ConversationReadScope || !scope.isSettled) return false;
-      _queryCleanupErrors.remove(scope);
-      return true;
-    });
-    final scope = ConversationReadScope(
+    final scope = HistoryReadScope(
       threadId: threadId,
-      generation: generation,
-      reader: reader.reader,
-      timeline: reader,
+      generation: generation ?? this.generation,
+      reader: history,
       isEligible: () => !_retired,
     );
     _ownedQueries.add(scope);
     return scope;
   }
 
-  ConversationQueryScope? get queries {
-    if (_retired) return null;
-    final existing = _queries;
-    if (existing != null && existing.isActive) return existing;
-    if (existing != null) unawaited(_settleQueries(existing));
-    final scope = openScope(generation: generation);
-    _ownedQueries.add(scope);
-    return _queries = scope;
-  }
-
-  ConversationQueryScope? openDetailQueries() {
-    if (_retired) return null;
-    final scope = openScope(generation: generation);
+  CurrentReadScope openCurrentScope({int? generation}) {
+    if (_retired) throw const StaleConversationScope();
+    final scope = CurrentReadScope(
+      threadId: threadId,
+      generation: generation ?? this.generation,
+      reader: current,
+      isEligible: () => !_retired,
+    );
     _ownedQueries.add(scope);
     return scope;
-  }
-
-  Future<void> closeDetailQueries(ConversationQueryScope scope) async {
-    await _settleQueries(scope);
-    if (_ownedQueries.contains(scope)) {
-      final (error, stack) = _queryCleanupErrors[scope]!;
-      if (stack != null) Error.throwWithStackTrace(error, stack);
-      throw error;
-    }
   }
 
   @override
@@ -407,10 +456,8 @@ final class TimelineDisplayLease
       }
       _childrenDisplays.clear();
       _groupDisplays.clear();
-      _currentDisplays.clear();
       imageResources.retire();
       retirement.value = true;
-      _queries = null;
     }
     for (final scope in _ownedQueries.toList()) {
       unawaited(_settleQueries(scope));
@@ -419,7 +466,7 @@ final class TimelineDisplayLease
     return _released.future;
   }
 
-  Future<void> _settleQueries(ConversationQueryScope scope) {
+  Future<void> _settleQueries(Object scope) {
     if (!_ownedQueries.contains(scope)) return Future.value();
     final existing = _closingQueries[scope];
     if (existing != null) return existing;
@@ -430,13 +477,19 @@ final class TimelineDisplayLease
     return task;
   }
 
-  Future<void> _closeQuery(
-    ConversationQueryScope scope,
-    Future<void> closing,
-  ) async {
+  Future<void> _closeQuery(Object scope, Future<void> closing) async {
     try {
-      scope.retire();
-      final report = await scope.close();
+      final report = await switch (scope) {
+        HistoryQueryScope value => () async {
+          value.retire();
+          return value.close();
+        }(),
+        CurrentQueryScope value => () async {
+          value.retire();
+          return value.close();
+        }(),
+        _ => throw StateError('Unknown timeline query scope'),
+      };
       if (report.complete) {
         _ownedQueries.remove(scope);
         _queryCleanupErrors.remove(scope);
@@ -473,6 +526,8 @@ final class TimelineDisplayLease
     _presentation = null;
     imageResources.release();
     live.dispose();
+    currentCollectionError.dispose();
+    renderedCurrentAtoms.dispose();
     _expansions.clear();
     retirement.dispose();
     controller.dispose();
@@ -488,7 +543,7 @@ final class TimelineSessionOwner {
 
   final AnyworkClient client;
   final LatestValue<TimelineSessionViewState?> source = LatestValue(null);
-  Observation? _consumerObservation;
+  _TimelineRead? _consumerObservation;
   ConversationSession? _observedSession;
   String? _observedThread;
   TimelineDisplayLease? _current;
@@ -549,6 +604,40 @@ final class TimelineSessionOwner {
       selectionStartedMicros: started,
       layoutCompletedMicros: layoutCompletedMicros,
     );
+  }
+
+  /// Reached only after an actually mounted CurrentAtom body subtree completed
+  /// layout. This is display evidence, not an execution or atom-existence guess.
+  void recordCurrentContentLayout(
+    TimelineDisplayLease lease,
+    String itemId,
+    int _,
+  ) {
+    if (_closed ||
+        !identical(_current, lease) ||
+        lease.isRetired ||
+        lease._mode != TimelineDisplayMode.live ||
+        lease.live.value?.currentAtoms.any((atom) => atom.id == itemId) !=
+            true) {
+      return;
+    }
+    if (lease._renderedCurrentAtomIds.add(itemId)) {
+      lease.renderedCurrentAtoms.value++;
+    }
+  }
+
+  void recordCurrentContentUnmounted(
+    TimelineDisplayLease lease,
+    String itemId,
+  ) {
+    if (!identical(_current, lease) ||
+        lease.isRetired ||
+        lease._mode != TimelineDisplayMode.live) {
+      return;
+    }
+    if (lease._renderedCurrentAtomIds.remove(itemId)) {
+      lease.renderedCurrentAtoms.value++;
+    }
   }
 
   /// Updated from the actual viewport before the first consumer is attached.
@@ -714,36 +803,72 @@ final class TimelineSessionOwner {
       if (_ownsRead(read)) {
         _publishState(connection: TimelineConnectionPhase.opening);
       }
-      final reader = await client.conversations.openTimelineReader(
+      final history = await client.conversations.openHistoryReader(
+        read.session.threadId,
+      );
+      read.history = history;
+      if (!_ownsRead(read)) return;
+      final current = await client.conversations.openCurrentReader(
         read.session.threadId,
         demand: demand,
       );
-      read.reader = reader;
+      read.current = current;
       if (!_ownsRead(read)) return;
-      final metadata = reader.metadata;
-      if (metadata.presentationVersion != presentationVersion ||
-          metadata.readerProtocolVersion != timelineReaderProtocolVersion ||
-          metadata.readerId.isEmpty) {
+      if (history.metadata.historyProtocolVersion != historyProtocolVersion ||
+          history.metadata.readerId.isEmpty ||
+          current.metadata.currentProtocolVersion != currentProtocolVersion ||
+          current.metadata.readerId.isEmpty) {
         throw const ConversationContinuityError(
-          'Unsupported timeline reader handshake',
+          'Unsupported history or current reader handshake',
         );
       }
-      read.cursor = metadata.initialCursor;
-      var failures = 0;
+      final initial = await history.timelinePage(
+        demand: HistoryDemand(
+          maxRows: demand.maxItems,
+          maxBytes: demand.maxBytes,
+        ),
+      );
+      if (!_ownsRead(read)) return;
+      final initialView = current.initialView;
+      await _serialize(
+        () => _set(
+          read,
+          initial.entries,
+          initialView,
+          cut: initial.cut,
+          olderCursor: initial.next,
+        ),
+      );
+      unawaited(_runCurrentWatch(read, demand));
+      var cut = initial.cut;
       while (_ownsRead(read)) {
-        ViewUpdate update;
+        HistoryCut changed;
         try {
-          update = await reader.next(after: read.cursor!);
-          failures = 0;
+          changed = await history.waitChanged(cut);
         } catch (error) {
           if (!_ownsRead(read)) break;
-          if (error is StudioFailure && error.retryable && failures++ < 3) {
-            continue; // Same capability and applied cursor replay the original response.
-          }
           rethrow;
         }
         if (!_ownsRead(read)) break;
-        await _serialize(() => _applyUpdate(read, update));
+        cut = changed;
+        final modeIntent = _current?._modeIntent;
+        final page = await history.timelinePage(
+          cut: changed,
+          demand: HistoryDemand(
+            maxRows: demand.maxItems,
+            maxBytes: demand.maxBytes,
+          ),
+        );
+        if (page.cut != changed) {
+          throw const ConversationContinuityError(
+            'History page changed its requested cut',
+          );
+        }
+        final view = await current.snapshot(demand);
+        if (!_ownsRead(read) || modeIntent == null) break;
+        await _serialize(
+          () => _applyLatestHistory(read, page, view, modeIntent),
+        );
       }
     } catch (error) {
       if (_ownsRead(read)) {
@@ -751,21 +876,74 @@ final class TimelineSessionOwner {
           connection: TimelineConnectionPhase.failed,
           connectionError: error is _TimelineApplyFailure ? error.cause : error,
         );
-        if (read.restarts < 1 &&
-            (error is _TimelineApplyFailure ||
-                studioFailureReason(error) ==
-                    StudioFailureReason.conversationResyncRequired)) {
-          read.cancel();
-          _attachConsumer(
-            read.selection,
-            read.session,
-            restarts: read.restarts + 1,
-          );
-        }
+        _restart(read);
       }
     } finally {
       await read.close();
     }
+  }
+
+  Future<void> _runCurrentWatch(_TimelineRead read, ReadDemand demand) async {
+    try {
+      final reader = read.current;
+      if (reader == null || !_ownsRead(read)) return;
+      final watch = await reader.watch(
+        after: reader.initialView.revision,
+        demand: demand,
+      );
+      read.currentWatch = watch;
+      if (!_ownsRead(read)) return;
+      read.currentSubscription = watch.frames.listen(
+        (frame) {
+          if (!_ownsRead(read)) return;
+          switch (frame) {
+            case ResetCurrentFrame(:final view):
+              unawaited(_serialize(() => _applyCurrentView(read, view)));
+            case ProjectionCurrentFrame(:final revision, :final projection):
+              unawaited(
+                _serialize(
+                  () => _applyCurrentProjection(read, revision, projection),
+                ),
+              );
+            case NotificationCurrentFrame():
+              break;
+          }
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!_ownsRead(read)) return;
+          _publishState(
+            connection: TimelineConnectionPhase.failed,
+            connectionError: error,
+          );
+          _restart(read);
+        },
+        onDone: () {
+          if (_ownsRead(read)) {
+            _publishState(
+              connection: TimelineConnectionPhase.failed,
+              connectionError: const ConversationStreamEnded(),
+            );
+            _restart(read);
+          }
+        },
+      );
+    } catch (error) {
+      if (!_ownsRead(read)) return;
+      _publishState(
+        connection: TimelineConnectionPhase.failed,
+        connectionError: error,
+      );
+      read.cancel();
+    }
+  }
+
+  void _restart(_TimelineRead read) {
+    if (!_ownsRead(read) || read.restarts >= 1) {
+      read.cancel();
+      return;
+    }
+    read.cancel();
+    _attachConsumer(read.selection, read.session, restarts: read.restarts + 1);
   }
 
   void _detach() {
@@ -775,215 +953,396 @@ final class TimelineSessionOwner {
     consumer?.cancel();
   }
 
-  Future<void> _applyUpdate(_TimelineRead read, ViewUpdate update) async {
-    if (!_ownsRead(read)) return;
-    if (read.cursor == update.next) return;
-    final history = update.history;
-    final isSet = history.placement == HistoryPlacement.set;
-    var valid =
-        update.presentationVersion == presentationVersion &&
-        update.readerProtocolVersion == timelineReaderProtocolVersion &&
-        read.cursor == update.after &&
-        update.next != update.after &&
-        update.next.value.isNotEmpty &&
-        history.throughOrder >= 0 &&
-        history.throughOrder.bitLength <= 63 &&
-        (isSet
-            ? read.through == null &&
-                  history.fromOrder == null &&
-                  update.tail is ReplaceTail
-            : read.through != null &&
-                  history.fromOrder == read.through &&
-                  history.throughOrder >= read.through! &&
-                  history.before == null);
-    final ids = <String>{};
-    var order = history.fromOrder ?? 0;
-    for (final block in history.blocks) {
-      valid =
-          valid &&
-          block.id.isNotEmpty &&
-          ids.add(block.id) &&
-          block.blockOrder > order &&
-          block.blockOrder <= history.throughOrder;
-      order = block.blockOrder;
+  Future<void> _applyCurrentView(_TimelineRead read, CurrentView view) async {
+    final current = _current;
+    if (!_ownsRead(read) ||
+        current == null ||
+        current.isRetired ||
+        !identical(current.history, read.history) ||
+        !identical(current.current, read.current)) {
+      return;
     }
-    final previous = _current?.live.value;
-    TailSnapshot? tail;
-    switch (update.tail) {
-      case ReplaceTail(:final snapshot):
-        tail = snapshot;
-        valid =
-            valid &&
-            snapshot.readyFrontier == history.throughOrder &&
-            snapshot.revision >= 0 &&
-            snapshot.layoutRevision >= 0 &&
-            (isSet ||
-                previous == null ||
-                (snapshot.layoutRevision >= previous.layoutRevision &&
-                    snapshot.revision >= previous.revision));
-        var last = history.throughOrder;
-        String? work;
-        var works = 0;
-        for (final block in snapshot.blocks) {
-          valid =
-              valid &&
-              block.id.isNotEmpty &&
-              ids.add(block.id) &&
-              block.blockOrder > last &&
-              block.blockOrder.bitLength <= 63;
-          last = block.blockOrder;
-          if (block.state == DisplayBlockState.open &&
-              block.body is WorkDisplayBlock) {
-            work = block.id;
-            works++;
-          }
-        }
-        valid = valid && works <= 1 && snapshot.currentWorkId == work;
-      case KeepTail():
-        valid =
-            valid &&
-            previous != null &&
-            !isSet &&
-            history.throughOrder > read.through!;
-        if (previous != null) {
-          tail = TailSnapshot(
-            revision: previous.revision,
-            layoutRevision: previous.layoutRevision,
-            readyFrontier: previous.readyFrontier,
-            executionPresent: previous.executionPresent,
-            currentWorkId: ids.contains(previous.currentWorkId)
-                ? null
-                : previous.currentWorkId,
-            blocks: previous.blocks.where((b) => !ids.contains(b.id)).toList(),
-            older: previous.older,
-          );
-        }
-      case TailStatus(
-        :final baseLayoutRevision,
-        :final revision,
-        :final currentWorkId,
-        :final thinkingSummary,
-      ):
-        valid =
-            valid &&
-            previous != null &&
-            !isSet &&
-            history.blocks.isEmpty &&
-            history.throughOrder == read.through &&
-            previous.layoutRevision == baseLayoutRevision &&
-            previous.currentWorkId == currentWorkId &&
-            revision >= previous.revision;
-        if (previous != null) {
-          tail = TailSnapshot(
-            revision: revision,
-            layoutRevision: previous.layoutRevision,
-            readyFrontier: previous.readyFrontier,
-            executionPresent: previous.executionPresent,
-            currentWorkId: currentWorkId,
-            older: previous.older,
-            blocks: [
-              for (final b in previous.blocks)
-                if (b.id != currentWorkId)
-                  b
-                else
-                  LiveDisplayBlock(
-                    id: b.id,
-                    blockOrder: b.blockOrder,
-                    source: b.source,
-                    body: b.body,
-                    state: b.state,
-                    hasUnfinishedMembers: b.hasUnfinishedMembers,
-                    thinkingSummary: thinkingSummary,
-                  ),
-            ],
-          );
-        }
+    await current._admitCurrentProject(view);
+  }
+
+  Future<void> _applyCurrentProjection(
+    _TimelineRead read,
+    CurrentRevision revision,
+    CurrentProjection projection,
+  ) async {
+    final current = _current;
+    if (!_ownsRead(read) ||
+        current == null ||
+        current.isRetired ||
+        !identical(current.history, read.history) ||
+        !identical(current.current, read.current)) {
+      return;
     }
-    if (!valid || tail == null) {
-      throw const ConversationContinuityError(
-        'Invalid timeline cursor, range or tail',
-      );
-    }
-    if (isSet) {
-      await _set(read, history, tail);
-    } else {
-      final current = _current;
-      if (current == null || current.isRetired) {
-        throw const StaleConversationScope();
+    await current._admitCurrentProjection(revision, projection);
+  }
+}
+
+extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
+  CurrentAtomSnapshot _snapshotCurrent(
+    CurrentRevision revision,
+    CurrentProjection projection,
+  ) {
+    final atoms = projection.atoms.isNotEmpty
+        ? projection.atoms
+        : _loadedCurrentAtoms;
+    final snapshot = CurrentAtomSnapshot(
+      revision: revision.revision,
+      currentAtoms: atoms,
+    );
+    return snapshot;
+  }
+
+  Future<void> _applyCurrentRows(
+    CurrentRevision revision,
+    CurrentProjection projection,
+  ) async {
+    if (_retired) return;
+    final atoms = projection.atoms.isNotEmpty
+        ? projection.atoms
+        : _loadedCurrentAtoms;
+    final history = [
+      for (final message in _controller?.messages ?? const <Message>[])
+        (message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit)
+            .block,
+    ];
+    final overlay = TimelineCurrentProjection.overlayHistory(
+      history,
+      atoms: atoms,
+      ownerId: revision.ownerId,
+    );
+    final snapshot = _snapshotCurrent(revision, projection);
+    await _mutate(() async {
+      if (_retired) return;
+      if (_mode == TimelineDisplayMode.live && overlay.isNotEmpty) {
+        await _presentation!.replaceBlocks(overlay);
       }
-      await current._mutate(() async {
-        // Head admission revokes mutable body capability before any async UI
-        // handoff, not when a later member result or Widget rebuild arrives.
-        current._requireSealedMembers([
-          for (final block in history.blocks)
-            if (block.body is WorkDisplayBlock) block.id,
-          for (final block in tail!.blocks)
-            if (block.state == DisplayBlockState.sealed &&
-                block.body is WorkDisplayBlock)
-              block.id,
-        ]);
-        if (!_ownsRead(read) ||
-            !identical(_current, current) ||
-            current.isRetired) {
+      if (_retired) return;
+      live.value = snapshot;
+    });
+  }
+
+  Future<void> _admitCurrentProject(CurrentView view) async {
+    await _admitCurrentProjection(view.revision, view.projection);
+  }
+
+  Future<void> _admitCurrentProjection(
+    CurrentRevision revision,
+    CurrentProjection projection,
+  ) async {
+    if (_retired) return;
+    _latestCurrentRevision = revision;
+    _latestCurrentProjection = projection;
+    final scope = _currentQueries;
+    if (scope == null) return;
+    final atomRef = projection.collections
+        .where((reference) => reference.collection == 'atoms')
+        .firstOrNull;
+    if (atomRef != _atomCollection) {
+      _atomCollection = atomRef;
+      _loadedCurrentAtoms = const [];
+      currentCollectionError.value = null;
+    }
+    if (!_retired) await _applyCurrentRows(revision, projection);
+    if (atomRef != null && _loadedCurrentAtoms.isEmpty && !_retired) {
+      unawaited(_loadCurrentAtomsPage(scope, atomRef, projection));
+    }
+  }
+
+  Future<void> _loadCurrentAtomsPage(
+    CurrentReadScope scope,
+    CurrentCollectionRef reference,
+    CurrentProjection projection,
+  ) async {
+    try {
+      await _loadCurrentAtoms(scope, reference);
+      final owner = _read.owner;
+      await owner._serialize(() async {
+        if (_retired ||
+            !owner._ownsRead(_read) ||
+            !identical(owner._current, this) ||
+            reference != _atomCollection) {
           return;
         }
-        if (history.blocks.isNotEmpty) {
-          try {
-            await current._presentation!.applyBlocks(
-              history.blocks,
-              ChatPlacement.append,
-            );
-          } catch (error) {
-            throw _TimelineApplyFailure(error);
-          }
+        final latestRevision = _latestCurrentRevision;
+        if (latestRevision == null) return;
+        currentCollectionError.value = null;
+        try {
+          await _applyCurrentRows(
+            latestRevision,
+            _latestCurrentProjection ?? projection,
+          );
+        } catch (error) {
+          throw _TimelineApplyFailure(error);
         }
-        if (!_ownsRead(read) ||
-            !identical(_current, current) ||
-            current.isRetired) {
-          return;
-        }
-        current.live.value = tail;
       });
-      if (!_ownsRead(read) ||
-          !identical(_current, current) ||
-          current.isRetired) {
-        return;
+    } catch (error) {
+      final owner = _read.owner;
+      if (!_retired &&
+          owner._ownsRead(_read) &&
+          identical(owner._current, this) &&
+          reference == _atomCollection) {
+        if (error is _TimelineApplyFailure) {
+          owner._publishState(
+            connection: TimelineConnectionPhase.failed,
+            connectionError: error.cause,
+          );
+          owner._restart(_read);
+        } else {
+          currentCollectionError.value = error;
+        }
       }
-      if (history.blocks.isNotEmpty) {
-        current._firstOrder ??= history.blocks.first.blockOrder;
-        current._recordBatch(ChatPlacement.append);
+    }
+  }
+
+  Future<void> _loadCurrentAtoms(
+    CurrentReadScope scope,
+    CurrentCollectionRef reference,
+  ) async {
+    if (_retired || !scope.isActive || reference != _atomCollection) {
+      throw const StaleConversationScope();
+    }
+    final existing = _currentAtomsLoading;
+    if (existing != null) {
+      if (_currentAtomsLoadingRef == reference) return existing;
+      try {
+        await existing;
+      } catch (_) {
+        // This failure belongs to a superseded collection reference. The new
+        // reference still needs its own read and must expose its own result.
       }
-      _markPresentedInputs(
-        read.session.threadId,
-        history.blocks,
-        update.tail is ReplaceTail ? tail.blocks : const [],
+      return _loadCurrentAtoms(scope, reference);
+    }
+    final completion = Completer<void>();
+    _currentAtomsLoading = completion.future;
+    _currentAtomsLoadingRef = reference;
+    completion.complete(() async {
+      try {
+        final page = await scope.pageCollection(
+          reference: reference,
+          continuation: null,
+          demand: demand,
+        );
+        if (_retired || reference != _atomCollection) return;
+        if (page.revision != reference.revision) {
+          throw const StaleConversationScope();
+        }
+        final atoms = <CurrentAtom>[];
+        for (final entry in page.entries) {
+          atoms.add(await _decodeCurrentAtom(scope, entry));
+        }
+        if (_retired || reference != _atomCollection) return;
+        _loadedCurrentAtoms = List.unmodifiable(atoms);
+      } finally {
+        _currentAtomsLoading = null;
+        _currentAtomsLoadingRef = null;
+      }
+    }());
+    return completion.future;
+  }
+
+  Future<CurrentAtom> _decodeCurrentAtom(
+    CurrentReadScope scope,
+    CurrentCollectionEntry entry,
+  ) async {
+    final payload = switch (entry.payload) {
+      InlineCurrentPayload() => entry.payload,
+      DeferredCurrentPayload(:final reference, :final byteLength) =>
+        InlineCurrentPayload(
+          bytes: await _readCurrentPayload(scope, reference, byteLength),
+        ),
+    };
+    return decodeCurrentAtomPayload(payload);
+  }
+
+  Future<List<int>> _readCurrentPayload(
+    CurrentReadScope scope,
+    CurrentContentRef reference,
+    int byteLength,
+  ) async {
+    if (byteLength > demand.maxBytes) {
+      throw const ConversationContinuityError(
+        'Current collection entry exceeds the active demand',
       );
-      if (history.blocks.isNotEmpty) {
-        _publishState(
-          hasNewOutput: current.mode == TimelineDisplayMode.history,
+    }
+    final bytes = <int>[];
+    while (bytes.length < byteLength) {
+      final remaining = byteLength - bytes.length;
+      final window = await scope.readBody(
+        reference: reference,
+        range: ContentRange(
+          offset: bytes.length,
+          maxBytes: remaining < 64 * 1024 ? remaining : 64 * 1024,
+        ),
+      );
+      if (window.offset != bytes.length ||
+          window.generation != reference.generation ||
+          window.availableThrough != byteLength ||
+          window.bytes.isEmpty) {
+        throw const ConversationContinuityError(
+          'Current collection body is discontinuous',
+        );
+      }
+      bytes.addAll(window.bytes);
+      if (window.sealed && bytes.length < byteLength) {
+        throw const ConversationContinuityError(
+          'Sealed Current collection body is incomplete',
         );
       }
     }
-    if (!_ownsRead(read)) return;
-    read.through = history.throughOrder;
-    read.cursor = update.next;
+    return bytes;
+  }
+
+  int? get _firstLoadedOrder {
+    final messages = _controller?.messages;
+    if (messages == null || messages.isEmpty) return null;
+    final unit =
+        messages.first.metadata?[timelineDisplayUnitKey]
+            as TimelineDisplayUnit?;
+    return unit?.blockOrder;
+  }
+}
+
+extension TimelineSessionAccess on TimelineSessionOwner {
+  Future<void> _applyLatestHistory(
+    _TimelineRead read,
+    HistoryTimelinePage page,
+    CurrentView view,
+    int modeIntent,
+  ) async {
+    final current = _current;
+    if (!_ownsRead(read) ||
+        current == null ||
+        current.isRetired ||
+        !identical(current.history, read.history)) {
+      return;
+    }
+    final blocks = TimelineHistoryProjection.blocks(
+      page.entries.reversed,
+      cut: page.cut,
+    );
+    if (current._mode == TimelineDisplayMode.history) {
+      if (current._liveReturnPending && current._modeIntent == modeIntent) {
+        await _applyAcceptedLiveWindow(
+          read,
+          current,
+          page,
+          view,
+          blocks,
+          modeIntent: modeIntent,
+          transitionFromHistory: true,
+          clearPaging: false,
+        );
+        return;
+      }
+      await current._admitCurrentProject(view);
+      if (!_ownsRead(read)) return;
+      _publishState(
+        connection: TimelineConnectionPhase.ready,
+        connectionError: null,
+        hasNewOutput: page.cut != current._historyCut,
+      );
+      return;
+    }
+    // A latest-page read started before entering History uses the same current
+    // reader, but its History page is not the fixed browsing window. It still
+    // carries the live-output notification needed by Return to live.
+    if (current._modeIntent != modeIntent) return;
+    await _applyAcceptedLiveWindow(
+      read,
+      current,
+      page,
+      view,
+      blocks,
+      modeIntent: modeIntent,
+      transitionFromHistory: false,
+      clearPaging: false,
+    );
+  }
+
+  Future<void> _applyAcceptedLiveWindow(
+    _TimelineRead read,
+    TimelineDisplayLease current,
+    HistoryTimelinePage page,
+    CurrentView view,
+    List<DisplayBlock> blocks, {
+    required int modeIntent,
+    required bool transitionFromHistory,
+    required bool clearPaging,
+  }) async {
+    if (!_ownsRead(read) ||
+        !identical(_current, current) ||
+        current.isRetired ||
+        current._modeIntent != modeIntent ||
+        transitionFromHistory && !current._liveReturnPending) {
+      return;
+    }
+    await current._mutate(() async {
+      try {
+        await current._presentation!.reconcileBlocks(blocks);
+      } catch (error) {
+        throw _TimelineApplyFailure(error);
+      }
+      current.live.value = current._snapshotCurrent(
+        view.revision,
+        view.projection,
+      );
+      current._historyCut = page.cut;
+      current._before = page.next;
+      current._hasOlder = page.next != null;
+      current._firstOrder = current._firstLoadedOrder;
+      current._mode = TimelineDisplayMode.live;
+      current._liveWindowGeneration++;
+      current._liveReturnPending = false;
+      current._recordBatch(TimelineApplyPlacement.append);
+    });
+    if (!_ownsRead(read) ||
+        !identical(_current, current) ||
+        current.isRetired ||
+        current._modeIntent != modeIntent) {
+      return;
+    }
+    await current._admitCurrentProject(view);
+    if (!_ownsRead(read) ||
+        !identical(_current, current) ||
+        current.isRetired ||
+        current._modeIntent != modeIntent ||
+        current._mode != TimelineDisplayMode.live) {
+      return;
+    }
+    _markPresentedInputs(
+      read.session.threadId,
+      blocks,
+      current.live.value?.currentAtoms ?? const [],
+    );
     _publishState(
       connection: TimelineConnectionPhase.ready,
       connectionError: null,
+      hasNewOutput: false,
+      isLoadingOlder: clearPaging ? false : null,
+      olderError: clearPaging ? null : _unset,
     );
   }
 
   Future<void> _set(
     _TimelineRead read,
-    HistoryDelta batch,
-    TailSnapshot live,
-  ) async {
+    List<HistoryTimelineEntry> entries,
+    CurrentView currentView, {
+    required HistoryCut cut,
+    required String? olderCursor,
+  }) async {
     final session = read.session;
-    final next = TimelineDisplayLease(
+    final next = TimelineDisplayLease._(
+      read: read,
       threadId: session.threadId,
       generation: ++_generation,
       demand: _readDemand!,
-      reader: read.reader!,
+      history: read.history!,
+      current: read.current!,
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
@@ -992,15 +1351,24 @@ final class TimelineSessionOwner {
           : null,
     );
     _preparingDisplays.add(next);
+    final live = next._snapshotCurrent(
+      currentView.revision,
+      currentView.projection,
+    );
     try {
       final presentation = next._presentation!;
       await next._mutate(() async {
         try {
-          await presentation.applyBlocks(batch.blocks, ChatPlacement.set);
+          await presentation.applyBlocks(
+            TimelineHistoryProjection.blocks(entries.reversed, cut: cut),
+            TimelineApplyPlacement.set,
+          );
         } catch (error) {
           throw _TimelineApplyFailure(error);
         }
-        if (_ownsRead(read)) next.live.value = live;
+        if (_ownsRead(read)) {
+          next.live.value = live;
+        }
       });
     } catch (_) {
       _preparingDisplays.remove(next);
@@ -1012,31 +1380,42 @@ final class TimelineSessionOwner {
       _retire(next);
       return;
     }
-    next._before = batch.before;
-    next._firstOrder = batch.blocks.firstOrNull?.blockOrder;
-    next._recordBatch(ChatPlacement.set);
-    next._hasOlder = batch.before != null;
+    final blocks = TimelineHistoryProjection.blocks(entries.reversed, cut: cut);
+    next._historyCut = cut;
+    next._before = olderCursor;
+    next._firstOrder = blocks.firstOrNull?.blockOrder;
+    next._recordBatch(TimelineApplyPlacement.set);
+    next._hasOlder = olderCursor != null;
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
-    _markPresentedInputs(session.threadId, batch.blocks, live.blocks);
+    _markPresentedInputs(session.threadId, blocks, live.currentAtoms);
     _olderInFlight = null;
+    await next._admitCurrentProject(currentView);
     if (previous != null) _retire(previous);
-    _publishState(isLoadingOlder: false, olderError: null, hasNewOutput: false);
+    if (!_ownsRead(read) || !identical(_current, next) || next.isRetired) {
+      return;
+    }
+    _publishState(
+      connection: TimelineConnectionPhase.ready,
+      connectionError: null,
+      isLoadingOlder: false,
+      olderError: null,
+      hasNewOutput: false,
+    );
   }
 
   void _markPresentedInputs(
     String threadId,
     List<DisplayBlock> history,
-    List<LiveDisplayBlock> tail,
+    List<CurrentAtom> currentAtoms,
   ) {
     final inputIds = <String>[
       for (final block in history)
         if (block.body case SingleDisplayBlock(:final record))
           if (record.atom.source case InputChatSource(:final inputId)) inputId,
-      for (final block in tail)
-        if (block.body case SingleDisplayBlock(:final record))
-          if (record.atom.source case InputChatSource(:final inputId)) inputId,
+      for (final atom in currentAtoms)
+        if (atom.source case InputChatSource(:final inputId)) inputId,
     ];
     if (inputIds.isEmpty) return;
     client.drafts.existingComposer(threadId)?.markInputsPresented(inputIds);
@@ -1093,20 +1472,149 @@ final class TimelineSessionOwner {
     if (current == null) return Future.value();
     switch (command) {
       case TimelineEnterHistory():
-        current._mode = TimelineDisplayMode.history;
-        _publishState();
+        return _enterHistory(current);
       case TimelineReturnLive():
         return returnToLive(threadId);
     }
-    return Future.value();
   }
 
-  /// Reading intent changes no Session, consumer, query scope or loaded window.
-  Future<void> returnToLive(String threadId) async {
+  Future<void> _enterHistory(TimelineDisplayLease current) async {
+    final read = _consumerObservation;
+    try {
+      await _serialize(() async {
+        if (!identical(_current, current) || current.isRetired) return;
+        final freezeCurrent = current._mode == TimelineDisplayMode.live;
+        final invalidateReturn = current._liveReturnPending;
+        if (!freezeCurrent && !invalidateReturn) return;
+        current.enterHistoryMode();
+        if (freezeCurrent) {
+          _publishState(hasNewOutput: false);
+          await current.freezeForHistory();
+        }
+      });
+    } catch (error) {
+      if (identical(_current, current) &&
+          !current.isRetired &&
+          read != null &&
+          _ownsRead(read)) {
+        _publishState(
+          connection: TimelineConnectionPhase.failed,
+          connectionError: error is _TimelineApplyFailure ? error.cause : error,
+        );
+        _restart(read);
+        rethrow;
+      }
+    }
+  }
+
+  /// Rebuilds the live window from the same History reader after a history view.
+  Future<void> returnToLive(String threadId) {
     final current = lease(threadId);
-    if (current == null) return;
-    current._mode = TimelineDisplayMode.live;
-    _publishState(hasNewOutput: false);
+    final read = _consumerObservation;
+    if (current == null ||
+        read == null ||
+        read.isCancelled ||
+        !identical(current.history, read.history)) {
+      return Future.value();
+    }
+    if (current._mode == TimelineDisplayMode.live &&
+        !current._liveReturnPending &&
+        !(source.value?.hasNewOutput ?? false)) {
+      return Future.value();
+    }
+    return _readSlot((
+      current,
+      current._liveWindowGeneration,
+      'return-live',
+    ), () => _reloadLatestWindow(current, read));
+  }
+
+  Future<void> _reloadLatestWindow(
+    TimelineDisplayLease current,
+    _TimelineRead read,
+  ) async {
+    int? modeIntent;
+    int? liveGeneration;
+    TimelineDisplayMode? sourceMode;
+    try {
+      await _serialize(() async {
+        if (!identical(_current, current) ||
+            current.isRetired ||
+            !_ownsRead(read)) {
+          return;
+        }
+        sourceMode = current._mode;
+        liveGeneration = current._liveWindowGeneration;
+        modeIntent = current.requestLiveWindow();
+      });
+      final requestedMode = sourceMode;
+      final requestedGeneration = liveGeneration;
+      final requestedIntent = modeIntent;
+      if (requestedMode == null ||
+          requestedGeneration == null ||
+          requestedIntent == null) {
+        return;
+      }
+      final scope = current._historyQueries;
+      if (scope == null || !scope.isActive) return;
+      final demand = _readDemand ?? current.demand;
+      final page = await scope.timelinePage(
+        demand: HistoryDemand(
+          maxRows: demand.maxItems,
+          maxBytes: demand.maxBytes,
+        ),
+      );
+      final view = await current.current.snapshot(demand);
+      if (!_ownsRead(read) ||
+          current._modeIntent != requestedIntent ||
+          current._mode != requestedMode ||
+          !current._liveReturnPending) {
+        return;
+      }
+      await _serialize(() async {
+        if (!identical(_current, current) ||
+            current.isRetired ||
+            !_ownsRead(read) ||
+            current._modeIntent != requestedIntent ||
+            current._mode != requestedMode ||
+            !current._liveReturnPending) {
+          return;
+        }
+        // A newer accepted live page wins over this older return query.
+        if (current._liveWindowGeneration != requestedGeneration) return;
+        final blocks = TimelineHistoryProjection.blocks(
+          page.entries.reversed,
+          cut: page.cut,
+        );
+        await _applyAcceptedLiveWindow(
+          read,
+          current,
+          page,
+          view,
+          blocks,
+          modeIntent: requestedIntent,
+          transitionFromHistory: requestedMode == TimelineDisplayMode.history,
+          clearPaging: true,
+        );
+      });
+    } catch (error) {
+      final requestedMode = sourceMode;
+      final requestedIntent = modeIntent;
+      if (requestedMode != null &&
+          requestedIntent != null &&
+          _ownsRead(read) &&
+          current._modeIntent == requestedIntent &&
+          current._mode == requestedMode &&
+          current._liveReturnPending) {
+        _publishState(
+          connection: TimelineConnectionPhase.failed,
+          connectionError: error is _TimelineApplyFailure ? error.cause : error,
+          hasNewOutput: true,
+        );
+        _restart(read);
+        rethrow;
+      }
+    }
   }
 
   /// Returns a mounted composer to Chat's latest edge without waiting for paint.
@@ -1128,8 +1636,11 @@ final class TimelineSessionOwner {
     }
 
     if (!current()) return;
-    lease._mode = TimelineDisplayMode.live;
-    _publishState(hasNewOutput: false);
+    if (lease._mode != TimelineDisplayMode.live ||
+        lease._liveReturnPending ||
+        (source.value?.hasNewOutput ?? false)) {
+      unawaited(returnToLive(threadId).catchError((Object _, StackTrace _) {}));
+    }
     if (!current()) return;
     WidgetsBinding.instance.ensureVisualUpdate();
   }
@@ -1147,10 +1658,15 @@ final class TimelineSessionOwner {
     if (current == null || current.generation != generation) {
       return Future.value();
     }
-    return _readSlot((
-      current,
-      'history',
-    ), () => _loadOlder(current, retry: retry));
+    return _readSlot((current, current._modeIntent, 'history'), () async {
+      await _enterHistory(current);
+      if (!identical(_current, current) ||
+          current.isRetired ||
+          current._mode != TimelineDisplayMode.history) {
+        return;
+      }
+      await _loadOlder(current, retry: retry);
+    });
   }
 
   /// Main paging is single-flight and revalidates the captured display lease.
@@ -1193,19 +1709,32 @@ final class TimelineSessionOwner {
     if (!identical(_current, current) || current.isRetired) return;
     if (!current.hasOlder ||
         current._before == null ||
+        current._mode != TimelineDisplayMode.history ||
         (!retry && source.value?.olderError != null)) {
       return;
     }
     final before = current._before!;
+    final modeIntent = current._modeIntent;
     _publishState(isLoadingOlder: true, olderError: null);
     try {
-      final scope = current.queries;
-      if (scope is! TimelineQueryScope) {
+      final scope = current._historyQueries;
+      if (scope == null) {
         throw const StaleConversationScope();
       }
-      final page = await scope.loadTimelineOlder(
-        before: before,
-        demand: _readDemand ?? current.demand,
+      final cut = current._historyCut;
+      if (cut == null) {
+        throw const ConversationContinuityError(
+          'History window has no fixed cut',
+        );
+      }
+      final demand = _readDemand ?? current.demand;
+      final page = await scope.timelinePage(
+        cut: cut,
+        cursor: before,
+        demand: HistoryDemand(
+          maxRows: demand.maxItems,
+          maxBytes: demand.maxBytes,
+        ),
       );
       if (!identical(_current, current) ||
           current.isRetired ||
@@ -1216,35 +1745,49 @@ final class TimelineSessionOwner {
         if (!identical(_current, current) ||
             current.isRetired ||
             !scope.isActive ||
-            current._before != before) {
+            current._before != before ||
+            current._modeIntent != modeIntent ||
+            current._mode != TimelineDisplayMode.history) {
           return;
         }
-        if (page.presentationVersion != presentationVersion ||
-            page.before == before) {
+        if (page.next == before || page.entries.any((e) => e.rowKey.isEmpty)) {
           throw const ConversationContinuityError('Invalid history page');
         }
+        if (page.cut != cut) {
+          throw const ConversationContinuityError(
+            'History older page changed its fixed cut',
+          );
+        }
+        final blocks = TimelineHistoryProjection.blocks(
+          page.entries.reversed,
+          cut: cut,
+        );
         var order = 0;
         final ids = <String>{};
-        for (final block in page.blocks) {
+        for (final block in blocks) {
           if (block.id.isEmpty ||
               !ids.add(block.id) ||
               block.blockOrder <= order ||
-              block.blockOrder > page.ceiling ||
-              page.ceiling.bitLength > 63) {
+              block.blockOrder.bitLength > 63) {
             throw const ConversationContinuityError('Invalid history range');
           }
           order = block.blockOrder;
         }
-        if (page.blocks.isNotEmpty &&
+        if (blocks.isNotEmpty &&
             current._firstOrder != null &&
-            page.blocks.last.blockOrder >= current._firstOrder!) {
+            blocks.last.blockOrder >= current._firstOrder!) {
           throw const ConversationContinuityError('History pages overlap');
         }
         await current._mutate(() async {
           try {
             await current._presentation!.applyBlocks(
-              page.blocks,
-              ChatPlacement.prepend,
+              blocks,
+              TimelineApplyPlacement.prepend,
+            );
+            await current._presentation!.trimNewest(
+              current.loadedCount > current._historyRowLimit
+                  ? current.loadedCount - current._historyRowLimit
+                  : 0,
             );
           } catch (error) {
             throw _TimelineApplyFailure(error);
@@ -1255,12 +1798,12 @@ final class TimelineSessionOwner {
             !scope.isActive) {
           return;
         }
-        if (page.blocks.isNotEmpty) {
-          current._firstOrder = page.blocks.first.blockOrder;
+        if (blocks.isNotEmpty) {
+          current._firstOrder = blocks.first.blockOrder;
         }
-        current._before = page.before;
-        current._hasOlder = page.before != null;
-        current._recordBatch(ChatPlacement.prepend);
+        current._before = page.next;
+        current._hasOlder = page.next != null;
+        current._recordBatch(TimelineApplyPlacement.prepend);
       });
       if (identical(_current, current) &&
           !current.isRetired &&
@@ -1447,16 +1990,19 @@ final class TimelineSessionOwner {
   }
 }
 
-final class _TimelineRead implements Observation {
+final class _TimelineRead {
   _TimelineRead(this.owner, this.selection, this.session, this.restarts);
   final ClientResourceId resourceId = _newTimelineResourceId();
   final TimelineSessionOwner owner;
   final int selection;
   final ConversationSession session;
   final int restarts;
-  TimelineReader? reader;
-  ViewCursor? cursor;
-  int? through;
+  HistoryReader? history;
+  CurrentReader? current;
+  CurrentWatch? currentWatch;
+  // ignore: cancel_subscriptions
+  StreamSubscription<CurrentFrame>? currentSubscription;
+  Future<void>? _currentSubscriptionCancel;
   Future<void>? task;
   final List<(Object, StackTrace)> closeErrors = [];
   (Object, StackTrace)? get closeError => closeErrors.firstOrNull;
@@ -1469,11 +2015,7 @@ final class _TimelineRead implements Observation {
   bool get closePending => _closeAttempt == null || _closePending;
   bool get canRetryClose =>
       _closeAttempt != null && !_closePending && closeError != null;
-  @override
   bool isCancelled = false;
-  @override
-  bool get isPaused => false;
-  @override
   void cancel() {
     if (isCancelled) return;
     isCancelled = true;
@@ -1481,21 +2023,18 @@ final class _TimelineRead implements Observation {
   }
 
   void _requestStop() {
-    final original = reader;
-    if (original == null || _stopRequested) return;
+    if (_stopRequested) return;
     _stopRequested = true;
     try {
-      original.requestClose();
+      history?.requestClose();
+      current?.requestClose();
+      currentWatch?.requestClose();
       requestError = null;
     } catch (error, stack) {
       requestError = (error, stack);
     }
   }
 
-  @override
-  void pause() => throw UnsupportedError('Timeline reader cannot be paused');
-  @override
-  void resume() {}
   Future<void> close() => _closeAttempt ?? _startCloseAttempt();
 
   Future<void> _startCloseAttempt() {
@@ -1510,7 +2049,20 @@ final class _TimelineRead implements Observation {
       Future<void>.sync(() async {
         _requestStop();
         try {
-          await reader?.close();
+          final historyReader = history;
+          final currentReader = current;
+          final watch = currentWatch;
+          currentReader?.requestClose();
+          watch?.requestClose();
+          await Future.wait<void>([
+            if (historyReader != null) historyReader.close(),
+            if (currentReader != null) currentReader.close(),
+            if (watch != null) watch.close(),
+          ]);
+          if (currentSubscription != null) {
+            await (_currentSubscriptionCancel ??= currentSubscription!
+                .cancel());
+          }
           closeErrors.clear();
           requestError = null;
           owner._reads.remove(this);
@@ -1533,5 +2085,140 @@ final class _TimelineRead implements Observation {
   Future<void> _joinAttempt() async {
     await task;
     await _closeAttempt;
+  }
+}
+
+final class HistoryGroupMembers implements DisplayMembers {
+  HistoryGroupMembers._(
+    this.scope,
+    this.reference,
+    this.groupClosed,
+    this.demand,
+    this.currentAtoms,
+    this.currentOwnerId,
+  );
+
+  static Future<HistoryGroupMembers> open(
+    HistoryReadScope scope, {
+    required DisplayBlockRef reference,
+    required bool groupClosed,
+    required ReadDemand demand,
+    required List<CurrentAtom> Function() currentAtoms,
+    required String? Function() currentOwnerId,
+  }) async {
+    if (reference.blockId.isEmpty || !scope.isActive) {
+      throw const StaleConversationScope();
+    }
+    return HistoryGroupMembers._(
+      scope,
+      reference,
+      groupClosed,
+      demand,
+      currentAtoms,
+      currentOwnerId,
+    );
+  }
+
+  final HistoryReadScope scope;
+  final DisplayBlockRef reference;
+  final bool groupClosed;
+  final ReadDemand demand;
+  final List<CurrentAtom> Function() currentAtoms;
+  final String? Function() currentOwnerId;
+  String? _cursor;
+  int _offset = 0;
+  bool _done = false;
+  bool _closed = false;
+
+  @override
+  Future<DisplayMemberBatch?> next() async {
+    if (_closed || !scope.isActive || _done) {
+      return null;
+    }
+    final previousCursor = _cursor;
+    final page = await scope.groupPage(
+      groupId: reference.blockId,
+      cut: reference.cut,
+      cursor: _cursor,
+      demand: HistoryDemand(
+        maxRows: demand.maxItems,
+        maxBytes: demand.maxBytes,
+      ),
+    );
+    if (page.cut != reference.cut || page.groupId != reference.blockId) {
+      throw const ConversationContinuityError(
+        'History member page changed its fixed cut or group identity',
+      );
+    }
+    if (page.next?.isEmpty ?? false) {
+      throw const ConversationContinuityError(
+        'History member page returned an empty cursor',
+      );
+    }
+    if (page.next != null &&
+        (page.next == previousCursor || page.members.isEmpty)) {
+      throw const ConversationContinuityError(
+        'History member page made no bounded cursor progress',
+      );
+    }
+    final memberKeys = <String>{};
+    if (page.members.any(
+      (member) => member.rowKey.isEmpty || !memberKeys.add(member.rowKey),
+    )) {
+      throw const ConversationContinuityError(
+        'History member page returned duplicate or empty row identities',
+      );
+    }
+    _cursor = page.next;
+    _done = page.next == null;
+    final members = page.members.reversed.toList();
+    final entries = <DisplayMemberHead>[];
+    for (final member in members) {
+      if (member.head is! MemberHistoryRow) {
+        throw const ConversationContinuityError(
+          'History group returned a non-member head',
+        );
+      }
+      final ownerId = groupClosed ? null : currentOwnerId();
+      final projected = TimelineHistoryProjection.block(member, cut: page.cut);
+      final block = projected == null || ownerId == null
+          ? projected
+          : TimelineCurrentProjection.overlayHistory(
+              [projected],
+              atoms: currentAtoms(),
+              ownerId: ownerId,
+            ).single;
+      if (block?.body case final SingleDisplayBlock single) {
+        entries.add(
+          DisplayMemberHead(
+            memberKey: member.rowKey,
+            memberOrder: member.anchorSeq,
+            record: single.record,
+          ),
+        );
+      } else {
+        throw const ConversationContinuityError(
+          'History member has no readable entity head',
+        );
+      }
+    }
+    final offset = _offset;
+    _offset += entries.length;
+    return DisplayMemberBatch(
+      block: reference,
+      offset: offset,
+      complete: _done,
+      entries: entries,
+    );
+  }
+
+  @override
+  void requestClose() {
+    _closed = true;
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
   }
 }

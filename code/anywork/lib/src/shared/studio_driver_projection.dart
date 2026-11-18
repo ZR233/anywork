@@ -166,6 +166,24 @@ StudioDriverFacts queryStudioDriverFacts(
         .lease(presentationThreadId ?? '')
         ?.liveStatus
         ?.primaryActivity,
+    liveActivityTools: switch (timeline
+        .lease(presentationThreadId ?? '')
+        ?.liveStatus
+        ?.activityTools) {
+      final tools? => LiveActivityToolsFacts(
+        ownerId: tools.reference.ownerId,
+        collection: tools.reference.collection,
+        revision: tools.reference.revision,
+        totalCount: tools.totalCount,
+        loadedCount: tools.loadedCount,
+        expanded: tools.expanded,
+        loading: tools.loading,
+        hasPrevious: tools.hasPrevious,
+        hasNext: tools.hasNext,
+        error: tools.error,
+      ),
+      null => null,
+    },
     timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)
@@ -298,11 +316,10 @@ TimelineDisplayFacts? _timelineFacts(
     appliedSets: lease?.appliedSets,
     appliedPrepends: lease?.appliedPrepends,
     appliedAppends: lease?.appliedAppends,
-    currentDisplays: [
-      for (final display
-          in lease?.currentDisplays ?? const <TimelineCurrentDisplay>[])
-        _currentDisplayJson(display),
-    ],
+    renderedCurrentAtomIds:
+        (lease?.renderedCurrentAtomIds.toList() ?? <String>[])..sort(),
+    currentAtomsLoadedCount: lease?.live.value?.currentAtoms.length,
+    currentAtomsError: lease?.currentCollectionError.value?.toString(),
     groups: [
       for (final display
           in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
@@ -311,8 +328,10 @@ TimelineDisplayFacts? _timelineFacts(
           'expanded': display.expanded,
           'blockReference': switch (display.blockReference) {
             final reference? => {
-              'databaseId': reference.databaseId,
               'blockId': reference.blockId,
+              'cut': reference.cut.token,
+              'anchorSeq': reference.anchorSeq,
+              'headSeq': reference.headSeq,
             },
             null => null,
           },
@@ -359,99 +378,6 @@ TimelineDisplayFacts? _timelineFacts(
   );
 }
 
-/// Serializes only already mounted, admitted resources. No getter opens a scope or performs IO.
-Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
-  return {
-    'turnId': display.turnId,
-    'activityId': display.activityId,
-    'expanded': display.expanded,
-    'collections': [
-      for (final collection in display.collections)
-        if (collection.isCurrent)
-          {
-            'databaseId': collection.reference.databaseId,
-            'collection': collection.reference.collection,
-            'revision': collection.reference.revision,
-            'generation': collection.generation,
-            'expanded': collection.expanded,
-            'loading': collection.loading,
-            'error': collection.error?.toString(),
-            'ready': collection.page != null,
-            'continuation': collection.page?.continuation,
-            'entries': [
-              for (final entry
-                  in collection.page?.entries ??
-                      const <CurrentCollectionEntry>[])
-                {
-                  'id': entry.id,
-                  'position': entry.position,
-                  'payload': switch (entry.payload) {
-                    InlinePayload(:final bytes) => {
-                      'kind': 'inline',
-                      'byteLength': bytes.length,
-                      'base64': base64Encode(bytes),
-                    },
-                    DeferredPayload(:final reference, :final byteLength) => {
-                      'kind': 'deferred',
-                      'byteLength': byteLength,
-                      'reference': _currentReferenceJson(reference),
-                    },
-                  },
-                },
-            ],
-          },
-    ],
-    'windows': [
-      for (final observation in display.windows)
-        {
-          'id': observation.id,
-          'reference': _currentReferenceJson(observation.reference),
-          'offset': observation.offset,
-          'error': observation.error?.toString(),
-          'window': switch (observation.window) {
-            final window? => {
-              'offset': window.offset,
-              'byteLength': window.bytes.length,
-              'base64': base64Encode(window.bytes),
-              'generation': window.generation,
-              'availableThrough': window.availableThrough,
-              'sealed': window.sealed,
-            },
-            null => null,
-          },
-        },
-    ],
-  };
-}
-
-Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
-  'databaseId': reference.databaseId,
-  'target': switch (reference.target) {
-    ItemPayloadTarget(:final itemId) => {
-      'kind': 'itemPayload',
-      'itemId': itemId,
-    },
-    BodyContentTarget(:final owner, :final key) => {
-      'kind': 'body',
-      'key': key,
-      'owner': switch (owner) {
-        DisplayObservationContentOwner(:final blockId, :final memberKey) => {
-          'kind': 'displayObservation',
-          'blockId': blockId,
-          'memberKey': memberKey,
-        },
-        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
-        CurrentContentOwner(:final domain, :final id, :final revision) => {
-          'kind': 'current',
-          'domain': domain,
-          'id': id,
-          'revision': revision,
-        },
-      },
-    },
-  },
-};
-
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
@@ -472,16 +398,20 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
         'blockOrder': unit.blockOrder,
         'members': switch (unit.memberReference) {
           final reference? => {
-            'databaseId': reference.databaseId,
             'blockId': reference.blockId,
+            'cut': reference.cut.token,
+            'anchorSeq': reference.anchorSeq,
+            'headSeq': reference.headSeq,
           },
           null => null,
         },
         if (atom != null) ...{
-          'recordId': atom.completionItemId,
-          'completionSeq': atom.completionSeq,
+          'entityId': atom.id,
           'source': _sourceFacts(atom.source),
         },
+        'runId': ?item?.displayRecord?.runId,
+        'historyEventId': ?item?.displayRecord?.historyEventId,
+        'historyDetailEventId': ?item?.displayRecord?.historyDetailEventId,
       },
     );
   }
@@ -499,16 +429,6 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
     diagnostic: 'Message has no current chat metadata',
   );
 }
-
-Map<String, Object?> _timelineEnvelopeFacts(CompletedEntry entry) => {
-  'recordId': entry.recordId,
-  'completionSeq': entry.completionSeq,
-  'source': _sourceFacts(entry.atom.source),
-  'outcome': switch (entry.atom.lifecycle) {
-    TerminalChatAtom(:final outcome) => outcome.name,
-    _ => null,
-  },
-};
 
 TimelineItemFacts _atomFacts(ChatAtom atom) {
   if (atom.payload != null) {
@@ -528,9 +448,7 @@ TimelineItemFacts _atomFacts(ChatAtom atom) {
     channel: atom.textChannel?.name,
     atomic: {
       'source': _sourceFacts(atom.source),
-      'completionSeq': atom.completionSeq,
       'sourceOrder': atom.sourceOrder,
-      'completionItemId': atom.completionItemId,
       'toolCallId': atom.tool?.callId,
       'toolName': atom.tool?.name,
     },
@@ -590,12 +508,9 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(
-  ChatItemPresentation item, {
-  CompletedEntry? timeline,
-}) {
+TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
   try {
-    return _loadedItemFacts(item, timeline: timeline);
+    return _loadedItemFacts(item);
   } on FormatException catch (error) {
     // Only the current in-memory presentation is inspected here; no I/O error
     // can be relabelled by this per-item diagnostic boundary.
@@ -610,15 +525,11 @@ TimelineItemFacts _timelineItemFacts(
       channel: null,
       presentationContract: item.presentationContract,
       diagnostic: error.toString(),
-      timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
     );
   }
 }
 
-TimelineItemFacts _loadedItemFacts(
-  ChatItemPresentation item, {
-  CompletedEntry? timeline,
-}) {
+TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
   final data = item.data;
   final outcome = _diagnosticObject(data['outcome']);
   final state = _diagnosticObject(data['state']);
@@ -647,14 +558,17 @@ TimelineItemFacts _loadedItemFacts(
       'unknown';
   return TimelineItemFacts(
     id: item.id,
-    timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
+    timeline: item.displayUnit == null
+        ? null
+        : {
+            'blockId': item.displayUnit!.id,
+            'blockOrder': item.displayUnit!.blockOrder,
+          },
     atomic: item.atom == null
         ? null
         : {
             'source': _sourceFacts(item.atom!.source),
             'sourceOrder': item.atom!.sourceOrder,
-            'completionSeq': item.atom!.completionSeq,
-            'completionItemId': item.atom!.completionItemId,
           },
     sealedAt: _diagnosticUnixSeconds(item.createdAt),
     compatibility: item.compatibility.name,
@@ -691,7 +605,7 @@ TimelineItemFacts _loadedItemFacts(
           field: body.key,
           totalBytes: body.byteLength,
           previewBytes: body.inline?.length ?? 0,
-          hasReference: body.reference != null,
+          hasReference: body.hasReference,
         ),
     ],
     attachments: attachments,

@@ -1,5 +1,6 @@
 import 'agent_models.dart';
 import 'collection_equality.dart';
+import 'current_state_field.dart';
 import 'usage_diagnostics.dart';
 
 /// 继续点存在的原因。只有中断本身能证明的原因才会记录。
@@ -303,6 +304,7 @@ class ThreadRuntimeView {
     this.turnCompletionTokens = 0,
     this.turnResponseMillis = 0,
     this.liveUsage,
+    this.deferred = const [],
     this.workflow,
     this.plan,
     this.execution,
@@ -341,6 +343,9 @@ class ThreadRuntimeView {
   final int turnCompletionTokens;
   final int turnResponseMillis;
   final ThreadRuntimeLiveUsageView? liveUsage;
+  final List<CurrentStateField> deferred;
+  CurrentStateField? deferredField(String field) =>
+      deferred.where((value) => value.field == field).firstOrNull;
   final WorkflowRuntimeView? workflow;
   final PlanRuntimeView? plan;
 
@@ -392,6 +397,7 @@ class ThreadRuntimeView {
             turnCompletionTokens == other.turnCompletionTokens &&
             turnResponseMillis == other.turnResponseMillis &&
             liveUsage == other.liveUsage &&
+            listEquals(deferred, other.deferred) &&
             workflow == other.workflow &&
             plan == other.plan &&
             execution == other.execution &&
@@ -428,6 +434,7 @@ class ThreadRuntimeView {
     turnCompletionTokens,
     turnResponseMillis,
     liveUsage,
+    Object.hashAll(deferred),
     workflow,
     plan,
     execution,
@@ -463,6 +470,7 @@ class ThreadRuntimeView {
     int? turnCompletionTokens,
     int? turnResponseMillis,
     Object? liveUsage = _threadRuntimeUnset,
+    List<CurrentStateField>? deferred,
     WorkflowRuntimeView? workflow,
     Object? plan = _threadRuntimeUnset,
     Object? execution = _threadRuntimeUnset,
@@ -504,6 +512,7 @@ class ThreadRuntimeView {
       liveUsage: identical(liveUsage, _threadRuntimeUnset)
           ? this.liveUsage
           : liveUsage as ThreadRuntimeLiveUsageView?,
+      deferred: deferred ?? this.deferred,
       workflow: workflow ?? this.workflow,
       plan: identical(plan, _threadRuntimeUnset)
           ? this.plan

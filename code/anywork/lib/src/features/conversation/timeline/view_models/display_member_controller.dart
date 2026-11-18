@@ -4,25 +4,28 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart';
 
 import 'conversation_current_owner.dart';
+import '../state/timeline_display_unit.dart';
 
 /// One display-lease-owned complete member result, stable across live/history.
 /// ReadDemand limits each transport batch, not the accepted group size.
 final class DisplayMemberController extends ChangeNotifier {
   DisplayMemberController({
     required this.reference,
+    required bool groupClosed,
     required this.demand,
     required this.open,
-  }) {
+  }) : _groupClosed = groupClosed {
+    _requiresSealed = groupClosed;
     _restart();
   }
-  final DisplayBlockRef reference;
+  DisplayBlockRef reference;
+  bool _groupClosed;
   final ReadDemand demand;
-  final Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand) open;
+  final Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand, bool) open;
   List<DisplayMemberHead> _entries = const [];
   List<DisplayMemberHead> get entries => _entries;
-  int? revision;
   bool sealed = false;
-  bool get hasSnapshot => revision != null;
+  bool hasSnapshot = false;
   Object? _error;
   Object? cleanupError;
   Object? get error => cleanupError ?? _error;
@@ -41,6 +44,31 @@ final class DisplayMemberController extends ChangeNotifier {
   bool get awaitingSealed => _requiresSealed && !sealed;
   ValueListenable<DisplayMemberHead?> member(String key) =>
       _rows.putIfAbsent(key, () => ValueNotifier(null));
+  void rebase(
+    DisplayBlockRef next, {
+    required bool groupClosed,
+    bool force = false,
+  }) {
+    if (_retired ||
+        !force && reference == next && _groupClosed == groupClosed) {
+      return;
+    }
+    reference = next;
+    _groupClosed = groupClosed;
+    _requiresSealed = groupClosed;
+    hasSnapshot = false;
+    sealed = false;
+    final expanded = {
+      for (final entry in _disclosures.entries) entry.key: entry.value.expanded,
+    };
+    _retireDisclosures();
+    for (final entry in expanded.entries) {
+      _disclosures[entry.key] = TimelineMemberDisclosure()
+        ..expanded = entry.value;
+    }
+    _restart();
+  }
+
   TimelineMemberDisclosure disclosure(String memberKey) =>
       _disclosures.putIfAbsent(memberKey, TimelineMemberDisclosure.new);
 
@@ -52,7 +80,7 @@ final class DisplayMemberController extends ChangeNotifier {
     if (sealed) return;
     loading = true;
     for (final entry in entries) {
-      if (entry.record.contentSource is! CurrentAtom) continue;
+      if (entry.record.contentSource is! CurrentAtomSource) continue;
       final previous = _disclosures[entry.memberKey];
       if (previous == null) continue;
       previous.retire();
@@ -101,7 +129,9 @@ final class DisplayMemberController extends ChangeNotifier {
       if (_closing.isNotEmpty) {
         throw cleanupError ?? StateError('Member reader still closing');
       }
-      final handle = await open(reference, demand);
+      final cut = reference;
+      final closedGroup = _groupClosed;
+      final handle = await open(cut, demand, closedGroup);
       if (!_eligible(qualification)) {
         _close(handle);
         return;
@@ -109,96 +139,54 @@ final class DisplayMemberController extends ChangeNotifier {
       _handle = handle;
       final pending = <DisplayMemberHead>[];
       final keys = <String>{};
-      int? pendingRevision;
-      bool? pendingSealed;
-      // Continuity belongs to this qualified reader, not the retained UI cut.
-      // Keep skipped live results here too while awaiting a sealed snapshot.
-      int? observedRevision;
-      List<DisplayMemberHead>? observedEntries;
-      bool completedSealed = false;
+      final orders = <int>{};
       while (_eligible(qualification)) {
         final batch = await handle.next();
         if (!_eligible(qualification)) return;
         if (batch == null) {
-          if (pendingRevision != null || !completedSealed || awaitingSealed) {
-            throw const ConversationContinuityError(
-              'Incomplete display member result',
-            );
-          }
-          loading = false;
-          _closeHandle();
-          return;
-        }
-        if (completedSealed) {
           throw const ConversationContinuityError(
-            'Display member data after sealed result',
+            'Incomplete History group result',
           );
         }
-        if (batch.block != reference ||
+        if (batch.block != cut ||
             batch.offset != pending.length ||
-            (pendingRevision != null &&
-                (pendingRevision != batch.revision ||
-                    pendingSealed != batch.sealed)) ||
+            batch.entries.length > demand.maxItems ||
             (!batch.complete && batch.entries.isEmpty)) {
           throw const ConversationContinuityError(
-            'Inconsistent display member batch',
+            'Inconsistent History group batch',
           );
         }
-        pendingRevision ??= batch.revision;
-        pendingSealed ??= batch.sealed;
         for (final entry in batch.entries) {
-          if (!keys.add(entry.memberKey) ||
-              (pending.isNotEmpty &&
-                  pending.last.memberOrder >= entry.memberOrder)) {
+          if (entry.memberKey.isEmpty ||
+              !keys.add(entry.memberKey) ||
+              !orders.add(entry.memberOrder)) {
             throw const ConversationContinuityError(
-              'Invalid display member order or key',
+              'Invalid History member identity or order',
             );
           }
           pending.add(entry);
         }
         if (!batch.complete) continue;
+        // Transport pages are newest first; owner indices define display order.
+        pending.sort(
+          (left, right) => left.memberOrder.compareTo(right.memberOrder),
+        );
         final next = List<DisplayMemberHead>.unmodifiable(pending);
-        final firstResult = observedRevision == null;
-        final previousRevision = observedRevision ?? revision;
-        final previousEntries = observedEntries ?? entries;
-        final previousSealed = firstResult ? sealed : completedSealed;
-        if (previousRevision != null &&
-            (batch.revision < previousRevision ||
-                (previousSealed && !batch.sealed) ||
-                (batch.revision == previousRevision &&
-                    ((!firstResult && (previousSealed || !batch.sealed)) ||
-                        next.length != previousEntries.length ||
-                        !Iterable<int>.generate(next.length).every(
-                          (i) => _sameMember(previousEntries[i], next[i]),
-                        ))))) {
-          throw const ConversationContinuityError(
-            'Display member revision did not advance',
-          );
-        }
-        observedRevision = batch.revision;
-        observedEntries = next;
-        completedSealed = batch.sealed;
-        pending.clear();
-        keys.clear();
-        pendingRevision = null;
-        pendingSealed = null;
-        if (_requiresSealed && !batch.sealed) continue;
         final structural =
             loading ||
             _error != null ||
-            sealed != batch.sealed ||
+            sealed != closedGroup ||
             !listEquals(
               entries.map((e) => e.memberKey).toList(),
               next.map((e) => e.memberKey).toList(),
             );
         _entries = next;
-        revision = batch.revision;
-        sealed = batch.sealed;
-        _retireDisclosures(keep: next.map((e) => e.memberKey).toSet());
+        hasSnapshot = true;
+        sealed = closedGroup;
+        _retireDisclosures(keep: keys);
         loading = false;
         _error = null;
-        // Register accepted state before callbacks: listeners may synchronously
-        // retire the lease. Never publish another row after that revocation.
+        // Publish the complete accepted cut before any synchronous callbacks.
         for (final entry in next) {
           if (!_eligible(qualification)) return;
           final row = _rows.putIfAbsent(
@@ -208,13 +196,12 @@ final class DisplayMemberController extends ChangeNotifier {
           if (!_sameMember(row.value, entry)) row.value = entry;
         }
         if (!_eligible(qualification)) return;
-        final acceptedKeys = next.map((e) => e.memberKey).toSet();
         for (final key in _rows.keys.toList()) {
-          if (!acceptedKeys.contains(key)) {
-            _rows[key]!.value = null;
-          }
+          if (!keys.contains(key)) _rows[key]!.value = null;
         }
+        _closeHandle();
         if (structural) notifyListeners();
+        return;
       }
     } catch (failure) {
       if (_eligible(qualification)) {
@@ -260,7 +247,7 @@ final class DisplayMemberController extends ChangeNotifier {
     _qualification = Object();
     _closeHandle();
     _entries = const [];
-    revision = null;
+    hasSnapshot = false;
     sealed = false;
     for (final row in _rows.values) {
       row.dispose();
@@ -320,7 +307,7 @@ Object _recordValue(DisplayRecord record) {
     _fact(record.startFact),
     _fact(record.endFact),
     switch (record.contentSource) {
-      CurrentAtom() => 'current',
+      CurrentAtomSource() => 'current',
       FrozenObservation(:final capturedAt, :final available) => (
         'frozen',
         capturedAt,
@@ -329,8 +316,16 @@ Object _recordValue(DisplayRecord record) {
       CompletedOriginal(:final completionId) => ('completed', completionId),
     },
     atom.id,
-    atom.completionItemId,
-    atom.completionSeq,
+    record.historyEventId,
+    record.historyDetailEventId,
+    record.runId,
+    record.historyState,
+    record.historyObservation,
+    Object.hashAll(
+      record.currentContents.map(
+        (content) => (content.role, content.reference),
+      ),
+    ),
     atom.source,
     _sourceState(atom.sourceState),
     atom.sourceOrder,

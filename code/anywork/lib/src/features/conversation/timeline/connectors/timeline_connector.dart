@@ -11,17 +11,15 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../composer/composer.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/plan_summary_card.dart';
-import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
-import 'conversation_current_connector.dart';
-import '../live_status/live_status_view_model.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -218,7 +216,13 @@ class _TimelineConnectorBodyState
                   dimension: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              Text(error?.toString() ?? context.l10n.workspaceLoading),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Text(
+                    error?.toString() ?? context.l10n.workspaceLoading,
+                  ),
+                ),
+              ),
               Flexible(
                 child: SingleChildScrollView(
                   child: ComposerSubmissionList(
@@ -287,39 +291,12 @@ class _TimelineConnectorBodyState
         submission: submission,
       ),
       controls: lease,
-      currentWork: Consumer(
-        builder: (_, ref, _) {
-          final workSlice = ref.watch(
-            liveStatusViewModelProvider(threadId)
-                .select((aggregate) => aggregate?.timelineWork),
-          );
-          if (workSlice == null || !workSlice.hasVisibleContent) {
-            return const SizedBox.shrink();
-          }
-          final notifier = ref.read(
-            liveStatusViewModelProvider(threadId).notifier,
-          );
-          return ConversationCurrentConnector(
-            key: ValueKey(('work', lease.generation)),
-            section: ConversationLiveSection.work,
-            workSlice: workSlice,
-            onLoadOlder: notifier.loadOlderTimelineWork,
-            onReturnToLatest: notifier.returnToLatestTimelineWork,
-            threadId: threadId,
-            content: lease,
-            liveUnit: lease.liveUnit,
-            registerDisplay: lease.registerCurrentDisplay,
-            images: lease.imageResources,
-            readAttachment: readAttachment,
-            isDisplayActive: active,
-          );
-        },
-      ),
       canonicalPresentationBuilder: (item, render) =>
           TimelineCanonicalPayloadConnector(
             key: ValueKey((lease.generation, item.id)),
             item: item,
-            content: lease,
+            threadId: threadId,
+            openHistory: () => lease.openHistoryScope(),
             retirement: lease.retirement,
             isActive: active,
             render: render,
@@ -334,11 +311,29 @@ class _TimelineConnectorBodyState
         onContentLayout: (itemId, micros) {
           if (active()) owner.recordContentLayout(lease, itemId, micros);
         },
+        onCurrentContentLayout: (itemId, micros) {
+          if (active()) {
+            owner.recordCurrentContentLayout(lease, itemId, micros);
+          }
+        },
+        onCurrentContentUnmounted: (itemId) {
+          if (active()) {
+            owner.recordCurrentContentUnmounted(lease, itemId);
+          }
+        },
       ),
       monotonicMicros: () => owner.monotonicMicros,
       isDisplayActive: active,
       onContentLayout: (itemId, completedMicros) {
         if (active()) owner.recordContentLayout(lease, itemId, completedMicros);
+      },
+      onCurrentContentLayout: (itemId, completedMicros) {
+        if (active()) {
+          owner.recordCurrentContentLayout(lease, itemId, completedMicros);
+        }
+      },
+      onCurrentContentUnmounted: (itemId) {
+        if (active()) owner.recordCurrentContentUnmounted(lease, itemId);
       },
       onLoadOlder: () => active()
           ? owner.loadOlder(threadId, generation: lease.generation)
@@ -350,42 +345,22 @@ class _TimelineConnectorBodyState
           active() ? owner.returnToLive(threadId) : Future.value(),
       onEnterHistory: () {
         if (active()) {
-          unawaited(owner.dispatch(threadId, const TimelineEnterHistory()));
+          unawaited(
+            owner
+                .dispatch(threadId, const TimelineEnterHistory())
+                .catchError((Object _, StackTrace _) {}),
+          );
         }
       },
       onRetryConnection: () {
         if (active()) retry();
       },
-      contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
-          TimelineContentRangeConnector(
-            key: ValueKey((lease.generation, itemId, contentKey)),
-            itemId: itemId,
-            contentKey: contentKey,
-            label: label,
-            reference: reference,
-            witness: witness,
-            isDisplayActive: active,
-            readContent: (reference, range) {
-              final scope = lease.queries;
-              if (!active() || scope == null) {
-                return Future.error(const StaleConversationScope());
-              }
-              return scope.readContent(reference: reference, range: range);
-            },
-          ),
       attachmentBuilder: (item) => TimelineAttachmentsConnector(
         key: ValueKey((lease.generation, item.id)),
         item: item,
         resources: lease.imageResources,
         readAttachment: readAttachment,
         isActive: active,
-        readContent: (reference, range) {
-          final scope = lease.queries;
-          if (!active() || scope == null) {
-            return Future.error(const StaleConversationScope());
-          }
-          return scope.readContent(reference: reference, range: range);
-        },
       ),
       onLink: link,
       isSafeLink: (url) => safeExternalWebUrl(url) != null,

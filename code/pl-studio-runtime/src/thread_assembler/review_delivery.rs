@@ -247,7 +247,6 @@ impl From<&ReviewForwardReason> for DeliveryExceptionReason {
                 Self::AdmissionRejected(bounded_sources(error.as_ref()))
             }
             ReviewForwardReason::IdentityConflict => Self::IdentityConflict,
-            ReviewForwardReason::IdentityUnverifiable => Self::IdentityUnverifiable,
             ReviewForwardReason::StorageUnavailable(error) => {
                 Self::StorageUnavailable(bounded_sources(error.as_ref()))
             }

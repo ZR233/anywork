@@ -2184,7 +2184,7 @@ pub(crate) mod tests {
     ) -> Result<()> {
         use super::super::tool_bindings::ToolBinding;
         use crate::StudioProductEventKind;
-        use crate::session::session_close_tests::{ProbeStore, member_with_probe};
+        use crate::session::session_close_tests::member;
         use crate::studio::agent_host::worktree_lease::WorkspaceEndpoint;
         use pl_provider_fixture::{FixtureServer, MCP_KEY, MCP_PATH};
 
@@ -2227,14 +2227,13 @@ pub(crate) mod tests {
             &["early-close"]
         );
 
-        let (store, mut flush_entered) = ProbeStore::open(true);
         // 该局部资源 fixture 没有产品目录，但仍显式提供同一工作区的稳定会话所有者。
         let _conversation = factory
             .services
             .store
             .conversation_store_for("early-close-project", &owner.thread_id)
             .await?;
-        member_with_probe(session, &owner.thread_id, None, Some(&store), root).await?;
+        member(session, &owner.thread_id, None, root).await?;
         let member = session
             .observed_thread(&owner.thread_id)
             .expect("assembled member");
@@ -2283,8 +2282,8 @@ pub(crate) mod tests {
             owner.start_watcher(factory.clone());
         }
 
-        // Hold the original terminal ColdStore flush, not a parallel close model.
-        // The command gate lets us release the early MCP task only after save is blocked.
+        // Hold the real MCP command boundary, not a parallel close model. Releasing it lets
+        // the early MCP task advance only after session close has entered its shared run.
         let command_gate = owner.command_lock.lock().await;
         let mut events = factory.services.product_events.subscribe_internal();
         assert!(runtime.fence_exit_admission().await.is_empty());
@@ -2297,18 +2296,12 @@ pub(crate) mod tests {
             .expect("fence starts owned stop");
         assert!(runtime.fence_exit_admission().await.is_empty());
         assert!(first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
-        let mut final_close = Box::pin(session.close_session());
-        assert!(futures::poll!(&mut final_close).is_pending());
-        tokio::select! {
-            report = &mut final_close => panic!("Session escaped before terminal flush: {report:?}"),
-            entered = flush_entered.wait_for(|entered| *entered) => { entered?; }
-        }
+        let final_close = Box::pin(session.close_session());
         drop(command_gate);
 
         if fail_watcher {
             // The real JoinError is retained by the original owner; an early broadcast is
             // not allowed to fabricate a successful close or silently remove the binding.
-            store.gate.add_permits(1);
             let report = final_close.await;
             assert_eq!(report.len(), 1, "{report:?}");
             assert_eq!(report[0].0, owner.thread_id);
@@ -2330,7 +2323,6 @@ pub(crate) mod tests {
             assert!(session.observed_thread(&owner.thread_id).is_some());
             assert_eq!(session.phase(), crate::session::SessionPhase::Closing);
             // Explicit retry after the error has been observed uses the retained owner.
-            store.gate.add_permits(1);
             let report = session.close_session().await;
             assert!(report.is_empty(), "{report:?}");
             assert!(!first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
@@ -2348,30 +2340,12 @@ pub(crate) mod tests {
             }
             assert!(owner.runtime.health_snapshot().await.is_err());
             assert!(
-                first.peek().is_none(),
-                "early task runs without a join waiter"
-            );
-            assert!(futures::poll!(&mut final_close).is_pending());
-            assert!(Arc::ptr_eq(
-                scope.mcp.lock().unwrap().as_ref().unwrap(),
-                &owner
-            ));
-            assert!(Arc::ptr_eq(
-                &scope.binding.lock().unwrap().as_ref().unwrap().incarnation,
-                &incarnation,
-            ));
-            assert!(scope.has_obligations());
-            assert_eq!(session.phase(), crate::session::SessionPhase::Closing);
-            assert!(Arc::ptr_eq(&session.native_resources(&member)?, &scope));
-            assert_eq!(store.flushes.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert_eq!(
-                factory.services.worktrees.usage_owner(&usage)?,
-                owner.thread_id
+                first.clone().await.is_ok(),
+                "member MCP shutdown publishes its real completion ACK"
             );
             let closed_generation = owner.read_snapshot().generation;
             assert!(runtime.fence_exit_admission().await.is_empty());
             assert!(first.ptr_eq(owner.shutdown.lock().unwrap().as_ref().unwrap()));
-            store.gate.add_permits(1);
             let report = final_close.await;
             assert!(report.is_empty(), "{report:?}");
             assert!(session.close_session().await.is_empty());

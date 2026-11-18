@@ -5,43 +5,64 @@ use super::{
     user_input_answer_field, user_input_header_field, user_input_option_description_field,
     user_input_option_label_field, user_input_question_field,
 };
+use crate::ExecutionShape;
 use crate::protocol::*;
-use crate::{ExecutionItem, ExecutionShape};
 use crate::{UserQuestion, UserQuestionOption};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::ChatItem;
 
-fn body(record: &ChatItem, key: &str) -> Result<String> {
-    let value = record
-        .contents
-        .values()
-        .find(|content| content.descriptor.key.key == key)
-        .with_context(|| {
-            format!(
-                "canonical content {}:{key} is missing",
-                record.header.item_id
-            )
-        })?;
-    let mut bytes = Vec::with_capacity(value.data.len());
-    let mut offset = 0;
-    while offset < value.data.len() {
-        let window = value.data.range(offset as u64, 32 * 1024)?;
-        ensure!(
-            !window.as_bytes().is_empty(),
-            "canonical content read did not advance"
-        );
-        bytes.extend_from_slice(window.as_bytes());
-        offset += window.as_bytes().len();
+pub(super) trait BodySource {
+    fn body(&self, key: &str) -> Result<String>;
+    fn keys(&self) -> impl Iterator<Item = &str>;
+    fn contains(&self, key: &str) -> bool {
+        self.keys().any(|candidate| candidate == key)
     }
-    Ok(String::from_utf8(bytes)?)
+}
+impl BodySource for ChatItem {
+    fn body(&self, key: &str) -> Result<String> {
+        let value = self
+            .contents
+            .values()
+            .find(|content| content.descriptor.key.key == key)
+            .with_context(|| {
+                format!("canonical content {}:{key} is missing", self.header.item_id)
+            })?;
+        let mut bytes = Vec::with_capacity(value.data.len());
+        let mut offset = 0;
+        while offset < value.data.len() {
+            let window = value.data.range(offset as u64, 32 * 1024)?;
+            ensure!(
+                !window.as_bytes().is_empty(),
+                "canonical content read did not advance"
+            );
+            bytes.extend_from_slice(window.as_bytes());
+            offset += window.as_bytes().len();
+        }
+        Ok(String::from_utf8(bytes)?)
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.contents
+            .values()
+            .map(|c| c.descriptor.key.key.as_str())
+    }
+}
+impl BodySource for std::collections::BTreeMap<String, String> {
+    fn body(&self, key: &str) -> Result<String> {
+        self.get(key)
+            .cloned()
+            .with_context(|| format!("canonical body {key} is missing"))
+    }
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.keys().map(String::as_str)
+    }
+}
+fn body(record: &impl BodySource, key: &str) -> Result<String> {
+    record.body(key)
 }
 
-fn output(record: &ChatItem, value: ToolOutputDescriptor) -> Result<ThreadToolOutput> {
-    let artifacts = if record
-        .contents
-        .values()
-        .any(|c| c.descriptor.key.key == TOOL_OUTPUT_ARTIFACTS_FIELD)
-    {
+fn output(record: &impl BodySource, value: ToolOutputDescriptor) -> Result<ThreadToolOutput> {
+    let artifacts = if record.contains(TOOL_OUTPUT_ARTIFACTS_FIELD) {
         serde_json::from_str(&body(record, TOOL_OUTPUT_ARTIFACTS_FIELD)?)?
     } else {
         Vec::new()
@@ -56,7 +77,7 @@ fn output(record: &ChatItem, value: ToolOutputDescriptor) -> Result<ThreadToolOu
 
 fn tool(
     thread_id: &str,
-    record: &ChatItem,
+    record: &impl BodySource,
     value: ToolDescriptor,
     data: &serde_json::Value,
 ) -> Result<ThreadToolItem> {
@@ -203,21 +224,12 @@ fn content_outcome(value: ContentOutcome) -> ThreadContentLifecycle {
     }
 }
 
-pub(in crate::studio) fn execution_state(
-    record: &ChatItem,
+pub(super) fn decode_state(
+    record: &impl BodySource,
+    atom: &ChatAtom,
+    envelope: &serde_json::Value,
     thread_id: &str,
 ) -> Result<ExecutionShape> {
-    let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-    ensure!(
-        atom.completion_item_id.as_deref() == Some(record.header.item_id.as_str())
-            && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
-        "canonical execution envelope identity conflict"
-    );
-    let envelope: serde_json::Value = serde_json::from_slice(&record.payload)?;
-    ensure!(
-        envelope["contract"] == "anywork.chat/1",
-        "unsupported canonical execution payload contract"
-    );
     let data = &envelope["data"];
     let descriptor: ItemDescriptor =
         serde_json::from_value(serde_json::json!({"kind": envelope["type"], "data":data}))?;
@@ -231,17 +243,10 @@ pub(in crate::studio) fn execution_state(
         ItemDescriptor::Thinking(value) => {
             let parts = |prefix: &str| -> Result<Vec<String>> {
                 let mut keys = record
-                    .contents
-                    .values()
-                    .filter_map(|c| {
-                        let index = c
-                            .descriptor
-                            .key
-                            .key
-                            .strip_prefix(prefix)?
-                            .parse::<u32>()
-                            .ok()?;
-                        Some((index, c.descriptor.key.key.clone()))
+                    .keys()
+                    .filter_map(|key| {
+                        let index = key.strip_prefix(prefix)?.parse::<u32>().ok()?;
+                        Some((index, key.to_owned()))
                     })
                     .collect::<Vec<_>>();
                 keys.sort_by_key(|(index, _)| *index);
@@ -269,48 +274,7 @@ pub(in crate::studio) fn execution_state(
         }
         _ => anyhow::bail!(
             "canonical record {} has no execution restoration consumer",
-            record.header.item_id
+            atom.id
         ),
     })
-}
-
-pub(in crate::studio) fn execution_item(
-    record: &ChatItem,
-    thread_id: &str,
-    placement: Option<(u64, u64)>,
-) -> Result<ExecutionItem> {
-    let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-    let envelope: serde_json::Value = serde_json::from_slice(&record.payload)?;
-    let state = execution_state(record, thread_id)?;
-    let ordinal = placement
-        .map(|value| value.0)
-        .or(atom.source_order)
-        .context("canonical execution order is unknown")?;
-    let revision = envelope["sourceEffectSeq"]
-        .as_u64()
-        .or(placement.map(|value| value.1))
-        .context("canonical completion effect is unknown")?;
-    // 已发布旧原件可能没有统一时间字段；typed 正文自身的终态时间仍是原始证据。
-    let terminal = match &state {
-        ExecutionShape::Text(value) => value.lifecycle().terminal_at(),
-        ExecutionShape::Thinking(value) => value.lifecycle().terminal_at(),
-        ExecutionShape::Tool(value) => value.state().terminal_at(),
-        _ => None,
-    };
-    let updated = atom
-        .finished_at
-        .or(terminal)
-        .context("canonical completion time is unknown")?;
-    // 这里只是局部转换值的创建时间；不补写或宣称 lifecycle 的未知开始时间。
-    let created = atom.started_at.unwrap_or(updated);
-    Ok(ExecutionItem::new(
-        atom.id,
-        thread_id.into(),
-        atom.turn_id.unwrap_or_default(),
-        ordinal,
-        revision,
-        created,
-        updated,
-        state,
-    ))
 }

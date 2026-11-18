@@ -30,12 +30,14 @@ final class TimelineDisplayFacts {
     this.appliedSets,
     this.appliedPrepends,
     this.appliedAppends,
+    List<String> renderedCurrentAtomIds = const [],
+    this.currentAtomsLoadedCount,
+    this.currentAtomsError,
     this.firstContentLayout,
-    List<Map<String, Object?>> currentDisplays = const [],
     List<Map<String, Object?>> groups = const [],
     List<TimelineChildrenFacts> children = const [],
     List<TimelineItemFacts> items = const [],
-  }) : currentDisplays = List.unmodifiable(currentDisplays),
+  }) : renderedCurrentAtomIds = List.unmodifiable(renderedCurrentAtomIds),
        groups = List.unmodifiable(groups),
        items = List.unmodifiable(items),
        children = List.unmodifiable(children);
@@ -56,13 +58,40 @@ final class TimelineDisplayFacts {
   final int? appliedSets;
   final int? appliedPrepends;
   final int? appliedAppends;
+  final List<String> renderedCurrentAtomIds;
+  final int? currentAtomsLoadedCount;
+  final String? currentAtomsError;
   final TimelineContentLayoutFacts? firstContentLayout;
 
-  /// Request-local JSON projected from existing mounted current resources, never a resource owner.
-  final List<Map<String, Object?>> currentDisplays;
   final List<Map<String, Object?>> groups;
   final List<TimelineChildrenFacts> children;
   final List<TimelineItemFacts> items;
+}
+
+final class LiveActivityToolsFacts {
+  const LiveActivityToolsFacts({
+    required this.ownerId,
+    required this.collection,
+    required this.revision,
+    required this.totalCount,
+    required this.loadedCount,
+    required this.expanded,
+    required this.loading,
+    required this.hasPrevious,
+    required this.hasNext,
+    this.error,
+  });
+
+  final String ownerId;
+  final String collection;
+  final int revision;
+  final int totalCount;
+  final int loadedCount;
+  final bool expanded;
+  final bool loading;
+  final bool hasPrevious;
+  final bool hasNext;
+  final Object? error;
 }
 
 final class TimelineChildrenFacts {
@@ -266,6 +295,7 @@ final class StudioDriverFacts {
     this.timeline,
     this.timelineScroll,
     this.conversationActivity,
+    this.liveActivityTools,
     Map<String, ThreadWorkspace> workspacesByThread = const {},
     List<SessionDirectoryRow> rootRows = const [],
     this.directoryHasMore = false,
@@ -322,6 +352,7 @@ final class StudioDriverFacts {
   /// （design/26 §26.9）。
   final TimelineScrollDiagnostic? timelineScroll;
   final ConversationActivityView? conversationActivity;
+  final LiveActivityToolsFacts? liveActivityTools;
   final Map<String, ThreadWorkspace> workspacesByThread;
   final List<SessionDirectoryRow> rootRows;
   final bool directoryHasMore;
@@ -520,7 +551,6 @@ abstract final class StudioDriverState {
   static int _exitRequests = 0;
   static String? _startupFailureCode;
   static String? _startupFailureCorrelationId;
-  static bool _activityExpanded = false;
 
   /// Application assembly lends a query; binding never creates an observer or
   /// changes resource demand. Each request reads current Client facts directly.
@@ -531,14 +561,6 @@ abstract final class StudioDriverState {
   /// 没有装配 query 时没有任何 canonical 观察：明确标记未加载。
   static StudioDriverFacts readFacts() =>
       _query?.call() ?? StudioDriverFacts(acpAuthLoaded: false);
-
-  /// 固定活动条的**实际展开态**（用户此刻是否展开详情）。
-  ///
-  /// 与快照里的 `expandable`（该活动是否有可展开的完整内容）语义不同：`expandable` 是
-  /// 能力，`expanded` 是当前状态。仅由活动条在展开/收起或身份变化时上报。
-  static void publishActivityExpanded(bool expanded) {
-    _activityExpanded = expanded;
-  }
 
   static void publishShutdownProgress(StudioShutdownProgress progress) {
     _shutdownProgress.add(progress);
@@ -1103,8 +1125,6 @@ abstract final class StudioDriverState {
                   facts.conversationActivity!.backgroundToolCount,
               'errorMessage': facts.conversationActivity!.errorMessage,
               'expandable': facts.conversationActivity!.expandable,
-              // `expandable` 是能力；`expanded` 是用户此刻的实际展开态。
-              'expanded': _activityExpanded,
               'toolDetails': [
                 for (final tool in facts.conversationActivity!.toolDetails)
                   {
@@ -1131,6 +1151,21 @@ abstract final class StudioDriverState {
                   {'id': detail.id, 'title': detail.title, 'body': detail.body},
               ],
             },
+      'liveActivityTools': switch (facts.liveActivityTools) {
+        final tools? => {
+          'ownerId': tools.ownerId,
+          'collection': tools.collection,
+          'revision': tools.revision,
+          'totalCount': tools.totalCount,
+          'loadedCount': tools.loadedCount,
+          'expanded': tools.expanded,
+          'loading': tools.loading,
+          'hasPrevious': tools.hasPrevious,
+          'hasNext': tools.hasNext,
+          'error': tools.error?.toString(),
+        },
+        null => null,
+      },
       // 保存故障/恢复的 typed 诊断（只读投影，不是第二份业务状态）。
       //
       // 每个已观测到存储事实的 Thread 一条：typed 故障类别、代数与水位、执行阶段、
@@ -1293,7 +1328,9 @@ abstract final class StudioDriverState {
       'appliedSets': timeline.appliedSets,
       'appliedPrepends': timeline.appliedPrepends,
       'appliedAppends': timeline.appliedAppends,
-      'currentDisplays': timeline.currentDisplays,
+      'renderedCurrentAtomIds': timeline.renderedCurrentAtomIds,
+      'currentAtomsLoadedCount': timeline.currentAtomsLoadedCount,
+      'currentAtomsError': timeline.currentAtomsError,
       'groups': timeline.groups,
       'firstContentLayout': switch (timeline.firstContentLayout) {
         final layout? => {

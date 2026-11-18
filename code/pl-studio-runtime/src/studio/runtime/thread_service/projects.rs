@@ -2440,9 +2440,7 @@ mod standalone_tests {
         use crate::{
             studio::{
                 agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
-                storage_fault_test_support::{
-                    ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
-                },
+                storage_fault_test_support::{ThreadStorageSink, close_factory},
                 store::{
                     thread_archive::{ArchivePhase, ArchiveScope},
                     thread_preparation::{
@@ -2458,7 +2456,7 @@ mod standalone_tests {
         };
         use pl_core::thread::{
             ThreadHandle,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
+            current::{RuntimeEpoch, ThreadCurrent},
         };
         use sea_orm::ConnectionTrait;
         use std::{sync::Arc, time::Duration};
@@ -2750,33 +2748,9 @@ mod standalone_tests {
             Ok(())
         }
 
-        #[derive(Debug)]
-        struct RejectLaterPrivateWrites {
-            sink: ThreadStorageSink,
-            original_fence: u64,
-        }
-        impl ColdStore for RejectLaterPrivateWrites {
-            fn pressure(&self, id: &str) -> StoragePressure {
-                self.sink.pressure(id)
-            }
-            fn admit(&self, id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-                if write.effect.sequence > self.original_fence {
-                    return Err(ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "injected later private checkpoint failure",
-                        )),
-                    });
-                }
-                self.sink.admit(id, write)
-            }
-            async fn flush(&self, id: &str, through: u64) -> Result<(), ColdStoreError> {
-                self.sink.flush(id, through).await
-            }
-        }
-
         /// Seeds the isolated home with the durable facts the crashing private owner inherits: the
-        /// project, the required root with a durable owner checkpoint, the required-private catalog
-        /// row, and a real older incarnation's durable earlier checkpoint. This heavy preparation runs
+        /// project, the required root with durable Current, the required-private catalog row, and a
+        /// real older incarnation's durable earlier Current. This heavy preparation runs
         /// in the parent and shuts its runtime down cleanly, so the spawned producer's bounded crash
         /// window only has to cover the original owner's own work.
         async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
@@ -2822,19 +2796,44 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            // A real older incarnation leaves a durable earlier checkpoint before private AttachCold.
-            let old = ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), None).await?;
-            let projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
-            let previous = ThreadHandle::resume_without_model(protocol.id.clone(), None)?;
-            previous.attach_storage(ColdStoreHandle::new(old)).await?;
-            previous.close().await?;
-            runtime
+            eprintln!("private crash seed: directory committed");
+            // A real older incarnation leaves durable earlier Current before private attachment.
+            // This predecessor supplies only complete Current. Its seed has no historical
+            // originals or writer obligations; ordinary History is created by the later owner.
+            let previous = ThreadHandle::restore_current(
+                ThreadCurrent::new(protocol.id.clone(), RuntimeEpoch::new()),
+                None,
+            )?;
+            let epoch = previous.runtime_epoch();
+            let mut current_store = runtime
                 .store
-                .thread_persistence()
-                .history_channel(&protocol.id)
-                .stop_and_join()
+                .state_for(&protocol.workspace_id, &protocol.id)?;
+            current_store
+                .attach_current(
+                    runtime.store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        previous.clone(),
+                    ),
+                )
                 .await?;
-            projection.await?;
+            eprintln!("private crash seed: Current registered");
+            previous
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: "fixture.private-seed".into(),
+                    expected_revision: None,
+                    payload: pl_core::context::OpaquePayload::text("durable earlier Current"),
+                }])
+                .await?;
+            eprintln!("private crash seed: extension changed");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                current_store.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve),
+            )
+            .await
+            .context("seed previous Current final handoff stalled")??;
+            eprintln!("private crash seed: Current closed");
             runtime.shutdown_runtime().await?;
             eprintln!("private crash seed: earlier checkpoint durable and seed runtime shut down");
             Ok(())
@@ -2849,7 +2848,7 @@ mod standalone_tests {
             let project = runtime.open_project(&workspace).await?;
             eprintln!("private crash fixture: project reopened");
             // The crashing owner still has to observe the seeded root: assembling required-private
-            // reserves against its live parent entry before the private AttachCold.
+            // reserves against its live parent entry before private history attachment.
             runtime
                 .ensure_thread_owner("required-root")
                 .await?
@@ -2868,15 +2867,14 @@ mod standalone_tests {
                 &private_agent,
                 |id| catalog.get_agent(id).map(|agent| agent.thread_id),
             )?;
-            let checkpoint = runtime
+            let current = runtime
                 .store
-                .history(&protocol.id)
+                .state_for(&protocol.workspace_id, &protocol.id)?
+                .load_current()
                 .await?
-                .checkpoint()
-                .await?
-                .context("seeded durable earlier checkpoint")?;
-            eprintln!("private crash fixture: seeded protocol and checkpoint read");
-            let old_fence = checkpoint.history_fence;
+                .context("seeded durable earlier current")?;
+            eprintln!("private crash fixture: seeded protocol and current read");
+            let old_fence = current.snapshot_revision;
             let physical = close_factory(&runtime.store)?;
             runtime
                 .store
@@ -2915,36 +2913,37 @@ mod standalone_tests {
                     )
                     .await?;
             }
-            let sink =
-                ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), Some(&checkpoint))
-                    .await?;
-            let _projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
-            let storage = if receipt {
-                ColdStoreHandle::new(sink)
-            } else {
-                ColdStoreHandle::new(RejectLaterPrivateWrites {
-                    sink,
-                    original_fence: old_fence,
-                })
-            };
+            let sink = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
+            if !receipt {
+                let path = runtime
+                    .store
+                    .registered_session_paths(&protocol.id)?
+                    .current_file();
+                tokio::fs::write(
+                    base.join("blocked-current-path"),
+                    path.to_string_lossy().as_bytes(),
+                )
+                .await?;
+                tokio::fs::rename(&path, path.with_extension("json.saved")).await?;
+                tokio::fs::create_dir(&path).await?;
+            }
             let mut spec = archive_test_spec(
                 protocol.id.clone(),
                 protocol.parent_thread_id.clone(),
                 &workspace,
             );
-            spec.checkpoint = Some(checkpoint);
-            spec.cold_store = Some(storage);
+            spec.history_sink = Some(sink);
             spec.initial_extensions.insert(
-                String::new(),
-                pl_core::context::OpaquePayload::text("invalid initialization"),
+                "fixture.private-initialization".into(),
+                pl_core::context::OpaquePayload::text("valid initialization"),
             );
-            eprintln!("private crash fixture: attach and fail initialization");
-            assert!(
-                runtime
-                    .session_for_roots(&["required-root".to_owned()])?
-                    .assemble(spec)
-                    .await
-                    .is_err()
+            eprintln!("private crash fixture: attach and close the original owner");
+            let session = runtime.session_for_roots(&["required-root".to_owned()])?;
+            session.assemble(spec).await?;
+            let close = session.close(&protocol.id).await;
+            ensure!(
+                close.is_err(),
+                "the original private close must retain its real failure"
             );
             eprintln!("private crash fixture: original failure retained");
             let record = runtime
@@ -2979,7 +2978,7 @@ mod standalone_tests {
             seed_private_crash_fixture(base).await?;
             let mut command = tokio::process::Command::new(std::env::current_exe()?);
             command
-        .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash")
+        .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_current_after_crash")
         .arg("--nocapture")
         .env("ANYWORK_ARCHIVE_PRIVATE_CRASH_FIXTURE", base)
         .kill_on_drop(true);
@@ -3008,7 +3007,7 @@ mod standalone_tests {
         }
 
         #[tokio::test]
-        async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash()
+        async fn archive_original_required_receipt_is_not_replaced_by_a_cold_current_after_crash()
         -> Result<()> {
             const CHILD: &str = "ANYWORK_ARCHIVE_PRIVATE_CRASH_FIXTURE";
             if let Some(base) = std::env::var_os(CHILD) {
@@ -3027,6 +3026,13 @@ mod standalone_tests {
                 let evidence = crash_original_private_owner(temp.path(), receipt).await?;
                 let original: ThreadPreparationRecord =
                     serde_json::from_value(evidence["record"].clone())?;
+                if !receipt {
+                    let path = std::path::PathBuf::from(
+                        tokio::fs::read_to_string(temp.path().join("blocked-current-path")).await?,
+                    );
+                    tokio::fs::remove_dir_all(&path).await?;
+                    tokio::fs::rename(path.with_extension("json.saved"), path).await?;
+                }
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
                 assert!(
                     runtime
@@ -3048,14 +3054,21 @@ mod standalone_tests {
                         .execute_unprepared("DROP TRIGGER reject_original_stop")
                         .await?;
                 } else {
+                    let private = runtime
+                        .store
+                        .read_thread("required-private")
+                        .await?
+                        .context("restored private Thread")?;
                     let before = runtime
                         .store
-                        .history("required-private")
+                        .state_for(&private.workspace_id, "required-private")?
+                        .load_current()
                         .await?
-                        .checkpoint()
-                        .await?
-                        .unwrap();
-                    assert_eq!(before.history_fence, evidence["oldFence"].as_u64().unwrap());
+                        .context("cold current")?;
+                    assert_eq!(
+                        before.snapshot_revision,
+                        evidence["oldFence"].as_u64().unwrap()
+                    );
                 }
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
@@ -3466,14 +3479,13 @@ mod standalone_tests {
         use super::*;
         use crate::studio::{
             agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
-            runtime::conversation_reader::ConversationReader,
             storage_fault_test_support::{ThreadStorageSink, spawn_live_projection_for_thread},
             store::{
                 directory::DirectoryDelta, thread_delete::DeletePhase,
                 thread_preparation::PreparationIdentity,
             },
         };
-        use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle};
+        use pl_core::thread::ThreadHandle;
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
@@ -3793,16 +3805,16 @@ mod standalone_tests {
             );
 
             let host = runtime.store.session_paths(&project.id, &root.id)?;
-            let db = sea_orm::Database::connect(
-                crate::studio::paths::sqlite_file_options(
-                    &host.history_database(),
-                    crate::studio::paths::SqliteFileMode::ReadWrite,
-                    |options| options,
-                )
-                .await?,
-            )
-            .await?;
-            db.execute_unprepared("CREATE TRIGGER reject_delete_save BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'permanent deletion must not repair this save'); END").await?;
+            let conversation = runtime.store.conversation_store(&root.id).await?;
+            conversation.flush_current(owner.runtime_epoch()).await?;
+            let current_writer = runtime
+                .store
+                .thread_persistence()
+                .current_writer(&root.id, host.root().to_path_buf())
+                .await?;
+            let current_file = host.current_file();
+            tokio::fs::rename(&current_file, current_file.with_extension("json.saved")).await?;
+            tokio::fs::create_dir(&current_file).await?;
             owner
                 .mutate_extensions(vec![ExtensionMutation::Put {
                     id: "delete-fault".into(),
@@ -3810,21 +3822,24 @@ mod standalone_tests {
                     payload: OpaquePayload::text("unsaved content"),
                 }])
                 .await?;
-            let save_error =
-                tokio::time::timeout(std::time::Duration::from_secs(10), owner.flush())
-                    .await?
-                    .expect_err("the live writer must expose its real save failure");
+            let save_error = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                conversation.flush_current(owner.runtime_epoch()),
+            )
+            .await?
+            .expect_err("the live Current writer must expose its real save failure");
             ensure!(
-                format!("{save_error:#}").contains("permanent deletion must not repair"),
+                format!("{save_error:#}").contains("current.json"),
                 "{save_error:#}"
             );
-            db.close().await?;
+            let failed_current = current_writer
+                .snapshot()
+                .error
+                .map(|error| error.to_string())
+                .context("blocked Current save failure")?;
             let channel = runtime.store.thread_persistence().history_channel(&root.id);
-            let durable = channel.subscribe().borrow().committed_sequence;
             let unsaved_sequence = owner.snapshot().commit_sequence;
-            assert!(durable < unsaved_sequence);
             assert!(runtime.thread_observations.live_feed(&root.id).is_some());
-            let history = runtime.store.history(&root.id).await?;
 
             tokio::time::timeout(
                 std::time::Duration::from_secs(15),
@@ -3838,9 +3853,12 @@ mod standalone_tests {
             );
             assert!(channel.deletion_joined(), "writer must actually join");
             assert_eq!(
-                channel.subscribe().borrow().committed_sequence,
-                durable,
-                "deletion must not invent a save ACK"
+                current_writer
+                    .snapshot()
+                    .error
+                    .map(|error| error.to_string()),
+                Some(failed_current),
+                "deletion must not retry or replace the original Current failure"
             );
             assert_eq!(
                 owner.snapshot().commit_sequence,
@@ -3866,14 +3884,6 @@ mod standalone_tests {
                     .is_none()
             );
             assert!(!host.root().exists());
-            let closed = history
-                .parent_report(1)
-                .await
-                .expect_err("the original pool must reject reads after deletion");
-            ensure!(
-                format!("{closed:#}").contains("permanently closed"),
-                "{closed:#}"
-            );
             runtime.shutdown_runtime().await?;
             Ok(())
         }
@@ -3898,18 +3908,32 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            let sink = ThreadStorageSink::new(runtime.store.clone(), child.clone(), None).await?;
-            let projection = spawn_live_projection_for_thread(runtime.store.clone(), &child.id);
-            let owner = ThreadHandle::resume_without_model(child.id.clone(), None)?;
-            owner.attach_storage(ColdStoreHandle::new(sink)).await?;
-            owner.close().await?;
-            runtime
-                .store
-                .thread_persistence()
-                .history_channel(&child.id)
-                .stop_and_join()
+            // This cold member needs an independent Current and an empty History store. A
+            // Current-only extension has no historical original and owes no History checkpoint.
+            runtime.store.history(&child.id).await?;
+            let owner = ThreadHandle::start_current(child.id.clone(), None)?;
+            let epoch = owner.runtime_epoch();
+            let mut current = runtime.store.state_for(&child.workspace_id, &child.id)?;
+            current
+                .attach_current(
+                    runtime.store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        owner.clone(),
+                    ),
+                )
                 .await?;
-            projection.await?;
+            owner
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: "fixture.cold-child".into(),
+                    expected_revision: None,
+                    payload: pl_core::context::OpaquePayload::text("durable cold Current"),
+                }])
+                .await?;
+            current
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
             // S1 archive belongs to the Session, not independently to a child. The caller exercises
             // both active and archived Session trees while this child stays cold in either case.
             Ok(child)
@@ -4151,18 +4175,16 @@ mod standalone_tests {
                         .await?
                         .context("archive reply")?;
                 }
-                let feed = runtime
-                    .open_conversation_feed(
+                let old_current = runtime
+                    .open_current_reader(
                         &root.id,
-                        crate::ChatScope::conversation(None),
+                        crate::CURRENT_PROTOCOL_VERSION,
                         crate::ReadDemand {
                             max_items: 16,
                             max_bytes: 65536,
                         },
                     )
                     .await?;
-                let reader: ConversationReader = feed.reader().clone();
-                let old_history = runtime.store.history(&root.id).await?;
                 let root_host = runtime.store.session_paths(&project.id, &root.id)?;
                 let child_host = runtime.store.session_paths(&project.id, &child.id)?;
                 let grandchild_host = runtime.store.session_paths(&project.id, &grandchild.id)?;
@@ -4197,12 +4219,14 @@ mod standalone_tests {
                     Some(neighbor.id.as_str())
                 );
                 assert!(
-                    reader.ensure().is_err(),
-                    "an old reader must lose its read qualification"
-                );
-                assert!(
-                    old_history.conversation_database_id().await.is_err(),
-                    "the original pools must close"
+                    old_current
+                        .snapshot(crate::ReadDemand {
+                            max_items: 16,
+                            max_bytes: 65536,
+                        })
+                        .await
+                        .is_err(),
+                    "an old CurrentReader must lose its read qualification"
                 );
                 for host in [root_host, child_host, grandchild_host, private_host] {
                     assert!(!host.root().exists());
@@ -4263,13 +4287,12 @@ mod standalone_tests {
                     b"neighbor artifact"
                 );
                 assert!(
-                    runtime
+                    !runtime
                         .store
-                        .history(&neighbor.id)
+                        .open_history_reader(&neighbor.id)
                         .await?
-                        .conversation_database_id()
-                        .await?
-                        .is_some()
+                        .database_id()
+                        .is_empty()
                 );
                 assert!(
                     runtime
@@ -4512,13 +4535,12 @@ mod standalone_tests {
                 assert!(!host.root().exists());
                 assert!(!workspace.join(SessionFiles::new(&root.id).root()).exists());
                 assert!(
-                    runtime
+                    !runtime
                         .store
-                        .history(&neighbor.id)
+                        .open_history_reader(&neighbor.id)
                         .await?
-                        .conversation_database_id()
-                        .await?
-                        .is_some()
+                        .database_id()
+                        .is_empty()
                 );
                 runtime.shutdown_runtime().await?;
             }
@@ -5445,52 +5467,6 @@ mod standalone_tests {
                 Ok(())
             }
             use crate::studio::store::thread_preparation::{PreparationBinding, PreparationSave};
-            use pl_core::thread::cold::{ColdStore, ColdStoreError, StoragePressure, ThreadWrite};
-            use std::sync::{
-                Arc,
-                atomic::{AtomicBool, AtomicUsize, Ordering},
-            };
-
-            #[derive(Debug)]
-            struct PrivateFlushFailure {
-                sink: ThreadStorageSink,
-                closing: Arc<AtomicBool>,
-                flushes: Arc<AtomicUsize>,
-            }
-
-            impl ColdStore for PrivateFlushFailure {
-                fn pressure(&self, id: &str) -> StoragePressure {
-                    self.sink.pressure(id)
-                }
-                fn admit(
-                    &self,
-                    id: &str,
-                    write: ThreadWrite,
-                ) -> std::result::Result<(), ColdStoreError> {
-                    if write.checkpoint.state.lifecycle == pl_core::thread::ThreadLifecycle::Closed
-                    {
-                        self.closing.store(true, Ordering::SeqCst);
-                    }
-                    self.sink.admit(id, write)
-                }
-                async fn flush(
-                    &self,
-                    id: &str,
-                    sequence: u64,
-                ) -> std::result::Result<(), ColdStoreError> {
-                    self.flushes.fetch_add(1, Ordering::SeqCst);
-                    self.sink.flush(id, sequence).await?;
-                    if self.closing.load(Ordering::SeqCst) {
-                        return Err(ColdStoreError {
-                            source: Box::new(std::io::Error::other(
-                                "private original save ACK failed",
-                            )),
-                        });
-                    }
-                    Ok(())
-                }
-            }
-
             #[tokio::test]
             async fn permanent_delete_private_required_save_records_real_stop_without_save_ack()
             -> Result<()> {
@@ -5536,29 +5512,46 @@ mod standalone_tests {
                         .into_owned(),
                 )?;
                 runtime.store.bind_thread_preparation(id, &binding).await?;
-                let sink = ThreadStorageSink::new(runtime.store.clone(), private, None).await?;
+                let sink = ThreadStorageSink::new(runtime.store.clone(), private).await?;
+                let current_file = runtime.store.registered_session_paths(id)?.current_file();
+                tokio::fs::create_dir_all(&current_file).await?;
                 let projection = spawn_live_projection_for_thread(runtime.store.clone(), id);
-                let flushes = Arc::new(AtomicUsize::new(0));
                 let mut spec = crate::thread_assembler::archive_test_spec(
                     id.into(),
                     Some(root.id.clone()),
                     &workspace,
                 );
-                spec.cold_store = Some(ColdStoreHandle::new(PrivateFlushFailure {
-                    sink,
-                    closing: Arc::new(AtomicBool::new(false)),
-                    flushes: flushes.clone(),
-                }));
+                spec.history_sink = Some(sink);
                 spec.initial_extensions.insert(
-                    String::new(),
-                    pl_core::context::OpaquePayload::text("invalid initialization"),
+                    "fixture.private-required".into(),
+                    pl_core::context::OpaquePayload::text("valid initialization"),
                 );
-                assert!(
-                    runtime
-                        .session_for_roots(std::slice::from_ref(&root.id))?
-                        .assemble(spec)
-                        .await
-                        .is_err()
+                let thread = runtime
+                    .session_for_roots(std::slice::from_ref(&root.id))?
+                    .assemble(spec)
+                    .await?;
+                let conversation = runtime.store.conversation_store(id).await?;
+                let current_writer = runtime
+                    .store
+                    .thread_persistence()
+                    .current_writer(
+                        id,
+                        runtime
+                            .store
+                            .registered_session_paths(id)?
+                            .root()
+                            .to_path_buf(),
+                    )
+                    .await?;
+                let save_error = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    conversation.flush_current(thread.runtime_epoch()),
+                )
+                .await?
+                .expect_err("the private owner must retain its real Current failure");
+                ensure!(
+                    format!("{save_error:#}").contains("current.json"),
+                    "{save_error:#}"
                 );
                 let record = runtime
                     .store
@@ -5567,13 +5560,17 @@ mod standalone_tests {
                     .context("retained private owner")?;
                 assert_eq!(record.save, PreparationSave::Required);
                 assert!(!record.stopped);
+                let before = current_writer
+                    .snapshot()
+                    .error
+                    .map(|error| error.to_string())
+                    .context("blocked private current save failure")?;
                 assert!(
                     runtime
                         .session_of(id)
                         .and_then(|session| session.observed_thread(id))
                         .is_some()
                 );
-                let before = flushes.load(Ordering::SeqCst);
                 assert!(
                     !workspace.join(SessionFiles::new(id).root()).exists(),
                     "the first execution removal must also handle an absent bound session"
@@ -5611,9 +5608,12 @@ mod standalone_tests {
                     PreparationBinding::Bound { identity: binding }
                 );
                 assert_eq!(
-                    flushes.load(Ordering::SeqCst),
-                    before,
-                    "deletion must never retry original flush"
+                    current_writer
+                        .snapshot()
+                        .error
+                        .map(|error| error.to_string()),
+                    Some(before),
+                    "deletion must not retry or replace the original Current failure"
                 );
                 assert!(
                     runtime

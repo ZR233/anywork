@@ -22,8 +22,6 @@ ChatAtom _activeWait(ThreadWaitPresentationView? wait) => ChatAtom(
 
 Map<String, Object?> _expectedAtom(Object? wait) => {
   'id': 'wait-atom',
-  'completionItemId': null,
-  'completionSeq': null,
   'source': {'kind': 'foregroundTurn', 'turnId': 'turn-a'},
   'sourceOrder': 4,
   'kind': 'toolCall',

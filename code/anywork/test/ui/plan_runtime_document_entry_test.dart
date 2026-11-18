@@ -49,11 +49,12 @@ void main() {
     await pumpClientUntil(
       tester,
       () =>
+          graph.client.conversations.visibleThreadId.value == 'thread-main' &&
           graph.client.conversations
-              .existingSession('thread-main')
-              ?.state
-              .hasSnapshot ==
-          true,
+                  .existingSession('thread-main')
+                  ?.state
+                  .hasSnapshot ==
+              true,
       'thread snapshot',
     );
 
@@ -165,7 +166,7 @@ void main() {
     final readingOffset = scroll.offset;
     expect(readingOffset, greaterThan(0));
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(
@@ -174,7 +175,7 @@ void main() {
     );
     expect(scroll.offset, closeTo(readingOffset, 1));
     tester.view.physicalSize = const Size(640, 900);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(
@@ -183,11 +184,11 @@ void main() {
     );
     expect(scroll.offset, closeTo(readingOffset, 1));
     tester.view.physicalSize = const Size(1200, 900);
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
     expect(scroll.offset, closeTo(readingOffset, 1));
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
-    await tester.pump();
+    await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(

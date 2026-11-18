@@ -8,8 +8,6 @@ String _threadTextChannelToJson(ThreadTextChannel channel) =>
 /// Mechanical canonical conversation JSON. No presentation grouping or state.
 Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
   'id': atom.id,
-  'completionItemId': atom.completionItemId,
-  'completionSeq': atom.completionSeq,
   'source': chatSourceIdToJson(atom.source),
   if (atom.sourceState case final state?)
     'sourceState': chatSourceStateToJson(state),
@@ -76,12 +74,6 @@ Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
   },
   'state': wait.state.name,
   if (wait.messagesReady != null) 'messagesReady': wait.messagesReady,
-};
-
-Map<String, Object?> completedEntryToJson(CompletedEntry entry) => {
-  'recordId': entry.recordId,
-  'completionSeq': entry.completionSeq,
-  'atom': chatAtomToJson(entry.atom),
 };
 
 Map<String, Object?> chatScopeToJson(ChatScope scope) => {

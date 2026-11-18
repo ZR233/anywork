@@ -8,6 +8,7 @@ pub(super) use commands::Command;
 /// A bounded command handle; mutable Thread state is owned exclusively by its actor.
 #[derive(Debug, Clone)]
 pub struct ThreadHandle {
+    current_owner: bool,
     pub(in crate::thread) runtime_epoch: current::RuntimeEpoch,
     pub(in crate::thread) final_current:
         watch::Receiver<Option<Result<current::ThreadCurrent, Arc<current::CurrentError>>>>,

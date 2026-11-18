@@ -240,6 +240,7 @@ mod tests {
     use super::*;
     use crate::protocol::*;
     use crate::studio::paths::SqliteFileMode;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::{HistoryStore, connect};
     use anyhow::{Context, Result};
     use pl_core::thread::{ToolDelivery, ToolDeliveryTarget, ToolOutcome};
@@ -460,7 +461,7 @@ mod tests {
             store.prepare_conversation_read().await?;
             store.close_for_deletion().await?;
             let db = connect(&path, SqliteFileMode::ReadWrite).await?;
-            assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+            assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
             assert!(!needs_content_preparation(&db, THREAD).await?);
             let result = metadata(&db, &order::tool_id(CALL)).await?;
             assert_eq!(result.id, order::message_id(MESSAGE));

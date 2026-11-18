@@ -12,21 +12,21 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 
 use anyhow::{Context, Result, ensure};
-use pl_core::chat::Session;
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use super::reader::export_completions_range;
+use super::reader::export_history_originals_window;
 use super::types::{
-    BuildInfoV2, CompletionCursorV2, EVENTS_SCHEMA_VERSION, EventBodyV2, EventSourceV2, EventV2,
-    ExecutionErrorStage, ExecutionErrorV2, ExportedBlobV2, MAX_QUEUED_BATCHES,
-    MAX_QUEUED_METADATA_BYTES, SealedMemberCutV2, TraceSummaryV2, format_utc_rfc3339,
-    validate_export_relative_path,
+    BuildInfoV3, CompletionCursorV3, EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3,
+    ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3, ExportedBlobV3,
+    MAX_QUEUED_BATCHES, MAX_QUEUED_METADATA_BYTES, SealedMemberCutV3, TraceSummaryV3,
+    format_utc_rfc3339, validate_export_relative_path,
 };
 use super::usage::{ThreadUsageInput, UsageAccumulator, fold_next_accounting};
 use crate::StudioStore;
+use crate::history::{HistoryCut, HistoryReader};
 use crate::studio::thread_projection::{BillingFact, PreparedAccounting};
 
 const EVENTS_FILE_NAME: &str = "events.jsonl";
@@ -45,7 +45,7 @@ pub trait BlobChunkWriter {
         self,
         media_type: Option<String>,
         encoding: String,
-    ) -> impl Future<Output = Result<ExportedBlobV2>> + Send;
+    ) -> impl Future<Output = Result<ExportedBlobV3>> + Send;
 }
 
 pub struct FsContentBlobSink {
@@ -126,7 +126,7 @@ impl BlobChunkWriter for FsBlobWriter {
         mut self,
         media_type: Option<String>,
         encoding: String,
-    ) -> Result<ExportedBlobV2> {
+    ) -> Result<ExportedBlobV3> {
         let mut writer = self.file.take().context("blob writer already finished")?;
         writer.flush().await?;
         let file = writer.into_inner();
@@ -178,7 +178,7 @@ impl BlobChunkWriter for FsBlobWriter {
             }
         }
 
-        Ok(ExportedBlobV2 {
+        Ok(ExportedBlobV3 {
             path: rel_path,
             byte_length: self.byte_length,
             sha256,
@@ -193,7 +193,9 @@ async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Resu
         .await
         .with_context(|| format!("open existing content blob {}", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
+    // Keep the bounded chunk on the heap: this verifier is nested in the export task's
+    // async state machine, whose inline buffers otherwise multiply across polling frames.
+    let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
     loop {
         let n = file.read(&mut buf).await?;
         if n == 0 {
@@ -213,7 +215,7 @@ async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Resu
 /// Commands queued onto the single background writer task.
 pub enum ExportCommand {
     RunStarted {
-        build: BuildInfoV2,
+        build: BuildInfoV3,
         manifest_sha256: String,
     },
     AgentRegistered {
@@ -225,21 +227,15 @@ pub enum ExportCommand {
         workspace_id: String,
         spawn_tool_call_id: Option<String>,
         initial_effect_seq: u64,
-        initial_completion_epoch: Option<String>,
-        initial_completion_seq: u64,
+        initial_history_cut: HistoryCut,
+        initial_history_seq: u64,
+        history: HistoryReader,
     },
     SkillsDiscovered {
         thread_id: String,
         report: pl_tool::skill::SkillDiscoveryReport,
     },
-    LiveHandoff {
-        thread_id: String,
-        effect_seq: u64,
-        accounting: PreparedAccounting,
-        lifecycle: Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
-        session: Session,
-        database_id: Option<String>,
-    },
+    LiveHandoff(Box<LiveHandoff>),
     Finalize {
         store: Option<StudioStore>,
         agent_ok: bool,
@@ -249,13 +245,25 @@ pub enum ExportCommand {
     },
 }
 
+pub(in crate::studio) struct LiveHandoff {
+    pub(super) thread_id: String,
+    pub(super) effect_seq: u64,
+    pub(super) accounting: PreparedAccounting,
+    pub(super) lifecycle: Arc<[ExecutionLifecycleExportV3]>,
+    pub(super) history: HistoryReader,
+    pub(super) history_cut: HistoryCut,
+    pub(super) history_seq: u64,
+    pub(super) current_owner_id: String,
+    pub(super) current_revision: u64,
+}
+
 pub struct FinalizeWriterOutcome {
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV2,
-    pub usage: Option<super::types::UsageExportV2>,
-    pub failure: Option<ExecutionErrorV2>,
+    pub trace: TraceSummaryV3,
+    pub usage: Option<super::types::UsageExportV3>,
+    pub failure: Option<ExecutionErrorV3>,
 }
 
 struct QueuedItem {
@@ -269,7 +277,7 @@ struct QueueState {
     queued_batches: usize,
     queued_bytes: usize,
     admission_closed: bool,
-    fatal_error: Option<ExecutionErrorV2>,
+    fatal_error: Option<ExecutionErrorV3>,
     writer_exited: bool,
     #[cfg(test)]
     paused: bool,
@@ -279,8 +287,8 @@ struct QueueState {
 #[derive(Clone)]
 pub struct MemberFinalCut {
     pub through_effect_seq: u64,
-    pub completion_epoch: Option<String>,
-    pub completion_head_seq: u64,
+    pub history_cut: HistoryCut,
+    pub history_seq: u64,
     pub summary: pl_core::thread::UsageSummary,
     pub status: Option<String>,
     pub aborted: bool,
@@ -302,12 +310,12 @@ pub struct MemberSnapshot {
     pub role: Option<String>,
     pub workspace_id: String,
     pub initial_effect_seq: u64,
-    pub session: Session,
-    pub initial_completion_seq: u64,
+    pub history: HistoryReader,
+    pub initial_history_seq: u64,
     pub latest_usage: pl_core::thread::UsageSummary,
     pub latest_effect_seq: u64,
-    pub latest_completion_epoch: Option<String>,
-    pub latest_completion_head_seq: u64,
+    pub latest_history_cut: HistoryCut,
+    pub latest_history_seq: u64,
     pub final_cut: Option<MemberFinalCut>,
     pub spawn_aborted: Option<String>,
 }
@@ -318,14 +326,17 @@ struct WriterMemberState {
     role: Option<String>,
     workspace_id: String,
     initial_effect_seq: u64,
-    exported_completion_seq: u64,
-    last_epoch: Option<String>,
+    history: HistoryReader,
+    exported_history_seq: u64,
+    last_history_cut: HistoryCut,
     last_effect_seq: u64,
     admitted_effects: BTreeMap<u64, String>,
     replayed_usage: pl_core::thread::UsageSummary,
     inferences: BTreeMap<String, (u64, String)>,
     completions_by_seq: BTreeMap<u64, (String, String)>,
-    completions_by_epoch: BTreeMap<(String, u64), String>,
+    scan_cut: Option<HistoryCut>,
+    scan_through: Option<u64>,
+    scan_pivot: u64,
 }
 
 pub struct BoundedExportQueue {
@@ -353,9 +364,9 @@ impl BoundedExportQueue {
         &self,
         cmd: ExportCommand,
         metadata_bytes: usize,
-    ) -> Result<(), Box<ExecutionErrorV2>> {
+    ) -> Result<(), Box<ExecutionErrorV3>> {
         if metadata_bytes > MAX_QUEUED_METADATA_BYTES {
-            let err = ExecutionErrorV2 {
+            let err = ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportBatchTooLarge".to_string(),
                 message: format!(
@@ -377,7 +388,7 @@ impl BoundedExportQueue {
                     return Err(Box::new(fatal.clone()));
                 }
                 if guard.admission_closed || guard.writer_exited {
-                    return Err(Box::new(ExecutionErrorV2 {
+                    return Err(Box::new(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportAdmissionClosed".to_string(),
                         message: "run exporter admission gate is closed".to_string(),
@@ -412,7 +423,7 @@ impl BoundedExportQueue {
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
-    ) -> Result<tokio::sync::oneshot::Receiver<FinalizeWriterOutcome>, Box<ExecutionErrorV2>> {
+    ) -> Result<tokio::sync::oneshot::Receiver<FinalizeWriterOutcome>, Box<ExecutionErrorV3>> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
             let mut guard = self
@@ -421,7 +432,7 @@ impl BoundedExportQueue {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if guard.writer_exited {
                 return Err(Box::new(guard.fatal_error.clone().unwrap_or(
-                    ExecutionErrorV2 {
+                    ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriterStopped".to_string(),
                         message: "exporter writer task exited before finalization".to_string(),
@@ -445,11 +456,11 @@ impl BoundedExportQueue {
         Ok(rx)
     }
 
-    pub fn close_admission(&self, reason: ExecutionErrorV2) {
+    pub fn close_admission(&self, reason: ExecutionErrorV3) {
         self.fail_permanently(reason);
     }
 
-    pub fn fail_permanently(&self, err: ExecutionErrorV2) {
+    pub fn fail_permanently(&self, err: ExecutionErrorV3) {
         let mut guard = self
             .state
             .lock()
@@ -466,7 +477,7 @@ impl BoundedExportQueue {
         self.run_cancel.cancel();
     }
 
-    pub fn fatal_error(&self) -> Option<ExecutionErrorV2> {
+    pub fn fatal_error(&self) -> Option<ExecutionErrorV3> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -558,7 +569,7 @@ struct WriterExitGuard {
 impl Drop for WriterExitGuard {
     fn drop(&mut self) {
         if !self.completed && self.queue.fatal_error().is_none() {
-            self.queue.fail_permanently(ExecutionErrorV2 {
+            self.queue.fail_permanently(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportWriterStopped".into(),
                 message: "export writer stopped before finalization".into(),
@@ -647,7 +658,7 @@ impl WriterWorker {
                         continue;
                     }
                     if let Err(err) = self.process_command(other).await {
-                        let diag = ExecutionErrorV2 {
+                        let diag = ExecutionErrorV3 {
                             stage: ExecutionErrorStage::Export,
                             code: "exportWriteFailed".to_string(),
                             message: err.to_string(),
@@ -668,8 +679,8 @@ impl WriterWorker {
             } => {
                 self.write_event(
                     None,
-                    EventSourceV2::default(),
-                    EventBodyV2::RunStarted {
+                    EventSourceV3::default(),
+                    EventBodyV3::RunStarted {
                         run_id: self.run_id.clone(),
                         build,
                         manifest_sha256,
@@ -686,8 +697,9 @@ impl WriterWorker {
                 workspace_id,
                 spawn_tool_call_id,
                 initial_effect_seq,
-                initial_completion_epoch,
-                initial_completion_seq,
+                initial_history_cut,
+                initial_history_seq,
+                history,
             } => {
                 if let Some(existing) = self.members.get(&thread_id) {
                     ensure!(
@@ -708,8 +720,9 @@ impl WriterWorker {
                         role: role.clone(),
                         workspace_id: workspace_id.clone(),
                         initial_effect_seq,
-                        exported_completion_seq: initial_completion_seq,
-                        last_epoch: initial_completion_epoch.clone(),
+                        history,
+                        exported_history_seq: initial_history_seq,
+                        last_history_cut: initial_history_cut.clone(),
                         last_effect_seq: initial_effect_seq,
                         admitted_effects: BTreeMap::new(),
                         replayed_usage: pl_core::thread::UsageSummary {
@@ -718,19 +731,20 @@ impl WriterWorker {
                         },
                         inferences: BTreeMap::new(),
                         completions_by_seq: BTreeMap::new(),
-                        completions_by_epoch: BTreeMap::new(),
+                        scan_cut: None,
+                        scan_through: None,
+                        scan_pivot: initial_history_seq,
                     },
                 );
                 self.write_event(
                     Some(thread_id.clone()),
-                    EventSourceV2 {
-                        epoch: initial_completion_epoch.clone(),
+                    EventSourceV3 {
                         effect_seq: Some(initial_effect_seq),
                         tool_call_id: spawn_tool_call_id.clone(),
-                        completion_seq: Some(initial_completion_seq),
+                        history_event_seq: Some(initial_history_seq),
                         ..Default::default()
                     },
-                    EventBodyV2::AgentRegistered {
+                    EventBodyV3::AgentRegistered {
                         agent_id,
                         thread_id,
                         parent_agent_id,
@@ -739,9 +753,9 @@ impl WriterWorker {
                         workspace_id,
                         spawn_tool_call_id,
                         initial_effect_seq,
-                        initial_completion_cursor: CompletionCursorV2 {
-                            epoch: initial_completion_epoch,
-                            completion_seq: initial_completion_seq,
+                        initial_history_cursor: CompletionCursorV3 {
+                            cut: initial_history_cut,
+                            history_seq: initial_history_seq,
                         },
                     },
                 )
@@ -750,8 +764,8 @@ impl WriterWorker {
             ExportCommand::SkillsDiscovered { thread_id, report } => {
                 self.write_event(
                     Some(thread_id.clone()),
-                    EventSourceV2::default(),
-                    EventBodyV2::SkillsDiscovered {
+                    EventSourceV3::default(),
+                    EventBodyV3::SkillsDiscovered {
                         thread_id,
                         source_fingerprint: report.source_fingerprint,
                         sources: report.sources,
@@ -762,38 +776,26 @@ impl WriterWorker {
                 )
                 .await?;
             }
-            ExportCommand::LiveHandoff {
-                thread_id,
-                effect_seq,
-                accounting,
-                lifecycle,
-                session,
-                database_id,
-            } => {
-                self.handle_live_handoff(
-                    thread_id,
-                    effect_seq,
-                    accounting,
-                    lifecycle,
-                    session,
-                    database_id,
-                )
-                .await?;
+            ExportCommand::LiveHandoff(handoff) => {
+                self.handle_live_handoff(*handoff).await?;
             }
             ExportCommand::Finalize { .. } => {}
         }
         Ok(())
     }
 
-    async fn handle_live_handoff(
-        &mut self,
-        thread_id: String,
-        effect_seq: u64,
-        accounting: PreparedAccounting,
-        lifecycle: Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
-        session: Session,
-        database_id: Option<String>,
-    ) -> Result<()> {
+    async fn handle_live_handoff(&mut self, handoff: LiveHandoff) -> Result<()> {
+        let LiveHandoff {
+            thread_id,
+            effect_seq,
+            accounting,
+            lifecycle,
+            history,
+            history_cut,
+            history_seq,
+            current_owner_id,
+            current_revision,
+        } = handoff;
         let member = self
             .members
             .get_mut(&thread_id)
@@ -806,20 +808,20 @@ impl WriterWorker {
             );
             return Ok(());
         }
+        member.history = history;
 
         let turn_id = accounting.primary_turn_id().map(str::to_owned);
         let mut events_to_emit = Vec::new();
         if !lifecycle.is_empty() {
             events_to_emit.push((
-                EventSourceV2 {
+                EventSourceV3 {
                     effect_seq: Some(effect_seq),
+                    current_owner_id: Some(current_owner_id.clone()),
+                    current_revision: Some(current_revision),
                     ..Default::default()
                 },
-                EventBodyV2::ExecutionLifecycle {
-                    facts: lifecycle
-                        .iter()
-                        .map(super::types::ExecutionLifecycleExportV2::from)
-                        .collect(),
+                EventBodyV3::ExecutionLifecycle {
+                    facts: lifecycle.to_vec(),
                 },
             ));
         }
@@ -839,12 +841,14 @@ impl WriterWorker {
                 .inferences
                 .insert(fact.record.inference_id.clone(), (effect_seq, fact_fp));
             events_to_emit.push((
-                EventSourceV2 {
+                EventSourceV3 {
                     effect_seq: Some(effect_seq),
                     turn_id: turn_id.clone(),
+                    current_owner_id: Some(current_owner_id.clone()),
+                    current_revision: Some(current_revision),
                     ..Default::default()
                 },
-                EventBodyV2::InferenceFinished {
+                EventBodyV3::InferenceFinished {
                     status: fact.status.as_str().to_string(),
                     auxiliary: fact.auxiliary,
                     billing: fact.record.clone(),
@@ -866,90 +870,117 @@ impl WriterWorker {
                 .await?;
         }
 
-        // Incrementally stream newly sealed completion items while the session is alive so
-        // body content reads proceed continuously without waiting for final producer ACK.
-        self.export_completions_for_member(&thread_id, &session, database_id.as_deref(), None)
+        // Stream the fixed original-event cut through the independent HistoryReader while live.
+        self.export_history_for_member(&thread_id, history_cut, history_seq)
             .await?;
         Ok(())
     }
 
-    async fn export_completions_for_member(
+    async fn export_history_for_member(
         &mut self,
         thread_id: &str,
-        session: &pl_core::chat::Session,
-        database_id: Option<&str>,
-        ceiling: Option<u64>,
+        requested_cut: HistoryCut,
+        requested_seq: u64,
     ) -> Result<()> {
-        let mut after_seq = self
-            .members
-            .get(thread_id)
-            .with_context(|| format!("missing member {thread_id}"))?
-            .exported_completion_seq;
-        let target = ceiling.unwrap_or_else(|| session.head_seq());
-        if target <= after_seq {
-            return Ok(());
-        }
-        while after_seq < target {
-            let (through_seq, records) = export_completions_range(
-                session,
-                database_id,
-                after_seq,
-                Some(target),
-                &mut self.blob_sink,
+        let (history, mut after_seq, mut active_cut, mut active_through, mut active_pivot) = {
+            let member = self
+                .members
+                .get(thread_id)
+                .with_context(|| format!("missing member {thread_id}"))?;
+            (
+                member.history.clone(),
+                member.exported_history_seq,
+                member.scan_cut.clone(),
+                member.scan_through,
+                member.scan_pivot,
             )
-            .await?;
-            for record in records {
+        };
+        let mut pending = (requested_seq > after_seq && active_through != Some(requested_seq))
+            .then_some((requested_cut.clone(), requested_seq));
+        loop {
+            let (cut, through, pivot) = match active_through.take() {
+                Some(through) => (
+                    active_cut
+                        .take()
+                        .context("active History scan lost its cut")?,
+                    through,
+                    active_pivot,
+                ),
+                None => {
+                    let Some((cut, through)) = pending.take() else {
+                        break;
+                    };
+                    (cut, through, after_seq)
+                }
+            };
+            let page =
+                export_history_originals_window(&history, through, pivot, &mut self.blob_sink)
+                    .await?;
+            active_cut = page.has_more.then(|| cut.clone());
+            active_through = page.has_more.then_some(page.through);
+            active_pivot = page.next_pivot;
+            {
                 let member = self
                     .members
                     .get_mut(thread_id)
                     .with_context(|| format!("missing member {thread_id}"))?;
-                let seq = record.header.append_seq;
-                let key = (record.epoch.clone(), seq);
-                if let Some(prev_fp) = member.completions_by_epoch.get(&key) {
+                member.scan_cut = active_cut.clone();
+                member.scan_through = active_through;
+                member.scan_pivot = active_pivot;
+            }
+            for record in page.records {
+                let sequence = record
+                    .source
+                    .history_event_seq
+                    .context("exported History original omitted its event sequence")?;
+                let event_id = record
+                    .source
+                    .history_event_id
+                    .clone()
+                    .context("exported History original omitted its event identity")?;
+                let member = self
+                    .members
+                    .get_mut(thread_id)
+                    .with_context(|| format!("missing member {thread_id}"))?;
+                if let Some((previous_id, previous_fp)) = member.completions_by_seq.get(&sequence) {
                     ensure!(
-                        *prev_fp == record.header_payload_fingerprint,
-                        "conflicting completion record at ({thread_id}, {}, {seq})",
-                        record.epoch
+                        *previous_id == event_id
+                            && *previous_fp == record.header_payload_fingerprint,
+                        "conflicting History original at ({thread_id}, seq={sequence})"
                     );
                     continue;
                 }
-                if let Some((prev_id, prev_fp)) = member.completions_by_seq.get(&seq) {
-                    ensure!(
-                        *prev_id == record.header.item_id
-                            && *prev_fp == record.header_payload_fingerprint,
-                        "conflicting completion record across epochs at ({thread_id}, seq={seq})"
-                    );
-                    continue;
-                }
-                member
-                    .completions_by_epoch
-                    .insert(key, record.header_payload_fingerprint.clone());
                 member.completions_by_seq.insert(
-                    seq,
-                    (
-                        record.header.item_id.clone(),
-                        record.header_payload_fingerprint,
-                    ),
+                    sequence,
+                    (event_id, record.header_payload_fingerprint.clone()),
                 );
-                member.last_epoch = Some(record.epoch);
-                member.exported_completion_seq = member.exported_completion_seq.max(seq);
                 self.write_event(
                     Some(thread_id.to_string()),
                     record.source,
-                    EventBodyV2::Completion {
+                    EventBodyV3::Completion {
                         header: record.header,
-                        atom: record.atom,
+                        atom: Box::new(record.atom),
                         payload: record.payload,
-                        contents: record.contents,
+                        contents_manifest: record.contents_manifest,
                     },
                 )
                 .await?;
             }
-            if let Some(member) = self.members.get_mut(thread_id) {
-                member.exported_completion_seq = member.exported_completion_seq.max(through_seq);
-                member.last_epoch = Some(session.epoch().as_str().to_string());
+            if !page.has_more {
+                after_seq = after_seq.max(page.through);
+                let member = self
+                    .members
+                    .get_mut(thread_id)
+                    .with_context(|| format!("missing member {thread_id}"))?;
+                member.exported_history_seq = after_seq;
+                member.last_history_cut = cut;
+                member.scan_cut = None;
+                member.scan_through = None;
+                member.scan_pivot = after_seq;
+                if pending.is_some() && requested_seq <= after_seq {
+                    pending = None;
+                }
             }
-            after_seq = through_seq;
             tokio::task::yield_now().await;
         }
         Ok(())
@@ -957,7 +988,7 @@ impl WriterWorker {
 
     async fn handle_finalize(
         &mut self,
-        store: Option<StudioStore>,
+        _store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -975,7 +1006,7 @@ impl WriterWorker {
         let mut missing_final_cut = Vec::new();
         let mut member_usage_inputs = Vec::new();
 
-        // First phase: backfill missing durable completions using read-only Session handles (never thread_snapshot).
+        // First phase: exhaust each member's fixed History cut through its retained reader.
         if fatal.is_none() {
             for (thread_id, snap) in &snapshots {
                 if snap.spawn_aborted.is_some() {
@@ -986,7 +1017,7 @@ impl WriterWorker {
                     missing_final_cut.push(thread_id.clone());
                 }
                 if !self.members.contains_key(thread_id) {
-                    fatal = Some(ExecutionErrorV2 {
+                    fatal = Some(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "missingMemberRegistration".to_string(),
                         message: format!(
@@ -996,64 +1027,46 @@ impl WriterWorker {
                     });
                     break;
                 }
-                let expected_head = final_cut.map(|c| c.completion_head_seq);
-                let res = async {
-                    let db_id = match &store {
-                        Some(store) => {
-                            store
-                                .history(thread_id)
-                                .await?
-                                .conversation_database_id()
-                                .await?
-                        }
-                        None => None,
-                    };
-                    anyhow::Ok((snap.session.clone(), db_id))
-                }
-                .await;
-                match res {
-                    Ok((session, db_id)) => {
-                        if let Some(expected) = expected_head
-                            && session.head_seq() < expected
-                        {
-                            fatal = Some(ExecutionErrorV2 {
-                                stage: ExecutionErrorStage::Export,
-                                code: "completionHeadRegressed".to_string(),
-                                message: format!(
-                                    "session {thread_id} head_seq {} is behind final cut {expected}",
-                                    session.head_seq()
-                                ),
-                                turn_failure: None,
-                            });
-                            break;
-                        }
-                        if let Err(err) = self
-                            .export_completions_for_member(
-                                thread_id,
-                                &session,
-                                db_id.as_deref(),
-                                expected_head,
-                            )
-                            .await
-                        {
-                            fatal = Some(ExecutionErrorV2 {
-                                stage: ExecutionErrorStage::Export,
-                                code: "completionBackfillFailed".to_string(),
-                                message: err.to_string(),
-                                turn_failure: None,
-                            });
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        fatal = Some(ExecutionErrorV2 {
+                let expected_seq = final_cut
+                    .map(|cut| cut.history_seq)
+                    .unwrap_or(snap.latest_history_seq);
+                let cut = final_cut
+                    .map(|cut| cut.history_cut.clone())
+                    .unwrap_or_else(|| snap.latest_history_cut.clone());
+                let actual_head = match snap.history.head().await {
+                    Ok(head) => head,
+                    Err(error) => {
+                        fatal = Some(ExecutionErrorV3 {
                             stage: ExecutionErrorStage::Export,
-                            code: "sessionOpenFailed".to_string(),
-                            message: err.to_string(),
+                            code: "historyHeadFailed".to_string(),
+                            message: error.to_string(),
                             turn_failure: None,
                         });
                         break;
                     }
+                };
+                if actual_head < expected_seq {
+                    fatal = Some(ExecutionErrorV3 {
+                        stage: ExecutionErrorStage::Export,
+                        code: "historyHeadRegressed".to_string(),
+                        message: format!(
+                            "history {thread_id} head {actual_head} is behind final cut {expected_seq}"
+                        ),
+                        turn_failure: None,
+                    });
+                    break;
+                }
+                if let Err(error) = self
+                    .export_history_for_member(thread_id, cut, expected_seq)
+                    .await
+                {
+                    fatal = Some(ExecutionErrorV3 {
+                        stage: ExecutionErrorStage::Export,
+                        code: "historyBackfillFailed".to_string(),
+                        message: error.to_string(),
+                        turn_failure: None,
+                    });
+                    break;
                 }
             }
         }
@@ -1103,7 +1116,7 @@ impl WriterWorker {
         let built_usage = self.usage.finish(accounting_complete, &member_usage_inputs);
 
         if fatal.is_none() && !built_usage.reconciled {
-            fatal = Some(ExecutionErrorV2 {
+            fatal = Some(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "usageReconcileFailed".to_string(),
                 message: built_usage
@@ -1124,21 +1137,25 @@ impl WriterWorker {
         let mut sealed_member_cuts = Vec::with_capacity(snapshots.len());
         let mut sealed_write_ok = self.queue.fatal_error().is_none() && fatal.is_none();
         for (thread_id, snap) in &snapshots {
-            let cut_epoch = snap
+            let completion_cursor = snap
                 .final_cut
                 .as_ref()
-                .and_then(|c| c.completion_epoch.clone())
+                .map(|cut| CompletionCursorV3 {
+                    cut: cut.history_cut.clone(),
+                    history_seq: cut.history_seq,
+                })
                 .or_else(|| {
                     self.members
                         .get(thread_id)
-                        .and_then(|m| m.last_epoch.clone())
+                        .map(|member| CompletionCursorV3 {
+                            cut: member.last_history_cut.clone(),
+                            history_seq: member.exported_history_seq,
+                        })
                 })
-                .or_else(|| snap.latest_completion_epoch.clone());
-            let cut_seq = snap
-                .final_cut
-                .as_ref()
-                .map(|c| c.completion_head_seq)
-                .unwrap_or(snap.latest_completion_head_seq);
+                .unwrap_or_else(|| CompletionCursorV3 {
+                    cut: snap.latest_history_cut.clone(),
+                    history_seq: snap.latest_history_seq,
+                });
             let through_effect_seq = snap
                 .final_cut
                 .as_ref()
@@ -1167,20 +1184,16 @@ impl WriterWorker {
                 && let Err(err) = self
                     .write_event(
                         Some(thread_id.clone()),
-                        EventSourceV2 {
-                            epoch: cut_epoch.clone(),
+                        EventSourceV3 {
                             effect_seq: Some(through_effect_seq),
-                            completion_seq: Some(cut_seq),
+                            history_event_seq: Some(completion_cursor.history_seq),
                             ..Default::default()
                         },
-                        EventBodyV2::ThreadSealed {
+                        EventBodyV3::ThreadSealed {
                             thread_id: thread_id.clone(),
                             through_effect_seq,
-                            completion_cut: CompletionCursorV2 {
-                                epoch: cut_epoch.clone(),
-                                completion_seq: cut_seq,
-                            },
-                            summary,
+                            history_cut: completion_cursor.clone(),
+                            summary: Box::new(summary),
                             status,
                             aborted,
                             error: err_msg,
@@ -1190,7 +1203,7 @@ impl WriterWorker {
             {
                 sealed_write_ok = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV2 {
+                    fatal = Some(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriteFailed".to_string(),
                         message: err.to_string(),
@@ -1199,16 +1212,13 @@ impl WriterWorker {
                 }
             }
 
-            sealed_member_cuts.push(SealedMemberCutV2 {
+            sealed_member_cuts.push(SealedMemberCutV3 {
                 thread_id: thread_id.clone(),
                 agent_id: snap.agent_id.clone(),
                 parent_agent_id: snap.parent_agent_id.clone(),
                 role: snap.role.clone(),
                 through_effect_seq,
-                completion_cut: CompletionCursorV2 {
-                    epoch: cut_epoch,
-                    completion_seq: cut_seq,
-                },
+                history_cut: completion_cursor,
                 aborted,
                 sealed: member_clean && sealed_write_ok,
             });
@@ -1218,8 +1228,8 @@ impl WriterWorker {
             if let Err(err) = self
                 .write_event(
                     None,
-                    EventSourceV2::default(),
-                    EventBodyV2::RunSealed {
+                    EventSourceV3::default(),
+                    EventBodyV3::RunSealed {
                         members: sealed_member_cuts,
                         reconciled: built_usage.reconciled,
                         reconcile_error: built_usage.reconcile_error.clone(),
@@ -1231,7 +1241,7 @@ impl WriterWorker {
                 .await
             {
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV2 {
+                    fatal = Some(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportWriteFailed".to_string(),
                         message: err.to_string(),
@@ -1246,7 +1256,7 @@ impl WriterWorker {
         if let Err(err) = self.flush_and_close_events_file().await {
             self.sealed = false;
             if fatal.is_none() {
-                fatal = Some(ExecutionErrorV2 {
+                fatal = Some(ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Export,
                     code: "exportFlushFailed".to_string(),
                     message: err.to_string(),
@@ -1262,7 +1272,7 @@ impl WriterWorker {
             Err(error) => {
                 self.sealed = false;
                 if fatal.is_none() {
-                    fatal = Some(ExecutionErrorV2 {
+                    fatal = Some(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportMeasureFailed".into(),
                         message: error.to_string(),
@@ -1294,7 +1304,7 @@ impl WriterWorker {
             trace_complete,
             usage_complete: final_usage.usage_complete,
             cost_complete: final_usage.cost_complete,
-            trace: TraceSummaryV2 {
+            trace: TraceSummaryV3 {
                 events_path: EVENTS_REL_PATH.to_string(),
                 events_sha256,
                 event_count,
@@ -1310,8 +1320,8 @@ impl WriterWorker {
     async fn write_event(
         &mut self,
         thread_id: Option<String>,
-        source: EventSourceV2,
-        body: EventBodyV2,
+        source: EventSourceV3,
+        body: EventBodyV3,
     ) -> Result<()> {
         if self.events_file.is_none() {
             let file = OpenOptions::new()
@@ -1323,7 +1333,7 @@ impl WriterWorker {
             self.events_file = Some(BufWriter::new(file));
         }
         let event_seq = self.next_event_seq;
-        let event = EventV2 {
+        let event = EventV3 {
             schema_version: EVENTS_SCHEMA_VERSION,
             run_id: self.run_id.clone(),
             event_seq,
@@ -1332,7 +1342,7 @@ impl WriterWorker {
             thread_id,
             source,
         };
-        let mut line = serde_json::to_vec(&event).context("serialize EventV2 line")?;
+        let mut line = serde_json::to_vec(&event).context("serialize EventV3 line")?;
         line.push(b'\n');
         let writer = self
             .events_file
@@ -1356,7 +1366,7 @@ impl WriterWorker {
     async fn measure_events_file(&self) -> Result<(String, u64)> {
         let mut file = File::open(&self.events_path).await?;
         let mut hasher = Sha256::new();
-        let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
+        let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
         loop {
             let count = file.read(&mut buf).await?;
             if count == 0 {
@@ -1402,7 +1412,7 @@ pub async fn await_finalize_with_budget(
         },
         Some(limit) => {
             if Instant::now() >= limit {
-                queue.close_admission(ExecutionErrorV2 {
+                queue.close_admission(ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Export,
                     code: "exportDeadlineExceeded".to_string(),
                     message: "shutdown cleanup deadline expired before export finalization"
@@ -1414,7 +1424,7 @@ pub async fn await_finalize_with_budget(
                 Ok(Ok(outcome)) => outcome,
                 Ok(Err(_)) => crashed_outcome(queue),
                 Err(_) => {
-                    let err = ExecutionErrorV2 {
+                    let err = ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportDeadlineExceeded".to_string(),
                         message: "exporter finalization exceeded shared shutdown deadline"
@@ -1426,7 +1436,7 @@ pub async fn await_finalize_with_budget(
                         trace_complete: false,
                         usage_complete: false,
                         cost_complete: false,
-                        trace: TraceSummaryV2 {
+                        trace: TraceSummaryV3 {
                             events_path: EVENTS_REL_PATH.to_string(),
                             events_sha256: None,
                             event_count: 0,
@@ -1444,7 +1454,7 @@ pub async fn await_finalize_with_budget(
 }
 
 fn crashed_outcome(queue: &BoundedExportQueue) -> FinalizeWriterOutcome {
-    let err = queue.fatal_error().unwrap_or(ExecutionErrorV2 {
+    let err = queue.fatal_error().unwrap_or(ExecutionErrorV3 {
         stage: ExecutionErrorStage::Export,
         code: "exportWriterStopped".to_string(),
         message: "exporter writer dropped finalize response channel".to_string(),
@@ -1454,7 +1464,7 @@ fn crashed_outcome(queue: &BoundedExportQueue) -> FinalizeWriterOutcome {
         trace_complete: false,
         usage_complete: false,
         cost_complete: false,
-        trace: TraceSummaryV2 {
+        trace: TraceSummaryV3 {
             events_path: EVENTS_REL_PATH.to_string(),
             events_sha256: None,
             event_count: 0,

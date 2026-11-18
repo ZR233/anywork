@@ -14,20 +14,18 @@ mod activity;
 mod completed_activity;
 pub(in crate::studio) use activity::project_activity;
 pub(in crate::studio) use completed_activity::activity_identity;
-#[cfg(test)]
-pub(in crate::studio) use completed_activity::completed_activity_identity;
 mod completions;
-pub(crate) use completions::committed_finish;
+pub(crate) use completions::committed_finish_execution;
 mod content;
 mod current;
 mod current_page;
-pub(in crate::studio) use current_page::current_page;
+pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
+pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
 mod current_projection;
 pub(in crate::studio) use content::{
     ContentError, InputView, continuation_request_digest, input_presentation, input_view,
-    prompt_request_digest, referenced_attachment_ids, saved_prompt_request_digest,
 };
-pub(in crate::studio) use current::{CurrentState, project_business_refs};
+pub(in crate::studio) use current::CurrentState;
 pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
@@ -38,22 +36,12 @@ pub(in crate::studio) use live::{
     seed_repaired_targets,
 };
 pub(crate) use presentation::{hidden, work};
-// The free item estimate is only read outside its own module by the storage
-// fault test that asserts the budget covers real bodies, so it stays test-only.
-#[cfg(test)]
-pub(in crate::studio) use live::retained_bytes;
-// The retained-window bound is only read outside its own module by the storage fault test that has
-// to commit more parts than the window holds, so it stays a test-only re-export.
-#[cfg(test)]
-pub(in crate::studio) use live::LIVE_ITEM_WINDOW;
 mod runtime;
 mod usage_projection;
-pub(in crate::studio) use runtime::{
-    fold_effect_accounting, project_cold_runtime, project_runtime,
-};
+pub(in crate::studio) use runtime::{project_cold_runtime, project_runtime};
 pub(in crate::studio) use usage_projection::usage_status;
 mod snapshot;
-pub(in crate::studio) use snapshot::{project_snapshot, saved_mode, status, storage_state};
+pub(in crate::studio) use snapshot::{saved_mode, status, storage_state};
 pub(in crate::studio) mod order;
 mod tool_media;
 pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
@@ -71,10 +59,10 @@ pub(in crate::studio) use user_input::{
 /// The canonical terminal Turn already prepared for the reliable history transaction.
 pub(in crate::studio) fn prepared_terminal_turn(prepared: &PreparedEffect) -> Option<crate::Turn> {
     prepared
-        .turns
-        .iter()
-        .find(|write| write.turn.state.is_terminal())
-        .map(|write| write.turn.clone())
+        .history_turn_details
+        .values()
+        .find(|turn| turn.state.is_terminal())
+        .cloned()
 }
 
 /// Identity of one streaming channel item (`reasoning` or `text`) for an attempt.
@@ -132,3 +120,9 @@ pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::T
         content: payload.content().into(),
     }
 }
+
+pub(in crate::studio) use live::HistoryObservationInput;
+
+pub(crate) use tool_media::{resource_references, resource_references_for_deliveries};
+
+mod history_facts;

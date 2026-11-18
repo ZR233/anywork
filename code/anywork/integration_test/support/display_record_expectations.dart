@@ -1,5 +1,6 @@
 import 'package:anywork_client/conversation_encoding.dart';
 import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void expectImageOriginalOutcome(ChatAtom atom, {required bool failed}) {
@@ -21,7 +22,7 @@ Map<String, Object?> displayRecordEvidence(DisplayRecord record) {
     'start': chatFactPositionToJson(record.startFact),
     'end': chatFactPositionToJson(record.endFact),
     'contentSource': switch (record.contentSource) {
-      CurrentAtom() => {'kind': 'currentAtom'},
+      CurrentAtomSource() => {'kind': 'currentAtom'},
       FrozenObservation(:final capturedAt, :final available) => {
         'kind': 'frozenObservation',
         'capturedAt': capturedAt,

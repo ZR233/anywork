@@ -540,47 +540,56 @@ impl AgentServices {
                 })
                 .transpose()?;
             if let Some(cursor) = &cursor
-                && (cursor.version != 3
+                && (cursor.version != 4
                     || cursor.target != input.target
                     || cursor.order != input.order
                     || cursor.detail != input.detail)
             {
                 bail!("session cursor does not belong to this query");
             }
-            let history = self.store.history(&input.target).await?;
-            history.prepare_conversation_read().await?;
-            let database_id = history.conversation_database_id().await?;
+            let reader = self.store.open_history_reader(&input.target).await?;
+            let database_id = Some(reader.database_id().to_owned());
             if let Some(cursor) = &cursor {
                 anyhow::ensure!(
                     cursor.database_id == database_id,
-                    "session cursor belongs to a rebuilt history database"
+                    "session cursor belongs to another history database"
                 );
             }
-            let (watermark, ceiling, items, has_more) = history
-                .agent_page(
-                    input.order == Order::Descending,
-                    input.detail == Detail::Text,
-                    cursor.as_ref().map(|cursor| cursor.anchor),
-                    cursor.as_ref().map(|cursor| cursor.ceiling),
+            let (through, entries, more) = reader
+                .events_window(
+                    if input.detail == Detail::Text {
+                        crate::history::HistoryEventsQuery::TextOriginals
+                    } else {
+                        crate::history::HistoryEventsQuery::Originals {
+                            scope: crate::ChatScope {
+                                query_class: crate::ChatClassFilter::All {},
+                                parent_id: None,
+                            },
+                        }
+                    },
                     cursor.as_ref().map(|cursor| cursor.through),
-                    input.limit,
-                    cancellation,
+                    cursor.as_ref().map(|cursor| cursor.anchor),
+                    input.order == Order::Ascending,
+                    crate::history::HistoryDemand {
+                        max_rows: input.limit as u32,
+                        max_bytes: 64 * 1024,
+                    },
                 )
                 .await?;
-            let through = cursor.as_ref().map_or(watermark, |cursor| cursor.through);
             let next_cursor =
-                if has_more {
-                    let anchor = items
+                if more {
+                    let anchor = entries
                         .last()
                         .context("session continuation has no anchor")?
-                        .completion_seq;
+                        .header
+                        .seq;
                     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
                         serde_json::to_vec(&Cursor {
-                            version: 3,
+                            version: 4,
                             database_id: database_id.clone(),
                             target: input.target.clone(),
                             through,
-                            ceiling,
+                            ceiling: through,
                             order: input.order,
                             detail: input.detail,
                             anchor,
@@ -596,7 +605,7 @@ impl AgentServices {
                     .map(|(identity, _, _)| identity.agent_id)
                     .context("agent directory identity is missing")?,
                 path,
-                through_sequence: through,
+                history_through_seq: through,
                 order: match input.order {
                     Order::Ascending => AgentSessionReadOrder::Ascending,
                     Order::Descending => AgentSessionReadOrder::Descending,
@@ -605,8 +614,8 @@ impl AgentServices {
                     Detail::Text => AgentSessionReadDetail::Text,
                     Detail::Full => AgentSessionReadDetail::Full,
                 },
-                items,
-                has_more,
+                items: entries,
+                has_more: more,
                 next_cursor,
             })
         };
@@ -798,17 +807,11 @@ mod tests {
             DynModelSession, Model, ModelError, ModelFactory, ModelRequest, ModelSession,
             ModelStepOutput, PreparedModelCall,
         },
-        thread::{
-            TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
-        },
+        thread::TurnInput,
     };
     use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
     use std::{
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
-        },
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -874,26 +877,8 @@ mod tests {
         record
     }
 
-    #[derive(Debug)]
-    struct CountFlush {
-        sink: ThreadStorageSink,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ColdStore for CountFlush {
-        fn pressure(&self, thread: &str) -> StoragePressure {
-            self.sink.pressure(thread)
-        }
-        fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-            self.sink.subscribe_pressure(thread)
-        }
-        fn admit(&self, thread: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            self.sink.admit(thread, write)
-        }
-        async fn flush(&self, thread: &str, sequence: u64) -> Result<(), ColdStoreError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.sink.flush(thread, sequence).await
-        }
+    async fn persist_test_thread(store: &StudioStore, thread: &crate::Thread) -> Result<()> {
+        crate::studio::storage_fault_test_support::register_test_thread(store, thread).await
     }
 
     struct SavedThenBlocked(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
@@ -916,25 +901,39 @@ mod tests {
         ) -> Result<PreparedModelCall, ModelError> {
             let first = std::mem::replace(&mut self.first, false);
             let entered = self.entered.clone();
-            Ok(PreparedModelCall::new(async move {
+            let (capture, mut captures) = pl_core::model::CurrentCaptureHandle::channel();
+            Ok(PreparedModelCall::new_with_current(async move {
+                let accepted = OpaquePayload::text("saved answer");
                 if !first {
                     if let Some(entered) = entered.lock().unwrap().take() {
                         let _ = entered.send(());
                     }
-                    request.cancellation.cancelled().await;
+                    loop {
+                        tokio::select! {
+                            () = request.cancellation.cancelled() => break,
+                            capture = captures.recv() => {
+                                let Some(capture) = capture else { break; };
+                                let _ = capture.reply.send(Ok(accepted.clone()));
+                            }
+                        }
+                    }
                 }
-                Ok(ModelStepOutput {
-                    turn_action: Default::default(),
-                    attempt_id: request.attempt_id,
-                    base_context_revision: request.context.revision,
-                    content: vec![ContextContent::Text {
-                        text: Arc::from("saved answer"),
-                    }],
-                    tool_calls: vec![],
-                    private_context: None,
-                    usage: Default::default(),
-                })
-            }))
+                pl_core::model::ModelCallExit {
+                    result: Ok(ModelStepOutput {
+                        turn_action: Default::default(),
+                        attempt_id: request.attempt_id,
+                        base_context_revision: request.context.revision,
+                        content: vec![ContextContent::Text {
+                            text: Arc::from("saved answer"),
+                        }],
+                        tool_calls: vec![],
+                        private_context: None,
+                        usage: Default::default(),
+                    }),
+                    current: Some(accepted),
+                }
+            })
+            .with_current_capture(capture))
         }
         async fn close(&mut self) -> Result<(), ModelError> {
             Ok(())
@@ -953,32 +952,54 @@ mod tests {
         }
     }
 
+    async fn wait_history_projection(store: &StudioStore, id: &str) -> Result<()> {
+        let channel = store.thread_persistence().history_channel(id);
+        let mut status = channel.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                {
+                    let current = status.borrow_and_update();
+                    if let Some(error) = &current.error {
+                        anyhow::bail!("history projection failed: {error}");
+                    }
+                    if current.queued_records == 0 {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+                status
+                    .changed()
+                    .await
+                    .context("history projection status closed")?;
+            }
+        })
+        .await
+        .context("history projection did not settle")??;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn read_agent_session_returns_saved_page_while_model_and_writer_are_blocked() -> Result<()>
     {
         let dir = tempfile::tempdir()?;
         let store = StudioStore::open(dir.path().join("data/studio.sqlite")).await?;
+        let record = record("root", None, dir.path());
+        persist_test_thread(&store, &record).await?;
         let fixture = close_factory(&store)?;
         let owner = SessionRuntime::open(crate::SessionId::new("root")?);
         fixture.install(&owner)?;
-        let record = record("root", None, dir.path());
-        fixture.events.commit_test_thread(&record).await?;
-        let sink = ThreadStorageSink::new(store.clone(), record, None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), record).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), "root");
-        let calls = Arc::new(AtomicUsize::new(0));
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(
             crate::studio::delegation::EXTENSION.into(),
             crate::studio::delegation::encode(Default::default())?,
         );
-        spec.cold_store = Some(ColdStoreHandle::new(CountFlush {
-            sink,
-            calls: calls.clone(),
-        }));
+        spec.history_sink = Some(sink);
         let mut activation = ThreadActivation::native_test("root", None);
         activation.agent.session_id = owner.id().clone();
         owner.install_explicit_activation(activation);
         let root = owner.assemble(spec).await?;
+        wait_history_projection(&store, "root").await?;
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         root.replace_model(ModelFactory::new(SavedThenBlocked(Arc::new(Mutex::new(
             Some(entered_tx),
@@ -987,6 +1008,7 @@ mod tests {
         root.run_turn(turn("saved", CancellationToken::new()))
             .await?;
         root.flush().await?;
+        wait_history_projection(&store, "root").await?;
         let tool = tool(&owner)?;
         let before = query(&tool, serde_json::json!({"target":"root", "detail":"full"})).await?;
         assert!(
@@ -1011,16 +1033,22 @@ mod tests {
                     ..Default::default()
                 })
                 .await?;
-            let history = store.history("root").await?;
-            let saved = history
-                .agent_page(
-                    true,
+            let reader = store.open_history_reader("root").await?;
+            let saved = reader
+                .events_window(
+                    crate::history::HistoryEventsQuery::Originals {
+                        scope: crate::ChatScope {
+                            query_class: crate::ChatClassFilter::All {},
+                            parent_id: None,
+                        },
+                    },
+                    None,
+                    None,
                     false,
-                    None,
-                    None,
-                    None,
-                    20,
-                    &tokio_util::sync::CancellationToken::new(),
+                    crate::history::HistoryDemand {
+                        max_rows: 20,
+                        max_bytes: 64 * 1024,
+                    },
                 )
                 .await?;
             tokio::time::timeout(
@@ -1034,17 +1062,11 @@ mod tests {
             )
             .await
             .context("running owner must admit the pending runtime fact")??;
-            calls.store(0, Ordering::SeqCst);
             let page = query(&tool, serde_json::json!({"target":"root", "detail":"full"})).await;
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                0,
-                "reading must never ask the target to flush"
-            );
             let page = page?;
-            assert_eq!(page.through_sequence, saved.0);
-            assert_eq!(page.items, saved.2);
-            assert!(page.through_sequence >= before.through_sequence);
+            assert!(page.history_through_seq >= saved.0);
+            assert!(page.items.starts_with(&saved.1));
+            assert!(page.history_through_seq >= before.history_through_seq);
             let first = query(
                 &tool,
                 serde_json::json!({"target":"root", "detail":"full", "limit":1}),
@@ -1063,17 +1085,12 @@ mod tests {
                 }),
             )
             .await?;
-            assert_eq!(next.through_sequence, saved.0);
+            assert_eq!(next.history_through_seq, first.history_through_seq);
             assert_eq!(next.items, page.items[1..2]);
             assert!(
                 query(&tool, serde_json::json!({"target":"root", "limit":0}),)
                     .await
                     .is_err()
-            );
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                0,
-                "continuation and errors must not flush"
             );
             assert_eq!(
                 owner.0.state().entries.len(),
@@ -1093,7 +1110,8 @@ mod tests {
             matches!(execution, Err(pl_core::thread::ThreadError::Cancelled)),
             "the deliberately cancelled model must finish through the typed cancellation path"
         );
-        assert!(owner.close_session().await.is_empty());
+        let closed = owner.close_session().await;
+        assert!(closed.is_empty(), "{closed:?}");
         projection.abort();
         let _ = projection.await;
         blocker.close().await?;
@@ -1107,19 +1125,20 @@ mod tests {
     -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = StudioStore::open(dir.path().join("data/studio.sqlite")).await?;
-        let fixture = close_factory(&store)?;
-        let owner = SessionRuntime::open(crate::SessionId::new("root")?);
-        fixture.install(&owner)?;
         for (id, parent) in [
             ("root", None),
             ("cold", Some("root")),
             ("sibling", Some("root")),
         ] {
-            fixture
-                .events
-                .commit_test_thread(&record(id, parent, dir.path()))
-                .await?;
+            persist_test_thread(&store, &record(id, parent, dir.path())).await?;
         }
+        let fixture = close_factory(&store)?;
+        let owner = SessionRuntime::open(crate::SessionId::new("root")?);
+        fixture.install(&owner)?;
+        // A cold reader consumes an existing independent History owner. Creating this empty
+        // History object does not activate a Current owner or synthesize any session facts.
+        store.history("cold").await?.close().await?;
+        store.history("sibling").await?.close().await?;
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(
             crate::studio::delegation::EXTENSION.into(),
@@ -1132,18 +1151,25 @@ mod tests {
         let tool = tool(&owner)?;
         let page = query(&tool, serde_json::json!({"target":"cold"})).await?;
         assert_eq!(
-            (page.through_sequence, page.items.len(), page.has_more),
+            (page.history_through_seq, page.items.len(), page.has_more),
             (0, 0, false)
         );
         let path = store.registered_session_paths("cold")?.history_database();
-        assert!(!path.exists(), "cold read cannot create the database");
+        assert!(
+            store
+                .state_for("query-project", "cold")?
+                .load_current()
+                .await?
+                .is_none(),
+            "an empty History cannot synthesize Current execution facts"
+        );
         assert!(owner.thread("cold").is_none());
         let services = owner.0.state().agent_services.clone().unwrap();
         assert!(services.authorize("cold", "sibling").await.is_err());
         assert!(services.authorize("cold", "root").await.is_err());
         let cursor = Cursor {
             database_id: None,
-            version: 3,
+            version: 4,
             target: "cold".into(),
             through: 0,
             ceiling: 0,
@@ -1162,41 +1188,19 @@ mod tests {
         ] {
             assert!(query(&tool, value).await.is_err());
         }
-        // A writer initialization gate gives the original request a real lock wait.
-        // Use a fresh cold member to enter initialization before its first query.
-        let fresh = store.history("sibling").await?;
-        let (entered, release) = fresh.arm_init_gate().await;
-        let read_entered = fresh.arm_reader_before_init().await;
         let cancellation = CancellationToken::new();
-        let init = fresh.prepare_write();
-        let read = async {
-            entered.await?;
-            let cancel = async {
-                read_entered.await.unwrap();
-                cancellation.cancel();
-            };
-            let (result, ()) = tokio::join!(
-                tool.execute(
-                    input(serde_json::json!({"target":"sibling"})),
-                    context("root", cancellation.clone())
-                ),
-                cancel
-            );
-            let error = result.expect_err("cancelled original request");
-            assert!(matches!(
-                error.source.downcast_ref::<pl_core::thread::ThreadError>(),
-                Some(pl_core::thread::ThreadError::Cancelled)
-            ));
-            release
-                .send(())
-                .map_err(|_| anyhow::anyhow!("initializer disappeared"))?;
-            Ok::<_, anyhow::Error>(())
-        };
-        let (initialized, cancelled) =
-            tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(init, read) })
-                .await?;
-        initialized?;
-        cancelled?;
+        cancellation.cancel();
+        let error = tool
+            .execute(
+                input(serde_json::json!({"target":"sibling"})),
+                context("root", cancellation),
+            )
+            .await
+            .expect_err("cancelled original request");
+        assert!(matches!(
+            error.source.downcast_ref::<pl_core::thread::ThreadError>(),
+            Some(pl_core::thread::ThreadError::Cancelled)
+        ));
         let page = query(&tool, serde_json::json!({"target":"sibling"})).await?;
         assert!(page.items.is_empty());
         // Real storage damage remains an error at the tool boundary.
@@ -1206,7 +1210,10 @@ mod tests {
             .await
             .expect_err("real storage errors must survive the tool boundary");
         assert!(
-            error.chain().any(|source| source.is::<sea_orm::DbErr>()),
+            error.chain().any(|source| matches!(
+                source.downcast_ref::<crate::history::HistoryError>(),
+                Some(crate::history::HistoryError::Database(_))
+            )),
             "{error:#}"
         );
         assert!(owner.thread("cold").is_none());

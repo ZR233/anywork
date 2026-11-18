@@ -35,6 +35,15 @@ abstract class StartedService with _$StartedService {
 abstract class StartedItemsState with _$StartedItemsState {
   const factory StartedItemsState({
     @Default(<String>[]) List<String> skills,
+    @Default(0) int skillsTotal,
+    @Default(false) bool skillsHasMore,
+    @Default(false) bool skillsLoading,
+    @Default(0) int mcpStateTotal,
+    @Default(false) bool mcpStateHasMore,
+    @Default(false) bool mcpStateLoading,
+    @Default(0) int lspStateTotal,
+    @Default(false) bool lspStateHasMore,
+    @Default(false) bool lspStateLoading,
     @Default(<StartedService>[]) List<StartedService> mcp,
     @Default(<StartedService>[]) List<StartedService> lsp,
     required DomainSyncStatus mcpSync,

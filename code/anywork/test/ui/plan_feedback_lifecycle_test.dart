@@ -619,6 +619,13 @@ Future<void> _publishPlanDocument(
   String markdown,
 ) async {
   final session = graph.client.conversations.session(threadId);
+  await pumpClientUntil(
+    tester,
+    () =>
+        graph.client.conversations.visibleThreadId.value == threadId &&
+        session.state.workspace != null,
+    'visible plan thread',
+  );
   await pumpClientFuture(
     tester,
     timelineReady(graph.timeline, session.threadId),

@@ -8,6 +8,7 @@ import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
 import '../view_models/display_member_controller.dart';
 import 'timeline_member_atom.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 
 /// Borrows the stable block demand from the original display lease.
 class CompletionRunConnector extends StatefulWidget {
@@ -19,16 +20,20 @@ class CompletionRunConnector extends StatefulWidget {
     this.readAttachment,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.registerMemberDisplay,
     super.key,
   });
   final TimelineDisplayUnit unit;
   final String threadId;
-  final ConversationQueries content;
+  final TimelineDisplayLease content;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
+  final void Function(String, int)? onCurrentContentLayout;
+  final void Function(String)? onCurrentContentUnmounted;
   final VoidCallback Function(TimelineMemberDisplay)? registerMemberDisplay;
   @override
   State<CompletionRunConnector> createState() => _MembersState();
@@ -71,6 +76,12 @@ class _MembersState extends State<CompletionRunConnector>
   @override
   void initState() {
     super.initState();
+    _bindDisplay();
+  }
+
+  void _bindDisplay() {
+    _unregister?.call();
+    _unregisterMember?.call();
     final intent = widget.unit.expansion;
     _unregister = intent.registerDisplay?.call(this);
     _unregisterMember = widget.registerMemberDisplay?.call(this);
@@ -78,6 +89,7 @@ class _MembersState extends State<CompletionRunConnector>
     if (open != null) {
       intent.members ??= DisplayMemberController(
         reference: blockReference!,
+        groupClosed: (widget.unit.body as WorkDisplayBlock).groupClosed,
         // Transport budget only; the group accepts all batches.
         demand: const ReadDemand(maxItems: 12, maxBytes: 32 * 1024),
         open: open,
@@ -91,9 +103,7 @@ class _MembersState extends State<CompletionRunConnector>
   @override
   void didUpdateWidget(covariant CompletionRunConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.unit.state == DisplayBlockState.sealed) {
-      _controller?.requireSealed();
-    }
+    _bindDisplay();
   }
 
   @override
@@ -141,7 +151,7 @@ class _MembersState extends State<CompletionRunConnector>
 
   Widget _member(DisplayMemberController controller, DisplayMemberHead entry) {
     if (controller.awaitingSealed &&
-        entry.record.contentSource is CurrentAtom) {
+        entry.record.contentSource is CurrentAtomSource) {
       return const Text('正在读取封存观察…');
     }
     return TimelineMemberAtom(
@@ -154,13 +164,16 @@ class _MembersState extends State<CompletionRunConnector>
       displayId: entry.memberKey,
       disclosure: controller.disclosure(entry.memberKey),
       executionPresent: widget.unit.executionPresent,
-      content: widget.content,
+      threadId: widget.threadId,
+      currentReader: widget.content.current,
       retirement: widget.unit.expansion.retirement,
       isActive: () => isCurrent && widget.unit.expansion.expanded == true,
       images: widget.images,
       readAttachment: widget.readAttachment,
       monotonicMicros: widget.monotonicMicros,
       onContentLayout: widget.onContentLayout,
+      onCurrentContentLayout: widget.onCurrentContentLayout,
+      onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
       registerDisplay: (member) {
         _members.add(member);
         return () => _members.remove(member);

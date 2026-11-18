@@ -5,12 +5,9 @@ use super::super::conversation;
 use super::legacy_current::{
     CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent as PreparedCurrent,
 };
-use super::legacy_timeline_types::CurrentProjection;
+use super::legacy_timeline_types::{CurrentCollectionRef, CurrentPlanHead, CurrentProjection};
 use super::*;
-use crate::{
-    ContentOwner, ContentRef, ContentTarget, CurrentCollectionRef, CurrentPlanHead,
-    CurrentTurnHead, ThreadStatus,
-};
+use crate::{ContentOwner, ContentRef, ContentTarget, CurrentTurnHead, ThreadStatus};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
 use std::sync::Arc;
 
@@ -1109,15 +1106,6 @@ mod tests {
                 .await?
                 .is_none()
         );
-        assert_eq!(
-            store
-                .cold_current_state()
-                .await?
-                .context("cold domain state")?
-                .projection()
-                .source_effect_seq,
-            0
-        );
         store
             .writer()
             .await?
@@ -1141,15 +1129,6 @@ mod tests {
                 .context
                 .records
                 .len(),
-            2
-        );
-        assert_eq!(
-            store
-                .cold_current_state()
-                .await?
-                .context("cold domain state")?
-                .projection()
-                .source_effect_seq,
             2
         );
         assert_eq!(store.commit_checkpoint_effects(&effects).await?.len(), 2);

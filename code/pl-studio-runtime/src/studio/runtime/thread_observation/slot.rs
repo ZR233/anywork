@@ -16,7 +16,43 @@ pub(in crate::studio::runtime) struct SourcePosition {
 pub(in crate::studio::runtime) struct ObservationSlot {
     state: Mutex<SourcePosition>,
     changed: watch::Sender<u64>,
-    readers: Mutex<Option<Vec<std::sync::Weak<super::super::conversation_reader::ReadLease>>>>,
+    readers: Mutex<Option<Vec<ReadRegistration>>>,
+}
+
+enum ReadRegistration {
+    Current(std::sync::Weak<super::super::current_reader::Inner>),
+}
+
+enum ReadOwner {
+    Current(super::super::CurrentReader),
+}
+
+impl ReadRegistration {
+    fn upgrade(&self) -> Option<ReadOwner> {
+        match self {
+            Self::Current(reader) => reader
+                .upgrade()
+                .map(|inner| ReadOwner::Current(super::super::CurrentReader { inner })),
+        }
+    }
+    fn alive(&self) -> bool {
+        match self {
+            Self::Current(reader) => reader.strong_count() > 0,
+        }
+    }
+}
+
+impl ReadOwner {
+    fn request_close(&self) {
+        match self {
+            Self::Current(reader) => reader.request_close(),
+        }
+    }
+    async fn close(self) -> anyhow::Result<()> {
+        match self {
+            Self::Current(reader) => reader.close().await,
+        }
+    }
 }
 
 impl Default for ObservationSlot {
@@ -33,17 +69,17 @@ impl Default for ObservationSlot {
 }
 
 impl ObservationSlot {
-    pub(in crate::studio::runtime) fn register_reader(
+    pub(in crate::studio::runtime) fn register_current_reader(
         &self,
-        reader: &super::super::ConversationReader,
+        reader: &super::super::CurrentReader,
     ) {
         let mut readers = self
             .readers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(readers) = readers.as_mut() {
-            readers.retain(|reader| reader.strong_count() > 0);
-            readers.push(Arc::downgrade(&reader.inner));
+            readers.retain(ReadRegistration::alive);
+            readers.push(ReadRegistration::Current(Arc::downgrade(&reader.inner)));
         } else {
             reader.request_close();
         }
@@ -58,7 +94,6 @@ impl ObservationSlot {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|reader| reader.upgrade())
-            .map(|inner| super::super::ConversationReader { inner })
             .collect::<Vec<_>>();
         for reader in &readers {
             reader.request_close();

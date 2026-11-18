@@ -20,10 +20,22 @@ const TERMINAL_TASK_LEDGER_CAPACITY: usize = 64;
 #[derive(Default)]
 struct EffectWindowState {
     batches: std::collections::VecDeque<Arc<ThreadEffectBatch>>,
+    current_exports: std::collections::BTreeMap<u64, Arc<HistoryExport>>,
     /// Highest `sequence` already handed off to durable history. Every commit at or below it has
     /// been released, so a consumer behind it resynchronizes from the durable store instead of
     /// reading the exact live batch.
     durable_through: u64,
+}
+
+/// One immutable export from a Current owner to its independent history consumer.
+/// The state is the original observation cut needed by the product projector. It is never a
+/// recovery document, a history fence, or a candidate for saving Current.
+#[derive(Debug, Clone)]
+pub struct HistoryExport {
+    pub effect: Arc<ThreadEffectBatch>,
+    pub state: ThreadSnapshot,
+    /// Transient reliable-output reservation transferred with this exact export.
+    pub output_claim: Option<String>,
 }
 
 /// Shared transient live effect window: one [`ThreadEffectBatch`] per commit that is not durable
@@ -93,6 +105,33 @@ impl EffectWindow {
         self.write().batches.push_back(batch);
     }
 
+    pub(super) fn push_current(&self, export: Arc<HistoryExport>) {
+        let mut state = self.write();
+        state.batches.push_back(export.effect.clone());
+        state.current_exports.insert(export.effect.sequence, export);
+    }
+
+    pub(super) fn current_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
+        let state = self.read();
+        if after > state.published_through()
+            || state
+                .frontier()
+                .is_some_and(|frontier| after.saturating_add(1) < frontier)
+        {
+            return Err(ThreadError::InvalidContext);
+        }
+        Ok(state
+            .current_exports
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .take(limit)
+            .map(|(_, export)| export.clone())
+            .collect())
+    }
+
     /// Releases every batch covered by a confirmed durable watermark.
     ///
     /// The handoff is the moment the facts become answerable from the durable store, so the live
@@ -100,17 +139,18 @@ impl EffectWindow {
     /// A consumer that has not consumed them yet observes an explicit gap and resynchronizes from
     /// history instead of reading a stale body or losing the fact.
     pub(super) fn release_through(&self, durable_sequence: u64) {
+        self.write().release_through(durable_sequence);
+    }
+
+    /// Export publication precedes the coalescing Current snapshot. Validate
+    /// and release under the window's own lock so handoff never depends on it.
+    pub(super) fn release_export_through(&self, through: u64) -> Result<(), ThreadError> {
         let mut state = self.write();
-        if durable_sequence > state.durable_through {
-            state.durable_through = durable_sequence;
+        if through > state.published_through() {
+            return Err(ThreadError::InvalidContext);
         }
-        while state
-            .batches
-            .front()
-            .is_some_and(|batch| batch.sequence <= state.durable_through)
-        {
-            state.batches.pop_front();
-        }
+        state.release_through(through);
+        Ok(())
     }
 
     /// First commit sequence the window can still serve, or `None` while it can serve everything.
@@ -161,6 +201,25 @@ pub(super) enum WindowPage {
 }
 
 impl EffectWindowState {
+    fn published_through(&self) -> u64 {
+        self.batches.back().map_or(self.durable_through, |batch| {
+            batch.sequence.max(self.durable_through)
+        })
+    }
+
+    fn release_through(&mut self, through: u64) {
+        self.durable_through = self.durable_through.max(through);
+        while self
+            .batches
+            .front()
+            .is_some_and(|batch| batch.sequence <= self.durable_through)
+        {
+            self.batches.pop_front();
+        }
+        self.current_exports
+            .retain(|sequence, _| *sequence > through);
+    }
+
     /// First commit sequence the window can still serve, if anything was ever released.
     fn frontier(&self) -> Option<u64> {
         self.batches
@@ -221,6 +280,18 @@ pub enum ModelExecutionPhase {
     Running,
 }
 
+/// One already-admitted context compaction visible to the current owner.
+///
+/// The identity is the exact `context-compaction:<thread>:<commit>` value carried by the matching
+/// pending operation. This record is ephemeral and only exists while that operation is in flight.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveContextCompaction {
+    pub operation_id: String,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
 /// Current owner state published after each accepted request or model-output commit.
 ///
 /// A snapshot holds only the facts that current logical execution and live observation still
@@ -249,6 +320,12 @@ pub struct ThreadSnapshot {
     /// first boundary and its completion. Never persisted: it describes live execution only.
     #[serde(skip)]
     pub model_execution: Option<ModelExecutionPhase>,
+    /// The original admitted compaction operation, if context preparation is compacting now.
+    ///
+    /// This is an ephemeral observation of the operation identity already allocated for the
+    /// pending `ContextCompactionEvent::Started`; it is never a second identity or persisted state.
+    #[serde(skip)]
+    pub active_context_compaction: Option<ActiveContextCompaction>,
     /// Ephemeral producer previews for running tasks; never persisted or used as model context.
     ///
     /// One entry per running call, each holding the producer's own opaque output identities and
@@ -530,6 +607,7 @@ impl ThreadSnapshot {
         self.observation_revision = 0;
         self.model_progress = None;
         self.model_execution = None;
+        self.active_context_compaction = None;
         self.tool_progress.clear();
         self.model_available = false;
         self.pending_tool_commits.clear();
@@ -1377,6 +1455,8 @@ impl ContextCapacity {
 pub enum ThreadError {
     #[error("current owner is paused; user-authorized continuation is required")]
     CurrentPaused,
+    #[error("user-authorized Current resume failed: {0}")]
+    CurrentResume(#[source] Arc<current::CurrentError>),
     #[error("current owners do not attach the legacy checkpoint store")]
     CurrentCheckpointStore,
     #[error("tool registration was rejected and cleanup remains pending: {0}")]

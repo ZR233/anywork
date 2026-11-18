@@ -7,7 +7,6 @@ import 'package:material_ui/material_ui.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -400,11 +399,10 @@ final _statusDeclaredWindowItem = ChatItemPresentation.forUnit(
       id: 'preview-lsp-status-unit',
       blockOrder: 1,
       body: SingleDisplayBlock(
-        visibility: SingleVisibility.content,
+        visibility: HistorySingleVisibility.content,
         record: DisplayRecord(
           atom: ChatAtom(
             id: 'preview-lsp-status',
-            completionItemId: 'preview-lsp-status',
             source: TimelinePreviewFixtures.groupSource,
             sourceOrder: 1,
             kind: ChatAtomKind.toolCall,
@@ -477,30 +475,11 @@ final _statusDeclaredWindowItem = ChatItemPresentation.forUnit(
 );
 
 Widget _declaredStatusCard() {
-  final bytes = utf8.encode(_statusJsonText);
   return ChatItemView(
     key: const ValueKey('preview-lsp-status-declared'),
     item: _statusDeclaredWindowItem,
     initiallyExpanded: true,
     bodyBuilder: _lspPreviewMarkdown,
-    contentRangeBuilder: (id, key, label, reference, witness) =>
-        TimelineContentRangeConnector(
-          itemId: id,
-          contentKey: key,
-          label: label,
-          reference: reference,
-          witness: witness,
-          readContent: (_, range) async => ContentWindow(
-            offset: range.offset,
-            bytes: bytes.sublist(
-              range.offset,
-              (range.offset + range.maxBytes).clamp(0, bytes.length),
-            ),
-            generation: 'preview',
-            availableThrough: bytes.length,
-            sealed: true,
-          ),
-        ),
   );
 }
 

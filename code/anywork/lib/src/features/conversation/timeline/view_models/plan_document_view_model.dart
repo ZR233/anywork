@@ -7,7 +7,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
-import '../state/content_reference_identity.dart';
 import 'timeline_view_model.dart';
 import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../../../../domain/models/timeline_commands.dart';
@@ -40,7 +39,7 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
   Observation? _sessionObservation;
   late TimelineSessionOwner _timeline;
   Observation? _timelineObservation;
-  ConversationQueryScope? _scope;
+  CurrentQueryScope? _scope;
   Object? _source;
   int _generation = 0;
   int _request = 0;
@@ -77,12 +76,7 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
         _timeline.source.value?.connection != TimelineConnectionPhase.ready) {
       return null;
     }
-    return (
-      session,
-      content,
-      content.reader.metadata.readerId,
-      contentReferenceIdentity(document),
-    );
+    return (session, content, content.current.metadata.readerId, document);
   }
 
   void _sync() {
@@ -147,8 +141,10 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
       canRead: true,
     );
     try {
-      final scope = _scope ??= content.openScope(generation: ++_generation);
-      final window = await scope.readContent(
+      final scope = _scope ??= content.openCurrentScope(
+        generation: ++_generation,
+      );
+      final window = await scope.readBody(
         reference: document,
         range: ContentRange(offset: offset, maxBytes: 64 * 1024),
       );

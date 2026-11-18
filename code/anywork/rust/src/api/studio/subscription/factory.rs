@@ -17,7 +17,7 @@ impl BridgeObservationFactory {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
 
@@ -30,12 +30,247 @@ mod tests {
         directory::types::{
             BridgeThreadDirectoryFilter, BridgeThreadDirectoryQuery, BridgeThreadDirectoryWindow,
         },
-        handlers::chat::tests::Environment,
-        types::{
-            BridgeChatClassFilter, BridgeChatScope, BridgeErrorCode, BridgeProductTopic,
-            BridgeReadDemand,
-        },
+        types::{BridgeErrorCode, BridgeProductTopic, BridgeReadDemand},
     };
+
+    const MODEL: &str = "bridge-chat-fixture";
+    const ACCOUNT: &str = "bridge-chat-fixture";
+    const INITIAL_PROMPT: &str = "conversation read lease";
+    const INITIAL_INPUT: &str = "input-bridge-chat";
+    const FOLLOWUP_PROMPT: &str = "conversation live range";
+
+    /// Isolated real Runtime assembled through public product commands and the existing provider
+    /// fixture. `BridgeObservationFactory` itself is the only substituted connection point.
+    pub(crate) struct Environment {
+        _temp: tempfile::TempDir,
+        provider: pl_provider_fixture::FixtureServer,
+        pub(crate) runtime: pl_studio_runtime::StudioRuntime,
+        pub(crate) thread_id: String,
+    }
+
+    impl Environment {
+        pub(crate) async fn new() -> Result<Self> {
+            Self::with_followup(None).await
+        }
+
+        async fn with_followup(reply: Option<pl_provider_fixture::Reply>) -> Result<Self> {
+            use pl_model::{
+                config::{AccountConfig, AccountId, ModelRouteConfig},
+                model::{ModelInfo, ModelTransportProfile},
+                protocol::ProtocolEndpoint,
+            };
+            use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
+            use pl_studio_runtime::{
+                CURRENT_PROTOCOL_VERSION, CreateThreadRequest, CurrentFrame, DelegationMode,
+                NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput, StudioRuntime,
+                StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode, TurnState,
+                config::{ConfigPaths, ConfigStore, StudioConfig},
+                mode::ThreadModeId,
+            };
+
+            let temp = tempfile::tempdir()?;
+            let home = temp.path().join("home");
+            let project = temp.path().join("project");
+            std::fs::create_dir(&project)?;
+            let mut script = vec![Step::prompt(
+                Protocol::ResponsesHttp,
+                INITIAL_PROMPT,
+                0,
+                Reply::Sse(pl_provider_fixture::responses_text(
+                    "A completed response for independent demand reads.",
+                    "bridge-chat-answer",
+                    MODEL,
+                )),
+            )];
+            if let Some(reply) = reply {
+                script.push(Step::prompt(
+                    Protocol::ResponsesHttp,
+                    FOLLOWUP_PROMPT,
+                    1,
+                    reply,
+                ));
+            }
+            let provider = FixtureServer::start(script).await?;
+
+            let initialized: Result<pl_studio_runtime::StudioRuntime> = async {
+                let mut model = ModelInfo::compatible(MODEL);
+                model
+                    .binding
+                    .set_transport(ModelTransportProfile::responses_http());
+                model.capabilities.instruction_snapshot_overrides = true;
+                model.base_instructions = "Follow the finite conversation fixture.".into();
+                let account_id = AccountId::new(ACCOUNT)?;
+                let mut config = StudioConfig::default_config()?;
+                config.models.accounts.clear();
+                config.models.accounts.insert(
+                    account_id.clone(),
+                    AccountConfig::from_explicit_models(
+                        ProtocolEndpoint::compatible(ACCOUNT, provider.base_url()),
+                        vec![model],
+                    ),
+                );
+                let route = ModelRouteConfig {
+                    account_id: account_id.clone(),
+                    model_id: MODEL.into(),
+                    effort: None,
+                };
+                for selected in config
+                    .models
+                    .routes
+                    .values_mut()
+                    .chain(config.mode_model_routes.values_mut())
+                {
+                    *selected = route.clone();
+                }
+                ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
+                Ok(Box::pin(StudioRuntime::initialize(StudioRuntimeOptions {
+                    studio_home: Some(home),
+                    host: StudioHostKind::Test,
+                    ..StudioRuntimeOptions::desktop()
+                }))
+                .await?)
+            }
+            .await;
+            let runtime = match initialized {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    let provider = provider.finish().await;
+                    return Err(error.context(format!("provider cleanup: {provider:?}")));
+                }
+            };
+
+            let created: Result<String> = async {
+                let project = runtime.open_project(&project).await?;
+                let started = Box::pin(runtime.create_thread_command(
+                    project.id,
+                    CreateThreadRequest {
+                        title: Some("Conversation boundary fixture".into()),
+                        input: StudioPromptInput {
+                            input_id: INITIAL_INPUT.into(),
+                            text: INITIAL_PROMPT.into(),
+                            attachment_draft_ids: Vec::new(),
+                        },
+                        mode: ThreadModeId::simple().label().into(),
+                        route: NewThreadModelRoute {
+                            account_id: ACCOUNT.into(),
+                            model_id: MODEL.into(),
+                            effort: None,
+                        },
+                        delegation_mode: Some(DelegationMode::Profile),
+                        delegation_preference: None,
+                        workspace_mode: ThreadWorkspaceMode::Local,
+                    },
+                    None,
+                ))
+                .await?;
+                let thread_id = started.thread.id;
+                let demand = ReadDemand {
+                    max_items: 16,
+                    max_bytes: 64 * 1024,
+                };
+                let current = runtime
+                    .open_current_reader(&thread_id, CURRENT_PROTOCOL_VERSION, demand)
+                    .await?;
+                let baseline = current.snapshot(demand).await?;
+                let watch = current.watch(Some(baseline.revision), demand).await?;
+                loop {
+                    let update = watch
+                        .next()
+                        .await?
+                        .context("fixture Current stream ended")?;
+                    let turn = match update {
+                        CurrentFrame::Reset { view } => view.state.active_turn,
+                        CurrentFrame::Notification { notification, .. } => {
+                            match notification.notification {
+                                ThreadNotification::TurnCompleted { turn } => Some(turn),
+                                _ => None,
+                            }
+                        }
+                        CurrentFrame::Projection { .. } => None,
+                    };
+                    if let Some(turn) = turn
+                        && turn.input_id.as_deref() == Some(INITIAL_INPUT)
+                        && turn.state.is_terminal()
+                    {
+                        ensure!(
+                            matches!(turn.state, TurnState::Completed(_)),
+                            "fixture failed: {:?}",
+                            turn.state
+                        );
+                        break;
+                    }
+                }
+                watch.request_close();
+                watch.close().await?;
+                current.request_close();
+                current.close().await?;
+                runtime.synchronize_thread_observation(&thread_id).await?;
+                Ok(thread_id)
+            }
+            .await;
+
+            match created {
+                Ok(thread_id) => Ok(Self {
+                    _temp: temp,
+                    provider,
+                    runtime,
+                    thread_id,
+                }),
+                Err(error) => {
+                    let shutdown = runtime.shutdown_runtime().await;
+                    let provider = provider.finish().await;
+                    Err(error.context(format!(
+                        "cleanup: runtime={shutdown:?}; provider={provider:?}"
+                    )))
+                }
+            }
+        }
+
+        async fn submit_followup(&self) -> Result<()> {
+            use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest};
+
+            let snapshot = self.runtime.thread_snapshot(&self.thread_id).await?;
+            Box::pin(
+                self.runtime.submit_prompt_command(
+                    self.thread_id.clone(),
+                    SubmitPromptRequest {
+                        input: StudioPromptInput {
+                            input_id: "input-bridge-live".into(),
+                            text: FOLLOWUP_PROMPT.into(),
+                            attachment_draft_ids: Vec::new(),
+                        },
+                        expected_model_route_revision: snapshot
+                            .model_route
+                            .as_ref()
+                            .context("fixture model route")?
+                            .revision,
+                    },
+                ),
+            )
+            .await?;
+            Ok(())
+        }
+
+        fn home_path(&self) -> std::path::PathBuf {
+            self._temp.path().join("home")
+        }
+
+        pub(crate) async fn finish(self, result: Result<()>) -> Result<()> {
+            let shutdown = self.runtime.shutdown_runtime().await;
+            let provider = self.provider.finish().await;
+            drop(self.runtime);
+            let cleanup = self._temp.close();
+            result.context(format!(
+                "cleanup: runtime={:?}; provider={:?}; isolated files={cleanup:?}",
+                shutdown.as_ref().map(|_| ()),
+                provider.as_ref().map(|_| ())
+            ))?;
+            shutdown?;
+            provider?;
+            cleanup?;
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn real_factories_share_shutdown_without_stopping_business_runtime() -> Result<()> {
@@ -71,21 +306,18 @@ mod tests {
                 max_items: 2,
                 max_bytes: 64 * 1024,
             };
-            let conversation = factory
-                .open_conversation(
+            let current = factory
+                .open_current(
                     env.thread_id.clone(),
-                    BridgeChatScope {
-                        query_class: BridgeChatClassFilter::All,
-                        parent_id: None,
-                    },
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
                     demand,
                 )
                 .await?;
-            let state = factory
-                .open_conversation_state(env.thread_id.clone())
-                .await?;
-            let timeline = factory
-                .open_timeline(env.thread_id.clone(), 6, 1, demand)
+            let history = factory
+                .open_history(
+                    env.thread_id.clone(),
+                    pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION,
+                )
                 .await?;
 
             ensure!(account.next().await?.is_some());
@@ -118,9 +350,8 @@ mod tests {
             metadata.close().await?;
             statistics.close().await?;
             product.cancel().await?;
-            conversation.close().await?;
-            state.close().await?;
-            timeline.close().await?;
+            current.close().await?;
+            history.close().await?;
             ensure!(
                 env.runtime.runtime_snapshot().await?.state.kind()
                     == pl_studio_runtime::StudioRuntimeStateKind::Ready
@@ -134,19 +365,14 @@ mod tests {
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
-        use pl_studio_runtime::{
-            ChatAtomKind, ChatScope, ReadDemand, ThreadNotification, ThreadSubscriptionUpdate,
-            TurnState,
-        };
-        use pl_studio_runtime::{
-            ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
-        };
+        use pl_studio_runtime::{ReadDemand, ThreadNotification, TurnState};
+        use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
 
         let stage = ReplyStage::new();
         let frames = responses_text_chunks(
             &["execution continues after observation closes"],
             "bridge-observation-close",
-            crate::api::studio::handlers::chat::tests::MODEL,
+            MODEL,
         );
         let reply = stage.gated(frames[..3].to_vec(), frames[3..].to_vec());
         let mut env = Environment::with_followup(Some(reply)).await?;
@@ -157,13 +383,30 @@ mod tests {
                 .open_product_topic(BridgeProductTopic::Updater)
                 .await?;
             let bridge_state = factory
-                .open_conversation_state(env.thread_id.clone())
+                .open_current(
+                    env.thread_id.clone(),
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
+                    BridgeReadDemand {
+                        max_items: 16,
+                        max_bytes: 64 * 1024,
+                    },
+                )
                 .await?;
             // 独立状态读取只用于核对原业务执行，不属于待关闭的桥接作用域。
-            let mut state = env
+            let demand = ReadDemand {
+                max_items: 16,
+                max_bytes: 64 * 1024,
+            };
+            let state = env
                 .runtime
-                .open_conversation_state_feed(&env.thread_id)
+                .open_current_reader(
+                    &env.thread_id,
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
+                    demand,
+                )
                 .await?;
+            let baseline = state.snapshot(demand).await?;
+            let state = state.watch(Some(baseline.revision), demand).await?;
             env.submit_followup().await?;
             stage.wait_reached().await;
             let before = env.runtime.thread_snapshot(&env.thread_id).await?;
@@ -192,15 +435,16 @@ mod tests {
                 .await?;
             stage.release();
             let completed_id = loop {
-                let update = state.recv().await?.context("state feed ended")?;
+                let update = state.next().await?.context("Current watch ended")?;
                 let turn = match update {
-                    ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => snapshot.active_turn,
-                    ThreadSubscriptionUpdate::Notification { notification } => {
+                    pl_studio_runtime::CurrentFrame::Reset { view } => view.state.active_turn,
+                    pl_studio_runtime::CurrentFrame::Notification { notification, .. } => {
                         match notification.notification {
                             ThreadNotification::TurnCompleted { turn } => Some(turn),
                             _ => None,
                         }
                     }
+                    pl_studio_runtime::CurrentFrame::Projection { .. } => None,
                 };
                 if let Some(turn) = turn
                     && turn.id == active.id
@@ -210,6 +454,7 @@ mod tests {
                     break turn.id;
                 }
             };
+            state.request_close();
             state.close().await?;
             env.runtime
                 .synchronize_thread_observation(&env.thread_id)
@@ -223,32 +468,35 @@ mod tests {
             })
             .await?;
             ensure!(env.runtime.read_thread(&env.thread_id).await?.title == title);
-            let mut feed = env
+            let history = env
                 .runtime
-                .open_conversation_feed(
+                .open_history_reader(
                     &env.thread_id,
-                    ChatScope::conversation(None),
-                    ReadDemand {
-                        max_items: 100,
-                        max_bytes: 64 * 1024,
+                    pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION,
+                )
+                .await?;
+            let page = history
+                .turns_page(
+                    None,
+                    None,
+                    pl_studio_runtime::history::HistoryDemand {
+                        max_rows: 100,
+                        max_bytes: 256 * 1024,
                     },
                 )
                 .await?;
-            let batch = loop {
-                match feed.recv().await?.context("reopened conversation ended")? {
-                    ConversationEvent::Chat { batch } => break batch,
-                    ConversationEvent::Activity { .. } => {}
-                }
-            };
             ensure!(
-                batch.entries.iter().any(|entry| {
-                    entry.atom.turn_id.as_deref() == Some(completed_id.as_str())
-                        && entry.atom.kind == ChatAtomKind::Text
+                page.entries.iter().any(|entry| {
+                    matches!(
+                        &entry.head,
+                        pl_studio_runtime::history::HistoryRowHead::Turn(turn)
+                            if turn.turn_id == completed_id
+                    )
                 }),
                 "completed turn was not recovered from durable history"
             );
-            feed.reader().close().await?;
-            feed.close().await?;
+            history.request_close();
+            history.close().await;
             Ok(())
         })
         .await

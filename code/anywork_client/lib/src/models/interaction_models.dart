@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'studio_enums.dart';
 
 const agentSessionPlanConfirmationQuestionId = 'plan_confirmation';
@@ -72,6 +74,43 @@ class PendingInteraction {
     this.revision = 0,
   });
 
+  factory PendingInteraction.fromPayload({
+    required String id,
+    required String threadId,
+    required String turnId,
+    required InteractionKind kind,
+    required InteractionPayload payload,
+    required int revision,
+  }) => PendingInteraction(
+    id: id,
+    threadId: threadId,
+    turnId: turnId,
+    kind: kind,
+    payload: payload,
+    revision: revision,
+    title: switch (payload) {
+      ToolApprovalInteractionPayload(:final toolName) =>
+        toolName.isEmpty ? 'Tool approval' : toolName,
+      UserInputInteractionPayload() => 'User input requested',
+      UnknownInteractionPayload() => switch (kind) {
+        InteractionKind.toolApproval => 'Tool approval',
+        InteractionKind.userInput => 'User input requested',
+      },
+    },
+    body: switch (payload) {
+      ToolApprovalInteractionPayload(arguments: null) => '',
+      ToolApprovalInteractionPayload(arguments: final String text) => text,
+      ToolApprovalInteractionPayload(:final arguments) =>
+        const JsonEncoder.withIndent('  ').convert(arguments),
+      UserInputInteractionPayload(:final questions) =>
+        questions
+            .map((question) => question.question)
+            .where((question) => question.isNotEmpty)
+            .join('\n'),
+      UnknownInteractionPayload() => '',
+    },
+  );
+
   final String id;
   final String threadId;
   final String turnId;
@@ -95,6 +134,118 @@ class PendingInteraction {
     ),
     _ => false,
   };
+}
+
+/// Decodes the producer's canonical Current interaction without exposing a
+/// lifecycle resolution or continuation as a new command authority.
+({PendingInteraction interaction, bool pending}) decodeCurrentInteraction(
+  Object? value, {
+  required String expectedId,
+  required String threadId,
+}) {
+  const invalid = FormatException('Invalid Current interaction');
+  Map<String, Object?> object(Object? value) {
+    if (value is Map<String, Object?>) return value;
+    throw invalid;
+  }
+
+  String string(Object? value) {
+    if (value is String) return value;
+    throw invalid;
+  }
+
+  int integer(Object? value) {
+    if (value is int && value >= 0) return value;
+    throw invalid;
+  }
+
+  List<Object?> list(Object? value) {
+    if (value is List<Object?>) return value;
+    throw invalid;
+  }
+
+  bool flag(Object? value) {
+    if (value == null) return false;
+    if (value is bool) return value;
+    throw invalid;
+  }
+
+  final request = object(value);
+  final scope = object(request['scope']);
+  if (string(request['interactionId']) != expectedId ||
+      string(scope['threadId']) != threadId)
+    throw invalid;
+  final turnId = string(scope['turnId']);
+  final revision = integer(request['revision']);
+  if (request['createdAt'] is! int || request['updatedAt'] is! int)
+    throw invalid;
+  final content = object(request['content']);
+  final data = object(content['data']);
+  final status = string(object(data['state'])['kind']);
+  if (!const {'pending', 'resolved', 'cancelled', 'expired'}.contains(status)) {
+    throw invalid;
+  }
+  final InteractionKind kind;
+  final InteractionPayload payload;
+  switch (content['kind']) {
+    case 'userInput':
+      kind = InteractionKind.userInput;
+      payload = UserInputInteractionPayload(
+        questions: [
+          for (final raw in list(data['questions']))
+            (() {
+              final question = object(raw);
+              return UserQuestionView(
+                id: string(question['id']),
+                header: string(question['header']),
+                question: string(question['question']),
+                isOther: flag(question['isOther']),
+                isSecret: flag(question['isSecret']),
+                options: [
+                  for (final raw
+                      in question['options'] == null
+                          ? const []
+                          : list(question['options']))
+                    (() {
+                      final option = object(raw);
+                      return UserQuestionOptionView(
+                        label: string(option['label']),
+                        description: string(option['description']),
+                      );
+                    })(),
+                ],
+              );
+            })(),
+        ],
+      );
+    case 'toolApproval':
+      kind = InteractionKind.toolApproval;
+      final approval = object(data['request']);
+      if (!approval.containsKey('arguments')) throw invalid;
+      payload = ToolApprovalInteractionPayload(
+        toolName: string(approval['name']),
+        arguments: approval['arguments'],
+        workingDirectory: approval['workingDirectory'] == null
+            ? ''
+            : string(approval['workingDirectory']),
+        parentAgentId: approval['parentAgentId'] == null
+            ? null
+            : string(approval['parentAgentId']),
+      );
+    default:
+      throw invalid;
+  }
+  return (
+    interaction: PendingInteraction.fromPayload(
+      id: expectedId,
+      threadId: threadId,
+      turnId: turnId,
+      kind: kind,
+      payload: payload,
+      revision: revision,
+    ),
+    pending: status == 'pending',
+  );
 }
 
 class PlanConfirmationView {

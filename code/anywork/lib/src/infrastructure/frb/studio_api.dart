@@ -14,7 +14,7 @@ import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/conversation.dart'
-    show DisplayMembers, ProtocolVersionMismatch;
+    show ConversationContinuityError, ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -40,11 +40,11 @@ import '../../rust/api/studio/subscription/product_topic.dart' as frb_topic_sub;
 import '../../rust/api/studio/subscription/shutdown.dart' as frb_shutdown_sub;
 import '../../rust/api/studio/subscription/startup.dart' as frb_startup_sub;
 import '../../rust/api/studio/types/product_topic.dart' as frb_topic_types;
-import '../../rust/api/studio/handlers/chat.dart' as frb_chat;
-import '../../rust/api/studio/handlers/chat/timeline.dart' as frb_timeline;
+import '../../rust/api/studio/handlers/timeline.dart' as frb_timeline;
 import '../../rust/api/studio/handlers/mode_editor.dart' as frb_mode_editor;
 import '../../rust/api/studio/types/chat.dart' as frb_chat_types;
 import '../../rust/api/studio/types/presentation.dart' as frb_presentation;
+import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/command.dart' as frb_command;
 import '../../rust/api/studio/handlers/attachment.dart' as frb_attachment;
 import '../../rust/api/studio/handlers/ssh.dart' as frb_ssh;
@@ -52,7 +52,6 @@ import '../../rust/api/studio/types/attachment.dart' as frb_attachment_types;
 import '../../rust/api/studio/types/ssh.dart' as frb_ssh_types;
 import '../../rust/api/studio/types/shutdown.dart' as frb_shutdown;
 import '../../rust/api/studio/types/thread_stream/item.dart' as frb_item;
-import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/api/studio/handlers/bots.dart' as frb_bots;
 import '../../rust/api/studio/accounts/types.dart' as frb_accounts;
@@ -66,12 +65,8 @@ import '../../rust/api/studio/types/bots.dart' as frb_bots_types;
 import '../../rust/frb_generated.dart';
 part 'studio_thread_stream.dart';
 part 'studio_thread_preparation.dart';
-part 'studio_conversation.dart';
-part 'studio_conversation_native.dart';
 part 'studio_timeline.dart';
-part 'studio_conversation_descriptor.dart';
 part 'studio_presentation_converters.dart';
-part 'studio_conversation_content_watch.dart';
 part 'studio_api_contract.dart';
 part 'frb_runtime_owner.dart';
 part 'studio_frb_converters.dart';
@@ -169,14 +164,4 @@ ThreadRuntimeView _emptyRuntimeView() {
     activeMcpServers: [],
     activeLspServers: [],
   );
-}
-
-String _jsonText(Object? value) {
-  if (value == null) {
-    return '';
-  }
-  if (value is String) {
-    return value;
-  }
-  return const JsonEncoder.withIndent('  ').convert(value);
 }

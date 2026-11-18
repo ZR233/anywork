@@ -123,7 +123,7 @@ void main() {
       );
       expect(
         find.text(
-          '完整 31 项 · ${location == WorkDisplayLocation.history ? '历史消息行' : '实时底部'}',
+          '完整 31 项 · ${location == WorkDisplayLocation.history ? '历史消息行' : '当前消息行'}',
         ),
         findsOneWidget,
       );

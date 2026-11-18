@@ -122,20 +122,25 @@ impl StudioRuntime {
                     deliveries.extend(effect.deliveries.iter().cloned());
                 }
             }
-            deliveries.extend(
-                self.store
-                    .history(&thread_id)
-                    .await?
-                    .tool_media_deliveries(&attachment_id)
-                    .await?,
-            );
-            let store = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
-            return crate::studio::thread_projection::read_persisted_media(
-                &store,
+            let resources = FileResourceStore::new(self.store.session_resources_dir(&thread_id)?);
+            // Current and the reliable RAM queue provide still-live deliveries. Historical proof
+            // is an exact resource-entity query, never a scan over unrelated tool originals.
+            if crate::studio::thread_projection::resource_references_for_deliveries(
                 &deliveries,
                 &attachment_id,
-            )
-            .await;
+            )?
+            .is_some()
+            {
+                return crate::studio::thread_projection::read_persisted_media(
+                    &resources,
+                    &deliveries,
+                    &attachment_id,
+                )
+                .await;
+            }
+            let history = self.store.open_history_reader(&thread_id).await?;
+            return crate::studio::history_resources::read(&history, &resources, &attachment_id)
+                .await;
         }
         self.store
             .read_attachment_bytes(&thread_id, &attachment_id)

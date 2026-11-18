@@ -53,13 +53,22 @@ class ExpandedWorkTimelineFixtureState
   void initState() {
     super.initState();
     unit = TimelineDisplayUnit(
-      block: const DisplayBlock(
+      block: DisplayBlock(
         id: 'expanded-preview-work',
         blockOrder: 2,
         body: WorkDisplayBlock(
-          timing: WorkTiming(startedAt: 100, finishedAt: 225),
-          members: DisplayBlockRef(
-            databaseId: 'preview',
+          timing: WorkTiming(
+            startedAt: isHistory ? 100 : null,
+            finishedAt: isHistory ? 225 : null,
+          ),
+          executionPresent: !isHistory,
+          memberCount: 120,
+          unfinishedCount: isHistory ? 0 : 120,
+          groupClosed: isHistory,
+          members: const DisplayBlockRef(
+            cut: HistoryCut('preview'),
+            anchorSeq: 1,
+            headSeq: 1,
             blockId: 'expanded-preview-work',
           ),
         ),
@@ -68,7 +77,7 @@ class ExpandedWorkTimelineFixtureState
     );
     controls.controller.setMessages([
       _textMessage('before-work', '工作组之前：先核对代码、接口与验证范围。'),
-      if (isHistory) _workMessage(),
+      _workMessage(),
       _textMessage('after-work', '工作组之后：所有成员沿主时间线自然阅读。'),
     ], animated: false);
   }
@@ -178,23 +187,6 @@ class ExpandedWorkTimelineFixtureState
     );
   }
 
-  Widget _liveWork() => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      const Text('实时工作组之前：相邻内容'),
-      CompletionRunView(
-        id: unit.id,
-        // No synthetic clock/timer is needed to exercise the live layout.
-        timing: const WorkTiming(startedAt: null),
-        state: DisplayBlockState.open,
-        location: WorkDisplayLocation.live,
-        initiallyExpanded: widget.initiallyExpanded,
-        childBuilder: (_) => _rows(),
-      ),
-      const Text('实时工作组之后：相邻内容'),
-    ],
-  );
-
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
@@ -229,7 +221,7 @@ class ExpandedWorkTimelineFixtureState
                 onPressed: growMiddle,
                 child: Text('异步加高中段第 $middle 项'),
               ),
-              Text('完整 $count 项 · ${isHistory ? '历史消息行' : '实时底部'}'),
+              Text('完整 $count 项 · ${isHistory ? '历史消息行' : '当前消息行'}'),
             ],
           ),
           Expanded(
@@ -259,7 +251,6 @@ class ExpandedWorkTimelineFixtureState
               isSafeLink: (_) => false,
               remoteImageBuilder: (_, _) => const SizedBox.shrink(),
               groupMembersBuilder: (_) => _rows(),
-              currentWork: isHistory ? null : _liveWork(),
             ),
           ),
         ],

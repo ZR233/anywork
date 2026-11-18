@@ -181,6 +181,7 @@ pub(super) fn run(
 
 fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
     let path = history_lock_database(home)?;
+    let current = read_saved_current(home, thread_id)?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?
@@ -190,7 +191,7 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
             )
             .await?;
             let owner: String =
-                sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
+                sea_orm::sqlx::query("SELECT thread_id FROM history_store_meta WHERE singleton=1")
                     .fetch_one(&mut connection)
                     .await?
                     .try_get("thread_id")?;
@@ -199,27 +200,95 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
                 "history owner differs from observed Thread"
             );
             let mut result = serde_json::Map::new();
-            let rows:Vec<(String,Vec<u8>,Vec<u8>)>=sea_orm::sqlx::query_as("SELECT item_id,payload,metadata FROM conversation_items ORDER BY seq").fetch_all(&mut connection).await?;
-            let mut originals=Vec::new();
-            for (id,payload,metadata) in rows {
-                let atom:pl_studio_runtime::ChatAtom=serde_json::from_slice(&metadata)?;
-                let mut bodies=Vec::new();
-                for body in &atom.contents {
-                    let pl_studio_runtime::ContentTarget::Body { owner:pl_studio_runtime::ContentOwner::Item { item_id },key }=&body.reference.target else {anyhow::bail!("original has a mutable content owner")};
-                    ensure!(item_id==&id,"original body owner differs");
-                    let chunks:Vec<Vec<u8>>=sea_orm::sqlx::query_scalar("SELECT data FROM conversation_content_chunks WHERE owner_key=?1 AND content_key=?2 ORDER BY byte_offset")
-                        .bind(format!("4:item{id}")).bind(key).fetch_all(&mut connection).await?;
-                    let bytes=chunks.into_iter().flatten().collect::<Vec<_>>();
-                    bodies.push(json!({"key":key,"bytes":bytes,"text":String::from_utf8(bytes.clone())?}));
+            let mut after = 0i64;
+            let mut originals = Vec::new();
+            loop {
+                let rows: Vec<String> = sea_orm::sqlx::query_scalar(
+                    "SELECT event_id FROM history_events
+                     WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
+                )
+                .bind(after)
+                .fetch_all(&mut connection)
+                .await?;
+                if rows.is_empty() {
+                    break;
                 }
-                originals.push(json!({"recordId":id,"metadata":atom,"payloadBytes":payload,"bodies":bodies}));
+                for id in rows {
+                    let seq: i64 = sea_orm::sqlx::query_scalar(
+                        "SELECT seq FROM history_events WHERE event_id=?1",
+                    )
+                    .bind(&id)
+                    .fetch_one(&mut connection)
+                    .await?;
+                    after = seq;
+                    let head = history_canonical_head(&mut connection, &id).await?;
+                    let directories: Vec<(String, String, i64)> = sea_orm::sqlx::query_as(
+                        "SELECT body_id,body_key,byte_length FROM history_bodies
+                         WHERE owner_event_id=?1 AND role='body' ORDER BY ordinal",
+                    )
+                    .bind(&id)
+                    .fetch_all(&mut connection)
+                    .await?;
+                    let mut bodies = Vec::new();
+                    for (body_id, key, length) in directories {
+                        let bytes =
+                            history_body_bytes(&mut connection, &body_id, u64::try_from(length)?)
+                                .await?;
+                        bodies.push(json!({
+                            "key": key,
+                            "bytes": bytes,
+                            "text": String::from_utf8(bytes.clone())?
+                        }));
+                    }
+                    originals.push(json!({
+                        "recordId": id,
+                        "metadata": head,
+                        "bodies": bodies
+                    }));
+                }
             }
-            result.insert("items".into(),json!(originals));
-            let rows:Vec<String>=sea_orm::sqlx::query_scalar("SELECT payload FROM current_context ORDER BY ordinal").fetch_all(&mut connection).await?;
-            result.insert("context".into(),Value::Array(rows.into_iter().map(|payload|serde_json::from_str(&payload)).collect::<serde_json::Result<Vec<_>>>()?));
+            result.insert("items".into(), json!(originals));
+            result.insert(
+                "context".into(),
+                serde_json::to_value(&current.state.context.records)?,
+            );
             connection.close().await?;
             Ok(Value::Object(result))
         })
+}
+
+async fn history_body_bytes(
+    connection: &mut SqliteConnection,
+    body_id: &str,
+    length: u64,
+) -> Result<Vec<u8>> {
+    ensure!(
+        length <= 4 * 1024 * 1024,
+        "WebSocket evidence body exceeds its inspection budget"
+    );
+    let mut bytes = Vec::with_capacity(usize::try_from(length)?);
+    let mut chunk = 0i64;
+    while (bytes.len() as u64) < length {
+        let expected = usize::try_from((length - bytes.len() as u64).min(64 * 1024))?;
+        let data: Vec<u8> = sea_orm::sqlx::query_scalar(
+            "SELECT data FROM history_body_chunks WHERE body_id=?1 AND chunk_no=?2",
+        )
+        .bind(body_id)
+        .bind(chunk)
+        .fetch_one(&mut *connection)
+        .await?;
+        ensure!(
+            !data.is_empty() && data.len() == expected,
+            "history body has a gap or invalid chunk length"
+        );
+        bytes.extend_from_slice(&data);
+        chunk += 1;
+    }
+    ensure!(
+        bytes.len() as u64 == length,
+        "history body chunks exceed the declared length"
+    );
+    Ok(bytes)
 }
 
 fn validate_history(history: &Value, native: bool) -> Result<()> {
@@ -269,14 +338,15 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
             .iter()
             .filter(|item| {
                 item["metadata"]["kind"] == "text"
+                    && item["metadata"]["state"]["kind"] == "knownTerminal"
                     && item["bodies"]
                         .as_array()
                         .is_some_and(|bodies| bodies.iter().any(|field| field["text"] == body))
             })
             .collect::<Vec<_>>();
         ensure!(
-            matching.len() == 1 && matching[0]["metadata"]["lifecycle"]["outcome"] == lifecycle,
-            "{body} lost its independent {lifecycle} lifecycle"
+            matching.len() == 1 && matching[0]["metadata"]["state"]["outcome"] == lifecycle,
+            "{body} lost its independent {lifecycle} KnownTerminal state"
         );
     }
     let mut assistant_frames = 0;

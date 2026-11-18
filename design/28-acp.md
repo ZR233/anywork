@@ -13,7 +13,7 @@ Studio 的账户连接所有者（Owner）按接入 ID 与连接代次持有已�
 - **宿主环境白名单**：子进程按平台白名单原样透传官方程序启动、定位用户配置及打开登录浏览器所需的既有环境值，不复制其他凭据类变量。Windows 保留系统目录、用户配置目录、临时目录与标准命令查找上下文，包含初始化 Winsock 所需的 `SystemRoot`；变量查询遵循 Windows 原生的大小写无关语义。Linux X11 环境下，`DISPLAY` 与继承的 `XAUTHORITY` 必须成对传递（仅传递既有文件路径，不读取或记录认证文件内容，不放宽显示服务器访问控制，也不通过浏览器垫片绕过官方认证流程）。同时按原样透传宿主既有的 `XDG_SESSION_TYPE` 与 `XDG_CURRENT_DESKTOP`，使官方程序及其唤起的浏览器遵循实际显示平台与桌面服务；若宿主未设置则保持缺省，不猜测或合成环境变量，也不强制指定浏览器凭据后端。隔离显示验收使用与目标虚拟显示一致的会话上下文，不混用操作者真实桌面的显示标识。
 - **代理环境**：原样透传宿主既有的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 及其小写形式，由官方程序的网络库解释；不记录其值、不修改宿主环境，也不将 Windows 系统代理或自动代理脚本转换成另一套规则。服务器下载使用产品 HTTP 客户端的系统代理能力，官方程序自身仅支持环境变量代理时，登录验收必须明确配置并记录该运行条件。
 
-Native 历史原件内部使用 Class／All 与真实 parent 的 Records 查询；ACP 的外部会话、权限、消息及取消协议保持自身契约。Native 完成游标、数据库 Run 或 GUI 展示组不进入 ACP 协议；父子业务结果仍经真实受理与关闭链交付。
+Native History 使用独立 `HistoryCut`、typed events 与 Class/All 查询；ACP 的外部会话、权限、消息及取消协议保持自身契约。Native event seq、row anchor、Current revision 或 GUI 展示组不进入 ACP 协议；父子业务结果仍经 Current marker 与真实受理/关闭链交付。
 ### 账户连接与后台准备
 
 Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户异步准备连接并检查已有登录态，普通 command 与受管模板共用账户所有者。定义、程序或受管安装不合格时发布明确阻塞状态，不自动安装、调用模型或发起交互登录。每账户每实例的并发请求共享同一准备结果，进程只启动一次、`initialize` 只协商一次；认证、支持的额度查询和业务 session 复用该连接。进程初始 cwd 是账户专属空目录，业务 cwd 随各 session 请求传入，不因共享进程而共享工作区或工具权限。只读查询及订阅不触发准备。
@@ -267,7 +267,7 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分支不能取得本机 `HOST_WORKSPACE_ACCESS` grant，工作区外请求按原远程策略处理，不转为本机用户审批或自动审查。`RequestApproval`/`AutoReview` 的本机越界审批依赖 Native 执行上下文，不用假 Turn/TaskAccess、另选模型或新增计费 owner 补齐；这些本机能力不属于远程项目接入范围。该限制不改变 Native 已有权限模式，也不声称 Shell 命令受 OS 沙箱隔离。
 
-任务受理、执行 future 所有权、取消、等待、结果访问和关闭共享普通会话的必要任务基础。Native 的 TaskRecord、Turn、writer/checkpoint、ACK 和冷读仍归 Native owner；ACP 只使用真实实例及调用身份，不伪造 Native 对象、轮次或持久序号，不新增任务数据库，也不承诺跨实例恢复。一次 MCP 请求结束只结束观察；已受理执行由任务 owner 持有，stdin 和结果查询使用真实原回执，不能从文件名或 MCP request ID 合成。长输出与归档失败继续由原捕获/可靠资源责任收束，不能重跑命令补日志。
+任务受理、执行 future 所有权、取消、等待、结果访问和关闭共享普通会话的必要任务基础。Native 的 TaskRecord、Turn、Current writer、History writer/reader 和 pending marker 仍归 Native owner；ACP 只使用真实实例及调用身份，不伪造 Native 对象、轮次或持久序号，不新增任务数据库，也不承诺跨实例恢复。一次 MCP 请求结束只结束观察；已受理执行由任务 owner 持有，stdin 和结果查询使用真实原回执，不能从文件名或 MCP request ID 合成。长输出与归档失败继续由原捕获/可靠资源责任收束。
 
 宿主指令分别标明 ACP 本机目录与业务执行端、Shell、根目录及执行侧会话文件路径，要求远程操作使用上述 MCP 工具；项目指令也由原业务文件后端读取。工具输入不能选择 caller、SSH 目标或扩大工作区权限。外部代理自带的本机工具不受这些 MCP 权限约束，不能把提示词或前缀声称为沙箱。
 

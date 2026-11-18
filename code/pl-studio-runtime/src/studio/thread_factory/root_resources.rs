@@ -1,4 +1,4 @@
-//! Root activation uses the same physical tools as children and resumes a current-state checkpoint.
+//! Root activation uses the same physical tools as children and restores complete current facts.
 use super::{
     StudioThreadFactory,
     errors::resource_error,
@@ -32,16 +32,16 @@ impl StudioThreadFactory {
         }
         self.ensure_bot_execution_workspace(&thread.clone().into(), None)
             .await?;
-        let checkpoint = super::recovery::load_checkpoint_for_recovery(
+        let current = super::recovery::load_current_for_recovery(
             &self.services.store,
             &thread.clone().into(),
         )
         .await
-        .map_err(|error| resource_error("load root delegation checkpoint", error))?;
-        root_delegation(
-            &thread,
-            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
-        )
+        .map_err(|error| resource_error("load root delegation current", error))?;
+        let saved = current
+            .as_ref()
+            .map(|current| current.state.to_paused_snapshot());
+        root_delegation(&thread, saved.as_ref())
     }
 
     pub(super) async fn bind_bot_project(
@@ -247,16 +247,19 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: crate::Thread = thread.clone().into();
-        let mut checkpoint =
-            super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
+        let mut current =
+            super::recovery::load_current_for_recovery(&self.services.store, &protocol_thread)
                 .await
-                .map_err(|error| resource_error("load Thread checkpoint", error))?;
+                .map_err(|error| resource_error("load Thread current", error))?;
         // Only decoded, validated ownership selects the bot definition: the live binding and the
         // fact frozen in this session must agree when both exist. Titles, user text, paths and
         // arbitrary metadata never decide the Agent role.
+        let saved_snapshot = current
+            .as_ref()
+            .map(|current| current.state.to_paused_snapshot());
         let bot_owner = crate::studio::model_route::verified_bot_owner(
             bot.as_ref().map(|bot| bot.id.as_str()),
-            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
+            saved_snapshot.as_ref(),
         )
         .map_err(|error| resource_error("verify bot ownership", error))?;
         let agent = ResolvedAgentDefinition::root(if bot_owner.is_some() {
@@ -270,41 +273,34 @@ impl StudioThreadFactory {
             Some(_) => VerifiedAgentIdentity::BotRoot,
             None => VerifiedAgentIdentity::GenericRoot,
         };
-        if let Some(checkpoint) = &mut checkpoint {
-            let history = self
-                .services
-                .store
-                .history_for(&thread.workspace_id, id)
-                .await
-                .map_err(|error| resource_error("open Mode recovery writer", error))?;
-            *checkpoint = history
-                .prepare_execution_identity(|state| {
-                    crate::mode::migrate_mode_snapshot(state, &self.services.thread_modes)?;
-                    // A root's saved Mode identity is required evidence: without it neither the
-                    // Mode nor the legacy Agent role can be attributed, so the original
-                    // checkpoint stays as it is.
-                    anyhow::ensure!(
-                        state.extensions.contains_key("studio.mode"),
-                        "root Thread has no saved Mode identity; original checkpoint preserved"
-                    );
-                    // Mode recovery reads the saved role text before this migration rewrites the
-                    // snapshot structure; the Agent identity is the verified one above.
-                    crate::instruction::migrate_saved_representation(state, &saved_identity)?;
-                    Ok(())
-                })
-                .await
+        if let Some(current) = &mut current {
+            // These migrations only rewrite frozen extension payloads. Keep the complete current
+            // state (including model_call and tool previews) intact instead of replacing it from
+            // the paused product snapshot.
+            let mut state = current.state.to_paused_snapshot();
+            crate::mode::migrate_mode_snapshot(&mut state, &self.services.thread_modes)
                 .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
+            if !state.extensions.contains_key("studio.mode") {
+                return Err(ThreadAssemblyError::Identity(
+                    "root Thread has no saved Mode identity; original current preserved".into(),
+                ));
+            }
+            crate::instruction::migrate_saved_representation(&mut state, &saved_identity)
+                .map_err(|error| resource_error("migrate saved Mode and instructions", error))?;
+            debug_assert!(
+                state.extensions.contains_key("studio.mode"),
+                "saved Mode migration preserved its identity"
+            );
+            current.state.extensions = state.extensions;
+            current.state.extension_sequence = state.extension_sequence;
         }
-        let saved = checkpoint
+        let saved = current
             .as_ref()
-            .map_or_else(pl_core::thread::ThreadSnapshot::default, |checkpoint| {
-                checkpoint.state.clone()
+            .map_or_else(pl_core::thread::ThreadSnapshot::default, |current| {
+                current.state.to_paused_snapshot()
             });
-        let is_new = checkpoint.is_none();
-        let delegation = root_delegation(
-            &thread,
-            checkpoint.as_ref().map(|checkpoint| &checkpoint.state),
-        )?;
+        let is_new = current.is_none();
+        let delegation = root_delegation(&thread, (!is_new).then_some(&saved))?;
         if preflight_delegation != Some(delegation) {
             return Err(ThreadAssemblyError::Identity(
                 "root delegation differs from its preflight".into(),
@@ -541,11 +537,16 @@ impl StudioThreadFactory {
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             protocol_thread,
-            checkpoint.as_ref(),
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;
-        let export_session = persistence.chat_session();
+        let export_history = self
+            .services
+            .store
+            .history(id)
+            .await
+            .map_err(|error| resource_error("open export history", error))?
+            .reader();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
         let model = pl_model::runtime::ThreadModel::new(
             pl_model::runtime::ModelRuntime::from_route(&route)?,
@@ -571,7 +572,7 @@ impl StudioThreadFactory {
             route,
             model_available,
             model,
-            checkpoint,
+            current,
             initial_context,
             initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
                 .into_iter()
@@ -580,7 +581,7 @@ impl StudioThreadFactory {
             tools: Vec::new(),
             resources: ResourceAccess::new(store),
             capacity: Default::default(),
-            cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
+            history_sink: Some(persistence),
         };
         if let Some(lease) = verified_lease {
             self.confirm_worktree_binding(
@@ -605,7 +606,7 @@ impl StudioThreadFactory {
                     workspace_id: thread.workspace_id.clone(),
                     spawn_tool_call_id: None,
                     initial_effect_seq: saved.commit_sequence,
-                    session: export_session,
+                    history: export_history,
                 },
             ))
             .await;

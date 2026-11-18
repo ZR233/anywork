@@ -1,10 +1,22 @@
+#[expect(
+    dead_code,
+    reason = "shared isolated fixtures also serve other integration test binaries"
+)]
+mod support;
+
+use anyhow::{Context, Result, ensure};
+
 use pl_core::thread::current::RuntimeEpoch;
 use pl_studio_runtime::history::*;
-use pl_studio_runtime::{ChatActiveStatus, ChatTerminalOutcome, RuntimeCostAmount};
+use pl_studio_runtime::{
+    CURRENT_PROTOCOL_VERSION, ChatActiveStatus, ChatTerminalOutcome, ContentRange,
+    CurrentContentRef, CurrentFrame, CurrentProjection, RuntimeCostAmount,
+};
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait,
 };
 use std::{path::Path, sync::Arc};
+use support::{Environment, current_demand, prompt_step, reached};
 
 fn demand() -> HistoryDemand {
     HistoryDemand::default()
@@ -85,6 +97,374 @@ async fn raw(path: &Path) -> Result<DatabaseConnection> {
             .create_if_missing(true)
     });
     Ok(Database::connect(options).await?)
+}
+
+fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContentRef> {
+    projection
+        .atoms
+        .iter()
+        .filter(|atom| {
+            atom.kind == pl_studio_runtime::ChatAtomKind::Text
+                && atom.text_channel == Some(pl_studio_runtime::ThreadTextChannel::Final)
+        })
+        .flat_map(|atom| atom.contents.iter())
+        .find(|content| content.role == pl_studio_runtime::ChatContentRole::Body)
+        .map(|content| content.reference.clone())
+}
+
+async fn read_current_body(
+    reader: &pl_studio_runtime::CurrentReader,
+    reference: &CurrentContentRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    loop {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                ContentRange {
+                    offset: bytes.len() as u64,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await?;
+        ensure!(window.offset == bytes.len() as u64);
+        let finished = window.offset + window.bytes.len() as u64 == window.available_through;
+        ensure!(
+            finished || !window.bytes.is_empty(),
+            "Current body did not advance"
+        );
+        bytes.extend(window.bytes);
+        if finished {
+            break;
+        }
+    }
+    Ok(bytes)
+}
+
+async fn read_history_body(
+    reader: &HistoryReader,
+    reference: &HistoryEventBodyRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() as u64 != reference.byte_length {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                bytes.len() as u64,
+                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
+            )
+            .await?;
+        ensure!(!window.bytes.is_empty(), "history body did not advance");
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+#[tokio::test]
+async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_history()
+-> Result<()> {
+    use pl_provider_fixture::ReplyStage;
+
+    let stage = ReplyStage::new();
+    let head = "流".repeat(33_000);
+    let tail = "🎉完整终稿";
+    let expected = format!("{head}{tail}").into_bytes();
+    let mut frames = pl_provider_fixture::responses_text_chunks(
+        &[head.as_str(), tail],
+        "current-history",
+        support::MODEL,
+    );
+    let after: Vec<_> = frames.split_off(3);
+    let reply = ReplyStage::staged(vec![frames, after], &[&stage]);
+    let mut env = Environment::new(vec![prompt_step("current-history", 0, reply)], vec![]).await?;
+    let result = async {
+        let thread = env
+            .start(
+                pl_studio_runtime::ThreadWorkspaceMode::Worktree,
+                "current-history",
+            )
+            .await?;
+        let id = thread.thread.id;
+        let demand = current_demand();
+        let history_demand = HistoryDemand::default();
+        let reader = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
+            .await?;
+        let metadata = reader.watch(None, demand).await?;
+        let Some(CurrentFrame::Reset { view }) = metadata.next().await? else {
+            anyhow::bail!("Current watch did not begin with Reset");
+        };
+        ensure!(
+            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
+            "Current did not expose the current Thread schema"
+        );
+        ensure!(
+            view.state
+                .runtime
+                .as_ref()
+                .is_none_or(|runtime| runtime.deferred.is_empty()),
+            "small runtime snapshot unexpectedly deferred a State field"
+        );
+        ensure!(
+            view.state
+                .activity
+                .as_ref()
+                .is_none_or(|activity| activity.deferred.is_empty()),
+            "small activity snapshot unexpectedly deferred a State field"
+        );
+        reached(&stage).await?;
+        let mut reference = None;
+        while reference.is_none() {
+            match metadata.next().await? {
+                Some(CurrentFrame::Reset { view }) => {
+                    reference = final_text_reference(&view.projection);
+                }
+                Some(CurrentFrame::Projection { projection, .. }) => {
+                    reference = final_text_reference(&projection);
+                }
+                Some(CurrentFrame::Notification { .. }) => {}
+                None => anyhow::bail!("Current watch ended before the response body appeared"),
+            }
+        }
+        let reference = reference.unwrap();
+        for stale_reference in [
+            {
+                let mut stale = reference.clone();
+                stale.owner_id.push_str(":wrong-owner");
+                stale
+            },
+            {
+                let mut stale = reference.clone();
+                stale.generation.push_str(":wrong-generation");
+                stale
+            },
+        ] {
+            let stale = reader
+                .read_body(
+                    stale_reference,
+                    ContentRange {
+                        offset: 0,
+                        max_bytes: 1,
+                    },
+                )
+                .await
+                .unwrap_err();
+            ensure!(
+                stale
+                    .downcast_ref::<pl_studio_runtime::StudioError>()
+                    .and_then(|error| error.reason())
+                    == Some("staleCurrentReference"),
+                "wrong owner or body generation was accepted"
+            );
+        }
+        let live_view = reader.snapshot(demand).await?;
+        ensure!(
+            live_view.state.active_turn.as_ref().is_some_and(|turn| {
+                turn.input_id.as_deref() == Some("input-current-history")
+                    && matches!(turn.state, pl_studio_runtime::TurnState::Running(_))
+            }),
+            "held provider lost its actual running Turn: {:?}",
+            live_view.state.active_turn
+        );
+        ensure!(
+            live_view
+                .state
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.deferred.is_empty()),
+            "live runtime snapshot unexpectedly deferred a State field"
+        );
+        ensure!(
+            live_view
+                .state
+                .activity
+                .as_ref()
+                .is_none_or(|activity| activity.deferred.is_empty()),
+            "live activity snapshot unexpectedly deferred a State field"
+        );
+        ensure!(
+            live_view.state.thread.status == live_view.projection.logical_status,
+            "Current baseline used an older catalog status"
+        );
+        let r1 = live_view.revision.owner_id;
+        let body = reader
+            .watch_body(
+                reference.clone(),
+                ContentRange {
+                    offset: 65_530,
+                    max_bytes: 40,
+                },
+            )
+            .await?;
+        let live_window = body.next().await?.context("live body watch")?;
+        ensure!(live_window.offset == 65_530);
+        ensure!(live_window.bytes == expected[65_530..65_570]);
+        ensure!(
+            !live_window.sealed,
+            "the held provider attempt was still active"
+        );
+
+        let saved_stream_bytes =
+            tokio::time::timeout(support::integration_test_deadline()?, async {
+                loop {
+                    if let Ok(saved) = support::saved(&env.home, &id).await
+                        && let Some(call) = saved.current.model_call.as_ref()
+                        && let pl_core::thread::current::SavedModelPhase::Streaming { stream } =
+                            &call.phase
+                    {
+                        let stream = pl_model::completion::ModelStreamCurrent::decode(stream)?;
+                        if stream.content_parts.iter().any(|part| part.text == head) {
+                            return Ok::<_, anyhow::Error>(std::fs::read(
+                                saved.root.join("current.json"),
+                            )?);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .context("periodic Current did not save the held provider prefix")??;
+        stage.release();
+        let terminal = loop {
+            let Some(frame) = metadata.next().await? else {
+                anyhow::bail!("Current watch ended before the provider Turn completed");
+            };
+            if let CurrentFrame::Notification { notification, .. } = frame
+                && let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
+                    notification.notification
+            {
+                break turn;
+            }
+        };
+        ensure!(terminal.input_id.as_deref() == Some("input-current-history"));
+        loop {
+            match body.next().await {
+                Ok(Some(window)) => {
+                    ensure!(window.bytes == expected[65_530..65_570]);
+                    if window.sealed {
+                        break;
+                    }
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<pl_studio_runtime::StudioError>()
+                        .is_some_and(|error| error.reason() == Some("staleCurrentReference")) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+                Ok(None) => {
+                    anyhow::bail!("body watch ended without sealing or retiring the live reference")
+                }
+            }
+        }
+        body.close().await?;
+        metadata.close().await?;
+        reader.close().await?;
+
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let saved = support::saved(&env.home, &id).await?;
+        ensure!(saved.current.schema_version == pl_core::thread::current::CURRENT_SCHEMA_VERSION);
+        ensure!(saved.current.saved_runtime_epoch.to_string() == r1);
+
+        let history = env
+            .runtime
+            .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let originals = history
+            .events_page(
+                HistoryEventsQuery::TextOriginals,
+                None,
+                None,
+                history_demand,
+            )
+            .await?;
+        let mut canonical = None;
+        let mut durable = None;
+        for event in originals.entries {
+            let Some(payload_ref) = event.payload_ref.clone() else {
+                continue;
+            };
+            let payload = read_history_body(&history, &payload_ref).await?;
+            let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
+            ensure!(envelope["contract"] == "anywork.chat/1");
+            let bodies = history
+                .list_bodies(event.header.event_id.clone(), None, history_demand)
+                .await?;
+            let body = bodies
+                .entries
+                .into_iter()
+                .find(|entry| entry.role == HistoryBodyRole::Body)
+                .context("text original has no body")?;
+            let bytes = read_history_body(&history, &body.reference).await?;
+            if bytes == expected {
+                ensure!(canonical.is_none(), "final body was stored more than once");
+                canonical = Some((event.header.event_id.clone(), envelope));
+                durable = Some(body.reference);
+            }
+        }
+        let (event_id, envelope) = canonical.context("final text original")?;
+        let durable = durable.context("final text body reference")?;
+        ensure!(envelope["turnId"].is_string());
+        history.close().await;
+        let provider_requests = env.root_provider.recorded().len();
+        ensure!(provider_requests == 1, "fixture prompt made extra requests");
+
+        env.restart().await?;
+        std::fs::write(saved.root.join("current.json"), b"broken current JSON")?;
+        let broken_current_history = env
+            .runtime
+            .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let detail = broken_current_history
+            .read_event(event_id.clone(), history_demand)
+            .await?;
+        ensure!(read_history_body(&broken_current_history, &durable).await? == expected);
+        ensure!(detail.header.event_id == event_id);
+        broken_current_history.close().await;
+        ensure!(env.root_provider.recorded().len() == provider_requests);
+
+        std::fs::write(saved.root.join("current.json"), &saved_stream_bytes)?;
+        env.restart().await?;
+        std::fs::write(saved.path, b"broken history; Current must not open it")?;
+        let current = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
+            .await?;
+        let view = current.snapshot(demand).await?;
+        ensure!(
+            view.revision.owner_id == r1 && !view.projection.execution_present,
+            "passive cold reading must retain saved provenance without activating a new Core owner"
+        );
+        let restored = final_text_reference(&view.projection).context("saved streaming body")?;
+        ensure!(
+            read_current_body(&current, &restored).await? == head.as_bytes(),
+            "cold Current borrowed the later final body from History"
+        );
+        let stale = current
+            .read_body(
+                reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        ensure!(
+            stale
+                .downcast_ref::<pl_studio_runtime::StudioError>()
+                .and_then(|error| error.reason())
+                == Some("staleCurrentReference")
+        );
+        current.close().await?;
+        ensure!(env.root_provider.recorded().len() == provider_requests);
+        Ok(())
+    }
+    .await;
+    stage.release();
+    env.finish(result).await
 }
 
 #[tokio::test]
@@ -178,6 +558,154 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
             .bytes,
         b"opaque original bytes"
     );
+    reader.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = HistoryStore::open(
+        directory.path().join("history.sqlite"),
+        "fixed-pages",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let reader = store.reader();
+    let run = RuntimeEpoch::new();
+    let mut classifier = HistoryClassifier::new(run);
+    let mut member = entity("member", run, true);
+    member.kind = HistoryEntityKind::ToolCall;
+    member.text_channel = None;
+    member.tool = Some(HistoryToolIdentity {
+        call_id: "call".into(),
+        name: "lookup".into(),
+    });
+    classifier
+        .record(
+            &store,
+            &HistoryEntityChange {
+                event: HistoryEvent::new("member-start", HistoryEventKind::EntityStarted, 10),
+                entity: member.clone(),
+                placement: HistoryPlacement::Work,
+                boundary_observations: Vec::new(),
+                public_summary: None,
+            },
+        )
+        .await?;
+    let group = classifier.open_group().unwrap().to_owned();
+    let mut turn = HistoryTurnHead {
+        turn_id: "turn-a".into(),
+        input_id: Some("input-a".into()),
+        run_id: Some(run.to_string()),
+        state: HistoryTurnState::Running,
+        phase: None,
+        context_disposition: pl_studio_runtime::ThreadContextDisposition::Active,
+        queued_at: Some(9),
+        started_at: Some(10),
+        finished_at: None,
+        updated_at: 10,
+        detail_event_id: None,
+    };
+    let turn_event = |id, kind, head: HistoryTurnHead, anchor| {
+        let mut event = HistoryEvent::new(id, kind, head.updated_at);
+        event.header.run_id = Some(run.to_string());
+        event.header.turn_id = Some("turn-a".into());
+        event.header.row_key = Some("turn:turn-a".into());
+        event.head = Some(HistoryRowHead::Turn(head));
+        event.is_anchor = anchor;
+        event
+    };
+    store
+        .accept_batch(&[turn_event(
+            "turn-start",
+            HistoryEventKind::TurnStarted,
+            turn.clone(),
+            true,
+        )])
+        .await?;
+    store
+        .record_usage(&usage("priced-usage", run, true))
+        .await?;
+    let cut = reader.capture().await?;
+    let main = reader
+        .timeline_page(Some(cut.clone()), None, demand())
+        .await?;
+    let members = reader
+        .group_page(group.clone(), Some(cut.clone()), None, demand())
+        .await?;
+    let turns = reader.turns_page(Some(cut.clone()), None, demand()).await?;
+    let costs = reader.costs_page(Some(cut.clone()), None, demand()).await?;
+    let accounting = reader.accounting(Some(cut.clone())).await?;
+
+    member.state = HistoryEntityState::KnownTerminal {
+        outcome: ChatTerminalOutcome::Completed,
+    };
+    member.finished_at = Some(30);
+    classifier
+        .record(
+            &store,
+            &HistoryEntityChange {
+                event: HistoryEvent::new("member-end", HistoryEventKind::EntityEnded, 30),
+                entity: member,
+                placement: HistoryPlacement::Work,
+                boundary_observations: Vec::new(),
+                public_summary: None,
+            },
+        )
+        .await?;
+    turn.state = HistoryTurnState::Completed;
+    turn.finished_at = Some(30);
+    turn.updated_at = 30;
+    let ended = turn_event("turn-end", HistoryEventKind::TurnEnded, turn.clone(), false);
+    turn.context_disposition = pl_studio_runtime::ThreadContextDisposition::RolledBack;
+    turn.updated_at = 40;
+    store
+        .accept_batch(&[
+            ended,
+            turn_event("rollback", HistoryEventKind::TurnRolledBack, turn, false),
+        ])
+        .await?;
+    store.flush().await?;
+
+    assert_eq!(
+        reader
+            .timeline_page(Some(cut.clone()), None, demand())
+            .await?,
+        main
+    );
+    assert_eq!(
+        reader
+            .group_page(group.clone(), Some(cut.clone()), None, demand())
+            .await?,
+        members
+    );
+    assert_eq!(reader.turns_page(Some(cut), None, demand()).await?, turns);
+    let latest_main = reader.timeline_page(None, None, demand()).await?;
+    let latest_members = reader.group_page(group, None, None, demand()).await?;
+    let latest_turns = reader.turns_page(None, None, demand()).await?;
+    assert_eq!(
+        latest_main.entries.len(),
+        main.entries.len(),
+        "rollback must not hide Timeline rows"
+    );
+    assert_eq!(
+        latest_members.members.len(),
+        members.members.len(),
+        "rollback must not hide members"
+    );
+    assert_ne!(latest_main.entries[0].head, main.entries[0].head);
+    assert!(matches!(&latest_members.members[0].head,
+        HistoryRowHead::Member(head) if matches!(head.state, HistoryEntityState::KnownTerminal { .. })));
+    assert!(matches!(&latest_turns.entries[0].head,
+        HistoryRowHead::Turn(head) if head.context_disposition == pl_studio_runtime::ThreadContextDisposition::RolledBack));
+    assert_eq!(
+        reader.costs_page(None, None, demand()).await?.entries,
+        costs.entries,
+        "rollback must not retract costs"
+    );
+    assert_eq!(reader.accounting(None).await?, accounting);
     reader.close().await;
     store.close().await?;
     Ok(())
@@ -533,229 +1061,262 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
 #[tokio::test]
 async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_group() -> Result<()>
 {
-    let temp = tempfile::tempdir()?;
-    let store = HistoryStore::open(
-        temp.path().join("h.sqlite"),
-        "groups",
-        HistoryLimits::default(),
-    )
-    .await?;
-    let run = RuntimeEpoch::new();
-    let reader = store.reader();
-    let mut classifier = HistoryClassifier::new(run);
-    let mut tool = entity("tool", run, true);
-    tool.kind = HistoryEntityKind::ToolCall;
-    tool.text_channel = None;
-    tool.tool = Some(HistoryToolIdentity {
-        call_id: "attempt-scoped-call".into(),
-        name: "terminal".into(),
-    });
-    let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
-    let atom = pl_studio_runtime::ChatAtom {
-        id: tool.entity_id.clone(),
-        completion_item_id: None,
-        completion_seq: None,
-        source: tool.source.clone(),
-        source_state: None,
-        source_order: None,
-        kind: tool.kind,
-        delivery: tool.delivery,
-        lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
-            status: ChatActiveStatus::Running,
-            started: None,
-        },
-        turn_id: Some("turn-a".into()),
-        attempt_id: tool.attempt_id.clone(),
-        tool: tool.tool.clone(),
-        wait: None,
-        text_channel: None,
-        started_at: tool.started_at,
-        finished_at: None,
-        content_present: tool.content_present,
-        contents: Vec::new(),
-        payload: None,
-    };
-    let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
-    assert_eq!(change.entity.started_at, Some(10_000));
-    tool = change.entity.clone();
-    let mut invalid_atom = atom.clone();
-    invalid_atom.finished_at = Some(i64::MAX);
-    assert!(matches!(
-        HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
-        Err(HistoryError::InvalidEvent(_))
-    ));
-    change.public_summary = Some("正在执行".into());
-    classifier.record(&store, &change).await?;
-    assert_eq!(
-        reader
-            .events_page(
-                HistoryEventsQuery::Turn {
-                    turn_id: "turn-a".into()
+    for (outcome, observed_output) in [
+        (
+            ChatTerminalOutcome::Completed,
+            b"completely different final".as_slice(),
+        ),
+        (
+            ChatTerminalOutcome::Cancelled,
+            b"interrupted prefix without a final result".as_slice(),
+        ),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            temp.path().join("h.sqlite"),
+            "groups",
+            HistoryLimits::default(),
+        )
+        .await?;
+        let run = RuntimeEpoch::new();
+        let reader = store.reader();
+        let mut classifier = HistoryClassifier::new(run);
+        let mut tool = entity("tool", run, true);
+        tool.kind = HistoryEntityKind::ToolCall;
+        tool.text_channel = None;
+        tool.tool = Some(HistoryToolIdentity {
+            call_id: "attempt-scoped-call".into(),
+            name: "terminal".into(),
+        });
+        let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
+        let atom = pl_studio_runtime::ChatAtom {
+            id: tool.entity_id.clone(),
+            completion_item_id: None,
+            completion_seq: None,
+            source: tool.source.clone(),
+            source_state: None,
+            source_order: None,
+            kind: tool.kind,
+            delivery: tool.delivery,
+            lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
+                status: ChatActiveStatus::Running,
+                started: None,
+            },
+            turn_id: Some("turn-a".into()),
+            attempt_id: tool.attempt_id.clone(),
+            tool: tool.tool.clone(),
+            wait: None,
+            text_channel: None,
+            started_at: tool.started_at,
+            finished_at: None,
+            content_present: tool.content_present,
+            contents: Vec::new(),
+            payload: None,
+        };
+        let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
+        assert_eq!(change.entity.started_at, Some(10_000));
+        tool = change.entity.clone();
+        let mut invalid_atom = atom.clone();
+        invalid_atom.finished_at = Some(i64::MAX);
+        assert!(matches!(
+            HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
+            Err(HistoryError::InvalidEvent(_))
+        ));
+        change.public_summary = Some("正在执行".into());
+        classifier.record(&store, &change).await?;
+        assert_eq!(
+            reader
+                .events_page(
+                    HistoryEventsQuery::Turn {
+                        turn_id: "turn-a".into()
+                    },
+                    None,
+                    None,
+                    demand()
+                )
+                .await?
+                .entries[0]
+                .header
+                .event_id,
+            "tool-start"
+        );
+        let old_group = classifier.open_group().unwrap().to_owned();
+        let mut empty = entity("text", run, true);
+        empty.content_present = Some(false);
+        let before_empty = reader.capture().await?;
+        let mut unexpected = HistoryEvent::new(
+            "unexpected-boundary",
+            HistoryEventKind::BoundaryObserved,
+            11,
+        );
+        unexpected.bodies.push(HistoryBody::new(
+            "observed",
+            HistoryBodyRole::ToolOutput,
+            b"must not silently disappear".to_vec(),
+        ));
+        let mut empty_change = HistoryEntityChange {
+            event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
+            entity: empty.clone(),
+            placement: HistoryPlacement::Single,
+            boundary_observations: vec![HistoryBoundaryObservation {
+                event: unexpected,
+                entity: tool.clone(),
+            }],
+            public_summary: None,
+        };
+        assert!(matches!(
+            classifier.record(&store, &empty_change).await,
+            Err(HistoryError::InvalidEvent(_))
+        ));
+        assert_eq!(reader.capture().await?, before_empty);
+        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
+        empty_change.boundary_observations.clear();
+        classifier.record(&store, &empty_change).await?;
+        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
+        let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
+        boundary.bodies.push(HistoryBody::new(
+            "partial",
+            HistoryBodyRole::ToolOutput,
+            b"old observed bytes".to_vec(),
+        ));
+        let mut observed_tool = tool.clone();
+        observed_tool.body_manifest_event_id = Some("boundary".into());
+        empty.content_present = Some(true);
+        let mut visible = HistoryEvent::new("visible", HistoryEventKind::ContentBecameVisible, 12);
+        visible.header.occurred_at = Some(12);
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: visible,
+                    entity: empty.clone(),
+                    placement: HistoryPlacement::Single,
+                    boundary_observations: vec![HistoryBoundaryObservation {
+                        event: boundary,
+                        entity: observed_tool,
+                    }],
+                    public_summary: Some("边界观察".into()),
                 },
+            )
+            .await?;
+        assert!(classifier.open_group().is_none());
+        let old_cut = reader.capture().await?;
+        tool.state = HistoryEntityState::KnownTerminal { outcome };
+        tool.finished_at = Some(15);
+        tool.body_manifest_event_id = Some("tool-end".into());
+        let mut end = HistoryEvent::new("tool-end", HistoryEventKind::EntityEnded, 15);
+        end.bodies.push(HistoryBody::new(
+            "observed-output",
+            HistoryBodyRole::ToolOutput,
+            observed_output.to_vec(),
+        ));
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: end,
+                    entity: tool,
+                    placement: HistoryPlacement::Work,
+                    boundary_observations: Vec::new(),
+                    public_summary: None,
+                },
+            )
+            .await?;
+        let new_group = classifier.open_group().unwrap().to_owned();
+        assert_ne!(old_group, new_group);
+        // Completing the already-visible text does not close a newer Work group.
+        empty.state = HistoryEntityState::KnownTerminal {
+            outcome: ChatTerminalOutcome::Completed,
+        };
+        empty.content_present = Some(false);
+        empty.finished_at = Some(16);
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: HistoryEvent::new("text-end", HistoryEventKind::EntityEnded, 16),
+                    entity: empty,
+                    placement: HistoryPlacement::Single,
+                    boundary_observations: Vec::new(),
+                    public_summary: None,
+                },
+            )
+            .await?;
+        assert_eq!(classifier.open_group(), Some(new_group.as_str()));
+        assert!(reader
+        .timeline_page(None, None, demand())
+        .await?
+        .entries
+        .iter()
+        .any(|entry| matches!(&entry.head, HistoryRowHead::Single(head)
+            if head.entity_id == "text"
+                && head.single_visibility == Some(HistorySingleVisibility::FinalEmptyAfterContent))));
+        store.flush().await?;
+        let old = reader
+            .group_page(old_group.clone(), None, None, demand())
+            .await?;
+        let Some(HistoryRowHead::Member(old_head)) = old.members.first().map(|entry| &entry.head)
+        else {
+            panic!("old member")
+        };
+        assert!(matches!(
+            old_head.state,
+            HistoryEntityState::KnownActive { .. }
+        ));
+        assert!(matches!(
+            old_head.observation,
+            HistoryObservation::Boundary {
+                captured_at: Some(12)
+            }
+        ));
+        let body = reader
+            .list_bodies(
+                old_head.body_manifest_event_id.clone().unwrap(),
                 None,
-                None,
-                demand()
+                demand(),
             )
             .await?
             .entries[0]
-            .header
-            .event_id,
-        "tool-start"
-    );
-    let old_group = classifier.open_group().unwrap().to_owned();
-    let mut empty = entity("text", run, true);
-    empty.content_present = Some(false);
-    let before_empty = reader.capture().await?;
-    let mut unexpected = HistoryEvent::new(
-        "unexpected-boundary",
-        HistoryEventKind::BoundaryObserved,
-        11,
-    );
-    unexpected.bodies.push(HistoryBody::new(
-        "observed",
-        HistoryBodyRole::ToolOutput,
-        b"must not silently disappear".to_vec(),
-    ));
-    let mut empty_change = HistoryEntityChange {
-        event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
-        entity: empty.clone(),
-        placement: HistoryPlacement::Single,
-        boundary_observations: vec![HistoryBoundaryObservation {
-            event: unexpected,
-            entity: tool.clone(),
-        }],
-        public_summary: None,
-    };
-    assert!(matches!(
-        classifier.record(&store, &empty_change).await,
-        Err(HistoryError::InvalidEvent(_))
-    ));
-    assert_eq!(reader.capture().await?, before_empty);
-    assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-    empty_change.boundary_observations.clear();
-    classifier.record(&store, &empty_change).await?;
-    assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-    let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
-    boundary.bodies.push(HistoryBody::new(
-        "partial",
-        HistoryBodyRole::ToolOutput,
-        b"old observed bytes".to_vec(),
-    ));
-    let mut observed_tool = tool.clone();
-    observed_tool.body_manifest_event_id = Some("boundary".into());
-    empty.content_present = Some(true);
-    let mut visible = HistoryEvent::new("visible", HistoryEventKind::ContentBecameVisible, 12);
-    visible.header.occurred_at = Some(12);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: visible,
-                entity: empty.clone(),
-                placement: HistoryPlacement::Single,
-                boundary_observations: vec![HistoryBoundaryObservation {
-                    event: boundary,
-                    entity: observed_tool,
-                }],
-                public_summary: Some("边界观察".into()),
-            },
-        )
-        .await?;
-    assert!(classifier.open_group().is_none());
-    let old_cut = reader.capture().await?;
-    tool.state = HistoryEntityState::KnownTerminal {
-        outcome: ChatTerminalOutcome::Completed,
-    };
-    tool.finished_at = Some(15);
-    tool.body_manifest_event_id = Some("tool-end".into());
-    let mut end = HistoryEvent::new("tool-end", HistoryEventKind::EntityEnded, 15);
-    end.bodies.push(HistoryBody::new(
-        "final",
-        HistoryBodyRole::ToolOutput,
-        b"completely different final".to_vec(),
-    ));
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: end,
-                entity: tool,
-                placement: HistoryPlacement::Work,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
-    let new_group = classifier.open_group().unwrap().to_owned();
-    assert_ne!(old_group, new_group);
-    // Completing the already-visible text does not close a newer Work group.
-    empty.state = HistoryEntityState::KnownTerminal {
-        outcome: ChatTerminalOutcome::Completed,
-    };
-    empty.finished_at = Some(16);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: HistoryEvent::new("text-end", HistoryEventKind::EntityEnded, 16),
-                entity: empty,
-                placement: HistoryPlacement::Single,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
-    assert_eq!(classifier.open_group(), Some(new_group.as_str()));
-    store.flush().await?;
-    let old = reader
-        .group_page(old_group.clone(), None, None, demand())
-        .await?;
-    let Some(HistoryRowHead::Member(old_head)) = old.members.first().map(|entry| &entry.head)
-    else {
-        panic!("old member")
-    };
-    assert!(matches!(
-        old_head.state,
-        HistoryEntityState::KnownActive { .. }
-    ));
-    assert!(matches!(
-        old_head.observation,
-        HistoryObservation::Boundary {
-            captured_at: Some(12)
-        }
-    ));
-    let body = reader
-        .list_bodies(
-            old_head.body_manifest_event_id.clone().unwrap(),
-            None,
-            demand(),
-        )
-        .await?
-        .entries[0]
-        .reference
-        .clone();
-    assert_eq!(
-        reader.read_body(body, 0, 64).await?.bytes,
-        b"old observed bytes"
-    );
-    assert_eq!(
-        reader
-            .group_page(new_group, None, None, demand())
+            .reference
+            .clone();
+        assert_eq!(
+            reader.read_body(body, 0, 64).await?.bytes,
+            b"old observed bytes"
+        );
+        let new = reader.group_page(new_group, None, None, demand()).await?;
+        assert_eq!(new.members.len(), 1);
+        let HistoryRowHead::Member(new_head) = &new.members[0].head else {
+            panic!("new member")
+        };
+        assert_eq!(
+            new_head.state,
+            HistoryEntityState::KnownTerminal { outcome }
+        );
+        let body = reader
+            .list_bodies(
+                new_head
+                    .body_manifest_event_id
+                    .clone()
+                    .context("new observation owner")?,
+                None,
+                demand(),
+            )
             .await?
-            .members
-            .len(),
-        1
-    );
-    assert_eq!(
-        reader
-            .timeline_page(Some(old_cut), None, demand())
-            .await?
-            .entries
-            .len(),
-        2
-    );
-    reader.close().await;
-    store.close().await?;
+            .entries[0]
+            .reference
+            .clone();
+        assert_eq!(reader.read_body(body, 0, 64).await?.bytes, observed_output);
+        assert_eq!(
+            reader
+                .timeline_page(Some(old_cut), None, demand())
+                .await?
+                .entries
+                .len(),
+            2
+        );
+        reader.close().await;
+        store.close().await?;
+    }
     Ok(())
 }
 
@@ -903,8 +1464,7 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
         .read_body(original_usage.payload_ref.unwrap(), 0, 65_536)
         .await?;
     assert_eq!(
-        serde_json::from_slice::<HistoryUsageFact>(&raw_usage.bytes)?
-            .record
+        serde_json::from_slice::<pl_studio_runtime::InferenceBillingRecord>(&raw_usage.bytes)?
             .recorded_at,
         20
     );
@@ -1022,4 +1582,196 @@ async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mu
     reader.close().await;
     reopened.close().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_old_work()
+-> Result<()> {
+    use pl_provider_fixture::{Reply, ReplyStage};
+    use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode};
+    let first_stage = ReplyStage::new();
+    let second_stage = ReplyStage::new();
+    let staged = |name: &str, stage: &ReplyStage| -> Result<Reply> {
+        let mut frames = pl_provider_fixture::responses_reasoning_text(
+            &["original reasoning"],
+            &["original output"],
+            name,
+            support::MODEL,
+        );
+        let delta = frames
+            .iter()
+            .position(|frame| frame["type"] == "response.output_text.delta")
+            .context("fixture output delta")?;
+        let after = frames.split_off(delta + 1);
+        Ok(stage.gated(frames, after))
+    };
+    let mut env = Environment::new(
+        vec![
+            prompt_step("restart-r1", 0, staged("r1", &first_stage)?),
+            prompt_step("restart-r2", 1, staged("r2", &second_stage)?),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let started = env.start(ThreadWorkspaceMode::Local, "restart-r1").await?;
+        let id = &started.thread.id;
+        let old = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let old_watch = old.watch(None, current_demand()).await?;
+        reached(&first_stage).await?;
+        let reference = loop {
+            let projection = match old_watch
+                .next()
+                .await?
+                .context("original Current watch ended")?
+            {
+                CurrentFrame::Reset { view } => view.projection,
+                CurrentFrame::Projection { projection, .. } => *projection,
+                CurrentFrame::Notification { .. } => continue,
+            };
+            if let Some(reference) = final_text_reference(&projection) {
+                break reference;
+            }
+        };
+        let r1 = old.snapshot(current_demand()).await?.revision.owner_id;
+        ensure!(reference.owner_id == r1);
+        ensure!(read_current_body(&old, &reference).await? == b"original output");
+        first_stage.release();
+        support::completed_prompt(&env.runtime, id, "restart-r1").await?;
+        env.restart().await?;
+        ensure!(
+            old_watch.next().await?.is_none(),
+            "retired owner still delivered metadata"
+        );
+        old_watch.close().await?;
+        old.close().await?;
+        let current = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let paused = current.snapshot(current_demand()).await?;
+        ensure!(paused.revision.owner_id == r1 && !paused.projection.execution_present);
+        ensure!(
+            !paused.projection.atoms.iter().any(|atom| matches!(
+                atom.kind,
+                pl_studio_runtime::ChatAtomKind::Text | pl_studio_runtime::ChatAtomKind::Reasoning
+            )),
+            "cold Current replayed completed history"
+        );
+        ensure!(env.root_provider.recorded().len() == 1);
+        let history = env
+            .runtime
+            .open_history_reader(id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let old_cut = history.capture().await?;
+        let old_page = history
+            .timeline_page(Some(old_cut.clone()), None, demand())
+            .await?;
+        let old_group = old_page
+            .entries
+            .iter()
+            .find_map(|entry| match &entry.head {
+                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r1.as_str()) => {
+                    Some(head.group_id.clone())
+                }
+                _ => None,
+            })
+            .context("original R1 work group")?;
+        let old_members = history
+            .group_page(old_group.clone(), Some(old_cut.clone()), None, demand())
+            .await?;
+        let route = paused.state.model_route.context("saved route")?.revision;
+        env.runtime
+            .submit_prompt_command(
+                id.clone(),
+                SubmitPromptRequest {
+                    input: StudioPromptInput {
+                        input_id: "input-restart-r2".into(),
+                        text: "restart-r2".into(),
+                        attachment_draft_ids: Vec::new(),
+                    },
+                    expected_model_route_revision: route,
+                },
+            )
+            .await?;
+        reached(&second_stage).await?;
+        let running = current.snapshot(current_demand()).await?;
+        let r2 = running.revision.owner_id;
+        ensure!(
+            r2 != r1 && running.projection.execution_present,
+            "new execution reused the saved owner or remained paused"
+        );
+        ensure!(running.state.thread.status == running.projection.logical_status);
+        let stale = current
+            .read_body(
+                reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        ensure!(
+            stale
+                .downcast_ref::<pl_studio_runtime::StudioError>()
+                .and_then(|error| error.reason())
+                == Some("staleCurrentReference"),
+            "old owner reference was accepted by R2"
+        );
+        let mut cut = history.capture().await?;
+        loop {
+            let page = history
+                .timeline_page(Some(cut.clone()), None, demand())
+                .await?;
+            if let Some(group) = page.entries.iter().find_map(|entry| match &entry.head {
+                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r2.as_str()) => {
+                    Some(head)
+                }
+                _ => None,
+            }) {
+                ensure!(
+                    group.group_id != old_group,
+                    "R2 extended the saved R1 group"
+                );
+                break;
+            }
+            cut = history.wait_changed(cut).await?;
+        }
+        ensure!(
+            history
+                .timeline_page(Some(old_cut.clone()), None, demand())
+                .await?
+                == old_page
+        );
+        ensure!(
+            history
+                .group_page(old_group.clone(), Some(old_cut), None, demand())
+                .await?
+                == old_members
+        );
+        ensure!(
+            history
+                .group_page(old_group, None, None, demand())
+                .await?
+                .members
+                == old_members.members,
+            "R2 changed the original R1 members"
+        );
+        second_stage.release();
+        support::completed_prompt(&env.runtime, id, "restart-r2").await?;
+        ensure!(env.root_provider.recorded().len() == 2);
+        history.close().await;
+        current.close().await?;
+        Ok(())
+    })
+    .await
+    .context("restart owner integration watchdog")
+    .and_then(std::convert::identity);
+    first_stage.release();
+    second_stage.release();
+    env.finish(result).await
 }

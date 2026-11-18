@@ -1,392 +1,727 @@
-//! Mechanical presentation mappings; membership and cuts belong to the runtime owner.
+//! Mechanical mappings for the independent History and Current FRB ports.
 
 use pl_studio_runtime as protocol;
+use pl_studio_runtime::history as runtime_history;
 
-use super::chat;
+use super::{chat, thread_stream};
 use crate::api::studio::types::*;
 
-pub(crate) fn protocol_block_ref(value: BridgeDisplayBlockRef) -> protocol::DisplayBlockRef {
-    protocol::DisplayBlockRef {
-        database_id: value.database_id,
-        block_id: value.block_id,
+type ConvertResult<T> = Result<T, anyhow::Error>;
+
+pub(crate) fn history_demand(value: BridgeHistoryDemand) -> runtime_history::HistoryDemand {
+    runtime_history::HistoryDemand {
+        max_rows: value.max_rows,
+        max_bytes: value.max_bytes,
     }
 }
 
-pub(crate) fn block_ref(value: protocol::DisplayBlockRef) -> BridgeDisplayBlockRef {
-    BridgeDisplayBlockRef {
-        database_id: value.database_id,
-        block_id: value.block_id,
+pub(crate) fn read_demand(value: BridgeReadDemand) -> protocol::ReadDemand {
+    chat::demand(value)
+}
+
+pub(crate) fn history_events_query(
+    value: BridgeHistoryEventsQuery,
+) -> runtime_history::HistoryEventsQuery {
+    match value {
+        BridgeHistoryEventsQuery::AllEvents => runtime_history::HistoryEventsQuery::AllEvents,
+        BridgeHistoryEventsQuery::Entity { entity_id } => {
+            runtime_history::HistoryEventsQuery::Entity { entity_id }
+        }
+        BridgeHistoryEventsQuery::Turn { turn_id } => {
+            runtime_history::HistoryEventsQuery::Turn { turn_id }
+        }
+        BridgeHistoryEventsQuery::Source { source } => {
+            runtime_history::HistoryEventsQuery::Source {
+                source: protocol_source_id(source),
+            }
+        }
+        BridgeHistoryEventsQuery::Call { call_id } => {
+            runtime_history::HistoryEventsQuery::Call { call_id }
+        }
+        BridgeHistoryEventsQuery::Message { message_id } => {
+            runtime_history::HistoryEventsQuery::Message { message_id }
+        }
+        BridgeHistoryEventsQuery::Attempt { run_id, attempt_id } => {
+            runtime_history::HistoryEventsQuery::Attempt { run_id, attempt_id }
+        }
+        BridgeHistoryEventsQuery::Originals {
+            query_class,
+            parent_id,
+        } => runtime_history::HistoryEventsQuery::Originals {
+            scope: protocol::ChatScope {
+                query_class: protocol::ChatClassFilter::Class { value: query_class },
+                parent_id,
+            },
+        },
+        BridgeHistoryEventsQuery::TextOriginals => {
+            runtime_history::HistoryEventsQuery::TextOriginals
+        }
     }
 }
 
-fn timing(value: protocol::WorkTiming) -> BridgeWorkTiming {
-    BridgeWorkTiming {
+fn protocol_source_id(value: BridgeChatSourceId) -> protocol::ChatSourceId {
+    match value {
+        BridgeChatSourceId::ForegroundTurn { turn_id } => {
+            protocol::ChatSourceId::ForegroundTurn { turn_id }
+        }
+        BridgeChatSourceId::Input { input_id } => protocol::ChatSourceId::Input { input_id },
+        BridgeChatSourceId::InboxMessage {
+            source_id,
+            message_id,
+        } => protocol::ChatSourceId::InboxMessage {
+            source_id,
+            message_id,
+        },
+        BridgeChatSourceId::BackgroundResult { message_id } => {
+            protocol::ChatSourceId::BackgroundResult { message_id }
+        }
+        BridgeChatSourceId::Operation { operation_id } => {
+            protocol::ChatSourceId::Operation { operation_id }
+        }
+        BridgeChatSourceId::Receipt { receipt_id } => {
+            protocol::ChatSourceId::Receipt { receipt_id }
+        }
+    }
+}
+
+pub(crate) fn cut_to_bridge(value: runtime_history::HistoryCut) -> BridgeHistoryCut {
+    BridgeHistoryCut { token: value.token }
+}
+
+fn cut(value: runtime_history::HistoryCut) -> BridgeHistoryCut {
+    cut_to_bridge(value)
+}
+
+pub(crate) fn bridge_to_cut(value: BridgeHistoryCut) -> runtime_history::HistoryCut {
+    runtime_history::HistoryCut { token: value.token }
+}
+
+fn entity_state(value: runtime_history::HistoryEntityState) -> BridgeHistoryEntityState {
+    match value {
+        runtime_history::HistoryEntityState::Unknown => BridgeHistoryEntityState::Unknown,
+        runtime_history::HistoryEntityState::KnownActive { status } => {
+            BridgeHistoryEntityState::KnownActive {
+                status: match status {
+                    protocol::ChatActiveStatus::Running => BridgeChatActiveStatus::Running,
+                    protocol::ChatActiveStatus::Waiting => BridgeChatActiveStatus::Waiting,
+                },
+            }
+        }
+        runtime_history::HistoryEntityState::KnownTerminal { outcome } => {
+            BridgeHistoryEntityState::KnownTerminal {
+                outcome: chat::terminal_outcome(outcome),
+            }
+        }
+    }
+}
+
+fn body_ref(value: runtime_history::HistoryEventBodyRef) -> BridgeHistoryEventBodyRef {
+    BridgeHistoryEventBodyRef {
+        database_id: value.database_id,
+        owner_event_id: value.owner_event_id,
+        body_key: value.body_key,
+        body_id: value.body_id,
+        byte_start: value.byte_start,
+        byte_length: value.byte_length,
+    }
+}
+
+fn wait_intent(value: runtime_history::HistoryWaitIntentHead) -> BridgeHistoryWaitIntent {
+    match value {
+        runtime_history::HistoryWaitIntentHead::Events {
+            target_count,
+            timeout_ms,
+        } => BridgeHistoryWaitIntent::Events {
+            target_count,
+            timeout_ms,
+        },
+        runtime_history::HistoryWaitIntentHead::Timer { duration_ms } => {
+            BridgeHistoryWaitIntent::Timer { duration_ms }
+        }
+    }
+}
+
+fn wait(value: runtime_history::HistoryWaitHead) -> BridgeHistoryWaitHead {
+    match value {
+        runtime_history::HistoryWaitHead::Inline { presentation } => {
+            BridgeHistoryWaitHead::Inline {
+                presentation: thread_stream::wait_presentation(presentation),
+            }
+        }
+        runtime_history::HistoryWaitHead::Deferred {
+            intent,
+            state,
+            messages_ready,
+            presentation,
+        } => BridgeHistoryWaitHead::Deferred {
+            intent: wait_intent(intent),
+            state: match state {
+                protocol::ThreadWaitState::Waiting => BridgeHistoryWaitState::Waiting,
+                protocol::ThreadWaitState::Ready => BridgeHistoryWaitState::Ready,
+                protocol::ThreadWaitState::TimedOut => BridgeHistoryWaitState::TimedOut,
+                protocol::ThreadWaitState::Elapsed => BridgeHistoryWaitState::Elapsed,
+                protocol::ThreadWaitState::Cancelled => BridgeHistoryWaitState::Cancelled,
+                protocol::ThreadWaitState::Failed => BridgeHistoryWaitState::Failed,
+                protocol::ThreadWaitState::Interrupted => BridgeHistoryWaitState::Interrupted,
+            },
+            messages_ready,
+            presentation: body_ref(presentation),
+        },
+    }
+}
+
+fn entity_head(value: runtime_history::HistoryEntityHead) -> BridgeHistoryEntityHead {
+    BridgeHistoryEntityHead {
+        entity_id: value.entity_id,
+        run_id: value.run_id,
+        attempt_id: value.attempt_id,
+        source: chat::source_id(value.source),
+        kind: chat::atom_kind(value.kind),
+        delivery: chat::delivery(value.delivery),
+        state: entity_state(value.state),
         started_at: value.started_at,
         finished_at: value.finished_at,
-    }
-}
-
-fn record(value: protocol::DisplayRecord) -> BridgeDisplayRecord {
-    BridgeDisplayRecord {
-        atom: chat::atom(value.atom),
-        start_fact: value.start_fact.map(chat::fact_position),
-        end_fact: value.end_fact.map(chat::fact_position),
-        content_source: match value.content_source {
-            protocol::DisplayContentSource::CurrentAtom => BridgeDisplayContentSource::CurrentAtom,
-            protocol::DisplayContentSource::FrozenObservation {
-                captured_at,
-                available,
-            } => BridgeDisplayContentSource::FrozenObservation {
-                captured_at,
-                available,
-            },
-            protocol::DisplayContentSource::CompletedOriginal { completion_id } => {
-                BridgeDisplayContentSource::CompletedOriginal { completion_id }
+        text_channel: value.text_channel.map(chat::text_channel),
+        tool: value.tool.map(|tool| BridgeChatToolIdentity {
+            call_id: tool.call_id,
+            name: tool.name,
+        }),
+        wait: value.wait.map(wait),
+        content_present: value.content_present,
+        single_visibility: value.single_visibility.map(|visibility| match visibility {
+            runtime_history::HistorySingleVisibility::Content => BridgeSingleVisibility::Content,
+            runtime_history::HistorySingleVisibility::FinalEmptyAfterContent => {
+                BridgeSingleVisibility::FinalEmptyAfterContent
+            }
+        }),
+        observation: match value.observation {
+            runtime_history::HistoryObservation::Original => BridgeHistoryObservation::Original,
+            runtime_history::HistoryObservation::Boundary { captured_at } => {
+                BridgeHistoryObservation::Boundary { captured_at }
+            }
+            runtime_history::HistoryObservation::UnavailableLegacy { captured_at } => {
+                BridgeHistoryObservation::UnavailableLegacy { captured_at }
             }
         },
+        presentation_contract: value.presentation_contract,
+        detail_event_id: value.detail_event_id,
+        input_manifest_event_id: value.input_manifest_event_id,
+        body_manifest_event_id: value.body_manifest_event_id,
     }
 }
 
-fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
+fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
     match value {
-        protocol::DisplayBlockBody::Work {
-            timing: value,
-            members,
-        } => BridgeDisplayBlockBody::Work {
-            timing: timing(value),
-            members: block_ref(members),
-        },
-        protocol::DisplayBlockBody::Single {
-            record: value,
-            visibility,
-        } => BridgeDisplayBlockBody::Single {
-            record: Box::new(record(*value)),
-            visibility: match visibility {
-                protocol::SingleVisibility::Content => BridgeSingleVisibility::Content,
-                protocol::SingleVisibility::FinalEmptyAfterContent => {
-                    BridgeSingleVisibility::FinalEmptyAfterContent
-                }
-            },
-        },
+        runtime_history::HistoryRowHead::Work(value) => {
+            BridgeHistoryRowHead::Work(BridgeHistoryWorkHead {
+                group_id: value.group_id,
+                run_id: value.run_id,
+                started_at: value.started_at,
+                boundary_at: value.boundary_at,
+                closed: value.closed,
+                member_count: value.member_count,
+                unfinished_count: value.unfinished_count,
+                execution_present: value.execution_present,
+                summary: value.summary,
+            })
+        }
+        runtime_history::HistoryRowHead::Single(value) => {
+            BridgeHistoryRowHead::Single(entity_head(value))
+        }
+        runtime_history::HistoryRowHead::Member(value) => {
+            BridgeHistoryRowHead::Member(entity_head(value))
+        }
+        runtime_history::HistoryRowHead::Turn(value) => {
+            BridgeHistoryRowHead::Turn(BridgeHistoryTurnHead {
+                turn_id: value.turn_id,
+                input_id: value.input_id,
+                run_id: value.run_id,
+                state: match value.state {
+                    runtime_history::HistoryTurnState::Unknown => BridgeHistoryTurnState::Unknown,
+                    runtime_history::HistoryTurnState::Queued => BridgeHistoryTurnState::Queued,
+                    runtime_history::HistoryTurnState::Running => BridgeHistoryTurnState::Running,
+                    runtime_history::HistoryTurnState::Completed => {
+                        BridgeHistoryTurnState::Completed
+                    }
+                    runtime_history::HistoryTurnState::Cancelled => {
+                        BridgeHistoryTurnState::Cancelled
+                    }
+                    runtime_history::HistoryTurnState::Failed => BridgeHistoryTurnState::Failed,
+                    runtime_history::HistoryTurnState::BudgetLimited => {
+                        BridgeHistoryTurnState::BudgetLimited
+                    }
+                },
+                phase: value.phase.map(thread_stream::turn_phase),
+                context_disposition: match value.context_disposition {
+                    protocol::ThreadContextDisposition::Active => {
+                        BridgeHistoryContextDisposition::Active
+                    }
+                    protocol::ThreadContextDisposition::RolledBack => {
+                        BridgeHistoryContextDisposition::RolledBack
+                    }
+                },
+                queued_at: value.queued_at,
+                started_at: value.started_at,
+                finished_at: value.finished_at,
+                updated_at: value.updated_at,
+                detail_event_id: value.detail_event_id,
+            })
+        }
+        runtime_history::HistoryRowHead::Source(value) => {
+            BridgeHistoryRowHead::Source(BridgeHistorySourceHead {
+                source: chat::source_id(value.source),
+                lifecycle: match value.lifecycle {
+                    protocol::ChatSourceLifecycle::Unknown => BridgeHistorySourceLifecycle::Unknown,
+                    protocol::ChatSourceLifecycle::Active => BridgeHistorySourceLifecycle::Active,
+                    protocol::ChatSourceLifecycle::Ended { outcome } => {
+                        BridgeHistorySourceLifecycle::Ended {
+                            outcome: chat::terminal_outcome(outcome),
+                        }
+                    }
+                },
+                started_at: value.started_at,
+                ended_at: value.ended_at,
+                observed_at: value.observed_at,
+                detail_event_id: value.detail_event_id,
+            })
+        }
+        runtime_history::HistoryRowHead::Cost(value) => {
+            BridgeHistoryRowHead::Cost(BridgeHistoryCostHead {
+                purpose: value.purpose,
+                currency: value.currency,
+                cost_delta: value.cost_delta,
+                cost_total: value.cost_total,
+                cache_savings_delta: value.cache_savings_delta,
+                cache_savings_total: value.cache_savings_total,
+                updated_at: value.updated_at,
+                detail_event_id: value.detail_event_id,
+            })
+        }
+        runtime_history::HistoryRowHead::Accounting(value) => {
+            BridgeHistoryRowHead::Accounting(BridgeHistoryAccountingHead {
+                prompt_tokens: value.prompt_tokens,
+                completion_tokens: value.completion_tokens,
+                cached_prompt_tokens: value.cached_prompt_tokens,
+                cache_write_tokens: value.cache_write_tokens,
+                reasoning_tokens: value.reasoning_tokens,
+                inference_count: value.inference_count,
+                total_tokens: value.total_tokens,
+                cache_usage: thread_stream::cache_usage(value.cache_usage),
+                has_incomplete_usage: value.has_incomplete_usage,
+                has_unpriced_usage: value.has_unpriced_usage,
+                updated_at: value.updated_at,
+                detail_event_id: value.detail_event_id,
+            })
+        }
     }
 }
 
-pub(crate) fn member_batch(value: protocol::DisplayMemberBatch) -> BridgeDisplayMemberBatch {
-    BridgeDisplayMemberBatch {
-        block: block_ref(value.block),
-        revision: value.revision,
+fn timeline_entry(value: runtime_history::HistoryTimelineEntry) -> BridgeHistoryTimelineEntry {
+    BridgeHistoryTimelineEntry {
+        row_key: value.row_key,
+        anchor_seq: value.anchor_seq,
+        head_seq: value.head_seq,
+        head: row_head(value.head),
+    }
+}
+
+pub(crate) fn timeline_page(
+    value: runtime_history::HistoryTimelinePage,
+) -> BridgeHistoryTimelinePage {
+    BridgeHistoryTimelinePage {
+        cut: cut(value.cut),
+        entries: value.entries.into_iter().map(timeline_entry).collect(),
+        next: value.next,
+    }
+}
+
+pub(crate) fn group_page(value: runtime_history::HistoryGroupPage) -> BridgeHistoryGroupPage {
+    BridgeHistoryGroupPage {
+        cut: cut(value.cut),
+        group_id: value.group_id,
+        members: value.members.into_iter().map(timeline_entry).collect(),
+        next: value.next,
+    }
+}
+
+fn event_header(value: runtime_history::HistoryEventHeader) -> BridgeHistoryEventHeader {
+    BridgeHistoryEventHeader {
+        seq: value.seq,
+        event_id: value.event_id,
+        kind: value.kind.as_str().to_owned(),
+        run_id: value.run_id,
+        attempt_id: value.attempt_id,
+        entity_id: value.entity_id,
+        turn_id: value.turn_id,
+        source: value.source.map(chat::source_id),
+        call_id: value.call_id,
+        message_id: value.message_id,
+        group_id: value.group_id,
+        row_key: value.row_key,
+        original: value.original.map(|original| BridgeHistoryOriginalInfo {
+            query_class: original.query_class,
+            parent_id: original.parent_id,
+            original_kind: chat::atom_kind(original.original_kind),
+            tool_name: original.tool_name,
+        }),
+        occurred_at: value.occurred_at,
+        recorded_at: value.recorded_at,
+    }
+}
+
+pub(crate) fn event_detail(value: runtime_history::HistoryEventDetail) -> BridgeHistoryEventDetail {
+    BridgeHistoryEventDetail {
+        header: event_header(value.header),
+        head: value.head.map(row_head),
+        payload_ref: value.payload_ref.map(body_ref),
+        owned_manifest_event_id: value.owned_manifest_event_id,
+    }
+}
+
+pub(crate) fn events_page(value: runtime_history::HistoryEventsPage) -> BridgeHistoryEventsPage {
+    BridgeHistoryEventsPage {
+        cut: cut(value.cut),
+        entries: value.entries.into_iter().map(event_detail).collect(),
+        next: value.next,
+    }
+}
+
+pub(crate) fn history_body_window(
+    value: runtime_history::HistoryBodyWindow,
+) -> BridgeHistoryBodyWindow {
+    BridgeHistoryBodyWindow {
         offset: value.offset,
-        sealed: value.sealed,
-        complete: value.complete,
+        bytes: value.bytes,
+        total_length: value.total_length,
+        media_type: value.media_type,
+    }
+}
+
+pub(crate) fn body_page(value: runtime_history::HistoryBodyPage) -> BridgeHistoryBodyPage {
+    BridgeHistoryBodyPage {
+        owner_event_id: value.owner_event_id,
         entries: value
             .entries
             .into_iter()
-            .map(|member| BridgeDisplayMemberHead {
-                member_key: member.member_key,
-                member_order: member.member_order,
-                record: record(member.record),
+            .map(|entry| BridgeHistoryBodyEntry {
+                ordinal: entry.ordinal,
+                body_key: entry.body_key,
+                role: match entry.role {
+                    runtime_history::HistoryBodyRole::CanonicalPayload => {
+                        BridgeHistoryBodyRole::CanonicalPayload
+                    }
+                    runtime_history::HistoryBodyRole::CanonicalMetadata => {
+                        BridgeHistoryBodyRole::CanonicalMetadata
+                    }
+                    runtime_history::HistoryBodyRole::Body => BridgeHistoryBodyRole::Body,
+                    runtime_history::HistoryBodyRole::ReasoningSummary => {
+                        BridgeHistoryBodyRole::ReasoningSummary
+                    }
+                    runtime_history::HistoryBodyRole::ToolArguments => {
+                        BridgeHistoryBodyRole::ToolArguments
+                    }
+                    runtime_history::HistoryBodyRole::ToolOutput => {
+                        BridgeHistoryBodyRole::ToolOutput
+                    }
+                    runtime_history::HistoryBodyRole::Attachment => {
+                        BridgeHistoryBodyRole::Attachment
+                    }
+                    runtime_history::HistoryBodyRole::WaitPresentation => {
+                        BridgeHistoryBodyRole::WaitPresentation
+                    }
+                    runtime_history::HistoryBodyRole::Other { name } => {
+                        BridgeHistoryBodyRole::Other { name }
+                    }
+                },
+                reference: body_ref(entry.reference),
+                media_type: entry.media_type,
             })
             .collect(),
+        next: value.next,
     }
 }
 
-pub(crate) fn open_timeline(value: protocol::OpenTimeline) -> BridgeOpenTimeline {
-    BridgeOpenTimeline {
-        reader_id: value.reader_id,
-        presentation_version: value.presentation_version,
-        reader_protocol_version: value.reader_protocol_version,
-        initial_cursor: value.initial_cursor.0,
-    }
-}
-fn display_blocks(values: Vec<protocol::DisplayBlock>) -> Vec<BridgeDisplayBlock> {
-    values
-        .into_iter()
-        .map(|value| BridgeDisplayBlock {
-            id: value.id,
-            block_order: value.block_order,
-            body: body(value.body),
-        })
-        .collect()
-}
-pub(crate) fn tail_snapshot(value: protocol::TailSnapshot) -> BridgeTailSnapshot {
-    BridgeTailSnapshot {
-        revision: value.revision,
-        layout_revision: value.layout_revision,
-        ready_frontier: value.ready_frontier,
-        execution_present: value.execution_present,
-        current_work_id: value.current_work_id,
-        older: value.older,
-        blocks: value
-            .blocks
-            .into_iter()
-            .map(|block| BridgeLiveDisplayBlock {
-                id: block.id,
-                block_order: block.block_order,
-                source: block.source.map(chat::source_id),
-                body: body(block.body),
-                has_unfinished_members: block.has_unfinished_members,
-                thinking_summary: block.thinking_summary,
-                state: match block.state {
-                    protocol::DisplayBlockState::Open => BridgeDisplayBlockState::Open,
-                    protocol::DisplayBlockState::Sealed => BridgeDisplayBlockState::Sealed,
-                },
-            })
-            .collect(),
-    }
-}
-pub(crate) fn view_update(value: protocol::ViewUpdate) -> BridgeViewUpdate {
-    BridgeViewUpdate {
-        presentation_version: value.presentation_version,
-        reader_protocol_version: value.reader_protocol_version,
-        after: value.after.0,
-        next: value.next.0,
-        history: BridgeHistoryDelta {
-            placement: match value.history.placement {
-                protocol::HistoryPlacement::Set => BridgeHistoryPlacement::Set,
-                protocol::HistoryPlacement::Append => BridgeHistoryPlacement::Append,
-            },
-            from_order: value.history.from_order,
-            through_order: value.history.through_order,
-            blocks: display_blocks(value.history.blocks),
-            before: value.history.before,
-        },
-        tail: match value.tail {
-            protocol::TailUpdate::Keep {} => BridgeTailUpdate::Keep,
-            protocol::TailUpdate::Replace { snapshot } => BridgeTailUpdate::Replace {
-                snapshot: tail_snapshot(snapshot),
-            },
-            protocol::TailUpdate::Status {
-                base_layout_revision,
-                revision,
-                current_work_id,
-                thinking_summary,
-            } => BridgeTailUpdate::Status {
-                base_layout_revision,
-                revision,
-                current_work_id,
-                thinking_summary,
-            },
+pub(crate) fn accounting(value: runtime_history::HistoryAccountingHead) -> BridgeHistoryAccounting {
+    BridgeHistoryAccounting {
+        head: match row_head(runtime_history::HistoryRowHead::Accounting(value)) {
+            BridgeHistoryRowHead::Accounting(head) => head,
+            _ => unreachable!("accounting row mapping"),
         },
     }
 }
-pub(crate) fn timeline_page(value: protocol::TimelinePage) -> BridgeTimelinePage {
-    BridgeTimelinePage {
-        presentation_version: value.presentation_version,
+
+pub(crate) fn bridge_to_body_ref(
+    value: BridgeHistoryEventBodyRef,
+) -> runtime_history::HistoryEventBodyRef {
+    runtime_history::HistoryEventBodyRef {
         database_id: value.database_id,
-        ceiling: value.ceiling,
-        blocks: display_blocks(value.blocks),
-        before: value.before,
+        owner_event_id: value.owner_event_id,
+        body_key: value.body_key,
+        body_id: value.body_id,
+        byte_start: value.byte_start,
+        byte_length: value.byte_length,
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn reference() -> protocol::DisplayBlockRef {
-        protocol::DisplayBlockRef {
-            database_id: "database".into(),
-            block_id: "work".into(),
-        }
+pub(crate) fn current_revision(value: protocol::CurrentRevision) -> BridgeCurrentRevision {
+    BridgeCurrentRevision {
+        owner_id: value.owner_id,
+        revision: value.revision,
     }
+}
 
-    fn work() -> protocol::DisplayBlockBody {
-        protocol::DisplayBlockBody::Work {
-            timing: protocol::WorkTiming {
-                started_at: Some(1_700_000_000),
-                finished_at: Some(1_700_000_125),
-            },
-            members: reference(),
-        }
+pub(crate) fn bridge_to_current_revision(
+    value: BridgeCurrentRevision,
+) -> protocol::CurrentRevision {
+    protocol::CurrentRevision {
+        owner_id: value.owner_id,
+        revision: value.revision,
     }
+}
 
-    #[test]
-    fn cursor_handoff_preserves_keep_and_independent_versions() {
-        let mapped = view_update(protocol::ViewUpdate {
-            presentation_version: 6,
-            reader_protocol_version: 1,
-            after: protocol::ViewCursor("C0".into()),
-            next: protocol::ViewCursor("C1".into()),
-            history: protocol::HistoryDelta {
-                placement: protocol::HistoryPlacement::Append,
-                from_order: Some(3),
-                through_order: 4,
-                before: None,
-                blocks: vec![protocol::DisplayBlock {
-                    id: "work".into(),
-                    block_order: 4,
-                    body: work(),
-                }],
-            },
-            tail: protocol::TailUpdate::Keep {},
-        });
-        assert_eq!(mapped.after, "C0");
-        assert_eq!(mapped.next, "C1");
-        assert!(matches!(mapped.tail, BridgeTailUpdate::Keep));
-        assert_eq!(mapped.history.from_order, Some(3));
-        let BridgeDisplayBlockBody::Work { timing, .. } = &mapped.history.blocks[0].body else {
-            panic!("Work")
-        };
-        assert_eq!(timing.finished_at, Some(1_700_000_125));
+pub(crate) fn current_content_ref(value: protocol::CurrentContentRef) -> BridgeCurrentContentRef {
+    BridgeCurrentContentRef {
+        owner_id: value.owner_id,
+        domain: value.domain,
+        entity_id: value.entity_id,
+        content_key: value.content_key,
+        generation: value.generation,
     }
+}
 
-    #[test]
-    fn live_source_preserves_unknown_and_independent_ownership() {
-        let mut window = protocol::TailSnapshot {
-            revision: 1,
-            layout_revision: 1,
-            ready_frontier: 0,
-            execution_present: false,
-            current_work_id: Some("not-an-encoded-turn".into()),
-            blocks: vec![protocol::LiveDisplayBlock {
-                has_unfinished_members: false,
-                thinking_summary: None,
-                id: "not-an-encoded-turn".into(),
-                block_order: 1,
-                source: None,
-                body: work(),
-                state: protocol::DisplayBlockState::Open,
-            }],
-            older: None,
-        };
-        let mapped = tail_snapshot(window.clone());
-        assert!(mapped.blocks[0].source.is_none());
-        assert_eq!(mapped.current_work_id, window.current_work_id);
-        window.blocks[0].source = Some(protocol::ChatSourceId::Input {
-            input_id: "independent-input".into(),
-        });
-        assert!(matches!(&tail_snapshot(window).blocks[0].source,
-            Some(BridgeChatSourceId::Input { input_id }) if input_id == "independent-input"));
+pub(crate) fn current_state_field(value: protocol::CurrentStateField) -> BridgeCurrentStateField {
+    match value {
+        protocol::CurrentStateField::Body {
+            field,
+            reference,
+            byte_length,
+        } => BridgeCurrentStateField::Body {
+            field,
+            reference: current_content_ref(reference),
+            byte_length,
+        },
+        protocol::CurrentStateField::Collection {
+            field,
+            reference,
+            count,
+        } => BridgeCurrentStateField::Collection {
+            field,
+            reference: current_collection_ref(reference),
+            count,
+        },
     }
+}
 
-    #[test]
-    fn single_visibility_keeps_authoritative_empty_content_typed() {
-        for (visibility, expected) in [
-            (
-                protocol::SingleVisibility::Content,
-                BridgeSingleVisibility::Content,
-            ),
-            (
-                protocol::SingleVisibility::FinalEmptyAfterContent,
-                BridgeSingleVisibility::FinalEmptyAfterContent,
-            ),
-        ] {
-            let mapped = body(protocol::DisplayBlockBody::Single {
-                record: Box::new(protocol::DisplayRecord {
-                    atom: atom(protocol::ChatAtomLifecycle::Terminal {
-                        started: None,
-                        ended: None,
-                        outcome: protocol::ChatTerminalOutcome::Completed,
-                    }),
-                    start_fact: None,
-                    end_fact: None,
-                    content_source: protocol::DisplayContentSource::CompletedOriginal {
-                        completion_id: "empty".into(),
-                    },
-                }),
-                visibility,
-            });
-            let BridgeDisplayBlockBody::Single { visibility, record } = mapped else {
-                panic!("expected Single");
-            };
-            assert_eq!(visibility, expected);
-            assert!(record.atom.payload.is_none());
-        }
+pub(crate) fn bridge_to_current_content_ref(
+    value: BridgeCurrentContentRef,
+) -> protocol::CurrentContentRef {
+    protocol::CurrentContentRef {
+        owner_id: value.owner_id,
+        domain: value.domain,
+        entity_id: value.entity_id,
+        content_key: value.content_key,
+        generation: value.generation,
     }
+}
 
-    fn atom(lifecycle: protocol::ChatAtomLifecycle) -> protocol::ChatAtom {
-        protocol::ChatAtom {
-            id: "reasoning".into(),
-            completion_item_id: None,
-            completion_seq: None,
-            source: protocol::ChatSourceId::ForegroundTurn {
-                turn_id: "turn".into(),
-            },
-            source_state: None,
-            source_order: Some(1),
-            kind: protocol::ChatAtomKind::Reasoning,
-            delivery: protocol::ChatDeliveryKind::Foreground,
-            lifecycle,
-            turn_id: Some("turn".into()),
-            attempt_id: None,
-            tool: None,
-            wait: None,
-            text_channel: None,
-            content_present: Some(false),
-            started_at: None,
-            finished_at: None,
-            contents: Vec::new(),
-            payload: None,
-        }
+pub(crate) fn current_collection_ref(
+    value: protocol::CurrentCollectionRef,
+) -> BridgeCurrentCollectionRef {
+    BridgeCurrentCollectionRef {
+        owner_id: value.owner_id,
+        collection: value.collection,
+        revision: value.revision,
     }
+}
 
-    #[test]
-    fn member_batch_keeps_real_interruption_without_fabricating_completion() {
-        let mapped = member_batch(protocol::DisplayMemberBatch {
-            block: reference(),
-            revision: 9,
-            offset: 4,
-            sealed: true,
-            complete: false,
-            entries: vec![protocol::DisplayMemberHead {
-                member_key: "original-member".into(),
-                member_order: 7,
-                record: protocol::DisplayRecord {
-                    atom: atom(protocol::ChatAtomLifecycle::Terminal {
-                        started: None,
-                        ended: Some(protocol::ChatFactPosition {
-                            effect_seq: 19,
-                            suborder: 2,
-                        }),
-                        outcome: protocol::ChatTerminalOutcome::Cancelled,
-                    }),
-                    start_fact: None,
-                    end_fact: Some(protocol::ChatFactPosition {
-                        effect_seq: 19,
-                        suborder: 2,
-                    }),
-                    content_source: protocol::DisplayContentSource::FrozenObservation {
-                        captured_at: None,
-                        available: true,
+pub(crate) fn bridge_to_current_collection_ref(
+    value: BridgeCurrentCollectionRef,
+) -> protocol::CurrentCollectionRef {
+    protocol::CurrentCollectionRef {
+        owner_id: value.owner_id,
+        collection: value.collection,
+        revision: value.revision,
+    }
+}
+
+pub(crate) fn current_collection_page(
+    value: protocol::CurrentCollectionPage,
+) -> BridgeCurrentCollectionPage {
+    BridgeCurrentCollectionPage {
+        revision: value.revision,
+        entries: value
+            .entries
+            .into_iter()
+            .map(|entry| BridgeCurrentCollectionEntry {
+                id: entry.id,
+                position: entry.position,
+                payload: match entry.payload {
+                    protocol::CurrentPayloadData::Inline { bytes } => {
+                        BridgeCurrentPayloadData::Inline { bytes }
+                    }
+                    protocol::CurrentPayloadData::Deferred {
+                        reference,
+                        byte_length,
+                    } => BridgeCurrentPayloadData::Deferred {
+                        reference: current_content_ref(reference),
+                        byte_length,
                     },
                 },
-            }],
-        });
-        assert_eq!(protocol_block_ref(mapped.block), reference());
-        assert_eq!(mapped.revision, 9);
-        assert!(mapped.sealed);
-        assert_eq!(mapped.offset, 4);
-        assert!(!mapped.complete);
-        let member = &mapped.entries[0];
-        assert_eq!(member.member_key, "original-member");
-        assert_eq!(member.member_order, 7);
-        assert!(matches!(
-            member.record.content_source,
-            BridgeDisplayContentSource::FrozenObservation {
-                available: true,
-                ..
-            }
-        ));
-        assert!(member.record.start_fact.is_none());
-        assert!(matches!(
-            member.record.end_fact,
-            Some(BridgeChatFactPosition {
-                effect_seq: 19,
-                suborder: 2
             })
-        ));
-        assert!(member.record.atom.completion_seq.is_none());
-        assert!(member.record.atom.payload.is_none());
-        assert!(matches!(
-            member.record.atom.lifecycle,
-            BridgeChatAtomLifecycle::Terminal {
-                ended: Some(BridgeChatFactPosition {
-                    effect_seq: 19,
-                    suborder: 2
-                }),
-                outcome: BridgeChatTerminalOutcome::Cancelled,
-                ..
-            }
-        ));
+            .collect(),
+        continuation: value.continuation,
     }
+}
+
+fn current_atom(value: protocol::CurrentAtom) -> BridgeCurrentAtom {
+    BridgeCurrentAtom {
+        id: value.id,
+        source: chat::source_id(value.source),
+        source_state: value.source_state.map(chat::source_state),
+        source_order: value.source_order,
+        kind: chat::atom_kind(value.kind),
+        delivery: chat::delivery(value.delivery),
+        lifecycle: match value.lifecycle {
+            protocol::ChatAtomLifecycle::Active { started, status } => {
+                BridgeChatAtomLifecycle::Active {
+                    started: started.map(chat::fact_position),
+                    status: match status {
+                        protocol::ChatActiveStatus::Running => BridgeChatActiveStatus::Running,
+                        protocol::ChatActiveStatus::Waiting => BridgeChatActiveStatus::Waiting,
+                    },
+                }
+            }
+            protocol::ChatAtomLifecycle::Terminal {
+                started,
+                ended,
+                outcome,
+            } => BridgeChatAtomLifecycle::Terminal {
+                started: started.map(chat::fact_position),
+                ended: ended.map(chat::fact_position),
+                outcome: chat::terminal_outcome(outcome),
+            },
+        },
+        turn_id: value.turn_id,
+        attempt_id: value.attempt_id,
+        tool: value.tool.map(|tool| BridgeChatToolIdentity {
+            call_id: tool.call_id,
+            name: tool.name,
+        }),
+        wait: value.wait.map(thread_stream::wait_presentation),
+        text_channel: value.text_channel.map(chat::text_channel),
+        started_at: value.started_at,
+        finished_at: value.finished_at,
+        content_present: value.content_present,
+        contents: value
+            .contents
+            .into_iter()
+            .map(|content| BridgeCurrentAtomContent {
+                role: match content.role {
+                    protocol::ChatContentRole::Body => BridgeChatContentRole::Body,
+                    protocol::ChatContentRole::ReasoningSummary => {
+                        BridgeChatContentRole::ReasoningSummary
+                    }
+                    protocol::ChatContentRole::ToolArguments => {
+                        BridgeChatContentRole::ToolArguments
+                    }
+                    protocol::ChatContentRole::ToolOutput => BridgeChatContentRole::ToolOutput,
+                },
+                reference: current_content_ref(content.reference),
+            })
+            .collect(),
+    }
+}
+
+fn current_preview(value: protocol::CurrentContentPreview) -> BridgeCurrentContentPreview {
+    BridgeCurrentContentPreview {
+        id: value.id,
+        role: match value.role {
+            protocol::CurrentContentRole::Reasoning => BridgeCurrentContentRole::Reasoning,
+            protocol::CurrentContentRole::Response => BridgeCurrentContentRole::Response,
+            protocol::CurrentContentRole::ToolArguments => BridgeCurrentContentRole::ToolArguments,
+            protocol::CurrentContentRole::ToolOutput => BridgeCurrentContentRole::ToolOutput,
+        },
+        text_channel: value.text_channel.map(chat::text_channel),
+        text: value.text,
+        reference: current_content_ref(value.reference),
+    }
+}
+
+fn current_projection(value: protocol::CurrentProjection) -> BridgeCurrentProjection {
+    BridgeCurrentProjection {
+        logical_status: match value.logical_status {
+            protocol::ThreadStatus::Idle => BridgeThreadStatus::Idle,
+            protocol::ThreadStatus::Queued => BridgeThreadStatus::Queued,
+            protocol::ThreadStatus::Running => BridgeThreadStatus::Running,
+            protocol::ThreadStatus::WaitingTool => BridgeThreadStatus::WaitingTool,
+            protocol::ThreadStatus::WaitingInteraction => BridgeThreadStatus::WaitingInteraction,
+            protocol::ThreadStatus::Cancelling => BridgeThreadStatus::Cancelling,
+            protocol::ThreadStatus::Closing => BridgeThreadStatus::Closing,
+            protocol::ThreadStatus::Closed => BridgeThreadStatus::Closed,
+            protocol::ThreadStatus::Faulted => BridgeThreadStatus::Faulted,
+        },
+        execution_present: value.execution_present,
+        active: value.active.map(|head| BridgeCurrentActivityHead {
+            id: head.id,
+            kind: thread_stream::activity::activity_kind(head.kind),
+            summary: head.summary,
+            thinking_summary: head.thinking_summary,
+            thinking_seconds: head.thinking_seconds,
+            tool_count: head.tool_count,
+            background_tool_count: head.background_tool_count,
+            latest_tool: head.latest_tool.map(|tool| BridgeCurrentToolHead {
+                call_id: tool.call_id,
+                name: tool.name,
+                state: thread_stream::activity::tool_state(tool.state),
+            }),
+        }),
+        active_turn: value.active_turn.map(|turn| BridgeCurrentTurnHead {
+            id: turn.id,
+            phase: thread_stream::turn_phase(turn.phase),
+        }),
+        sources: value.sources.into_iter().map(chat::source_state).collect(),
+        atoms: value.atoms.into_iter().map(current_atom).collect(),
+        plan: value.plan.map(|plan| BridgeCurrentPlanHead {
+            revision: plan.revision,
+            phase: thread_stream::plan_phase(plan.phase),
+            document: plan.document.map(current_content_ref),
+        }),
+        interactions: value.interactions.map(current_collection_ref),
+        previews: value.previews.into_iter().map(current_preview).collect(),
+        collections: value
+            .collections
+            .into_iter()
+            .map(current_collection_ref)
+            .collect(),
+    }
+}
+
+pub(crate) fn current_view(value: protocol::CurrentView) -> ConvertResult<BridgeCurrentView> {
+    Ok(BridgeCurrentView {
+        revision: current_revision(value.revision),
+        state: Box::new(thread_stream::bridge_thread_snapshot(*value.state)?),
+        projection: current_projection(value.projection),
+    })
+}
+
+pub(crate) fn current_frame(value: protocol::CurrentFrame) -> ConvertResult<BridgeCurrentFrame> {
+    Ok(match value {
+        protocol::CurrentFrame::Reset { view } => BridgeCurrentFrame::Reset {
+            view: Box::new(current_view(*view)?),
+        },
+        protocol::CurrentFrame::Notification {
+            revision,
+            notification,
+        } => BridgeCurrentFrame::Notification {
+            revision: current_revision(revision),
+            notification: Box::new(thread_stream::thread_notification(*notification)?),
+        },
+        protocol::CurrentFrame::Projection {
+            revision,
+            projection,
+        } => BridgeCurrentFrame::Projection {
+            revision: current_revision(revision),
+            projection: Box::new(current_projection(*projection)),
+        },
+    })
 }

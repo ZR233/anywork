@@ -374,7 +374,7 @@ void main() {
         'Client delivers the initial content baseline',
       );
       await tester.pumpAndSettle();
-      final openedWindows = transport.timelineReaders.length;
+      final openedWindows = transport.currentReaders.length;
       await pumpClientFuture(
         tester,
         graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
@@ -384,9 +384,9 @@ void main() {
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
       }
-      expect(transport.timelineReaders, hasLength(openedWindows));
+      expect(transport.currentReaders, hasLength(openedWindows));
       expect(
-        transport.timelineReaders.every((entry) => entry.joined.isCompleted),
+        transport.currentReaders.every((entry) => entry.joined.isCompleted),
         isTrue,
       );
     },

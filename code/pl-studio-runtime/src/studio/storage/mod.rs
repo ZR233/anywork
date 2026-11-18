@@ -1,20 +1,7 @@
 pub(crate) mod calls;
 pub(crate) mod coordinator;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
 mod current_file;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
+pub(crate) use current_file::{read_for_upgrade, verify_for_upgrade};
 pub(crate) mod current_writer;
 pub(crate) mod history;
 pub(crate) mod state;
@@ -251,6 +238,15 @@ mod mode_migration_tests {
             manager.snapshot().modes().next().is_none(),
             "restoration cannot re-register a deleted Mode"
         );
+        drop(reopened);
+        let current =
+            upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
+        assert_eq!(current.state.extensions["studio.workflow"], workflow);
+        assert_eq!(current.state.context, original.context);
+        let restored = crate::mode::saved_registered_mode(&current.state.to_paused_snapshot())?
+            .context("current saved Mode")?;
+        assert_eq!(restored.prompt(), "保存的原始 Prompt");
+        assert_eq!(restored.definition(), saved.definition);
         Ok(())
     }
 
@@ -1406,14 +1402,13 @@ mod mode_migration_tests {
         runtime.shutdown_runtime().await?;
 
         let paths = StudioPaths::resolve(Some(home.clone()))?;
-        let history_path = paths
-            .session_paths(&project.id, &thread.id)?
-            .history_database();
-        let history = HistoryStore::open(&history_path, &thread.id).await?;
-        let initial = history.checkpoint().await?.context("initial checkpoint")?;
+        let session = paths.session_paths(&project.id, &thread.id)?;
+        let state_directory = session.root().to_owned();
+        let state = super::state::StateStore::new(state_directory.clone(), &thread.id);
+        let initial_current = state.load_current().await?.context("initial current")?;
+        let initial = initial_current.state.to_paused_snapshot();
         assert_eq!(
             initial
-                .state
                 .context
                 .records
                 .iter()
@@ -1422,19 +1417,17 @@ mod mode_migration_tests {
             1
         );
         assert!(
-            initial.state.context.records.iter().all(|record| {
+            initial.context.records.iter().all(|record| {
                 !matches!(record.source, ContextSource::InstructionSnapshot { .. })
             })
         );
         assert!(
             !initial
-                .state
                 .extensions
                 .contains_key("studio.instructions.binding")
         );
-        let initial_instructions = initial.state.extensions["studio.instructions"].clone();
+        let initial_instructions = initial.extensions["studio.instructions"].clone();
         let initial_instruction_records = initial
-            .state
             .context
             .records
             .iter()
@@ -1446,7 +1439,7 @@ mod mode_migration_tests {
             })
             .cloned()
             .collect::<Vec<_>>();
-        drop(history);
+        drop(state);
 
         let runtime = crate::StudioRuntime::initialize(options()).await?;
         runtime
@@ -1457,17 +1450,18 @@ mod mode_migration_tests {
             )
             .await?;
         runtime.shutdown_runtime().await?;
-        let history = HistoryStore::open(&history_path, &thread.id).await?;
-        let same_mode = history
-            .checkpoint()
+        let state = super::state::StateStore::new(state_directory.clone(), &thread.id);
+        let same_mode = state
+            .load_current()
             .await?
-            .context("same-Mode checkpoint")?;
+            .context("same-Mode current")?
+            .state
+            .to_paused_snapshot();
         assert_eq!(
-            same_mode.state.extensions["studio.instructions"], initial_instructions,
+            same_mode.extensions["studio.instructions"], initial_instructions,
             "binding a canonical initial prompt must not advance its instruction revision"
         );
         let same_mode_instruction_records = same_mode
-            .state
             .context
             .records
             .iter()
@@ -1481,17 +1475,18 @@ mod mode_migration_tests {
             .collect::<Vec<_>>();
         assert_eq!(same_mode_instruction_records, initial_instruction_records);
         let saved_binding = crate::compaction::decode_instruction_binding(
-            &same_mode.state.extensions["studio.instructions.binding"],
+            &same_mode.extensions["studio.instructions.binding"],
         )?;
         assert!(saved_binding.append_snapshots);
-        drop(history);
+        drop(state);
 
-        let history = HistoryStore::open(&history_path, &thread.id).await?;
-        let checkpoint = history
-            .checkpoint()
+        let state = super::state::StateStore::new(state_directory.clone(), &thread.id);
+        let checkpoint = state
+            .load_current()
             .await?
-            .context("checkpoint before restoring the old snapshot")?;
-        let instruction_record = checkpoint.state.extensions["studio.instructions"].clone();
+            .context("current before restoring the old snapshot")?;
+        let mut restored = checkpoint.clone();
+        let instruction_record = restored.state.extensions["studio.instructions"].clone();
         let instructions = crate::instruction::decode_snapshot(&instruction_record.payload)?;
         let text = instructions.trusted_text();
         let restored_snapshot = ContextRecord {
@@ -1505,83 +1500,82 @@ mod mode_migration_tests {
             content: vec![ContextContent::Text { text: text.into() }],
             tool_calls: Vec::new(),
         };
-        let context_revision = checkpoint
+        let context_revision = restored
             .state
             .context
             .revision
             .checked_add(1)
             .context("context revision exhausted")?;
-        let extension_revision = checkpoint
+        let extension_revision = restored
             .state
             .extension_sequence
             .checked_add(1)
             .context("extension revision exhausted")?;
-        let sequence = checkpoint
-            .state
-            .commit_sequence
-            .checked_add(1)
-            .context("Thread commit sequence exhausted")?;
         anyhow::ensure!(
-            checkpoint
+            restored
                 .state
                 .extensions
                 .contains_key("studio.instructions.binding"),
             "binding to remove from restored checkpoint"
         );
-        let extension_change = ExtensionChange::Delete {
-            id: "studio.instructions.binding".into(),
-            revision: extension_revision,
-        };
-        let mut state = checkpoint.state.clone();
-        state.extensions.remove("studio.instructions.binding");
-        state.extension_sequence = extension_revision;
-        let mut extension_changes = state.extension_changes.to_vec();
-        extension_changes.push(extension_change.clone());
-        state.extension_changes = extension_changes.into();
-        state.commit_sequence = sequence;
-        let mut records = state.context.records.to_vec();
+        restored
+            .state
+            .extensions
+            .remove("studio.instructions.binding");
+        restored.state.extension_sequence = extension_revision;
+        let mut records = restored.state.context.records.to_vec();
         records.push(restored_snapshot.clone());
-        state.context = ContextSnapshot {
+        restored.state.context = ContextSnapshot {
             revision: context_revision,
             records: records.into(),
         };
-        let effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence,
-            context: Some(ContextChange::Append {
-                revision: context_revision,
-                records: vec![restored_snapshot].into(),
-            }),
-            extensions: vec![extension_change].into(),
-            ..Default::default()
-        };
-        let checkpoint = ThreadCheckpoint::capture(thread.id.clone(), sequence, state)?;
-        let empty = BTreeSet::new();
-        history
-            .commit_checkpoint_effects(&[crate::studio::storage::history::CheckpointEffect {
-                checkpoint: &checkpoint,
-                effect: &effect,
-                history: EffectCommit {
-                    current: &crate::studio::storage::history::test_current(effect.sequence),
-                    completions: &[],
-                    turns: &[],
-                    execution_order: 0,
-                    rolled_back_turns: &empty,
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-                accounting: crate::studio::storage::history::AccountingCommit {
-                    facts: &crate::studio::thread_projection::PreparedAccounting::prepare(&effect)?,
-                    material_changed: true,
-                },
-            }])
+        restored.snapshot_revision = restored
+            .snapshot_revision
+            .checked_add(1)
+            .context("current snapshot revision exhausted")?;
+        let restored = std::sync::Arc::new(restored);
+        let source = crate::studio::storage::current_writer::CurrentSource::new(
+            {
+                let restored = restored.clone();
+                move |epoch, _| {
+                    let restored = restored.clone();
+                    Box::pin(async move {
+                        let mut current = (*restored).clone();
+                        current.saved_runtime_epoch = epoch;
+                        Ok(current)
+                    })
+                }
+            },
+            {
+                let restored = restored.clone();
+                move |epoch| {
+                    let restored = restored.clone();
+                    Box::pin(async move {
+                        let mut current = (*restored).clone();
+                        current.saved_runtime_epoch = epoch;
+                        Ok(current)
+                    })
+                }
+            },
+        );
+        let coordinator_store =
+            crate::studio::StudioStore::open(&home.join("data/studio.sqlite")).await?;
+        let epoch = pl_core::thread::current::RuntimeEpoch::new();
+        let mut state = super::state::StateStore::new(state_directory.clone(), &thread.id);
+        state
+            .attach_current(
+                coordinator_store.thread_persistence().clone(),
+                None,
+                epoch,
+                source,
+            )
             .await?;
-        drop(history);
+        state.flush_current(epoch).await?;
+        state
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
+        drop(state);
+        coordinator_store.close().await?;
 
         let runtime = crate::StudioRuntime::initialize(options()).await?;
         runtime
@@ -1593,13 +1587,16 @@ mod mode_migration_tests {
             .await?;
         runtime.shutdown_runtime().await?;
 
-        let history = HistoryStore::open(&history_path, &thread.id).await?;
-        let changed = history
-            .checkpoint()
-            .await?
-            .context("changed-Mode checkpoint")?;
+        let reopened = crate::studio::StudioStore::open(&home.join("data/studio.sqlite")).await?;
+        let changed = crate::studio::thread_factory::recovery::load_current_for_recovery(
+            &reopened,
+            &crate::Thread::from(thread.clone()),
+        )
+        .await?
+        .context("changed-Mode current")?
+        .state
+        .to_paused_snapshot();
         let current_instruction_records = changed
-            .state
             .context
             .records
             .iter()
@@ -1616,7 +1613,7 @@ mod mode_migration_tests {
             ContextSource::InstructionSnapshot { .. }
         ));
         let instructions = crate::instruction::decode_snapshot(
-            &changed.state.extensions["studio.instructions"].payload,
+            &changed.extensions["studio.instructions"].payload,
         )?;
         assert_eq!(
             current_instruction_records[0].content,
@@ -1625,8 +1622,9 @@ mod mode_migration_tests {
             }]
         );
         crate::compaction::decode_instruction_binding(
-            &changed.state.extensions["studio.instructions.binding"],
+            &changed.extensions["studio.instructions.binding"],
         )?;
+        reopened.close().await?;
         Ok(())
     }
 
@@ -2578,7 +2576,7 @@ mod mode_migration_tests {
             let db = raw_database(&path).await?;
             let content_prepared = applied_migrations(&db).await?;
             let (read_only, _) = store
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("prepared content is readable before lifecycle recovery")?;
             assert_eq!(
@@ -2646,7 +2644,7 @@ mod mode_migration_tests {
             drop(store);
             let reopened = HistoryStore::open(&path, "migration").await?;
             let (read_only, _) = reopened
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("pending workspace lifecycle does not invalidate prepared content")?;
             assert_eq!(
@@ -2666,7 +2664,7 @@ mod mode_migration_tests {
                 "Schema must not advance workspace lifecycle after ModelAccess was applied"
             );
             let (read_only, _) = reopened
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("content preparation retains the existing checkpoint")?;
             assert_eq!(
@@ -2778,7 +2776,22 @@ mod mode_migration_tests {
         thread: &crate::Thread,
     ) -> Result<HistoryStore> {
         register_test_thread(store, thread).await?;
-        store.history_for(&thread.workspace_id, &thread.id).await
+        let path = store
+            .session_paths(&thread.workspace_id, &thread.id)?
+            .history_database();
+        HistoryStore::open(&path, &thread.id).await
+    }
+
+    async fn upgrade_legacy_history_to_current(
+        path: &std::path::Path,
+        thread_id: &str,
+        session_dir: &std::path::Path,
+    ) -> Result<pl_core::thread::current::ThreadCurrent> {
+        crate::history::upgrade_history(path, thread_id, session_dir).await?;
+        crate::studio::storage::state::StateStore::new(session_dir.to_owned(), thread_id)
+            .load_current()
+            .await?
+            .context("upgraded current")
     }
 
     /// These fixtures seed only checkpoint/context data using the current writer. The published
@@ -2790,21 +2803,9 @@ mod mode_migration_tests {
     ) -> Result<()> {
         use sea_orm::{DatabaseBackend, Statement};
         assert!(matches!(version, 5 | 8));
-        let row = db
-            .query_one_raw(Statement::from_string(
-                DatabaseBackend::Sqlite,
-                "SELECT COUNT(*) AS count FROM timeline_records",
-            ))
-            .await?
-            .context("fixture timeline output")?;
-        assert_eq!(
-            row.try_get::<i64>("", "count")?,
-            0,
-            "legacy fixture must not discard completed history"
-        );
         super::history::discard_empty_demand_fixture(db).await?;
         db.execute_unprepared(
-            "DROP TABLE timeline_records;
+            "DROP TABLE IF EXISTS timeline_records;
          DROP TABLE seaql_migrations",
         )
         .await?;
@@ -2955,7 +2956,6 @@ mod mode_migration_tests {
             "SELECT json_array(version,applied_at) AS fact FROM seaql_migrations ORDER BY version",
             "SELECT json_array(id,revision,context_revision,context_count,payload,payload_hash) AS fact FROM session_checkpoint ORDER BY id",
             "SELECT json_array(ordinal,record_id,payload,payload_hash) AS fact FROM current_context ORDER BY ordinal",
-            "SELECT json_array(ordinal,item_id,payload,last_write_seq) AS fact FROM history_items ORDER BY ordinal",
             "SELECT json_array(append_seq,record_id,typeof(payload),hex(payload)) AS fact FROM timeline_records ORDER BY append_seq",
             "SELECT json_array(seq,item_id,typeof(payload),hex(payload)) AS fact FROM conversation_items ORDER BY seq",
         ] {
@@ -3099,165 +3099,25 @@ mod mode_migration_tests {
         let cold = HistoryStore::open(&path, "migration").await?;
         assert_eq!(
             serde_json::to_value(
-                cold.read_only_checkpoint_with_latest_turn()
+                cold.legacy_test_checkpoint_with_latest_turn()
                     .await?
                     .context("cold checkpoint after upgrade")?
                     .0
             )?,
-            serde_json::to_value(expected)?
+            serde_json::to_value(&expected)?
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_child_open_and_parent_recovery_prepare_checkpoint_envelopes() -> Result<()> {
-        use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
-        use crate::studio::store::directory::DirectoryDelta;
-        use crate::{StudioHostKind, StudioRuntimeOptions};
-        use pl_model::{
-            config::{AccountConfig, AccountId, ModelRouteConfig},
-            model::ModelInfo,
-            protocol::ProtocolEndpoint,
-        };
-        let directory = tempfile::tempdir()?;
-        let home = directory.path().join("home");
-        let workspace = directory.path().join("workspace");
-        tokio::fs::create_dir(&workspace).await?;
-        let account_id = AccountId::new("storage-fixture")?;
-        let route = ModelRouteConfig {
-            account_id: account_id.clone(),
-            model_id: "storage-model".into(),
-            effort: None,
-        };
-        let mut config = StudioConfig::default_config()?;
-        config.models.accounts.clear();
-        config.models.accounts.insert(
-            account_id,
-            AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible("Storage fixture", "http://127.0.0.1:0"),
-                vec![ModelInfo::compatible(&route.model_id)],
-            ),
+        drop(cold);
+        let current =
+            upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
+        assert!(current.state.usage_summary.diagnostics.legacy_unknown);
+        assert_eq!(
+            current.state.extensions["vendor.unknown"].payload.content(),
+            "opaque bytes must survive"
         );
-        for selected in config
-            .models
-            .routes
-            .values_mut()
-            .chain(config.mode_model_routes.values_mut())
-        {
-            *selected = route.clone();
-        }
-        ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
-        let options = || StudioRuntimeOptions {
-            studio_home: Some(home.clone()),
-            host: StudioHostKind::Test,
-            ..StudioRuntimeOptions::desktop()
-        };
-        let runtime = crate::StudioRuntime::initialize(options()).await?;
-        let project = runtime.open_project(&workspace).await?;
-        let root = runtime.create_thread(&project.id, "Legacy root").await?;
-        runtime.shutdown_runtime().await?;
-        let store = crate::studio::StudioStore::open(&home.join("data/studio.sqlite")).await?;
-        let mut children = Vec::new();
-        for (id, role) in [
-            ("retired-child", crate::config::ROOT_AGENT_ROUTE_KEY),
-            ("cold-child", "executor"),
-            ("timeline-child", "executor"),
-            ("turn-page-child", "executor"),
-        ] {
-            let mut child = bound_thread(id);
-            child.workspace_id = project.id.clone();
-            child.parent_thread_id = Some(root.id.clone());
-            child.root_thread_id = root.id.clone();
-            child.role = role.into();
-            store
-                .persist_directory_summaries(&DirectoryDelta {
-                    agent_upserts: vec![
-                        crate::studio::records::directory_facts_from_thread(&child).1,
-                    ],
-                    ..Default::default()
-                })
-                .await?;
-            let history = store.history_for(&project.id, id).await?;
-            persist(&history, saved_state(BTreeMap::new()), true).await?;
-            let path = store.session_paths(&project.id, id)?.history_database();
-            drop(history);
-            downgrade_checkpoint_to_schema_five(&path).await?;
-            children.push((child, path));
-        }
-        let root_path = store
-            .session_paths(&project.id, &root.id)?
-            .history_database();
-        downgrade_checkpoint_to_schema_five(&root_path).await?;
-        drop(store);
-        let runtime = crate::StudioRuntime::initialize(options()).await?;
-        let result = async {
-        // These children have no execution owner. Both independent content entrypoints must
-        // prepare only SQLite content before querying, leaving model/instruction recovery pending.
-        for (child, path) in children.iter().skip(2) {
-            assert!(HistoryStore::open(path, &child.id).await?.checkpoint().await.is_err());
-            if child.id == "timeline-child" {
-                let mut feed = runtime.open_conversation_feed(&child.id, crate::ChatScope::conversation(None),
-                    crate::ReadDemand { max_items: 10, max_bytes: 64 * 1024 }).await?;
-                let Some(crate::ConversationEvent::Chat { batch }) = feed.recv().await? else {
-                    anyhow::bail!("cold conversation did not publish its initial Chat");
-                };
-                assert!(batch.entries.is_empty());
-                feed.close().await?;
-            } else {
-                assert!(runtime.list_thread_turns(&child.id, None, 10).await?.turns.is_empty());
-            }
-            let checkpoint = HistoryStore::open(path, &child.id).await?.checkpoint().await?.context("prepared content checkpoint")?;
-            assert_eq!(checkpoint.state.context, saved_state(BTreeMap::new()).context);
-            assert!(checkpoint.state.extensions.is_empty(), "content access must not regenerate instructions");
-            let db = raw_database(path).await?;
-            assert!(db.query_one_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-                "SELECT version FROM seaql_migrations WHERE version IN ('m20261026_000007_history_model_access','m20261026_000008_history_execution_identity')"
-            )).await?.is_none(), "content access must not advance execution recovery");
-            db.close().await?;
-        }
-        // The retired child's first saved-state lookup decides whether an owner may be installed.
-        // It must happen after migration even when that lookup proves the child is not sealed.
-        let child = &children[0].0;
-        let mut subscription = runtime.open_conversation_state_feed(&child.id).await?;
-        anyhow::ensure!(
-            subscription.recv().await?.is_some(),
-            "missing retired child baseline"
+        assert_eq!(
+            current.state.last_attempt_usage_origin,
+            expected.state.last_attempt_usage_origin
         );
-        drop(subscription);
-        // The composer can ask for child interactions while the root subscription is opening.
-        // That read must wait for storage preparation, without activating a child itself.
-        let (subscription, interactions) = tokio::join!(
-            runtime.open_conversation_state_feed(&root.id),
-            runtime.read_child_interactions(&root.id),
-        );
-        let mut subscription = subscription?;
-        interactions?;
-        anyhow::ensure!(
-            subscription.recv().await?.is_some(),
-            "missing root baseline"
-        );
-        drop(subscription);
-        for (child, path) in children {
-            let saved = HistoryStore::open(&path, &child.id)
-                .await?
-                .checkpoint()
-                .await?
-                .context("current child checkpoint")?;
-            anyhow::ensure!(
-                saved.schema_version == ThreadCheckpoint::SCHEMA_VERSION,
-                "child envelope was not upgraded"
-            );
-            anyhow::ensure!(
-                runtime.thread_snapshot(&child.id).await?.thread.id == child.id,
-                "child snapshot unavailable after opening"
-            );
-        }
-        anyhow::Ok(())
-    }
-    .await;
-        let shutdown = runtime.shutdown_runtime().await;
-        result?;
-        shutdown?;
         Ok(())
     }
 
@@ -3354,14 +3214,15 @@ mod mode_migration_tests {
                     "studio.model-route".into(),
                     record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
                 );
-                persist_schema12_fixture(&path, id, original.clone()).await?;
+                // A schema-24 source has already completed its named route migration. Keep
+                // its unavailable account, but seed the actual v24 representation.
+                crate::studio::model_route::migration::upgrade(&mut original)?;
+                let legacy = HistoryStore::open(&path, id).await?;
+                persist(&legacy, original.clone(), true).await?;
             } else {
-                let history = store.history_for(&project.id, id).await?;
+                let history = HistoryStore::open(&path, id).await?;
                 persist(&history, original.clone(), true).await?;
                 drop(history);
-                if id != root_id {
-                    downgrade_checkpoint_to_schema_five(&path).await?;
-                }
             }
             let files = SessionFiles::new(id);
             for temp in [session.temp_dir(), workspace.join(files.temp())] {
@@ -3372,13 +3233,6 @@ mod mode_migration_tests {
             tokio::fs::write(workspace.join(files.artifacts()).join("delivery"), b"keep").await?;
             tokio::fs::create_dir_all(session.root().join("resources")).await?;
             tokio::fs::write(session.root().join("resources/reliable"), b"reliable").await?;
-            let cold = HistoryStore::open(&path, id).await?;
-            if id != root_id {
-                assert!(
-                    cold.checkpoint().await.is_err(),
-                    "legacy reads need preparation"
-                );
-            }
             members.push((thread, session, original));
         }
         drop(store);
@@ -3393,8 +3247,11 @@ mod mode_migration_tests {
         for (thread, session, original) in &members {
             let snapshot = runtime.thread_snapshot(&thread.id).await?;
             assert!(snapshot.thread.archived);
-            let history = HistoryStore::open(&session.history_database(), &thread.id).await?;
-            let saved = history.checkpoint().await?.context("archived checkpoint")?;
+            let saved =
+                crate::studio::storage::state::StateStore::new(session.root().to_owned(), &thread.id)
+                    .load_current()
+                    .await?
+                    .context("archived current")?;
             assert_eq!(saved.state.context, original.context);
             assert_eq!(
                 saved.state.extensions["vendor.unknown"],
@@ -3528,136 +3385,18 @@ mod mode_migration_tests {
             )?,
             before_retry
         );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn shared_recovery_entry_commits_saved_representations_before_publishing() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let database_path = directory.path().join("data/studio.sqlite");
-        let store = crate::studio::StudioStore::open(&database_path).await?;
-        let thread = bound_thread("migration");
-        register_test_thread(&store, &thread).await?;
-        let mut original = saved_state(BTreeMap::from([
-            (
-                "studio.model-route".into(),
-                record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
-            ),
-            (
-                "studio.agent-profile".into(),
-                record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
-            ),
-        ]));
-        original.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
-        let path = store
-            .session_paths(&thread.workspace_id, &thread.id)?
-            .history_database();
-        let before = persist_schema12_fixture(&path, &thread.id, original.clone()).await?;
-        let history = store.history_for(&thread.workspace_id, &thread.id).await?;
-        let faults = raw_database(&path).await?;
-        faults
-            .execute_unprepared(
-                "CREATE TRIGGER block_delegation_migration BEFORE UPDATE ON session_checkpoint
-        BEGIN SELECT RAISE(ABORT,'injected delegation migration write fault'); END",
-            )
-            .await?;
-        let before_facts = schema12_fixture_facts(&faults).await?;
-        let failure =
-            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
-                .await
-                .expect_err("the injected checkpoint fault must block recovery");
-        assert!(format!("{failure:#}").contains("injected delegation migration write fault"));
-        assert_eq!(schema12_fixture_facts(&faults).await?, before_facts);
-        assert!(
-            history.checkpoint().await.is_err(),
-            "cold reads must still reject the unprepared schema12 fixture"
-        );
-        let preserved: ThreadCheckpoint =
-            serde_json::from_str(&saved_checkpoint_payload(&faults).await?)?;
-        let mut before_metadata = before.pruned()?;
-        before_metadata.state.context.records = Default::default();
+        drop(reopened);
+        let current =
+            upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
         assert_eq!(
-            serde_json::to_vec(&preserved)?,
-            serde_json::to_vec(&before_metadata)?,
-            "failed extension migration preserves the old checkpoint metadata; context rows are unchanged"
-        );
-        assert!(
-            !preserved
-                .state
-                .extensions
-                .contains_key(crate::studio::delegation::EXTENSION)
-        );
-        faults
-            .execute_unprepared("DROP TRIGGER block_delegation_migration")
-            .await?;
-        drop(faults);
-
-        let recovered =
-            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
-                .await?
-                .context("recovered checkpoint")?;
-        assert_eq!(recovered.state_revision, original.commit_sequence);
-        assert_eq!(
-            recovered.state.lifecycle,
-            pl_core::thread::ThreadLifecycle::Closed
-        );
-        assert!(
-            !crate::studio::agent_close::is_explicitly_closed(&recovered.state)?,
-            "old owner closure must retain its original recoverable meaning"
-        );
-        assert_eq!(
-            recovered.state.extensions["studio.model-route"]
+            current.state.extensions["studio.model-route"]
                 .payload
                 .version(),
             2
         );
-        assert_eq!(
-            recovered.state.extensions["studio.agent-profile"]
-                .payload
-                .version(),
-            2
-        );
-        assert_eq!(
-            recovered.state.extensions["studio.model-route"].revision, 2,
-            "表示迁移保留扩展 revision"
-        );
-        assert_eq!(recovered.state.context, original.context);
-        assert_eq!(
-            crate::studio::delegation::saved(&recovered.state)?,
-            Some(crate::DelegationSettings::default())
-        );
-        let durable = history.checkpoint().await?.context("durable checkpoint")?;
-        assert_eq!(
-            serde_json::to_vec(&durable)?,
-            serde_json::to_vec(&recovered)?,
-            "恢复返回前已经持久化当前表示"
-        );
-
-        let again =
-            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(&store, &thread)
-                .await?
-                .context("second recovery")?;
-        assert_eq!(serde_json::to_vec(&again)?, serde_json::to_vec(&recovered)?);
-        drop(history);
-        drop(store);
-
-        let reopened = crate::studio::StudioStore::open(&database_path).await?;
-        let history = reopened
-            .history_for(&thread.workspace_id, &thread.id)
-            .await?;
-        let saved = history.checkpoint().await?.context("reopened checkpoint")?;
-        assert_eq!(
-            crate::studio::delegation::saved(&saved.state)?,
-            Some(crate::DelegationSettings::default())
-        );
-        assert_eq!(
-            saved.state.extensions["studio.model-route"]
-                .payload
-                .version(),
-            2
-        );
-        let route = crate::studio::model_route::saved(&saved.state)?
-            .context("reopened route")?
+        assert_eq!(current.state.extensions["studio.plan"], plan);
+        let route = crate::studio::model_route::saved(&current.state.to_paused_snapshot())?
+            .context("current route")?
             .route;
         assert_eq!(route.account_id.as_str(), "deepseek");
         assert_eq!(route.model_id, "deepseek-flash");
@@ -3683,13 +3422,7 @@ mod mode_migration_tests {
             )]));
             persist(&history, state, true).await?;
             let before = history.checkpoint().await?.context("original checkpoint")?;
-            assert!(
-                crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-                    &store, &thread
-                )
-                .await
-                .is_err()
-            );
+            assert!(history.prepare_model_access().await.is_err());
             let after = history.checkpoint().await?.context("retained checkpoint")?;
             assert_eq!(serde_json::to_vec(&after)?, serde_json::to_vec(&before)?);
             assert_eq!(history.watermark().await?, before.history_fence);
@@ -3760,6 +3493,14 @@ mod mode_migration_tests {
             serde_json::to_vec(&durable)?,
             "重开后再次迁移不改变已保存状态"
         );
+        drop(reopened);
+        let current =
+            upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
+        let (current_profile, current_revision) =
+            crate::studio::model_route::saved_profile(&current.state.to_paused_snapshot())?
+                .context("current migrated profile")?;
+        assert_eq!(current_revision, 3);
+        assert_eq!(current_profile, profile);
         Ok(())
     }
 
@@ -3874,6 +3615,15 @@ mod mode_migration_tests {
         );
         assert!(faults.query_one_raw(sea_orm::Statement::from_string(sea_orm::DatabaseBackend::Sqlite, "SELECT version FROM seaql_migrations WHERE version='m20261026_000007_history_model_access'")).await?.is_some(), "successful retry commits the completion record");
         faults.close().await?;
+        drop(store);
+        let current =
+            upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
+        assert_eq!(
+            current.state.extensions["studio.model-route"]
+                .payload
+                .version(),
+            2
+        );
         Ok(())
     }
 
@@ -3975,11 +3725,14 @@ mod mode_migration_tests {
             "不可改写的用户/厂商正文",
         )?);
         state.context.records = records.into();
+        // Producer normalization precedes schema 24. The 24 -> 25 boundary must preserve
+        // these producer bytes, rather than repeat the old codec migration in normal reads.
+        let mut normalized =
+            ThreadCheckpoint::capture(thread.id.clone(), state.commit_sequence, state)?;
+        crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        let state = normalized.state;
         persist_legacy_producer(&history, &history_path, state.clone()).await?;
         let before = history.checkpoint().await?.context("legacy checkpoint")?;
-        let db = raw_database(&history_path).await?;
-        restore_pre_timeline_history_fixture(&db, 5).await?;
-        db.close().await?;
         drop(history);
         drop(store);
 
@@ -3988,18 +3741,16 @@ mod mode_migration_tests {
         let upgraded = reopened
             .history_for(&thread.workspace_id, &thread.id)
             .await?;
-        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-            &reopened, &thread,
-        )
-        .await?
-        .context("upgraded checkpoint")?;
-        assert_eq!(checkpoint.state_revision, before.state_revision);
-        assert_eq!(checkpoint.history_fence, before.history_fence);
+        let current =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&reopened, &thread)
+                .await?
+                .context("upgraded current")?;
+        assert_eq!(current.snapshot_revision, 0, "Current has its own revision");
         assert_eq!(
-            checkpoint.state.context.revision,
+            current.state.context.revision,
             before.state.context.revision
         );
-        let receipt = &checkpoint.state.extensions[crate::compaction::LATEST_RECEIPT];
+        let receipt = &current.state.extensions[crate::compaction::LATEST_RECEIPT];
         assert_eq!(
             receipt.revision,
             before.state.extensions[crate::compaction::LATEST_RECEIPT].revision
@@ -4007,9 +3758,10 @@ mod mode_migration_tests {
         assert_eq!(receipt.payload.version(), 4);
         let decoded = crate::compaction::decode_receipt(4, receipt.payload.content())?;
         assert_eq!(decoded.inference_id, "compact-call");
-        assert_eq!(upgraded.watermark().await?, 1);
+        assert!(upgraded.reader().head().await? > 0);
+        assert_eq!(current.state.context, before.state.context);
 
-        let compaction = checkpoint
+        let compaction = current
             .state
             .context
             .records
@@ -4035,7 +3787,7 @@ mod mode_migration_tests {
             "sealed-checkpoint-bytes"
         );
         assert_eq!(
-            checkpoint
+            current
                 .state
                 .context
                 .records
@@ -4046,12 +3798,15 @@ mod mode_migration_tests {
             "无关 opaque 正文保持原字节"
         );
 
-        let unchanged = serde_json::to_vec(&checkpoint)?;
-        upgraded.prepare_activation().await?;
+        let unchanged = serde_json::to_vec(&current.state)?;
+        let again =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&reopened, &thread)
+                .await?
+                .context("stable current")?;
         assert_eq!(
-            serde_json::to_vec(&upgraded.checkpoint().await?.context("stable checkpoint")?)?,
+            serde_json::to_vec(&again.state)?,
             unchanged,
-            "再次激活没有变化"
+            "再次读取 current 没有变化"
         );
         Ok(())
     }
@@ -4129,199 +3884,6 @@ mod mode_migration_tests {
         assert!(crate::studio::producer_migration::compaction_receipt(1, &unsafe_receipt).is_err());
         assert!(crate::compaction::decode_receipt(3, LEGACY_NATIVE_RECEIPT).is_err());
         Ok(())
-    }
-
-    /// 共享 history 入口必须让 checkpoint 冷读等到 writer 完成 identity，而不是另开半初始化库。
-    #[tokio::test]
-    async fn shared_history_checkpoint_waits_for_identity_and_keeps_cold_reads_empty() -> Result<()>
-    {
-        let directory = tempfile::tempdir()?;
-        let database_path = directory.path().join("data/studio.sqlite");
-        let store = crate::studio::StudioStore::open(&database_path).await?;
-        let thread_id = "migration";
-        let thread = bound_thread(thread_id);
-        let history = registered_history(&store, &thread).await?;
-        let history_path = store
-            .session_paths(&thread.workspace_id, thread_id)?
-            .history_database();
-
-        let missing =
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(&store, &thread)
-                .await?;
-        assert!(missing.is_none(), "缺库冷读必须为空且不创建文件");
-        assert!(!tokio::fs::try_exists(&history_path).await?);
-
-        let (entered, release) = history.arm_init_gate().await;
-        let writer = history.clone();
-        let mut drive_state = SharedHistoryDrive {
-            persist: Some(tokio::spawn(async move {
-                persist(&writer, saved_state(BTreeMap::new()), true).await
-            })),
-            checkpoint: None,
-            release: Some(release),
-        };
-        let drive = drive_state
-            .run(&store, &thread, thread_id, &history_path, entered)
-            .await;
-        let cleanup = drive_state.reclaim().await;
-        let recovered = finish_shared_history_drive(drive, cleanup)?;
-        assert_eq!(recovered.thread_id, thread_id);
-        assert_eq!(recovered.state_revision, 1);
-        let foreign = store
-            .state_for(&thread.workspace_id, "other-thread")?
-            .prepare_recovery(&history)
-            .await
-            .expect_err("错 Thread 的 history 句柄必须失败闭锁");
-        assert!(
-            foreign
-                .to_string()
-                .contains("history database belongs to another Thread"),
-            "{foreign}"
-        );
-
-        drop(history);
-        drop(store);
-        let damaged = crate::studio::StudioStore::open(&database_path).await?;
-        raw_database(&history_path)
-            .await?
-            .execute_unprepared("DELETE FROM history_meta")
-            .await?;
-        let error =
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(&damaged, &thread)
-                .await
-                .expect_err("损坏 identity 必须失败闭锁");
-        assert!(
-            error
-                .to_string()
-                .contains("history database identity row is missing"),
-            "{error}"
-        );
-        Ok(())
-    }
-
-    /// 本交错测试每个阶段的静态预算。超时只用于失败闭锁，同步本体仍是 oneshot。
-    const SHARED_HISTORY_STAGE_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
-
-    fn missed_shared_history_init(stage: &str) -> anyhow::Error {
-        anyhow::anyhow!(
-            "{stage} exceeded {:?}: checkpoint/reader missed shared history initialization (`StudioStore::history` must install the handle so writer and checkpoint share one init lock)",
-            SHARED_HISTORY_STAGE_BUDGET
-        )
-    }
-
-    async fn wait_shared_history_stage<T>(
-        stage: &'static str,
-        future: impl std::future::Future<Output = T>,
-    ) -> Result<T> {
-        tokio::time::timeout(SHARED_HISTORY_STAGE_BUDGET, future)
-            .await
-            .map_err(|_| missed_shared_history_init(stage))
-    }
-
-    async fn join_shared_history_handle<T>(
-        stage: &'static str,
-        handle: &mut Option<tokio::task::JoinHandle<Result<T>>>,
-    ) -> Result<T> {
-        let task = handle
-            .as_mut()
-            .with_context(|| format!("{stage} handle missing"))?;
-        let joined = wait_shared_history_stage(stage, task).await?;
-        let _ = handle.take();
-        joined.with_context(|| format!("{stage} join"))?
-    }
-
-    struct SharedHistoryDrive {
-        persist: Option<tokio::task::JoinHandle<Result<()>>>,
-        checkpoint: Option<tokio::task::JoinHandle<Result<Option<ThreadCheckpoint>>>>,
-        release: Option<tokio::sync::oneshot::Sender<()>>,
-    }
-
-    impl SharedHistoryDrive {
-        async fn run(
-            &mut self,
-            store: &crate::studio::StudioStore,
-            thread: &crate::Thread,
-            thread_id: &str,
-            history_path: &std::path::Path,
-            entered: tokio::sync::oneshot::Receiver<()>,
-        ) -> Result<ThreadCheckpoint> {
-            wait_shared_history_stage("writer gate arrived", entered).await??;
-            assert!(
-                tokio::fs::try_exists(history_path).await?,
-                "writer connect 已创建文件，但 identity 尚未提交"
-            );
-
-            let waiting_history = store.history(thread_id).await?;
-            let reader_waiting = waiting_history.arm_reader_before_init().await;
-            let waiting = store.clone();
-            let waiting_thread = thread.clone();
-            self.checkpoint = Some(tokio::spawn(async move {
-                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-                    &waiting,
-                    &waiting_thread,
-                )
-                .await
-            }));
-            wait_shared_history_stage("reader waiting on shared init", reader_waiting).await??;
-            self.release
-                .take()
-                .context("writer gate already released")?
-                .send(())
-                .map_err(|_| anyhow::anyhow!("writer dropped the init gate"))?;
-
-            join_shared_history_handle("persist join", &mut self.persist).await?;
-            // Initialization publishes a valid database identity before the first effect commits.
-            // An independent reader may observe the empty snapshot during that interval.
-            if let Some(observed) =
-                join_shared_history_handle("checkpoint join", &mut self.checkpoint).await?
-            {
-                assert_eq!(observed.thread_id, thread_id);
-                assert_eq!(observed.state_revision, 1);
-            }
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(store, thread)
-                .await?
-                .context("checkpoint after acknowledged persistence")
-        }
-
-        async fn reclaim(self) -> Result<()> {
-            if let Some(release) = self.release {
-                let _ = release.send(());
-            }
-            let persist = reclaim_shared_history_task("persist", self.persist).await;
-            let checkpoint = reclaim_shared_history_task("checkpoint", self.checkpoint).await;
-            match (persist, checkpoint) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(persist), Err(checkpoint)) => Err(persist.context(checkpoint)),
-            }
-        }
-    }
-
-    async fn reclaim_shared_history_task<T>(
-        name: &'static str,
-        handle: Option<tokio::task::JoinHandle<Result<T>>>,
-    ) -> Result<()> {
-        let Some(handle) = handle else {
-            return Ok(());
-        };
-        if !handle.is_finished() {
-            handle.abort();
-        }
-        match handle.await {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(error)) => Err(error.context(format!("{name} failed while reclaiming"))),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(anyhow::anyhow!("{name} join failed: {error}")),
-        }
-    }
-
-    fn finish_shared_history_drive<T>(drive: Result<T>, cleanup: Result<()>) -> Result<T> {
-        match (drive, cleanup) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(drive), Ok(())) => Err(drive),
-            (Ok(_), Err(cleanup)) => Err(cleanup),
-            (Err(drive), Err(cleanup)) => Err(drive.context(format!("cleanup: {cleanup:#}"))),
-        }
     }
 
     /// All Studio-owned database families reject unknown future formats and migration names before

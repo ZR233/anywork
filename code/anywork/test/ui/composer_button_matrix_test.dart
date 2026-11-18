@@ -16,7 +16,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/pump_client_future.dart';
-import '../support/mapped_conversation_feed.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -36,29 +35,23 @@ final class _ScriptedTransport extends RecordingDemoTransport {
   PendingInteraction? restoredPlan;
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async {
-    final inner = await super.openConversationStateFeed(threadId);
+  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) {
     final plan = restoredPlan;
-    if (plan == null) return inner;
-    return MappedConversationStateFeed(inner, (frame) {
-      if (frame case ThreadSnapshotFrame(:final workspace)) {
-        return ThreadSnapshotFrame(
-          workspace: workspace.copyWith(
-            thread: workspace.thread.copyWith(status: ThreadStatusView.closed),
-            interactions: [plan],
-            runtime: workspace.runtime.copyWith(
-              execution: null,
-              continuation: null,
-            ),
+    if (plan == null) return frame;
+    if (frame case ThreadSnapshotFrame(:final workspace)) {
+      return ThreadSnapshotFrame(
+        workspace: workspace.copyWith(
+          thread: workspace.thread.copyWith(status: ThreadStatusView.closed),
+          interactions: [plan],
+          runtime: workspace.runtime.copyWith(
+            execution: null,
+            continuation: null,
           ),
-          completedHistoryVersion: frame.completedHistoryVersion,
-          schemaVersion: frame.schemaVersion,
-        );
-      }
-      return frame;
-    });
+        ),
+        schemaVersion: frame.schemaVersion,
+      );
+    }
+    return frame;
   }
 
   @override

@@ -32,13 +32,13 @@
 - **Chat Completions 协议**：按分块索引（chunk index）确定性构造流内标识与 `item_id`，并令 `call_id = item_id`。系统不存在可选的 `call_id` 或将两个标识互作回退的归一化路径。
 - **追踪锚点**：追踪记录的工具片段标识以最早稳定的上游条目或运行时工具 ID 为锚点，`call_id` 仅作为元数据写入工具快照，用于后续协议回放与上游工具结果匹配。
 
-Native current 解耦的目标合同中，上述是 provider 或单次流内部的身份规则；传给 Core 的调用身份还必须限定在其 attempt 内。模型层保存内部身份与原始 `item_id`、`call_id` 的映射，以内部身份关联上下文和工具结果，出站 Responses、Chat 等原生协议仍使用各自要求的原始身份。不同 attempt 的同名 provider 调用不能冲突；不得改写原生 replay、签名或未知字段。该映射与新生产入口按 [15](./15-session-storage.md#native-current-与历史解耦的目标合同) 的分阶段边界实施，不能将旧生产路径描述成已经切换。
+上述是 provider 或单次流内部的身份规则；传给 Core 的调用身份还必须限定在其 attempt 内。模型层保存内部身份与原始 `item_id`、`call_id` 的映射，以内部身份关联 Current 上下文和工具结果，出站 Responses、Chat 等协议仍使用各自要求的原始身份。不同 attempt 的同名 provider 调用不能冲突，也不得改写原生 replay、签名或未知字段。完整 Current、effect original cut 与 schema 25 History 的边界见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。
 
 模型生产者拥有完整流合并事实和不透明保存格式：保留已接受的正文、推理、成员关系和阶段、部分工具输入原文、完整调用、原生 replay、已观察用量和来源。部分参数是不可执行的字符串，不解析补全为工具调用。捕获与生产者退出交接遵循 [15](./15-session-storage.md#捕获保存与关闭)；它们不提供跨进程续接，旧流只供暂停展示，新请求使用新的物理会话和累积器。用户继续后采用当前确认的模型和工具配置，通过普通准备流程检查原生上下文的来源隔离及兼容族；必要原生材料不兼容时保留原件并在发送前报错，普通请求也遵循相同规则。
 
 ## 6.2 依赖与公开 API
 
-`pl-model` 实现并依赖 `pl-core` 的模型会话与模型请求契约，而 `pl-core` 不依赖 `pl-model`。产品 DTO 与适配器内部消息可依赖 `pl-protocol`；`pl-trace` 仅只读消费内核观察接口，不充当模型执行门面。厂商协议适配层内部可使用 `reqwest`、`eventsource-stream`、`tokio-tungstenite` 与 `serde` 处理底层网络传输、类型化协议请求及流事件解析，但不得将这些第三方依赖类型暴露给 `pl-core`。
+`pl-model` 实现并依赖 `pl-core` 的模型会话与模型请求契约，而 `pl-core` 不依赖 `pl-model`。模型消息与配置定义在 `pl-model` 的对应领域模块，Studio 产品 DTO 定义在 `pl-studio-runtime`；仅共享基础原语依赖 `pl-protocol`；`pl-trace` 仅只读消费内核观察接口，不充当模型执行门面。厂商协议适配层内部可使用 `reqwest`、`eventsource-stream`、`tokio-tungstenite` 与 `serde` 处理底层网络传输、类型化协议请求及流事件解析，但不得将这些第三方依赖类型暴露给 `pl-core`。
 
 公开 API 按六个稳定领域模块组织：`completion`、`config`、`model`、`protocol`、`runtime`、`trace`。消费方统一通过领域模块前缀访问类型；crate 根模块仅重导出基础错误类型与 `Result`，确保同一公开接口仅有一条规范导入路径。各领域模块精确重导出其公共签名中直接引用的 `pl-protocol` 类型，使消费方仅依赖 `pl-model` 即可完整命名公开签名，同时禁止与公共签名无关的成套镜像转发。
 

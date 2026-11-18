@@ -464,6 +464,8 @@ async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> R
             _ => false,
         }
     }));
-    store.close_current(epoch).await?;
+    store
+        .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+        .await?;
     Ok(())
 }

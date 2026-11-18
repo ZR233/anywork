@@ -179,7 +179,7 @@ void main() {
             onLink: (_) {},
             isSafeLink: (_) => false,
             remoteImageBuilder: (_, _) => const SizedBox.shrink(),
-            currentWork: Column(
+            canonicalPresentationBuilder: (_, _) => Column(
               children: [
                 const Text('工作组之前：相邻内容'),
                 originalGroup,

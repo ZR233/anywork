@@ -1,4 +1,5 @@
 //! A noninteractive adapter of the production Studio lifecycle, without a second agent loop.
+#![recursion_limit = "256"]
 mod acp;
 mod args;
 mod signals;
@@ -8,17 +9,21 @@ pub use acp::{AcpExecutionReport, AcpOptionsArgs, ExecAcpArgs, PreparedAcp, exec
 pub use args::{Cli, Command, ExecArgs, PreparedExec, PreparedExport};
 pub use signals::SignalListener;
 
-use anyhow::{Context, Result};
-use pl_studio_runtime::{
-    BuildInfoV2, ExecutionErrorStage, ExecutionErrorV2, ExecutionOutcome, RESULT_SCHEMA_VERSION,
-    ResultOutcome, ResultV2, RunExportOptions, RunExportReport, RunExporter,
-    StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
-    StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
-    StudioSubmitPromptOptions, TimingReportV2, format_export_utc_rfc3339,
+use anyhow::{Context, Result, ensure};
+use pl_studio_runtime::history::{
+    BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryCut, HistoryDemand,
+    HistoryEventBodyRef, HistoryReader, HistoryRowHead, HistoryTurnState,
 };
 use pl_studio_runtime::{
-    StudioPromptInput, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn,
-    TurnCompletion, TurnState,
+    BuildInfoV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION,
+    ResultOutcome, ResultV3, RunExportOptions, RunExportReport, RunExporter,
+    StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
+    StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
+    StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
+};
+use pl_studio_runtime::{
+    CURRENT_PROTOCOL_VERSION, ReadDemand, StudioPromptInput, ThreadStatus, ThreadWorkspaceMode,
+    Turn, TurnCompletion, TurnState,
 };
 use std::future::Future;
 use std::time::{Instant, SystemTime};
@@ -50,20 +55,42 @@ pub enum ExecutionError {
     Runtime(#[source] anyhow::Error),
 }
 
-/// Retains the actual task identity, native terminal, shutdown, and optional export report.
+/// Why the noninteractive CLI stopped observing its freshly submitted root input.
+/// Waiting belongs to Current and does not imply that a terminal History Turn exists.
+#[derive(Debug)]
+pub enum InputObservation {
+    Terminal(Turn),
+    WaitingForInteraction,
+}
+
+/// Retains the actual input observation, shutdown, and optional export report.
 #[derive(Debug)]
 pub struct ExecutionReport {
     pub submission: Option<pl_studio_runtime::StudioSubmitPromptResponse>,
-    pub turn: Option<Turn>,
+    pub observation: Option<InputObservation>,
     pub final_text: String,
     pub signal: Option<CancellationSignal>,
     pub error: Option<ExecutionError>,
     pub shutdown: StudioShutdownReport,
     pub export: Option<RunExportReport>,
-    pub export_error: Option<ExecutionErrorV2>,
+    pub export_error: Option<ExecutionErrorV3>,
 }
 
 impl ExecutionReport {
+    pub fn turn(&self) -> Option<&Turn> {
+        match &self.observation {
+            Some(InputObservation::Terminal(turn)) => Some(turn),
+            Some(InputObservation::WaitingForInteraction) | None => None,
+        }
+    }
+
+    fn waiting_for_interaction(&self) -> bool {
+        matches!(
+            self.observation,
+            Some(InputObservation::WaitingForInteraction)
+        )
+    }
+
     fn shutdown_failed(&self) -> bool {
         let not_started_before_runtime = self.submission.is_none()
             && self.shutdown.outcome == StudioShutdownOutcome::NotStarted
@@ -113,7 +140,10 @@ impl ExecutionReport {
                 ExecutionError::Runtime(_) => 11,
             };
         }
-        match self.turn.as_ref().map(|turn| &turn.state) {
+        if self.waiting_for_interaction() {
+            return 3;
+        }
+        match self.turn().map(|turn| &turn.state) {
             Some(TurnState::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => 0,
                 TurnCompletion::InteractionRequested => 3,
@@ -145,7 +175,10 @@ impl ExecutionReport {
                 ExecutionError::Runtime(_) => ResultOutcome::Failed,
             };
         }
-        match self.turn.as_ref().map(|turn| &turn.state) {
+        if self.waiting_for_interaction() {
+            return ResultOutcome::BlockedOnInput;
+        }
+        match self.turn().map(|turn| &turn.state) {
             Some(TurnState::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => ResultOutcome::Completed,
                 TurnCompletion::InteractionRequested => ResultOutcome::BlockedOnInput,
@@ -158,7 +191,10 @@ impl ExecutionReport {
     }
 
     fn execution_outcome(&self) -> Option<ExecutionOutcome> {
-        if let Some(turn) = &self.turn {
+        if self.waiting_for_interaction() {
+            return Some(ExecutionOutcome::BlockedOnInput);
+        }
+        if let Some(turn) = self.turn() {
             return match &turn.state {
                 TurnState::Completed(state) => Some(match state.completion() {
                     TurnCompletion::Normal => ExecutionOutcome::Completed,
@@ -179,22 +215,22 @@ impl ExecutionReport {
         None
     }
 
-    fn native_execution_error(&self) -> Option<ExecutionErrorV2> {
+    fn native_execution_error(&self) -> Option<ExecutionErrorV3> {
         if let Some(error) = &self.error {
             return Some(match error {
-                ExecutionError::Input(err) => ExecutionErrorV2 {
+                ExecutionError::Input(err) => ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Startup,
                     code: "invalidInput".to_string(),
                     message: format!("{err:#}"),
                     turn_failure: None,
                 },
-                ExecutionError::Startup(err) => ExecutionErrorV2 {
+                ExecutionError::Startup(err) => ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Startup,
                     code: format!("{:?}", err.kind),
                     message: err.to_string(),
                     turn_failure: None,
                 },
-                ExecutionError::Runtime(err) => ExecutionErrorV2 {
+                ExecutionError::Runtime(err) => ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Turn,
                     code: "runtimeError".to_string(),
                     message: format!("{err:#}"),
@@ -202,11 +238,11 @@ impl ExecutionReport {
                 },
             });
         }
-        if let Some(turn) = &self.turn
+        if let Some(turn) = self.turn()
             && let TurnState::Failed(failed) = &turn.state
         {
             let failure = failed.failure();
-            return Some(ExecutionErrorV2 {
+            return Some(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Turn,
                 code: failure
                     .code
@@ -252,7 +288,7 @@ async fn execute_observed(
     let mut signal = std::pin::pin!(signal);
     let mut report = ExecutionReport {
         submission: None,
-        turn: None,
+        observation: None,
         final_text: String::new(),
         signal: None,
         error: None,
@@ -282,7 +318,7 @@ async fn execute_observed(
                     Some(exp)
                 }
                 Err(error) => {
-                    report.export_error = Some(ExecutionErrorV2 {
+                    report.export_error = Some(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportStartFailed".to_string(),
                         message: format!("{error:#}"),
@@ -384,12 +420,7 @@ async fn execute_observed(
     if report.signal.is_none()
         && let Some(submission) = &report.submission
     {
-        let task = wait_for_input(
-            &runtime,
-            &submission.thread_id,
-            &submission.input_id,
-            submission.cursor,
-        );
+        let task = wait_for_input(&runtime, &submission.thread_id, &submission.input_id);
         let export_cancelled = async {
             match &exporter {
                 Some(exp) => exp.cancellation().cancelled().await,
@@ -400,7 +431,7 @@ async fn execute_observed(
             caught = signal.as_mut() => report.signal = Some(caught),
             _ = export_cancelled => {}
             result = task => match result {
-                Ok(turn) => report.turn = Some(turn),
+                Ok(observation) => report.observation = Some(observation),
                 Err(error) => report.error = Some(ExecutionError::Runtime(error)),
             }
         }
@@ -410,7 +441,7 @@ async fn execute_observed(
         && !exporter
             .as_ref()
             .is_some_and(|exp| exp.cancellation().is_cancelled())
-        && let Some(turn) = &report.turn
+        && let Some(turn) = report.turn()
         && matches!(&turn.state, TurnState::Completed(state) if state.completion() == TurnCompletion::Normal)
     {
         tokio::select! { biased;
@@ -454,7 +485,7 @@ async fn finalize_and_write_export_result(
     shutdown_wall_ms: Option<u64>,
 ) {
     let export_report = exporter.finish_report().await;
-    let timing = TimingReportV2 {
+    let timing = TimingReportV3 {
         total_wall_ms: run_start.elapsed().as_millis() as u64,
         initialize_wall_ms,
         agent_wall_ms,
@@ -470,7 +501,7 @@ async fn finalize_and_write_export_result(
         finished_at,
     );
     if let Err(err) = exporter.write_result(&result_v1) {
-        report.export_error = Some(ExecutionErrorV2 {
+        report.export_error = Some(ExecutionErrorV3 {
             stage: ExecutionErrorStage::Export,
             code: "resultWriteFailed".to_string(),
             message: format!("{err:#}"),
@@ -479,9 +510,9 @@ async fn finalize_and_write_export_result(
     }
 }
 
-fn shutdown_error_v2(shutdown: &StudioShutdownReport) -> ExecutionErrorV2 {
+fn shutdown_error_v3(shutdown: &StudioShutdownReport) -> ExecutionErrorV3 {
     if let Some(issue) = shutdown.issues.first() {
-        ExecutionErrorV2 {
+        ExecutionErrorV3 {
             stage: ExecutionErrorStage::Shutdown,
             code: issue.code.clone(),
             message: format!(
@@ -491,7 +522,7 @@ fn shutdown_error_v2(shutdown: &StudioShutdownReport) -> ExecutionErrorV2 {
             turn_failure: None,
         }
     } else {
-        ExecutionErrorV2 {
+        ExecutionErrorV3 {
             stage: ExecutionErrorStage::Shutdown,
             code: "pendingPersistenceNotDrained".to_string(),
             message: format!(
@@ -506,17 +537,17 @@ fn shutdown_error_v2(shutdown: &StudioShutdownReport) -> ExecutionErrorV2 {
 fn build_result_v1(
     report: &ExecutionReport,
     export_report: &RunExportReport,
-    timing: TimingReportV2,
+    timing: TimingReportV3,
     finished_at: String,
-) -> ResultV2 {
+) -> ResultV3 {
     let outcome = report.result_outcome();
     let execution_outcome = report.execution_outcome();
     let exit_code = i32::from(report.exit_code());
     let execution_error = report.native_execution_error();
     let error = match outcome {
-        ResultOutcome::ShutdownFailed => Some(shutdown_error_v2(&report.shutdown)),
+        ResultOutcome::ShutdownFailed => Some(shutdown_error_v3(&report.shutdown)),
         ResultOutcome::ExportFailed => export_report.failure.clone().or_else(|| {
-            Some(ExecutionErrorV2 {
+            Some(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportFailed".to_string(),
                 message: export_report
@@ -532,14 +563,14 @@ fn build_result_v1(
     let final_text = if report.error.is_none()
         && report.signal.is_none()
         && matches!(
-            report.turn.as_ref().map(|t| &t.state),
+            report.turn().map(|t| &t.state),
             Some(TurnState::Completed(state)) if state.completion() == TurnCompletion::Normal
         ) {
         Some(report.final_text.clone())
     } else {
         None
     };
-    ResultV2 {
+    ResultV3 {
         schema_version: RESULT_SCHEMA_VERSION,
         run_id: export_report.run_id.clone(),
         root_thread_id: report
@@ -552,7 +583,7 @@ fn build_result_v1(
         exit_code,
         started_at: export_report.started_at.clone(),
         finished_at,
-        build: BuildInfoV2::current(),
+        build: BuildInfoV3::current(),
         timing,
         final_text,
         trace_complete: export_report.trace_complete,
@@ -570,43 +601,198 @@ async fn wait_for_input(
     runtime: &StudioRuntime,
     thread_id: &str,
     input_id: &str,
-    cursor: u64,
-) -> Result<Turn> {
-    let mut feed = runtime.open_conversation_state_feed(thread_id).await?;
-    let result = async {
-        loop {
-            let update = feed.recv().await?.context("任务状态流提前结束")?;
-            match update {
-                ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
-                    if let Some(turn) = snapshot.active_turn
-                        && is_target_terminal(&turn, input_id, cursor)
-                    {
-                        return Ok(turn);
-                    }
-                }
-                ThreadSubscriptionUpdate::Notification { notification } => {
-                    match notification.notification {
-                        ThreadNotification::TurnCompleted { turn }
-                            if is_target_terminal(&turn, input_id, cursor) =>
-                        {
-                            return Ok(turn);
-                        }
-                        ThreadNotification::Lagged { .. } => anyhow::bail!("任务状态流丢失连续性"),
-                        _ => {}
-                    }
-                }
-            }
-        }
+) -> Result<InputObservation> {
+    let history = runtime
+        .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
+        .await?;
+    let initial = async {
+        let cut = history.capture().await?;
+        let terminal = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await?;
+        Ok::<_, anyhow::Error>((cut, terminal))
     }
     .await;
-    feed.close().await?;
-    result
+    let initial_cut = match initial {
+        Ok((cut, None)) => cut,
+        Ok((_, Some(turn))) => {
+            history.close().await;
+            return Ok(InputObservation::Terminal(turn));
+        }
+        Err(error) => {
+            history.close().await;
+            return Err(error);
+        }
+    };
+    let demand = ReadDemand {
+        max_items: 128,
+        max_bytes: 256 * 1024,
+    };
+    let current = match runtime
+        .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, demand)
+        .await
+    {
+        Ok(current) => current,
+        Err(error) => {
+            history.close().await;
+            return Err(error);
+        }
+    };
+    let result = async {
+        let watch = current.watch(None, demand).await?;
+        let observed = async {
+            let mut cut = initial_cut;
+            loop {
+                if let Some(turn) = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await? {
+                    return Ok(InputObservation::Terminal(turn));
+                }
+                let view = current.snapshot(demand).await?;
+                if view.projection.logical_status == ThreadStatus::WaitingInteraction {
+                    // This CLI owns one freshly submitted root input. The owner can retain an
+                    // unanswered interaction after retiring its active Turn; do not invent one.
+                    return Ok(InputObservation::WaitingForInteraction);
+                }
+                // Either domain can change independently. Current can require a human while the
+                // Turn is still running; only History can establish its immutable terminal facts.
+                tokio::select! {
+                    changed = history.wait_changed(cut.clone()) => cut = changed?,
+                    frame = watch.next() => { ensure!(frame?.is_some(), "Current ended before the input settled"); }
+                }
+            }
+        }.await;
+        let closed = watch.close().await;
+        match (observed, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close)) => Err(error.context(format!("Current watch close also failed: {close}"))),
+        }
+    }.await;
+    history.close().await;
+    let closed = current.close().await;
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close)) => {
+            Err(error.context(format!("Current reader close also failed: {close}")))
+        }
+    }
 }
 
-fn is_target_terminal(turn: &Turn, input_id: &str, cursor: u64) -> bool {
-    turn.input_id.as_deref() == Some(input_id)
-        && turn.revision >= cursor
-        && turn.state.is_terminal()
+fn is_target_terminal(turn: &Turn, input_id: &str) -> bool {
+    turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
+}
+
+async fn terminal_turn_for_input(
+    history: &HistoryReader,
+    thread_id: &str,
+    input_id: &str,
+    cut: HistoryCut,
+) -> Result<Option<Turn>> {
+    let mut page_cursor = None;
+    loop {
+        let page = history
+            .turns_page(Some(cut.clone()), page_cursor.clone(), history_demand())
+            .await?;
+        for entry in page.entries {
+            let HistoryRowHead::Turn(head) = entry.head else {
+                continue;
+            };
+            if head.input_id.as_deref() != Some(input_id)
+                || !matches!(
+                    head.state,
+                    HistoryTurnState::Completed
+                        | HistoryTurnState::Cancelled
+                        | HistoryTurnState::Failed
+                        | HistoryTurnState::BudgetLimited
+                )
+            {
+                continue;
+            }
+            let event_id = head
+                .detail_event_id
+                .context("terminal History Turn omitted its immutable detail")?;
+            let turn = read_history_turn(history, &event_id).await?;
+            ensure!(
+                turn.id == head.turn_id
+                    && turn.thread_id == thread_id
+                    && is_target_terminal(&turn, input_id),
+                "terminal History Turn identity does not match the submitted input"
+            );
+            return Ok(Some(turn));
+        }
+        let Some(next) = page.next else {
+            return Ok(None);
+        };
+        ensure!(
+            page_cursor.as_deref() != Some(next.as_str()),
+            "History Turn cursor did not advance"
+        );
+        page_cursor = Some(next);
+    }
+}
+
+async fn read_history_turn(history: &HistoryReader, event_id: &str) -> Result<Turn> {
+    let mut cursor = None;
+    let mut selected = None;
+    loop {
+        let page = history
+            .list_bodies(event_id.to_owned(), cursor.clone(), history_demand())
+            .await?;
+        let HistoryBodyPage {
+            owner_event_id,
+            entries,
+            next,
+        } = page;
+        ensure!(
+            owner_event_id == event_id,
+            "History Turn detail belongs to another event"
+        );
+        for entry in entries {
+            if entry.body_key == "turn_detail" {
+                ensure!(selected.is_none(), "duplicate History Turn detail body");
+                selected = Some(entry.reference);
+            }
+        }
+        let Some(next) = next else {
+            break;
+        };
+        ensure!(
+            cursor.as_deref() != Some(next.as_str()),
+            "History Turn body cursor did not advance"
+        );
+        cursor = Some(next);
+    }
+    let reference = selected.context("terminal History Turn omitted its typed detail body")?;
+    serde_json::from_slice(&read_history_body(history, &reference).await?)
+        .context("History Turn detail is not a typed Turn")
+}
+
+async fn read_history_body(
+    history: &HistoryReader,
+    reference: &HistoryEventBodyRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while (bytes.len() as u64) < reference.byte_length {
+        let offset = bytes.len() as u64;
+        let max_bytes = (reference.byte_length - offset).min(BODY_CHUNK_BYTES as u64) as u32;
+        let window = history
+            .read_body(reference.clone(), offset, max_bytes)
+            .await?;
+        ensure!(
+            window.offset == offset
+                && !window.bytes.is_empty()
+                && window.bytes.len() <= max_bytes as usize
+                && window.total_length == reference.byte_length,
+            "History Turn detail range did not advance"
+        );
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+fn history_demand() -> HistoryDemand {
+    HistoryDemand {
+        max_rows: 128,
+        max_bytes: 1024 * 1024,
+    }
 }
 
 #[cfg(test)]
@@ -726,12 +912,11 @@ mod tests {
             )),
             updated_at: 2,
         };
-        assert!(!is_target_terminal(&turn, "another-input", 1));
-        assert!(!is_target_terminal(&turn, "accepted", 13));
-        assert!(is_target_terminal(&turn, "accepted", 10));
+        assert!(!is_target_terminal(&turn, "another-input"));
+        assert!(is_target_terminal(&turn, "accepted"));
         let mut report = ExecutionReport {
             submission: None,
-            turn: Some(turn),
+            observation: Some(InputObservation::Terminal(turn)),
             final_text: "answer".into(),
             signal: None,
             error: None,
@@ -751,7 +936,7 @@ mod tests {
         report.shutdown.persistence = StudioPendingPersistence::Drained;
         report.shutdown.outcome = StudioShutdownOutcome::Degraded;
         assert_eq!(report.exit_code(), 13);
-        report.turn = None;
+        report.observation = None;
         report.signal = None;
         report.error = Some(ExecutionError::Input(anyhow::anyhow!("invalid route")));
         report.shutdown = StudioShutdownReport::not_started();
@@ -778,7 +963,7 @@ mod tests {
             persistence: StudioPendingPersistence::Drained,
         };
         let sample_export =
-            |sealed: bool, failure: Option<ExecutionErrorV2>, usage_complete: bool| {
+            |sealed: bool, failure: Option<ExecutionErrorV3>, usage_complete: bool| {
                 RunExportReport {
                     run_id: "run-1".into(),
                     started_at: "2026-11-13T15:00:00.000Z".into(),
@@ -787,7 +972,7 @@ mod tests {
                     trace_complete: sealed && failure.is_none(),
                     usage_complete,
                     cost_complete: usage_complete,
-                    trace: pl_studio_runtime::TraceSummaryV2 {
+                    trace: pl_studio_runtime::TraceSummaryV3 {
                         events_path: "events.jsonl".into(),
                         events_sha256: Some("b".repeat(64)),
                         event_count: 5,
@@ -804,7 +989,7 @@ mod tests {
         // 1. Sealed trace with incomplete usage/cost keeps exit 0 + Completed.
         let mut report = ExecutionReport {
             submission: None,
-            turn: Some(completed_turn),
+            observation: Some(InputObservation::Terminal(completed_turn)),
             final_text: "ok".into(),
             signal: None,
             error: None,
@@ -828,7 +1013,7 @@ mod tests {
         report.signal = Some(CancellationSignal::Terminate);
         report.export = Some(sample_export(
             false,
-            Some(ExecutionErrorV2 {
+            Some(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "writeFailed".into(),
                 message: "disk full".into(),
@@ -847,13 +1032,13 @@ mod tests {
         // 5. Export start failure before runtime start exits 12 without tripping shutdownFailed(13).
         let start_fail_report = ExecutionReport {
             submission: None,
-            turn: None,
+            observation: None,
             final_text: String::new(),
             signal: None,
             error: None,
             shutdown: StudioShutdownReport::not_started(),
             export: None,
-            export_error: Some(ExecutionErrorV2 {
+            export_error: Some(ExecutionErrorV3 {
                 stage: ExecutionErrorStage::Export,
                 code: "exportStartFailed".into(),
                 message: "cannot write run.json".into(),
@@ -869,7 +1054,7 @@ mod tests {
         // 6. Cancellation before root creation with unsealed export (no failure) keeps 143 instead of 12.
         let pre_root_cancel_report = ExecutionReport {
             submission: None,
-            turn: None,
+            observation: None,
             final_text: String::new(),
             signal: Some(CancellationSignal::Terminate),
             error: None,

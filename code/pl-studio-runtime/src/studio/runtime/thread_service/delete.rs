@@ -253,7 +253,7 @@ impl StudioRuntime {
                     .await?;
             }
             for history in histories {
-                history.close_for_deletion().await?;
+                history.close().await?;
             }
             for id in &ids {
                 self.store.thread_persistence().forget_deleted(id)?;

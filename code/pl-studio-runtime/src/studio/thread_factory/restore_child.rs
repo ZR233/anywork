@@ -63,19 +63,20 @@ impl StudioThreadFactory {
             .await
             .map_err(Self::workspace_usage_error)?;
         }
-        let checkpoint =
-            super::recovery::load_checkpoint_for_recovery(&self.services.store, &protocol_thread)
+        let mut current =
+            super::recovery::load_current_for_recovery(&self.services.store, &protocol_thread)
                 .await
-                .map_err(|error| resource_error("load Thread checkpoint", error))?
+                .map_err(|error| resource_error("load Thread current", error))?
                 .ok_or_else(|| {
-                    ThreadAssemblyError::Identity(format!("child {id} has no saved checkpoint"))
+                    ThreadAssemblyError::Identity(format!("child {id} has no saved current"))
                 })?;
         // Core Closed belongs to the previous owner (including graceful host shutdown).
         // Only Studio's durable explicit-close intent prohibits a new execution incarnation.
-        if crate::studio::agent_close::is_explicitly_closed(&checkpoint.state)
+        let restored = current.state.to_paused_snapshot();
+        if crate::studio::agent_close::is_explicitly_closed(&restored)
             .map_err(|error| resource_error("read child close intent", error))?
         {
-            self.project_child_close(&protocol_thread, &checkpoint.state)
+            self.project_child_close(&protocol_thread, &restored)
                 .await?;
             return Err(ThreadAssemblyError::Closed);
         }
@@ -103,7 +104,6 @@ impl StudioThreadFactory {
             )
             .await?
         };
-        let restored = checkpoint.state.clone();
         let saved = restored
             .extensions
             .get(crate::studio::workspace_receipt::EXTENSION)
@@ -136,20 +136,14 @@ impl StudioThreadFactory {
         let saved_identity = VerifiedAgentIdentity::child(&profile).map_err(|error| {
             ThreadAssemblyError::Identity(format!("invalid child Agent: {error}"))
         })?;
-        let history = self
-            .services
-            .store
-            .history_for(&thread.workspace_id, id)
-            .await
-            .map_err(|error| resource_error("open child instruction migration writer", error))?;
-        let checkpoint = history
-            .prepare_execution_identity(|state| {
-                crate::instruction::migrate_saved_representation(state, &saved_identity)
-            })
-            .await
+        // Instruction migration only rewrites the frozen extension payload. Keep the complete
+        // current state intact instead of round-tripping it through a legacy checkpoint.
+        let mut migrated = current.state.to_paused_snapshot();
+        crate::instruction::migrate_saved_representation(&mut migrated, &saved_identity)
             .map_err(|error| resource_error("migrate saved child instructions", error))?;
-        // 迁移后的快照是后续读取与持久化的唯一来源。
-        let restored = checkpoint.state.clone();
+        current.state.extensions = migrated.extensions;
+        current.state.extension_sequence = migrated.extension_sequence;
+        let restored = current.state.to_paused_snapshot();
         let route_selector = crate::studio::model_route::profile_route(&profile)
             .map_err(|error| resource_error("read saved child model route", error))?;
         let resolved = crate::studio::delegation::resolve_child_route(&config, &profile);
@@ -329,7 +323,6 @@ impl StudioThreadFactory {
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             protocol_thread,
-            Some(&checkpoint),
         )
         .await
         .map_err(|error| resource_error("open restored child persistence", error))?;
@@ -358,7 +351,7 @@ impl StudioThreadFactory {
             route,
             model_available,
             model,
-            checkpoint: Some(checkpoint),
+            current: Some(current),
             initial_context: Vec::new(),
             initial_runtime_facts: super::session_files::session_files_fact(&prepared.workspace)
                 .into_iter()
@@ -367,7 +360,7 @@ impl StudioThreadFactory {
             tools: Vec::new(),
             resources: ResourceAccess::new(resources),
             capacity: Default::default(),
-            cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
+            history_sink: Some(persistence),
         };
         Self::configure_review_finish(&mut prepared.tools, id, &profile, &assignment)?;
         if let Some(check) = review_check {

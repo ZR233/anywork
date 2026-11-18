@@ -1,0 +1,779 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://anywork.dev/schemas/run-export/v3/events.schema.json",
+  "title": "EventV3",
+  "description": "One immutable JSONL line written to events.jsonl.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "eventSeq",
+    "type",
+    "data",
+    "emittedAt",
+    "threadId",
+    "source"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 3
+    },
+    "runId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventSeq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "enum": [
+        "runStarted",
+        "agentRegistered",
+        "skillsDiscovered",
+        "inferenceFinished",
+        "completion",
+        "threadSealed",
+        "runSealed",
+        "executionLifecycle"
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "emittedAt": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "threadId": {
+      "type": ["string", "null"]
+    },
+    "source": {
+      "$ref": "#/$defs/EventSourceV3"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "runStarted" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunStartedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "agentRegistered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/AgentRegisteredData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "skillsDiscovered" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/SkillsDiscoveredData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "inferenceFinished" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/InferenceFinishedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "completion" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/CompletionData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "threadSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/ThreadSealedData" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "runSealed" } } },
+      "then": { "properties": { "data": { "$ref": "#/$defs/RunSealedData" } } }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "executionLifecycle"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/ExecutionLifecycleData"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativeBlobPath": {
+      "type": "string",
+      "pattern": "^contents/[0-9a-f]{64}\\.bin$"
+    },
+    "HistoryEventHeader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "eventId", "kind", "runId", "attemptId", "entityId", "turnId", "source", "callId", "messageId", "groupId", "rowKey", "original", "occurredAt", "recordedAt"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "eventId": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "runId": { "type": ["string", "null"] },
+        "attemptId": { "type": ["string", "null"] },
+        "entityId": { "type": ["string", "null"] },
+        "turnId": { "type": ["string", "null"] },
+        "source": { "oneOf": [{ "$ref": "native.schema.json#/$defs/ChatSourceId" }, { "type": "null" }] },
+        "callId": { "type": ["string", "null"] },
+        "messageId": { "type": ["string", "null"] },
+        "groupId": { "type": ["string", "null"] },
+        "rowKey": { "type": ["string", "null"] },
+        "original": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["queryClass", "parentId", "originalKind", "toolName"],
+              "properties": {
+                "queryClass": { "type": "string" },
+                "parentId": { "type": ["string", "null"] },
+                "originalKind": { "$ref": "#/$defs/ChatAtomKind" },
+                "toolName": { "type": ["string", "null"] }
+              }
+            },
+            { "type": "null" }
+          ]
+        },
+        "occurredAt": { "type": ["integer", "null"] },
+        "recordedAt": { "type": "integer" }
+      }
+    },
+    "HistoryEventBodyRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["databaseId", "ownerEventId", "bodyKey", "bodyId", "byteStart", "byteLength"],
+      "properties": {
+        "databaseId": { "type": "string", "minLength": 1 },
+        "ownerEventId": { "type": "string", "minLength": 1 },
+        "bodyKey": { "type": "string", "minLength": 1 },
+        "bodyId": { "type": "string", "minLength": 1 },
+        "byteStart": { "type": "integer", "minimum": 0 },
+        "byteLength": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "HistoryBodyRole": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["canonicalPayload", "canonicalMetadata", "body", "reasoningSummary", "toolArguments", "toolOutput", "attachment", "waitPresentation"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "other" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "ChatAtomKind": {
+      "enum": ["input", "text", "reasoning", "toolCall", "fileChange", "skill", "interaction", "plan", "compaction", "turnReceipt", "receipt", "raw", "agent", "inference", "unknown"]
+    },
+    "HistoryEntityState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "unknown" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "status"],
+          "properties": {
+            "kind": { "const": "knownActive" },
+            "status": { "enum": ["running", "waiting"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "outcome"],
+          "properties": {
+            "kind": { "const": "knownTerminal" },
+            "outcome": { "enum": ["completed", "failed", "cancelled", "transferred"] }
+          }
+        }
+      ]
+    },
+    "HistoryObservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "original" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "capturedAt"],
+          "properties": {
+            "kind": { "const": "boundary" },
+            "capturedAt": { "type": ["integer", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "capturedAt"],
+          "properties": {
+            "kind": { "const": "unavailableLegacy" },
+            "capturedAt": { "type": ["integer", "null"] }
+          }
+        }
+      ]
+    },
+    "HistoryToolIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["callId", "name"],
+      "properties": {
+        "callId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "SingleVisibility": {
+      "enum": ["content", "finalEmptyAfterContent"]
+    },
+    "ThreadWaitTargetStatus": {
+      "enum": ["running", "succeeded", "failed", "cancelled", "interrupted"]
+    },
+    "ThreadWaitTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId"],
+      "properties": {
+        "taskId": { "type": "string", "minLength": 1 },
+        "toolName": { "type": "string" },
+        "summary": { "type": "string" },
+        "summaryTruncated": { "type": "boolean" },
+        "status": { "$ref": "#/$defs/ThreadWaitTargetStatus" }
+      }
+    },
+    "ThreadWaitIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "events" },
+            "data": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["targets", "timeoutMs"],
+              "properties": {
+                "targets": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/ThreadWaitTarget" }
+                },
+                "timeoutMs": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "timer" },
+            "data": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["durationMs"],
+              "properties": {
+                "durationMs": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ThreadWaitState": {
+      "enum": ["waiting", "ready", "timedOut", "elapsed", "cancelled", "failed", "interrupted"]
+    },
+    "ThreadWaitPresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "state"],
+      "properties": {
+        "intent": { "$ref": "#/$defs/ThreadWaitIntent" },
+        "state": { "$ref": "#/$defs/ThreadWaitState" },
+        "messagesReady": { "type": "boolean" }
+      }
+    },
+    "HistoryWaitIntentHead": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "targetCount", "timeoutMs"],
+          "properties": {
+            "kind": { "const": "events" },
+            "targetCount": { "type": "integer", "minimum": 0 },
+            "timeoutMs": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "durationMs"],
+          "properties": {
+            "kind": { "const": "timer" },
+            "durationMs": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "HistoryWaitHead": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "presentation"],
+          "properties": {
+            "kind": { "const": "inline" },
+            "presentation": { "$ref": "#/$defs/ThreadWaitPresentation" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "intent", "state", "messagesReady", "presentation"],
+          "properties": {
+            "kind": { "const": "deferred" },
+            "intent": { "$ref": "#/$defs/HistoryWaitIntentHead" },
+            "state": { "$ref": "#/$defs/ThreadWaitState" },
+            "messagesReady": { "type": ["boolean", "null"] },
+            "presentation": { "$ref": "#/$defs/HistoryEventBodyRef" }
+          }
+        }
+      ]
+    },
+    "HistoryEntityHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entityId", "runId", "attemptId", "source", "kind", "delivery", "state", "startedAt", "finishedAt", "textChannel", "tool", "wait", "contentPresent", "singleVisibility", "observation", "presentationContract", "detailEventId", "inputManifestEventId", "bodyManifestEventId"],
+      "properties": {
+        "entityId": { "type": "string", "minLength": 1 },
+        "runId": { "type": ["string", "null"] },
+        "attemptId": { "type": ["string", "null"] },
+        "source": { "$ref": "native.schema.json#/$defs/ChatSourceId" },
+        "kind": { "$ref": "#/$defs/ChatAtomKind" },
+        "delivery": { "enum": ["foreground", "backgroundHandoff", "independent"] },
+        "state": { "$ref": "#/$defs/HistoryEntityState" },
+        "startedAt": { "type": ["integer", "null"] },
+        "finishedAt": { "type": ["integer", "null"] },
+        "textChannel": { "anyOf": [{ "enum": ["user", "parentAgent", "commentary", "final"] }, { "type": "null" }] },
+        "tool": { "anyOf": [{ "$ref": "#/$defs/HistoryToolIdentity" }, { "type": "null" }] },
+        "wait": { "anyOf": [{ "$ref": "#/$defs/HistoryWaitHead" }, { "type": "null" }] },
+        "contentPresent": { "type": ["boolean", "null"] },
+        "singleVisibility": { "anyOf": [{ "$ref": "#/$defs/SingleVisibility" }, { "type": "null" }] },
+        "observation": { "$ref": "#/$defs/HistoryObservation" },
+        "presentationContract": { "type": ["string", "null"] },
+        "detailEventId": { "type": ["string", "null"] },
+        "inputManifestEventId": { "type": ["string", "null"] },
+        "bodyManifestEventId": { "type": ["string", "null"] }
+      }
+    },
+    "BuildInfoV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "gitCommit", "target"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "target": { "type": "string", "minLength": 1 }
+      }
+    },
+    "EventSourceV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "historyEventId",
+        "historyEventSeq",
+        "effectSeq",
+        "turnId",
+        "attemptId",
+        "toolCallId",
+        "currentOwnerId",
+        "currentRevision"
+      ],
+      "properties": {
+        "historyEventId": { "type": ["string", "null"] },
+        "historyEventSeq": { "type": ["integer", "null"], "minimum": 0 },
+        "effectSeq": { "type": ["integer", "null"], "minimum": 0 },
+        "turnId": { "type": ["string", "null"] },
+        "attemptId": { "type": ["string", "null"] },
+        "toolCallId": { "type": ["string", "null"] },
+        "currentOwnerId": { "type": ["string", "null"] },
+        "currentRevision": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "CompletionCursorV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cut", "historySeq"],
+      "properties": {
+        "cut": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["token"],
+          "properties": { "token": { "type": "string", "minLength": 1 } }
+        },
+        "historySeq": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "RunStartedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "build", "manifestSha256"],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "build": { "$ref": "#/$defs/BuildInfoV3" },
+        "manifestSha256": { "$ref": "#/$defs/sha256Hex" }
+      }
+    },
+    "AgentRegisteredData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agentId",
+        "threadId",
+        "parentAgentId",
+        "parentThreadId",
+        "role",
+        "workspaceId",
+        "spawnToolCallId",
+        "initialEffectSeq",
+        "initialHistoryCursor"
+      ],
+      "properties": {
+        "agentId": { "type": "string", "minLength": 1 },
+        "threadId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "parentThreadId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "workspaceId": { "type": "string" },
+        "spawnToolCallId": { "type": ["string", "null"] },
+        "initialEffectSeq": { "type": "integer", "minimum": 0 },
+        "initialHistoryCursor": { "$ref": "#/$defs/CompletionCursorV3" }
+      }
+    },
+    "SkillDiscoverySourceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["providerId", "kind", "location", "identity"],
+      "properties": {
+        "providerId": { "type": "string" },
+        "kind": { "type": "string" },
+        "location": { "type": ["string", "null"] },
+        "identity": { "type": "string" }
+      }
+    },
+    "SkillResourceBase": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "path"],
+          "properties": {
+            "kind": { "const": "directory" },
+            "path": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "url"],
+          "properties": {
+            "kind": { "const": "url" },
+            "url": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "description"],
+          "properties": {
+            "kind": { "const": "opaque" },
+            "description": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "SkillWinnerSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "providerId",
+        "rank",
+        "localOrder",
+        "resourceBase"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "source": { "enum": ["project", "user", "system", "external"] },
+        "providerId": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 0 },
+        "localOrder": { "type": "integer", "minimum": 0 },
+        "resourceBase": { "$ref": "#/$defs/SkillResourceBase" }
+      }
+    },
+    "SkillsDiscoveredData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "sourceFingerprint",
+        "sources",
+        "winners",
+        "warnings",
+        "complete"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "sourceFingerprint": { "type": "string" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SkillDiscoverySourceSummary" }
+        },
+        "winners": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SkillWinnerSummary" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "complete": { "type": "boolean" }
+      }
+    },
+    "InferenceFinishedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "auxiliary", "billing"],
+      "properties": {
+        "status": {
+          "enum": [
+            "committed",
+            "rejected",
+            "cancelled",
+            "interrupted",
+            "failed"
+          ]
+        },
+        "auxiliary": { "type": "boolean" },
+        "billing": {
+          "$ref": "native.schema.json#/$defs/InferenceBillingRecord"
+        }
+      }
+    },
+    "ChatItemHeaderExportV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event"
+      ],
+      "properties": {
+        "event": { "$ref": "#/$defs/HistoryEventHeader" }
+      }
+    },
+    "ExportedBlobV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "byteLength", "sha256", "mediaType", "encoding"],
+      "properties": {
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ExportedContentV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nativeRef",
+        "role",
+        "historyRole",
+        "path",
+        "byteLength",
+        "sha256",
+        "mediaType",
+        "encoding"
+      ],
+      "properties": {
+        "nativeRef": {
+          "$ref": "#/$defs/HistoryEventBodyRef"
+        },
+        "role": {
+          "oneOf": [
+            {
+              "enum": [
+                "body",
+                "reasoningSummary",
+                "toolArguments",
+                "toolOutput"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "historyRole": { "$ref": "#/$defs/HistoryBodyRole" },
+        "path": { "$ref": "#/$defs/relativeBlobPath" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/$defs/sha256Hex" },
+        "mediaType": { "type": ["string", "null"] },
+        "encoding": { "type": "string", "minLength": 1 }
+      }
+    },
+    "CompletionData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["header", "atom", "payload", "contentsManifest"],
+      "properties": {
+        "header": { "$ref": "#/$defs/ChatItemHeaderExportV3" },
+        "atom": { "$ref": "#/$defs/HistoryEntityHead" },
+        "payload": { "$ref": "#/$defs/ExportedBlobV3" },
+        "contentsManifest": { "$ref": "#/$defs/ExportedBlobV3" }
+      }
+    },
+    "UsageSummary": {
+      "$ref": "native.schema.json#/$defs/UsageSummary"
+    },
+    "ThreadSealedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "throughEffectSeq",
+        "historyCut",
+        "summary",
+        "status",
+        "aborted",
+        "error"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "historyCut": { "$ref": "#/$defs/CompletionCursorV3" },
+        "summary": { "$ref": "#/$defs/UsageSummary" },
+        "status": { "type": ["string", "null"] },
+        "aborted": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "SealedMemberCutV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threadId",
+        "agentId",
+        "parentAgentId",
+        "role",
+        "throughEffectSeq",
+        "historyCut",
+        "aborted",
+        "sealed"
+      ],
+      "properties": {
+        "threadId": { "type": "string", "minLength": 1 },
+        "agentId": { "type": "string", "minLength": 1 },
+        "parentAgentId": { "type": ["string", "null"] },
+        "role": { "type": ["string", "null"] },
+        "throughEffectSeq": { "type": "integer", "minimum": 0 },
+        "historyCut": { "$ref": "#/$defs/CompletionCursorV3" },
+        "aborted": { "type": "boolean" },
+        "sealed": { "type": "boolean" }
+      }
+    },
+    "RunSealedData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "members",
+        "reconciled",
+        "reconcileError",
+        "traceComplete",
+        "usageComplete",
+        "costComplete"
+      ],
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/SealedMemberCutV3" }
+        },
+        "reconciled": { "type": "boolean" },
+        "reconcileError": { "type": ["string", "null"] },
+        "traceComplete": { "type": "boolean" },
+        "usageComplete": { "type": "boolean" },
+        "costComplete": { "type": "boolean" }
+      }
+    },
+    "ExecutionLifecycleExportV3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["eventId", "eventKind", "occurredAt", "recordedAt", "head"],
+      "properties": {
+        "eventId": { "type": "string", "minLength": 1 },
+        "eventKind": { "type": "string", "minLength": 1 },
+        "occurredAt": { "type": ["integer", "null"] },
+        "recordedAt": { "type": "integer" },
+        "head": { "$ref": "#/$defs/HistoryEntityHead" }
+      }
+    },
+    "ExecutionLifecycleData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "facts"
+      ],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExecutionLifecycleExportV3"
+          }
+        }
+      }
+    }
+  }
+}

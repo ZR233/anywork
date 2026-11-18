@@ -5,7 +5,6 @@
 
 mod acp_business;
 mod bots;
-mod conversation;
 mod error;
 mod routes;
 mod security;
@@ -47,7 +46,7 @@ pub(crate) struct AppState {
     normal_requests: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     shutdown: CancellationToken,
-    conversations: Arc<conversation::Conversations>,
+    timelines: Arc<timeline::Timelines>,
 }
 
 impl AppState {
@@ -57,7 +56,7 @@ impl AppState {
             normal_requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             shutdown,
-            conversations: Arc::new(conversation::Conversations::default()),
+            timelines: Arc::new(timeline::Timelines::default()),
         }
     }
 }
@@ -88,11 +87,23 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .await
         .context("Studio HTTP server failed");
     shutdown.cancel();
-    state.conversations.shutdown().await;
-    let shutdown_result = runtime.shutdown_runtime().await;
-    result?;
-    shutdown_result?;
-    Ok(())
+    let readers_result = state.timelines.shutdown().await;
+    let shutdown_result = runtime.shutdown_runtime().await.map(|_| ());
+    let mut result = result;
+    for (owner, outcome) in [
+        ("timeline readers", readers_result),
+        ("runtime", shutdown_result),
+    ] {
+        if let Err(error) = outcome {
+            result = Err(match result {
+                Ok(()) => error.context(format!("{owner} shutdown failed")),
+                Err(previous) => {
+                    previous.context(format!("{owner} shutdown also failed: {error:#}"))
+                }
+            });
+        }
+    }
+    result
 }
 
 fn router(state: AppState) -> Router {
@@ -116,10 +127,11 @@ async fn limit_normal_requests(
     let path = request.uri().path();
     if path == "/api/v1/events/product"
         || (path.starts_with("/api/v1/threads/")
-            && (path.ends_with("/events")
-                || path.ends_with("/contents/watch")
-                || path.ends_with("/timeline/next")
-                || path.ends_with("/timeline/close")))
+            && (path.ends_with("/history/changed")
+                || path.ends_with("/current/watch")
+                || path.ends_with("/current/body/watch")
+                || path.ends_with("/history/close")
+                || path.ends_with("/current/close")))
     {
         return next.run(request).await;
     }

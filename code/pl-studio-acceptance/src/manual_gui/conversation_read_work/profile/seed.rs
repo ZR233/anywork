@@ -1,11 +1,12 @@
 use super::super::*;
-use super::record;
+use super::{record, require_stopped, wait_initial_turn, wait_notified_turn};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
-use pl_studio_runtime::{ChatAtomKind, ChatPlacement, ChatSourceId};
+use pl_studio_runtime::history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead};
+use pl_studio_runtime::{ChatAtomKind, ChatSourceId, mode::ThreadModeId};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -32,10 +33,10 @@ struct MainInventory {
 struct BatchReceipt {
     input_id: String,
     turn_id: String,
-    target_sequence: Option<u64>,
+    snapshot_revision: Option<u64>,
     history_admitted_sequence: Option<u64>,
     history_durable_sequence: Option<u64>,
-    state_durable_revision: Option<u64>,
+    current_saved_revision: Option<u64>,
     completed: bool,
 }
 
@@ -93,12 +94,9 @@ pub(super) fn run(
                     ));
                 }
             }
-            if inventory
-                .main_items
-                .is_some_and(|count| count < GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS)
-            {
+            if inventory.main_items.is_some_and(|count| count <= 40) {
                 errors.push(format!(
-                    "{:?} has fewer than 20,000 Main items",
+                    "{:?} has too few Main rows to exercise bounded pagination",
                     inventory.thread_id
                 ));
             }
@@ -106,7 +104,7 @@ pub(super) fn run(
         record(
             &mut errors,
             "audit runtime shutdown",
-            runtime.shutdown_runtime().await,
+            runtime.shutdown_runtime().await.and_then(require_stopped),
         );
         ensure!(errors.is_empty(), "{}", errors.join("\n"));
         Ok(())
@@ -144,7 +142,7 @@ async fn write_one(
         record(
             &mut runtime_errors,
             "seed runtime shutdown",
-            runtime.shutdown_runtime().await,
+            runtime.shutdown_runtime().await.and_then(require_stopped),
         );
         ensure!(runtime_errors.is_empty(), "{}", runtime_errors.join("\n"));
         id.context("seed produced no Thread")
@@ -205,9 +203,7 @@ async fn seed_batches(
                     text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::mode::ThreadModeId::simple()
-                    .label()
-                    .into(),
+                mode: ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -222,57 +218,120 @@ async fn seed_batches(
         .await?;
     let id = created.thread.id;
     inventory.thread_id = Some(id.clone());
-    let mut subscription = runtime.open_conversation_state_feed(&id).await?;
-    // One State baseline belongs to this subscription, not to each seeded Turn.
-    let mut saw_snapshot = false;
-    let mut revision = completed(
-        runtime,
-        &mut subscription,
-        &mut saw_snapshot,
-        &id,
-        &input_id(1),
-        interrupt,
-        &mut inventory.batches,
-    )
-    .await?;
-    for batch in 2..=GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
-        checkpoint(interrupt)?;
-        runtime
-            .submit_prompt_command(
-                id.clone(),
-                SubmitPromptRequest {
-                    input: StudioPromptInput {
-                        input_id: input_id(batch),
-                        text: gui_timeline_read_profile_seed_prompt(batch),
-                        attachment_draft_ids: Vec::new(),
-                    },
-                    expected_model_route_revision: revision,
-                },
-            )
-            .await?;
-        revision = completed(
+    let demand = current_demand();
+    let current = runtime
+        .open_current_reader(&id, pl_studio_runtime::CURRENT_PROTOCOL_VERSION, demand)
+        .await?;
+    let mut watch = match current.watch(None, demand).await {
+        Ok(watch) => watch,
+        Err(error) => {
+            return match current.close().await {
+                Ok(()) => Err(error),
+                Err(close_error) => {
+                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                }
+            };
+        }
+    };
+    let mut saw_baseline = false;
+    let first_input = input_id(1);
+    let outcome: Result<()> = async {
+        let first = Box::pin(wait_initial_turn(
             runtime,
-            &mut subscription,
-            &mut saw_snapshot,
+            &current,
+            &mut watch,
+            &mut saw_baseline,
             &id,
-            &input_id(batch),
+            first_input.as_str(),
+        ))
+        .await?;
+        let mut revision = first.route_revision;
+        persist_completed_batch(
+            runtime,
+            &id,
+            first.turn_id,
+            first.snapshot_revision,
+            &first_input,
             interrupt,
             &mut inventory.batches,
         )
         .await?;
+        for batch in 2..=GUI_TIMELINE_READ_PROFILE_SEED_BATCHES {
+            checkpoint(interrupt)?;
+            runtime
+                .submit_prompt_command(
+                    id.clone(),
+                    SubmitPromptRequest {
+                        input: StudioPromptInput {
+                            input_id: input_id(batch),
+                            text: gui_timeline_read_profile_seed_prompt(batch),
+                            attachment_draft_ids: Vec::new(),
+                        },
+                        expected_model_route_revision: revision,
+                    },
+                )
+                .await?;
+            let current_input = input_id(batch);
+            let observed = Box::pin(wait_notified_turn(
+                &current,
+                &mut watch,
+                &mut saw_baseline,
+                &id,
+                current_input.as_str(),
+            ))
+            .await?;
+            revision = observed.route_revision;
+            persist_completed_batch(
+                runtime,
+                &id,
+                observed.turn_id,
+                observed.snapshot_revision,
+                &current_input,
+                interrupt,
+                &mut inventory.batches,
+            )
+            .await?;
+        }
+        Ok(())
     }
-    Ok(id)
+    .await;
+    let closed_watch = watch.close().await;
+    let closed_current = current.close().await;
+    let mut close_errors = Vec::new();
+    if let Err(error) = closed_watch {
+        close_errors.push(format!("watch: {error:#}"));
+    }
+    if let Err(error) = closed_current {
+        close_errors.push(format!("reader: {error:#}"));
+    }
+    match outcome {
+        Ok(()) if close_errors.is_empty() => Ok(id),
+        Err(error) => {
+            let mut message = format!("{error:#}");
+            if !close_errors.is_empty() {
+                message.push_str(&format!(
+                    "; Current close also failed: {}",
+                    close_errors.join("; ")
+                ));
+            }
+            Err(anyhow::anyhow!(message))
+        }
+        Ok(()) => Err(anyhow::anyhow!(
+            "Current close failed: {}",
+            close_errors.join("; ")
+        )),
+    }
 }
 
-async fn completed(
+async fn persist_completed_batch(
     runtime: &StudioRuntime,
-    subscription: &mut ConversationStateFeed,
-    saw_snapshot: &mut bool,
     thread_id: &str,
+    turn_id: String,
+    snapshot_revision: u64,
     input_id: &str,
     interrupt: &mpsc::Receiver<()>,
     batches: &mut Vec<BatchReceipt>,
-) -> Result<u64> {
+) -> Result<()> {
     // Seed work is excluded from performance samples. Keep cancellation live
     // while a large batch is processed rather than treating a timer as progress.
     cancellable(interrupt, async {
@@ -280,76 +339,20 @@ async fn completed(
             batches.len() < GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
             "seed batch evidence exceeded the required batch count"
         );
-        let turn_id = loop {
-            let update = subscription.recv().await?;
-            let Some(update) = update else {
-                bail!("seed Thread stream ended");
-            };
-            match update {
-                ThreadSubscriptionUpdate::Snapshot {
-                    completed_history_version,
-                    ..
-                } => {
-                    ensure!(
-                        !*saw_snapshot,
-                        "seed subscription repeated its initial State snapshot"
-                    );
-                    ensure!(
-                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
-                        "unsupported completed history version {completed_history_version}"
-                    );
-                    *saw_snapshot = true;
-                }
-                ThreadSubscriptionUpdate::Notification { notification } => {
-                    ensure!(
-                        *saw_snapshot,
-                        "seed notification arrived before State snapshot"
-                    );
-                    if let ThreadNotification::TurnCompleted { turn } = notification.notification
-                        && turn.input_id.as_deref() == Some(input_id)
-                    {
-                        ensure!(
-                            matches!(turn.state, pl_studio_runtime::TurnState::Completed(_)),
-                            "seed Turn failed: {:?}",
-                            turn.state
-                        );
-                        break turn.id;
-                    }
-                }
-            }
-        };
         // Retain the successful Turn even if the snapshot or save wait fails.
         let receipt_index = batches.len();
         batches.push(BatchReceipt {
             input_id: input_id.to_owned(),
             turn_id,
-            target_sequence: None,
+            snapshot_revision: None,
             history_admitted_sequence: None,
             history_durable_sequence: None,
-            state_durable_revision: None,
+            current_saved_revision: None,
             completed: false,
         });
         let receipt = &mut batches[receipt_index];
-        let (target_sequence, revision) = {
-            let snapshot = runtime.thread_snapshot(thread_id).await?;
-            ensure!(
-                snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
-                    && snapshot.thread.id == thread_id,
-                "seed snapshot schema/Thread identity mismatch: schema={} thread={}",
-                snapshot.schema_version,
-                snapshot.thread.id
-            );
-            ensure!(
-                snapshot.revision != 0,
-                "seed snapshot has no commit revision"
-            );
-            receipt.target_sequence = Some(snapshot.revision);
-            let revision = snapshot
-                .model_route
-                .map(|route| route.revision)
-                .context("seed has no model route")?;
-            (snapshot.revision, revision)
-        };
+        ensure!(snapshot_revision != 0, "seed Current has no revision");
+        receipt.snapshot_revision = Some(snapshot_revision);
         loop {
             let saved = {
                 let persistence = runtime.persistence_queue_snapshot();
@@ -360,26 +363,31 @@ async fn completed(
                     .with_context(|| format!("seed persistence has no Thread {thread_id}"))?;
                 receipt.history_admitted_sequence = thread.history_admitted_sequence;
                 receipt.history_durable_sequence = thread.history_durable_sequence;
-                receipt.state_durable_revision = thread.state_durable_revision;
+                receipt.current_saved_revision = thread
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.saved_revision);
                 ensure!(
                     thread.fault.is_none() && thread.last_error.is_none(),
                     "seed Thread persistence fault: {:?}; last error: {:?}",
                     thread.fault,
                     thread.last_error
                 );
-                thread
-                    .history_admitted_sequence
-                    .is_some_and(|sequence| sequence >= target_sequence)
+                // This per-batch fence is History-only. The independent Current writer is joined
+                // and its complete final file is saved by shutdown before the subsequent audit.
+                persistence.pending_bytes == 0
+                    && persistence.in_flight_bytes == 0
+                    && persistence.last_error.is_none()
+                    && thread.pending_bytes == 0
+                    && thread.in_flight_bytes == 0
                     && thread
-                        .history_durable_sequence
-                        .is_some_and(|sequence| sequence >= target_sequence)
-                    && thread
-                        .state_durable_revision
-                        .is_some_and(|revision| revision >= target_sequence)
+                        .history_admitted_sequence
+                        .zip(thread.history_durable_sequence)
+                        .is_some_and(|(admitted, durable)| durable >= admitted)
             };
             if saved {
                 receipt.completed = true;
-                return Ok(revision);
+                return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -393,73 +401,141 @@ async fn count(
     thread_id: &str,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<MainInventory> {
-    let demand = ReadDemand {
-        max_items: 128,
+    let demand = HistoryDemand {
+        max_rows: 128,
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     };
-    let mut feed = cancellable(
+    let reader = cancellable(
         interrupt,
-        runtime.open_conversation_feed(thread_id, ChatScope::conversation(None), demand),
+        runtime.open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION),
     )
     .await?;
     let result = cancellable(interrupt, async {
-        let mut batch = loop {
-            match feed.recv().await? {
-                Some(ConversationEvent::Chat { batch })
-                    if batch.placement == ChatPlacement::Set =>
-                {
-                    break *batch;
-                }
-                Some(_) => {}
-                None => bail!("inventory feed ended before Set"),
-            }
-        };
-        let reader = feed.reader().clone();
-        let mut total = 0usize;
-        let mut model_text_items = 0usize;
-        let mut inputs = BTreeSet::new();
-        let mut seen = BTreeSet::new();
+        let mut inventory = InventoryScan::default();
+        let mut cut = None;
+        let mut cursor = None;
         loop {
             checkpoint(interrupt)?;
-            batch.validate_for(&ChatScope::conversation(None))?;
-            total = total
-                .checked_add(batch.entries.len())
-                .context("Main count overflow")?;
-            for entry in &batch.entries {
-                match (&entry.atom.kind, &entry.atom.source) {
-                    (ChatAtomKind::Text, ChatSourceId::ForegroundTurn { .. }) => {
-                        model_text_items += 1;
-                    }
-                    (ChatAtomKind::Input, ChatSourceId::Input { input_id }) => {
-                        ensure!(
-                            inputs.insert(input_id.clone()),
-                            "Main inventory repeated input {input_id}"
-                        );
-                    }
-                    _ => {}
-                }
+            let page = reader
+                .timeline_page(cut.clone(), cursor.clone(), demand)
+                .await?;
+            for entry in &page.entries {
+                count_head(&reader, &page.cut, entry, demand, &mut inventory, interrupt).await?;
             }
-            let Some(before) = batch.before else {
+            let Some(next) = page.next else {
                 break;
             };
             ensure!(
-                seen.insert(before.clone()),
+                cursor.as_deref() != Some(next.as_str()),
                 "Main inventory cursor repeated"
             );
-            batch = reader.load_older(&before, demand).await?;
+            cut = Some(page.cut);
+            cursor = Some(next);
         }
         Ok(MainInventory {
-            main_items: total,
-            model_text_items,
-            normal_input_turns: inputs.len(),
+            main_items: inventory.main_items,
+            model_text_items: inventory.model_text_items,
+            normal_input_turns: inventory.inputs.len(),
         })
     })
     .await;
     let mut errors = Vec::new();
     let total = record(&mut errors, "Main inventory read", result);
-    record(&mut errors, "Main inventory feed close", feed.close().await);
+    reader.close().await;
     ensure!(errors.is_empty(), "{}", errors.join("\n"));
     total.context("missing Main inventory")
+}
+
+#[derive(Default)]
+struct InventoryScan {
+    main_items: usize,
+    model_text_items: usize,
+    inputs: BTreeSet<String>,
+    groups: BTreeSet<String>,
+}
+
+async fn count_head(
+    reader: &pl_studio_runtime::history::HistoryReader,
+    cut: &pl_studio_runtime::history::HistoryCut,
+    entry: &pl_studio_runtime::history::HistoryTimelineEntry,
+    demand: HistoryDemand,
+    inventory: &mut InventoryScan,
+    interrupt: &mpsc::Receiver<()>,
+) -> Result<()> {
+    match &entry.head {
+        HistoryRowHead::Single(head) => {
+            inventory.main_items = inventory
+                .main_items
+                .checked_add(1)
+                .context("Main count overflow")?;
+            count_entity(head, inventory);
+        }
+        HistoryRowHead::Work(head) => {
+            ensure!(
+                inventory.groups.insert(head.group_id.clone()),
+                "Main inventory repeated Work {}",
+                head.group_id
+            );
+            inventory.main_items = inventory
+                .main_items
+                .checked_add(1)
+                .context("Main count overflow")?;
+            let mut group_cut = Some(cut.clone());
+            let mut cursor = None;
+            loop {
+                checkpoint(interrupt)?;
+                let page = reader
+                    .group_page(
+                        head.group_id.clone(),
+                        group_cut.clone(),
+                        cursor.clone(),
+                        demand,
+                    )
+                    .await?;
+                for member in &page.members {
+                    let HistoryRowHead::Member(head) = &member.head else {
+                        bail!("group page contained a non-member head");
+                    };
+                    count_entity(head, inventory);
+                }
+                let Some(next) = page.next else {
+                    break;
+                };
+                ensure!(
+                    cursor.as_deref() != Some(next.as_str()),
+                    "member continuation did not advance"
+                );
+                group_cut = Some(page.cut);
+                cursor = Some(next);
+            }
+        }
+        _ => {
+            bail!("timeline page contained a non-Main head");
+        }
+    }
+    Ok(())
+}
+
+fn count_entity(
+    head: &pl_studio_runtime::history::HistoryEntityHead,
+    inventory: &mut InventoryScan,
+) {
+    match (&head.kind, &head.source) {
+        (ChatAtomKind::Text, ChatSourceId::ForegroundTurn { .. }) => {
+            inventory.model_text_items += 1;
+        }
+        (ChatAtomKind::Input, ChatSourceId::Input { input_id }) => {
+            inventory.inputs.insert(input_id.clone());
+        }
+        _ => {}
+    }
+}
+
+fn current_demand() -> ReadDemand {
+    ReadDemand {
+        max_items: 128,
+        max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
+    }
 }
 
 fn checkpoint(interrupt: &mpsc::Receiver<()>) -> Result<()> {

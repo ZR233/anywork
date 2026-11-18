@@ -1,13 +1,10 @@
 import '../support/test_app_lifecycle.dart';
-import '../support/recording_demo_transport.dart' show timelineReady;
+import '../support/recording_demo_transport.dart'
+    show timelineReady, RecordingDemoTransport;
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
 import 'dart:convert';
-
-import '../support/mapped_conversation_feed.dart';
-
-import 'package:anywork_client/conversation_ports.dart';
 
 import '../support/test_statistics_feed.dart';
 
@@ -51,7 +48,10 @@ import 'package:anywork_client/studio_client.dart'
         ThreadDirectoryPage,
         ThreadMetadataFrame,
         ThreadObservationHandle,
-        ThreadRuntimeUpdate;
+        ThreadRuntimeUpdate,
+        ThreadStreamFrame,
+        ThreadSnapshotFrame,
+        ThreadNotificationFrame;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
@@ -1367,6 +1367,18 @@ void main() {
         '准备时编辑的下一条草稿',
       );
       final createdThreadId = graph.client.selection.state.selectedThreadId!;
+      await pumpClientUntil(
+        tester,
+        () =>
+            graph.client.conversations.visibleThreadId.value ==
+                createdThreadId &&
+            graph.client.conversations
+                    .existingSession(createdThreadId)
+                    ?.state
+                    .workspace !=
+                null,
+        'created Thread visible conversation',
+      );
       await pumpClientFuture(
         tester,
         timelineReady(graph.timeline, createdThreadId),
@@ -1969,7 +1981,7 @@ Future<void> _waitForModelDirectory(AppGraph graph) async {
 /// 提交推进 Thread 目录 status；这里只在 canonical 帧上补齐这两类环境事实（active
 /// workflow run 与目录 status），命令、CAS 与帧收敛全部走真实 Demo transport 与
 /// Client，不在测试内复刻任何业务判定。
-class _WorkflowScenarioTransport extends TestDemoStudioTransport {
+class _WorkflowScenarioTransport extends RecordingDemoTransport {
   _WorkflowScenarioTransport({this.threadStatus = ThreadStatusView.idle})
     : super(lspActivityLoop: false);
 
@@ -2042,39 +2054,29 @@ class _WorkflowScenarioTransport extends TestDemoStudioTransport {
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async => MappedConversationStateFeed(
-    await super.openConversationStateFeed(threadId),
-    (frame) => switch (frame) {
-      ThreadSnapshotFrame(
-        :final workspace,
-        :final completedHistoryVersion,
-        :final schemaVersion,
-      ) =>
-        ThreadSnapshotFrame(
-          workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-          completedHistoryVersion: completedHistoryVersion,
-          schemaVersion: schemaVersion,
-        ),
-      ThreadNotificationFrame() => switch (frame.update) {
-        ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
-          ThreadNotificationFrame(
-            threadId: frame.threadId,
-            revision: frame.revision,
-            epoch: frame.epoch,
-            baseRevision: frame.baseRevision,
-            update: ThreadRuntimeUpdate(
-              runtime: _runtime(runtime),
-              todo: todo,
-              modelRoute: modelRoute,
-            ),
+  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) =>
+      switch (frame) {
+        ThreadSnapshotFrame(:final workspace, :final schemaVersion) =>
+          ThreadSnapshotFrame(
+            workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
+            schemaVersion: schemaVersion,
           ),
-        _ => frame,
-      },
-      _ => frame,
-    },
-  );
+        ThreadNotificationFrame() => switch (frame.update) {
+          ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
+            ThreadNotificationFrame(
+              threadId: frame.threadId,
+              revision: frame.revision,
+              epoch: frame.epoch,
+              baseRevision: frame.baseRevision,
+              update: ThreadRuntimeUpdate(
+                runtime: _runtime(runtime),
+                todo: todo,
+                modelRoute: modelRoute,
+              ),
+            ),
+          _ => frame,
+        },
+      };
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
     rows: [for (final row in page.rows) _thread(row)],

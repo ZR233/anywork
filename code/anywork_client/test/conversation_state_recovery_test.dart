@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
@@ -7,34 +8,286 @@ import 'support/timeline_transport.dart';
 
 const _demand = ReadDemand(maxItems: 1, maxBytes: 1024);
 
-ThreadWorkspace _workspace(int revision, {StudioTurnView? latestTurn}) {
-  return ThreadWorkspace(
-    thread: StudioThread(
-      id: 'thread',
-      workspaceId: 'project',
-      title: 'Thread',
-      mode: ThreadModeId.simple,
-      delegationMode: DelegationMode.profile,
-      delegationPreference: DelegationPreference.balanced,
-      updatedAt: DateTime.utc(2026),
-      workspacePath: '/tmp/thread',
-    ),
-    revision: revision,
-    interactions: const [],
-    runtime: const ThreadRuntimeView(
-      modelId: 'model',
-      contextTokens: 0,
-      contextWindow: 1,
-      totalTokens: 0,
-      costLabel: '',
-      activeSkills: [],
-      activeMcpServers: [],
-      activeLspServers: [],
-    ),
-    businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
-    latestTurn: latestTurn,
-  );
+ThreadWorkspace _workspace(int revision) =>
+    emptyCurrentWorkspace('thread').copyWith(revision: revision);
+
+CurrentView _view(int revision) =>
+    currentViewForWorkspace(_workspace(revision));
+
+Future<TestCurrentReader> _open(ConversationFixture fixture) async {
+  await fixture.open(demand: _demand);
+  await fixture.transport.currentOpened(0);
+  return fixture.currentReader();
 }
+
+Future<TestCurrentReader> _reopen(
+  ConversationFixture fixture,
+  int index,
+) async {
+  await fixture.transport
+      .currentOpened(index)
+      .timeout(const Duration(seconds: 4));
+  return fixture.currentReader();
+}
+
+void main() {
+  test('active interaction query is bounded, leaves State moving and rejects a late old page', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    final reader = await _open(fixture);
+    const oldRef = CurrentCollectionRef(
+      ownerId: 'owner',
+      collection: 'interactions',
+      revision: 1,
+    );
+    const nextRef = CurrentCollectionRef(
+      ownerId: 'owner',
+      collection: 'interactions',
+      revision: 2,
+    );
+    final oldStarted = Completer<void>();
+    final oldPage = Completer<CurrentCollectionPage>();
+    final bytes = utf8.encode(
+      jsonEncode(_questionRequest('new', '问题' * 18000)),
+    );
+    const body = CurrentContentRef(
+      ownerId: 'owner',
+      domain: 'collection',
+      entityId: 'new',
+      contentKey: 'entry',
+      generation: '2',
+    );
+    var queries = 0;
+    final offsets = <int>[];
+    reader.onPage = (reference, continuation, demand) async {
+      expect(demand.maxItems, 1);
+      expect(demand.maxBytes, lessThanOrEqualTo(64 * 1024));
+      expect(continuation, isNull);
+      queries++;
+      if (reference == oldRef) {
+        oldStarted.complete();
+        return oldPage.future;
+      }
+      expect(reference, nextRef);
+      return CurrentCollectionPage(
+        revision: nextRef.revision,
+        entries: [
+          CurrentCollectionEntry(
+            id: 'new',
+            position: 1,
+            payload: DeferredCurrentPayload(
+              reference: body,
+              byteLength: bytes.length,
+            ),
+          ),
+        ],
+        continuation: 'unread-rest-of-collection',
+      );
+    };
+    reader.onReadBody = (reference, range) async {
+      expect(reference, body);
+      expect(range.maxBytes, lessThanOrEqualTo(64 * 1024));
+      offsets.add(range.offset);
+      return ContentWindow(
+        offset: range.offset,
+        bytes: bytes.sublist(
+          range.offset,
+          (range.offset + range.maxBytes).clamp(0, bytes.length),
+        ),
+        generation: body.generation,
+        availableThrough: bytes.length,
+        sealed: true,
+      );
+    };
+    await reader.deliver(ResetCurrentFrame(_interactionView(1, oldRef)));
+    await oldStarted.future;
+    expect(fixture.session().state.hasInteractionBaseline, isFalse);
+    await reader.deliver(testCurrentEvent(frame: _progress(2)));
+    expect(fixture.session().state.revision, 2);
+    await reader.deliver(testCurrentEvent(frame: _interactionRefs(3, nextRef)));
+    final ready = await fixture.session().source.waitFor(
+      (value) => value.interactions.singleOrNull?.id == 'new',
+    );
+    expect(
+      (ready.interactions.single.payload as UserInputInteractionPayload)
+          .questions
+          .single
+          .question,
+      '问题' * 18000,
+    );
+    expect(offsets.length, greaterThan(1));
+    expect(ready.hasInteractionBaseline, isTrue);
+    oldPage.complete(
+      CurrentCollectionPage(
+        revision: 1,
+        entries: [
+          CurrentCollectionEntry(
+            id: 'old',
+            position: 1,
+            payload: InlineCurrentPayload(
+              bytes: utf8.encode(
+                jsonEncode(_questionRequest('old', 'old question')),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(fixture.session().state.interactions.single.id, 'new');
+    await reader.deliver(testCurrentEvent(frame: _interactionRefs(4, nextRef)));
+    expect(fixture.session().state.interactions.single.id, 'new');
+    expect(queries, 2);
+    expect(fixture.transport.historyOpens, isEmpty);
+    expect(reader.requested, isFalse);
+  });
+
+  test('interaction failure is visible and does not close or stall the State owner', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    final reader = await _open(fixture);
+    const reference = CurrentCollectionRef(
+      ownerId: 'owner',
+      collection: 'interactions',
+      revision: 1,
+    );
+    final failure = StateError('controlled interaction read failure');
+    reader.onPage = (_, _, _) async => throw failure;
+    await reader.deliver(ResetCurrentFrame(_interactionView(1, reference)));
+    await fixture.session().source.waitFor(
+      (value) => identical(value.interactionReadError, failure),
+    );
+    await reader.deliver(testCurrentEvent(frame: _progress(2)));
+    expect(fixture.session().state.revision, 2);
+    expect(fixture.session().state.interactionReadError, same(failure));
+    expect(fixture.session().state.hasInteractionBaseline, isFalse);
+    expect(reader.requested, isFalse);
+    reader.onPage = (reference, _, _) async =>
+        CurrentCollectionPage(revision: reference.revision, entries: const []);
+    await reader.deliver(ResetCurrentFrame(_interactionView(3, reference)));
+    await fixture.session().source.waitFor(
+      (value) => value.revision == 3 && value.hasInteractionBaseline,
+    );
+    expect(fixture.session().state.interactions, isEmpty);
+  });
+
+  test('Current watch failures rebuild a fresh Reset baseline with bounded retries', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    var reader = await _open(fixture);
+    for (var attempt = 0; attempt < 3; attempt++) {
+      await reader.deliver(ResetCurrentFrame(_view(1)));
+      reader.sendError(ConversationContinuityError('stream $attempt'));
+      await reader.requestCloseStarted.future.timeout(
+        const Duration(seconds: 2),
+      );
+      reader = await _reopen(fixture, attempt + 1);
+    }
+    await reader.deliver(ResetCurrentFrame(_view(9)));
+    expect(fixture.session().state.workspace!.revision, 9);
+    expect(fixture.transport.currentOpens, hasLength(4));
+  });
+
+  test(
+    'late old Current reader cannot mutate the replacement generation',
+    () async {
+      final fixture = ConversationFixture();
+      addTearDown(fixture.close);
+      final old = await _open(fixture);
+      await old.deliver(ResetCurrentFrame(_view(1)));
+      old.sendError(ConversationContinuityError('old current broke'));
+      await old.requestCloseStarted.future.timeout(const Duration(seconds: 2));
+      final replacement = await _reopen(fixture, 1);
+      await replacement.deliver(ResetCurrentFrame(_view(2)));
+      old.send(testCurrentEvent(frame: _progress(99)));
+      expect(fixture.session().state.workspace!.revision, 2);
+    },
+  );
+
+  test('unsupported State schema fails without retry', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    fixture.transport.currentReaderFactory = (threadId, index) =>
+        TestCurrentReader(
+          threadId: threadId,
+          initialView: currentViewForWorkspace(_workspace(1))
+              .copyWithStateSchema(threadSchemaVersion + 1),
+        );
+    await fixture.open(demand: _demand);
+    await fixture.transport.currentOpened(0);
+    final failed = fixture.session().source.waitFor(
+      (value) =>
+          value.sync.phase == DomainSyncPhase.failed &&
+          value.sync.retryExhausted,
+    );
+    await failed;
+    expect(fixture.transport.currentOpens, hasLength(1));
+    expect(fixture.session().state.hasSnapshot, isFalse);
+  });
+
+  test('New Current watch starts with Reset and preserves envelope order after Reset', () async {
+    final fixture = ConversationFixture();
+    addTearDown(fixture.close);
+    final reader = await _open(fixture);
+    await reader.deliver(ResetCurrentFrame(_view(1)));
+    await reader.deliver(testCurrentEvent(frame: _progress(2)));
+    await reader.deliver(testCurrentEvent(frame: _progress(3)));
+    expect(fixture.session().state.revision, 3);
+  });
+}
+
+Map<String, Object?> _questionRequest(String id, String question) => {
+  'interactionId': id,
+  'scope': {'threadId': 'thread', 'turnId': 'turn'},
+  'revision': 7,
+  'createdAt': 1,
+  'updatedAt': 1,
+  'content': {
+    'kind': 'userInput',
+    'data': {
+      'questions': [
+        {
+          'id': 'answer',
+          'header': 'Choice',
+          'question': question,
+          'isOther': true,
+          'isSecret': false,
+          'options': <Object?>[],
+        },
+      ],
+      'state': {'kind': 'pending', 'operationId': id},
+    },
+  },
+};
+
+CurrentView _interactionView(int revision, CurrentCollectionRef reference) =>
+    currentViewForWorkspace(
+      _workspace(revision).copyWith(
+        businessRefs: ThreadBusinessRefs(plan: null, interactions: reference),
+      ),
+      projection: CurrentProjection(
+        logicalStatus: ThreadStatusView.waitingInteraction,
+        executionPresent: true,
+        sources: const [],
+        atoms: const [],
+        previews: const [],
+        collections: const [],
+        interactions: reference,
+      ),
+    );
+
+ThreadNotificationFrame _interactionRefs(
+  int revision,
+  CurrentCollectionRef reference,
+) => ThreadNotificationFrame(
+  threadId: 'thread',
+  revision: revision,
+  baseRevision: revision - 1,
+  epoch: 7,
+  update: ThreadBusinessRefsUpdate(
+    references: ThreadBusinessRefs(plan: null, interactions: reference),
+  ),
+);
 
 ThreadNotificationFrame _progress(int revision) => ThreadNotificationFrame(
   threadId: 'thread',
@@ -44,211 +297,13 @@ ThreadNotificationFrame _progress(int revision) => ThreadNotificationFrame(
   update: const ThreadActivityUpdate(activity: null),
 );
 
-ThreadSnapshotFrame _snapshot(int revision, {StudioTurnView? latestTurn}) =>
-    ThreadSnapshotFrame(
-      schemaVersion: threadSchemaVersion,
-      completedHistoryVersion: completedHistoryVersion,
-      workspace: _workspace(revision, latestTurn: latestTurn),
-    );
-
-Future<TestConversationStateFeed> _open(ConversationFixture fixture) async {
-  await fixture.open(demand: _demand);
-  await fixture.transport.stateOpened(0);
-  return fixture.stateFeed();
-}
-
-Future<TestConversationStateFeed> _reopen(
-  ConversationFixture fixture,
-  int index,
-  Stopwatch delay,
-) async {
-  await fixture.transport
-      .stateOpened(index)
-      .timeout(const Duration(seconds: 4));
-  expect(delay.elapsed, greaterThanOrEqualTo(const Duration(milliseconds: 80)));
-  return fixture.stateFeed();
-}
-
-void _lag(TestConversationStateFeed feed) {
-  feed.send(
-    ConversationStateEvent(
-      frame: ThreadResyncRequiredFrame(threadId: 'thread', dropped: 1),
+extension on CurrentView {
+  CurrentView copyWithStateSchema(int schemaVersion) => CurrentView(
+    revision: revision,
+    state: ThreadSnapshotFrame(
+      workspace: state.workspace,
+      schemaVersion: schemaVersion,
     ),
+    projection: projection,
   );
-}
-
-Future<void> _acceptedSnapshot(
-  TestConversationStateFeed feed,
-  int revision, {
-  StudioTurnView? latestTurn,
-}) => feed.deliver(
-  ConversationStateEvent(frame: _snapshot(revision, latestTurn: latestTurn)),
-);
-
-void main() {
-  test(
-    'each ACKed forward State recovery starts a fresh lag retry episode',
-    () async {
-      final fixture = ConversationFixture();
-      addTearDown(fixture.close);
-      var feed = await _open(fixture);
-
-      for (var episode = 0; episode < 5; episode++) {
-        await _acceptedSnapshot(feed, 1);
-        await feed.deliver(ConversationStateEvent(frame: _progress(2)));
-        final delay = Stopwatch()..start();
-        _lag(feed);
-        await feed.requestCloseStarted.future;
-        feed = await _reopen(fixture, episode + 1, delay);
-      }
-
-      final completedTurn = StudioTurnView(
-        inputId: 'input',
-        turnId: 'turn',
-        threadId: 'thread',
-        revision: 1,
-        state: const CompletedStudioTurnState(
-          startedAt: 1,
-          completedAt: 2,
-          completion: StudioTurnCompletion.normal,
-        ),
-        updatedAt: DateTime.utc(2026),
-      );
-      await _acceptedSnapshot(feed, 1, latestTurn: completedTurn);
-      expect(
-        fixture.session().state.workspace!.latestTurn!.state.isTerminal,
-        isTrue,
-      );
-      expect(fixture.session().state.sync.retryExhausted, isFalse);
-    },
-  );
-
-  for (final duplicateNotification in [false, true]) {
-    test(
-      '${duplicateNotification ? 'ACKed duplicate notification' : 'baseline only'} does not reset consecutive lag retries',
-      () async {
-        final fixture = ConversationFixture();
-        addTearDown(fixture.close);
-        var feed = await _open(fixture);
-        const delays = [
-          Duration(milliseconds: 100),
-          Duration(milliseconds: 400),
-          Duration(seconds: 1),
-        ];
-
-        for (var attempt = 0; attempt < delays.length + 1; attempt++) {
-          await _acceptedSnapshot(feed, 1);
-          if (duplicateNotification) {
-            await feed.deliver(
-              ConversationStateEvent(
-                frame: ThreadNotificationFrame(
-                  threadId: 'thread',
-                  revision: 1,
-                  baseRevision: 1,
-                  epoch: 7,
-                  update: const ThreadActivityUpdate(activity: null),
-                ),
-              ),
-            );
-          }
-          final delay = Stopwatch()..start();
-          _lag(feed);
-          await feed.requestCloseStarted.future;
-          if (attempt == delays.length) {
-            expect(fixture.session().state.sync.retryExhausted, isTrue);
-            expect(fixture.transport.stateOpens, hasLength(delays.length + 1));
-          } else {
-            final next = await _reopen(fixture, attempt + 1, delay);
-            expect(
-              delay.elapsed,
-              greaterThanOrEqualTo(
-                delays[attempt] - const Duration(milliseconds: 20),
-              ),
-            );
-            feed = next;
-          }
-        }
-      },
-    );
-  }
-
-  test('retired attempt late progress ACK cannot reset the next attempt retry budget', () async {
-    final fixture = ConversationFixture();
-    addTearDown(fixture.close);
-    var feed = await _open(fixture);
-
-    _lag(feed);
-    await feed.requestCloseStarted.future;
-    feed = await _reopen(fixture, 1, Stopwatch()..start());
-
-    await _acceptedSnapshot(feed, 1);
-    final gate = Completer<void>();
-    feed.ackGate = gate;
-    feed.send(ConversationStateEvent(frame: _progress(2)));
-    await feed.ackStarted(2).timeout(const Duration(seconds: 2));
-    _lag(feed);
-    await feed.requestCloseStarted.future;
-    final oldFeed = feed;
-    gate.complete();
-    await oldFeed.acknowledged(2).timeout(const Duration(seconds: 2));
-    feed = await _reopen(fixture, 2, Stopwatch()..start());
-
-    await _acceptedSnapshot(feed, 1);
-    _lag(feed);
-    await feed.requestCloseStarted.future;
-    feed = await _reopen(fixture, 3, Stopwatch()..start());
-    await _acceptedSnapshot(feed, 1);
-    _lag(feed);
-    await feed.requestCloseStarted.future;
-    expect(fixture.session().state.sync.retryExhausted, isTrue);
-    expect(fixture.transport.stateOpens, hasLength(4));
-  });
-
-  test(
-    'failed forward notification ACK does not count as State recovery',
-    () async {
-      final fixture = ConversationFixture();
-      addTearDown(fixture.close);
-      var feed = await _open(fixture);
-
-      _lag(feed);
-      await feed.requestCloseStarted.future;
-      feed = await _reopen(fixture, 1, Stopwatch()..start());
-      await _acceptedSnapshot(feed, 1);
-      feed.ackFailure = StateError('ACK failed');
-      feed.send(ConversationStateEvent(frame: _progress(2)));
-      await feed.requestCloseStarted.future;
-
-      feed = await _reopen(fixture, 2, Stopwatch()..start());
-      await _acceptedSnapshot(feed, 1);
-      _lag(feed);
-      await feed.requestCloseStarted.future;
-      feed = await _reopen(fixture, 3, Stopwatch()..start());
-      await _acceptedSnapshot(feed, 1);
-      _lag(feed);
-      await feed.requestCloseStarted.future;
-      expect(fixture.session().state.sync.retryExhausted, isTrue);
-      expect(fixture.transport.stateOpens, hasLength(4));
-    },
-  );
-
-  test('unsupported State protocol fails immediately without retry', () async {
-    final fixture = ConversationFixture();
-    addTearDown(fixture.close);
-    final feed = await _open(fixture);
-
-    feed.send(
-      ConversationStateEvent(
-        frame: ThreadSnapshotFrame(
-          schemaVersion: threadSchemaVersion + 1,
-          completedHistoryVersion: completedHistoryVersion,
-          workspace: _workspace(1),
-        ),
-      ),
-    );
-    await feed.requestCloseStarted.future;
-    expect(fixture.session().state.sync.retryExhausted, isTrue);
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    expect(fixture.transport.stateOpens, hasLength(1));
-  });
 }

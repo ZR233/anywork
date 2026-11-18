@@ -1,6 +1,5 @@
 //! The same isolated session is opened by three completely new native GUI processes.
 use super::*;
-use sea_orm::sqlx::Row;
 
 pub(super) fn run(
     context: &RecoveryScenario<'_>,
@@ -180,56 +179,31 @@ pub(super) fn run(
 }
 
 fn read_context(home: &Path, thread_id: &str) -> Result<serde_json::Value> {
-    let path = history_lock_database(home)?;
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?
-        .block_on(async {
-            let mut connection = SqliteConnection::connect_with(
-                &SqliteConnectOptions::new().filename(&path).read_only(true),
-            )
-            .await?;
-            let owner: String =
-                sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
-                    .fetch_one(&mut connection)
-                    .await?
-                    .try_get("thread_id")?;
-            ensure!(
-                owner == thread_id,
-                "restored history belongs to another Thread"
-            );
-            let rows = sea_orm::sqlx::query("SELECT payload FROM current_context ORDER BY ordinal")
-                .fetch_all(&mut connection)
-                .await?;
-            let context = rows
-                .into_iter()
-                .map(|row| {
-                    let payload: String = row.try_get("payload")?;
-                    Ok(serde_json::from_str::<serde_json::Value>(&payload)?)
-                })
-                .collect::<Result<Vec<_>>>()?;
-            for record in &context {
-                if record["source"]["kind"] != "assistant" {
-                    continue;
-                }
-                let content = record["content"]
-                    .as_array()
-                    .context("assistant content missing")?;
-                for part in content {
-                    if part["payload"]["format"] == "pl.model.assistant" {
-                        let frame: serde_json::Value = serde_json::from_str(
-                            part["payload"]["content"]
-                                .as_str()
-                                .context("assistant frame missing")?,
-                        )?;
-                        ensure!(
-                            !frame["receipt"]["response"]["replay"].is_null(),
-                            "saved new response lost frozen replay"
-                        );
-                    }
-                }
+    let saved = read_saved_current(home, thread_id)?;
+    let context = serde_json::to_value(&saved.state.context.records)?;
+    let context = context
+        .as_array()
+        .context("saved Current context records missing")?;
+    for record in context {
+        if record["source"]["kind"] != "assistant" {
+            continue;
+        }
+        let content = record["content"]
+            .as_array()
+            .context("assistant content missing")?;
+        for part in content {
+            if part["payload"]["format"] == "pl.model.assistant" {
+                let frame: serde_json::Value = serde_json::from_str(
+                    part["payload"]["content"]
+                        .as_str()
+                        .context("assistant frame missing")?,
+                )?;
+                ensure!(
+                    !frame["receipt"]["response"]["replay"].is_null(),
+                    "saved new response lost frozen replay"
+                );
             }
-            connection.close().await?;
-            Ok(serde_json::json!(context))
-        })
+        }
+    }
+    Ok(serde_json::json!(context))
 }

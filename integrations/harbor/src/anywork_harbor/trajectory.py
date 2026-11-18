@@ -11,6 +11,17 @@ from .artifacts import RunArtifacts, decode_json
 from .errors import AnywkArtifactError
 
 
+def _native_event(event: dict, data: dict) -> dict:
+    return {
+        "eventSeq": event["eventSeq"],
+        "emittedAt": event["emittedAt"],
+        "source": event["source"],
+        "header": data.get("header"),
+        "payload": data.get("payload"),
+        "contentsManifest": data.get("contentsManifest"),
+    }
+
+
 def _valid_tokens(usage: dict) -> dict:
     result = {
         k: v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else None
@@ -83,26 +94,9 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
     trajectories, call_steps = {}, {}
     for thread, member in members.items():
         steps, inference_steps, tools = [], {}, {}
-        inference_effects = {}
-        payloads = {}
-        for event in by_thread[thread]:
-            data = event["data"]
-            payload = decode_json(artifacts.content(data["payload"]))
-            payloads[data["header"]["appendSeq"]] = payload
-            if data["atom"]["kind"] == "inference":
-                inference = payload.get("data", {}).get("inferenceId")
-                effect = payload.get("sourceEffectSeq")
-                if inference in bills[thread] and effect is not None:
-                    inference_effects.setdefault(effect, []).append(inference)
 
         def order(event):
-            atom = event["data"]["atom"]
-            position = atom["lifecycle"].get("started") or atom["lifecycle"].get("ended")
-            return (
-                (position["effectSeq"], position["suborder"], event["data"]["header"]["appendSeq"])
-                if position
-                else (float("inf"), event["data"]["header"]["appendSeq"], 0)
-            )
+            return event["data"]["header"]["event"]["seq"]
 
         def new_step(inference=None, steps=steps, inference_steps=inference_steps):
             step = {
@@ -121,32 +115,47 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
             data = event["data"]
             atom = data["atom"]
             contents = defaultdict(list)
-            for content in data["contents"]:
-                contents[content["role"]].append(artifacts.content(content).decode("utf-8"))
+            opaque_contents = []
+            for content in artifacts.manifest_contents(data["contentsManifest"]):
+                role = content["role"]
+                if role is None:
+                    if content["historyRole"]["kind"] not in {
+                        "canonicalPayload",
+                        "canonicalMetadata",
+                    }:
+                        opaque_contents.append(content)
+                    continue
+                if content["encoding"] != "utf-8":
+                    if role == "body":
+                        raise ValueError("最终正文 body 不是 UTF-8")
+                    opaque_contents.append(content)
+                    continue
+                contents[role].append(artifacts.content(content).decode("utf-8"))
             body = "".join(contents["body"])
             source = atom["source"]
             parent_input = (
                 source.get("kind") == "inboxMessage" and atom.get("textChannel") == "parentAgent"
             )
             if atom["kind"] == "input" or parent_input:
+                step_extra = {
+                    "nativeSource": source,
+                    "nativeEvents": [_native_event(event, data)],
+                }
+                if opaque_contents:
+                    step_extra["nativeOpaqueContents"] = opaque_contents
                 steps.append(
                     {
                         "step_id": len(steps) + 1,
                         "source": "user",
                         "message": body,
-                        "extra": {"nativeSource": source},
+                        "extra": step_extra,
                     }
                 )
                 continue
             inference = atom.get("attemptId")
-            payload = payloads[data["header"]["appendSeq"]]
+            payload = decode_json(artifacts.content(data["payload"]))
             if atom["kind"] == "inference":
                 inference = payload.get("data", {}).get("inferenceId")
-            if atom.get("tool") and inference is None:
-                started = atom["lifecycle"].get("started")
-                candidates = inference_effects.get(started["effectSeq"], []) if started else []
-                if len(candidates) == 1:
-                    inference = candidates[0]
             if atom["kind"] == "turnReceipt":
                 continue
             step = inference_steps.get(inference) if inference else None
@@ -156,6 +165,9 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
             if step is None:
                 step = new_step(inference)
             step["extra"].setdefault("nativeAtoms", []).append(atom)
+            step["extra"].setdefault("nativeEvents", []).append(_native_event(event, data))
+            if opaque_contents:
+                step["extra"].setdefault("nativeOpaqueContents", []).extend(opaque_contents)
             step["message"] += body
             reasoning = "".join(contents["reasoningSummary"])
             if reasoning:
@@ -165,12 +177,20 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                 call_id = tool["callId"]
                 if call_id not in tools:
                     arguments_text = "".join(contents["toolArguments"])
-                    try:
-                        arguments = json.loads(arguments_text) if arguments_text else {}
-                    except ValueError:
-                        arguments = {"nativeArguments": arguments_text}
-                    if not isinstance(arguments, dict):
-                        arguments = {"nativeArguments": arguments}
+                    argument_refs = [
+                        content
+                        for content in opaque_contents
+                        if content["historyRole"]["kind"] == "toolArguments"
+                    ]
+                    if argument_refs:
+                        arguments = {"nativeOpaqueContents": argument_refs}
+                    else:
+                        try:
+                            arguments = json.loads(arguments_text) if arguments_text else {}
+                        except ValueError:
+                            arguments = {"nativeArguments": arguments_text}
+                        if not isinstance(arguments, dict):
+                            arguments = {"nativeArguments": arguments}
                     step.setdefault("tool_calls", []).append(
                         {
                             "tool_call_id": call_id,
@@ -181,15 +201,23 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                     tools[call_id] = step
                 output = "".join(contents["toolOutput"])
                 native_state = payload.get("data", {}).get("state")
-                if output or native_state is not None:
+                output_refs = [
+                    content
+                    for content in opaque_contents
+                    if content["historyRole"]["kind"] in {"toolOutput", "attachment"}
+                ]
+                if output or native_state is not None or output_refs:
+                    result_extra = {
+                        "nativeState": native_state,
+                        "nativePayload": data["payload"],
+                    }
+                    if output_refs:
+                        result_extra["nativeOpaqueContents"] = output_refs
                     tools[call_id].setdefault("observation", {"results": []})["results"].append(
                         {
                             "source_call_id": call_id,
                             "content": output or None,
-                            "extra": {
-                                "nativeState": native_state,
-                                "nativePayload": data["payload"],
-                            },
+                            "extra": result_extra,
                         }
                     )
         for inference, event in bills[thread].items():
@@ -205,6 +233,7 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                     "billing": billing,
                     "status": event["data"]["status"],
                     "auxiliary": event["data"]["auxiliary"],
+                    "nativeEvent": _native_event(event, event["data"]),
                     "noText": not bool(step["message"]),
                 }
             )
@@ -221,6 +250,7 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
             "agent": {"name": "anywk", "version": artifacts.manifest["build"]["version"]},
             "steps": steps,
             "extra": {
+                "nativeRun": artifacts.manifest,
                 "nativeMember": member,
                 "traceComplete": artifacts.complete,
                 "executionLifecycle": lifecycles[thread],

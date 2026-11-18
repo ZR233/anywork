@@ -3,6 +3,8 @@
 use super::super::conversation;
 use super::super::execution_sources as sources;
 use super::legacy_timeline_types::CurrentProjection;
+#[cfg(test)]
+use super::legacy_timeline_types::{CurrentCollectionRef, CurrentContentPreview};
 use super::*;
 use crate::protocol::*;
 #[cfg(test)]
@@ -716,6 +718,7 @@ async fn migrate(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::schema::legacy_timeline_types::CurrentProjection;
     use sea_orm::DatabaseConnection;
 
@@ -826,7 +829,7 @@ mod tests {
             ExecutionShape::Turn(ThreadTurnItem::new(state)),
         );
         Ok(
-            crate::studio::runtime::chat_item::completion_draft(&item, 5, "fixture")?
+            crate::studio::runtime::chat_item::completion_draft(&item, 5, "fixture", None)?
                 .payload
                 .to_vec(),
         )
@@ -1175,7 +1178,7 @@ mod tests {
         .await?;
 
         prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
         let tool = conversation::read_item(&db, "tool").await?;
         assert_eq!(
             tool.unwrap()
@@ -1429,6 +1432,7 @@ mod tests {
 mod background_tests {
     use super::*;
     use crate::studio::paths::SqliteFileMode;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::{HistoryStore, connect};
     use crate::studio::thread_projection::order;
     use anyhow::{Context, Result};
@@ -1647,7 +1651,7 @@ mod background_tests {
             store.prepare_conversation_read().await?;
             store.close_for_deletion().await?;
             let db = connect(&path, SqliteFileMode::ReadWrite).await?;
-            assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+            assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
             assert!(!needs_content_preparation(&db, THREAD).await?);
             let result = metadata(&db, &order::tool_id(CALL)).await?;
             assert_eq!(result.id, order::message_id(MESSAGE));

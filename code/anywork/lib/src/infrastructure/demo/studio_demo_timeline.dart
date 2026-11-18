@@ -15,41 +15,13 @@ final class _DemoDisplayScript {
   int? finishedAt;
 }
 
-bool _sameDisplayAtomIdentity(ChatAtom previous, ChatAtom next) =>
-    previous.id == next.id &&
-    previous.source == next.source &&
-    previous.sourceOrder == next.sourceOrder;
-
-bool _sameDisplayBodyIdentity(
-  DisplayBlockBody previous,
-  DisplayBlockBody next,
-) => switch (previous) {
-  WorkDisplayBlock(:final members) =>
-    next is WorkDisplayBlock && next.members == members,
-  SingleDisplayBlock(:final record) =>
-    next is SingleDisplayBlock &&
-        _sameDisplayAtomIdentity(record.atom, next.record.atom) &&
-        switch (record.contentSource) {
-          CompletedOriginal(:final completionId) =>
-            switch (next.record.contentSource) {
-              CompletedOriginal(completionId: final nextId) =>
-                completionId == nextId,
-              _ => false,
-            },
-          _ => true,
-        },
-};
-
-const _demoDisplayIdentityFailure = StudioFailure(
-  code: StudioFailureCode.conflict,
-  message: 'An explicit Demo display fixture cannot change its block or member identity',
-  retryable: false,
-  correlationId: 'demo-display-identity-conflict',
-);
-
 extension _DemoDisplayHistory on _DemoHistory {
-  DisplayBlockRef displayRef(String id) =>
-      DisplayBlockRef(databaseId: epoch, blockId: id);
+  DisplayBlockRef displayRef(String id) => DisplayBlockRef(
+    blockId: id,
+    cut: HistoryCut('demo-cut:$epoch'),
+    anchorSeq: 0,
+    headSeq: 0,
+  );
 
   void declareDisplay(
     String id,
@@ -72,13 +44,10 @@ extension _DemoDisplayHistory on _DemoHistory {
       work: work,
       turnId: turnId,
     );
-    if (work) displayCurrentWorkId = id;
     for (final member in memberIds) {
       displayMembership[member] = id;
       updateDisplayMember(member);
     }
-    displayRevision++;
-    displayLayoutRevision++;
   }
 
   void updateDisplayMember(String itemId) {
@@ -86,10 +55,10 @@ extension _DemoDisplayHistory on _DemoHistory {
     if (id == null) return; // Explicitly hidden from this controlled story.
     final script = displayScripts[id]!;
     if (script.sealed) return;
-    final entry = completed[itemId];
-    final atom = entry?.atom ?? activeAtoms[itemId];
+    final entry = byId[itemId];
+    final atom = entry?.message ?? activeAtoms[itemId];
     if (atom == null) return;
-    script.blockOrder ??= ++displayLastOrder;
+    script.blockOrder ??= ++historyLastOrder;
     final heads = displayHeads.putIfAbsent(displayRef(id), () => []);
     final order = script.memberIds.indexOf(itemId) + 1;
     final index = heads.indexWhere((h) => h.memberKey == itemId);
@@ -110,8 +79,8 @@ extension _DemoDisplayHistory on _DemoHistory {
           ActiveChatAtom() => null,
         },
         contentSource: entry == null
-            ? const CurrentAtom()
-            : CompletedOriginal(completionId: entry.recordId),
+            ? const CurrentAtomSource()
+            : CompletedOriginal(completionId: entry.message.id),
       ),
     );
     if (index >= 0 && identical(heads[index].record.atom, atom)) return;
@@ -122,8 +91,6 @@ extension _DemoDisplayHistory on _DemoHistory {
       heads[index] = head;
     }
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
-    displayRevision++;
-    displayLayoutRevision++;
   }
 
   DisplayBlockBody scriptBody(_DemoDisplayScript script) {
@@ -131,7 +98,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     if (!script.work) {
       final head = heads.single;
       return SingleDisplayBlock(
-        visibility: SingleVisibility.content,
+        visibility: HistorySingleVisibility.content,
         record: head.record,
       );
     }
@@ -141,12 +108,18 @@ extension _DemoDisplayHistory on _DemoHistory {
         startedAt: script.startedAt,
         finishedAt: script.sealed ? script.finishedAt : null,
       ),
+      executionPresent: false,
+      memberCount: script.memberIds.length,
+      unfinishedCount: script.memberIds
+          .where((id) => activeAtoms.containsKey(id))
+          .length,
+      groupClosed: script.sealed,
     );
   }
 
   DisplayRecord freezeDisplayRecord(String blockId, DisplayMemberHead head) {
     final record = head.record;
-    if (record.contentSource is! CurrentAtom) return record;
+    if (record.contentSource is! CurrentAtomSource) return record;
     final owner = DisplayObservationContentOwner(
       blockId: blockId,
       memberKey: head.memberKey,
@@ -222,28 +195,6 @@ extension _DemoDisplayHistory on _DemoHistory {
     );
   }
 
-  void advanceDisplayFrontier() {
-    var frontier = displayLastOrder;
-    for (final script in displayScripts.values) {
-      if (!script.sealed &&
-          script.blockOrder != null &&
-          script.blockOrder! - 1 < frontier) {
-        frontier = script.blockOrder! - 1;
-      }
-    }
-    for (final block in displayLiveSeed?.blocks ?? <LiveDisplayBlock>[]) {
-      if (block.state == DisplayBlockState.open &&
-          !displayBlocks.any((saved) => saved.id == block.id) &&
-          block.blockOrder - 1 < frontier) {
-        frontier = block.blockOrder - 1;
-      }
-    }
-    if (frontier < displayReadyFrontier) {
-      throw _demoQueryFailure('Display ready frontier regressed');
-    }
-    displayReadyFrontier = frontier;
-  }
-
   void sealDisplay(String id) {
     final script = displayScripts[id]!;
     if (script.sealed) return;
@@ -269,10 +220,6 @@ extension _DemoDisplayHistory on _DemoHistory {
       ),
     );
     displayBlocks.sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
-    advanceDisplayFrontier();
-    if (displayCurrentWorkId == id) displayCurrentWorkId = null;
-    displayRevision++;
-    displayLayoutRevision++;
     displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
   }
 
@@ -302,7 +249,7 @@ extension _DemoDisplayHistory on _DemoHistory {
               ),
               startFact: head.record.startFact,
               endFact: ended,
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
           );
           for (final body in bodies[head.memberKey]?.values ?? <_DemoBody>[]) {
@@ -313,178 +260,6 @@ extension _DemoDisplayHistory on _DemoHistory {
       sealDisplay(script.id);
     }
   }
-
-  void installDisplay({
-    required List<DisplayBlock> blocks,
-    TailSnapshot? live,
-    Map<DisplayBlockRef, List<DisplayMemberHead>>? members,
-  }) {
-    final summaryOnly =
-        blocks.isEmpty &&
-        (members == null || members.isEmpty) &&
-        live != null &&
-        displayLiveSeed != null &&
-        _demoSameTailLayout(displayLiveSeed!, live);
-    var through = displayHead;
-    final ids = {for (final block in displayBlocks) block.id};
-    final existingBodies = {
-      for (final block in liveBlocks()) block.id: block.body,
-    };
-    final existingOrders = {
-      for (final block in liveBlocks()) block.id: block.blockOrder,
-    };
-    void validateIdentity(String id, DisplayBlockBody body, int order) {
-      final previousOrder = existingOrders[id];
-      if (previousOrder != null && previousOrder != order) {
-        throw _demoDisplayIdentityFailure;
-      }
-      final script = displayScripts[id];
-      if (script != null &&
-          (script.work != (body is WorkDisplayBlock) ||
-              (body is SingleDisplayBlock &&
-                  body.record.atom.id != script.memberIds.single))) {
-        throw _demoDisplayIdentityFailure;
-      }
-      final previous = existingBodies[id];
-      if (previous != null && !_sameDisplayBodyIdentity(previous, body)) {
-        throw _demoDisplayIdentityFailure;
-      }
-    }
-
-    for (final block in blocks) {
-      if (block.blockOrder <= through || !ids.add(block.id)) {
-        throw _demoQueryFailure('Duplicate or unordered display fixture');
-      }
-      validateIdentity(block.id, block.body, block.blockOrder);
-      if (block.body case WorkDisplayBlock(:final members)) {
-        if (members.databaseId != epoch || members.blockId != block.id) {
-          throw _demoStale();
-        }
-      }
-      through = block.blockOrder;
-    }
-    if (live != null &&
-        (live.readyFrontier != through ||
-            live.blocks.any((block) => ids.contains(block.id)))) {
-      throw _demoQueryFailure('Invalid display live/history cut');
-    }
-    var liveOrder = 0;
-    final liveIds = <String>{};
-    for (final block in live?.blocks ?? <LiveDisplayBlock>[]) {
-      if (block.id.isEmpty ||
-          !liveIds.add(block.id) ||
-          block.blockOrder <= liveOrder ||
-          block.blockOrder <= through) {
-        throw _demoQueryFailure('Invalid explicit live display order');
-      }
-      validateIdentity(block.id, block.body, block.blockOrder);
-      if (block.body case WorkDisplayBlock(:final members)) {
-        if (members.databaseId != epoch || members.blockId != block.id) {
-          throw _demoStale();
-        }
-      }
-      liveOrder = block.blockOrder;
-    }
-    for (final entry
-        in (members ?? const <DisplayBlockRef, List<DisplayMemberHead>>{})
-            .entries) {
-      if (entry.key.databaseId != epoch) throw _demoStale();
-      if (displayBlocks.any((block) => block.id == entry.key.blockId)) {
-        throw _demoQueryFailure('Sealed display members cannot be replaced');
-      }
-      var order = 0;
-      final keys = <String>{};
-      for (final head in entry.value) {
-        if (head.memberOrder <= order || !keys.add(head.memberKey)) {
-          throw _demoQueryFailure('Invalid explicit display member order');
-        }
-        order = head.memberOrder;
-      }
-      for (final previous in displayHeads[entry.key] ?? <DisplayMemberHead>[]) {
-        final next = entry.value
-            .where((head) => head.memberKey == previous.memberKey)
-            .firstOrNull;
-        if (next == null ||
-            next.memberOrder != previous.memberOrder ||
-            !_sameDisplayAtomIdentity(previous.record.atom, next.record.atom)) {
-          throw _demoDisplayIdentityFailure;
-        }
-      }
-    }
-    // Sealing changes the page even if every existing member was already
-    // terminal and the caller correctly omits an unchanged member fixture.
-    final changedMemberBlocks = <String>{
-      for (final block in blocks)
-        if (block.body is WorkDisplayBlock) block.id,
-      for (final reference in members?.keys ?? <DisplayBlockRef>[])
-        reference.blockId,
-    };
-    displayBlocks.addAll(blocks);
-    displayBlocks.sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
-    displayReadyFrontier = through;
-    for (final block in blocks) {
-      if (block.blockOrder > displayLastOrder) {
-        displayLastOrder = block.blockOrder;
-      }
-    }
-    for (final block in live?.blocks ?? <LiveDisplayBlock>[]) {
-      if (block.blockOrder > displayLastOrder) {
-        displayLastOrder = block.blockOrder;
-      }
-    }
-    if (blocks.any((block) => block.id == displayCurrentWorkId)) {
-      displayCurrentWorkId = null;
-    }
-    if (live != null) {
-      displayLiveSeed = live;
-      displayCurrentWorkId = live.currentWorkId;
-    }
-    for (final entry
-        in (members ?? const <DisplayBlockRef, List<DisplayMemberHead>>{})
-            .entries) {
-      displayHeads[entry.key] = List.of(entry.value);
-    }
-    for (final id in changedMemberBlocks) {
-      displayMemberRevisions.update(id, (v) => v + 1, ifAbsent: () => 1);
-    }
-    if (blocks.isNotEmpty || live != null) {
-      displayRevision++;
-      if (!summaryOnly) displayLayoutRevision++;
-    }
-  }
-
-  List<LiveDisplayBlock> liveBlocks() => [
-    ...?displayLiveSeed?.blocks.where(
-      (b) => !displayBlocks.any((s) => s.id == b.id),
-    ),
-    for (final block in displayBlocks.where(
-      (block) => block.blockOrder > displayHead,
-    ))
-      LiveDisplayBlock(
-        id: block.id,
-        blockOrder: block.blockOrder,
-        body: block.body,
-        state: DisplayBlockState.sealed,
-      ),
-    for (final script in displayScripts.values)
-      if (!script.sealed &&
-          (displayHeads[displayRef(script.id)]?.isNotEmpty ?? false))
-        LiveDisplayBlock(
-          id: script.id,
-          source: script.turnId == null
-              ? null
-              : ForegroundTurnChatSource(turnId: script.turnId!),
-          blockOrder: script.blockOrder!,
-          hasUnfinishedMembers:
-              (displayHeads[displayRef(script.id)] ??
-                      const <DisplayMemberHead>[])
-                  .any(
-                    (member) => member.record.atom.lifecycle is ActiveChatAtom,
-                  ),
-          body: scriptBody(script),
-          state: DisplayBlockState.open,
-        ),
-  ]..sort((a, b) => a.blockOrder.compareTo(b.blockOrder));
 }
 
 Object _displayRecordJson(DisplayRecord record) => {
@@ -502,7 +277,7 @@ Object _displayRecordJson(DisplayRecord record) => {
           'suborder': record.endFact!.suborder,
         },
   'contentSource': switch (record.contentSource) {
-    CurrentAtom() => {'kind': 'currentAtom'},
+    CurrentAtomSource() => {'kind': 'currentAtom'},
     FrozenObservation(:final capturedAt, :final available) => {
       'kind': 'frozenObservation',
       'capturedAt': capturedAt,
@@ -521,52 +296,36 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
     'record': _displayRecordJson(record),
     'visibility': visibility.name,
   },
-  WorkDisplayBlock(:final timing, :final members) => {
-    'kind': 'work',
-    'members': {'databaseId': members.databaseId, 'blockId': members.blockId},
-    'timing': {'startedAt': timing.startedAt, 'finishedAt': timing.finishedAt},
-  },
-};
-Map<String, Object?> _liveJson(TailSnapshot live) => {
-  'revision': live.revision,
-  'layoutRevision': live.layoutRevision,
-  'readyFrontier': live.readyFrontier,
-  'executionPresent': live.executionPresent,
-  'currentWorkId': live.currentWorkId,
-  'older': live.older,
-  'blocks': [
-    for (final b in live.blocks)
-      {
-        'id': b.id,
-        'blockOrder': b.blockOrder,
-        if (b.source != null) 'source': chatSourceIdToJson(b.source!),
-        'body': _displayBodyJson(b.body),
-        'state': b.state.name,
-        'hasUnfinishedMembers': b.hasUnfinishedMembers,
-        'thinkingSummary': b.thinkingSummary,
+  WorkDisplayBlock(
+    :final timing,
+    :final members,
+    :final executionPresent,
+    :final memberCount,
+    :final unfinishedCount,
+    :final groupClosed,
+    :final summary,
+  ) =>
+    {
+      'kind': 'work',
+      'members': {
+        'blockId': members.blockId,
+        'cut': members.cut.token,
+        'anchorSeq': members.anchorSeq,
+        'headSeq': members.headSeq,
       },
-  ],
+      'timing': {
+        'startedAt': timing.startedAt,
+        'finishedAt': timing.finishedAt,
+      },
+      'executionPresent': executionPresent,
+      'memberCount': memberCount,
+      'unfinishedCount': unfinishedCount,
+      'groupClosed': groupClosed,
+      'summary': summary,
+    },
 };
 
-bool _demoSameTailLayout(TailSnapshot before, TailSnapshot after) {
-  Map<String, Object?> layout(TailSnapshot value) {
-    final result = _liveJson(value)
-      ..remove('revision')
-      ..remove('layoutRevision');
-    result['blocks'] = [
-      for (final entry in result['blocks'] as List)
-        if ((entry as Map)['id'] == value.currentWorkId)
-          (Map<String, Object?>.from(entry)..remove('thinkingSummary'))
-        else
-          entry,
-    ];
-    return result;
-  }
-
-  return jsonEncode(layout(before)) == jsonEncode(layout(after));
-}
-
-extension _DemoPresentationQueries on _DemoReader {
+extension _DemoPresentationQueries on _DemoReadSource {
   DisplayBlockBody fitDisplay(DisplayBlockBody body) => switch (body) {
     SingleDisplayBlock(:final record, :final visibility) => SingleDisplayBlock(
       visibility: visibility,
@@ -580,121 +339,58 @@ extension _DemoPresentationQueries on _DemoReader {
     WorkDisplayBlock() => body,
   };
 
-  TailSnapshot livePage(ReadDemand demand, {String? before}) {
+  ({List<DisplayBlock> blocks, String? before}) historyPage(
+    ReadDemand demand, {
+    String? before,
+    int? ceiling,
+  }) {
     _demoDemand(demand);
-    final history = _history;
-    final revision = history.displayRevision;
-    final layout = history.displayLayoutRevision;
-    final blocks = history.liveBlocks();
-    final end = before == null
-        ? blocks.length
-        : boundary(before, 'display-live', layout);
-    final selected = <LiveDisplayBlock>[];
-    String? older;
-    TailSnapshot page() => TailSnapshot(
-      currentWorkId: history.displayCurrentWorkId,
-      revision: revision,
-      layoutRevision: layout,
-      readyFrontier: history.displayHead,
-      executionPresent:
-          history.displayLiveSeed?.executionPresent ??
-          (_api._demoWorkspace(threadId).runtime.execution != null),
-      blocks: selected,
-      older: older,
-    );
-    for (var i = end - 1; i >= 0; i--) {
-      final b = blocks[i];
-      final candidate = LiveDisplayBlock(
-        id: b.id,
-        blockOrder: b.blockOrder,
-        source: b.source,
-        body: fitDisplay(b.body),
-        state: b.state,
-        hasUnfinishedMembers: b.hasUnfinishedMembers,
-        thinkingSummary: b.thinkingSummary,
-      );
-      final next = i > 0 ? cursor('display-live', layout, i) : null;
-      final trial = TailSnapshot(
-        currentWorkId: history.displayCurrentWorkId,
-        revision: revision,
-        layoutRevision: layout,
-        readyFrontier: history.displayHead,
-        executionPresent: page().executionPresent,
-        blocks: [candidate, ...selected],
-        older: next,
-      );
-      if (_demoEncoded(_liveJson(trial)) > demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: live display envelope does not fit',
-          );
-        }
-        break;
-      }
-      selected.insert(0, candidate);
-      older = next;
-      if (selected.length == demand.maxItems) break;
-    }
-    final result = page();
-    if (before == null &&
-        result.currentWorkId != null &&
-        !result.blocks.any(
-          (block) =>
-              block.id == result.currentWorkId &&
-              block.state == DisplayBlockState.open &&
-              block.body is WorkDisplayBlock,
-        )) {
-      throw _demoQueryFailure(
-        'InvalidDemand: current Work head does not fit the latest window',
-      );
-    }
-    if (_demoEncoded(_liveJson(result)) > demand.maxBytes) {
-      throw _demoQueryFailure(
-        'InvalidDemand: live display envelope does not fit',
-      );
-    }
-    return result;
-  }
-
-  TimelinePage timelinePage(ReadDemand demand, {String? before}) {
-    _demoDemand(demand);
-    final ceiling = before == null
-        ? _history.displayHead
+    final upper = ceiling ?? _history.displayHead;
+    final pageCeiling = before == null
+        ? upper
         : boundary('h0:$before', 'display-h0', 0);
     final end = before == null
-        ? ceiling + 1
-        : boundary(before, 'display-history', ceiling);
+        ? pageCeiling + 1
+        : boundary(before, 'display-history', pageCeiling);
     final records = _history.displayBlocks
-        .where((b) => b.blockOrder < end && b.blockOrder <= ceiling)
+        .where(
+          (block) => block.blockOrder < end && block.blockOrder <= pageCeiling,
+        )
         .toList();
     final selected = <DisplayBlock>[];
     String? next;
-    TimelinePage page() => TimelinePage(
-      presentationVersion: presentationVersion,
-      databaseId: _history.epoch,
-      ceiling: ceiling,
-      blocks: selected,
-      before: next,
-    );
+    ({List<DisplayBlock> blocks, String? before}) page() =>
+        (blocks: selected, before: next);
+    int encoded(({List<DisplayBlock> blocks, String? before}) value) =>
+        _demoEncoded({
+          'blocks': [
+            for (final block in value.blocks)
+              {
+                'id': block.id,
+                'blockOrder': block.blockOrder,
+                'body': _displayBodyJson(block.body),
+              },
+          ],
+          'before': value.before,
+        });
+    if (encoded(page()) > demand.maxBytes) {
+      throw _demoQueryFailure('InvalidDemand');
+    }
     for (var i = records.length - 1; i >= 0; i--) {
-      final b = records[i];
+      final block = records[i];
       final candidate = DisplayBlock(
-        id: b.id,
-        blockOrder: b.blockOrder,
-        body: fitDisplay(b.body),
+        id: block.id,
+        blockOrder: block.blockOrder,
+        body: fitDisplay(block.body),
       );
       final token = i > 0
-          ? cursor('display-history', ceiling, b.blockOrder)
+          ? cursor('display-history', pageCeiling, block.blockOrder)
           : null;
-      if (token != null) _cursors['h0:$token'] = ('display-h0', 0, ceiling);
-      final trial = TimelinePage(
-        presentationVersion: presentationVersion,
-        databaseId: _history.epoch,
-        ceiling: ceiling,
-        blocks: [candidate, ...selected],
-        before: token,
-      );
-      if (_pageBytes(trial) > demand.maxBytes) {
+      if (token != null) {
+        _cursors['h0:$token'] = ('display-h0', 0, pageCeiling);
+      }
+      final trial = (blocks: [candidate, ...selected], before: token);
+      if (encoded(trial) > demand.maxBytes) {
         if (selected.isEmpty) throw _demoQueryFailure('InvalidDemand');
         break;
       }
@@ -702,594 +398,6 @@ extension _DemoPresentationQueries on _DemoReader {
       next = token;
       if (selected.length == demand.maxItems) break;
     }
-    if (_pageBytes(page()) > demand.maxBytes) {
-      throw _demoQueryFailure('InvalidDemand');
-    }
     return page();
   }
 }
-
-final class _DemoTimelineReader implements TimelineReader {
-  _DemoTimelineReader(
-    this._api,
-    String threadId,
-    _DemoHistory history,
-    this._demand,
-  ) : reader = _DemoReader(
-        _api,
-        threadId,
-        history,
-        const ChatScope.conversation(),
-      ),
-      metadata = OpenTimeline(
-        readerId: newStudioCorrelationId(),
-        presentationVersion: presentationVersion,
-        readerProtocolVersion: timelineReaderProtocolVersion,
-        initialCursor: ViewCursor(newStudioCorrelationId()),
-      ) {
-    _demoDemand(_demand);
-    _confirmed = metadata.initialCursor;
-    _api._ownedHistoryReaders.add(reader);
-    history.changes.add(_changed);
-  }
-  final DemoStudioTransport _api;
-  @override
-  final _DemoReader reader;
-  @override
-  final OpenTimeline metadata;
-  final ReadDemand _demand;
-  late ViewCursor _confirmed;
-  ViewUpdate? _pending;
-  TailSnapshot? _tail;
-  TailSnapshot? _pendingTail;
-  TailSnapshot? _target;
-  int? _through;
-  bool _closed = false;
-  bool _reading = false;
-  Completer<void>? _changedWait;
-  Future<void>? _active;
-
-  void _changed() {
-    final waiter = _changedWait;
-    _changedWait = null;
-    waiter?.complete();
-  }
-
-  TailSnapshot _captureTail(ReadDemand demand, {String? before}) =>
-      reader.livePage(demand, before: before);
-  TailSnapshot _mainTail(
-    ViewCursor after, {
-    required bool initial,
-    String? before,
-  }) {
-    var tail = _captureTail(_demand);
-    while (true) {
-      final response = _response(
-        after,
-        HistoryDelta(
-          placement: initial ? HistoryPlacement.set : HistoryPlacement.append,
-          fromOrder: initial ? null : tail.readyFrontier,
-          throughOrder: tail.readyFrontier,
-          blocks: const [],
-          before: before,
-        ),
-        ReplaceTail(snapshot: tail),
-      );
-      if (_fits(response)) return tail;
-      if (tail.blocks.isEmpty || tail.blocks.first.id == tail.currentWorkId) {
-        throw _demoQueryFailure('InvalidDemand');
-      }
-      final blocks = tail.blocks.skip(1).toList();
-      final index = blocks.isEmpty
-          ? reader._history.liveBlocks().length
-          : reader._history.liveBlocks().indexWhere(
-              (b) => b.id == blocks.first.id,
-            );
-      final older = reader.cursor('display-live', tail.layoutRevision, index);
-      tail = TailSnapshot(
-        revision: tail.revision,
-        layoutRevision: tail.layoutRevision,
-        readyFrontier: tail.readyFrontier,
-        executionPresent: tail.executionPresent,
-        currentWorkId: tail.currentWorkId,
-        blocks: blocks,
-        older: older,
-      );
-    }
-  }
-
-  @override
-  Future<ViewUpdate> next({required ViewCursor after}) {
-    if (_closed) return Future.error(_conversationClosedFailure);
-    if (_reading) return Future.error(_demoQueryFailure('ConcurrentNext'));
-    _reading = true;
-    final done = Completer<void>();
-    _active = done.future;
-    return _next(after).whenComplete(() {
-      _reading = false;
-      done.complete();
-    });
-  }
-
-  ViewUpdate _response(
-    ViewCursor after,
-    HistoryDelta history,
-    TailUpdate tail,
-  ) => ViewUpdate(
-    presentationVersion: presentationVersion,
-    readerProtocolVersion: timelineReaderProtocolVersion,
-    after: after,
-    next: ViewCursor(newStudioCorrelationId()),
-    history: history,
-    tail: tail,
-  );
-  bool _fits(ViewUpdate response) =>
-      response.history.blocks.length +
-              (response.tail is ReplaceTail
-                  ? (response.tail as ReplaceTail).snapshot.blocks.length
-                  : 0) <=
-          _demand.maxItems &&
-      _viewBytes(response) <= _demand.maxBytes;
-  Future<ViewUpdate> _next(ViewCursor after) async {
-    final pending = _pending;
-    if (pending != null) {
-      if (after == pending.after) return pending;
-      if (after != pending.next) throw _demoQueryFailure('StaleViewCursor');
-      _confirmed = pending.next;
-      _through = pending.history.throughOrder;
-      _tail = _pendingTail;
-      _pending = null;
-    }
-    if (after != _confirmed) throw _demoQueryFailure('StaleViewCursor');
-    while (!_closed) {
-      final history = reader._history;
-      final through = _through;
-      if (through == null) {
-        final page = reader.timelinePage(_demand);
-        final zeroBefore = history.displayHead == 0
-            ? null
-            : reader.cursor(
-                'display-history',
-                history.displayHead,
-                history.displayHead + 1,
-              );
-        if (zeroBefore != null) {
-          reader._cursors['h0:$zeroBefore'] = (
-            'display-h0',
-            0,
-            history.displayHead,
-          );
-        }
-        final tail = _mainTail(after, initial: true, before: zeroBefore);
-        var heads = page.blocks;
-        var before = page.before;
-        while (true) {
-          final response = _response(
-            after,
-            HistoryDelta(
-              placement: HistoryPlacement.set,
-              throughOrder: history.displayHead,
-              blocks: heads,
-              before: before,
-            ),
-            ReplaceTail(snapshot: tail),
-          );
-          if (_fits(response)) {
-            _pendingTail = tail;
-            return _pending = response;
-          }
-          if (heads.isEmpty) throw _demoQueryFailure('InvalidDemand');
-          heads = heads.skip(1).toList();
-          final boundary = heads.isEmpty
-              ? history.displayHead + 1
-              : heads.first.blockOrder;
-          before = reader.cursor(
-            'display-history',
-            history.displayHead,
-            boundary,
-          );
-          reader._cursors['h0:$before'] = (
-            'display-h0',
-            0,
-            history.displayHead,
-          );
-        }
-      }
-      final previousTail = _tail;
-      if (_target == null &&
-          previousTail != null &&
-          previousTail.layoutRevision == history.displayLayoutRevision &&
-          previousTail.readyFrontier == history.displayHead &&
-          previousTail.revision != history.displayRevision) {
-        final work = history.displayLiveSeed?.blocks
-            .where((block) => block.id == previousTail.currentWorkId)
-            .firstOrNull;
-        final summary = work?.thinkingSummary;
-        final status = _response(
-          after,
-          HistoryDelta(
-            placement: HistoryPlacement.append,
-            fromOrder: through,
-            throughOrder: through,
-            blocks: const [],
-          ),
-          TailStatus(
-            baseLayoutRevision: previousTail.layoutRevision,
-            revision: history.displayRevision,
-            currentWorkId: previousTail.currentWorkId,
-            thinkingSummary: summary,
-          ),
-        );
-        if (!_fits(status)) throw _demoQueryFailure('InvalidDemand');
-        _pendingTail = TailSnapshot(
-          revision: history.displayRevision,
-          layoutRevision: previousTail.layoutRevision,
-          readyFrontier: previousTail.readyFrontier,
-          executionPresent: previousTail.executionPresent,
-          currentWorkId: previousTail.currentWorkId,
-          older: previousTail.older,
-          blocks: [
-            for (final block in previousTail.blocks)
-              if (block.id != previousTail.currentWorkId)
-                block
-              else
-                LiveDisplayBlock(
-                  id: block.id,
-                  blockOrder: block.blockOrder,
-                  source: block.source,
-                  body: block.body,
-                  state: block.state,
-                  hasUnfinishedMembers: block.hasUnfinishedMembers,
-                  thinkingSummary: summary,
-                ),
-          ],
-        );
-        return _pending = status;
-      }
-      if (_target == null &&
-          (_tail?.layoutRevision != history.displayLayoutRevision ||
-              _tail?.readyFrontier != history.displayHead)) {
-        _target = _mainTail(after, initial: false);
-      }
-      final target = _target;
-      if (target != null) {
-        final records = history.displayBlocks
-            .where(
-              (b) =>
-                  b.blockOrder > through &&
-                  b.blockOrder <= target.readyFrontier,
-            )
-            .take(_demand.maxItems)
-            .toList();
-        final selected = <DisplayBlock>[];
-        var checked = through;
-        for (final b in records) {
-          final head = DisplayBlock(
-            id: b.id,
-            blockOrder: b.blockOrder,
-            body: reader.fitDisplay(b.body),
-          );
-          final trial = _response(
-            after,
-            HistoryDelta(
-              placement: HistoryPlacement.append,
-              fromOrder: through,
-              throughOrder: b.blockOrder,
-              blocks: [...selected, head],
-            ),
-            const KeepTail(),
-          );
-          if (!_fits(trial)) break;
-          selected.add(head);
-          checked = b.blockOrder;
-        }
-        if (records.isNotEmpty && selected.isEmpty) {
-          throw _demoQueryFailure('InvalidDemand');
-        }
-        if (records.length < _demand.maxItems &&
-            selected.length == records.length) {
-          checked = target.readyFrontier;
-        }
-        TailUpdate tail = checked == target.readyFrontier
-            ? ReplaceTail(snapshot: target)
-            : const KeepTail();
-        var response = _response(
-          after,
-          HistoryDelta(
-            placement: HistoryPlacement.append,
-            fromOrder: through,
-            throughOrder: checked,
-            blocks: selected,
-          ),
-          tail,
-        );
-        if (!_fits(response) && tail is ReplaceTail && selected.isNotEmpty) {
-          tail = const KeepTail();
-          response = ViewUpdate(
-            presentationVersion: response.presentationVersion,
-            readerProtocolVersion: response.readerProtocolVersion,
-            after: response.after,
-            next: response.next,
-            history: response.history,
-            tail: tail,
-          );
-        }
-        if (!_fits(response)) throw _demoQueryFailure('InvalidDemand');
-        if (tail is ReplaceTail) {
-          _pendingTail = target;
-          _target = null;
-        } else {
-          final ids = selected.map((b) => b.id).toSet();
-          final previous = _tail!;
-          _pendingTail = TailSnapshot(
-            revision: previous.revision,
-            layoutRevision: previous.layoutRevision,
-            readyFrontier: previous.readyFrontier,
-            executionPresent: previous.executionPresent,
-            currentWorkId: ids.contains(previous.currentWorkId)
-                ? null
-                : previous.currentWorkId,
-            blocks: previous.blocks.where((b) => !ids.contains(b.id)).toList(),
-            older: previous.older,
-          );
-        }
-        return _pending = response;
-      }
-      final wait = _changedWait ??= Completer<void>();
-      await wait.future;
-    }
-    throw _conversationClosedFailure;
-  }
-
-  @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => reader._read(() {
-    return reader.timelinePage(demand, before: before);
-  });
-  @override
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => reader._read(() => _captureTail(demand, before: before));
-  @override
-  void requestClose() {
-    _closed = true;
-    reader.requestClose();
-    _changed();
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
-    await _active;
-    await reader.close();
-    reader._history.changes.remove(_changed);
-    _pending = null;
-    _tail = null;
-    _target = null;
-    _api._ownedTimelineReaders.remove(this);
-  }
-
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required ReadDemand demand,
-  }) => reader._read(() {
-    _demoDemand(demand);
-    if (reference.databaseId != reader._history.epoch) throw _demoStale();
-    final known =
-        reader._history.displayBlocks.any(
-          (b) => b.id == reference.blockId && b.body is WorkDisplayBlock,
-        ) ||
-        reader._history.liveBlocks().any(
-          (b) => b.id == reference.blockId && b.body is WorkDisplayBlock,
-        );
-    if (!known) throw _demoMissing();
-    final members = _DemoDisplayMembers(reader, reference, demand);
-    reader._displayReads.add(members);
-    return members;
-  });
-}
-
-final class _DemoDisplayMembers implements DisplayMembers {
-  _DemoDisplayMembers(this.reader, this.reference, this.demand) {
-    reader._history.changes.add(_changed);
-  }
-  final _DemoReader reader;
-  final DisplayBlockRef reference;
-  final ReadDemand demand;
-  bool _closed = false, _reading = false, _sealedDelivered = false;
-  int? _revision;
-  bool _sealed = false;
-  List<DisplayMemberHead>? _cut;
-  int _offset = 0;
-  Completer<void>? _wake;
-  Future<DisplayMemberBatch?>? _pending;
-  int get revision =>
-      reader._history.displayMemberRevisions[reference.blockId] ?? 0;
-  bool get isSealed =>
-      reader._history.displayBlocks.any((b) => b.id == reference.blockId);
-  void _changed() {
-    if ((_revision != revision || _sealed != isSealed) &&
-        !(_wake?.isCompleted ?? true)) {
-      _wake!.complete();
-    }
-  }
-
-  @override
-  Future<DisplayMemberBatch?> next() {
-    if (_reading) {
-      return Future.error(_demoQueryFailure('Concurrent member next'));
-    }
-    _reading = true;
-    final result = _next();
-    _pending = result;
-    return result.whenComplete(() {
-      _reading = false;
-      _pending = null;
-    });
-  }
-
-  Future<DisplayMemberBatch?> _next() async {
-    while (!_closed &&
-        !_sealedDelivered &&
-        _cut == null &&
-        _revision == revision &&
-        _sealed == isSealed) {
-      _wake = Completer<void>();
-      await _wake!.future;
-    }
-    if (_closed || _sealedDelivered) return null;
-    if (_cut == null) {
-      // Capture lightweight immutable heads at one cut. Changes arriving during
-      // transport belong to the next result, never the remaining batches.
-      _revision = revision;
-      _sealed = isSealed;
-      _offset = 0;
-      _cut = List.unmodifiable([
-        for (final h
-            in reader._history.displayHeads[reference] ??
-                const <DisplayMemberHead>[])
-          DisplayMemberHead(
-            memberKey: h.memberKey,
-            memberOrder: h.memberOrder,
-            record: DisplayRecord(
-              atom: reader.fit(h.record.atom, 0),
-              startFact: h.record.startFact,
-              endFact: h.record.endFact,
-              contentSource: h.record.contentSource,
-            ),
-          ),
-      ]);
-    }
-    final cut = _cut!;
-    final selected = <DisplayMemberHead>[];
-    int batchBytes(List<DisplayMemberHead> entries, bool complete) =>
-        _demoEncoded({
-          'block': {
-            'databaseId': reference.databaseId,
-            'blockId': reference.blockId,
-          },
-          'revision': _revision!,
-          'offset': _offset,
-          'sealed': _sealed,
-          'complete': complete,
-          'entries': [
-            for (final e in entries)
-              {
-                'memberKey': e.memberKey,
-                'memberOrder': e.memberOrder,
-                'record': _displayRecordJson(e.record),
-              },
-          ],
-        });
-    if (batchBytes([], cut.isEmpty) > demand.maxBytes) {
-      throw _demoQueryFailure('InvalidDemand: member envelope does not fit');
-    }
-    for (
-      var i = _offset;
-      i < cut.length && selected.length < demand.maxItems;
-      i++
-    ) {
-      final trial = [...selected, cut[i]];
-      if (batchBytes(trial, i + 1 == cut.length) > demand.maxBytes) {
-        if (selected.isEmpty) {
-          throw _demoQueryFailure(
-            'InvalidDemand: member envelope does not fit',
-          );
-        }
-        break;
-      }
-      selected.add(cut[i]);
-    }
-    final complete = _offset + selected.length == cut.length;
-    final result = DisplayMemberBatch(
-      block: reference,
-      revision: _revision!,
-      offset: _offset,
-      sealed: _sealed,
-      complete: complete,
-      entries: List.unmodifiable(selected),
-    );
-    _offset += selected.length;
-    if (complete) {
-      _cut = null;
-      _sealedDelivered = _sealed;
-    }
-    return result;
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    _closed = true;
-    _cut = null;
-    reader._history.changes.remove(_changed);
-    if (!(_wake?.isCompleted ?? true)) _wake!.complete();
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
-    await _pending;
-    reader._displayReads.remove(this);
-  }
-}
-
-int _viewBytes(ViewUpdate value) => _demoEncoded({
-  'presentationVersion': value.presentationVersion,
-  'readerProtocolVersion': value.readerProtocolVersion,
-  'after': value.after.value,
-  'next': value.next.value,
-  'history': {
-    'placement': value.history.placement.name,
-    'fromOrder': value.history.fromOrder,
-    'throughOrder': value.history.throughOrder,
-    'blocks': [
-      for (final b in value.history.blocks)
-        {
-          'id': b.id,
-          'blockOrder': b.blockOrder,
-          'body': _displayBodyJson(b.body),
-        },
-    ],
-    'before': value.history.before,
-  },
-  'tail': switch (value.tail) {
-    KeepTail() => {'kind': 'keep'},
-    ReplaceTail(:final snapshot) => {
-      'kind': 'replace',
-      'snapshot': _liveJson(snapshot),
-    },
-    TailStatus(
-      :final baseLayoutRevision,
-      :final revision,
-      :final currentWorkId,
-      :final thinkingSummary,
-    ) =>
-      {
-        'kind': 'status',
-        'baseLayoutRevision': baseLayoutRevision,
-        'revision': revision,
-        'currentWorkId': currentWorkId,
-        'thinkingSummary': thinkingSummary,
-      },
-  },
-});
-
-int _pageBytes(TimelinePage page) => _demoEncoded({
-  'presentationVersion': page.presentationVersion,
-  'databaseId': page.databaseId,
-  'ceiling': page.ceiling,
-  'blocks': [
-    for (final b in page.blocks)
-      {
-        'id': b.id,
-        'blockOrder': b.blockOrder,
-        'body': _displayBodyJson(b.body),
-      },
-  ],
-  'before': page.before,
-});

@@ -417,9 +417,6 @@ impl InputDriver {
 
 impl Owner {
     pub(super) fn resume_inputs(&mut self, options: InputDriverOptions) -> Result<(), ThreadError> {
-        if self.current_saved_lifecycle.is_some() {
-            return Err(ThreadError::CurrentPaused);
-        }
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
         }
@@ -427,7 +424,7 @@ impl Owner {
         // generation an earlier cancellation armed for the queue's next Turn is spent: the resumed
         // queue runs under the stop count it now has, not under one a stop already overtook.
         if self.input_driver.options().is_none() {
-            self.authorized_stops = None;
+            self.authorized_stops = self.current_saved_lifecycle.map(|_| self.interrupt.stops());
         }
         self.input_driver.enable(options);
         self.publish_snapshot();
@@ -488,7 +485,9 @@ impl Owner {
         };
         // The execution identity exists before any Turn record or storage wait, so a stop can name
         // exactly this generation even while it is still preparing.
-        if let Err(error) = self.begin_execution() {
+        if self.current_saved_lifecycle.is_none()
+            && let Err(error) = self.begin_execution()
+        {
             self.input_driver.fail(Arc::new(error));
             self.pause_inputs();
             return false;
@@ -500,7 +499,36 @@ impl Owner {
             max_model_steps: options.max_model_steps,
             cancellation: CancellationToken::new(),
         };
-        let result = if has_input {
+        let result = if self.current_saved_lifecycle.is_some() {
+            // Only the already-authorized queue driver reaches here. Use the same Current resume
+            // reconciliation and the same Turn loop; restoring an owner alone never enables it.
+            let authorized_stops = self
+                .authorized_stops
+                .take()
+                .unwrap_or_else(|| self.interrupt.stops());
+            self.resume_current(
+                self.runtime_epoch,
+                authorized_stops,
+                TurnInput {
+                    turn_id: request.turn_id,
+                    attempt_prefix: request.attempt_prefix,
+                    content: Vec::new(),
+                    max_model_steps: request.max_model_steps,
+                    cancellation: request.cancellation,
+                },
+            )
+            .await
+            .map(Some)
+            .map_err(|error| match error {
+                current::CurrentError::Cancelled => ThreadError::Cancelled,
+                current::CurrentError::Owner(ref owner)
+                    if matches!(owner.as_ref(), ThreadError::Cancelled) =>
+                {
+                    ThreadError::Cancelled
+                }
+                error => ThreadError::CurrentResume(Arc::new(error)),
+            })
+        } else if has_input {
             self.run_next_input(request).await
         } else {
             let active = self

@@ -1,8 +1,9 @@
 use super::*;
 use pl_core::chat::{
     ChatContent, ChatContentKey, ChatContents, ChatError, ContentData, ContentDescriptor,
-    ContentManifestPage, ContentManifestRequest,
 };
+#[cfg(test)]
+use pl_core::chat::{ContentManifestPage, ContentManifestRequest};
 use serde::{Deserialize, Serialize};
 
 pub(in crate::studio::storage::history) const CHUNK_BYTES: usize = 64 * 1024;
@@ -42,23 +43,16 @@ pub(in crate::studio::storage::history) fn manifest(bytes: &[u8]) -> Result<Mani
     Ok(manifest)
 }
 
+#[cfg(test)]
 pub(in super::super) async fn write_contents(
     db: &impl ConnectionTrait,
     id: &str,
     contents: &ChatContents,
 ) -> Result<()> {
     let owner = ChatKey::new("item", id)?;
-    write_owned_contents(db, &owner, contents).await
-}
-
-pub(in crate::studio::storage::history) async fn write_owned_contents(
-    db: &impl ConnectionTrait,
-    owner: &ChatKey,
-    contents: &ChatContents,
-) -> Result<()> {
     for (key, content) in contents {
         ensure!(
-            &key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
+            key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
             "completion content manifest has a foreign or inconsistent owner"
         );
         write_content(db, content, true).await?;
@@ -201,6 +195,7 @@ async fn write_chunks(
 }
 
 /// Decode only the generic key container. Encoding is always delegated to the one product mapper.
+#[cfg(test)]
 pub(in crate::studio::storage::history) fn current_owner(
     key: &ChatKey,
 ) -> Result<Option<crate::ContentOwner>> {
@@ -350,6 +345,7 @@ pub(in super::super) async fn read_contents(
     Ok(contents)
 }
 
+#[cfg(test)]
 pub(in super::super) async fn list_contents(
     db: &impl ConnectionTrait,
     request: &ContentManifestRequest,

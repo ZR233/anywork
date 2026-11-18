@@ -1,15 +1,59 @@
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, TransactionTrait};
+use sea_orm::{
+    ConnectionTrait, Database, DatabaseConnection, SqliteTransactionMode, TransactionOptions,
+    TransactionTrait,
+};
 use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf, SchemaManager};
 
 use super::{HistoryError, Result, db::statement};
 
 const MIGRATION: &str = "m20261116_000001_append_only_history";
+pub(super) type StageUpgradeReport =
+    Box<dyn FnOnce(super::upgrade::ImportCounts) -> Result<()> + Send>;
+fn known_legacy_versions() -> &'static std::collections::BTreeSet<String> {
+    static VERSIONS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
+        std::sync::OnceLock::new();
+    VERSIONS.get_or_init(|| {
+        crate::studio::storage::history::frozen_v24_migrations("migration-ledger")
+            .into_iter()
+            .map(|step| step.name().to_owned())
+            .collect()
+    })
+}
+
+/// Registers only the source ledger's already-applied definitions. No legacy migration is run
+/// during 24→25, including optional product preparation phases that were never applied.
+async fn legacy_versions(db: &DatabaseConnection) -> Result<Vec<String>> {
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT version FROM seaql_migrations ORDER BY version",
+            vec![],
+        ))
+        .await?;
+    let mut versions = Vec::with_capacity(rows.len());
+    for row in rows {
+        let version: String = row.try_get("", "version")?;
+        if !known_legacy_versions().contains(&version) {
+            return Err(HistoryError::Integrity(format!(
+                "unknown schema 24 migration {version}"
+            )));
+        }
+        versions.push(version);
+    }
+    Ok(versions)
+}
 
 struct Migration {
     thread_id: String,
     database_id: String,
+    source: Option<super::import::V24HistorySource>,
+    source_watermark: Option<u64>,
+    stage_report: Option<Arc<Mutex<Option<StageUpgradeReport>>>>,
 }
 impl MigrationName for Migration {
     fn name(&self) -> &str {
@@ -19,27 +63,81 @@ impl MigrationName for Migration {
 #[sea_orm_migration::async_trait::async_trait]
 impl MigrationTrait for Migration {
     fn use_transaction(&self) -> Option<bool> {
-        Some(true)
+        Some(false)
     }
     async fn up(&self, manager: &SchemaManager) -> std::result::Result<(), DbErr> {
         let db = manager.get_connection();
+        let stage_report = match &self.stage_report {
+            Some(slot) => slot
+                .lock()
+                .map_err(|_| DbErr::Migration("pending report stage lock poisoned".into()))?
+                .take(),
+            None => None,
+        };
         db.execute_unprepared(include_str!("schema.sql")).await?;
         db.execute_raw(statement(
             "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,?)",
             vec![self.database_id.clone().into(), self.thread_id.clone().into()],
         )).await?;
+        if let Some(source) = self.source.as_ref() {
+            let counts = super::upgrade::import_database(
+                db,
+                source,
+                &self.database_id,
+                &self.thread_id,
+                self.source_watermark.ok_or_else(|| {
+                    DbErr::Migration("schema 24 source watermark is missing".into())
+                })?,
+            )
+            .await
+            .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
+            if let Some(stage_report) = stage_report {
+                stage_report(counts).map_err(|error| {
+                    DbErr::Migration(format!("schema 25 report staging failed: {error:#}"))
+                })?;
+            }
+        }
         Ok(())
     }
 }
 struct Migrator {
     thread_id: String,
+    legacy_versions: Vec<String>,
+    migration: Option<(String, super::import::V24HistorySource, u64)>,
+    stage_report: Option<Arc<Mutex<Option<StageUpgradeReport>>>>,
 }
 impl MigratorTraitSelf for Migrator {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Migration {
+        let (database_id, source, source_watermark) = self.migration.as_ref().map_or_else(
+            || (uuid::Uuid::new_v4().to_string(), None, None),
+            |(database_id, source, source_watermark)| {
+                (
+                    database_id.clone(),
+                    Some(source.clone()),
+                    Some(*source_watermark),
+                )
+            },
+        );
+        let mut migrations = if self.legacy_versions.is_empty() {
+            Vec::new()
+        } else {
+            crate::studio::storage::history::frozen_v24_migrations(&self.thread_id)
+                .into_iter()
+                .filter(|step| {
+                    self.legacy_versions
+                        .iter()
+                        .any(|version| version == step.name())
+                })
+                .collect()
+        };
+        migrations.push(Box::new(Migration {
             thread_id: self.thread_id.clone(),
-            database_id: uuid::Uuid::new_v4().to_string(),
-        })]
+            database_id,
+            source,
+            source_watermark,
+            stage_report: self.stage_report.clone(),
+        }));
+        migrations
     }
 }
 
@@ -78,16 +176,91 @@ pub(super) async fn connect(
 }
 
 pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<()> {
-    Migrator {
-        thread_id: thread_id.into(),
-    }
-    .up(db, None)
+    run_immediate(
+        Migrator {
+            thread_id: thread_id.into(),
+            legacy_versions: Vec::new(),
+            migration: None,
+            stage_report: None,
+        },
+        db,
+    )
     .await?;
     Ok(())
 }
 
+pub(super) async fn run_upgrade(
+    db: &DatabaseConnection,
+    thread_id: &str,
+    database_id: &str,
+    source_watermark: u64,
+    source: super::import::V24HistorySource,
+    stage_report: StageUpgradeReport,
+) -> Result<()> {
+    let stage_report = Arc::new(Mutex::new(Some(stage_report)));
+    run_immediate(
+        Migrator {
+            thread_id: thread_id.into(),
+            legacy_versions: legacy_versions(db).await?,
+            migration: Some((database_id.to_owned(), source, source_watermark)),
+            stage_report: Some(stage_report),
+        },
+        db,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn run_immediate(migrator: Migrator, db: &DatabaseConnection) -> Result<()> {
+    // sea-orm-migration 2.0.4 has no transaction-mode hook. Keep the official runner as the
+    // sole migration executor/recorder, pass its manager this explicit Immediate transaction,
+    // and keep use_transaction()=false so the runner cannot open a nested transaction.
+    let thread_id = migrator.thread_id.clone();
+    let tx = db
+        .begin_with_options(TransactionOptions {
+            sqlite_transaction_mode: Some(SqliteTransactionMode::Immediate),
+            ..Default::default()
+        })
+        .await?;
+    migrator.up(&tx, None).await?;
+    match tx.commit().await {
+        Ok(()) => Ok(()),
+        Err(commit_error) => {
+            // A lost COMMIT acknowledgement is not proof that the new format was not published.
+            // Observe the committed identity through a fresh pooled connection before deciding
+            // whether a retry would append a second migration.
+            match identity(db, &thread_id).await {
+                Ok(_) => Ok(()),
+                Err(_) => Err(commit_error.into()),
+            }
+        }
+    }
+}
+
 pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result<(String, u64)> {
     let tx = db.begin().await?;
+    for table in tx
+        .query_all_raw(statement(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            vec![],
+        ))
+        .await?
+    {
+        let name: String = table.try_get("", "name")?;
+        if ![
+            "history_store_meta",
+            "history_events",
+            "history_bodies",
+            "history_body_chunks",
+            "seaql_migrations",
+        ]
+        .contains(&name.as_str())
+        {
+            return Err(HistoryError::Integrity(format!(
+                "unexpected table in schema 25 history: {name}"
+            )));
+        }
+    }
     let row = tx
         .query_one_raw(statement(
             "SELECT schema_version,database_id,thread_id FROM history_store_meta WHERE singleton=1",
@@ -103,7 +276,9 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         ));
     }
     let database_id: String = row.try_get("", "database_id")?;
-    if uuid::Uuid::parse_str(&database_id).is_err() {
+    // Database identity is an opaque capability qualifier. Upgrading a published
+    // history-db-* identity preserves its bytes; only new databases mint UUIDs.
+    if database_id.is_empty() {
         return Err(HistoryError::Integrity(
             "invalid history database identity".into(),
         ));
@@ -111,7 +286,19 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
     let migration = tx
         .query_all_raw(statement("SELECT version FROM seaql_migrations", vec![]))
         .await?;
-    if migration.len() != 1 || migration[0].try_get::<String>("", "version")? != MIGRATION {
+    let mut found = false;
+    for row in &migration {
+        let version: String = row.try_get("", "version")?;
+        if version != MIGRATION && !known_legacy_versions().contains(&version) {
+            return Err(HistoryError::Integrity(format!(
+                "unknown history migration {version}"
+            )));
+        }
+        if version == MIGRATION {
+            found = true;
+        }
+    }
+    if !found {
         return Err(HistoryError::Integrity(
             "unsupported history migration state".into(),
         ));

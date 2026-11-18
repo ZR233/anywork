@@ -1,6 +1,6 @@
 //! Current Work snapshots and the one-time legacy display upgrade.
+use super::v24_presentation_types::DisplayBlockBody;
 use super::*;
-use crate::DisplayBlockBody;
 mod legacy;
 use crate::{ChatFactPosition, ChatSourceId};
 use serde::{Deserialize, Serialize};
@@ -226,11 +226,6 @@ pub(in crate::studio::storage::history) mod tests {
     use sea_orm::{Database, DatabaseConnection};
     use sea_orm_migration::MigratorTraitSelf;
 
-    pub(in crate::studio::storage::history) async fn initialize_current(
-        db: &DatabaseConnection,
-    ) -> Result<()> {
-        super::super::prepare(db, THREAD, Preparation::Schema, None).await
-    }
     const THREAD: &str = "display-snapshot-migration";
     struct Published18;
     impl MigratorTraitSelf for Published18 {
@@ -263,73 +258,6 @@ pub(in crate::studio::storage::history) mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_store_initializes_current_snapshots_without_legacy_conversion() -> Result<()> {
-        let (_dir, db) = fixture().await?;
-        initialize_current(&db).await?;
-        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
-        super::super::execution_facts::validate(&db).await?;
-        assert_eq!(conversation::display::watermarks(&db).await?, (0, 0));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn immutable_runs_backfill_visible_members_without_rewriting_originals() -> Result<()> {
-        let (_dir, db) = fixture().await?;
-        let mut originals = Vec::new();
-        for seq in 1..=3i64 {
-            let id = format!("original-{seq}");
-            let mut atom: crate::ChatAtom =
-                serde_json::from_slice(&conversation::tests::metadata(&id))?;
-            atom.kind = crate::ChatAtomKind::ToolCall;
-            atom.delivery = crate::ChatDeliveryKind::Foreground;
-            if seq == 3 {
-                atom.kind = crate::ChatAtomKind::Inference;
-            }
-            atom.source = crate::ChatSourceId::ForegroundTurn {
-                turn_id: "saved-turn".into(),
-            };
-            let metadata = serde_json::to_vec(&atom)?;
-            let payload = vec![0u8, 255, seq as u8];
-            let visible = seq < 3;
-            db.execute_raw(statement("INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata,display_run_start,display_run_ordinal) VALUES(?,?,'conversation',NULL,?,?,?,?)",
-            vec![seq.into(),id.clone().into(),payload.clone().into(),metadata.clone().into(),visible.then_some(1i64).into(),visible.then_some(seq).into()])).await?;
-            originals.push((id, payload, metadata));
-        }
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        let heads = conversation::display::history_heads(&db, 1, None, 10).await?;
-        assert_eq!(heads.len(), 1);
-        assert!(
-            matches!(&heads[0].body, DisplayBlockBody::Work { timing, .. } if timing.started_at.is_none() && timing.finished_at.is_none())
-        );
-        let members = db
-            .query_all_raw(statement(
-                "SELECT completion_id FROM conversation_display_members ORDER BY member_order",
-                vec![],
-            ))
-            .await?;
-        assert_eq!(
-            members
-                .iter()
-                .map(|row| row.try_get::<String>("", "completion_id"))
-                .collect::<std::result::Result<Vec<_>, _>>()?,
-            vec!["original-1", "original-2"]
-        );
-        let rows = db
-            .query_all_raw(statement(
-                "SELECT item_id,payload,metadata FROM conversation_items ORDER BY seq",
-                vec![],
-            ))
-            .await?;
-        for (row, (id, payload, metadata)) in rows.iter().zip(originals) {
-            assert_eq!(row.try_get::<String>("", "item_id")?, id);
-            assert_eq!(row.try_get::<Vec<u8>>("", "payload")?, payload);
-            assert_eq!(row.try_get::<Vec<u8>>("", "metadata")?, metadata);
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn published_legacy_snapshot_bookkeeping_upgrades_and_reopens() -> Result<()> {
         let (_dir, db) = fixture().await?;
         super::initialize(&db).await?;
@@ -354,74 +282,6 @@ pub(in crate::studio::storage::history) mod tests {
             ))
             .await?
             .is_some()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn legacy_work_keeps_identity_and_unknown_time_and_rolls_back_invalid_headers()
-    -> Result<()> {
-        let (_dir, db) = fixture().await?;
-        super::initialize(&db).await?;
-        let header = serde_json::json!({
-            "version":2,"legacy":true,"id":"old-work",
-            "source":{"kind":"foregroundTurn","turnId":"old-turn"},
-            "block_order":1,"history_pos":1,"boundary":null,
-            "sealed":true,"unfinished":0,"next_member":0,"revision":1,"skip_display":false,
-            "body":{"kind":"work","summary":{"durationMs":1234},
-                "members":{"databaseId":"unused","blockId":"old-work"}}
-        });
-        db.execute_raw(statement("INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header) VALUES(?,?,1,1,1,0,?)",vec!["old-work".into(),serde_json::to_string(&header["source"])?.into(),serde_json::to_vec(&header)?.into()])).await?;
-        db.execute_unprepared(
-            "UPDATE history_meta SET schema_version=20,display_published_through=1 WHERE id=1",
-        )
-        .await?;
-        // An unsupported header must not leave an archive or partially publish a new schema.
-        let mut invalid = header.clone();
-        invalid["version"] = 99.into();
-        db.execute_raw(statement(
-            "UPDATE conversation_display_blocks SET header=?",
-            vec![serde_json::to_vec(&invalid)?.into()],
-        ))
-        .await?;
-        assert!(
-            super::super::prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
-        assert_eq!(version(&db).await?, 20);
-        assert!(
-            db.query_one_raw(statement(
-                "SELECT 1 FROM sqlite_schema WHERE name='work_snapshot_migration_headers'",
-                vec![]
-            ))
-            .await?
-            .is_none()
-        );
-        db.execute_raw(statement(
-            "UPDATE conversation_display_blocks SET header=?",
-            vec![serde_json::to_vec(&header)?.into()],
-        ))
-        .await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        let heads = conversation::display::history_heads(&db, 1, None, 1).await?;
-        assert_eq!(heads[0].id, "old-work");
-        let DisplayBlockBody::Work { timing, .. } = &heads[0].body else {
-            panic!("Work")
-        };
-        assert_eq!(timing.started_at, None);
-        assert_eq!(timing.finished_at, None);
-        let archived = db
-            .query_one_raw(statement(
-                "SELECT header FROM work_snapshot_migration_headers WHERE block_id='old-work'",
-                vec![],
-            ))
-            .await?
-            .unwrap();
-        assert_eq!(
-            archived.try_get::<Vec<u8>>("", "header")?,
-            serde_json::to_vec(&header)?
         );
         Ok(())
     }

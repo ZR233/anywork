@@ -140,6 +140,31 @@ impl StudioRuntime {
             } = request;
             validate_prompt_content(&input)?;
             ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
+            // The host request digest lets an exact durable repeat answer before draft resolution,
+            // route lookup or workspace preparation. Older facts without that optional digest
+            // retain the content-digest fallback after ThreadInput is reconstructed.
+            let history_admission = self
+                .read_input_admission(&thread_id, &input.input_id)
+                .await?;
+            if let Some(admission) = &history_admission {
+                anyhow::ensure!(
+                    admission.purpose == pl_core::thread::input::InputPurpose::Message,
+                    "input identity conflicts with an accepted prompt"
+                );
+                if let Some(accepted_digest) = &admission.request_digest {
+                    let requested_digest =
+                        crate::history::prompt_request_digest(&input, &options.presentation)?;
+                    anyhow::ensure!(
+                        accepted_digest == &requested_digest,
+                        "input identity conflicts with an accepted prompt"
+                    );
+                    return Ok(StudioSubmitPromptResponse {
+                        thread_id,
+                        input_id: admission.id.clone(),
+                        cursor: admission.accepted_sequence,
+                    });
+                }
+            }
             let started = std::time::Instant::now();
             let (thread_record, thread, _agent_operation) = self
                 .prepare_prompt_admission(&thread_id, UserThreadAction::Submit, &input.input_id)
@@ -171,53 +196,9 @@ impl StudioRuntime {
             let terminal_retry = snapshot
                 .terminal_inputs
                 .iter()
-                .any(|identity| identity.id == input.input_id);
+                .find(|identity| identity.id == input.input_id)
+                .cloned();
             drop(snapshot);
-            if terminal_retry {
-                // Core's bounded terminal identity proves admission but no longer carries
-                // the original admission watermark. Wait for its original writer before
-                // answering, rather than rebuilding that receipt at today's commit.
-                ensure_submission_not_cancelled(cancel)?;
-                self.thread_observations
-                    .synchronize(Some(&thread_id))
-                    .await?;
-                ensure_submission_not_cancelled(cancel)?;
-            }
-            // 跨重启幂等：终态输入已经离开 core 的有界驻留窗口，改由 history.sqlite 的轻量身份
-            // 索引回答重复提交；只读取最小身份记录，不把历史实体搬回 core，也不重放 effect。
-            // 幂等命中必须证明正文身份：索引里的 host 提交摘要与本次请求一致才是重放，不一致或
-            // 索引无法给出摘要都按身份冲突拒绝，不能只凭 ID 返回旧回执。
-            let durable_receipt = match self.read_timeline_history(&thread_id).await {
-                Ok(history) => history.input_identity(&input.input_id).await?,
-                // 历史尚未追平 checkpoint fence 时退回普通受理：驻留队列仍然覆盖本 incarnation
-                // 的重复提交，不能因为一次只读索引未就绪而拒绝新输入。
-                Err(error) if terminal_retry => return Err(error),
-                Err(_) => None,
-            };
-            if let Some(previous) = durable_receipt {
-                let expected = crate::studio::thread_projection::prompt_request_digest(
-                    &input,
-                    options.presentation,
-                );
-                match previous.request_digest.as_deref() {
-                    Some(stored) => anyhow::ensure!(
-                        stored == expected,
-                        "input identity conflicts with an accepted prompt"
-                    ),
-                    None => bail!(
-                        "input identity was already accepted with an unverifiable body; use a new inputId"
-                    ),
-                }
-                return Ok(StudioSubmitPromptResponse {
-                    thread_id,
-                    input_id: input.input_id,
-                    cursor: previous.entry.accepted_sequence,
-                });
-            }
-            anyhow::ensure!(
-                !terminal_retry,
-                "accepted input identity is missing from synchronized history"
-            );
             // The caller's frozen route is a CAS against its canonical extension,
             // not a Thread revision or the current mode default. Both route writes
             // and input admission hold lifecycle_lock, so it cannot change between
@@ -341,6 +322,25 @@ impl StudioRuntime {
                 payload,
                 context,
             };
+            if let Some(admission) = history_admission {
+                anyhow::ensure!(
+                    admission.purpose == pl_core::thread::input::InputPurpose::Message
+                        && admission.digest == thread_input.digest(),
+                    "input identity conflicts with an accepted prompt"
+                );
+                return Ok(StudioSubmitPromptResponse {
+                    thread_id,
+                    input_id: admission.id,
+                    cursor: admission.accepted_sequence,
+                });
+            }
+            if terminal_retry.is_some() {
+                return Err(anyhow::Error::new(crate::StudioError::new(
+                    crate::StudioErrorCode::Busy,
+                    "The accepted input receipt is not yet durable in History; retry the same inputId",
+                    true,
+                )));
+            }
             let driver = pl_core::thread::input::InputDriverOptions {
                 max_model_steps: submission_step_limit(
                     options.max_model_steps,

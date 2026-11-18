@@ -1,5 +1,3 @@
-import 'support/display_record_observation.dart';
-
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,6 +11,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
     show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.dart';
@@ -26,8 +25,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-import 'support/fixture_gate.dart';
 import 'support/composer_target_diagnostic.dart';
+import 'support/display_record_observation.dart';
+import 'support/fixture_gate.dart';
+import 'support/history_turns.dart';
 import 'support/presentation_capture.dart';
 import 'support/timeline_observation.dart';
 
@@ -217,12 +218,28 @@ void main() {
       while (!predicate()) {
         if (elapsed.elapsed > const Duration(seconds: 35)) {
           final selection = graph.client.selection.state;
+          final selectedThread = selection.selectedThreadId;
+          final current = selectedThread == null
+              ? null
+              : graph.client.conversations.session(selectedThread).state;
+          final currentDiagnostic = {
+            'hasSnapshot': current?.hasSnapshot,
+            'revision': current?.revision,
+            'syncPhase': current?.sync.phase.name,
+            'syncError': current?.sync.errorMessage,
+            'activeTurnId': current?.activeTurn?.turnId,
+            'activeInputId': current?.activeTurn?.inputId,
+            'activeStatus': current?.activeTurn?.state.status.name,
+            'lastTurnId': current?.lastTurn?.turnId,
+            'lastStatus': current?.lastTurn?.state.status.name,
+          };
           report['readinessFailure'] = {
             'reason': reason,
             'expectedProjectPath': project,
             'projectId': selection.selectedProjectId,
             'threadId': selection.selectedThreadId,
             'needsOpen': selection.needsOpen,
+            'current': currentDiagnostic,
             'route': router.routeInformationProvider.value.uri.toString(),
             'projects': [
               for (final item
@@ -253,7 +270,7 @@ void main() {
           } catch (error) {
             report['readinessCaptureError'] = error.toString();
           }
-          fail('Timed out: $reason');
+          fail('Timed out: $reason; Current: ${jsonEncode(currentDiagnostic)}');
         }
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);
@@ -310,28 +327,28 @@ void main() {
       tester,
       () => graph.timeline.lease(threadId)!,
     );
-    await until(
-      () =>
-          graph.timeline.lease(threadId) != null &&
-          observed.singleBlocks.any(
-            (block) =>
-                (block.body as SingleDisplayBlock).record.atom.source
-                    is InputChatSource,
-          ),
-      'first real InputChatSource applied',
-    );
-    StudioTurnView? latestTurn() {
-      final state = graph.client.conversations.session(threadId).state;
-      return state.activeTurn ?? state.lastTurn;
-    }
+    StudioTurnView? firstTurn;
+    await until(() {
+      if (graph.timeline.lease(threadId) == null) return false;
+      final turn = graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn;
+      if (turn?.state.status != StudioTurnStatus.running ||
+          turn?.inputId == null) {
+        return false;
+      }
+      firstTurn = turn;
+      return true;
+    }, 'first canonical running Turn with its accepted input');
+    expect(firstTurn!.inputId, isNotNull);
+    expect(firstTurn!.state.status, StudioTurnStatus.running);
+    record('first-model-gate-reached', {'turnId': firstTurn!.turnId});
 
-    await until(
-      () => latestTurn()?.state.status == StudioTurnStatus.running,
-      'first canonical running Turn delivered',
-    );
-    final firstTurn = latestTurn()!;
-    expect(firstTurn.state.status, StudioTurnStatus.running);
-    record('first-model-gate-reached', {'turnId': firstTurn.turnId});
+    StudioTurnView? activeTurn() {
+      final state = graph.client.conversations.session(threadId).state;
+      return state.activeTurn;
+    }
 
     transport.arm();
     await submit(_second);
@@ -401,6 +418,32 @@ void main() {
     await capturePresentation(tester, 'submission-received.png');
 
     transport.releaseFeed();
+    final historyRows = await waitForHistoryRows(
+      conversations: graph.client.conversations,
+      threadId: threadId,
+      matches: (rows) {
+        final matches = rows.where((entry) {
+          final head = entry.head;
+          return head is SingleHistoryRow &&
+              head.head.source == InputChatSource(inputId: inputId);
+        }).toList();
+        if (matches.length > 1) {
+          throw StateError(
+            'History admitted duplicate input rows for $inputId',
+          );
+        }
+        return matches.length == 1;
+      },
+      description: 'one canonical History input row for $inputId',
+    );
+    expect(
+      historyRows.where((entry) {
+        final head = entry.head;
+        return head is SingleHistoryRow &&
+            head.head.source == InputChatSource(inputId: inputId);
+      }),
+      hasLength(1),
+    );
     await until(
       () =>
           owner.submissions.value.isEmpty &&
@@ -425,12 +468,17 @@ void main() {
     expect(completedOriginalId(canonicalBody.record), isNotNull);
     await observed.revealSingle(canonical);
     final row = observed.itemRow(canonical.id);
-    expect(row.hitTestable(), findsOneWidget);
+    final canonicalText = find.descendant(
+      of: row,
+      matching: find.text(_second, findRichText: true),
+    );
+    await observed.reveal(canonicalText, canonical.id);
+    expect(canonicalText.hitTestable(), findsOneWidget);
     expect(
       tester.widget<ChatItemView>(row).item.atom!.source,
       InputChatSource(inputId: inputId),
     );
-    expect(find.text(_second), findsOneWidget);
+    expect(canonicalText, findsOneWidget);
     expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,
@@ -441,18 +489,21 @@ void main() {
     await capturePresentation(tester, 'submission-canonical.png');
     await fixtureGate(tester, provider, _stage, release: true);
     firstGateReleased = true;
+    final secondTurn = await waitForCompletedHistoryTurn(
+      conversations: graph.client.conversations,
+      threadId: threadId,
+      matches: (head) => head.inputId == inputId,
+      description: 'completed History Turn for the handed-off second input',
+      timeout: const Duration(minutes: 2),
+    );
     await until(() {
-      final turn = latestTurn();
-      return turn != null &&
-          turn.turnId != firstTurn.turnId &&
-          turn.state.status == StudioTurnStatus.completed &&
-          observed.singleBlocks.any(
-            (block) =>
-                (block.body as SingleDisplayBlock).record.atom.source ==
-                    ForegroundTurnChatSource(turnId: turn.turnId) &&
-                (block.body as SingleDisplayBlock).record.atom.kind ==
-                    ChatAtomKind.text,
-          );
+      return observed.singleBlocks.any(
+        (block) =>
+            (block.body as SingleDisplayBlock).record.atom.source ==
+                ForegroundTurnChatSource(turnId: secondTurn.turnId) &&
+            (block.body as SingleDisplayBlock).record.atom.kind ==
+                ChatAtomKind.text,
+      );
     }, 'second real model turn completed after interrupting the first');
     await until(() {
       final state = graph.client.conversations.session(threadId).state;
@@ -473,23 +524,21 @@ void main() {
       'strict lifecycle provider listening on the original address',
     );
     await submit(_lifecycle);
-    await until(
-      () =>
-          File('$output/submission-stop-reached').existsSync() &&
-          graph.client.conversations
-                  .session(threadId)
-                  .state
-                  .runtime
-                  ?.execution
-                  ?.phase ==
-              AgentExecutionPhase.running,
-      'real execution is running inside the provider gate',
-    );
+    await until(() {
+      final state = graph.client.conversations.session(threadId).state;
+      final execution = state.runtime?.execution;
+      final turn = state.activeTurn;
+      return File('$output/submission-stop-reached').existsSync() &&
+          execution?.phase == AgentExecutionPhase.running &&
+          turn?.turnId == execution?.turnId &&
+          turn?.inputId != null &&
+          turn?.state.status == StudioTurnStatus.running;
+    }, 'real execution is running inside the provider gate');
     final session = graph.client.conversations.session(threadId);
     final stoppedExecution = session.state.runtime!.execution!;
     final stoppedTurnId = stoppedExecution.turnId!;
-    expect(latestTurn()!.turnId, stoppedTurnId);
-    expect(latestTurn()!.state.isTerminal, isFalse);
+    expect(activeTurn()!.turnId, stoppedTurnId);
+    expect(activeTurn()!.state.isTerminal, isFalse);
     expect(tester.widget<TextField>(input).controller!.text, isEmpty);
 
     // Hold only the real stop RPC, not a fabricated stop result. This gives a
@@ -523,7 +572,7 @@ void main() {
     }, 'production stop action pending for the frozen execution identity');
     expect(transport.stopReceipt, isNull);
     expect(session.state.runtime!.execution!.id, stoppedExecution.id);
-    expect(latestTurn()!.state.isTerminal, isFalse);
+    expect(activeTurn()!.state.isTerminal, isFalse);
     await capturePresentation(tester, 'submission-stopping.png');
     expect(session.state.runtime!.execution!.id, stoppedExecution.id);
     record('stop-pending-not-terminal', {'executionId': stoppedExecution.id});
@@ -536,6 +585,14 @@ void main() {
     expect(transport.stopReceipt!.threadId, threadId);
     expect(transport.stopReceipt!.stopped, isTrue);
     record('stop-accepted', {'executionId': stoppedExecution.id});
+    final cancelledTurn = await waitForHistoryTurn(
+      conversations: graph.client.conversations,
+      threadId: threadId,
+      matches: (head) => head.turnId == stoppedTurnId,
+      isExpectedTerminal: (head) => head.state == HistoryTurnState.cancelled,
+      description: 'cancelled stopped Turn in History',
+    );
+    expect(cancelledTurn.state, HistoryTurnState.cancelled);
     // A successful RPC is NOT the end condition: wait for the canonical
     // execution to disappear, the exact Turn to terminate and its continuation.
     await until(
@@ -543,8 +600,6 @@ void main() {
           session.state.runtime?.execution == null &&
           session.state.runtime?.continuation?.sourceTurnId == stoppedTurnId &&
           session.state.runtime?.continuation?.claimed == false &&
-          latestTurn()?.turnId == stoppedTurnId &&
-          latestTurn()?.state.status == StudioTurnStatus.cancelled &&
           find.byKey(const ValueKey('composer-continue')).evaluate().length ==
               1,
       'stopped execution ended and canonical continuation is available',
@@ -567,17 +622,20 @@ void main() {
     // claim this exact canonical continuation and admit a new execution.
     await tester.tap(find.byKey(const ValueKey('composer-continue')));
     await tester.pump();
-    await until(
-      () =>
-          File('$output/submission-resume-reached').existsSync() &&
-          session.state.runtime?.execution?.phase ==
-              AgentExecutionPhase.running &&
-          session.state.runtime?.execution?.id != stoppedExecution.id,
-      'explicit continuation starts a new real execution',
-    );
+    await until(() {
+      final execution = session.state.runtime?.execution;
+      final turn = session.state.activeTurn;
+      return File('$output/submission-resume-reached').existsSync() &&
+          execution?.phase == AgentExecutionPhase.running &&
+          execution?.id != stoppedExecution.id &&
+          turn?.turnId == execution?.turnId &&
+          turn?.inputId != null &&
+          turn?.state.status == StudioTurnStatus.running;
+    }, 'explicit continuation starts a new real execution');
     final resumedExecution = session.state.runtime!.execution!;
     expect(resumedExecution.turnId, isNot(stoppedTurnId));
-    expect(latestTurn()!.state.isTerminal, isFalse);
+    expect(activeTurn()!.turnId, resumedExecution.turnId);
+    expect(activeTurn()!.state.isTerminal, isFalse);
     expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
     expect(find.byKey(const ValueKey('composer-continue')), findsNothing);
     expect(tester.widget<TextField>(input).controller!.text, isEmpty);
@@ -590,12 +648,18 @@ void main() {
     });
     await File('$output/submission-stop-release').writeAsString('release\n');
     await File('$output/submission-resume-release').writeAsString('release\n');
+    final resumedTurn = await waitForCompletedHistoryTurn(
+      conversations: graph.client.conversations,
+      threadId: threadId,
+      matches: (head) => head.turnId == resumedExecution.turnId,
+      description: 'completed resumed Turn in History',
+      timeout: const Duration(minutes: 2),
+    );
+    expect(resumedTurn.state, HistoryTurnState.completed);
     await until(
       () =>
           session.state.runtime?.execution == null &&
           session.state.runtime?.continuation == null &&
-          latestTurn()?.turnId == resumedExecution.turnId &&
-          latestTurn()?.state.status == StudioTurnStatus.completed &&
           session.state.storage?.acceptedSequence != null &&
           session.state.storage?.durableSequence != null &&
           session.state.storage!.durableSequence! >=
@@ -611,7 +675,7 @@ void main() {
       'completed': true,
     };
     report['inputId'] = inputId;
-    report['firstTurnId'] = firstTurn.turnId;
+    report['firstTurnId'] = firstTurn!.turnId;
     report['heldFrames'] = transport.heldFrames;
     for (final name in [
       'submission-pending.png',
@@ -728,14 +792,14 @@ class _SubmissionTransport extends FrbStudioTransport {
     return result;
   }
 
-  Future<ViewUpdate> deliver(ViewUpdate update) async {
+  Future<HistoryTimelinePage> deliver(HistoryTimelinePage update) async {
     final gate = _feed;
     if (gate != null && !gate.isCompleted) {
       heldFrames++;
-      lastHeldCursor = update.next.value;
+      lastHeldCursor = update.next;
       record('real-response-held', {
-        'after': update.after.value,
-        'next': update.next.value,
+        'cut': update.cut.token,
+        'next': update.next,
       });
       await gate.future;
     }
@@ -743,49 +807,100 @@ class _SubmissionTransport extends FrbStudioTransport {
   }
 
   @override
-  Future<TimelineReader> openTimelineReader(
+  Future<HistoryReader> openHistoryReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required ReadDemand demand,
-  }) async => _SubmissionReader(
-    await super.openTimelineReader(
+    required int historyProtocolVersion,
+  }) async => _SubmissionHistoryReader(
+    await super.openHistoryReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: readerProtocolVersion,
-      demand: demand,
+      historyProtocolVersion: historyProtocolVersion,
     ),
     this,
   );
 }
 
 /// Holds only delivery of the original response. Closing releases that local barrier first.
-class _SubmissionReader implements TimelineReader {
-  _SubmissionReader(this.original, this.owner);
-  final TimelineReader original;
+class _SubmissionHistoryReader implements HistoryReader {
+  _SubmissionHistoryReader(this.original, this.owner);
+  final HistoryReader original;
   final _SubmissionTransport owner;
   @override
-  OpenTimeline get metadata => original.metadata;
+  OpenHistory get metadata => original.metadata;
   @override
-  ConversationReader get reader => original.reader;
+  String get threadId => original.threadId;
   @override
-  Future<ViewUpdate> next({required ViewCursor after}) async =>
-      owner.deliver(await original.next(after: after));
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) async => owner.deliver(
+    await original.timelinePage(cut: cut, cursor: cursor, demand: demand),
+  );
   @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => original.loadTimelineOlder(before: before, demand: demand);
+  Future<HistoryCut> capture() => original.capture();
   @override
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => original.loadLiveOlder(before: before, demand: demand);
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.groupPage(
+    groupId: groupId,
+    cut: cut,
+    cursor: cursor,
+    demand: demand,
+  );
   @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required ReadDemand demand,
-  }) => original.openDisplayMembers(reference: reference, demand: demand);
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.turnsPage(cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.eventsPage(
+    query: query,
+    cut: cut,
+    cursor: cursor,
+    demand: demand,
+  );
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) => original.readEvent(eventId: eventId, demand: demand);
+  @override
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.listBodies(eventId: eventId, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) => original.readBody(
+    reference: reference,
+    offset: offset,
+    maxBytes: maxBytes,
+  );
+  @override
+  Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
+      original.accounting(cut: cut);
+  @override
+  Future<HistoryTimelinePage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.costsPage(cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryCut> waitChanged(HistoryCut after) =>
+      original.waitChanged(after);
   @override
   void requestClose() {
     owner.releaseFeed();

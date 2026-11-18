@@ -15,8 +15,6 @@ import 'support/accounts_test_runtime.dart';
 import 'support/directory_feed.dart';
 import 'support/timeline_transport.dart';
 
-const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
-
 // The native fixture identity used before the SDK conversation migration.
 const _epoch = 'native-runtime-one';
 
@@ -154,7 +152,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   final List<StreamController<ThreadStreamFrame>> threadBindings = [];
-  final List<ScriptedConversationFeed> contentWindows = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
   int continuationReadCalls = 0;
@@ -197,21 +194,11 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
-    required ChatScope scope,
+    required int currentProtocolVersion,
     required ReadDemand demand,
-  }) async {
-    final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
-    threadBindings.add(states);
-    final feed = ScriptedConversationFeed(threadId: threadId);
-    contentWindows.add(feed);
-    return feed;
-  }
-
-  @override
-  Future<ConversationStateFeed> openConversationStateFeed(String threadId) =>
-      Future.value(ScriptedConversationStateFeed(threadId: threadId));
+  }) => Future.value(ScriptedCurrentReader(threadId: threadId));
 
   @override
   Future<void> compactThread(String threadId) {
@@ -395,34 +382,12 @@ final class _TopicBinding {
   final Future<void> listening;
 }
 
-final class _RouteConflictFeed extends ScriptedConversationFeed {
-  _RouteConflictFeed({
-    required super.threadId,
-    required super.subscriptionId,
-    required super.initial,
-
-    required this.onClose,
-  });
-
-  final Future<void> Function() onClose;
-  Future<void>? _closing;
-
-  @override
-  Future<void> close() => _closing ??= _close();
-
-  Future<void> _close() async {
-    // A feed owns cleanup even if retired before its events getter is consumed.
-    await onClose();
-    await super.close();
-  }
-}
-
-/// A state feed whose native close stays observable and gateable, mirroring
-/// [_RouteConflictFeed] on the independent state channel.
-final class _RouteConflictStateFeed extends ScriptedConversationStateFeed {
-  _RouteConflictStateFeed({
+/// A Current reader whose native close stays observable and gateable.
+final class _RouteConflictCurrentReader extends ScriptedCurrentReader {
+  _RouteConflictCurrentReader({
     required super.threadId,
     required super.states,
+    super.initialView,
     required this.onClose,
   });
 
@@ -440,50 +405,27 @@ final class _RouteConflictStateFeed extends ScriptedConversationStateFeed {
 }
 
 final class _RouteConflictTransport extends _Transport {
-  _RouteConflictTransport({this.onStateFeedClose}) {
+  _RouteConflictTransport({this.onCurrentClose}) {
     addTearDown(() async {
-      for (final binding in bindings) {
-        await binding.close();
-      }
       for (final binding in stateBindings) {
         await binding.close();
       }
     });
   }
 
-  final List<StreamController<ThreadStreamFrame>> bindings = [];
   final List<StreamController<ThreadStreamFrame>> stateBindings = [];
-  final Future<void> Function(int index)? onStateFeedClose;
+  final List<_RouteConflictCurrentReader> readers = [];
+  final Future<void> Function(int index)? onCurrentClose;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
-  int windowOpens = 0;
+  Completer<void>? nextCurrentOpenGate;
 
   @override
-  Future<ConversationFeed> openConversationFeed(
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
-    required ChatScope scope,
+    required int currentProtocolVersion,
     required ReadDemand demand,
   }) async {
-    final index = bindings.length;
-    // Frames may have no consumer when opening is retired immediately.
-    final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
-    bindings.add(binding);
-    windowOpens++;
-    final feed = _RouteConflictFeed(
-      threadId: threadId,
-      subscriptionId: 'route-conflict-$index',
-      initial: chatSet(messages: const []),
-
-      onClose: Future<void>.value,
-    );
-    contentWindows.add(feed);
-    return feed;
-  }
-
-  @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async {
     final index = stateBindings.length;
     // Frames may have no consumer when opening is retired immediately.
     final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
@@ -491,11 +433,22 @@ final class _RouteConflictTransport extends _Transport {
     if (stateBindings.length == 2 && !refreshEntered.isCompleted) {
       refreshEntered.complete();
     }
-    return _RouteConflictStateFeed(
+    final initial = index == 0
+        ? _workspace(revision: 40, routeRevision: 3)
+        : _workspace(revision: 7, routeRevision: 4);
+    final reader = _RouteConflictCurrentReader(
       threadId: threadId,
       states: binding.stream,
-      onClose: () => onStateFeedClose?.call(index) ?? Future<void>.value(),
+      initialView: currentViewForWorkspace(initial),
+      onClose: () => onCurrentClose?.call(index) ?? Future<void>.value(),
     );
+    readers.add(reader);
+    if (index > 0) {
+      final gate = nextCurrentOpenGate;
+      nextCurrentOpenGate = null;
+      await gate?.future;
+    }
+    return reader;
   }
 
   @override
@@ -925,30 +878,20 @@ Future<AnyworkClient> _client(
   onRuntime?.call(runtime);
   final client = runtime.client;
   client.applyBootstrap(_bootstrap(_epoch, _settings(1)));
-  // The command has a stable selected identity; this test does not open a native
-  // ChatView. State frames enter through the production read-model reducers.
+  // The command has a stable selected identity; Current frames enter through
+  // the production read-model reducers.
   client.selection.restoreStartup(
     workspaceId: 'project',
     threadId: 'thread',
     needsOpen: true,
   );
-  final consumer = TestCompletionConsumer();
-  client.conversations
-      .session('thread')
-      .content
-      .attachConsumer(consumer, demand: _demand);
-  _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
-  await scriptedStateFeed('thread');
-  final feed = transport.contentWindows.single;
-  await feed.acknowledged(1);
+  await scriptedCurrentReader('thread');
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
   return client;
 }
-
-final _completionConsumers = Expando<TestCompletionConsumer>();
 
 ResourceStamp _stamp(String key, int revision) =>
     ResourceStamp(resourceKey: key, ownerEpoch: _epoch, revision: revision);
@@ -1891,7 +1834,6 @@ void main() {
     client.selection.markOpened();
     final session = client.conversations.existingSession('thread')!;
     await session.deliverWorkspace(_workspace(revision: 40, routeRevision: 2));
-    await session.content.ready;
     final failure = expectLater(
       client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
@@ -2444,7 +2386,7 @@ void main() {
   });
 
   test(
-    'route conflict resync rebuilds the state feed and awaits the new baseline',
+    'route conflict resync uses the replacement initialView before retrying',
     () async {
       final transport = _RouteConflictTransport();
       final client = await _client(transport);
@@ -2453,7 +2395,6 @@ void main() {
       await session.deliverWorkspace(
         _workspace(revision: 40, routeRevision: 2),
       );
-      await session.content.ready;
       await session.deliverNotification(
         ThreadNotificationFrame(
           threadId: 'thread',
@@ -2467,6 +2408,7 @@ void main() {
           ),
         ),
       );
+      final replacementOpen = transport.nextCurrentOpenGate = Completer<void>();
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
         accountId: 'account',
@@ -2478,18 +2420,14 @@ void main() {
         hasLength(2),
         reason: 'the resync replaced the state feed',
       );
-      expect(
-        transport.bindings,
-        hasLength(1),
-        reason: 'a state resync must not reopen valid content',
-      );
       expect(session.state.revision, 41);
       expect(
         transport.attempts,
         hasLength(1),
         reason: 'await the replacement baseline',
       );
-      await session.deliverWorkspace(_workspace(revision: 7, routeRevision: 4));
+      expect(session.state.modelRoute?.revision, 3);
+      replacementOpen.complete();
       await changing;
       expect(transport.attempts, hasLength(2));
       expect(
@@ -2498,6 +2436,7 @@ void main() {
       );
       expect(transport.attempts.last.expectedRouteRevision, 4);
       expect(transport.attempts.last.expectedSettingsRevision, 2);
+      expect(session.state.modelRoute?.revision, 4);
       transport.stateBindings.first.add(
         ThreadNotificationFrame(
           threadId: 'thread',
@@ -2529,40 +2468,34 @@ void main() {
       expect(session.state.runtime!.modelId, 'alpha');
       expect(session.state.modelRoute?.modelId, 'alpha');
       expect(session.state.sync.phase, DomainSyncPhase.ready);
-      final delivered = _completionConsumers[client]!.batches;
-      expect(delivered, hasLength(1));
-      expect(delivered.map((batch) => batch.placement), [
-        ChatPlacement.set,
-      ], reason: 'The original content feed keeps its accepted Set');
-      expect(transport.windowOpens, 1);
-      expect(transport.bindings, hasLength(1));
       expect(transport.stateBindings, hasLength(2));
     },
   );
 
   for (final closeClient in [false, true]) {
     test(
-      'route resync baseline wait ends on ${closeClient ? 'Client close' : 'Session retire'} while cleanup stays owned',
+      '${closeClient ? 'Client close' : 'Session retire'} rejects pending route resync and owns the late replacement reader',
       () async {
-        final cancelEntered = Completer<void>();
-        final cleanup = Completer<void>();
+        final previousCloseEntered = Completer<void>();
+        final previousCloseGate = Completer<void>();
         final transport = _RouteConflictTransport(
-          onStateFeedClose: (index) {
-            if (index != 1) return Future.value();
-            cancelEntered.complete();
-            return cleanup.future;
+          onCurrentClose: (index) {
+            if (index != 0) return Future.value();
+            previousCloseEntered.complete();
+            return previousCloseGate.future;
           },
         );
         final client = await _client(transport);
         addTearDown(() {
-          if (!cleanup.isCompleted) cleanup.complete();
+          if (!previousCloseGate.isCompleted) previousCloseGate.complete();
         });
         client.selection.markOpened();
         final session = client.conversations.existingSession('thread')!;
         await session.deliverWorkspace(
           _workspace(revision: 40, routeRevision: 3),
         );
-        await session.content.ready;
+        final replacementOpen = transport.nextCurrentOpenGate =
+            Completer<void>();
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
           accountId: 'account',
@@ -2581,6 +2514,9 @@ void main() {
         await transport.refreshEntered.future;
         expect(transport.stateBindings, hasLength(2));
         expect(transport.attempts, hasLength(1));
+        expect(transport.readers, hasLength(2));
+        final late = transport.readers[1];
+        expect(late.requestCloseCalls, 0);
         final closing = closeClient
             ? client.close(
                 budget: ClientCloseBudget(const Duration(seconds: 30)),
@@ -2588,23 +2524,19 @@ void main() {
             : client.conversations.close(
                 budget: ClientCloseBudget(Duration.zero),
               );
-        await cancelEntered.future;
+        await previousCloseEntered.future;
         await rejected;
         expect(
           transport.attempts,
           hasLength(1),
           reason: 'Retired observation cannot replay even a known conflict',
         );
-        if (!closeClient) {
-          final report = await closing;
-          expect(report.complete, isFalse);
-          expect(
-            report.unresolved.map((resource) => resource.owner),
-            contains('conversation-state:thread'),
-            reason: 'the gated state cleanup stays owned for retry',
-          );
-        }
-        cleanup.complete();
+
+        replacementOpen.complete();
+        await late.closeCompleted.future;
+        expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
+        expect(late.closeCalls, 1);
+        previousCloseGate.complete();
         if (closeClient) {
           expect((await closing).complete, isTrue);
         } else {
@@ -2618,53 +2550,6 @@ void main() {
       },
     );
   }
-
-  test(
-    'Client close owns a resync still joining its previous runtime binding',
-    () async {
-      final cancelEntered = Completer<void>();
-      final cleanup = Completer<void>();
-      final transport = _RouteConflictTransport(
-        onStateFeedClose: (index) {
-          if (index != 0) return Future.value();
-          cancelEntered.complete();
-          return cleanup.future;
-        },
-      );
-      final client = await _client(transport);
-      addTearDown(() {
-        if (!cleanup.isCompleted) cleanup.complete();
-      });
-      client.selection.markOpened();
-      final session = client.conversations.existingSession('thread')!;
-      await session.deliverWorkspace(
-        _workspace(revision: 40, routeRevision: 3),
-      );
-      await session.content.ready;
-      final changing = client.threadCommands.setThreadModelRoute(
-        threadId: 'thread',
-        accountId: 'account',
-        modelId: 'alpha',
-      );
-      final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
-      await cancelEntered.future;
-      await transport.refreshEntered.future;
-      expect(transport.stateBindings, hasLength(2));
-      expect(transport.refreshEntered.isCompleted, isTrue);
-      final closing = client.close(
-        budget: ClientCloseBudget(const Duration(seconds: 30)),
-      );
-      await rejected;
-      expect(transport.attempts, hasLength(1));
-      cleanup.complete();
-      expect((await closing).complete, isTrue);
-      expect(
-        transport.stateBindings,
-        hasLength(2),
-        reason: 'close prevents any further replacement',
-      );
-    },
-  );
 
   test('execution recovery does not gate an explicit stop request', () async {
     final transport = _Transport();
@@ -2926,6 +2811,84 @@ void main() {
       },
     );
   }
+
+  test(
+    'interaction query loading and failure cannot confirm a decision',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final session = client.conversations.session('thread');
+      final interaction = _interaction();
+      await session.deliverWorkspace(_workspace(interactions: [interaction]));
+      final entered = transport.interactions.stream.first;
+      final resolving = client.threadCommands.resolveActiveInteraction(
+        'thread',
+        interaction.id,
+        _resolution,
+      );
+      final operation = client.mutations.latest('interaction:thread')!;
+      final call = await entered;
+      call.reply.complete(
+        InteractionCommandReply(
+          interaction: interaction,
+          receipt: _identityReceipt(call.operationId, effective: true),
+        ),
+      );
+      await resolving;
+
+      final reader = await scriptedCurrentReader('thread');
+      final reference = CurrentCollectionRef(
+        ownerId: reader.metadata.currentOwnerId,
+        collection: 'interactions',
+        revision: 2,
+      );
+      final started = Completer<void>();
+      final page = Completer<CurrentCollectionPage>();
+      reader.onPage = (_, _, _) {
+        started.complete();
+        return page.future;
+      };
+      await _applyOwnerUpdate(
+        client,
+        ThreadBusinessRefsUpdate(
+          references: ThreadBusinessRefs(plan: null, interactions: reference),
+        ),
+      );
+      await started.future;
+      expect(session.state.hasInteractionBaseline, isFalse);
+      expect(
+        operation.state.value.observed,
+        isFalse,
+        reason: 'An empty display while querying is not a canonical removal',
+      );
+      final failure = StateError('controlled decision query failure');
+      page.completeError(failure);
+      await session.source.waitFor(
+        (value) => identical(value.interactionReadError, failure),
+      );
+      expect(operation.state.value.observed, isFalse);
+      expect(
+        client.threadCommands.state.commands['interaction:thread']?.phase,
+        CommandPhase.pending,
+      );
+
+      reader.onPage = (reference, _, _) async => CurrentCollectionPage(
+        revision: reference.revision,
+        entries: const [],
+      );
+      await session.deliverWorkspace(
+        _workspace(revision: session.state.revision + 1).copyWith(
+          businessRefs: ThreadBusinessRefs(plan: null, interactions: reference),
+        ),
+      );
+      await operation.state.waitFor((value) => value.observed);
+      expect(session.state.hasInteractionBaseline, isTrue);
+      expect(
+        client.threadCommands.state.commands,
+        isNot(contains('interaction:thread')),
+      );
+    },
+  );
 
   test(
     'queued interaction rechecks Recovery before transport invocation',
@@ -3849,13 +3812,8 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
-    client.conversations
-        .session('thread')
-        .content
-        .attachConsumer(TestCompletionConsumer(), demand: _demand);
     client.conversations.setVisibleThread('thread');
-    await scriptedStateFeed('thread');
-    await transport.contentWindows.single.acknowledged(1);
+    await scriptedCurrentReader('thread');
     await client.conversations
         .session('thread')
         .deliverWorkspace(

@@ -155,13 +155,20 @@ class _PlanDetailViewState extends State<PlanDetailView> {
       final body = MarkdownDocumentBody(
         child: widget.body ?? const SizedBox.shrink(),
       );
-      Widget scroll(Widget child) => Scrollbar(
-        controller: _scroll,
-        child: SingleChildScrollView(
-          key: StudioDriverKeys.planDetailsScroll,
+      // Split/full layout can reparent the same panel state. A PageStorage key
+      // preserves the user's reading position across that ScrollPosition swap.
+      Widget scroll(Widget child) => KeyedSubtree(
+        key: PageStorageKey<String>(
+          'plan-details-scroll-storage:${widget.identity}',
+        ),
+        child: Scrollbar(
           controller: _scroll,
-          primary: false,
-          child: child,
+          child: SingleChildScrollView(
+            key: StudioDriverKeys.planDetailsScroll,
+            controller: _scroll,
+            primary: false,
+            child: child,
+          ),
         ),
       );
       return Material(

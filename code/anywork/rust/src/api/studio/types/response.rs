@@ -133,8 +133,7 @@ pub struct BridgePersistenceQueueSnapshot {
 
 /// 单个 Thread 的持久化水位与队列压力。
 ///
-/// 水位字段为 `Some` 表示该 Thread 有正在上报的 writer，值为已观测事实（含 0）；`None`
-/// 表示没有 writer 报告过该水位（例如仅通过 checkpoint 回退诊断出现），是未知而非零。
+/// Current 与 History 分别由实际 owner 提供，缺失的 owner 或水位表示未知。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeThreadPersistenceSnapshot {
@@ -142,11 +141,7 @@ pub struct BridgeThreadPersistenceSnapshot {
     pub fault_generation: u64,
     pub fault: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_dirty_revision: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_saving_revision: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_durable_revision: Option<u64>,
+    pub current: Option<BridgeCurrentPersistenceSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_admitted_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +152,20 @@ pub struct BridgeThreadPersistenceSnapshot {
     pub in_flight_bytes: u64,
     pub last_error: Option<String>,
     pub pressure_paused: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeCurrentPersistenceSnapshot {
+    pub runtime_epoch: Option<String>,
+    pub dirty: bool,
+    pub in_flight: bool,
+    pub saved_runtime_epoch: Option<String>,
+    pub saved_revision: Option<u64>,
+    pub last_successful_save_at: Option<i64>,
+    pub last_successful_capture_at: Option<i64>,
+    pub snapshot_age_millis: Option<u64>,
+    pub last_error: Option<String>,
 }
 
 /// 配置级 Agent Profiles 的 canonical 资源快照；与运行期 Agent directory 互不替代。

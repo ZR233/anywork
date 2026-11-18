@@ -223,10 +223,18 @@ mod s2_delete_recovery_tests {
         tokio::time::timeout(std::time::Duration::from_secs(30), publication_retry(true)).await?
     }
 
-    #[derive(Debug)]
     struct FailedRestoreFactory {
         native: crate::studio::thread_factory::StudioThreadFactory,
+        store: crate::studio::StudioStore,
         fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl std::fmt::Debug for FailedRestoreFactory {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("FailedRestoreFactory")
+                .finish_non_exhaustive()
+        }
     }
 
     impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
@@ -254,6 +262,15 @@ mod s2_delete_recovery_tests {
             assert!(scope.mcp.lock().unwrap().is_some());
             *scope.s2_mcp_close_failure.lock().unwrap() = Some(self.fail.clone());
             drop(spec);
+            self.store
+                .thread_persistence()
+                .history_channel(&id)
+                .stop_and_join()
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "join failed cold History preparation",
+                    source: source.into_boxed_dyn_error(),
+                })?;
             Err(ThreadAssemblyError::Resource {
                 operation: "restore after physical preparation",
                 source: Box::new(std::io::Error::other("injected cold restoration failure")),
@@ -303,6 +320,7 @@ mod s2_delete_recovery_tests {
                         identity,
                         FailedRestoreFactory {
                             native: runtime.thread_factory.clone(),
+                            store: runtime.store.clone(),
                             fail: fail.clone(),
                         }
                     )

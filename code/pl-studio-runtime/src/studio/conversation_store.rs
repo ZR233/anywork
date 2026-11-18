@@ -1,58 +1,28 @@
-//! 一个 Native 会话的共享数据所有者；弱注册不延长冷会话的寿命。
+//! Per-Thread execution, Current publication and archive-admission lifetime.
+//! Current has no history cursor or completion publication allocator.
+use super::runtime::thread_observation::{
+    RetainedProjection, publication::ConversationPublication,
+};
+use super::storage::{
+    state::StateStore,
+    thread_writer::{HistoryChannel, ThreadStorageBinding},
+};
+use super::thread_projection::PreparedEffect;
+use crate::history::HistoryStore;
 use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
 use std::sync::{Arc, Mutex};
 
-use pl_core::chat::{Session, TimelineEpoch};
-
-use super::runtime::thread_observation::publication::ConversationSource;
-use super::runtime::thread_observation::{
-    RetainedProjection, publication::ConversationPublication,
-};
-use super::storage::history::HistoryStore;
-use super::storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
-use super::thread_projection::presentation::{DisplayMemberCapture, PresentationCut};
-use super::thread_projection::{LiveProjection, PreparedEffect};
-
-pub(in crate::studio) enum ReadRequest<'a> {
-    Current,
-    Display {
-        before: Option<u64>,
-        limit: usize,
-        after: Option<u64>,
-        history_limit: usize,
-    },
-    Members {
-        block: &'a str,
-        delivered: Option<(u64, bool)>,
-        fixed_snapshot: bool,
-    },
-}
-
-pub(in crate::studio) enum ReadCut {
-    Ready {
-        source: Arc<ConversationSource>,
-        display: Option<PresentationCut>,
-        members: Option<DisplayMemberCapture>,
-    },
-    Cold(Option<super::storage::history::ConversationSnapshot>),
-}
-
 type Initialization = Shared<BoxFuture<'static, Result<(), Arc<anyhow::Error>>>>;
 type Initializer =
     Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<RetainedProjection>> + Send + Sync>;
 enum Mode {
     Cold,
-    Initializing {
-        operation: Initialization,
-    },
+    Initializing { operation: Initialization },
     Ready,
-    Faulted {
-        error: Arc<anyhow::Error>,
-        factory: Initializer,
-    },
+    Faulted { factory: Initializer },
 }
 
 pub(crate) struct ConversationStore {
@@ -60,22 +30,14 @@ pub(crate) struct ConversationStore {
     mode: Mutex<Mode>,
     driver_taken: std::sync::atomic::AtomicBool,
     history: HistoryStore,
-    session: Session,
+    state: tokio::sync::Mutex<StateStore>,
+    persistence: super::storage::coordinator::ThreadPersistenceCoordinator,
     pub(in crate::studio) publication: Arc<ConversationPublication>,
     retained: Mutex<Option<RetainedProjection>>,
     mutation: Mutex<()>,
     database_id: std::sync::OnceLock<String>,
     execution: Mutex<(usize, Option<usize>)>,
     channel: Mutex<std::sync::Weak<HistoryChannel>>,
-    #[cfg(test)]
-    last_locked_us: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    before_meta: tokio::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -119,19 +81,10 @@ impl ConversationStore {
                     })?;
                     let _gate = store.lifecycle.lock().await;
                     let result = result.and_then(|mut retained| {
-                        store
-                            .publication
-                            .bind_presentation(retained.projection.presentation());
                         let baseline = retained
                             .baseline
                             .take()
-                            .map(|current| {
-                                store.publication.prepare(
-                                    &store.session,
-                                    store.session.head_seq(),
-                                    current,
-                                )
-                            })
+                            .map(|current| store.publication.prepare(current))
                             .transpose()?;
                         Ok((retained, baseline))
                     });
@@ -157,10 +110,7 @@ impl ConversationStore {
                                 .mode
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                Mode::Faulted {
-                                    error: error.clone(),
-                                    factory: retry,
-                                };
+                                Mode::Faulted { factory: retry };
                             Err(error)
                         }
                     }
@@ -178,57 +128,118 @@ impl ConversationStore {
             .map_err(crate::error_mapping::shared_runtime_error)
     }
 
-    async fn wait_initialization(&self) -> anyhow::Result<()> {
-        let pending = {
-            let mode = self
-                .mode
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            match &*mode {
-                Mode::Initializing { operation, .. } => Some(operation.clone()),
-                Mode::Faulted { error, .. } => {
-                    return Err(crate::error_mapping::shared_runtime_error(error.clone()));
-                }
-                Mode::Cold | Mode::Ready => None,
-            }
-        };
-        if let Some(pending) = pending {
-            pending
-                .await
-                .map_err(crate::error_mapping::shared_runtime_error)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn open_reader(self: &Arc<Self>) -> ConversationReadHandle {
-        ConversationReadHandle(self.clone())
-    }
-    pub(crate) fn new(history: HistoryStore) -> anyhow::Result<Arc<Self>> {
-        let session = Session::new(
-            history.clone(),
-            TimelineEpoch::new(super::ids::new_id("timeline"))?,
-        );
+    pub(crate) fn new(
+        history: HistoryStore,
+        state: StateStore,
+        persistence: super::storage::coordinator::ThreadPersistenceCoordinator,
+    ) -> anyhow::Result<Arc<Self>> {
         Ok(Arc::new(Self {
             lifecycle: tokio::sync::Mutex::new(()),
             mode: Mutex::new(Mode::Cold),
             driver_taken: std::sync::atomic::AtomicBool::new(false),
             history,
-            session,
+            state: tokio::sync::Mutex::new(state),
+            persistence,
             publication: Arc::new(ConversationPublication::new()),
             retained: Mutex::new(None),
             mutation: Mutex::new(()),
             database_id: std::sync::OnceLock::new(),
             execution: Mutex::new((0, None)),
             channel: Mutex::new(std::sync::Weak::new()),
-            #[cfg(test)]
-            last_locked_us: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            before_meta: tokio::sync::Mutex::new(None),
         }))
     }
 
-    pub(crate) fn session(&self) -> &Session {
-        &self.session
+    /// Registers the live Core owner as the independent current JSON source.
+    ///
+    /// This path never opens or waits for history. The writer observes the owner's small dirty
+    /// watch and periodically captures current; close consumes the owner's final handoff.
+    pub(crate) async fn attach_current(
+        &self,
+        handle: pl_core::thread::ThreadHandle,
+    ) -> anyhow::Result<()> {
+        let epoch = handle.runtime_epoch();
+        let mut state = self.state.lock().await;
+        let current = state.current_save_state().ok();
+        if current.as_ref().is_some_and(|current| {
+            current.runtime_epoch == Some(epoch)
+                && current.lifecycle == super::storage::current_writer::CurrentLifecycle::Open
+        }) {
+            return Ok(());
+        }
+        if current
+            .as_ref()
+            .is_some_and(|current| current.runtime_epoch != Some(epoch))
+        {
+            let _gate = self.lifecycle.lock().await;
+            anyhow::ensure!(
+                !self.driver_taken.load(std::sync::atomic::Ordering::Acquire),
+                "previous Current projection owner has not joined"
+            );
+            let mut mode = self
+                .mode
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                !matches!(*mode, Mode::Initializing { .. }),
+                "previous Current projection initialization has not joined"
+            );
+            let mut retained = self
+                .retained
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            anyhow::ensure!(
+                retained
+                    .as_ref()
+                    .is_none_or(|value| value.pending.is_none()),
+                "previous projection still owns an unhanded reliable fact"
+            );
+            // A successor starts its own Current and classifier. Archive facts already handed to
+            // the old reliable channel keep their original run identity and lifetime there.
+            *retained = None;
+            *mode = Mode::Cold;
+        }
+        let previous = match current.as_ref() {
+            Some(current)
+                if current.lifecycle == super::storage::current_writer::CurrentLifecycle::Open =>
+            {
+                current.runtime_epoch
+            }
+            Some(current)
+                if current.lifecycle
+                    == super::storage::current_writer::CurrentLifecycle::Closing =>
+            {
+                anyhow::bail!("current writer is still closing its registered owner");
+            }
+            Some(_) | None => None,
+        };
+        state
+            .attach_current(
+                self.persistence.clone(),
+                previous,
+                epoch,
+                super::storage::current_writer::CurrentSource::from_thread(handle),
+            )
+            .await
+    }
+
+    pub(crate) async fn close_current(
+        &self,
+        handle: &pl_core::thread::ThreadHandle,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> anyhow::Result<()> {
+        self.state
+            .lock()
+            .await
+            .close_current(handle.runtime_epoch(), purpose)
+            .await
+    }
+
+    pub(crate) async fn flush_current(
+        &self,
+        epoch: pl_core::thread::current::RuntimeEpoch,
+    ) -> anyhow::Result<()> {
+        self.state.lock().await.flush_current(epoch).await?;
+        Ok(())
     }
 
     pub(in crate::studio) fn take_projection(&self) -> anyhow::Result<Option<RetainedProjection>> {
@@ -299,35 +310,13 @@ impl ConversationStore {
         anyhow::ensure!(
             pending.write.effect.thread_id == self.history.thread_id()
                 && pending.prepared.sequence == pending.write.effect.sequence
-                && pending.prepared.current.projection().source_effect_seq
-                    == pending.prepared.sequence
                 && pending.prepared.accounting.thread_id == self.history.thread_id(),
             "prepared effect does not match the accepted original"
         );
-        let Some(drafts) = pending.prepared.completion_drafts.as_ref() else {
-            anyhow::ensure!(
-                pending.admitted,
-                "unadmitted effect has no fresh publication plan"
-            );
+        if pending.admitted {
             return Ok(pending.prepared.clone());
-        };
-        let plan = self.session.prepare_fresh(drafts.clone())?;
-        let (display_state, display) = retained
-            .projection
-            .plan_display(&pending.prepared, plan.records())?;
-        let source = pending
-            .publishes_current()
-            .then_some(&pending.prepared)
-            .and_then(|prepared| prepared.current_state.as_ref())
-            .map(|current| {
-                self.publication
-                    .prepare(&self.session, plan.head_seq(), current.clone())
-            })
-            .transpose()?;
-        let mut prepared = pending.prepared.as_ref().clone();
-        LiveProjection::complete_prepared(&mut prepared, plan.records().clone(), display);
-        prepared.current_state = None;
-        let prepared = Arc::new(prepared);
+        }
+        let prepared = pending.prepared.clone();
         let previous_retention = super::storage::thread_writer::ProjectionRetention {
             resident_bytes: retained
                 .projection
@@ -343,7 +332,7 @@ impl ConversationStore {
                 super::storage::thread_writer::ProjectionRetention {
                     resident_bytes: retained
                         .projection
-                        .retained_after_display(&display_state)
+                        .retained_bytes()
                         .saturating_add(pending.extra_retained_bytes()),
                     pending: Some(super::storage::thread_writer::PendingProjectionRetention {
                         sequence: prepared.sequence,
@@ -351,19 +340,11 @@ impl ConversationStore {
                     }),
                 },
             )?;
-            channel.prepare_with(Some(&pending.write), prepared.clone(), || {
-                self.session.admit_prepared(plan, || {
-                    retained.projection.apply_display(display_state);
-                    if let Some(source) = source {
-                        self.publication.apply(source);
-                    }
-                })?;
-                Ok(())
-            })
+            channel.accept_prepared(Some(&pending.write), prepared.clone())
         })();
         if let Err(error) = handoff {
-            // Publication did not run: the original Store rows and pending batch
-            // still own the material. Restore their charge before releasing admission.
+            // The independent Current publication is already visible. Only this archive
+            // admission failed; retain its exact original and restore the archive charge.
             return match channel.set_projection_retention(previous_retention) {
                 Ok(()) => Err(error),
                 Err(retention) => {
@@ -371,32 +352,25 @@ impl ConversationStore {
                 }
             };
         }
-        for item in prepared.completions.iter() {
+        for change in prepared
+            .history_changes
+            .iter()
+            .filter(|change| change.event.header.original.is_some())
+        {
             channel
                 .order_index()
-                .mark_completion(&item.header.item_id, true);
+                .mark_completion(&change.event.header.event_id, true);
         }
         pending.prepared = prepared.clone();
         pending.admitted = true;
-        #[cfg(test)]
-        self.last_locked_us.store(
-            locked.elapsed().as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        tracing::debug!(target: "conversation_work", source_effect_seq = prepared.sequence,
+        tracing::debug!(target: "conversation_work", current_revision = prepared.sequence,
             admission_wait_us = locked.duration_since(admission_started).as_micros() as u64,
             admission_locked_us = locked.elapsed().as_micros() as u64,
-            completion_records = prepared.completions.len(),
+            history_changes = prepared.history_changes.len(),
             prepared_bytes = prepared.retained_bytes(),
             queued_bytes = channel.subscribe().borrow().queued_bytes,
             "conversation memory admission");
         Ok(prepared)
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn last_admission_locked_us(&self) -> u64 {
-        self.last_locked_us
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) async fn attach_execution(
@@ -407,12 +381,7 @@ impl ConversationStore {
             std::ptr::eq(self, binding.conversation.as_ref()),
             "binding belongs to another conversation"
         );
-        self.session.initialize().await?;
-        let database = self
-            .history
-            .conversation_database_id()
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("execution database is not initialized"))?;
+        let database = self.history.database_id().to_owned();
         anyhow::ensure!(
             self.database_id
                 .get()
@@ -456,15 +425,6 @@ impl ConversationStore {
         }
     }
 
-    #[cfg(test)]
-    pub(in crate::studio) fn retire_test_execution(&self) {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.publication.retire_execution();
-    }
-
     pub(in crate::studio) fn confirm_committed(
         &self,
         committed: &super::storage::thread_writer::CommittedBatch,
@@ -479,22 +439,6 @@ impl ConversationStore {
                 .is_none_or(|database| database == committed.database_id()),
             "committed database identity differs"
         );
-        if let Some(through) = committed.append_seq() {
-            self.session.confirm_durable(through)?;
-        }
-        if let Some(source) = self.publication.current() {
-            let mut presentation = source
-                .presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((effect, frontier, last)) = committed.display() {
-                anyhow::ensure!(
-                    effect <= committed.effect(),
-                    "display commit exceeds its batch"
-                );
-                presentation.confirm_cut(effect, frontier, last)?;
-            }
-        }
         self.database_id
             .get_or_init(|| committed.database_id().to_owned());
         Ok(())
@@ -518,280 +462,5 @@ impl Drop for ConversationStore {
         {
             channel.release_projection_retention();
         }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ConversationReadHandle(Arc<ConversationStore>);
-
-impl ConversationReadHandle {
-    pub(in crate::studio) async fn capture(
-        &self,
-        request: ReadRequest<'_>,
-    ) -> anyhow::Result<ReadCut> {
-        loop {
-            self.0.wait_initialization().await?;
-            if let Some(cut) = self.capture_ready(&request) {
-                return Ok(cut);
-            }
-            // BEGIN 在 gate 外取得连接。首次 meta SELECT 留在 gate 内建立真实快照。
-            let mut snapshot = self.0.history.conversation_snapshot().await?;
-            let gate = self.0.lifecycle.lock().await;
-            let initializing = {
-                let mode = self
-                    .0
-                    .mode
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                match &*mode {
-                    Mode::Faulted { error, .. } => {
-                        return Err(crate::error_mapping::shared_runtime_error(error.clone()));
-                    }
-                    Mode::Initializing { .. } => true,
-                    Mode::Cold | Mode::Ready => false,
-                }
-            };
-            if initializing {
-                drop(gate);
-                drop(snapshot);
-                continue;
-            }
-            if let Some(cut) = self.capture_ready(&request) {
-                return Ok(cut);
-            }
-            #[cfg(test)]
-            if let Some((entered, release)) = self.0.before_meta.lock().await.take() {
-                let _ = entered.send(());
-                let _ = release.await;
-            }
-            if let Some(snapshot) = &mut snapshot {
-                snapshot.pin(self.0.history.thread_id()).await?;
-                anyhow::ensure!(
-                    self.0
-                        .database_id
-                        .get()
-                        .is_none_or(|database| database == &snapshot.database_id),
-                    pl_core::chat::ChatError::StaleContent
-                );
-                self.0
-                    .database_id
-                    .get_or_init(|| snapshot.database_id.clone());
-            }
-            drop(gate);
-            return Ok(ReadCut::Cold(snapshot));
-        }
-    }
-
-    pub(in crate::studio) async fn current_state(
-        &self,
-    ) -> anyhow::Result<Option<Arc<super::thread_projection::CurrentState>>> {
-        match self.capture(ReadRequest::Current).await? {
-            ReadCut::Ready { source, .. } => Ok(Some(source.current.clone())),
-            ReadCut::Cold(Some(snapshot)) => Ok(Some(snapshot.current_state().await?)),
-            ReadCut::Cold(None) => Ok(None),
-        }
-    }
-
-    fn capture_ready(&self, request: &ReadRequest<'_>) -> Option<ReadCut> {
-        let _mutation = self
-            .0
-            .mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let source = self.0.publication.current()?;
-        let owner = source
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (display, members) = match request {
-            ReadRequest::Current => (None, None),
-            ReadRequest::Display {
-                before,
-                limit,
-                after,
-                history_limit,
-            } => (
-                Some(owner.capture(*before, *limit, *after, *history_limit)),
-                None,
-            ),
-            // Filter unchanged revisions before enumerating resident members. Changed results
-            // still capture the complete overlay under these same locks, independent of demand.
-            ReadRequest::Members {
-                block,
-                delivered,
-                fixed_snapshot,
-            } => (
-                None,
-                owner.capture_members(block, *delivered, *fixed_snapshot),
-            ),
-        };
-        drop(owner);
-        Some(ReadCut::Ready {
-            source,
-            display,
-            members,
-        })
-    }
-
-    pub(crate) fn session(&self) -> &Session {
-        self.0.session()
-    }
-
-    pub(in crate::studio) fn identity_matches(&self, database: Option<&str>) -> bool {
-        self.0.database_id.get().map(String::as_str) == database
-    }
-
-    pub(in crate::studio) fn bind_database(&self, database: Option<&str>) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.0
-                .database_id
-                .get()
-                .is_none_or(|current| Some(current.as_str()) == database),
-            pl_core::chat::ChatError::StaleContent
-        );
-        if let Some(database) = database {
-            self.0.database_id.get_or_init(|| database.to_owned());
-        }
-        Ok(())
-    }
-    pub(crate) async fn wait_initialization(&self) -> anyhow::Result<()> {
-        self.0.wait_initialization().await
-    }
-
-    pub(in crate::studio) fn current_conversation(
-        &self,
-    ) -> Option<Arc<super::runtime::thread_observation::publication::ConversationSource>> {
-        let _mutation = self
-            .0
-            .mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.0.publication.current()
-    }
-
-    pub(in crate::studio) fn content_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.0.publication.content_changes()
-    }
-
-    pub(in crate::studio) fn subscribe_progress(
-        &self,
-    ) -> tokio::sync::watch::Receiver<
-        Option<Arc<super::runtime::thread_observation::publication::ConversationSource>>,
-    > {
-        self.0.publication.subscribe_progress()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::storage::coordinator::ThreadPersistenceCoordinator;
-    use super::*;
-    use sea_orm::{ConnectionTrait, Database};
-
-    #[tokio::test]
-    async fn concurrent_passive_opens_share_a_weak_store_without_creating_history()
-    -> anyhow::Result<()> {
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("absent/history.sqlite");
-        let history = HistoryStore::open(&path, "passive").await?;
-        let registry = ThreadPersistenceCoordinator::default();
-        let (first, second) = tokio::join!(
-            async {
-                Ok::<_, anyhow::Error>(registry.install_conversation_store(
-                    "passive",
-                    ConversationStore::new(history.clone())?,
-                ))
-            },
-            async {
-                Ok::<_, anyhow::Error>(registry.install_conversation_store(
-                    "passive",
-                    ConversationStore::new(history.clone())?,
-                ))
-            },
-        );
-        let (first, second) = (first?, second?);
-        assert!(Arc::ptr_eq(&first, &second));
-        let reader = first.open_reader();
-        assert!(matches!(
-            reader.capture(ReadRequest::Current).await?,
-            ReadCut::Cold(None)
-        ));
-        assert_eq!(registry.snapshot().pending_commits, 0);
-        assert_eq!(history.reader_calls(), 1);
-        println!("COLD_EMPTY_READ_PORT_CALLS=1 COLD_PAGE_ROWS=0");
-        assert!(!path.try_exists()?);
-        let weak = Arc::downgrade(&first);
-        drop(first);
-        drop(second);
-        assert!(weak.upgrade().is_some());
-        drop(reader);
-        assert!(weak.upgrade().is_none());
-        assert!(registry.conversation_store("passive").is_none());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_meta_cut_precedes_attach_and_page_read_does_not_hold_the_gate()
-    -> anyhow::Result<()> {
-        for before_select in [true, false] {
-            let directory = tempfile::tempdir()?;
-            let path = directory.path().join("history.sqlite");
-            let history = HistoryStore::open(&path, "cold-race").await?;
-            history.prepare_write().await?;
-            let store = ConversationStore::new(history)?;
-            let reader = store.open_reader();
-            let (entered, waiting) = tokio::sync::oneshot::channel();
-            let (release, resume) = tokio::sync::oneshot::channel();
-            if before_select {
-                *store.before_meta.lock().await = Some((entered, resume));
-            }
-            let read = tokio::spawn(async move { reader.capture(ReadRequest::Current).await });
-            let factory = Arc::new({
-                let path = path.clone();
-                move || {
-                    let path = path.clone();
-                    Box::pin(async move {
-                        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display()))
-                            .await?;
-                        db.execute_unprepared(
-                            "UPDATE history_meta SET applied_write_seq=1 WHERE id=1",
-                        )
-                        .await?;
-                        db.close().await?;
-                        anyhow::bail!("controlled initialization failure")
-                    }) as BoxFuture<'static, anyhow::Result<RetainedProjection>>
-                }
-            });
-            if before_select {
-                waiting.await?;
-            }
-            let mut initializing = Box::pin(store.initialize_projection(factory));
-            if before_select {
-                assert!(futures::poll!(initializing.as_mut()).is_pending());
-                release.send(()).ok();
-            }
-            let ReadCut::Cold(Some(snapshot)) = read.await?? else {
-                panic!("expected pinned cold snapshot")
-            };
-            // 整页物化尚未开始；初始化必须能取得 gate 并完成原结果。
-            let failed =
-                tokio::time::timeout(std::time::Duration::from_secs(3), initializing).await?;
-            assert!(failed.is_err());
-            let cold = snapshot.current_state().await?;
-            assert_eq!(
-                cold.projection().source_effect_seq,
-                0,
-                "page mixed the later metadata into its pinned snapshot"
-            );
-            assert!(
-                store
-                    .open_reader()
-                    .capture(ReadRequest::Current)
-                    .await
-                    .is_err(),
-                "failed initialization appeared as empty success"
-            );
-        }
-        Ok(())
     }
 }

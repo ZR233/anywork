@@ -1,163 +1,10 @@
 //! Turn 的业务索引；执行顺序不定义展示成员范围。
 use super::{integer, statement};
 use crate::{ThreadContextDisposition, Turn};
-use anyhow::{Context, Result, ensure};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, QueryResult};
-use serde::{Deserialize, Serialize};
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PageCursor {
-    version: u32,
-    thread_id: String,
-    database_id: String,
-    through: u64,
-    ceiling: u64,
-    turn_order: u64,
-    turn_id: String,
-    record_before: Option<u64>,
-}
-
-pub(super) async fn page(
-    db: &impl ConnectionTrait,
-    thread: &str,
-    database: &str,
-    token: Option<&str>,
-    limit: usize,
-) -> Result<crate::ThreadTurnPage> {
-    use crate::studio::runtime::conversation_reader::{JsonBudget, entries};
-    use pl_core::chat::{ChatBudget, ChatHistoryRequest, ChatKey, ChatQuery, ReadDemand};
-    let through = u64::try_from(super::applied_write_seq(db).await?)?;
-    let ceiling = super::conversation::latest_append_seq(db).await?;
-    let mut cursor = token.map(serde_json::from_str::<PageCursor>).transpose()?;
-    if let Some(cursor) = &cursor {
-        ensure!(
-            cursor.version == 4
-                && cursor.thread_id == thread
-                && cursor.database_id == database
-                && cursor.through <= through
-                && cursor.ceiling <= ceiling,
-            "Turn cursor version or database, owner or durable cut is invalid; restart from the first page"
-        );
-    }
-    let fixed_through = cursor.as_ref().map_or(through, |cursor| cursor.through);
-    let fixed_ceiling = cursor.as_ref().map_or(ceiling, |cursor| cursor.ceiling);
-    let mut result = crate::ThreadTurnPage {
-        turns: vec![],
-        next_cursor: None,
-    };
-    let mut remaining = super::PAGE_BYTE_BUDGET;
-    for _ in 0..limit.clamp(1, super::TURN_PAGE_ROW_LIMIT) {
-        let row = match &cursor {
-            Some(cursor) if cursor.record_before.is_some() => db.query_one_raw(statement(
-                "SELECT * FROM history_turns WHERE turn_id=? AND turn_order=?",
-                vec![cursor.turn_id.clone().into(),integer(cursor.turn_order)?.into()],
-            )).await?,
-            Some(cursor) => db.query_one_raw(statement(
-                "SELECT * FROM history_turns WHERE (turn_order,turn_id)<(?,?) ORDER BY turn_order DESC,turn_id DESC LIMIT 1",
-                vec![integer(cursor.turn_order)?.into(),cursor.turn_id.clone().into()],
-            )).await?,
-            None => db.query_one_raw(statement("SELECT * FROM history_turns ORDER BY turn_order DESC,turn_id DESC LIMIT 1",vec![])).await?,
-        };
-        let Some(row) = row else { break };
-        let turn = decode(&row)?;
-        ensure!(
-            turn.updated_effect
-                .is_none_or(|effect| effect <= fixed_through),
-            "Turn changed after this fixed history cut; restart the page"
-        );
-        let before = cursor.as_ref().and_then(|cursor| cursor.record_before);
-        let mut history = crate::ThreadTurnHistory {
-            turn: turn.turn,
-            items: vec![],
-            context_disposition: turn.context_disposition,
-        };
-        let mut next = PageCursor {
-            version: 4,
-            thread_id: thread.into(),
-            database_id: database.into(),
-            through: fixed_through,
-            ceiling: fixed_ceiling,
-            turn_order: turn.turn_order,
-            turn_id: history.turn.id.clone(),
-            record_before: Some(i64::MAX as u64),
-        };
-        let reserve = serde_json::to_vec(&history)?
-            .len()
-            .saturating_add(serde_json::to_vec(&next)?.len().saturating_mul(6))
-            .saturating_add(256);
-        let budget = JsonBudget::new(database.into(), String::new()).headers_only();
-        let available = remaining
-            .saturating_sub(reserve)
-            .saturating_sub(budget.fixed_bytes());
-        if available == 0 {
-            ensure!(
-                !result.turns.is_empty(),
-                "Turn metadata exceeds history page byte budget"
-            );
-            break;
-        }
-        let page = super::conversation::page(
-            db,
-            &ChatHistoryRequest {
-                query: Some(ChatQuery {
-                    query_class: None,
-                    parent_id: Some(ChatKey::new("turn", &history.turn.id)?),
-                }),
-                after: 0,
-                before,
-                ceiling: fixed_ceiling,
-                demand: ReadDemand::new(super::TURN_PAGE_ITEM_LIMIT, available),
-            },
-            &budget,
-            false,
-        )
-        .await?;
-        ensure!(
-            page.exhausted || !page.items.is_empty(),
-            "Turn record cannot fit history page demand"
-        );
-        next.record_before = (!page.exhausted).then(|| {
-            page.items
-                .first()
-                .expect("checked nonempty page")
-                .header
-                .append_seq
-        });
-        history.items = entries(page.items, database)?;
-        let bytes = serde_json::to_vec(&history)?.len();
-        remaining = remaining
-            .checked_sub(bytes)
-            .context("Turn record exceeded history byte budget")?;
-        result.turns.push(history);
-        let records_remain = next.record_before.is_some();
-        result.next_cursor = Some(serde_json::to_string(&next)?);
-        cursor = Some(next);
-        if records_remain {
-            break;
-        }
-        // One index seek proves whether a strictly older Turn exists.
-        let next = cursor.as_ref().expect("recorded current Turn");
-        let older = db
-            .query_one_raw(statement(
-                "SELECT 1 AS present FROM history_turns WHERE (turn_order,turn_id)<(?,?) LIMIT 1",
-                vec![
-                    integer(next.turn_order)?.into(),
-                    next.turn_id.clone().into(),
-                ],
-            ))
-            .await?;
-        if older.is_none() {
-            result.next_cursor = None;
-            break;
-        }
-    }
-    ensure!(
-        serde_json::to_vec(&result)?.len() <= super::PAGE_BYTE_BUDGET,
-        "encoded Turn page exceeds its byte budget"
-    );
-    Ok(result)
-}
 
 pub(super) const CREATE: &str = "
 CREATE TABLE history_turns (
@@ -181,15 +28,6 @@ pub(in crate::studio) struct TurnWrite {
     pub updated_effect: Option<u64>,
     pub terminal_effect: Option<u64>,
     pub context_disposition: ThreadContextDisposition,
-}
-
-impl TurnWrite {
-    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        // Turn 只含状态、输入身份和错误；不保留其全部完成成员。
-        serde_json::to_vec(&self.turn)
-            .map_or(u64::MAX, |bytes| bytes.len() as u64)
-            .saturating_add(std::mem::size_of::<Self>() as u64)
-    }
 }
 
 pub(super) fn decode(row: &QueryResult) -> Result<TurnWrite> {
@@ -278,6 +116,7 @@ pub(super) async fn apply(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn latest_at(
     db: &impl ConnectionTrait,
     thread: &str,
@@ -302,11 +141,7 @@ pub(super) async fn latest_at(
     Ok(Some(value.turn))
 }
 
-pub(super) async fn terminal(db: &impl ConnectionTrait) -> Result<Option<Turn>> {
-    db.query_one_raw(statement("SELECT * FROM history_turns WHERE terminal_effect IS NOT NULL ORDER BY terminal_effect DESC,turn_order DESC,turn_id DESC LIMIT 1", vec![]))
-        .await?.as_ref().map(|row| Ok(decode(row)?.turn)).transpose()
-}
-
+#[cfg(test)]
 pub(super) async fn rollback(
     db: &impl ConnectionTrait,
     ids: &std::collections::BTreeSet<String>,
@@ -337,6 +172,7 @@ pub(super) async fn rollback(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn verify(db: &impl ConnectionTrait, writes: &[TurnWrite]) -> Result<()> {
     for write in writes {
         let old = read(db, &write.turn.id)

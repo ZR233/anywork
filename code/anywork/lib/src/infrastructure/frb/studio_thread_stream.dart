@@ -1,101 +1,88 @@
 part of 'studio_api.dart';
 
-ThreadStreamFrame _threadStreamFrameFromFrb(
-  frb.BridgeThreadSubscriptionUpdate value,
+ThreadNotificationFrame _currentNotificationFrameFromEnvelope(
+  frb.BridgeThreadNotificationEnvelope envelope,
 ) {
-  return value.when(
-    snapshot: (completedHistoryVersion, snapshot) => ThreadSnapshotFrame(
-      workspace: _threadWorkspaceFromSnapshot(snapshot),
-      completedHistoryVersion: completedHistoryVersion,
-      schemaVersion: snapshot.schemaVersion,
+  final threadId = envelope.threadId;
+  final revision = _exactTimelineInt(envelope.revision, 'state counter');
+  final epoch = _exactTimelineInt(envelope.epoch, 'state counter');
+  final baseRevision = _exactTimelineInt(
+    envelope.baseRevision,
+    'state counter',
+  );
+  return envelope.notification.when(
+    turnStarted: (turn) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadTurnUpdate(_turnFromFrb(turn)),
     ),
-    notification: (envelope) {
-      final threadId = envelope.threadId;
-      final revision = _exactTimelineInt(envelope.revision, 'state counter');
-      final epoch = _exactTimelineInt(envelope.epoch, 'state counter');
-      final baseRevision = _exactTimelineInt(
-        envelope.baseRevision,
-        'state counter',
-      );
-      return envelope.notification.when(
-        turnStarted: (turn) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadTurnUpdate(_turnFromFrb(turn)),
-        ),
-        turnUpdated: (turn) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadTurnUpdate(_turnFromFrb(turn)),
-        ),
-        turnCompleted: (turn) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadTurnUpdate(_turnFromFrb(turn)),
-        ),
-        interactionChanged: (interaction) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadInteractionUpdate(
-            interaction: _interactionFromFrb(interaction),
-            pending: _interactionIsPending(interaction),
-          ),
-        ),
-        threadRuntimeUpdated: (runtime, modelRoute) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadRuntimeUpdate(
-            runtime: _threadRuntimeFromFrb(runtime),
-            todo: _todoFromFrb(runtime.todo),
-            modelRoute: _threadModelRouteFromFrb(modelRoute),
-          ),
-        ),
-        activityChanged: (activity) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadActivityUpdate(
-            activity: activity == null
-                ? null
-                : _threadActivityFromFrb(activity),
-          ),
-        ),
-        storageChanged: (storage) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadStorageUpdate(
-            storage: storage == null ? null : _threadStorageFromFrb(storage),
-          ),
-        ),
-        businessRefsChanged: (references) => ThreadNotificationFrame(
-          threadId: threadId,
-          revision: revision,
-          epoch: epoch,
-          baseRevision: baseRevision,
-          update: ThreadBusinessRefsUpdate(
-            references: _businessRefsFromFrb(references),
-          ),
-        ),
-        lagged: (dropped) => ThreadResyncRequiredFrame(
-          threadId: threadId,
-          dropped: _exactTimelineInt(dropped, 'state counter'),
-          epoch: epoch,
-        ),
-      );
-    },
+    turnUpdated: (turn) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadTurnUpdate(_turnFromFrb(turn)),
+    ),
+    turnCompleted: (turn) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadTurnUpdate(_turnFromFrb(turn)),
+    ),
+    interactionChanged: (interaction) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadInteractionUpdate(
+        interaction: _interactionFromFrb(interaction),
+        pending: _interactionIsPending(interaction),
+      ),
+    ),
+    threadRuntimeUpdated: (runtime, modelRoute) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadRuntimeUpdate(
+        runtime: _threadRuntimeFromFrb(runtime),
+        todo: _todoFromFrb(runtime.todo),
+        modelRoute: _threadModelRouteFromFrb(modelRoute),
+      ),
+    ),
+    activityChanged: (activity) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadActivityUpdate(
+        activity: activity == null ? null : _threadActivityFromFrb(activity),
+      ),
+    ),
+    storageChanged: (storage) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadStorageUpdate(
+        storage: storage == null ? null : _threadStorageFromFrb(storage),
+      ),
+    ),
+    businessRefsChanged: (references) => ThreadNotificationFrame(
+      threadId: threadId,
+      revision: revision,
+      epoch: epoch,
+      baseRevision: baseRevision,
+      update: ThreadBusinessRefsUpdate(
+        references: _businessRefsFromFrb(references),
+      ),
+    ),
+    lagged: (dropped) => throw ConversationContinuityError(
+      'Current notification gap (thread=$threadId, dropped=$dropped)',
+    ),
   );
 }
 
@@ -134,39 +121,43 @@ ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   );
 }
 
+ThreadActivityKind _threadActivityKindFromFrb(
+  frb_activity.BridgeThreadActivityKind value,
+) => switch (value) {
+  frb_activity.BridgeThreadActivityKind.preparing =>
+    ThreadActivityKind.preparing,
+  frb_activity.BridgeThreadActivityKind.compacting =>
+    ThreadActivityKind.compacting,
+  frb_activity.BridgeThreadActivityKind.waitingApi =>
+    ThreadActivityKind.waitingApi,
+  frb_activity.BridgeThreadActivityKind.thinking => ThreadActivityKind.thinking,
+  frb_activity.BridgeThreadActivityKind.responding =>
+    ThreadActivityKind.responding,
+  frb_activity.BridgeThreadActivityKind.planning => ThreadActivityKind.planning,
+  frb_activity.BridgeThreadActivityKind.runningTool =>
+    ThreadActivityKind.runningTool,
+  frb_activity.BridgeThreadActivityKind.awaitingApproval =>
+    ThreadActivityKind.awaitingApproval,
+  frb_activity.BridgeThreadActivityKind.awaitingInput =>
+    ThreadActivityKind.awaitingInput,
+  frb_activity.BridgeThreadActivityKind.stopping => ThreadActivityKind.stopping,
+};
+
 ThreadActivityView _threadActivityFromFrb(
   frb_activity.BridgeThreadActivity value,
 ) {
   return ThreadActivityView(
     threadId: value.threadId,
+    deferred: [
+      for (final field in value.deferred_) _currentStateFieldFromFrb(field),
+    ],
     identity: value.identity,
     revision: _exactTimelineInt(value.revision, 'state counter'),
     turnId: value.turnId,
     executionId: value.executionId,
     inputId: value.inputId,
     attemptId: value.attemptId,
-    kind: switch (value.kind) {
-      frb_activity.BridgeThreadActivityKind.preparing =>
-        ThreadActivityKind.preparing,
-      frb_activity.BridgeThreadActivityKind.compacting =>
-        ThreadActivityKind.compacting,
-      frb_activity.BridgeThreadActivityKind.waitingApi =>
-        ThreadActivityKind.waitingApi,
-      frb_activity.BridgeThreadActivityKind.thinking =>
-        ThreadActivityKind.thinking,
-      frb_activity.BridgeThreadActivityKind.responding =>
-        ThreadActivityKind.responding,
-      frb_activity.BridgeThreadActivityKind.planning =>
-        ThreadActivityKind.planning,
-      frb_activity.BridgeThreadActivityKind.runningTool =>
-        ThreadActivityKind.runningTool,
-      frb_activity.BridgeThreadActivityKind.awaitingApproval =>
-        ThreadActivityKind.awaitingApproval,
-      frb_activity.BridgeThreadActivityKind.awaitingInput =>
-        ThreadActivityKind.awaitingInput,
-      frb_activity.BridgeThreadActivityKind.stopping =>
-        ThreadActivityKind.stopping,
-    },
+    kind: _threadActivityKindFromFrb(value.kind),
     summary: value.summary,
     summaryTruncated: value.summaryTruncated,
     thinkingSummary: value.thinkingSummary,
@@ -453,6 +444,9 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
       .toList(growable: false);
   final costLabel = formatRuntimeCosts(estimatedCosts);
   return ThreadRuntimeView(
+    deferred: [
+      for (final field in value.deferred_) _currentStateFieldFromFrb(field),
+    ],
     usageDiagnostics: threadUsageDiagnosticsFromFrb(usage.diagnostics),
     modelId: usage.modelId,
     liveUsage: value.liveUsage == null
@@ -702,13 +696,11 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
           ) as InteractionPayload,
         ),
   );
-  return PendingInteraction(
+  return PendingInteraction.fromPayload(
     id: value.interactionId,
     threadId: value.scope.threadId,
     turnId: value.scope.turnId,
     kind: mapped.kind,
-    title: _interactionTitle(mapped.kind, mapped.payload),
-    body: _interactionBody(mapped.kind, mapped.payload),
     payload: mapped.payload,
     revision: _exactTimelineInt(value.revision, 'state counter'),
   );

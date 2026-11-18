@@ -274,27 +274,3 @@ DeepSeekWebSearchSettingsView _deepSeekWebSearchFromFrb(
     accountId: value.accountId,
   );
 }
-
-String _interactionTitle(InteractionKind kind, InteractionPayload payload) {
-  return switch (payload) {
-    ToolApprovalInteractionPayload(:final toolName) =>
-      toolName.isEmpty ? 'Tool approval' : toolName,
-    UserInputInteractionPayload() => 'User input requested',
-    UnknownInteractionPayload() => switch (kind) {
-      InteractionKind.toolApproval => 'Tool approval',
-      InteractionKind.userInput => 'User input requested',
-    },
-  };
-}
-
-String _interactionBody(InteractionKind kind, InteractionPayload payload) {
-  return switch (payload) {
-    ToolApprovalInteractionPayload(:final arguments) => _jsonText(arguments),
-    UserInputInteractionPayload(:final questions) =>
-      questions
-          .map((question) => question.question)
-          .where((question) => question.isNotEmpty)
-          .join('\n'),
-    UnknownInteractionPayload() => '',
-  };
-}

@@ -1,76 +1,212 @@
 import 'dart:async';
 import 'dart:math';
 
+import '../../../conversation_ports.dart';
 import '../../../lifecycle.dart'
     show ClientCloseBudget, ClientOwnership, ClientResourceId;
-import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/conversation_repository.dart';
 
-/// Borrows the original feed's reader. Retiring this display scope cancels its
-/// watches and rejects late results, but never closes a sibling's read lease.
-final class ConversationReadScope implements TimelineQueryScope {
-  ConversationReadScope({
+/// Borrows the original completion reader until the display scope retires.
+///
+/// Queries start outside the component admission queue. Only an eligible older
+/// page is handed to [applyOlder]; late results never mutate a replacement scope.
+
+final class HistoryReadScope implements HistoryQueryScope {
+  HistoryReadScope({
     required this.threadId,
     required this.generation,
-    required ConversationReader reader,
+    required HistoryReader reader,
     required bool Function() isEligible,
-    Future<void> Function(ChatBatch)? applyOlder,
-    TimelineReader? timeline,
   }) : _reader = reader,
-       _timeline = timeline,
-       _isEligible = isEligible,
-       _applyOlder = applyOlder;
+       _isEligible = isEligible;
 
-  @override
   final String threadId;
-  @override
   final int generation;
-  final ConversationReader _reader;
+  final HistoryReader _reader;
   final bool Function() _isEligible;
-  final Future<void> Function(ChatBatch)? _applyOlder;
-  final TimelineReader? _timeline;
-  final Set<_ScopedDisplayMembers> _members = {};
   final Map<Future<void>, ClientResourceId> _pending = {};
-  final Set<_ContentWatch> _watches = {};
-  final Set<_ResourceRead> _resourceReads = {};
   final String _resourceScopeId = _newResourceScopeId();
   int _resourceSequence = 0;
   bool _retired = false;
-  Future<ChatBatch>? _older;
-  Future<TimelinePage>? _timelineOlder;
 
-  @override
   bool get isActive => !_retired && _isEligible();
-  @override
-  int get pendingQueries => _pending.length;
-  bool get isSettled =>
-      _retired &&
-      _pending.isEmpty &&
-      _watches.isEmpty &&
-      _members.isEmpty &&
-      _resourceReads.isEmpty;
 
-  /// The current cleanup obligations of this scope's retained resources.
-  ///
-  /// This synchronous snapshot preserves resource identities, original errors
-  /// and their stacks. Reading it does not retire the scope, request cancellation,
-  /// wait for completion, retry cleanup or change resource ownership.
   CloseReport get cleanupReport => CloseReport(
     unresolved: [
       for (final resourceId in _pending.values)
         UnresolvedResource(
           resourceId: resourceId,
-          owner: 'chat-query:$threadId:$generation',
+          owner: 'history-query:$threadId:$generation',
           attemptId: AttemptId(generation),
-          reason: StateError('query still in flight'),
+          reason: StateError('history query still in flight'),
           ownership: ClientOwnership.owned,
           stages: [
             ClientResourceStage(
-              owner: 'chat-query:$threadId:$generation',
+              owner: 'history-query:$threadId:$generation',
+              phase: ClientClosePhase.consumer,
+              ownership: ClientOwnership.owned,
+              pending: true,
+            ),
+          ],
+        ),
+    ],
+  );
+
+  ClientResourceId _allocateResourceId() =>
+      ClientResourceId(_resourceScopeId, ++_resourceSequence);
+
+  Future<T> _run<T>(Future<T> Function() operation) {
+    if (!isActive) return Future.error(const StaleConversationScope());
+    final completion = Completer<T>();
+    late final Future<void> joined;
+    joined = completion.future
+        .then<void>((_) {}, onError: (Object _, StackTrace __) {})
+        .whenComplete(() => _pending.remove(joined));
+    _pending[joined] = _allocateResourceId();
+    completion.complete(
+      Future<T>.sync(operation).then(
+        (value) {
+          if (!isActive) throw const StaleConversationScope();
+          return value;
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!isActive) throw const StaleConversationScope();
+          Error.throwWithStackTrace(error, stack);
+        },
+      ),
+    );
+    return completion.future;
+  }
+
+  @override
+  Future<HistoryCut> capture() => _run(_reader.capture);
+
+  @override
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(
+    () => _reader.timelinePage(cut: cut, cursor: cursor, demand: demand),
+  );
+
+  @override
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(
+    () => _reader.groupPage(
+      groupId: groupId,
+      cut: cut,
+      cursor: cursor,
+      demand: demand,
+    ),
+  );
+
+  @override
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(() => _reader.turnsPage(cut: cut, cursor: cursor, demand: demand));
+
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) => _run(() => _reader.readEvent(eventId: eventId, demand: demand));
+
+  @override
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(
+    () => _reader.listBodies(eventId: eventId, cursor: cursor, demand: demand),
+  );
+
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) => _run(
+    () => _reader.readBody(
+      reference: reference,
+      offset: offset,
+      maxBytes: maxBytes,
+    ),
+  );
+
+  @override
+  void retire() {
+    _retired = true;
+  }
+
+  @override
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
+    retire();
+    final pending = List<Future<void>>.of(_pending.keys);
+    if (pending.isNotEmpty) {
+      if (budget == null) {
+        await Future.wait(pending);
+      } else if (budget.remaining > Duration.zero) {
+        try {
+          await Future.wait(pending).timeout(budget.remaining);
+        } on TimeoutException {
+          // Original reads retain their cleanup responsibility.
+        }
+      }
+    }
+    return cleanupReport;
+  }
+}
+
+/// One Current-owner borrow. Body watches and collection reads are independent.
+final class CurrentReadScope implements CurrentQueryScope {
+  CurrentReadScope({
+    required this.threadId,
+    required this.generation,
+    required CurrentReader reader,
+    required bool Function() isEligible,
+  }) : _reader = reader,
+       _isEligible = isEligible;
+
+  @override
+  final String threadId;
+  @override
+  final int generation;
+  final CurrentReader _reader;
+  final bool Function() _isEligible;
+  final Set<_ScopedCurrentBodyWatch> _watches = {};
+  final Map<Future<void>, ClientResourceId> _pending = {};
+  final String _resourceScopeId = _newResourceScopeId();
+  int _resourceSequence = 0;
+  bool _retired = false;
+
+  @override
+  CurrentReader get reader => _reader;
+
+  bool get isActive => !_retired && _isEligible();
+
+  CloseReport get cleanupReport => CloseReport(
+    unresolved: [
+      for (final resourceId in _pending.values)
+        UnresolvedResource(
+          resourceId: resourceId,
+          owner: 'current-query:$threadId:$generation',
+          attemptId: AttemptId(generation),
+          reason: StateError('current query still in flight'),
+          ownership: ClientOwnership.owned,
+          stages: [
+            ClientResourceStage(
+              owner: 'current-query:$threadId:$generation',
               phase: ClientClosePhase.consumer,
               ownership: ClientOwnership.owned,
               pending: true,
@@ -80,22 +216,29 @@ final class ConversationReadScope implements TimelineQueryScope {
       for (final watch in _watches)
         UnresolvedResource(
           resourceId: watch.resourceId,
-          owner: 'chat-watch:$threadId:$generation',
+          owner: 'current-watch:$threadId:$generation',
           attemptId: AttemptId(generation),
-          reason:
-              watch.errors.firstOrNull?.$1 ?? StateError('watch still closing'),
+          reason: watch.error ?? StateError('current watch still closing'),
           ownership: ClientOwnership.owned,
           stages: [
-            if (watch.requestError case final failure?)
+            if (watch.openError case final error?)
               ClientResourceStage(
-                owner: 'chat-watch:$threadId:$generation',
+                owner: 'current-watch:$threadId:$generation',
+                phase: ClientClosePhase.opening,
+                ownership: ClientOwnership.owned,
+                error: error.$1,
+                stackTrace: error.$2,
+              ),
+            if (watch.requestError case final error?)
+              ClientResourceStage(
+                owner: 'current-watch:$threadId:$generation',
                 phase: ClientClosePhase.closeRequest,
                 ownership: ClientOwnership.owned,
-                error: failure.$1,
-                stackTrace: failure.$2,
+                error: error.$1,
+                stackTrace: error.$2,
               ),
             ClientResourceStage(
-              owner: 'chat-watch:$threadId:$generation',
+              owner: 'current-watch:$threadId:$generation',
               phase: ClientClosePhase.consumer,
               ownership: ClientOwnership.owned,
               pending: !watch.subscriptionSettled,
@@ -103,7 +246,7 @@ final class ConversationReadScope implements TimelineQueryScope {
               stackTrace: watch.subscriptionError?.$2,
             ),
             ClientResourceStage(
-              owner: 'chat-watch:$threadId:$generation',
+              owner: 'current-watch:$threadId:$generation',
               phase: ClientClosePhase.close,
               ownership: ClientOwnership.owned,
               pending: !watch.handleSettled,
@@ -112,204 +255,28 @@ final class ConversationReadScope implements TimelineQueryScope {
             ),
           ],
         ),
-      for (final member in _members)
-        UnresolvedResource(
-          resourceId: member.resourceId,
-          owner: 'display-members:$threadId:$generation',
-          attemptId: AttemptId(generation),
-          reason:
-              member.closeError?.$1 ??
-              member.requestError?.$1 ??
-              StateError('members still closing'),
-          ownership: ClientOwnership.owned,
-          stages: [
-            if (member.requestError case final failure?)
-              ClientResourceStage(
-                owner: 'display-members:$threadId:$generation',
-                phase: ClientClosePhase.closeRequest,
-                ownership: ClientOwnership.owned,
-                error: failure.$1,
-                stackTrace: failure.$2,
-              ),
-            ClientResourceStage(
-              owner: 'display-members:$threadId:$generation',
-              phase: ClientClosePhase.close,
-              ownership: ClientOwnership.owned,
-              pending: !member.closeSettled,
-              error: member.closeError?.$1,
-              stackTrace: member.closeError?.$2,
-            ),
-          ],
-        ),
     ],
   );
-
-  TimelineReader get _timelineFeed =>
-      _timeline ?? (throw StateError('Not a Timeline read scope'));
 
   ClientResourceId _allocateResourceId() =>
       ClientResourceId(_resourceScopeId, ++_resourceSequence);
 
-  @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
+  Future<T> _run<T>(Future<T> Function() operation) {
     if (!isActive) return Future.error(const StaleConversationScope());
-    final existing = _timelineOlder;
-    if (existing != null) return existing;
-    final completion = Completer<TimelinePage>();
-    _timelineOlder = completion.future;
-    completion.complete(
-      _run(() async {
-        final batch = await _timelineFeed.loadTimelineOlder(
-          before: before,
-          demand: demand,
-        );
-        if (!isActive) throw const StaleConversationScope();
-        return batch;
-      }),
-    );
-    unawaited(
-      completion.future.then<void>(
-        (_) => _timelineOlder = null,
-        onError: (Object _, StackTrace __) => _timelineOlder = null,
-      ),
-    );
-    return completion.future;
-  }
-
-  @override
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => _run(() => _timelineFeed.loadLiveOlder(before: before, demand: demand));
-
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required ReadDemand demand,
-  }) => _run(() async {
-    final resourceId = _allocateResourceId();
-    final handle = await _timelineFeed.openDisplayMembers(
-      reference: reference,
-      demand: demand,
-    );
-    final owned = _ScopedDisplayMembers(
-      this,
-      handle,
-      reference,
-      demand,
-      resourceId,
-    );
-    _members.add(owned);
-    if (!isActive) {
-      owned.requestClose();
-      await owned._settle();
-      throw const StaleConversationScope();
-    }
-    return owned;
-  });
-
-  @override
-  Future<ThreadBusinessRefs> readBusinessRefs() =>
-      _run(_reader.readBusinessRefs);
-
-  @override
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
-    required ReadDemand demand,
-  }) => _run(() => _reader.readCompleted(recordId: recordId, demand: demand));
-
-  @override
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
-    if (!isActive) return Future.error(const StaleConversationScope());
-    final existing = _older;
-    if (existing != null) return existing;
-    final completion = Completer<ChatBatch>();
-    _older = completion.future;
-    completion.complete(
-      _run(() async {
-        // Start native IO outside the serial component admission queue.
-        final batch = await _reader.loadOlder(before: before, demand: demand);
-        if (!isActive) throw const StaleConversationScope();
-        await _applyOlder?.call(batch);
-        if (!isActive) throw const StaleConversationScope();
-        return batch;
-      }),
-    );
-    unawaited(
-      completion.future.then<void>(
-        (_) => _older = null,
-        onError: (Object _, StackTrace __) => _older = null,
-      ),
-    );
-    return completion.future;
-  }
-
-  @override
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  }) => _run(
-    () => _reader.listContents(
-      itemId: itemId,
-      continuation: continuation,
-      demand: demand,
-    ),
-  );
-
-  @override
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) => _run(
-    () => _reader.readContent(reference: reference, range: range),
-    resource: reference,
-  );
-
-  @override
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) => _run(() async {
-    final page = await _reader.pageCurrent(
-      reference: reference,
-      continuation: continuation,
-      demand: demand,
-    );
-    if (page.revision != reference.revision) throw _staleBusinessResource;
-    return page;
-  }, resource: reference);
-
-  Future<T> _run<T>(Future<T> Function() operation, {Object? resource}) {
-    if (!isActive) return Future.error(const StaleConversationScope());
-    final qualification = resource == null ? null : _ResourceRead(resource);
-    if (qualification != null) _resourceReads.add(qualification);
     final completion = Completer<T>();
     late final Future<void> joined;
     joined = completion.future
         .then<void>((_) {}, onError: (Object _, StackTrace __) {})
-        .whenComplete(() {
-          _pending.remove(joined);
-          _resourceReads.remove(qualification);
-        });
+        .whenComplete(() => _pending.remove(joined));
     _pending[joined] = _allocateResourceId();
     completion.complete(
       Future<T>.sync(operation).then(
         (value) {
           if (!isActive) throw const StaleConversationScope();
-          if (qualification?.stale ?? false) throw _staleBusinessResource;
           return value;
         },
         onError: (Object error, StackTrace stack) {
           if (!isActive) throw const StaleConversationScope();
-          if (qualification?.stale ?? false) throw _staleBusinessResource;
           Error.throwWithStackTrace(error, stack);
         },
       ),
@@ -318,223 +285,99 @@ final class ConversationReadScope implements TimelineQueryScope {
   }
 
   @override
-  Stream<ContentWindow> watchContent({
-    required ContentRef reference,
+  Future<CurrentCollectionPage> pageCollection({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) => _run(() async {
+    _validateCollection(reference);
+    final page = await _reader.pageCollection(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    );
+    if (page.revision != reference.revision) throw _staleCurrentReference;
+    return page;
+  });
+
+  @override
+  Future<ContentWindow> readBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  }) => _run(() async {
+    _validateBody(reference);
+    final window = await _reader.readBody(reference: reference, range: range);
+    if (window.generation != reference.generation) {
+      throw _staleCurrentReference;
+    }
+    return window;
+  });
+
+  @override
+  CurrentBodyWatch watchBody({
+    required CurrentContentRef reference,
     required ContentRange range,
   }) {
-    late final StreamController<ContentWindow> output;
-    _ContentWatch? watch;
-    output = StreamController<ContentWindow>(
-      onListen: () {
-        if (!isActive) {
-          output.addError(const StaleConversationScope());
-          unawaited(output.close());
-          return;
-        }
-        try {
-          final owned = _ContentWatch(reference, output, _allocateResourceId());
-          watch = owned;
-          _watches.add(owned);
-          owned.handle = _reader.watchContent(
-            reference: reference,
-            range: range,
-          );
-          owned.subscription = owned.handle!.windows.listen(
-            (value) {
-              if (isActive && !owned.stopping) output.add(value);
-            },
-            onError: (Object error, StackTrace stack) {
-              if (owned.stopping) return;
-              if (isActive) output.addError(error, stack);
-              // A terminal read error need not be followed by EOF. Retire the
-              // exact transport watch immediately and retain failed join IO.
-              unawaited(_finishWatchOutput(owned, output));
-            },
-            onDone: () {
-              // EOF ends delivery, not ownership of the original native
-              // watch. A failed join must remain retryable after onDone.
-              unawaited(_finishWatchOutput(owned, output));
-            },
-          );
-        } catch (error, stack) {
-          output.addError(error, stack);
-          final owned = watch;
-          if (owned == null) {
-            // Opening failed before a handle existed. Keep the
-            // original error on this Stream, not its listener's uncaught Zone.
-            unawaited(output.close());
-          } else {
-            unawaited(_finishWatchOutput(owned, output));
-          }
-        } finally {
-          final owned = watch;
-          if (owned != null) {
-            owned.listening.complete();
-            if (!isActive || owned.stopping) _requestWatchClose(owned);
-          }
-        }
-      },
-      onCancel: () async {
-        final owned = watch;
-        if (owned == null) return;
-        _requestWatchClose(owned);
-        await (owned.cancelling ??
-            owned.lastCancellation ??
-            _cancelWatch(owned));
-        if (!owned.sourceEnded) {
-          if (owned.errors.firstOrNull case final error?) {
-            Error.throwWithStackTrace(error.$1, error.$2);
-          }
-        }
-      },
-      onPause: () => watch?.subscription?.pause(),
-      onResume: () => watch?.subscription?.resume(),
+    if (!isActive) throw const StaleConversationScope();
+    _validateBody(reference);
+    final owned = _ScopedCurrentBodyWatch(
+      this,
+      reference,
+      _reader.watchBody(reference: reference, range: range),
+      _allocateResourceId(),
     );
-    return output.stream;
+    _watches.add(owned);
+    owned._start();
+    return owned;
   }
 
-  void businessRefsChanged(
-    ThreadBusinessRefs? previous,
-    ThreadBusinessRefs next,
-  ) {
-    final plan = previous?.plan?.document;
-    final interactions = previous?.interactions;
-    bool replaced(Object resource) =>
-        (plan != null && resource == plan && plan != next.plan?.document) ||
-        (interactions != null &&
-            resource == interactions &&
-            interactions != next.interactions);
-    for (final read in _resourceReads) {
-      if (replaced(read.resource)) read.stale = true;
-    }
-    for (final watch in List.of(_watches)) {
-      if (!watch.stopping && replaced(watch.reference)) {
-        watch.output.addError(_staleBusinessResource);
-        unawaited(_finishWatchOutput(watch, watch.output));
-      }
+  void _validateCollection(CurrentCollectionRef reference) {
+    if (reference.ownerId.isEmpty ||
+        reference.collection.isEmpty ||
+        reference.revision < 0) {
+      throw _staleCurrentReference;
     }
   }
 
-  void _releaseWatch(_ContentWatch watch) {
+  void _validateBody(CurrentContentRef reference) {
+    if (reference.ownerId.isEmpty ||
+        reference.domain.isEmpty ||
+        reference.entityId.isEmpty ||
+        reference.contentKey.isEmpty ||
+        reference.generation.isEmpty) {
+      throw _staleCurrentReference;
+    }
+  }
+
+  void _releaseWatch(_ScopedCurrentBodyWatch watch) {
     watch.released = true;
     _watches.remove(watch);
-  }
-
-  Future<void> _finishWatchOutput(
-    _ContentWatch watch,
-    StreamController<ContentWindow> output,
-  ) async {
-    if (watch.sourceEnded) return;
-    watch.sourceEnded = true;
-    await _cancelWatch(watch);
-    // Native EOF is not evidence of successful teardown. Deliver its actual
-    // failure before done, while the original scope retains retry ownership.
-    if (isActive && !output.isClosed) {
-      for (final error in watch.errors) {
-        output.addError(error.$1, error.$2);
-      }
-    }
-    unawaited(output.close());
-  }
-
-  void _requestWatchClose(_ContentWatch watch) {
-    watch.stopping = true;
-    final handle = watch.handle;
-    if (handle == null || watch.released) return;
-    try {
-      handle.requestClose();
-      watch.requestError = null;
-    } catch (error, stack) {
-      watch.requestError = (error, stack);
-    }
-  }
-
-  Future<void> _cancelWatch(_ContentWatch watch) {
-    if (watch.released) return Future.value();
-    // Synchronous wake precedes every await, including a late-open/listen join.
-    _requestWatchClose(watch);
-    final existing = watch.cancelling;
-    if (existing != null) return existing;
-    watch.handleSettled = false;
-    final completion = Completer<void>();
-    watch.cancelling = completion.future;
-    watch.lastCancellation = completion.future;
-    completion.complete(
-      Future<void>.sync(() async {
-        try {
-          await watch.listening.future;
-          _requestWatchClose(watch);
-          final subscription = watch.subscription;
-          // Dart cancel may cache its Future. Call it exactly once and retain an
-          // independent cancellation failure; native close cannot erase it.
-          final cancelled = watch.subscriptionCancellation ??=
-              Future<void>.sync(() async => subscription?.cancel()).then<void>(
-                (_) => watch.subscriptionSettled = true,
-                onError: (Object error, StackTrace stack) {
-                  watch.subscriptionError = (error, stack);
-                  watch.subscriptionSettled = true;
-                },
-              );
-          final handle = watch.handle;
-          // Unlike StreamSubscription.cancel, this is the explicit retryable
-          // transport join on the very same watch capability.
-          final joined = Future<void>.sync(() async => handle?.close())
-              .then<void>(
-                (_) {
-                  watch.handleError = null;
-                  watch.handleSettled = true;
-                },
-                onError: (Object error, StackTrace stack) {
-                  watch.handleError = (error, stack);
-                  watch.handleSettled = true;
-                },
-              );
-          await Future.wait([cancelled, joined]);
-          if (watch.errors.isEmpty) {
-            _releaseWatch(watch);
-          } else {}
-        } finally {
-          watch.cancelling = null;
-        }
-      }),
-    );
-    return completion.future;
   }
 
   @override
   void retire() {
     if (_retired) return;
     _retired = true;
-    for (final member in List.of(_members)) {
-      member.requestClose();
-    }
     for (final watch in List.of(_watches)) {
-      unawaited(_cancelWatch(watch));
+      watch.requestClose();
     }
   }
 
   @override
-  Future<CloseReport> close({ClientCloseBudget? budget}) =>
-      _join(budget: budget);
-
-  Future<CloseReport> _join({ClientCloseBudget? budget}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     retire();
-    final pending = [
+    final pending = <Future<void>>[
       ..._pending.keys,
-      for (final watch in List.of(_watches)) _cancelWatch(watch),
-      for (final member in List.of(_members)) member._settle(),
+      for (final watch in List.of(_watches)) watch._settle(),
     ];
     if (pending.isNotEmpty) {
       if (budget == null) {
         await Future.wait(pending);
-      } else {
-        final remaining = budget.remaining;
-        if (remaining > Duration.zero) {
-          try {
-            await Future.wait(pending).timeout(remaining);
-          } on TimeoutException {
-            /* Original operations retain their cleanup responsibility. */
-          }
+      } else if (budget.remaining > Duration.zero) {
+        try {
+          await Future.wait(pending).timeout(budget.remaining);
+        } on TimeoutException {
+          // Original operations retain their cleanup responsibility.
         }
       }
     }
@@ -542,139 +385,108 @@ final class ConversationReadScope implements TimelineQueryScope {
   }
 }
 
-final class _ScopedDisplayMembers implements DisplayMembers {
-  _ScopedDisplayMembers(
+final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
+  _ScopedCurrentBodyWatch(
     this.scope,
-    this.handle,
     this.reference,
-    this.demand,
+    this.opening,
     this.resourceId,
-  );
+  ) {
+    _output = StreamController<ContentWindow>(
+      onPause: () => _subscription?.pause(),
+      onResume: () => _subscription?.resume(),
+      onCancel: () => _join(closeOutput: false),
+    );
+  }
+
+  final CurrentReadScope scope;
+  final CurrentContentRef reference;
+  final Future<CurrentBodyWatch> opening;
   final ClientResourceId resourceId;
-  final ConversationReadScope scope;
-  final DisplayMembers handle;
-  final DisplayBlockRef reference;
-  final ReadDemand demand;
-  bool stopping = false;
-  bool pulling = false;
-  bool closed = false;
-  int revision = -1;
-  bool sealed = false;
-  bool ended = false;
+  late final StreamController<ContentWindow> _output;
+  CurrentBodyWatch? _handle;
+  // ignore: cancel_subscriptions
+  StreamSubscription<ContentWindow>? _subscription;
+  Future<void>? _openingTask;
+  Future<void>? _cancelling;
+  Future<void>? _subscriptionCancellation;
+  (Object, StackTrace)? openError;
   (Object, StackTrace)? requestError;
-  (Object, StackTrace)? closeError;
-  bool closeSettled = false;
-  Future<void>? _closing;
-  // Transport continuity evidence, not a second published member collection.
-  List<DisplayMemberHead> _lastEntries = const [];
-  List<DisplayMemberHead> _assemblingEntries = [];
-  final Set<String> _assemblingKeys = {};
-  ({int revision, bool sealed})? _assembling;
+  (Object, StackTrace)? subscriptionError;
+  (Object, StackTrace)? handleError;
+  bool _requested = false;
+  bool subscriptionSettled = false;
+  bool handleSettled = false;
+  bool released = false;
+
+  Object? get error =>
+      openError?.$1 ??
+      requestError?.$1 ??
+      subscriptionError?.$1 ??
+      handleError?.$1;
 
   @override
-  Future<DisplayMemberBatch?> next() {
-    if (stopping || !scope.isActive)
-      return Future.error(const StaleConversationScope());
-    if (ended) return Future.value(null);
-    if (pulling)
-      return Future.error(StateError('Display member next already in flight'));
-    pulling = true;
-    return scope._run(() async {
-      try {
-        final batch = await handle.next();
-        if (stopping || !scope.isActive) throw const StaleConversationScope();
-        if (batch == null) {
-          if (!sealed || _assembling != null) {
-            throw const ConversationContinuityError(
-              'Display members ended before a complete sealed result',
-            );
-          }
-          ended = true;
-          return null;
-        }
-        final current = _assembling;
-        var valid =
-            !sealed &&
-            batch.block == reference &&
-            batch.entries.length <= demand.maxItems &&
-            (batch.complete || batch.entries.isNotEmpty);
-        if (current == null) {
-          // Member revision and observation sealing are independent. Only an
-          // identical complete result may seal without a new member revision.
-          valid =
-              valid &&
-              batch.offset == 0 &&
-              (batch.revision > revision ||
-                  (revision >= 0 &&
-                      batch.revision == revision &&
-                      batch.sealed));
-        } else {
-          valid =
-              valid &&
-              batch.offset == _assemblingEntries.length &&
-              batch.revision == current.revision &&
-              batch.sealed == current.sealed;
-        }
-        var order = _assemblingEntries.lastOrNull?.memberOrder ?? 0;
-        final keys = <String>{};
-        for (final entry in batch.entries) {
-          valid =
-              valid &&
-              entry.memberKey.isNotEmpty &&
-              !_assemblingKeys.contains(entry.memberKey) &&
-              keys.add(entry.memberKey) &&
-              entry.memberOrder > order;
-          order = entry.memberOrder;
-        }
-        if (!valid)
-          throw const ConversationContinuityError(
-            'Invalid display member batch',
-          );
+  Stream<ContentWindow> get windows {
+    if (_output.isClosed) return const Stream.empty();
+    return _output.stream;
+  }
 
-        if (batch.revision == revision) {
-          final end = batch.offset + batch.entries.length;
-          var unchanged =
-              end <= _lastEntries.length &&
-              (!batch.complete || end == _lastEntries.length);
-          for (var i = 0; unchanged && i < batch.entries.length; i++) {
-            unchanged = _sameMemberHead(
-              _lastEntries[batch.offset + i],
-              batch.entries[i],
-            );
-          }
-          if (!unchanged) {
-            throw const ConversationContinuityError(
-              'Sealing changed display members without a new revision',
-            );
+  void _start() {
+    _openingTask ??= Future<void>.sync(() async {
+      try {
+        final handle = await opening;
+        _handle = handle;
+        if (_requested) {
+          try {
+            handle.requestClose();
+            requestError = null;
+          } catch (failure, stack) {
+            requestError = (failure, stack);
           }
         }
-        _assemblingEntries.addAll(batch.entries);
-        if (batch.complete) {
-          revision = batch.revision;
-          sealed = batch.sealed;
-          _lastEntries = sealed ? const [] : _assemblingEntries;
-          _assemblingEntries = [];
-          _assemblingKeys.clear();
-          _assembling = null;
-        } else {
-          _assembling = (revision: batch.revision, sealed: batch.sealed);
-          _assemblingKeys.addAll(keys);
+        if (_output.isClosed) return;
+        _subscription = handle.windows.listen(
+          (window) {
+            if (window.generation != reference.generation) {
+              if (!_requested && !_output.isClosed) {
+                _output.addError(_staleCurrentReference, StackTrace.current);
+              }
+              unawaited(_settle());
+              return;
+            }
+            if (!_requested && !_output.isClosed) _output.add(window);
+          },
+          onError: (Object failure, StackTrace stack) {
+            subscriptionError = (failure, stack);
+            if (!_requested && !_output.isClosed) {
+              _output.addError(failure, stack);
+            }
+            unawaited(_settle());
+          },
+          onDone: () {
+            subscriptionSettled = true;
+            if (!_output.isClosed) unawaited(_output.close());
+          },
+        );
+      } catch (failure, stack) {
+        openError = (failure, stack);
+        handleSettled = true;
+        if (!_output.isClosed) {
+          _output.addError(failure, stack);
+          await _output.close();
         }
-        return batch;
-      } finally {
-        pulling = false;
       }
     });
+    unawaited(_openingTask);
   }
 
   @override
   void requestClose() {
-    stopping = true;
-    _lastEntries = const [];
-    _assemblingEntries = [];
-    _assemblingKeys.clear();
-    _assembling = null;
-    if (closed) return;
+    if (_requested) return;
+    _requested = true;
+    _start();
+    final handle = _handle;
+    if (handle == null || released) return;
     try {
       handle.requestClose();
       requestError = null;
@@ -687,162 +499,50 @@ final class _ScopedDisplayMembers implements DisplayMembers {
     try {
       await close();
     } catch (_) {
-      // The original request/join failure remains on this owned handle.
+      // The original failure remains in this watch's cleanup report.
     }
   }
 
   @override
-  Future<void> close() {
-    if (closed) return Future.value();
+  Future<void> close() => _join(closeOutput: true);
+
+  Future<void> _join({required bool closeOutput}) {
+    if (released) return Future<void>.value();
     requestClose();
-    if (_closing != null) return _closing!;
-    closeSettled = false;
-    return _closing ??= Future<void>.sync(() async {
+    return _cancelling ??= Future<void>.sync(() async {
       try {
-        try {
-          await handle.close();
-          closeError = null;
-          closeSettled = true;
-        } catch (failure, stack) {
-          closeError = (failure, stack);
-          closeSettled = true;
-          rethrow;
-        }
-        if (requestError case final failure?) {
-          Error.throwWithStackTrace(failure.$1, failure.$2);
-        }
-        closed = true;
-        scope._members.remove(this);
+        await _openingTask;
+        final subscription = _subscription;
+        final cancelled = _subscriptionCancellation ??=
+            Future<void>.sync(() async => subscription?.cancel()).then<void>(
+              (_) {
+                subscriptionSettled = true;
+              },
+              onError: (Object failure, StackTrace stack) {
+                subscriptionError = (failure, stack);
+                subscriptionSettled = true;
+              },
+            );
+        final handle = _handle;
+        final joined = Future<void>.sync(() async => handle?.close())
+            .then<void>(
+              (_) {
+                handleError = null;
+                handleSettled = true;
+              },
+              onError: (Object failure, StackTrace stack) {
+                handleError = (failure, stack);
+                handleSettled = true;
+              },
+            );
+        await Future.wait([cancelled, joined]);
+        if (closeOutput && !_output.isClosed) await _output.close();
+        if (error == null) scope._releaseWatch(this);
       } finally {
-        _closing = null;
+        _cancelling = null;
       }
     });
   }
-}
-
-// FRB allocates fresh values, so allocation identity cannot prove continuity.
-bool _sameMemberHead(DisplayMemberHead a, DisplayMemberHead b) =>
-    a.memberKey == b.memberKey &&
-    a.memberOrder == b.memberOrder &&
-    _factFields(a.record.startFact) == _factFields(b.record.startFact) &&
-    _factFields(a.record.endFact) == _factFields(b.record.endFact) &&
-    _displaySourceFields(a.record.contentSource) ==
-        _displaySourceFields(b.record.contentSource) &&
-    _atomFields(a.record.atom) == _atomFields(b.record.atom) &&
-    _sameValues(
-      a.record.atom.contents,
-      b.record.atom.contents,
-      (a, b) => a.role == b.role && a.reference == b.reference,
-    ) &&
-    _samePayload(a.record.atom.payload, b.record.atom.payload);
-
-Object _displaySourceFields(DisplayContentSource source) => switch (source) {
-  CurrentAtom() => (CurrentAtom,),
-  FrozenObservation(:final capturedAt, :final available) => (
-    FrozenObservation,
-    capturedAt,
-    available,
-  ),
-  CompletedOriginal(:final completionId) => (CompletedOriginal, completionId),
-};
-
-Object _atomFields(ChatAtom atom) => (
-  atom.id,
-  atom.completionItemId,
-  atom.completionSeq,
-  atom.source,
-  switch (atom.sourceState) {
-    null => null,
-    final state => (
-      state.source,
-      switch (state.lifecycle) {
-        UnknownChatSource() => (UnknownChatSource,),
-        ActiveChatSource() => (ActiveChatSource,),
-        EndedChatSource(:final outcome) => (EndedChatSource, outcome),
-      },
-      _factFields(state.started),
-      _factFields(state.ended),
-    ),
-  },
-  atom.sourceOrder,
-  atom.kind,
-  atom.delivery,
-  switch (atom.lifecycle) {
-    ActiveChatAtom(:final started, :final status) => (
-      ActiveChatAtom,
-      _factFields(started),
-      status,
-    ),
-    TerminalChatAtom(:final started, :final ended, :final outcome) => (
-      TerminalChatAtom,
-      _factFields(started),
-      _factFields(ended),
-      outcome,
-    ),
-  },
-  atom.turnId,
-  atom.attemptId,
-  atom.tool == null ? null : (atom.tool!.callId, atom.tool!.name),
-  atom.wait,
-  atom.textChannel,
-  atom.contentPresent,
-  atom.startedAt,
-  atom.finishedAt,
-);
-
-(int, int)? _factFields(ChatFactPosition? value) =>
-    value == null ? null : (value.effectSeq, value.suborder);
-
-bool _samePayload(PayloadData? a, PayloadData? b) {
-  if (a is InlinePayload && b is InlinePayload) {
-    return _sameValues(a.bytes, b.bytes, (a, b) => a == b);
-  }
-  if (a is DeferredPayload && b is DeferredPayload) {
-    return a.reference == b.reference && a.byteLength == b.byteLength;
-  }
-  return a == null && b == null;
-}
-
-bool _sameValues<T>(List<T> a, List<T> b, bool Function(T, T) equal) {
-  if (a.length != b.length) return false;
-  for (var index = 0; index < a.length; index++) {
-    if (!equal(a[index], b[index])) return false;
-  }
-  return true;
-}
-
-final class _ContentWatch {
-  _ContentWatch(this.reference, this.output, this.resourceId);
-  final ClientResourceId resourceId;
-  final ContentRef reference;
-  final StreamController<ContentWindow> output;
-  final listening = Completer<void>();
-  ConversationContentWatch? handle;
-  // Owned until both subscription cancellation and original watch join settle.
-  // ignore: cancel_subscriptions
-  StreamSubscription<ContentWindow>? subscription;
-  Future<void>? subscriptionCancellation;
-  Future<void>? cancelling;
-  Future<void>? lastCancellation;
-  (Object, StackTrace)? requestError;
-  (Object, StackTrace)? subscriptionError;
-  (Object, StackTrace)? handleError;
-  bool subscriptionSettled = false;
-  bool handleSettled = false;
-  bool stopping = false;
-  bool sourceEnded = false;
-  bool released = false;
-  Iterable<(Object, StackTrace)> get errors => [
-    ?requestError,
-    ?subscriptionError,
-    ?handleError,
-  ];
-}
-
-final class _ResourceRead {
-  _ResourceRead(this.resource);
-  final Object resource;
-  bool stale = false;
 }
 
 String _newResourceScopeId() {
@@ -854,10 +554,10 @@ String _newResourceScopeId() {
   return 'conversation-query-$nonce';
 }
 
-const _staleBusinessResource = StudioFailure(
+const _staleCurrentReference = StudioFailure(
   code: StudioFailureCode.staleRevision,
-  reason: StudioFailureReason.staleContent,
-  message: 'The requested business resource changed',
+  reason: StudioFailureReason.staleCurrentReference,
+  message: 'The Current owner, collection revision, or body generation expired',
   retryable: false,
-  correlationId: 'client-business-resource-stale',
+  correlationId: 'client-stale-current-reference',
 );

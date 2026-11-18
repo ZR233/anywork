@@ -492,7 +492,7 @@ mod tests {
                 store.upsert_item(&db, 9, item.clone()).await?;
             }
             let mut draft =
-                crate::studio::runtime::chat_item::completion_draft(&item, 9, &database)?;
+                crate::studio::runtime::chat_item::completion_draft(&item, 9, &database, None)?;
             let mut atom: ChatAtom = serde_json::from_slice(&draft.metadata)?;
             atom.completion_seq = Some(seq);
             atom.completion_item_id = Some(item.id.clone());

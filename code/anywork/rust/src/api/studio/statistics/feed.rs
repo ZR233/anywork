@@ -346,12 +346,12 @@ impl BridgeStatisticsReadScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::{Result, ensure};
+    use anyhow::{Context, Result, ensure};
     use futures::poll;
     use pl_lifecycle::ScopeOwner;
     use std::time::Duration;
 
-    use crate::api::studio::handlers::chat::tests::Environment;
+    use crate::api::studio::subscription::factory::tests::Environment;
 
     #[tokio::test]
     async fn cancelled_and_closing_event_admissions_never_leave_unowned_tasks() -> Result<()> {
@@ -418,6 +418,55 @@ mod tests {
                 .await;
             ensure!(report.failures.len() == 1 && report.pending.is_empty());
             ensure!(report.failures[0].resource.label == "statisticsFeeds");
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn closing_read_scope_keeps_feed_and_runtime_usable() -> Result<()> {
+        let env = Environment::new().await?;
+        let result = async {
+            let scope = ScopeOwner::new("bridge", tokio::runtime::Handle::current());
+            let factory = BridgeObservationFactory::new(env.runtime.clone(), scope.handle());
+            let feed = factory.open_statistics().await?;
+            let header = super::bridge_header(
+                feed.inner
+                    .get()
+                    .feed
+                    .next()
+                    .await?
+                    .context("initial statistics publication")?,
+            );
+
+            let first = feed.open_scope(header.clone())?;
+            let first_identity = first.identity()?;
+            first.close().await?;
+            ensure!(
+                first.read_summaries(0, 1).is_err(),
+                "closed statistics read scope accepted another page read"
+            );
+
+            let second = feed.open_scope(header.clone())?;
+            let second_identity = second.identity()?;
+            ensure!(first_identity.scope_id != second_identity.scope_id);
+            ensure!(second_identity.feed_id == header.feed_id);
+            second.read_summaries(0, 1)?;
+            ensure!(
+                env.runtime.runtime_snapshot().await?.state.kind()
+                    == pl_studio_runtime::StudioRuntimeStateKind::Ready
+            );
+            second.close().await?;
+
+            feed.acknowledge(header.delivery_sequence)?;
+            feed.close().await?;
+            ensure!(
+                scope
+                    .close(tokio::time::Instant::now() + Duration::from_secs(5))
+                    .await
+                    .is_clean()
+            );
             Ok(())
         }
         .await;

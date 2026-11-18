@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'package:anywork_client/models.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
@@ -648,6 +650,24 @@ class _TimelineWorkPreviewHostState extends State<_TimelineWorkPreviewHost> {
   final _controls = ExpandedWorkPreviewControls();
   TimelineDisplayMode _mode = TimelineDisplayMode.live;
   @override
+  void initState() {
+    super.initState();
+    _controls.controller.setMessages([
+      Message.custom(
+        id: 'preview-work-host',
+        authorId: 'assistant',
+        metadata: {
+          chatItemPresentationKey: TimelinePreviewFixtures.item(
+            'preview-work-host',
+            'text',
+            const {'channel': 'final'},
+          ),
+        },
+      ),
+    ], animated: false);
+  }
+
+  @override
   void dispose() {
     _controls.dispose();
     super.dispose();
@@ -663,7 +683,7 @@ class _TimelineWorkPreviewHostState extends State<_TimelineWorkPreviewHost> {
       mode: _mode,
       connection: TimelineConnectionPhase.ready,
     ),
-    currentWork: Padding(
+    canonicalPresentationBuilder: (_, _) => Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
       child: widget.work,
     ),
@@ -743,9 +763,15 @@ class _SealedToolWorkGroupPreviewState
       body: WorkDisplayBlock(
         timing: const WorkTiming(startedAt: 1735689600, finishedAt: 1735689725),
         members: const DisplayBlockRef(
-          databaseId: 'preview',
           blockId: 'sealed-tool-preview-group',
+          cut: HistoryCut('preview-cut'),
+          anchorSeq: 2,
+          headSeq: 2,
         ),
+        executionPresent: false,
+        memberCount: 1,
+        unfinishedCount: 0,
+        groupClosed: true,
       ),
     ),
   );

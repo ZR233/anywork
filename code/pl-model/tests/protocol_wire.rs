@@ -856,13 +856,11 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         model("provider-a", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let source_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
-        source_runtime,
-        None,
-    ));
+    let source_factory =
+        ModelFactory::new(pl_model::runtime::ThreadModel::new(source_runtime, None));
     let thread = ThreadHandle::start_current(
         "cross-provider-thread".into(),
-        source_factory.open_session().await.unwrap(),
+        Some(source_factory.open_session().await.unwrap()),
     )
     .unwrap();
     thread
@@ -888,10 +886,8 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         model("provider-b", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let target_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
-        target_runtime,
-        None,
-    ));
+    let target_factory =
+        ModelFactory::new(pl_model::runtime::ThreadModel::new(target_runtime, None));
     let restored =
         ThreadHandle::restore_current(saved, Some(source_factory.open_session().await.unwrap()))
             .unwrap();
@@ -958,13 +954,13 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
         ModelRuntime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
         None,
     ));
     let thread = ThreadHandle::start_current(
         "new-configuration".into(),
-        source.open_session().await.unwrap(),
+        Some(source.open_session().await.unwrap()),
     )
     .unwrap();
     thread
@@ -988,7 +984,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
         ModelRuntime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
         None,
     ));
@@ -1537,13 +1533,8 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
             name,
             arguments: pl_provider_fixture::replay_tool_arguments(),
         };
-        // This regression exercises the unchanged legacy factory. Both its correction and its
-        // native call replay keep the original provider identity; the current factory is tested
-        // separately with explicitly attempt-scoped Core IDs.
-        let rejected_call_id = "bad-call";
-        let correction_prompt = format!(
-            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: model tool call {rejected_call_id} was rejected: unknown tool name \"internal-exec\". Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls."
-        );
+        let correction_prefix = "No tools in this batch were executed. This batch produced no tool side effects. Rejection: model tool call ";
+        let correction_suffix = " was rejected: unknown tool name \"internal-exec\". Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls.";
         let server = FixtureServer::start(vec![
             Step::prompt(
                 protocol,
@@ -1558,12 +1549,16 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
                     ],
                 ),
             ),
-            Step::prompt(
+            Step {
                 protocol,
-                correction_prompt,
-                1,
-                correction_tool_reply(protocol, "corrected", &[calls("exec", "good-call")]),
-            ),
+                request: RequestMatch::PromptIdentity {
+                    prefix: correction_prefix.into(),
+                    suffix: correction_suffix.into(),
+                    step: 1,
+                },
+                reply: correction_tool_reply(protocol, "corrected", &[calls("exec", "good-call")]),
+                optional: false,
+            },
             Step {
                 protocol,
                 request: RequestMatch::ToolOutput {
@@ -1747,6 +1742,29 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         );
         thread.close().await.unwrap();
         let requests = server.finish().await.unwrap();
+        let messages = requests[1]
+            .body
+            .get("input")
+            .or_else(|| requests[1].body.get("messages"))
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let content = &messages
+            .iter()
+            .rev()
+            .find(|item| item["role"] == "user")
+            .unwrap()["content"];
+        let actual_correction = content
+            .as_str()
+            .or_else(|| content.as_array()?.last()?.get("text")?.as_str())
+            .unwrap();
+        assert_eq!(
+            actual_correction,
+            format!(
+                "{correction_prefix}{}{correction_suffix}",
+                rejected_call.call_id
+            )
+        );
         let correction = requests[1].body.to_string();
         assert!(!correction.contains("\"previous_response_id\""));
         assert!(!correction.contains("\"function_call\""));
@@ -1983,7 +2001,10 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
             })
             .unwrap();
         let call = &output.tool_calls[0];
-        assert_eq!(call.call_id, "custom-call");
+        assert_ne!(
+            call.call_id, "custom-call",
+            "Core identity is attempt scoped"
+        );
         assert_eq!(call.tool_id, "stable-patch");
         assert_eq!(call.arguments.content(), raw);
         assert_eq!(call.arguments.format(), "application/json");
@@ -2100,8 +2121,8 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
                 ContextContent::Opaque { payload } if payload.format() == "pl.model.assistant" => {
                     assert_eq!(
                         payload.version(),
-                        5,
-                        "timing provenance requires the new frame version"
+                        6,
+                        "the current frame retains source attempt and timing provenance"
                     );
                     let frame: Value = serde_json::from_str(payload.content()).unwrap();
                     Some(
@@ -4230,7 +4251,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
             model("identity-model", transport),
         )
         .unwrap();
-        let mut session = ModelFactory::new(ThreadModel::new_current(runtime, None))
+        let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
             .open_session()
             .await
             .unwrap();
@@ -6417,7 +6438,10 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         .unwrap()
         .call_id
         .clone();
-    assert_eq!(proof_call_id, "proof-call");
+    assert_ne!(
+        proof_call_id, "proof-call",
+        "Core identity is attempt scoped"
+    );
     let compacted = source
         .compact(
             ModelRequest {

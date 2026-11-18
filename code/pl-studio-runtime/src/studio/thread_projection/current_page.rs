@@ -1,6 +1,6 @@
 //! Shared bounded collection selection over an owner cut, including passive checkpoint-derived cuts.
-use super::CurrentState;
-use crate::protocol::*;
+use super::{CurrentState, current::CurrentPositionIndex};
+use crate::*;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
 
@@ -12,10 +12,34 @@ pub(in crate::studio) fn current_page(
     encode: impl Fn(String) -> Result<String>,
 ) -> Result<CurrentCollectionPage> {
     ensure!(
-        reference.collection == "interactions"
-            && state.projection().interactions.as_ref() == Some(reference),
+        state
+            .projection()
+            .interactions
+            .iter()
+            .chain(state.projection().collections.iter())
+            .any(|current| current == reference),
         core::ChatError::StaleContent
     );
+    page_rows(state.by_position(), reference, after, demand, encode)
+}
+
+/// Live and saved collections share an owner ID but cannot reuse each other's page generations.
+/// Values stay in the signed wire range supported by Dart's native integer representation.
+pub(in crate::studio) fn collection_revision(version: u64, cold: bool) -> Result<u64> {
+    version
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(u64::from(!cold)))
+        .filter(|value| *value <= i64::MAX as u64)
+        .ok_or_else(|| anyhow::anyhow!("Current collection revision exhausted"))
+}
+
+pub(in crate::studio) fn page_rows(
+    rows: &CurrentPositionIndex,
+    reference: &CurrentCollectionRef,
+    after: Option<&str>,
+    demand: ReadDemand,
+    encode: impl Fn(String) -> Result<String>,
+) -> Result<CurrentCollectionPage> {
     let boundary = after
         .map(serde_json::from_str::<(i64, String)>)
         .transpose()?;
@@ -35,7 +59,7 @@ pub(in crate::studio) fn current_page(
         continuation: None,
     };
     let mut selected_bytes = 0usize;
-    for (_, entry) in state.by_position().range((lower, upper)) {
+    for (_, entry) in rows.range((lower, upper)) {
         if page.entries.len() == demand.max_items as usize {
             return Ok(page);
         }
@@ -49,7 +73,7 @@ pub(in crate::studio) fn current_page(
         let mut candidate = CurrentCollectionEntry {
             id: entry.entry_id.clone(),
             position: entry.position,
-            payload: PayloadData::Inline { bytes: Vec::new() },
+            payload: CurrentPayloadData::Inline { bytes: Vec::new() },
         };
         let overhead = serde_json::to_vec(&candidate)?
             .len()
@@ -57,21 +81,17 @@ pub(in crate::studio) fn current_page(
         let inline = overhead.saturating_add(entry.payload.len().saturating_mul(4));
         if fixed.saturating_add(selected_bytes).saturating_add(inline) <= demand.max_bytes as usize
         {
-            candidate.payload = PayloadData::Inline {
+            candidate.payload = CurrentPayloadData::Inline {
                 bytes: entry.payload.to_vec(),
             };
         } else {
-            candidate.payload = PayloadData::Deferred {
-                reference: ContentRef {
-                    database_id: reference.database_id.clone(),
-                    target: ContentTarget::Body {
-                        owner: ContentOwner::Current {
-                            domain: format!("collection:{}", reference.collection),
-                            id: entry.entry_id.clone(),
-                            revision: reference.revision,
-                        },
-                        key: "entry".into(),
-                    },
+            candidate.payload = CurrentPayloadData::Deferred {
+                reference: CurrentContentRef {
+                    owner_id: reference.owner_id.clone(),
+                    domain: format!("collection:{}", reference.collection),
+                    entity_id: entry.entry_id.clone(),
+                    content_key: "entry".into(),
+                    generation: reference.revision.to_string(),
                 },
                 byte_length: entry.payload.len() as u64,
             };

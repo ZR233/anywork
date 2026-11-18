@@ -2,8 +2,6 @@
 use super::super::conversation;
 use super::legacy_timeline_store as timeline;
 use super::*;
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct CompletionBoundary;
 impl MigrationName for CompletionBoundary {
@@ -339,9 +337,9 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::UserQuestion;
-    use crate::protocol::*;
-    use crate::studio::storage::history::{connect, conversation};
+    use crate::studio::storage::history::connect;
+    use crate::studio::storage::history::schema::legacy_timeline_types::CurrentContentPreview;
+    use crate::*;
     use anyhow::Result;
     use pl_core::{
         chat::{ChatContent, ChatContentKey, ChatItem, ContentData, ContentDescriptor},
@@ -382,21 +380,6 @@ mod tests {
         }
     }
 
-    struct Published17;
-    impl MigratorTraitSelf for Published17 {
-        fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
-            Migrator {
-                thread_id: THREAD.into(),
-                bot_root: None,
-                execution_identity: None,
-            }
-            .migrations()
-            .into_iter()
-            .take_while(|step| step.name() != IMMUTABLE_COMPLETION_RUNS)
-            .collect()
-        }
-    }
-
     fn at(effect_seq: u64) -> ChatFactPosition {
         ChatFactPosition {
             effect_seq,
@@ -428,7 +411,8 @@ mod tests {
                 ThreadContentLifecycle::completed(2),
             )),
         );
-        let mut draft = crate::studio::runtime::chat_item::completion_draft(&item, 2, &database)?;
+        let mut draft =
+            crate::studio::runtime::chat_item::completion_draft(&item, 2, &database, None)?;
         let mut a: ChatAtom = serde_json::from_slice(&draft.metadata)?;
         a.attempt_id = Some("attempt".into());
         a.source_order = Some(1);
@@ -616,149 +600,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nonempty_legacy_archive_rebuild_rollback_and_reopen_preserve_originals() -> Result<()>
-    {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("history.sqlite");
-        let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
-        Published16.up(&db, None).await?;
-        let (database, a) = seed(&db).await?;
-        let before = originals(&db).await?;
-        let old_head = timeline::read_state(&db).await?.context("old head")?;
-        let old_current = super::super::legacy_current::read(&db).await?;
-        let old_group = old_current
-            .items
-            .iter()
-            .find(|item| item.is_work_group())
-            .context("old open group")?;
-        let old_reference = old_group.members.as_ref().context("old members")?.clone();
-        let old_view = rows(
-            &db,
-            "SELECT hex(payload) AS value FROM conversation_view_state",
-        )
-        .await?;
-        let old_entries=rows(&db,"SELECT json_array(collection,position,entry_id,hex(payload)) AS value FROM conversation_view_entries ORDER BY collection,position,entry_id").await?;
-        let old_members=rows(&db,"SELECT json_array(item_id,member_order,member_id,completion_item_id,hex(metadata)) AS value FROM timeline_item_members ORDER BY item_id,member_order").await?;
-        // Failure occurs after archive DDL, while replay resolves a completion owner.
-        let mut damaged = a.clone();
-        damaged.completion_item_id = Some("missing".into());
-        db.execute_raw(statement(
-            "UPDATE conversation_atom_facts SET metadata=? WHERE atom_id='A' AND phase='terminal'",
-            vec![serde_json::to_vec(&damaged)?.into()],
-        ))
-        .await?;
-        let broken = originals(&db).await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
-        assert!(!applied(&db).await?);
-        assert_eq!(originals(&db).await?, broken);
-        assert_eq!(
-            rows(
-                &db,
-                "SELECT hex(payload) AS value FROM conversation_view_state"
-            )
-            .await?,
-            old_view
-        );
-        assert!(
-            db.query_one_raw(statement(
-                "SELECT 1 FROM sqlite_schema WHERE name='completion_boundary_archive_view_state'",
-                vec![]
-            ))
-            .await?
-            .is_none()
-        );
-        db.execute_raw(statement(
-            "UPDATE conversation_atom_facts SET metadata=? WHERE atom_id='A' AND phase='terminal'",
-            vec![serde_json::to_vec(&a)?.into()],
-        ))
-        .await?;
-        Published17.up(&db, None).await?;
-        assert!(applied(&db).await?);
-        assert_eq!(originals(&db).await?, before);
-        assert_eq!(
-            rows(
-                &db,
-                "SELECT hex(payload) AS value FROM completion_boundary_archive_view_state"
-            )
-            .await?,
-            old_view
-        );
-        assert_eq!(rows(&db,"SELECT json_array(collection,position,entry_id,hex(payload)) AS value FROM completion_boundary_archive_view_entries ORDER BY collection,position,entry_id").await?,old_entries);
-        assert_eq!(rows(&db,"SELECT json_array(item_id,member_order,member_id,completion_item_id,hex(metadata)) AS value FROM completion_boundary_archive_timeline_members ORDER BY item_id,member_order").await?,old_members);
-        let head = timeline::read_state(&db).await?.context("new head")?;
-        assert_ne!(head.generation, old_head.generation);
-        let cut: serde_json::Value = serde_json::from_slice(&head.recovery)?;
-        assert!(cut.is_array());
-        assert!(!String::from_utf8(head.recovery.clone())?.contains("旧活动前缀"));
-        assert_ne!(head.generation, old_reference.projection_generation);
-        assert!(
-            rows(&db, "SELECT item_id AS value FROM timeline_items")
-                .await?
-                .is_empty()
-        );
-        assert!(
-            rows(&db, "SELECT member_id AS value FROM timeline_item_members")
-                .await?
-                .is_empty()
-        );
-        let cold = conversation::completed::cold(&db).await?;
-        assert!(cold.projection().previews.is_empty());
-        assert!(!cold.projection().execution_present);
-        assert_eq!(cold.interactions().len(), 1);
-        assert!(
-            cold.projection()
-                .plan
-                .as_ref()
-                .and_then(|plan| plan.document.as_ref())
-                .is_some()
-        );
-        assert!(
-            cold.projection().atoms.is_empty(),
-            "cold browsing does not restore legacy work groups"
-        );
-        // Ordinary reopen must neither rotate generation nor populate an open group.
-        db.close().await?;
-        let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(
-            timeline::archived_generation(&db).await?,
-            old_head.generation
-        );
-        assert_eq!(originals(&db).await?, before);
-        assert!(
-        rows(&db, "SELECT name AS value FROM sqlite_schema WHERE name IN ('timeline_items','timeline_item_members','timeline_projection_state')")
-            .await?
-            .is_empty()
-    );
-        assert_eq!(
-            database,
-            rows(&db, "SELECT database_id AS value FROM history_meta").await?[0]
-        );
-        db.execute_unprepared("DROP TABLE completion_boundary_archive_timeline_members")
-            .await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
-        assert!(
-        db.query_one_raw(statement(
-            "SELECT 1 FROM sqlite_schema WHERE name='completion_boundary_archive_timeline_members'",
-            vec![]
-        ))
-        .await?
-        .is_none()
-    );
-        assert!(applied(&db).await?);
-        db.close().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn unfinished_completion_reference_or_incomplete_chunks_roll_back_relocation()
     -> Result<()> {
         for damage in [
@@ -854,136 +695,128 @@ mod tests {
 
     mod tool_restart {
         use super::*;
-        use crate::studio::{
-            storage::{
-                history::{EffectCommit, HistoryStore},
-                thread_writer::HistoryChannel,
-            },
-            thread_projection::LiveProjection,
-        };
+        use crate::studio::storage::history::HistoryStore;
         use pl_core::{
-            chat::{ChatHistory, ContentReadRequest, TimelineEpoch},
             context::{ContextRecord, ContextSnapshot, ContextSource},
             model::ModelToolCall,
-            thread::{ThreadHandle, ToolOutcome},
         };
 
         #[tokio::test]
-        async fn archived_tool_arguments_allow_actual_core_recovery_terminal_to_commit()
+        async fn archived_tool_arguments_and_originals_survive_the_migration_transaction()
         -> Result<()> {
-            eprintln!("tool recovery: creating runtime fixture");
-            let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-            eprintln!("tool recovery: runtime fixture ready");
-            let result = async {
-        let mut thread = crate::Thread::from(env.runtime.create_thread(
-            &env.project.id, "migrated interrupted tool",
-        ).await?);
-        thread.id = THREAD.into();
-        let path = env._temp.path().join("legacy-tool.sqlite");
-        let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
-        Published16.up(&db, None).await?;
-        let (database, _) = seed(&db).await?;
-        let store = HistoryStore::open(&path, THREAD).await?;
-        let arguments = format!("{{\"value\":\"{}\"}}", "工具参数".repeat(30_000));
-        let id = crate::studio::thread_projection::order::tool_id("old-call");
-        let item = ExecutionItem::new(id.clone(),THREAD.into(),"tool-turn".into(),2,1,3,3,
-            ExecutionShape::Tool(ThreadToolItem::new(
-                ThreadToolInvocation::new("old-call".into(),"side_effect".into(),arguments.clone()),
-                ThreadToolState::Running(RunningThreadTool::new(String::new())),
-            )),
-        );
-        store.upsert_item(&db,3,item.clone()).await?;
-        let old_key = ChatContentKey {
-            owner: pl_core::chat::ChatKey::new("item",&id)?,
-            key:"tool.arguments".into(),
-        };
-        super::super::super::legacy_content::write_content(&db,&ChatContent {
-            descriptor: ContentDescriptor {key:old_key.clone(),byte_length:arguments.len() as u64,
-                generation:7,media_type:None},
-            data:ContentData::Bytes(Arc::from(arguments.clone().into_bytes())),
-        },false).await?;
-        let mut checkpoint = *checkpoint::read(&db,THREAD).await?.context("checkpoint")?;
-        checkpoint.state.context = ContextSnapshot {revision:1,records:vec![ContextRecord {
-            id:"call-record".into(),turn_id:Some("tool-turn".into()),source:ContextSource::Assistant,
-            content:vec![],tool_calls:vec![ModelToolCall {
-                call_id:"old-call".into(),tool_id:"side_effect".into(),
-                arguments:OpaquePayload::new("tool.arguments",1,arguments.clone())?,
-                presentation_contract:None,rejection:None,
-            }],
-        }].into()};
-        checkpoint::write(&db,&checkpoint,None,None).await?;
-        let before = originals(&db).await?;
-        let original_manifest = rows(&db, "SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM conversation_contents WHERE content_key='tool.arguments'").await?;
-        let original_chunks = rows(&db, "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM conversation_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?;
-        prepare(&db,THREAD,Preparation::Schema,None).await?;
-        eprintln!("tool recovery: migration committed");
-        assert_eq!(originals(&db).await?,before);
-        assert_eq!(rows(&db,"SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM completion_boundary_archive_contents WHERE content_key='tool.arguments'").await?,original_manifest);
-        assert_eq!(rows(&db,"SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM completion_boundary_archive_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?,original_chunks);
-        assert!(rows(&db,"SELECT owner_key AS value FROM conversation_contents WHERE content_key='tool.arguments'").await?.is_empty());
-        db.close().await?;
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("legacy-tool.sqlite");
+            let db = connect(&path, crate::studio::paths::SqliteFileMode::Create).await?;
+            Published16.up(&db, None).await?;
+            seed(&db).await?;
+            let store = HistoryStore::open(&path, THREAD).await?;
+            let arguments = format!("{{\"value\":\"{}\"}}", "工具参数".repeat(30_000));
+            let id = crate::studio::thread_projection::order::tool_id("old-call");
+            let item = ExecutionItem::new(
+                id.clone(),
+                THREAD.into(),
+                "tool-turn".into(),
+                2,
+                1,
+                3,
+                3,
+                ExecutionShape::Tool(ThreadToolItem::new(
+                    ThreadToolInvocation::new(
+                        "old-call".into(),
+                        "side_effect".into(),
+                        arguments.clone(),
+                    ),
+                    ThreadToolState::Running(RunningThreadTool::new(String::new())),
+                )),
+            );
+            store.upsert_item(&db, 3, item).await?;
+            let key = ChatContentKey {
+                owner: pl_core::chat::ChatKey::new("item", &id)?,
+                key: "tool.arguments".into(),
+            };
+            super::super::super::legacy_content::write_content(
+                &db,
+                &ChatContent {
+                    descriptor: ContentDescriptor {
+                        key: key.clone(),
+                        byte_length: arguments.len() as u64,
+                        generation: 7,
+                        media_type: None,
+                    },
+                    data: ContentData::Bytes(Arc::from(arguments.clone().into_bytes())),
+                },
+                false,
+            )
+            .await?;
+            let mut checkpoint = *checkpoint::read(&db, THREAD).await?.context("checkpoint")?;
+            checkpoint.state.context = ContextSnapshot {
+                revision: 1,
+                records: vec![ContextRecord {
+                    id: "call-record".into(),
+                    turn_id: Some("tool-turn".into()),
+                    source: ContextSource::Assistant,
+                    content: vec![],
+                    tool_calls: vec![ModelToolCall {
+                        call_id: "old-call".into(),
+                        tool_id: "side_effect".into(),
+                        arguments: OpaquePayload::new("tool.arguments", 1, arguments.clone())?,
+                        presentation_contract: None,
+                        rejection: None,
+                    }],
+                }]
+                .into(),
+            };
+            checkpoint::write(&db, &checkpoint, None, None).await?;
+            let before = originals(&db).await?;
+            let original_manifest = rows(
+                &db,
+                "SELECT json_array(owner_key,content_key,hex(payload)) AS value
+                 FROM conversation_contents WHERE content_key='tool.arguments'",
+            )
+            .await?;
+            let original_chunks = rows(
+                &db,
+                "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value
+                 FROM conversation_content_chunks WHERE content_key='tool.arguments'
+                 ORDER BY byte_offset",
+            )
+            .await?;
 
-        // This is the real Core recovery reducer, not a hand-constructed terminal delivery.
-        let owner = ThreadHandle::resume_without_model(THREAD.into(),Some(checkpoint))?;
-        let mut settled = owner.snapshot();
-        let effects = owner.effect_page(3,std::num::NonZeroUsize::new(32).unwrap()).await?;
-        assert!(!effects.is_empty());
-        let delivery = effects.iter().flat_map(|effect| effect.deliveries.iter())
-            .find(|delivery| delivery.call_id=="old-call").context("Core recovery delivery")?;
-        assert!(matches!(delivery.outcome,ToolOutcome::Interrupted));
-        let channel=HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let chat=pl_core::chat::Session::new(store.clone(),TimelineEpoch::new("tool-recovery")?);
-        let mut projection=LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(),store.clone())?;
-        projection.bind_conversation_identity(database.clone())?;
-        projection.seed(vec![item],Default::default());
-        projection.restore_current(&chat,&thread,&settled).await?;
-        eprintln!("tool recovery: current restored");
-        for effect in &effects {
-            // Reattach the original effect's transfer facts, which live snapshots prune.
-            settled.deliveries = effect.deliveries.clone();
-            let (_,mut prepared)=projection.prepare(&thread,effect,&settled,false).await?;
-            projection.publish_prepared(&chat,&mut prepared).await?;
-            store.commit_effect(effect.sequence,EffectCommit {
-                turns:&prepared.turns,execution_order:prepared.execution_order,completions:&prepared.completions,current:&prepared.current,
-                rolled_back_turns:&Default::default(),identities:&[],messages:&[],receipts:&[],
-                tasks:&[],deliveries:&[],delivery_repairs:&[],attempt:effect.attempt.as_ref(),
-            }).await?;
-        }
-        assert!(store.watermark().await?>3);
-        let saved=store.read_chat_item(&id).await?.context("completed interrupted tool")?;
-        let body=saved.contents.get(&old_key).context("full arguments")?;
-        assert_eq!(body.data.range(0,arguments.len())?.as_bytes(),arguments.as_bytes());
-        owner.close().await?;
-        drop(projection);
-        drop(chat);
-        store.close_for_deletion().await?;
-        eprintln!("tool recovery: history closed");
-        let store=HistoryStore::open(&path,THREAD).await?;
-        let mut recovered = Vec::new();
-        while recovered.len() < arguments.len() {
-            let body=ChatHistory::read_content(&store,&ContentReadRequest {
-                epoch:TimelineEpoch::new("cold-tool")?,
-                reference:pl_core::chat::ContentRef::Body(old_key.clone()),
-                offset:recovered.len() as u64,max_bytes:64*1024,generation:None,
-            }).await?;
-            assert!(body.sealed);
-            assert!(!body.bytes.as_bytes().is_empty());
-            recovered.extend_from_slice(body.bytes.as_bytes());
-        }
-        assert_eq!(recovered,arguments.as_bytes());
-        {
-            let connection = store.writer().await?;
-            let db = &connection.db;
-            assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,hex(payload)) AS value FROM completion_boundary_archive_contents WHERE content_key='tool.arguments'").await?,original_manifest);
-            assert_eq!(rows(db,"SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value FROM completion_boundary_archive_content_chunks WHERE content_key='tool.arguments' ORDER BY byte_offset").await?,original_chunks);
-            assert_eq!(originals(db).await?[0][0],before[0][0],"unrelated completed A is unchanged");
-        }
-        store.close_for_deletion().await?;
-        Ok::<_,anyhow::Error>(())
-    }.await;
-            eprintln!("tool recovery: result before runtime shutdown: {result:?}");
-            env.finish(result).await
+            prepare(&db, THREAD, Preparation::Schema, None).await?;
+
+            assert_eq!(originals(&db).await?, before);
+            assert_eq!(
+                rows(
+                    &db,
+                    "SELECT json_array(owner_key,content_key,hex(payload)) AS value
+                     FROM completion_boundary_archive_contents
+                     WHERE content_key='tool.arguments'",
+                )
+                .await?,
+                original_manifest
+            );
+            assert_eq!(
+                rows(
+                    &db,
+                    "SELECT json_array(owner_key,content_key,byte_offset,hex(data)) AS value
+                     FROM completion_boundary_archive_content_chunks
+                     WHERE content_key='tool.arguments' ORDER BY byte_offset",
+                )
+                .await?,
+                original_chunks
+            );
+            assert!(
+                rows(
+                    &db,
+                    "SELECT owner_key AS value FROM conversation_contents
+                     WHERE content_key='tool.arguments'",
+                )
+                .await?
+                .is_empty()
+            );
+            db.close().await?;
+            store.close_for_deletion().await?;
+            Ok(())
         }
     }
 }

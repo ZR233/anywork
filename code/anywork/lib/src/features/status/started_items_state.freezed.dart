@@ -294,7 +294,7 @@ as bool,
 /// @nodoc
 mixin _$StartedItemsState {
 
- List<String> get skills; List<StartedService> get mcp; List<StartedService> get lsp; DomainSyncStatus get mcpSync; DomainSyncStatus get lspSync; Set<String> get pending; Map<String, String> get errors;
+ List<String> get skills; int get skillsTotal; bool get skillsHasMore; bool get skillsLoading; int get mcpStateTotal; bool get mcpStateHasMore; bool get mcpStateLoading; int get lspStateTotal; bool get lspStateHasMore; bool get lspStateLoading; List<StartedService> get mcp; List<StartedService> get lsp; DomainSyncStatus get mcpSync; DomainSyncStatus get lspSync; Set<String> get pending; Map<String, String> get errors;
 /// Create a copy of StartedItemsState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -306,20 +306,20 @@ $StartedItemsStateCopyWith<StartedItemsState> get copyWith => _$StartedItemsStat
 @override
 bool operator ==(Object other) {
   final _this = this as StartedItemsState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is StartedItemsState&&const DeepCollectionEquality().equals(other.skills, _this.skills)&&const DeepCollectionEquality().equals(other.mcp, _this.mcp)&&const DeepCollectionEquality().equals(other.lsp, _this.lsp)&&(identical(other.mcpSync, _this.mcpSync) || other.mcpSync == _this.mcpSync)&&(identical(other.lspSync, _this.lspSync) || other.lspSync == _this.lspSync)&&const DeepCollectionEquality().equals(other.pending, _this.pending)&&const DeepCollectionEquality().equals(other.errors, _this.errors));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is StartedItemsState&&const DeepCollectionEquality().equals(other.skills, _this.skills)&&(identical(other.skillsTotal, _this.skillsTotal) || other.skillsTotal == _this.skillsTotal)&&(identical(other.skillsHasMore, _this.skillsHasMore) || other.skillsHasMore == _this.skillsHasMore)&&(identical(other.skillsLoading, _this.skillsLoading) || other.skillsLoading == _this.skillsLoading)&&(identical(other.mcpStateTotal, _this.mcpStateTotal) || other.mcpStateTotal == _this.mcpStateTotal)&&(identical(other.mcpStateHasMore, _this.mcpStateHasMore) || other.mcpStateHasMore == _this.mcpStateHasMore)&&(identical(other.mcpStateLoading, _this.mcpStateLoading) || other.mcpStateLoading == _this.mcpStateLoading)&&(identical(other.lspStateTotal, _this.lspStateTotal) || other.lspStateTotal == _this.lspStateTotal)&&(identical(other.lspStateHasMore, _this.lspStateHasMore) || other.lspStateHasMore == _this.lspStateHasMore)&&(identical(other.lspStateLoading, _this.lspStateLoading) || other.lspStateLoading == _this.lspStateLoading)&&const DeepCollectionEquality().equals(other.mcp, _this.mcp)&&const DeepCollectionEquality().equals(other.lsp, _this.lsp)&&(identical(other.mcpSync, _this.mcpSync) || other.mcpSync == _this.mcpSync)&&(identical(other.lspSync, _this.lspSync) || other.lspSync == _this.lspSync)&&const DeepCollectionEquality().equals(other.pending, _this.pending)&&const DeepCollectionEquality().equals(other.errors, _this.errors));
 }
 
 
 @override
 int get hashCode {
   final _this = this as StartedItemsState;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.skills),const DeepCollectionEquality().hash(_this.mcp),const DeepCollectionEquality().hash(_this.lsp),_this.mcpSync,_this.lspSync,const DeepCollectionEquality().hash(_this.pending),const DeepCollectionEquality().hash(_this.errors));
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.skills),_this.skillsTotal,_this.skillsHasMore,_this.skillsLoading,_this.mcpStateTotal,_this.mcpStateHasMore,_this.mcpStateLoading,_this.lspStateTotal,_this.lspStateHasMore,_this.lspStateLoading,const DeepCollectionEquality().hash(_this.mcp),const DeepCollectionEquality().hash(_this.lsp),_this.mcpSync,_this.lspSync,const DeepCollectionEquality().hash(_this.pending),const DeepCollectionEquality().hash(_this.errors));
 }
 
 @override
 String toString() {
   final _this = this as StartedItemsState;
-  return 'StartedItemsState(skills: ${_this.skills}, mcp: ${_this.mcp}, lsp: ${_this.lsp}, mcpSync: ${_this.mcpSync}, lspSync: ${_this.lspSync}, pending: ${_this.pending}, errors: ${_this.errors})';
+  return 'StartedItemsState(skills: ${_this.skills}, skillsTotal: ${_this.skillsTotal}, skillsHasMore: ${_this.skillsHasMore}, skillsLoading: ${_this.skillsLoading}, mcpStateTotal: ${_this.mcpStateTotal}, mcpStateHasMore: ${_this.mcpStateHasMore}, mcpStateLoading: ${_this.mcpStateLoading}, lspStateTotal: ${_this.lspStateTotal}, lspStateHasMore: ${_this.lspStateHasMore}, lspStateLoading: ${_this.lspStateLoading}, mcp: ${_this.mcp}, lsp: ${_this.lsp}, mcpSync: ${_this.mcpSync}, lspSync: ${_this.lspSync}, pending: ${_this.pending}, errors: ${_this.errors})';
 }
 
 
@@ -330,7 +330,7 @@ abstract mixin class $StartedItemsStateCopyWith<$Res>  {
   factory $StartedItemsStateCopyWith(StartedItemsState value, $Res Function(StartedItemsState) _then) = _$StartedItemsStateCopyWithImpl;
 @useResult
 $Res call({
- List<String> skills, List<StartedService> mcp, List<StartedService> lsp, DomainSyncStatus mcpSync, DomainSyncStatus lspSync, Set<String> pending, Map<String, String> errors
+ List<String> skills, int skillsTotal, bool skillsHasMore, bool skillsLoading, int mcpStateTotal, bool mcpStateHasMore, bool mcpStateLoading, int lspStateTotal, bool lspStateHasMore, bool lspStateLoading, List<StartedService> mcp, List<StartedService> lsp, DomainSyncStatus mcpSync, DomainSyncStatus lspSync, Set<String> pending, Map<String, String> errors
 });
 
 
@@ -347,10 +347,19 @@ class _$StartedItemsStateCopyWithImpl<$Res>
 
 /// Create a copy of StartedItemsState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? skills = null,Object? mcp = null,Object? lsp = null,Object? mcpSync = null,Object? lspSync = null,Object? pending = null,Object? errors = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? skills = null,Object? skillsTotal = null,Object? skillsHasMore = null,Object? skillsLoading = null,Object? mcpStateTotal = null,Object? mcpStateHasMore = null,Object? mcpStateLoading = null,Object? lspStateTotal = null,Object? lspStateHasMore = null,Object? lspStateLoading = null,Object? mcp = null,Object? lsp = null,Object? mcpSync = null,Object? lspSync = null,Object? pending = null,Object? errors = null,}) {
   return _then(StartedItemsState(
 skills: null == skills ? _self.skills : skills // ignore: cast_nullable_to_non_nullable
-as List<String>,mcp: null == mcp ? _self.mcp : mcp // ignore: cast_nullable_to_non_nullable
+as List<String>,skillsTotal: null == skillsTotal ? _self.skillsTotal : skillsTotal // ignore: cast_nullable_to_non_nullable
+as int,skillsHasMore: null == skillsHasMore ? _self.skillsHasMore : skillsHasMore // ignore: cast_nullable_to_non_nullable
+as bool,skillsLoading: null == skillsLoading ? _self.skillsLoading : skillsLoading // ignore: cast_nullable_to_non_nullable
+as bool,mcpStateTotal: null == mcpStateTotal ? _self.mcpStateTotal : mcpStateTotal // ignore: cast_nullable_to_non_nullable
+as int,mcpStateHasMore: null == mcpStateHasMore ? _self.mcpStateHasMore : mcpStateHasMore // ignore: cast_nullable_to_non_nullable
+as bool,mcpStateLoading: null == mcpStateLoading ? _self.mcpStateLoading : mcpStateLoading // ignore: cast_nullable_to_non_nullable
+as bool,lspStateTotal: null == lspStateTotal ? _self.lspStateTotal : lspStateTotal // ignore: cast_nullable_to_non_nullable
+as int,lspStateHasMore: null == lspStateHasMore ? _self.lspStateHasMore : lspStateHasMore // ignore: cast_nullable_to_non_nullable
+as bool,lspStateLoading: null == lspStateLoading ? _self.lspStateLoading : lspStateLoading // ignore: cast_nullable_to_non_nullable
+as bool,mcp: null == mcp ? _self.mcp : mcp // ignore: cast_nullable_to_non_nullable
 as List<StartedService>,lsp: null == lsp ? _self.lsp : lsp // ignore: cast_nullable_to_non_nullable
 as List<StartedService>,mcpSync: null == mcpSync ? _self.mcpSync : mcpSync // ignore: cast_nullable_to_non_nullable
 as DomainSyncStatus,lspSync: null == lspSync ? _self.lspSync : lspSync // ignore: cast_nullable_to_non_nullable
@@ -441,10 +450,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<String> skills,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( List<String> skills,  int skillsTotal,  bool skillsHasMore,  bool skillsLoading,  int mcpStateTotal,  bool mcpStateHasMore,  bool mcpStateLoading,  int lspStateTotal,  bool lspStateHasMore,  bool lspStateLoading,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _StartedItemsState() when $default != null:
-return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
+return $default(_that.skills,_that.skillsTotal,_that.skillsHasMore,_that.skillsLoading,_that.mcpStateTotal,_that.mcpStateHasMore,_that.mcpStateLoading,_that.lspStateTotal,_that.lspStateHasMore,_that.lspStateLoading,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
   return orElse();
 
 }
@@ -462,10 +471,10 @@ return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<String> skills,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( List<String> skills,  int skillsTotal,  bool skillsHasMore,  bool skillsLoading,  int mcpStateTotal,  bool mcpStateHasMore,  bool mcpStateLoading,  int lspStateTotal,  bool lspStateHasMore,  bool lspStateLoading,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)  $default,) {final _that = this;
 switch (_that) {
 case _StartedItemsState():
-return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
+return $default(_that.skills,_that.skillsTotal,_that.skillsHasMore,_that.skillsLoading,_that.mcpStateTotal,_that.mcpStateHasMore,_that.mcpStateLoading,_that.lspStateTotal,_that.lspStateHasMore,_that.lspStateLoading,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -482,10 +491,10 @@ return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_th
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<String> skills,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( List<String> skills,  int skillsTotal,  bool skillsHasMore,  bool skillsLoading,  int mcpStateTotal,  bool mcpStateHasMore,  bool mcpStateLoading,  int lspStateTotal,  bool lspStateHasMore,  bool lspStateLoading,  List<StartedService> mcp,  List<StartedService> lsp,  DomainSyncStatus mcpSync,  DomainSyncStatus lspSync,  Set<String> pending,  Map<String, String> errors)?  $default,) {final _that = this;
 switch (_that) {
 case _StartedItemsState() when $default != null:
-return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
+return $default(_that.skills,_that.skillsTotal,_that.skillsHasMore,_that.skillsLoading,_that.mcpStateTotal,_that.mcpStateHasMore,_that.mcpStateLoading,_that.lspStateTotal,_that.lspStateHasMore,_that.lspStateLoading,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_that.pending,_that.errors);case _:
   return null;
 
 }
@@ -497,7 +506,7 @@ return $default(_that.skills,_that.mcp,_that.lsp,_that.mcpSync,_that.lspSync,_th
 
 
 class _StartedItemsState implements StartedItemsState {
-  const _StartedItemsState({ List<String> skills = const <String>[],  List<StartedService> mcp = const <StartedService>[],  List<StartedService> lsp = const <StartedService>[], required this.mcpSync, required this.lspSync,  Set<String> pending = const <String>{},  Map<String, String> errors = const <String, String>{}}): _skills = skills,_mcp = mcp,_lsp = lsp,_pending = pending,_errors = errors;
+  const _StartedItemsState({ List<String> skills = const <String>[], this.skillsTotal = 0, this.skillsHasMore = false, this.skillsLoading = false, this.mcpStateTotal = 0, this.mcpStateHasMore = false, this.mcpStateLoading = false, this.lspStateTotal = 0, this.lspStateHasMore = false, this.lspStateLoading = false,  List<StartedService> mcp = const <StartedService>[],  List<StartedService> lsp = const <StartedService>[], required this.mcpSync, required this.lspSync,  Set<String> pending = const <String>{},  Map<String, String> errors = const <String, String>{}}): _skills = skills,_mcp = mcp,_lsp = lsp,_pending = pending,_errors = errors;
 
 
  final  List<String> _skills;
@@ -507,6 +516,15 @@ class _StartedItemsState implements StartedItemsState {
   return EqualUnmodifiableListView(_skills);
 }
 
+@override@JsonKey() final  int skillsTotal;
+@override@JsonKey() final  bool skillsHasMore;
+@override@JsonKey() final  bool skillsLoading;
+@override@JsonKey() final  int mcpStateTotal;
+@override@JsonKey() final  bool mcpStateHasMore;
+@override@JsonKey() final  bool mcpStateLoading;
+@override@JsonKey() final  int lspStateTotal;
+@override@JsonKey() final  bool lspStateHasMore;
+@override@JsonKey() final  bool lspStateLoading;
  final  List<StartedService> _mcp;
 @override@JsonKey() List<StartedService> get mcp {
   if (_mcp is EqualUnmodifiableListView) return _mcp;
@@ -548,18 +566,18 @@ _$StartedItemsStateCopyWith<_StartedItemsState> get copyWith => __$StartedItemsS
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StartedItemsState&&const DeepCollectionEquality().equals(other.skills, _skills)&&const DeepCollectionEquality().equals(other.mcp, _mcp)&&const DeepCollectionEquality().equals(other.lsp, _lsp)&&(identical(other.mcpSync, mcpSync) || other.mcpSync == mcpSync)&&(identical(other.lspSync, lspSync) || other.lspSync == lspSync)&&const DeepCollectionEquality().equals(other.pending, _pending)&&const DeepCollectionEquality().equals(other.errors, _errors));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _StartedItemsState&&const DeepCollectionEquality().equals(other.skills, _skills)&&(identical(other.skillsTotal, skillsTotal) || other.skillsTotal == skillsTotal)&&(identical(other.skillsHasMore, skillsHasMore) || other.skillsHasMore == skillsHasMore)&&(identical(other.skillsLoading, skillsLoading) || other.skillsLoading == skillsLoading)&&(identical(other.mcpStateTotal, mcpStateTotal) || other.mcpStateTotal == mcpStateTotal)&&(identical(other.mcpStateHasMore, mcpStateHasMore) || other.mcpStateHasMore == mcpStateHasMore)&&(identical(other.mcpStateLoading, mcpStateLoading) || other.mcpStateLoading == mcpStateLoading)&&(identical(other.lspStateTotal, lspStateTotal) || other.lspStateTotal == lspStateTotal)&&(identical(other.lspStateHasMore, lspStateHasMore) || other.lspStateHasMore == lspStateHasMore)&&(identical(other.lspStateLoading, lspStateLoading) || other.lspStateLoading == lspStateLoading)&&const DeepCollectionEquality().equals(other.mcp, _mcp)&&const DeepCollectionEquality().equals(other.lsp, _lsp)&&(identical(other.mcpSync, mcpSync) || other.mcpSync == mcpSync)&&(identical(other.lspSync, lspSync) || other.lspSync == lspSync)&&const DeepCollectionEquality().equals(other.pending, _pending)&&const DeepCollectionEquality().equals(other.errors, _errors));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_skills),const DeepCollectionEquality().hash(_mcp),const DeepCollectionEquality().hash(_lsp),mcpSync,lspSync,const DeepCollectionEquality().hash(_pending),const DeepCollectionEquality().hash(_errors));
+    return Object.hash(runtimeType,const DeepCollectionEquality().hash(_skills),skillsTotal,skillsHasMore,skillsLoading,mcpStateTotal,mcpStateHasMore,mcpStateLoading,lspStateTotal,lspStateHasMore,lspStateLoading,const DeepCollectionEquality().hash(_mcp),const DeepCollectionEquality().hash(_lsp),mcpSync,lspSync,const DeepCollectionEquality().hash(_pending),const DeepCollectionEquality().hash(_errors));
 }
 
 @override
 String toString() {
-    return 'StartedItemsState(skills: $skills, mcp: $mcp, lsp: $lsp, mcpSync: $mcpSync, lspSync: $lspSync, pending: $pending, errors: $errors)';
+    return 'StartedItemsState(skills: $skills, skillsTotal: $skillsTotal, skillsHasMore: $skillsHasMore, skillsLoading: $skillsLoading, mcpStateTotal: $mcpStateTotal, mcpStateHasMore: $mcpStateHasMore, mcpStateLoading: $mcpStateLoading, lspStateTotal: $lspStateTotal, lspStateHasMore: $lspStateHasMore, lspStateLoading: $lspStateLoading, mcp: $mcp, lsp: $lsp, mcpSync: $mcpSync, lspSync: $lspSync, pending: $pending, errors: $errors)';
 }
 
 
@@ -570,7 +588,7 @@ abstract mixin class _$StartedItemsStateCopyWith<$Res> implements $StartedItemsS
   factory _$StartedItemsStateCopyWith(_StartedItemsState value, $Res Function(_StartedItemsState) _then) = __$StartedItemsStateCopyWithImpl;
 @override @useResult
 $Res call({
- List<String> skills, List<StartedService> mcp, List<StartedService> lsp, DomainSyncStatus mcpSync, DomainSyncStatus lspSync, Set<String> pending, Map<String, String> errors
+ List<String> skills, int skillsTotal, bool skillsHasMore, bool skillsLoading, int mcpStateTotal, bool mcpStateHasMore, bool mcpStateLoading, int lspStateTotal, bool lspStateHasMore, bool lspStateLoading, List<StartedService> mcp, List<StartedService> lsp, DomainSyncStatus mcpSync, DomainSyncStatus lspSync, Set<String> pending, Map<String, String> errors
 });
 
 
@@ -587,10 +605,19 @@ class __$StartedItemsStateCopyWithImpl<$Res>
 
 /// Create a copy of StartedItemsState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? skills = null,Object? mcp = null,Object? lsp = null,Object? mcpSync = null,Object? lspSync = null,Object? pending = null,Object? errors = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? skills = null,Object? skillsTotal = null,Object? skillsHasMore = null,Object? skillsLoading = null,Object? mcpStateTotal = null,Object? mcpStateHasMore = null,Object? mcpStateLoading = null,Object? lspStateTotal = null,Object? lspStateHasMore = null,Object? lspStateLoading = null,Object? mcp = null,Object? lsp = null,Object? mcpSync = null,Object? lspSync = null,Object? pending = null,Object? errors = null,}) {
   return _then(_StartedItemsState(
 skills: null == skills ? _self._skills : skills // ignore: cast_nullable_to_non_nullable
-as List<String>,mcp: null == mcp ? _self._mcp : mcp // ignore: cast_nullable_to_non_nullable
+as List<String>,skillsTotal: null == skillsTotal ? _self.skillsTotal : skillsTotal // ignore: cast_nullable_to_non_nullable
+as int,skillsHasMore: null == skillsHasMore ? _self.skillsHasMore : skillsHasMore // ignore: cast_nullable_to_non_nullable
+as bool,skillsLoading: null == skillsLoading ? _self.skillsLoading : skillsLoading // ignore: cast_nullable_to_non_nullable
+as bool,mcpStateTotal: null == mcpStateTotal ? _self.mcpStateTotal : mcpStateTotal // ignore: cast_nullable_to_non_nullable
+as int,mcpStateHasMore: null == mcpStateHasMore ? _self.mcpStateHasMore : mcpStateHasMore // ignore: cast_nullable_to_non_nullable
+as bool,mcpStateLoading: null == mcpStateLoading ? _self.mcpStateLoading : mcpStateLoading // ignore: cast_nullable_to_non_nullable
+as bool,lspStateTotal: null == lspStateTotal ? _self.lspStateTotal : lspStateTotal // ignore: cast_nullable_to_non_nullable
+as int,lspStateHasMore: null == lspStateHasMore ? _self.lspStateHasMore : lspStateHasMore // ignore: cast_nullable_to_non_nullable
+as bool,lspStateLoading: null == lspStateLoading ? _self.lspStateLoading : lspStateLoading // ignore: cast_nullable_to_non_nullable
+as bool,mcp: null == mcp ? _self._mcp : mcp // ignore: cast_nullable_to_non_nullable
 as List<StartedService>,lsp: null == lsp ? _self._lsp : lsp // ignore: cast_nullable_to_non_nullable
 as List<StartedService>,mcpSync: null == mcpSync ? _self.mcpSync : mcpSync // ignore: cast_nullable_to_non_nullable
 as DomainSyncStatus,lspSync: null == lspSync ? _self.lspSync : lspSync // ignore: cast_nullable_to_non_nullable

@@ -1,5 +1,6 @@
 //! Product observation registration; callbacks execute outside the registry lock.
 use super::*;
+use anyhow::Context as _;
 
 type Observe = dyn Fn(String, ThreadHandle, Arc<crate::session::NativeResources>) + Send + Sync;
 type BeforeClose = dyn Fn(
@@ -15,20 +16,156 @@ type Drain = dyn Fn(String, ClosePurpose) -> futures::future::BoxFuture<'static,
 type Synchronize = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
-/// Durable record of one accepted message identity inside a Thread's history.
+/// Settled record of one message identity in the recipient's saved Current.
 ///
-/// The index is the authority a delivery uses once it left core's bounded resident window. A
-/// migrated row may prove that the identity was accepted without proving the body, which must never
-/// be re-delivered as new work.
+/// The Current inbox or its bounded consumed-identity ledger is the authority a delivery uses once
+/// it left the resident queue. An identity without a verifiable body is never re-delivered as work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DurableMessageIdentity {
     /// The accepted body digest and its original admission sequence.
     Proven { sequence: u64, digest: String },
-    /// The identity is recorded but its accepted body cannot be verified.
-    Unverifiable,
 }
 
-/// Admission is not durability. Only the parent's existing history index proves final delivery.
+#[cfg(test)]
+use crate::studio::StudioStore;
+
+#[cfg(test)]
+async fn current_message_identity(
+    store: &StudioStore,
+    thread_id: &str,
+    message_id: &str,
+) -> anyhow::Result<Option<DurableMessageIdentity>> {
+    let paths = store.registered_session_paths(thread_id)?;
+    let current = store
+        .state_for(paths.workspace_id(), thread_id)?
+        .load_current()
+        .await?;
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let snapshot = current.state.to_paused_snapshot();
+    if let Some(record) = snapshot
+        .inbox
+        .iter()
+        .find(|record| record.message.id == message_id)
+    {
+        return Ok(Some(DurableMessageIdentity::Proven {
+            sequence: record.sequence,
+            digest: record.message.digest(),
+        }));
+    }
+    Ok(snapshot
+        .consumed_message_identities
+        .iter()
+        .find(|identity| identity.id == message_id)
+        .map(|identity| DurableMessageIdentity::Proven {
+            sequence: identity.sequence,
+            digest: identity.digest.clone(),
+        }))
+}
+
+#[cfg(test)]
+async fn history_parent_report(
+    history: &crate::history::HistoryStore,
+    thread: &str,
+    terminal: u64,
+) -> anyhow::Result<Option<pl_core::thread::inbox::ThreadMessage>> {
+    crate::studio::history_delivery::parent_report(&history.reader(), thread, terminal).await
+}
+pub(super) async fn latest_terminal_turn(
+    reader: &crate::history::HistoryReader,
+) -> anyhow::Result<Option<crate::Turn>> {
+    let mut cursor = None;
+    loop {
+        let page = reader
+            .turns_page(
+                None,
+                cursor,
+                crate::history::HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        for entry in page.entries {
+            let crate::history::HistoryRowHead::Turn(head) = entry.head else {
+                continue;
+            };
+            if !matches!(
+                head.state,
+                crate::history::HistoryTurnState::Completed
+                    | crate::history::HistoryTurnState::Cancelled
+                    | crate::history::HistoryTurnState::Failed
+                    | crate::history::HistoryTurnState::BudgetLimited
+            ) {
+                continue;
+            }
+            let detail_event_id = head
+                .detail_event_id
+                .context("terminal Turn has no immutable detail")?;
+            let detail = reader
+                .read_event(
+                    detail_event_id.clone(),
+                    crate::history::HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 1024 * 1024,
+                    },
+                )
+                .await?;
+            let mut body_cursor = None;
+            loop {
+                let bodies = reader
+                    .list_bodies(
+                        detail.header.event_id.clone(),
+                        body_cursor,
+                        crate::history::HistoryDemand {
+                            max_rows: 128,
+                            max_bytes: 64 * 1024,
+                        },
+                    )
+                    .await?;
+                for body in bodies.entries {
+                    if body.body_key != "turn_detail" {
+                        continue;
+                    }
+                    let mut bytes = Vec::with_capacity(body.reference.byte_length as usize);
+                    let mut offset = 0_u64;
+                    while offset < body.reference.byte_length {
+                        let window = reader
+                            .read_body(
+                                body.reference.clone(),
+                                offset,
+                                (body.reference.byte_length - offset).min(64 * 1024) as u32,
+                            )
+                            .await?;
+                        anyhow::ensure!(
+                            !window.bytes.is_empty(),
+                            "Turn detail body did not advance"
+                        );
+                        offset = offset
+                            .checked_add(window.bytes.len() as u64)
+                            .context("Turn detail body length overflow")?;
+                        bytes.extend(window.bytes);
+                    }
+                    return serde_json::from_slice(&bytes)
+                        .map(Some)
+                        .context("decode immutable Turn detail");
+                }
+                let Some(next) = bodies.next else {
+                    break;
+                };
+                body_cursor = Some(next);
+            }
+            return Err(anyhow::anyhow!("terminal Turn detail body is missing"));
+        }
+        let Some(next) = page.next else {
+            return Ok(None);
+        };
+        cursor = Some(next);
+    }
+}
+
+/// Admission is not durability. Only the parent's saved Current identity proves final delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParentMessageDelivery {
     Accepted { message_id: String, sequence: u64 },
@@ -40,7 +177,6 @@ pub(crate) enum ParentMessageDelivery {
 pub(crate) enum ParentMessageSkip {
     Closing,
     TargetUnavailable,
-    UnverifiableHistory,
     ClosedDuringAdmission,
 }
 
@@ -69,8 +205,6 @@ pub(super) enum DeliveryDisposition {
     Receipt(u64),
     /// The same identity is accepted with a provably different body.
     Conflict,
-    /// The identity is recorded but its accepted body cannot be verified (migrated row).
-    Unverifiable,
     /// The Thread never accepted this identity: a normal admission may proceed.
     New,
 }
@@ -210,11 +344,11 @@ impl SessionRuntime {
         )
     }
 
-    /// Bind close completion to each actual terminal effect's original report ID and the
-    /// parent's accepted/durable sequence. A skipped publication can never be a successful ACK.
+    /// Settle explicit pending Native delivery markers for this child and wait for the retained
+    /// terminal operation. History rows that have no marker are not inferred as owed deliveries.
     pub(crate) async fn acknowledge_parent_reports(
         &self,
-        store: &crate::studio::StudioStore,
+        _store: &crate::studio::StudioStore,
         child: &crate::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
         if let Some(parent) = child.parent_thread_id.as_deref()
@@ -228,111 +362,65 @@ impl SessionRuntime {
             operation: "acknowledge terminal parent reports",
             source: source.into_boxed_dyn_error(),
         };
-        let history = store.history(&child.id).await.map_err(failure)?;
+        let parent = child
+            .parent_thread_id
+            .as_deref()
+            .context("terminal child has no parent")
+            .map_err(failure)?;
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        let parent_record = services.record(parent).await.map_err(failure)?;
+        let had_pending = self
+            .pending_native_deliveries(&parent_record)
+            .await
+            .map_err(failure)?
+            .iter()
+            .any(|pending| {
+                matches!(
+                    pending.source(),
+                    super::pending_delivery::PendingNativeDeliverySource::Terminal {
+                        child_id,
+                        ..
+                    } if child_id == &child.id
+                )
+            });
         Box::pin(self.recover_saved_review_deliveries(child))
             .await
             .map_err(failure)?;
         self.join_review_delivery(&child.id)
             .await
             .map_err(failure)?;
-        let mut after = 0;
-        let mut acknowledged = false;
-        let mut synchronized = false;
-        loop {
-            let sequences = history
-                .terminal_report_sequences(after)
-                .await
-                .map_err(failure)?;
-            if sequences.is_empty() {
-                let mut cursor = String::new();
-                loop {
-                    let facts = history
-                        .review_delivery_exceptions(&cursor)
-                        .await
-                        .map_err(failure)?;
-                    if facts.is_empty() {
-                        break;
-                    }
-                    for fact in facts {
-                        let parent = child.parent_thread_id.as_deref().ok_or_else(|| {
-                            failure(anyhow::anyhow!("review delivery exception has no parent"))
-                        })?;
-                        cursor = fact.message.id.clone();
-                        self.acknowledge_review_exception(parent, fact.message, false)
-                            .await
-                            .map_err(failure)?;
-                        acknowledged = true;
-                    }
-                }
-                return Ok(if acknowledged {
-                    ParentReportAcknowledgement::Proven
-                } else {
-                    ParentReportAcknowledgement::Absent
-                });
-            }
-            for sequence in sequences {
-                let parent = child
-                    .parent_thread_id
-                    .as_deref()
-                    .ok_or_else(|| failure(anyhow::anyhow!("terminal child has no parent")))?;
-                let message_id =
-                    crate::studio::agent_close::terminal_report_id(&child.id, sequence);
-                let original = history.parent_report(sequence).await.map_err(failure)?;
-                // An earlier delivery can already be durable while receiver cleanup failed or its
-                // waiter was cancelled. Do not skip the remaining owner just because its ACK exists.
-                self.finish_report_receiver(parent).await?;
-                let mut receipt = self.durable_message_identity(parent, &message_id).await?;
-                if receipt.is_none() && !synchronized && self.observed_thread(parent).is_some() {
-                    // This is only a fixed handoff wait, never a substitute for the identity check.
-                    self.synchronize_observation(parent).await?;
-                    synchronized = true;
-                    receipt = self.durable_message_identity(parent, &message_id).await?;
-                }
-                if receipt.is_none() {
-                    let message = original.clone().ok_or_else(|| failure(anyhow::anyhow!(
-                        "parent report {message_id} lacks its original durable body; later checkpoints cannot reconstruct original permissions or messages"
-                    )))?;
-                    let services = self
-                        .0
-                        .state()
-                        .agent_services
-                        .clone()
-                        .ok_or(ThreadAssemblyError::Closed)?;
-                    services
-                        .redeliver_parent_report(self, parent, message)
-                        .await
-                        .map_err(failure)?;
-                    receipt = self.durable_message_identity(parent, &message_id).await?;
-                }
-                match receipt {
-                    Some(DurableMessageIdentity::Proven {
-                        sequence: accepted,
-                        digest,
-                    }) => {
-                        if let Some(original) = original
-                            && original.digest() != digest
-                        {
-                            return Err(failure(anyhow::anyhow!(
-                                "parent report {message_id} durable body differs from its original handoff"
-                            )));
-                        }
-                        tracing::trace!(child_id = child.id, %message_id, parent_sequence = accepted, "terminal report durable receipt verified");
-                    }
-                    Some(DurableMessageIdentity::Unverifiable) => {
-                        return Err(failure(anyhow::anyhow!(
-                            "parent report {message_id} has no verifiable durable receipt"
-                        )));
-                    }
-                    None => {
-                        return Err(failure(anyhow::anyhow!(
-                            "parent report {message_id} was not durably delivered; child history is retained"
-                        )));
-                    }
-                }
-                acknowledged = true;
-                after = sequence;
-            }
+        let remaining = self
+            .pending_native_deliveries(&parent_record)
+            .await
+            .map_err(failure)?
+            .into_iter()
+            .filter(|pending| {
+                matches!(
+                    pending.source(),
+                    super::pending_delivery::PendingNativeDeliverySource::Terminal {
+                        child_id,
+                        ..
+                    } if child_id == &child.id
+                )
+            })
+            .map(|pending| pending.message().id.clone())
+            .collect::<Vec<_>>();
+        if !remaining.is_empty() {
+            return Err(failure(anyhow::anyhow!(
+                "parent reports were not settled: {}",
+                remaining.join(", ")
+            )));
         }
+        Ok(if had_pending {
+            ParentReportAcknowledgement::Proven
+        } else {
+            ParentReportAcknowledgement::Absent
+        })
     }
     pub(super) fn prepare_close(
         &self,
@@ -400,7 +488,7 @@ impl SessionRuntime {
         })
     }
 
-    /// Adjudicates one message delivery against the target Thread's durable identity index.
+    /// Adjudicates one message delivery against the target Thread's saved Current identity.
     ///
     /// Every admission site must run this before it accepts a message as new work, because a delivery
     /// whose resident copy is gone would otherwise be admitted a second time. The result is the
@@ -427,7 +515,6 @@ impl SessionRuntime {
                 Ok(DeliveryDisposition::Receipt(sequence))
             }
             Some(DurableMessageIdentity::Proven { .. }) => Ok(DeliveryDisposition::Conflict),
-            Some(DurableMessageIdentity::Unverifiable) => Ok(DeliveryDisposition::Unverifiable),
         }
     }
 
@@ -503,12 +590,6 @@ impl SessionRuntime {
                     sequence,
                 });
             }
-            // Older history proves acceptance without a receipt. Never admit a second copy.
-            Some(DurableMessageIdentity::Unverifiable) => {
-                return Ok(ParentMessageDelivery::Skipped(
-                    ParentMessageSkip::UnverifiableHistory,
-                ));
-            }
             None => {}
         }
         // The committed inbox already owns this immutable terminal watermark. In particular,
@@ -566,21 +647,16 @@ impl SessionRuntime {
 mod storage_fault_tests {
 
     use super::*;
-    use crate::studio::StudioStore;
     use crate::studio::storage_fault_test_support::{
-        HistoryChannel, ThreadStorageSink, register_test_thread, spawn_live_projection,
-        spawn_live_projection_for_thread, ticket,
+        HistoryChannel, ThreadStorageSink, register_test_thread, spawn_live_projection_for_thread,
     };
-    use anyhow::{Context, Result};
+    use crate::studio::{StudioStore, ThreadStorageBinding};
+    use anyhow::Result;
     use pl_core::{
         context::{AgentMessageKind, ContextContent, OpaquePayload},
-        thread::{
-            TurnOutcome, TurnRecord, TurnState,
-            cold::{ColdStore, ColdStoreHandle},
-        },
+        thread::{TurnOutcome, TurnRecord, TurnState, history_sink::HistorySinkHandle},
     };
     use pl_tool::collaboration::thread::WorkspaceRelease;
-    use sea_orm::ConnectionTrait;
     use std::{
         collections::BTreeMap,
         sync::{
@@ -676,7 +752,7 @@ mod storage_fault_tests {
     }
 
     #[derive(Debug)]
-    struct ResourceIo(Arc<Mutex<Vec<WorkspaceRelease>>>);
+    struct ResourceIo(Arc<Mutex<Vec<(String, WorkspaceRelease)>>>);
     impl StudioChildFactory for ResourceIo {
         type Admission = ();
 
@@ -700,10 +776,10 @@ mod storage_fault_tests {
         }
         async fn close_published(
             &self,
-            _: &str,
+            id: &str,
             disposition: WorkspaceRelease,
         ) -> Result<(), ThreadAssemblyError> {
-            self.0.lock().unwrap().push(disposition);
+            self.0.lock().unwrap().push((id.into(), disposition));
             Ok(())
         }
         async fn discard_unpublished(
@@ -720,8 +796,7 @@ mod storage_fault_tests {
         owner: SessionRuntime,
         store: StudioStore,
         live: LiveOwners,
-        closes: Arc<Mutex<Vec<WorkspaceRelease>>>,
-        fail_sync: Arc<AtomicBool>,
+        closes: Arc<Mutex<Vec<(String, WorkspaceRelease)>>>,
         fail_drain: Arc<AtomicBool>,
         fail_drain_after_writer: Arc<AtomicBool>,
     }
@@ -735,8 +810,6 @@ mod storage_fault_tests {
             let observing = store.clone();
             let messages = store.clone();
             let closes = Arc::new(Mutex::new(Vec::new()));
-            let fail_sync = Arc::new(AtomicBool::new(false));
-            let sync_fault = fail_sync.clone();
             let fail_drain = Arc::new(AtomicBool::new(false));
             let drain_fault = fail_drain.clone();
             let fail_drain_after_writer = Arc::new(AtomicBool::new(false));
@@ -775,34 +848,43 @@ mod storage_fault_tests {
                 Some(Arc::new(move |id, message| {
                     let store = messages.clone();
                     Box::pin(async move {
-                        Ok(store
-                            .history(&id)
+                        let paths = store.registered_session_paths(&id).map_err(storage_error)?;
+                        let state = store
+                            .state_for(paths.workspace_id(), &id)
+                            .map_err(storage_error)?;
+                        let current = state
+                            .load_current()
                             .await
                             .map_err(storage_error)?
-                            .message_identity(&message)
-                            .await
-                            .map_err(storage_error)?
-                            .map(|receipt| match receipt.digest {
-                                Some(digest) => DurableMessageIdentity::Proven {
-                                    sequence: receipt.sequence,
-                                    digest,
-                                },
-                                None => DurableMessageIdentity::Unverifiable,
+                            .ok_or_else(|| {
+                                storage_error(anyhow::anyhow!("message owner has no current"))
+                            })?;
+                        let snapshot = current.state.to_paused_snapshot();
+                        if let Some(record) = snapshot
+                            .inbox
+                            .iter()
+                            .find(|record| record.message.id == message)
+                        {
+                            Ok(Some(DurableMessageIdentity::Proven {
+                                sequence: record.sequence,
+                                digest: record.message.digest(),
                             }))
+                        } else {
+                            Ok(snapshot
+                                .consumed_message_identities
+                                .iter()
+                                .find(|identity| identity.id == message)
+                                .map(|identity| DurableMessageIdentity::Proven {
+                                    sequence: identity.sequence,
+                                    digest: identity.digest.clone(),
+                                }))
+                        }
                     })
                 })),
                 |_, _, _| Box::pin(async { Ok(()) }),
                 move |id| {
                     let owners = syncing.clone();
-                    let fault = sync_fault.clone();
-                    Box::pin(async move {
-                        if id == "parent" && fault.load(Ordering::SeqCst) {
-                            return Err(storage_error(anyhow::anyhow!(
-                                "injected report ACK failure"
-                            )));
-                        }
-                        barrier(owners, id).await
-                    })
+                    Box::pin(async move { barrier(owners, id).await })
                 },
             )?;
             Ok(Self {
@@ -810,7 +892,6 @@ mod storage_fault_tests {
                 store,
                 live,
                 closes,
-                fail_sync,
                 fail_drain,
                 fail_drain_after_writer,
             })
@@ -846,13 +927,18 @@ mod storage_fault_tests {
                 protocol.workspace_path = workspace.to_string_lossy().into_owned();
             }
             register_test_thread(&self.store, &protocol).await?;
-            let checkpoint = self.store.history(id).await?.checkpoint().await?;
-            let sink =
-                ThreadStorageSink::new(self.store.clone(), protocol, checkpoint.as_ref()).await?;
-            let thread = ThreadHandle::resume_without_model(id.into(), checkpoint)?;
+            let sink = ThreadStorageSink::new(self.store.clone(), protocol.clone()).await?;
+            let thread = ThreadHandle::start_current(id.into(), None)?;
             thread
-                .attach_storage(ColdStoreHandle::new(sink.clone()))
+                .attach_history(HistorySinkHandle::new(sink.clone()))
                 .await?;
+            let channel = self.store.thread_persistence().history_channel(id);
+            let conversation = self
+                .store
+                .conversation_store_for(&protocol.workspace_id, id)
+                .await?;
+            conversation.attach_current(thread.clone()).await?;
+            let binding = Arc::new(ThreadStorageBinding::new(sink, channel, conversation));
             let activation = self.activation(id, parent);
             self.owner.0.state().insert_entry(
                 id.into(),
@@ -874,7 +960,7 @@ mod storage_fault_tests {
                                 ),
                             },
                             cleanup: Default::default(),
-                            close_storage: None,
+                            close_storage: Some(CloseStorage::Attached(binding)),
                             published_resources_closed: false,
                             workspace_disposition: None,
                         },
@@ -886,21 +972,40 @@ mod storage_fault_tests {
         }
 
         async fn stop_writers(&self) -> Result<()> {
-            let channels = self
+            let owners = self
                 .live
                 .lock()
                 .unwrap()
-                .values()
-                .map(|owner| owner.channel.clone())
+                .iter()
+                .map(|(id, owner)| (id.clone(), owner.clone()))
                 .collect::<Vec<_>>();
-            for channel in channels {
-                channel.stop_and_join().await?;
+            for (id, owner) in owners {
+                let through = owner.channel.handoff_ticket();
+                owner.channel.await_handoff_durable(&id, through).await?;
+                owner.channel.stop_and_join().await?;
+                let mut projection = owner.projection.lock().await;
+                if let Some(task) = projection.task.as_mut() {
+                    let result = task.await;
+                    projection.task = None;
+                    result?;
+                }
+                if let Some(error) = projection.failure.clone() {
+                    return Err(anyhow::Error::new(error));
+                }
+                drop(projection);
+                let mut owners = self.live.lock().unwrap();
+                if owners
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(&current.projection, &owner.projection))
+                {
+                    owners.remove(&id);
+                }
             }
             Ok(())
         }
     }
 
-    /// Real checkpoint rejection leaves the close owner registered; retry must use the same
+    /// Real current publication rejection leaves the close owner registered; retry must use the same
     /// request authorization while an ordinary close still cannot consume explicit Cleanup.
     #[tokio::test]
     async fn cancelled_unpublished_cleanup_keeps_the_real_preparer_until_disposal_joins()
@@ -1017,8 +1122,7 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn rejected_close_checkpoint_keeps_cleanup_request_retryable_without_early_cleanup()
-    -> Result<()> {
+    async fn sealed_cleanup_cannot_consume_the_preserve_disposition() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let fixture = Fixture::new(store.clone())?;
@@ -1028,30 +1132,6 @@ mod storage_fault_tests {
         fixture
             .owner
             .freeze_agent_close_disposition("child", WorkspaceRelease::Preserve)?;
-        let history = store.history("child").await?;
-        let before = history
-            .checkpoint()
-            .await?
-            .context("durable close intent")?;
-        let db = sea_orm::Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &store
-                    .session_paths("project-test", "child")?
-                    .history_database(),
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared("CREATE TRIGGER reject_closed_checkpoint BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'controlled closed checkpoint rejection'); END").await?;
-        assert!(fixture.owner.close("child").await.is_err());
-        assert!(fixture.owner.0.state().entries.contains_key("child"));
-        assert!(fixture.closes.lock().unwrap().is_empty());
-        assert_eq!(
-            history.checkpoint().await?.unwrap().history_fence,
-            before.history_fence
-        );
         let targets = vec![(1, "child".to_owned())];
         let seal = fixture
             .owner
@@ -1065,257 +1145,13 @@ mod storage_fault_tests {
                 .is_err()
         );
         drop(seal);
-        let generation = store
-            .thread_persistence()
-            .history_channel("child")
-            .subscribe()
-            .borrow()
-            .fault_generation;
-        db.execute_unprepared("DROP TRIGGER reject_closed_checkpoint")
-            .await?;
-        store
-            .thread_persistence()
-            .retry_history("child", generation)
-            .await?;
         fixture.owner.close("child").await?;
         assert_eq!(
             *fixture.closes.lock().unwrap(),
-            vec![WorkspaceRelease::Preserve]
-        );
-        assert_eq!(
-            history.checkpoint().await?.unwrap().state.lifecycle,
-            ThreadLifecycle::Closed
+            vec![("child".into(), WorkspaceRelease::Preserve)]
         );
         assert!(fixture.owner.close_session().await.is_empty());
         fixture.stop_writers().await?;
-        Ok(())
-    }
-
-    /// Component integration in two phases: global Closing rejects live publication without an
-    /// ACK while the parent gate is held. After that gate and shutdown finish, a fresh owner runs
-    /// explicit recovery and proves the saved original ID/body durably and idempotently.
-    #[tokio::test]
-    async fn global_seal_skips_report_without_ack_and_retry_proves_the_original_terminal_id()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let resources = crate::studio::storage_fault_test_support::close_factory(&store)?;
-        let fixture = Fixture::new(store.clone())?;
-        resources.install(&fixture.owner)?;
-        let parent = fixture.add("parent", None).await?;
-        let child = Fixture::protocol("child", Some("parent"));
-        register_test_thread(&store, &child).await?;
-        let message_id = crate::studio::agent_close::terminal_report_id("child", 1);
-        let terminal_turn = TurnRecord {
-            turn_id: "original-terminal-turn".into(),
-            input_id: None,
-            state: TurnState::Finished(TurnOutcome::Completed),
-            model_steps: 0,
-            elapsed_ms: None,
-        };
-        let body = serde_json::to_string(&serde_json::json!({
-            "childId": child.id,
-            "commitSequence": 1,
-            "turn": terminal_turn,
-            "turnId": terminal_turn.turn_id,
-            "inputId": terminal_turn.input_id,
-            "message": "actual terminal fixture",
-            "messages": [],
-            "runningTasks": [],
-            "pendingInteractions": [],
-            "permissions": [],
-        }))?;
-        let message = pl_core::thread::inbox::ThreadMessage {
-            kind: AgentMessageKind::Report,
-            id: message_id.clone(),
-            source_id: "studio.child:child".into(),
-            payload: OpaquePayload::new("pl.studio.turn-report", 3, body.clone())?,
-            context: vec![ContextContent::Text { text: body.into() }],
-        };
-        // Save the original body with its terminal effect through the real writer. A ticket
-        // without this handoff cannot authorize recovery to reconstruct a report from later state.
-        crate::studio::storage_fault_test_support::save_terminal_report(
-            &store,
-            &child,
-            message.clone(),
-        )
-        .await?;
-        let checkpoint = store.history("child").await?.checkpoint().await?;
-        let child_sink =
-            ThreadStorageSink::new(store.clone(), child.clone(), checkpoint.as_ref()).await?;
-        spawn_live_projection(&child_sink);
-        let mut closed = ticket("child", 2);
-        closed.checkpoint.state.lifecycle = ThreadLifecycle::Closed;
-        child_sink.admit("child", closed)?;
-        child_sink.flush("child", 2).await?;
-        store
-            .thread_persistence()
-            .history_channel("child")
-            .stop_and_join()
-            .await?;
-        assert_eq!(
-            store
-                .history("child")
-                .await?
-                .terminal_report_sequences(0)
-                .await?,
-            vec![1]
-        );
-        assert_eq!(
-            store
-                .history("child")
-                .await?
-                .terminal_report_sequence("original-terminal-turn")
-                .await?,
-            Some(1)
-        );
-        // Recovery must retry the projection's original saved bytes, never a second body with
-        // the same terminal ID. The real services below also own cold delivery reconciliation.
-        let original = store
-            .history("child")
-            .await?
-            .parent_report(1)
-            .await?
-            .context("original durable terminal report")?;
-        assert_eq!(original, message);
-        let root_gate = fixture.owner.agent_operation("parent").await;
-        let (entered, registered) = tokio::sync::oneshot::channel();
-        let (release, publish) = tokio::sync::oneshot::channel();
-        let owner = fixture.owner.clone();
-        let source = store.clone();
-        let target = child.clone();
-        let first_message = message.clone();
-        let operations = super::super::agent_operations::AgentOperations::default();
-        let job = tokio::spawn(async move {
-            operations
-                .run(
-                    "parent".into(),
-                    "report-ack-fixture".into(),
-                    || Ok(()),
-                    async move {
-                        let _parent_resources = root_gate;
-                        entered
-                            .send(())
-                            .map_err(|_| anyhow::anyhow!("registration gate closed"))?;
-                        publish.await?;
-                        assert_eq!(
-                            owner
-                                .notify_parent("parent", first_message.clone(), false)
-                                .await?,
-                            ParentMessageDelivery::Skipped(ParentMessageSkip::Closing)
-                        );
-                        // Observe the negative live-send result before any explicit recovery.
-                        // Full ACK recovery may take this same gate and belongs to phase B.
-                        assert!(
-                            source
-                                .history("parent")
-                                .await?
-                                .message_identity(&first_message.id)
-                                .await?
-                                .is_none()
-                        );
-                        let history = source.history(&target.id).await?;
-                        assert_eq!(history.terminal_report_sequences(0).await?, vec![1]);
-                        assert_eq!(history.parent_report(1).await?, Some(first_message));
-                        assert!(history.checkpoint().await?.is_some());
-                        assert!(source.agent_close(&target.id).await?.is_none());
-                        drop(_parent_resources);
-                        Ok(())
-                    },
-                )
-                .await
-        });
-        registered.await?;
-        let mut shutdown = Box::pin(fixture.owner.close_session());
-        assert!(futures::poll!(shutdown.as_mut()).is_pending());
-        assert!(fixture.owner.0.state().closing);
-        release
-            .send(())
-            .map_err(|_| anyhow::anyhow!("publication gate closed"))?;
-        job.await??;
-        assert!(
-            store
-                .history("parent")
-                .await?
-                .message_identity(&message_id)
-                .await?
-                .is_none()
-        );
-        assert!(store.agent_close("child").await?.is_none());
-        assert!(store.history("child").await?.checkpoint().await?.is_some());
-        assert!(shutdown.await.is_empty());
-        fixture.stop_writers().await?;
-        drop(parent);
-        drop(fixture);
-        let restarted = Fixture::new(store.clone())?;
-        resources.install(&restarted.owner)?;
-        let parent = restarted.add("parent", None).await?;
-        let accepted = restarted
-            .owner
-            .notify_parent("parent", message.clone(), false)
-            .await?;
-        let sequence = match accepted {
-            ParentMessageDelivery::Accepted { sequence, .. } => sequence,
-            other => anyhow::bail!("unexpected retry delivery: {other:?}"),
-        };
-        assert_eq!(
-            restarted
-                .owner
-                .acknowledge_parent_reports(&store, &child)
-                .await?,
-            ParentReportAcknowledgement::Proven
-        );
-        assert_eq!(
-            restarted
-                .owner
-                .notify_parent("parent", message, false)
-                .await?,
-            ParentMessageDelivery::ProvenExisting {
-                message_id: message_id.clone(),
-                sequence
-            }
-        );
-        let receipt = store
-            .history("parent")
-            .await?
-            .message_identity(&message_id)
-            .await?
-            .context("exact durable parent report")?;
-        assert_eq!(receipt.sequence, sequence);
-        assert_eq!(receipt.digest.as_deref(), Some(original.digest().as_str()));
-        assert_eq!(
-            store.history("child").await?.parent_report(1).await?,
-            Some(original)
-        );
-        assert_eq!(
-            parent
-                .snapshot()
-                .inbox
-                .iter()
-                .filter(|entry| entry.message.id == message_id)
-                .count(),
-            1
-        );
-        assert!(
-            store
-                .history("parent")
-                .await?
-                .message_identity(&crate::studio::agent_close::terminal_report_id("child", 2))
-                .await?
-                .is_none()
-        );
-        let absent = Fixture::protocol("no-terminal", Some("parent"));
-        register_test_thread(&store, &absent).await?;
-        assert_eq!(
-            restarted
-                .owner
-                .acknowledge_parent_reports(&store, &absent)
-                .await?,
-            ParentReportAcknowledgement::Absent
-        );
-        assert!(restarted.owner.close_session().await.is_empty());
-        restarted.stop_writers().await?;
-        resources.shutdown().await?;
         Ok(())
     }
 
@@ -1348,21 +1184,20 @@ mod storage_fault_tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .all(|release| *release == WorkspaceRelease::Preserve)
+                    .all(|(_, release)| *release == WorkspaceRelease::Preserve)
             );
-            let checkpoint = store
-                .history("parent")
-                .await?
-                .checkpoint()
-                .await?
-                .context("durable closed checkpoint")?;
-            assert_eq!(checkpoint.state.lifecycle, ThreadLifecycle::Closed);
             fixture
                 .fail_drain_after_writer
                 .store(false, Ordering::SeqCst);
             fixture.owner.close_tree("parent", &[]).await?;
             assert!(fixture.owner.observed_thread("parent").is_none());
             assert!(fixture.owner.observed_thread("child").is_none());
+            let current = store
+                .state_for("project-test", "parent")?
+                .load_current()
+                .await?
+                .context("durable closed current after observation ACK retry")?;
+            assert_eq!(current.state.lifecycle, ThreadLifecycle::Closed);
             fixture.stop_writers().await?;
             Ok(())
         }
@@ -1414,16 +1249,19 @@ mod storage_fault_tests {
                 &self,
                 identity: &ThreadActivation,
             ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
-                let checkpoint = self
+                let paths = self
                     .0
-                    .history(identity.id())
-                    .await
+                    .registered_session_paths(identity.id())
+                    .map_err(storage_error)?;
+                let current = self
+                    .0
+                    .state_for(paths.workspace_id(), identity.id())
                     .map_err(storage_error)?
-                    .checkpoint()
+                    .load_current()
                     .await
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
-                crate::studio::delegation::saved(&checkpoint.state)
+                crate::studio::delegation::saved(&current.state.to_paused_snapshot())
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))
             }
@@ -1434,15 +1272,18 @@ mod storage_fault_tests {
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
                 let id = request.identity.id().to_owned();
                 let protocol = Fixture::protocol(&id, None);
-                let checkpoint = self
+                let paths = self
                     .0
-                    .history(&id)
-                    .await
+                    .registered_session_paths(&id)
+                    .map_err(storage_error)?;
+                let current = self
+                    .0
+                    .state_for(paths.workspace_id(), &id)
                     .map_err(storage_error)?
-                    .checkpoint()
+                    .load_current()
                     .await
                     .map_err(storage_error)?;
-                let sink = ThreadStorageSink::new(self.0.clone(), protocol, checkpoint.as_ref())
+                let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await
                     .map_err(storage_error)?;
                 let model_info = pl_model::model::ModelInfo::compatible("reactivated-model");
@@ -1476,7 +1317,7 @@ mod storage_fault_tests {
                     route,
                     model_available: true,
                     model,
-                    checkpoint,
+                    current,
                     initial_context: Vec::new(),
                     initial_runtime_facts: Vec::new(),
                     initial_extensions: BTreeMap::new(),
@@ -1487,18 +1328,30 @@ mod storage_fault_tests {
                         ),
                     ),
                     capacity: Default::default(),
-                    cold_store: Some(ColdStoreHandle::new(sink)),
+                    history_sink: Some(sink),
                 })
             }
         }
 
         async fn save_cold_thread(store: &StudioStore, protocol: &crate::Thread) -> Result<()> {
             register_test_thread(store, protocol).await?;
-            let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
             let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
             let channel = store.thread_persistence().history_channel(&protocol.id);
-            let thread = ThreadHandle::resume_without_model(protocol.id.clone(), None)?;
-            thread.attach_storage(ColdStoreHandle::new(sink)).await?;
+            let thread = ThreadHandle::start_current(protocol.id.clone(), None)?;
+            thread.attach_history(HistorySinkHandle::new(sink)).await?;
+            let epoch = thread.runtime_epoch();
+            let mut current_store = store.state_for(&protocol.workspace_id, &protocol.id)?;
+            current_store
+                .attach_current(
+                    store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        thread.clone(),
+                    ),
+                )
+                .await?;
             let assignment = crate::AgentWorkspaceAssignmentSnapshot {
                 mode: crate::AgentWorkspaceMode::Directory,
                 project_root: store.paths().home().to_string_lossy().into_owned(),
@@ -1522,10 +1375,51 @@ mod storage_fault_tests {
                     },
                 ])
                 .await?;
-            thread.close().await?;
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
+            let through = channel.handoff_ticket();
+            channel.await_handoff_durable(&protocol.id, through).await?;
             channel.stop_and_join().await?;
             projection.await?;
             Ok(())
+        }
+
+        /// Seed the explicit Current obligation left before recipient admission. History's
+        /// immutable report alone does not authorize recovery to infer or re-send a delivery.
+        async fn save_pending_report(
+            store: &StudioStore,
+            parent: &crate::Thread,
+            message: &pl_core::thread::inbox::ThreadMessage,
+        ) -> Result<()> {
+            let mut state = store.state_for(&parent.workspace_id, &parent.id)?;
+            let saved = state
+                .load_current()
+                .await?
+                .context("saved parent Current")?;
+            let owner = ThreadHandle::restore_current(saved, None)?;
+            let epoch = owner.runtime_epoch();
+            state
+                .attach_current(
+                    store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        owner.clone(),
+                    ),
+                )
+                .await?;
+            let pending = crate::thread_assembler::pending_delivery::PendingNativeDelivery::from_terminal_message(message.clone(), false)?;
+            owner
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: pending.extension_id(),
+                    expected_revision: None,
+                    payload: pending.encode()?,
+                }])
+                .await?;
+            state
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
         }
 
         #[derive(Clone, Copy)]
@@ -1584,10 +1478,7 @@ mod storage_fault_tests {
                     Some(ThreadAssemblyError::Unpublished(_))
                 ));
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity(&saved.message.id)
+                    current_message_identity(&store, "parent", &saved.message.id)
                         .await?
                         .is_none()
                 );
@@ -1601,27 +1492,24 @@ mod storage_fault_tests {
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let receipt = store
-                    .history("parent")
-                    .await?
-                    .message_identity(&saved.message.id)
+                let DurableMessageIdentity::Proven {
+                    sequence: receipt_sequence,
+                    digest: receipt_digest,
+                } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
                     .context("original report durable receipt")?;
-                assert_eq!(
-                    receipt.digest.as_deref(),
-                    Some(saved.message.digest().as_str())
-                );
+                assert_eq!(receipt_digest, saved.message.digest());
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let repeated = store
-                    .history("parent")
-                    .await?
-                    .message_identity(&saved.message.id)
+                let DurableMessageIdentity::Proven {
+                    sequence: repeated_sequence,
+                    digest: repeated_digest,
+                } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
                     .context("idempotent original report receipt")?;
-                assert_eq!(repeated.sequence, receipt.sequence);
-                assert_eq!(repeated.digest, receipt.digest);
+                assert_eq!(repeated_sequence, receipt_sequence);
+                assert_eq!(repeated_digest, receipt_digest);
                 {
                     let state = fixture.owner.0.state();
                     let entry = &state.entries["parent"];
@@ -1670,13 +1558,7 @@ mod storage_fault_tests {
                 // Never add a parent Entry to the coordinator recovering the saved close.
                 save_cold_thread(&store, &parent).await?;
                 save_cold_thread(&store, &child).await?;
-                let checkpoint = store
-                    .history("child")
-                    .await?
-                    .checkpoint()
-                    .await?
-                    .context("saved cold child")?;
-                let sequence = checkpoint.history_fence + 1;
+                let sequence = 1;
                 let content = frozen_report_body(
                     &child,
                     sequence,
@@ -1686,55 +1568,49 @@ mod storage_fault_tests {
                     kind: AgentMessageKind::Report,
                     id: crate::studio::agent_close::terminal_report_id("child", sequence),
                     source_id: "studio.child:child".into(),
-                    payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+                    payload: OpaquePayload::new("pl.studio.turn-report", 3, content.clone())?,
                     context: vec![ContextContent::Text {
                         text: content.into(),
                     }],
                 };
                 save_terminal_report(&store, &child, message.clone()).await?;
+                save_pending_report(&store, &parent, &message).await?;
                 let resources = close_factory(&store)?;
-                let checkpoint = store
-                    .history("child")
+                let current = store
+                    .state_for("project-test", "child")?
+                    .load_current()
                     .await?
-                    .checkpoint()
-                    .await?
-                    .context("terminal child checkpoint")?;
+                    .context("terminal child current")?;
+                let current_snapshot = current.state.to_paused_snapshot();
                 resources
                     .factory
-                    .begin_child_close(&child, Some(&checkpoint.state), false)
+                    .begin_child_close(&child, Some(&current_snapshot), false)
                     .await?;
                 let fixture = Fixture::new(store.clone())?;
                 resources.install(&fixture.owner)?;
                 assert!(fixture.owner.0.state().entries.is_empty());
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity(&message.id)
+                    current_message_identity(&store, "parent", &message.id)
                         .await?
                         .is_none()
                 );
-                fixture.fail_sync.store(inject_failure, Ordering::SeqCst);
                 fixture.fail_drain.store(inject_failure, Ordering::SeqCst);
                 let first = tokio::time::timeout(
                     std::time::Duration::from_secs(10),
                     fixture.owner.resume_agent_closes(),
                 )
                 .await?;
-                let first_receipt = store
-                    .history("parent")
-                    .await?
-                    .message_identity(&message.id)
+                let DurableMessageIdentity::Proven {
+                    sequence: first_sequence,
+                    digest: first_digest,
+                } = current_message_identity(&store, "parent", &message.id)
                     .await?
                     .context("original report was durably received even when cleanup failed")?;
-                assert_eq!(
-                    first_receipt.digest.as_deref(),
-                    Some(message.digest().as_str())
-                );
+                assert_eq!(first_digest, message.digest());
                 if inject_failure {
-                    let failure = first.expect_err("both delivery ACK and receiver drain fail");
+                    let failure = first
+                        .expect_err("receiver drain fails after the real Current delivery ACK");
                     let diagnostic = format!("{failure:#}");
-                    assert!(diagnostic.contains("injected report ACK failure"));
                     assert!(diagnostic.contains("injected receiver drain failure"));
                     assert!(
                         !store
@@ -1762,7 +1638,6 @@ mod storage_fault_tests {
                             .unwrap()
                             .ready
                     );
-                    fixture.fail_sync.store(false, Ordering::SeqCst);
                     fixture.fail_drain.store(false, Ordering::SeqCst);
                     if matches!(path, RecoveryPath::ActivateParent) {
                         // Normal activation itself must release the retained receiver, never return the
@@ -1792,28 +1667,25 @@ mod storage_fault_tests {
                 );
                 assert_eq!(
                     *fixture.closes.lock().unwrap(),
-                    vec![WorkspaceRelease::Preserve]
+                    vec![("child".into(), WorkspaceRelease::Preserve)]
                 );
                 assert_eq!(
                     fixture
                         .owner
                         .acknowledge_parent_reports(&store, &child)
                         .await?,
-                    ParentReportAcknowledgement::Proven
+                    ParentReportAcknowledgement::Absent
                 );
-                let receipt = store
-                    .history("parent")
-                    .await?
-                    .message_identity(&message.id)
+                let DurableMessageIdentity::Proven {
+                    sequence: receipt_sequence,
+                    digest: receipt_digest,
+                } = current_message_identity(&store, "parent", &message.id)
                     .await?
                     .context("same durable parent ACK")?;
-                assert_eq!(receipt.sequence, first_receipt.sequence);
-                assert_eq!(receipt.digest, first_receipt.digest);
+                assert_eq!(receipt_sequence, first_sequence);
+                assert_eq!(receipt_digest, first_digest);
                 assert_eq!(
-                    store
-                        .history("child")
-                        .await?
-                        .parent_report(sequence)
+                    history_parent_report(&store.history("child").await?, "child", sequence)
                         .await?
                         .context("unchanged original report")?
                         .digest(),
@@ -1836,11 +1708,13 @@ mod storage_fault_tests {
                 followup.id = "after-recovery".into();
                 active.send_message(followup).await?;
                 fixture.owner.synchronize_observation("parent").await?;
+                store
+                    .conversation_store("parent")
+                    .await?
+                    .flush_current(active.runtime_epoch())
+                    .await?;
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity("after-recovery")
+                    current_message_identity(&store, "parent", "after-recovery")
                         .await?
                         .is_some()
                 );
@@ -1862,13 +1736,7 @@ mod storage_fault_tests {
             let child = Fixture::protocol("child", Some("parent"));
             save_cold_thread(store, &parent).await?;
             save_cold_thread(store, &child).await?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
-                .await?
-                .context("cold child checkpoint")?;
-            let sequence = checkpoint.history_fence + 1;
+            let sequence = 1;
             let content = frozen_report_body(
                 &child,
                 sequence,
@@ -1878,12 +1746,13 @@ mod storage_fault_tests {
                 kind: AgentMessageKind::Report,
                 id: crate::studio::agent_close::terminal_report_id("child", sequence),
                 source_id: "studio.child:child".into(),
-                payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+                payload: OpaquePayload::new("pl.studio.turn-report", 3, content.clone())?,
                 context: vec![ContextContent::Text {
                     text: content.into(),
                 }],
             };
             save_terminal_report(store, &child, message.clone()).await?;
+            save_pending_report(store, &parent, &message).await?;
             Ok(SavedClose {
                 child,
                 message,
@@ -1898,28 +1767,21 @@ mod storage_fault_tests {
                     .owner
                     .acknowledge_parent_reports(store, &saved.child)
                     .await?,
-                ParentReportAcknowledgement::Proven
+                ParentReportAcknowledgement::Absent
             );
+            let child_history = store.history("child").await?;
             assert_eq!(
-                store
-                    .history("child")
-                    .await?
-                    .parent_report(saved.sequence)
+                history_parent_report(&child_history, "child", saved.sequence)
                     .await?
                     .context("unchanged original body")?
                     .digest(),
                 saved.message.digest()
             );
-            assert_eq!(
-                store
-                    .history("parent")
+            let DurableMessageIdentity::Proven { digest, .. } =
+                current_message_identity(store, "parent", &saved.message.id)
                     .await?
-                    .message_identity(&saved.message.id)
-                    .await?
-                    .context("durable original ID")?
-                    .digest,
-                Some(saved.message.digest())
-            );
+                    .context("durable original ID")?;
+            assert_eq!(digest, saved.message.digest());
             assert!(
                 store
                     .agent_close("child")
@@ -1948,16 +1810,16 @@ mod storage_fault_tests {
             followup.id = "after-retained-storage-recovery".into();
             active.send_message(followup.clone()).await?;
             fixture.owner.synchronize_observation("parent").await?;
-            assert_eq!(
-                store
-                    .history("parent")
+            store
+                .conversation_store("parent")
+                .await?
+                .flush_current(active.runtime_epoch())
+                .await?;
+            let DurableMessageIdentity::Proven { digest, .. } =
+                current_message_identity(store, "parent", &followup.id)
                     .await?
-                    .message_identity(&followup.id)
-                    .await?
-                    .context("real followup history write")?
-                    .digest,
-                Some(followup.digest())
-            );
+                    .context("real followup history write")?;
+            assert_eq!(digest, followup.digest());
             assert!(fixture.owner.close_session().await.is_empty());
             fixture.stop_writers().await
         }
@@ -1968,15 +1830,15 @@ mod storage_fault_tests {
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             let saved = save_pending_close(&store).await?;
             let resources = close_factory(&store)?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
+            let current = store
+                .state_for("project-test", "child")?
+                .load_current()
                 .await?
                 .context("saved terminal child")?;
+            let current_snapshot = current.state.to_paused_snapshot();
             resources
                 .factory
-                .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+                .begin_child_close(&saved.child, Some(&current_snapshot), false)
                 .await?;
             let fixture = Fixture::new(store.clone())?;
             resources.install(&fixture.owner)?;
@@ -1997,12 +1859,15 @@ mod storage_fault_tests {
                 .close_storage_binding("parent")?
                 .context("retained exact binding after attachment and close")?;
             assert!(binding.channel.is_stopping());
-            assert!(
-                store
-                    .thread_persistence()
-                    .retained_history_channel("parent")
-                    .is_none()
-            );
+            if let Some(retained) = store
+                .thread_persistence()
+                .retained_history_channel("parent")
+            {
+                assert!(
+                    Arc::ptr_eq(&retained, &binding.channel),
+                    "cleanup changed writer ownership"
+                );
+            }
             assert!(
                 fixture
                     .owner
@@ -2014,10 +1879,10 @@ mod storage_fault_tests {
                         .native()
                         .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
             );
-            let first_receipt = store
-                .history("parent")
-                .await?
-                .message_identity(&saved.message.id)
+            let DurableMessageIdentity::Proven {
+                sequence: first_sequence,
+                digest: first_digest,
+            } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
                 .context("original durable receipt before cleanup retry")?;
             fixture
@@ -2028,14 +1893,14 @@ mod storage_fault_tests {
                 fixture.owner.resume_agent_closes(),
             )
             .await??;
-            let receipt = store
-                .history("parent")
-                .await?
-                .message_identity(&saved.message.id)
+            let DurableMessageIdentity::Proven {
+                sequence: receipt_sequence,
+                digest: receipt_digest,
+            } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
                 .context("same receipt after exact-binding cleanup")?;
-            assert_eq!(receipt.sequence, first_receipt.sequence);
-            assert_eq!(receipt.digest, first_receipt.digest);
+            assert_eq!(receipt_sequence, first_sequence);
+            assert_eq!(receipt_digest, first_digest);
             assert!(
                 store
                     .thread_persistence()
@@ -2052,15 +1917,15 @@ mod storage_fault_tests {
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             let saved = save_pending_close(&store).await?;
             let resources = close_factory(&store)?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
+            let current = store
+                .state_for("project-test", "child")?
+                .load_current()
                 .await?
                 .context("saved terminal child")?;
+            let current_snapshot = current.state.to_paused_snapshot();
             resources
                 .factory
-                .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+                .begin_child_close(&saved.child, Some(&current_snapshot), false)
                 .await?;
             let fixture = Fixture::new(store.clone())?;
             resources.install(&fixture.owner)?;
@@ -2076,16 +1941,15 @@ mod storage_fault_tests {
                     .agent_services
                     .clone()
                     .context("close services")?;
-                let checkpoint = store
-                    .history("parent")
-                    .await?
-                    .checkpoint()
+                let current = store
+                    .state_for("project-test", "parent")?
+                    .load_current()
                     .await?
                     .context("cold original parent")?;
                 services.install_storage_owner(
                     &fixture.owner,
                     &Fixture::protocol("parent", None),
-                    checkpoint,
+                    current,
                     EntryPurpose::ReportReceiver,
                 )?;
             }

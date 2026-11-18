@@ -1686,7 +1686,7 @@ pub struct ModelProgressSender {
 
 #[derive(Debug, Clone)]
 struct ModelProgressReservation {
-    store: crate::thread::cold::ColdStoreHandle,
+    store: crate::thread::cold::StorageHandle,
     thread_id: String,
     attempt_id: String,
 }
@@ -1705,7 +1705,7 @@ struct ModelProgressReservation {
 /// covered by the reservation instead of being dropped by the same full budget.
 #[derive(Debug)]
 pub(crate) struct OutputBudget {
-    store: Option<crate::thread::cold::ColdStoreHandle>,
+    store: Option<crate::thread::cold::StorageHandle>,
     thread_id: String,
     operation_id: String,
     limit: u64,
@@ -1774,7 +1774,7 @@ impl OutputBudget {
     /// retention; an unused ceiling consumes no resident bytes. A backend without a reliable
     /// budget grants the request unchanged, while core still enforces the operation limit.
     pub(crate) fn reserve(
-        store: Option<crate::thread::cold::ColdStoreHandle>,
+        store: Option<crate::thread::cold::StorageHandle>,
         thread_id: &str,
         operation_id: &str,
         max_bytes: u64,
@@ -2079,7 +2079,7 @@ impl ModelProgressSender {
     }
     /// Creates the observation channel for one call that already holds its reliable output quota.
     pub(crate) fn channel(
-        store: Option<crate::thread::cold::ColdStoreHandle>,
+        store: Option<crate::thread::cold::StorageHandle>,
         thread_id: &str,
         turn_id: &str,
         attempt_id: &str,

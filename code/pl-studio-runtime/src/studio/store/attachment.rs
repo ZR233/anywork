@@ -166,41 +166,6 @@ impl StudioStore {
         Ok(materialized)
     }
 
-    /// Unified blob fence: makes every attachment blob a checkpoint still names durable.
-    ///
-    /// A published `state.toml` must never name a blob whose bytes or directory entry are not on
-    /// disk yet. New blobs are synced when they are promoted, but the writer validates and waits on
-    /// this fence explicitly instead of depending on that scattered call order. A missing catalog
-    /// record or a missing blob is *not* "nothing to fence": the checkpoint names a blob that is
-    /// not provably durable, so publication fails closed and is retried, surfacing the failure as
-    /// persistence diagnostics instead of publishing a `state.toml` that points at absent bytes.
-    pub(in crate::studio) async fn blob_fence(
-        &self,
-        thread_id: &str,
-        attachment_ids: &[String],
-    ) -> Result<()> {
-        if attachment_ids.is_empty() {
-            return Ok(());
-        }
-        let records = self.list_thread_attachments(thread_id).await?;
-        for attachment_id in attachment_ids {
-            let Some(record) = records.iter().find(|record| &record.id == attachment_id) else {
-                anyhow::bail!(
-                    "checkpoint names attachment {attachment_id} with no catalog record for Thread {thread_id}"
-                );
-            };
-            let path = self.attachment_host_path(record)?;
-            if !tokio::fs::try_exists(&path).await? {
-                anyhow::bail!(
-                    "checkpoint names missing attachment blob {} for Thread {thread_id}",
-                    path.display()
-                );
-            }
-            sync_blob(&path).await?;
-        }
-        Ok(())
-    }
-
     pub(crate) async fn promote_attachment_drafts(
         &self,
         thread_id: &str,
@@ -370,31 +335,6 @@ pub(in crate::studio) async fn write_migrated_attachment_catalog(
         pl_tool::workspace::write_file_atomically(&path, &contents)
     })
     .await??;
-    Ok(())
-}
-
-/// Makes one newly written attachment blob and its directory entry durable.
-///
-/// The catalog and every checkpoint that references the blob are published only after promotion
-/// returns, so the file contents and the directory entry must be synced first. Directory sync is
-/// skipped on Windows, which has no equivalent operation.
-async fn sync_blob(path: &std::path::Path) -> Result<()> {
-    let file = path.to_owned();
-    // Windows backs `sync_all` with `FlushFileBuffers`, which requires a writable handle;
-    // opening the blob read-only returns `ERROR_ACCESS_DENIED` there.
-    tokio::task::spawn_blocking(move || {
-        let handle = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(file)?;
-        handle.sync_all()
-    })
-    .await??;
-    #[cfg(unix)]
-    if let Some(directory) = path.parent() {
-        let directory = directory.to_owned();
-        tokio::task::spawn_blocking(move || std::fs::File::open(directory)?.sync_all()).await??;
-    }
     Ok(())
 }
 

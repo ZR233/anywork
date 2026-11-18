@@ -75,7 +75,7 @@ impl Owner {
         let record = TaskRecord {
             id: format!("task:{}", call.call.call_id),
             parent_call_id: call.parent_call_id.clone(),
-            invocation: call.parent_call_id.as_ref().map(|_| call.call.clone()),
+            invocation: Some(call.call.clone()),
             call_id: call.call.call_id.clone(),
             tool_id: call.call.tool_id.clone(),
             turn_id: call.turn_id.clone(),

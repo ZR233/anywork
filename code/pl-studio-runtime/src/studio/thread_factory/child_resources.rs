@@ -384,11 +384,16 @@ impl StudioChildResources for StudioThreadFactory {
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             persisted_thread.clone(),
-            None,
         )
         .await
         .map_err(|error| resource_error("open child chat session", error))?;
-        let export_session = persistence.chat_session();
+        let export_history = self
+            .services
+            .store
+            .history(&persisted_thread.id)
+            .await
+            .map_err(|error| resource_error("open export history", error))?
+            .reader();
         if let Some(exporter) = &self.services.run_export
             && exporter.is_enrolled_root(&persisted_thread.root_thread_id)
         {
@@ -403,7 +408,7 @@ impl StudioChildResources for StudioThreadFactory {
                     workspace_id: persisted_thread.workspace_id.clone(),
                     spawn_tool_call_id: Some(request.call_id.clone()),
                     initial_effect_seq: 0,
-                    session: export_session,
+                    history: export_history,
                 },
             ))
             .await;
@@ -440,7 +445,7 @@ impl StudioChildResources for StudioThreadFactory {
             route: profile.route.clone(),
             model_available: true,
             model,
-            checkpoint: None,
+            current: None,
             tools: Vec::new(),
             initial_context,
             initial_runtime_facts: super::session_files::session_files_fact(
@@ -451,7 +456,7 @@ impl StudioChildResources for StudioThreadFactory {
             initial_extensions,
             resources: ResourceAccess::new(store),
             capacity: Default::default(),
-            cold_store: Some(pl_core::thread::cold::ColdStoreHandle::new(persistence)),
+            history_sink: Some(persistence),
         };
         Ok(prepared_tools.tools.install(spec))
     }

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
+import 'timeline_display_unit.dart';
 import 'tool_display.dart';
 import 'tool_display_registry.dart';
 import 'tool_presentation.dart';
@@ -87,7 +88,7 @@ final class UnavailableToolCard extends ToolCardReading {
 
 enum ToolCardUnavailableKind { unknownContract, malformed, deferred }
 
-ToolCardReading readToolCard(ChatItemPresentation item) {
+ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
   final marker = item.presentationContract;
   final spec = toolDisplayRegistry[marker];
   if (spec == null) {
@@ -115,13 +116,13 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
     if (argumentsBody == null) {
       throw const FormatException('缺少 tool.arguments 正文');
     }
-    if (argumentsBody.reference != null) {
+    if (argumentsBody.hasReference && arguments == null) {
       return const UnavailableToolCard(
         '参数按需读取，尚未取得完整业务内容',
         kind: ToolCardUnavailableKind.deferred,
       );
     }
-    final arguments = item.inlineText('tool.arguments');
+    arguments ??= item.inlineText('tool.arguments');
     if (arguments == null) {
       throw const FormatException('缺少 tool.arguments 内联内容');
     }
@@ -157,7 +158,8 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
         statusString: status,
         frozenObservation:
             item.displayRecord?.contentSource is FrozenObservation,
-        executionPresent: item.displayRecord?.contentSource is CurrentAtom,
+        executionPresent:
+            item.displayRecord?.contentSource is CurrentAtomSource,
         arguments: arguments,
         output: item.inlineText('tool.result') ?? '',
         // No start timestamp is present in the canonical invocation. Keep unknown.
