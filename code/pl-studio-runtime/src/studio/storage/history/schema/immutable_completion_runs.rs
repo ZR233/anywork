@@ -430,7 +430,8 @@ mod tests {
         Ok((dir, db))
     }
 
-    async fn seed(db: &impl ConnectionTrait, count: u64) -> Result<()> {
+    async fn seed(db: &DatabaseConnection, count: u64) -> Result<()> {
+        let transaction = db.begin().await?;
         for seq in 1..=count {
             let mut atom: ChatAtom = serde_json::from_slice(
                 &crate::studio::storage::history::conversation::tests::metadata(&format!(
@@ -452,7 +453,7 @@ mod tests {
                 outcome: ChatTerminalOutcome::Completed,
             };
             // Deliberate non-JSON bytes: migration must never decode or rewrite the original BLOB.
-            db.execute_raw(statement(
+            transaction.execute_raw(statement(
                 "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata)
              VALUES(?,?,'conversation',?,?,?)",
                 vec![
@@ -465,6 +466,7 @@ mod tests {
             ))
             .await?;
         }
+        transaction.commit().await?;
         Ok(())
     }
 

@@ -282,7 +282,7 @@ mod tests {
     };
     use crate::studio::storage::history::{HistoryStore, connect};
     use anyhow::Result;
-    use sea_orm::DatabaseConnection;
+    use sea_orm::{DatabaseConnection, TransactionTrait};
     use std::path::{Path, PathBuf};
 
     const THREAD: &str = "source-classification-upgrade";
@@ -428,7 +428,7 @@ mod tests {
         ))
     }
 
-    async fn fixture() -> Result<(tempfile::TempDir, PathBuf)> {
+    async fn fixture(completions: u64) -> Result<(tempfile::TempDir, PathBuf)> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let db = connect(&path, SqliteFileMode::Create).await?;
@@ -447,8 +447,9 @@ mod tests {
             .context("database identity")?
             .try_get::<String>("", "database_id")?;
         let store = HistoryStore::open(&path, THREAD).await?;
-        // More than one migration window, with real producer payloads and content chunks.
-        for seq in 1..=133u64 {
+        // Commit the complete fixture state before the tested upgrade starts.
+        let transaction = db.begin().await?;
+        for seq in 1..=completions {
             let state = match seq {
                 1 | 3 | 5 => ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![format!("摘要 {seq}")],
@@ -489,7 +490,7 @@ mod tests {
                 state,
             );
             if seq != 7 {
-                store.upsert_item(&db, 9, item.clone()).await?;
+                store.upsert_item(&transaction, 9, item.clone()).await?;
             }
             let mut draft =
                 crate::studio::runtime::chat_item::completion_draft(&item, 9, &database, None)?;
@@ -508,39 +509,40 @@ mod tests {
             }
             draft.metadata = serde_json::to_vec(&atom)?.into();
             let completion = pl_core::chat::ChatItem::complete(draft, seq);
-            conversation::migration::append_published(&db, &completion).await?;
-            db.execute_raw(statement(
-                "UPDATE conversation_items SET metadata=?,query_class=? WHERE seq=?",
-                vec![
-                    completion.header.metadata.to_vec().into(),
-                    if seq == 4 {
-                        "diagnostic"
-                    } else {
-                        "conversation"
-                    }
-                    .into(),
-                    integer(seq)?.into(),
-                ],
-            ))
-            .await?;
+            conversation::migration::append_published(&transaction, &completion).await?;
+            transaction
+                .execute_raw(statement(
+                    "UPDATE conversation_items SET metadata=?,query_class=? WHERE seq=?",
+                    vec![
+                        completion.header.metadata.to_vec().into(),
+                        if seq == 4 {
+                            "diagnostic"
+                        } else {
+                            "conversation"
+                        }
+                        .into(),
+                        integer(seq)?.into(),
+                    ],
+                ))
+                .await?;
         }
         let item = ExecutionItem::new(
             "active-agent".into(),
             THREAD.into(),
             "turn".into(),
-            134,
+            completions + 1,
             1,
             1,
             2,
             agent(true),
         );
-        store.upsert_item(&db, 9, item.clone()).await?;
+        store.upsert_item(&transaction, 9, item.clone()).await?;
         let mut current = CurrentProjection::empty(9, ThreadStatus::Running);
         let mut atom = crate::studio::runtime::chat_item::atom(&item);
         atom.kind = ChatAtomKind::Unknown;
         current.atoms.push(atom);
         crate::studio::storage::history::schema::legacy_current::apply(
-            &db,
+            &transaction,
             9,
             &crate::studio::storage::history::schema::legacy_current::LegacyCurrent::new(
                 FrozenCurrentProjection::new(current),
@@ -549,10 +551,12 @@ mod tests {
             ),
         )
         .await?;
-        db.execute_unprepared("UPDATE history_meta SET applied_write_seq=9")
+        transaction
+            .execute_unprepared("UPDATE history_meta SET applied_write_seq=9")
             .await?;
-        timeline::normalize_legacy(&db).await?;
-        timeline::rebuild_published(&db, &database).await?;
+        timeline::normalize_legacy(&transaction).await?;
+        timeline::rebuild_published(&transaction, &database).await?;
+        transaction.commit().await?;
         db.close().await?;
         Ok((directory, path))
     }
@@ -599,7 +603,8 @@ mod tests {
 
     #[tokio::test]
     async fn named_source_upgrade_preserves_originals_and_is_stable_on_cold_reopen() -> Result<()> {
-        let (_directory, path) = fixture().await?;
+        // Cross the 128-record migration window with real producer payloads and chunks.
+        let (_directory, path) = fixture(133).await?;
         let db = open(&path).await?;
         let original = originals(&db).await?;
         let old_ledger = ledger(&db).await?;
@@ -693,7 +698,7 @@ mod tests {
     #[tokio::test]
     async fn source_upgrade_failure_rolls_back_metadata_generation_and_applied_receipt()
     -> Result<()> {
-        let (_directory, path) = fixture().await?;
+        let (_directory, path) = fixture(133).await?;
         let db = open(&path).await?;
         let original = originals(&db).await?;
         let frozen = derived(&db).await?;
@@ -729,7 +734,7 @@ mod tests {
             "UPDATE conversation_items SET payload=CAST(json_set(CAST(payload AS TEXT),'$.type',42) AS BLOB) WHERE seq=2",
             "UPDATE conversation_items SET payload=CAST(json_set(CAST(payload AS TEXT),'$.data',NULL) AS BLOB) WHERE seq=2",
         ] {
-            let (_directory, path) = fixture().await?;
+            let (_directory, path) = fixture(7).await?;
             let db = open(&path).await?;
             db.execute_unprepared(corruption).await?;
             let original = originals(&db).await?;
@@ -755,7 +760,7 @@ mod tests {
             "DROP INDEX conversation_items_by_parent",
             "DROP INDEX conversation_items_tool",
         ] {
-            let (_directory, path) = fixture().await?;
+            let (_directory, path) = fixture(7).await?;
             let db = open(&path).await?;
             prepare(&db, THREAD, Preparation::Schema, None).await?;
             let old_ledger = ledger(&db).await?;

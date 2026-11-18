@@ -590,6 +590,10 @@ pub(crate) mod bot_archive_test_host {
             let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
                 studio_home: Some(home.to_owned()),
                 host: StudioHostKind::Test,
+                skill_search: pl_tool::skill::SkillSearchOptions {
+                    include_default_user_dir: false,
+                    additional_dirs: Vec::new(),
+                },
                 ..StudioRuntimeOptions::desktop()
             })
             .await?;

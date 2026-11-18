@@ -387,7 +387,8 @@ mod tests {
     };
     use anyhow::Result;
     use serde::Deserialize;
-    use tokio::time::{Instant, sleep, timeout};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
 
     use super::*;
     use crate::config::{AcpLaunch, AcpServiceDefinition};
@@ -397,23 +398,28 @@ mod tests {
     };
 
     const FIXTURE: &str = r#"#!/usr/bin/python3
-import json, os, pathlib, subprocess, sys, time
+import json, os, pathlib, socket, subprocess, sys
 root = pathlib.Path(os.environ['DETECTION_FIXTURE_ROOT'])
 mode = (root / 'mode').read_text()
 args = sys.argv[1:]
 assert args in [['--version'], ['acp', '--help']], args
 child = None
+gate = socket.create_connection(('127.0.0.1', int(os.environ['DETECTION_FIXTURE_GATE'])))
 if mode == 'hang' and args == ['acp', '--help']:
-    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+    child = subprocess.Popen(
+        [sys.executable, '-c',
+         'import socket,sys; socket.socket(fileno=int(sys.argv[1])).recv(1)',
+         str(gate.fileno())], pass_fds=(gate.fileno(),))
 with (root / 'calls').open('a') as log:
     log.write(json.dumps({'args': args, 'pid': os.getpid(),
                          'child': child.pid if child else None,
                          'cwd': os.getcwd()}) + '\n')
     log.flush()
+gate.sendall(os.getpid().to_bytes(4, 'little'))
 if mode == 'deadline':
-    time.sleep(6)
+    assert gate.recv(1) == b'x'
 if child:
-    time.sleep(60)
+    child.wait()
 if args == ['--version']:
     sys.stdout.write('1.5.4\n')
     if mode == 'version-fail':
@@ -460,11 +466,14 @@ sys.stderr.flush()
         runtime: StudioRuntime,
         home: tempfile::TempDir,
         program: PathBuf,
+        gate: tokio::net::TcpListener,
+        launched: AsyncMutex<Vec<(u32, tokio::net::TcpStream)>>,
     }
 
     impl Fixture {
         async fn new(mode: &str) -> Result<Self> {
             let home = tempfile::tempdir()?;
+            let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let bin = home.path().join("bin");
             std::fs::create_dir(&bin)?;
             let program = bin.join("agy");
@@ -474,6 +483,10 @@ sys.stderr.flush()
             let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
                 studio_home: Some(home.path().join("studio-home")),
                 host: StudioHostKind::Test,
+                skill_search: pl_tool::skill::SkillSearchOptions {
+                    include_default_user_dir: false,
+                    additional_dirs: Vec::new(),
+                },
                 ..StudioRuntimeOptions::desktop()
             })
             .await?;
@@ -484,6 +497,10 @@ sys.stderr.flush()
                 (
                     "DETECTION_FIXTURE_ROOT".into(),
                     home.path().to_string_lossy().into_owned(),
+                ),
+                (
+                    "DETECTION_FIXTURE_GATE".into(),
+                    gate.local_addr()?.port().to_string(),
                 ),
             ]);
             for key in [
@@ -515,6 +532,8 @@ sys.stderr.flush()
                 runtime,
                 home,
                 program,
+                gate,
+                launched: AsyncMutex::new(Vec::new()),
             })
         }
 
@@ -548,11 +567,23 @@ sys.stderr.flush()
                 .unwrap()
         }
 
+        async fn launch_notification(&self) -> Result<(u32, tokio::net::TcpStream)> {
+            let (mut connection, _) = self.gate.accept().await?;
+            let pid = connection.read_u32_le().await?;
+            Ok((pid, connection))
+        }
+
         async fn calls_reached(&self, count: usize) {
             timeout(Duration::from_secs(5), async {
-                while self.calls().len() < count {
-                    sleep(Duration::from_millis(10)).await;
+                let mut launched = self.launched.lock().await;
+                while launched.len() < count {
+                    launched.push(
+                        self.launch_notification()
+                            .await
+                            .expect("CLI launch notification"),
+                    );
                 }
+                assert_eq!(self.calls().len(), count);
             })
             .await
             .expect("fixture must be launched through the real worker");
@@ -560,20 +591,16 @@ sys.stderr.flush()
 
         async fn terminal(&self) -> State {
             timeout(Duration::from_secs(18), async {
-                loop {
-                    let state = self.runtime.read_acp_local_detection_state().state;
-                    let operation = self.operation();
-                    let finished = operation
-                        .join
-                        .lock()
-                        .await
-                        .as_ref()
-                        .is_some_and(JoinHandle::is_finished);
-                    if finished && !matches!(state, State::Checking | State::Cancelling) {
-                        return state;
-                    }
-                    sleep(Duration::from_millis(10)).await;
+                let operation = self.operation();
+                let mut slot = operation.join.lock().await;
+                if let Some(task) = slot.as_mut() {
+                    let outcome = task.await;
+                    slot.take();
+                    outcome.expect("the original detection owner finishes");
                 }
+                let state = self.runtime.read_acp_local_detection_state().state;
+                assert!(!matches!(state, State::Checking | State::Cancelling));
+                state
             })
             .await
             .expect("probe and physical cleanup must finish")
@@ -596,10 +623,20 @@ sys.stderr.flush()
             let resources = operation.resources.lock().await;
             assert!(resources.worker.is_none());
             assert!(resources.directory.is_none());
-            self.assert_reclaimed();
+            self.assert_reclaimed().await;
         }
 
-        fn assert_reclaimed(&self) {
+        async fn assert_reclaimed(&self) {
+            let stopped = timeout(Duration::from_secs(5), async {
+                let mut launched = self.launched.lock().await;
+                for (_, connection) in launched.iter_mut() {
+                    let mut byte = [0];
+                    assert_eq!(connection.read(&mut byte).await.unwrap(), 0);
+                }
+                launched.iter().map(|(pid, _)| *pid).collect::<Vec<_>>()
+            })
+            .await
+            .expect("root and descendant must both close their inherited notification socket");
             let probe_root = self
                 .runtime
                 .acp_detection
@@ -615,7 +652,9 @@ sys.stderr.flush()
                 assert!(!call.cwd.exists(), "probe cwd must outlive only its worker");
                 assert!(!Path::new(&format!("/proc/{}", call.pid)).exists());
                 if let Some(pid) = call.child {
-                    assert!(!Path::new(&format!("/proc/{pid}")).exists());
+                    // The descendant only blocks on this inherited socket. EOF proves
+                    // it stopped, independently of its system parent's zombie reaping.
+                    assert!(stopped.contains(&call.pid), "unobserved descendant {pid}");
                 }
             }
         }
@@ -767,7 +806,7 @@ sys.stderr.flush()
                 }
                 _ => unreachable!(),
             }
-            fixture.assert_reclaimed();
+            fixture.assert_reclaimed().await;
         }
         fixture.finish().await;
         Ok(())
@@ -776,14 +815,61 @@ sys.stderr.flush()
     #[tokio::test]
     async fn version_and_help_share_one_ten_second_deadline() -> Result<()> {
         let fixture = Fixture::new("deadline").await?;
-        let started = Instant::now();
+        // Inhibit auto-advance while real process/socket preparation is pending. The
+        // blocking wait doubles as a wall-clock watchdog and is released on success.
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (expired, wall_deadline) = tokio::sync::oneshot::channel();
+        let (started, blocking_started) = tokio::sync::oneshot::channel();
+        let inhibit = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            if matches!(
+                blocked.recv_timeout(Duration::from_secs(20)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                let _ = expired.send(());
+                let _ = blocked.recv();
+            }
+        });
+        blocking_started.await?;
+        tokio::time::pause();
         fixture.start("deadline");
-        assert_failure(fixture.terminal().await, FailureKind::Timeout);
-        assert!(started.elapsed() >= Duration::from_secs(9));
-        // Detection has a ten-second budget; physical cleanup may use its own five.
-        assert!(started.elapsed() < Duration::from_secs(16));
+        let operation = fixture.operation();
+        let cleanup = CancellationToken::new();
+        *operation.cleanup_pause.lock().unwrap() = Some(cleanup.clone());
+        let outcome = tokio::select! {
+            biased;
+            _ = wall_deadline => Err(anyhow::anyhow!("the shared probe deadline did not finish")),
+            result = async {
+                let (_, mut version) = fixture.launch_notification().await?;
+                tokio::time::advance(Duration::from_secs(6)).await;
+                version.write_all(b"x").await?;
+                let (_, _help) = fixture.launch_notification().await?;
+                tokio::time::advance(Duration::from_millis(3999)).await;
+                anyhow::ensure!(
+                    operation.resources.try_lock().is_err(),
+                    "the held help command must still own its resources before ten seconds"
+                );
+                tokio::time::advance(Duration::from_millis(2)).await;
+                // The real probe holds this lock across both commands. It releases it on
+                // timeout, before the existing cleanup gate permits physical reclamation.
+                let resources = operation.resources.lock().await;
+                anyhow::ensure!(resources.worker.is_some());
+                anyhow::Ok(())
+            } => result,
+        };
+        tokio::time::resume();
+        cleanup.cancel();
+        drop(release);
+        inhibit.await?;
+        if let Err(error) = outcome {
+            fixture.finish().await;
+            return Err(error);
+        }
+        let state = fixture.terminal().await;
         assert_eq!(fixture.calls().len(), 2, "both commands consume one budget");
+        fixture.assert_reclaimed().await;
         fixture.finish().await;
+        assert_failure(state, FailureKind::Timeout);
         Ok(())
     }
 
@@ -814,7 +900,7 @@ sys.stderr.flush()
                 })?;
         assert_eq!(cancelling.snapshot.state, State::Cancelling);
         assert_eq!(fixture.terminal().await, State::Cancelled);
-        fixture.assert_reclaimed();
+        fixture.assert_reclaimed().await;
         fixture.mode("available");
         fixture.start("new");
         let stale = fixture
