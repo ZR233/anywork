@@ -1939,9 +1939,11 @@ fn unknown_failure_receipt_versions_are_still_rejected() {
 ///
 /// Admission and durability always succeed: the only thing under test is the reservation the real
 /// adapter charges against, so the stream has to stop where the quota does and nowhere else.
+/// `limited_operation` can isolate the model stream from separate tool/result reservations.
 #[derive(Debug, Default)]
 struct OutputQuotaStore {
     limit: u64,
+    limited_operation: Option<&'static str>,
     charges: Arc<Mutex<Vec<u64>>>,
 }
 
@@ -1949,19 +1951,30 @@ impl pl_core::thread::cold::ColdStore for OutputQuotaStore {
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
-        _operation_id: &str,
+        operation_id: &str,
         max_bytes: u64,
     ) -> Result<u64, pl_core::thread::cold::ColdStoreError> {
+        if self
+            .limited_operation
+            .is_some_and(|limited| limited != operation_id)
+        {
+            return Ok(max_bytes);
+        }
         Ok(self.limit.min(max_bytes))
     }
 
     fn charge_operation_output(
         &self,
         _: &str,
-        _: &str,
+        operation_id: &str,
         total: u64,
     ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
-        self.charges.lock().unwrap().push(total);
+        if self
+            .limited_operation
+            .is_none_or(|limited| limited == operation_id)
+        {
+            self.charges.lock().unwrap().push(total);
+        }
         Ok(())
     }
 
@@ -2057,6 +2070,7 @@ async fn quota_thread(steps: Vec<Step>, limit: u64) -> QuotaRun {
             OutputQuotaStore {
                 limit,
                 charges: charges.clone(),
+                ..Default::default()
             },
         ))
         .await
@@ -2627,10 +2641,15 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         .await
         .expect("model session opens");
     let thread = ThreadHandle::start("staged-identity".into(), session).expect("thread starts");
+    let charges = Arc::new(Mutex::new(Vec::new()));
     thread
         .attach_storage(pl_core::thread::cold::ColdStoreHandle::new(
             OutputQuotaStore {
                 limit: 25,
+                // Tool execution and its running/result receipts have independent reservations;
+                // this regression limits only the one model attempt that exposes the call twice.
+                limited_operation: Some("live-attempt:0"),
+                charges: charges.clone(),
                 ..Default::default()
             },
         ))
@@ -2673,6 +2692,18 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
     .expect("the staged identity stream must not stall")
     .expect("the stream fits the quota once and completes");
     assert_eq!(completed.model_steps, 1, "one model step produced the call");
+    let charged = charges
+        .lock()
+        .expect("model charge log")
+        .iter()
+        .copied()
+        .max()
+        .expect("the limited model operation was charged");
+    assert!(charged <= 25, "the original model quota still applies");
+    assert!(
+        charged + arguments.len() as u64 > 25,
+        "charging the staged arguments again would exceed that same quota"
+    );
     let snapshot = thread.snapshot();
     assert_eq!(
         snapshot.persistence.fault, None,
