@@ -399,13 +399,19 @@ impl Timelines {
         if registry_closed || shutdown.is_cancelled() || owner.cancel().is_cancelled() {
             return Err(stale_scope());
         }
-        let (reads, activity) = match owner.as_ref() {
+        let (reads, activity, activity_changed) = match owner.as_ref() {
             TimelineOwner::History {
-                reads, activity, ..
+                reads,
+                activity,
+                activity_changed,
+                ..
             }
             | TimelineOwner::Current {
-                reads, activity, ..
-            } => (reads.clone(), activity),
+                reads,
+                activity,
+                activity_changed,
+                ..
+            } => (reads, activity, activity_changed),
         };
         let permit = {
             let mut last = activity.lock().expect("timeline activity poisoned");
@@ -413,12 +419,13 @@ impl Timelines {
                 return Err(stale_scope());
             }
             let permit = reads
+                .clone()
                 .try_acquire_owned()
                 .map_err(|_| ApiError::overloaded())?;
             *last = tokio::time::Instant::now();
-            owner.touch();
             permit
         };
+        activity_changed.notify_one();
         Ok(TimelineReadLease {
             owner,
             _permit: Some(permit),
@@ -1279,8 +1286,94 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use pl_studio_runtime::history::{HistoryEvent, HistoryEventKind, HistoryLimits, HistoryStore};
     use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+    use std::path::{Path as FsPath, PathBuf};
     use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn registered_history_reader_returns_events_and_closes() -> anyhow::Result<()> {
+        const FIXTURE: &str = "STUDIO_TIMELINE_READ_TEST_DIR";
+        if let Some(directory) = std::env::var_os(FIXTURE) {
+            return read_registered_history(&PathBuf::from(directory)).await;
+        }
+
+        // A synchronous lock regression blocks its executor, so time out a separate process.
+        let directory = tempfile::tempdir()?;
+        let mut child = tokio::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "timeline::tests::registered_history_reader_returns_events_and_closes",
+                "--nocapture",
+            ])
+            .env(FIXTURE, directory.path())
+            .kill_on_drop(true)
+            .spawn()?;
+        match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
+            Ok(status) => anyhow::ensure!(status?.success(), "History reader test process failed"),
+            Err(_) => {
+                child.kill().await?;
+                anyhow::bail!("the registered History reader did not return and close");
+            }
+        }
+        assert!(directory.path().join("read-complete").is_file());
+        Ok(())
+    }
+
+    async fn read_registered_history(directory: &FsPath) -> anyhow::Result<()> {
+        let thread_id = "timeline-http-read";
+        let store = HistoryStore::open(
+            directory.join("history.sqlite"),
+            thread_id,
+            HistoryLimits::default(),
+        )
+        .await?;
+        store
+            .accept_batch(&[HistoryEvent::new("first", HistoryEventKind::RunStarted, 1)])
+            .await?;
+        store.flush().await?;
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            host: StudioHostKind::Test,
+            ..StudioRuntimeOptions::http_server(Some(directory.join("studio")))
+        })
+        .await?;
+        let state = AppState::new(runtime.clone(), CancellationToken::new());
+        let owner = TimelineOwner::history(
+            thread_id.into(),
+            store.reader(),
+            state.streams.clone().try_acquire_owned()?,
+        );
+        let reader_id = next_owner("history", thread_id);
+        state
+            .timelines
+            .register(&state, reader_id.clone(), Arc::new(owner))
+            .map_err(|error| error.0)?;
+        let mut headers = HeaderMap::new();
+        headers.insert(CONVERSATION_HEADER, reader_id.parse()?);
+        let read = events(
+            State(state.clone()),
+            Path(thread_id.into()),
+            headers.clone(),
+            ApiJson(HistoryEventsRequest {
+                query: HistoryEventsQuery::AllEvents,
+                cut: None,
+                cursor: None,
+                demand: HistoryDemand::default(),
+            }),
+        )
+        .await;
+        let close = close_owner(state.clone(), thread_id.into(), headers, false).await;
+        state.timelines.shutdown().await?;
+        runtime.shutdown_runtime().await?;
+        store.close().await?;
+
+        let Json(page) = read.map_err(|error| error.0)?;
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].header.event_id, "first");
+        assert_eq!(close.map_err(|error| error.0)?, StatusCode::NO_CONTENT);
+        tokio::fs::write(directory.join("read-complete"), b"").await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn http_open_handlers_reject_unknown_protocol_before_thread_lookup() {
