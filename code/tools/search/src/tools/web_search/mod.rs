@@ -10,7 +10,8 @@ pub const DESCRIPTION: &str = "Search or open web pages, find text in pages, cap
 
 #[derive(Debug)]
 pub struct Context {
-    pub request_id: String,
+    /// Shared by calls that can refer to one another's results.
+    pub session_id: String,
     /// Only the user/assistant text selected by the host is supplied here.
     pub input: Option<Vec<serde_json::Value>>,
     pub cancellation: CancellationToken,
@@ -18,7 +19,7 @@ pub struct Context {
 
 #[derive(Debug)]
 pub struct Request {
-    pub id: String,
+    pub session_id: String,
     pub input: Option<Vec<serde_json::Value>>,
     pub commands: SearchCommands,
 }
@@ -84,7 +85,7 @@ impl<S: SearchService> TypedTool for WebSearch<S> {
         let response = self
             .service
             .search(Request {
-                id: context.request_id,
+                session_id: context.session_id,
                 input: context.input,
                 commands,
             })

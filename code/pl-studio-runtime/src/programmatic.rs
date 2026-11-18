@@ -38,7 +38,7 @@ mod tests {
         let id = AccountId::new("siwc-capability").unwrap();
         let selector = ModelRouteConfig {
             account_id: id.clone(),
-            model_id: "gpt-5.5".into(),
+            model_id: "gpt-6-luna".into(),
             effort: Some(ReasoningEffort::new("low")),
         };
         config.models.accounts.insert(id.clone(), account.clone());

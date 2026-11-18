@@ -134,6 +134,7 @@ fn configured_headers(headers: Option<&HashMap<String, String>>) -> Result<Heade
 /// 独立 `/alpha/search` 请求。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SearchRequest {
+    /// Search session identity used by the endpoint to resolve prior result references.
     pub id: String,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1376,7 +1376,7 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         Protocol::ResponsesHttp,
         "project outputs",
         0,
-        Reply::Sse(responses_text("done", "projection-done", "gpt-5.5")),
+        Reply::Sse(responses_text("done", "projection-done", "gpt-6-luna")),
     )])
     .await
     .unwrap();
@@ -1385,7 +1385,7 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         .service_capabilities
         .responses_tools
         .programmatic_tool_calling = true;
-    let mut info = bundled("gpt-5.5");
+    let mut info = bundled("gpt-6-luna");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
@@ -4550,7 +4550,7 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
 #[tokio::test]
 async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses_wire() {
     let search = json!({"type":"web_search_call","id":"search-1","status":"completed","action":{"type":"search","query":"rust release"},"results":[]});
-    let mut events = responses_text("result", "search-1", "gpt-5.5");
+    let mut events = responses_text("result", "search-1", "gpt-6-luna");
     events.insert(1, json!({"type":"response.output_item.added","item":{"type":"web_search_call","id":"search-1","action":{"type":"search","query":"rust release"}}}));
     events.insert(
         2,
@@ -4570,7 +4570,7 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
         .service_capabilities
         .responses_tools
         .programmatic_tool_calling = true;
-    let mut info = bundled("gpt-5.5");
+    let mut info = bundled("gpt-6-luna");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
@@ -4725,17 +4725,20 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
 #[tokio::test]
 async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_billed() {
     let bytes = tiny_png();
+    let mut events = responses_text("a pixel", "image-1", "gpt-6-luna");
+    events.last_mut().unwrap()["response"]["usage"]["input_tokens_details"]["cache_write_tokens"] =
+        json!(3);
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "describe",
         0,
-        Reply::Sse(responses_text("a pixel", "image-1", "gpt-5.5")),
+        Reply::Sse(events),
     )])
     .await
     .unwrap();
     let mut endpoint = pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url()));
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::ExplicitKey;
-    let mut info = bundled("gpt-5.5");
+    let mut info = bundled("gpt-6-luna");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
@@ -4749,6 +4752,7 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
         .unwrap();
     assert_eq!(result.content.as_deref(), Some("a pixel"));
     assert_eq!(result.accounting.usage.cache_read_tokens, Some(2));
+    assert_eq!(result.accounting.usage.cache_write_tokens, Some(3));
     assert!(
         matches!(result.accounting.pricing, PricingOutcome::Estimated { .. }),
         "{:?}",

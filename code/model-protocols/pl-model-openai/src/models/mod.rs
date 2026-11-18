@@ -15,7 +15,6 @@ use pl_model_openai_wire::model::{
     pricing::{ModelPricing, TokenPriceTier},
 };
 
-mod gpt_5_5;
 mod gpt_5_6_luna;
 mod gpt_5_6_sol;
 mod gpt_5_6_terra;
@@ -161,7 +160,6 @@ static CATALOG: LazyLock<Result<BundledModelDefinition, ModelDefinitionError>> =
             gpt_6_sol::MODEL,
             gpt_6_1_terra::MODEL,
             gpt_6_luna::MODEL,
-            gpt_5_5::MODEL,
             gpt_5_6_sol::MODEL,
             gpt_5_6_terra::MODEL,
             gpt_5_6_luna::MODEL,

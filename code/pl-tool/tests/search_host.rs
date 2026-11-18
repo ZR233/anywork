@@ -7,6 +7,10 @@ use axum::{
 };
 use pl_agent_tool::Tool;
 use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
+use pl_model::{
+    config::{AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig},
+    model::ModelInfo,
+};
 use pl_model_openai_deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_tool::{binding::prepare_native_tool, search::*};
 use serde_json::{Value, json};
@@ -52,6 +56,23 @@ impl Server {
                 .unwrap()
                 .push((uri.path().into(), body.clone()));
             match uri.path() {
+                "/alpha/search" if body["commands"]["open"].is_array() => {
+                    let previous_search = state.0.lock().unwrap().iter().any(|(_, previous)| {
+                        previous["id"] == body["id"]
+                            && previous["commands"]["search_query"].is_array()
+                    });
+                    if previous_search {
+                        (
+                            StatusCode::OK,
+                            Json(json!({"output":"opened search result"})),
+                        )
+                    } else {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error":"invalid ref_id"})),
+                        )
+                    }
+                }
                 "/alpha/search" => (
                     StatusCode::OK,
                     Json(json!({"output":"search body","encrypted_output":"opaque","results":[]})),
@@ -120,15 +141,130 @@ async fn standalone_search_host_preserves_frozen_options_commands_and_payload() 
         serde_json::from_str::<Value>(output.payload().content()).unwrap()["encrypted_output"],
         "opaque"
     );
+    let mut follow_up = context();
+    follow_up.turn_id = "next-turn".into();
+    follow_up.call_id = "open-call".into();
+    let output = tool
+        .execute(args(json!({"open":[{"ref_id":"turn0search0"}]})), follow_up)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(output.payload().content()).unwrap()["output"],
+        "opened search result"
+    );
     let requests = server.state.0.lock().unwrap().clone();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].1["id"], "turn:call");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].1["id"], "search-host");
+    assert_eq!(requests[1].1["id"], requests[0].1["id"]);
     assert_eq!(requests[0].1["model"], "search-model");
     assert_eq!(requests[0].1["max_output_tokens"], 512);
     assert_eq!(requests[0].1["commands"]["find"][0]["pattern"], "text");
     assert_eq!(requests[0].1["settings"]["external_web_access"], false);
     server.close().await;
 }
+
+#[tokio::test]
+async fn standalone_openai_search_sends_the_current_gpt_model_or_luna() {
+    let server = Server::start().await;
+    let openai_account = |models| {
+        let mut endpoint = pl_model_openai::endpoint::endpoint(Some(server.url.clone()));
+        endpoint.bearer_token = Some("fixture-key".into());
+        AccountConfig::from_explicit_models(endpoint, models)
+    };
+    let fallback_id = AccountId::new("a-search").unwrap();
+    let current_id = AccountId::new("b-conversation").unwrap();
+    let external_id = AccountId::new("c-compatible").unwrap();
+    let mut gpt = ModelInfo::compatible("gpt-6.1-sol");
+    gpt.capabilities.tools.function_calling = true;
+    let mut alias = ModelInfo::compatible("custom-alias");
+    alias.binding.request.api_model = Some("gpt-6.2-sol".into());
+    alias.capabilities.tools.function_calling = true;
+    let mut other = ModelInfo::compatible("other-gpt-model");
+    other.capabilities.tools.function_calling = true;
+    let models = AgentModelConfig {
+        accounts: [
+            (
+                fallback_id.clone(),
+                openai_account(vec![ModelInfo::compatible("gpt-6-sol")]),
+            ),
+            (current_id.clone(), openai_account(vec![gpt, alias])),
+            (
+                external_id.clone(),
+                AccountConfig::from_explicit_models(
+                    pl_model_openai::endpoint::compatible_endpoint("compatible", &server.url),
+                    vec![other],
+                ),
+            ),
+        ]
+        .into(),
+        routes: Default::default(),
+    };
+    let config = WebSearchConfig::default();
+    let deepseek = WebSearchDeepSeekOptions::default();
+    let default = plan_web_search_services(&models, &config, &deepseek)
+        .unwrap()
+        .openai
+        .resolution;
+    assert_eq!(default.model_id.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(default.account_id.as_ref(), Some(&fallback_id));
+
+    let cases = [
+        (&current_id, "gpt-6.1-sol", &current_id, "gpt-6.1-sol"),
+        (&current_id, "custom-alias", &current_id, "gpt-6.2-sol"),
+        (&external_id, "other-gpt-model", &fallback_id, "gpt-6-luna"),
+    ];
+    for (account_id, model_id, search_account, search_model) in cases {
+        let route = models
+            .resolve_route(
+                AgentRoleId::new("executor").unwrap(),
+                &ModelRouteConfig {
+                    account_id: account_id.clone(),
+                    model_id: model_id.into(),
+                    effort: None,
+                },
+            )
+            .unwrap();
+        let plan = plan_web_searches(&models, &route, &config, &deepseek).unwrap();
+        assert_eq!(
+            plan.openai.resolution.account_id.as_ref(),
+            Some(search_account)
+        );
+        assert_eq!(
+            plan.openai.resolution.model_id.as_deref(),
+            Some(search_model)
+        );
+        let binding = plan.build_thread(&config).unwrap();
+        let thread = pl_core::thread::ThreadHandle::start(
+            model_id.into(),
+            pl_core::model::DynModelSession::new(host::Calls {
+                calls: [(
+                    "web_search".into(),
+                    json!({"weather":[{"location":"济南"}]}).to_string(),
+                )]
+                .into(),
+                requests: Default::default(),
+            }),
+        )
+        .unwrap();
+        thread.register_tools(binding.tools).await.unwrap();
+        thread.run_turn(host::turn("weather")).await.unwrap();
+        let (_, request) = server
+            .state
+            .0
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("search request");
+        assert_eq!(
+            request["model"], search_model,
+            "conversation model {model_id}"
+        );
+        assert_eq!(request["commands"]["weather"][0]["location"], "济南");
+        thread.close().await.unwrap();
+    }
+    server.close().await;
+}
+
 #[tokio::test]
 async fn deepseek_hosts_keep_real_client_wire_sources_and_observed_failures() {
     let server = Server::start().await;
