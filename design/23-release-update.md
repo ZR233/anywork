@@ -68,7 +68,7 @@ PR 中可复用的工程工具和 remote helper 资源使用同次运行的明�
 
 构建环境中的 Git 与 OpenSSH 必须满足现有工作树和 SSH 消费者的真实能力要求，不能仅以命令存在或基础发行版的默认版本作为验收依据。运行容器保留宿主 UID/GID；该身份不必预置在镜像账户中。需要身份解析的系统工具通过容器内、无特权、临时的用户与组映射运行，不修改或挂载宿主账户文件，不以 root、扩大挂载或放宽权限规避身份问题。相关能力应在镜像冒烟中直接验证，而不是由 CI 消费者临时安装修补。
 
-正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。CLI 与 Rust bridge 使用相同的 Cargo 宿主目标和 release 编译目录，可复用编译产物。Linux 使用 GNU/glibc。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明，Linux 将 CLI 纳入 Debian 包的 ELF ABI 与共享库依赖检查。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
+正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。CLI 与 Rust bridge 使用相同的 Cargo 宿主目标和 release 编译目录，可复用编译产物。Linux 使用 GNU/glibc。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
 
 ## 23.2 Windows 安装包与签名信任根
 

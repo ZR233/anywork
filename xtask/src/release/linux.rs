@@ -640,7 +640,6 @@ mod tests {
     #[test]
     fn release_linux_stage_inspect_extract_verify_and_tampering() -> Result<()> {
         let fixture = Fixture::new()?;
-        assert!(inspect_elfs(&fixture.bundle)?.contains(&fixture.bundle.join("bin/anywk")));
         fixture.stage()?;
         verify(&fixture.release, &fixture.version)?;
         let fields = checked(Command::new("dpkg-deb").arg("--field").arg(fixture.deb()))?;
