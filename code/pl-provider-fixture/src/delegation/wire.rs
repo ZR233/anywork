@@ -396,20 +396,14 @@ impl Request {
 }
 
 fn parse_task_ack(text: &str) -> Result<Option<String>> {
-    if !text.starts_with("Task ") {
+    let Some(task_id) = crate::parse_running_receipt(text) else {
         return Ok(None);
-    }
-    let task_id = text
-        .strip_prefix("Task ")
-        .and_then(|text| {
-            text.strip_suffix(" is running. Its result will be delivered when execution finishes.")
-        })
-        .context("unrecognized task-style tool output")?;
+    };
     ensure!(
         !task_id.is_empty() && !task_id.chars().any(char::is_whitespace),
         "invalid background task acknowledgement identity"
     );
-    Ok(Some(task_id.to_owned()))
+    Ok(Some(task_id))
 }
 
 pub(super) fn decode<T: DeserializeOwned>(text: &str) -> Result<T> {

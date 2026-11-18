@@ -5377,16 +5377,25 @@ fn tool_delivery_contains(body: &Value, call_id: &str, tool_id: &str, marker: &s
 }
 
 fn tool_running_receipt(call_id: &str) -> String {
-    format!("Task task:{call_id} is running. Its result will be delivered when execution finishes.")
+    json!({"taskId": format!("task:{call_id}"), "toolName": "exec", "status": "running"})
+        .to_string()
 }
 
 /// Task identity comes from the exact wire call's accepted receipt. The provider call id
 /// is intentionally independent of the runtime's attempt-qualified task identity.
-fn running_task_id<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
-    direct_tool_output(body, call_id)?
-        .strip_prefix("Task ")?
-        .strip_suffix(" is running. Its result will be delivered when execution finishes.")
-        .filter(|id| id.starts_with("task:") && id.len() > "task:".len())
+fn running_task_id(body: &Value, call_id: &str) -> Option<String> {
+    parse_running_receipt(direct_tool_output(body, call_id)?)
+}
+
+fn parse_running_receipt(text: &str) -> Option<String> {
+    let receipt: Value = serde_json::from_str(text).ok()?;
+    if receipt["status"] != "running" || !receipt["toolName"].is_string() {
+        return None;
+    }
+    receipt["taskId"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
 }
 
 /// The current tool-scroll batch is ready only after every exact command has a
