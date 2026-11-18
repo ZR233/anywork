@@ -1131,10 +1131,6 @@ mod storage_fault_tests {
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
                 let id = request.identity.id().to_owned();
                 let protocol = Fixture::protocol(&id, None);
-                let paths = self
-                    .0
-                    .registered_session_paths(&id)
-                    .map_err(storage_error)?;
                 let current = request.root_current;
                 let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await

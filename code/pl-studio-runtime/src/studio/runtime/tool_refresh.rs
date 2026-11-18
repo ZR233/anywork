@@ -337,7 +337,6 @@ impl StudioRuntime {
                 () = cancellation.cancelled() => continue,
                 guard = gate.lock_owned() => guard,
             };
-            tracing::debug!(target: "thread_preparation", thread_id = %id, stage = "catalog_refresh", "starting");
             let cleanup = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 self.rejected_tools.retry(Some(&thread)),
@@ -366,6 +365,7 @@ impl StudioRuntime {
             }) {
                 continue;
             }
+            tracing::debug!(target: "thread_preparation", thread_id = %id, stage = "catalog_refresh", "starting");
             let attempt = cancellation.child_token();
             let result = {
                 let desired = sources.clone();

@@ -59,15 +59,8 @@ impl Owner {
         if !fact_changes.is_empty() {
             facts::stage_fact_changes(candidate, fact_changes)?;
         }
-        if let Some(mut replacement) = context {
-            if replacement.expected_revision != self.state.context.revision {
-                return Err(ThreadError::ContextConflict {
-                    expected: replacement.expected_revision,
-                    actual: self.state.context.revision,
-                });
-            }
+        if let Some(replacement) = context {
             candidate.context = self.state.context.clone();
-            replacement.expected_revision = candidate.context.revision;
             replacement::stage_replacement(candidate, replacement)?;
         }
         Ok(())

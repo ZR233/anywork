@@ -14,14 +14,11 @@ impl StudioRuntime {
         let mut catalogs = self.config_runtime.subscribe_model_catalogs();
         let runtime = self.clone();
         *slot = Some(BackgroundTask::new(tokio::spawn(async move {
-            loop {
-                match catalogs.recv().await {
-                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        if let Err(error) = runtime.publish_model_catalog_state() {
-                            tracing::error!(%error, "could not publish model catalog snapshot");
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
+                catalogs.recv().await
+            {
+                if let Err(error) = runtime.publish_model_catalog_state() {
+                    tracing::error!(%error, "could not publish model catalog snapshot");
                 }
             }
         })));
