@@ -39,12 +39,6 @@ pub(in crate::thread) enum Command {
         extensions::ApplicationUpdate,
         oneshot::Sender<Result<ThreadSnapshot, ThreadError>>,
     ),
-    Extensions(
-        Vec<extensions::ExtensionMutation>,
-        oneshot::Sender<
-            Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError>,
-        >,
-    ),
     Resources(
         crate::context::ResourceAccess,
         oneshot::Sender<Result<(), ThreadError>>,
@@ -116,7 +110,6 @@ impl Command {
             Self::ResolveInteraction(_, reply) => closed(reply),
             Self::CancelInteraction(_, reply) => closed(reply),
             Self::Application(_, reply) => closed(reply),
-            Self::Extensions(_, reply) => closed(reply),
             Self::Resources(_, reply) => closed(reply),
             Self::Retry { reply, .. } => closed(reply),
             Self::AttachCold(_, reply) | Self::AttachHistory(_, reply) => closed(reply),
