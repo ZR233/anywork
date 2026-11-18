@@ -449,15 +449,24 @@ impl Owner {
         };
         let mut state = self.state.clone();
         let mut pending = self.pending_bundle.take().expect("ready bundle");
-        let changes = (|| {
-            if let Some(application) = pending.update.application.take() {
-                self.stage_reconfiguration(&mut state, application.update, application.context)?;
-            }
-            if let Some(tools) = &pending.update.tools {
-                facts::stage_facts(&mut state, tools.facts.clone())?;
-            }
+        let fact_changes = pending
+            .update
+            .tools
+            .as_mut()
+            .map(|tools| std::mem::take(&mut tools.facts))
+            .unwrap_or_default();
+        let changes = if let Some(application) = pending.update.application.take() {
+            self.stage_reconfiguration(
+                &mut state,
+                application.update,
+                application.context,
+                fact_changes,
+            )
+        } else if fact_changes.is_empty() {
             Ok(())
-        })();
+        } else {
+            facts::stage_fact_changes(&mut state, fact_changes).map(|_| ())
+        };
         if let Err(error) = changes {
             self.pending_bundle = Some(pending);
             self.reject_pending_bundle(error);

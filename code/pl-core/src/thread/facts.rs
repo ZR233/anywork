@@ -39,20 +39,12 @@ impl Owner {
         &mut self,
         facts: Vec<RuntimeFact>,
     ) -> Result<ContextSnapshot, ThreadError> {
-        let mut sources = BTreeSet::new();
-        let mut merged = self
-            .state
-            .runtime_facts
-            .iter()
-            .map(|fact| (fact.source_id.clone(), fact.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for fact in facts {
-            if fact.source_id.is_empty() || !sources.insert(fact.source_id.clone()) {
-                return Err(ThreadError::InvalidContext);
-            }
-            merged.insert(fact.source_id.clone(), fact);
+        if !self.pending.is_empty() {
+            return Err(ThreadError::PendingTools);
         }
-        self.update_facts(merged.into_values().collect())
+        let context = stage_fact_changes(&mut self.state, facts)?;
+        self.publish()?;
+        Ok(context)
     }
 
     pub(super) fn update_facts(
@@ -66,6 +58,25 @@ impl Owner {
         self.publish()?;
         Ok(context)
     }
+}
+
+pub(super) fn stage_fact_changes(
+    state: &mut ThreadSnapshot,
+    changes: Vec<RuntimeFact>,
+) -> Result<ContextSnapshot, ThreadError> {
+    let mut sources = BTreeSet::new();
+    let mut merged = state
+        .runtime_facts
+        .iter()
+        .map(|fact| (fact.source_id.clone(), fact.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for fact in changes {
+        if fact.source_id.is_empty() || !sources.insert(fact.source_id.clone()) {
+            return Err(ThreadError::InvalidContext);
+        }
+        merged.insert(fact.source_id.clone(), fact);
+    }
+    stage_facts(state, merged.into_values().collect())
 }
 
 pub(super) fn stage_facts(

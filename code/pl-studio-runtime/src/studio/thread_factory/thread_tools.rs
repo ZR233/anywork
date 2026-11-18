@@ -88,7 +88,6 @@ impl StudioThreadFactory {
             )),
             incarnation: std::sync::Arc::new(()),
             authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
-            permission_mode: assembly.config.runtime.permission_mode,
             initial_skill_prompt: String::new(),
             catalog: None,
             policy_key: approval_policy_key(assembly.config, assembly.route),

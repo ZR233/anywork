@@ -441,8 +441,23 @@ async fn revoked_authority_cancels_the_old_task_and_waits_for_its_exit() {
         .unwrap()
         .unwrap();
     assert_eq!(binding(&reader), Some("new-policy"));
-    assert!(thread.snapshot().terminal_tasks.iter().any(|task| {
-        task.tool_id == "command" && task.status == pl_core::thread::task::TaskStatus::Cancelled
+    let snapshot = thread.snapshot();
+    assert!(
+        snapshot
+            .tasks
+            .values()
+            .chain(snapshot.terminal_tasks.iter())
+            .any(|task| {
+                task.tool_id == "command"
+                    && task.status == pl_core::thread::task::TaskStatus::Cancelled
+            })
+    );
+    assert!(snapshot.deliveries.iter().any(|delivery| {
+        delivery.tool_id == "command"
+            && delivery
+                .output
+                .context()
+                .contains(&support::text("original output"))
     }));
     thread.close().await.unwrap();
 }

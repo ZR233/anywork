@@ -52,9 +52,13 @@ impl Owner {
         candidate: &mut ThreadSnapshot,
         update: extensions::ApplicationUpdate,
         context: Option<ReplaceContext>,
+        fact_changes: Vec<RuntimeFact>,
     ) -> Result<(), ThreadError> {
         extensions::stage_extensions(candidate, update.mutations)?;
         facts::stage_facts(candidate, update.facts)?;
+        if !fact_changes.is_empty() {
+            facts::stage_fact_changes(candidate, fact_changes)?;
+        }
         if let Some(mut replacement) = context {
             if replacement.expected_revision != self.state.context.revision {
                 return Err(ThreadError::ContextConflict {

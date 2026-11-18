@@ -103,17 +103,6 @@ impl ReviewWorkspaceCheck {
         self.recheck()
     }
     pub(crate) fn recheck(&self) -> Result<(), ReviewWorkspaceError> {
-        if self
-            .factory
-            .tool_authority_invalidated(&self.target)
-            .map_err(|error| {
-                super::errors::resource_error("read review workspace authority", error)
-            })?
-        {
-            return Err(ReviewWorkspaceError::Unconfirmed(
-                "execution workspace authority requires refresh",
-            ));
-        }
         let bindings = self.factory.binding_snapshots();
         let current = bindings
             .get(&self.target)

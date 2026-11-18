@@ -187,11 +187,6 @@ impl NativeModelConfiguration {
                 .context("Thread has no frozen delegation selection")?;
             session.agent_control_tools_for_thread(id, thread, &profiles, selection)?
         };
-        if factory.tool_authority_invalidated(id)?
-            && let Some(binding) = factory.binding_snapshot(id)
-        {
-            factory.revoke_tool_binding(id, &binding);
-        }
         let (tools, _, binding) = factory
             .refresh_thread_tools(
                 id,

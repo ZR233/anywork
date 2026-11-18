@@ -348,18 +348,10 @@ impl StudioRuntime {
                 continue;
             }
             let snapshot = thread.snapshot();
-            let authority_invalidated = match self.thread_factory.tool_authority_invalidated(&id) {
-                Ok(invalidated) => invalidated,
-                Err(error) => {
-                    self.publish_tool_refresh_result(&id, &thread, Some(&error));
-                    continue;
-                }
-            };
-            if authority_invalidated
-                && let Some(binding) = self.thread_factory.binding_snapshot(&id)
-            {
-                self.thread_factory.revoke_tool_binding(&id, &binding);
-            }
+            let authority_invalidated = self
+                .thread_factory
+                .binding_snapshot(&id)
+                .is_some_and(|binding| !binding.authorization.is_active());
             if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
                 continue;
             }

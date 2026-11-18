@@ -876,6 +876,29 @@ impl SessionRuntime {
                     .collect(),
                 None => spec.tools,
             };
+            let storage_setup = async {
+                thread.set_resources(spec.resources).await?;
+                thread.set_capacity(spec.capacity).await?;
+                if let Some(store) = spec.history_sink {
+                    self.attach_execution_storage(&spec.id, store).await?;
+                }
+                Ok::<_, ThreadAssemblyError>(())
+            }
+            .await;
+            if let Err(setup) = storage_setup {
+                return match thread.retire_tools(registrations).await {
+                    Ok(()) => Err(setup),
+                    Err(ThreadError::RejectedTools(tools)) => {
+                        resources.candidates.retain(thread.clone(), tools);
+                        Err(setup)
+                    }
+                    Err(error) => Err(ThreadAssemblyError::Cleanup {
+                        id: spec.id.clone(),
+                        setup: Box::new(setup),
+                        cleanup: Box::new(error.into()),
+                    }),
+                };
+            }
             let cancellation = initial_binding
                 .as_ref()
                 .map(|binding| binding.lifetime.cancellation.clone());
@@ -883,8 +906,35 @@ impl SessionRuntime {
                 Some(binding) => pl_core::thread::RuntimeBinding::new(binding),
                 None => pl_core::thread::RuntimeBinding::new(()),
             };
+            let snapshot = thread.snapshot();
+            let application = (!spec.initial_extensions.is_empty()
+                || !spec.initial_context.is_empty())
+            .then(|| pl_core::thread::RuntimeApplication {
+                expected_sequence: snapshot.commit_sequence,
+                update: pl_core::thread::extensions::ApplicationUpdate {
+                    mutations: spec
+                        .initial_extensions
+                        .into_iter()
+                        .map(
+                            |(id, payload)| pl_core::thread::extensions::ExtensionMutation::Put {
+                                id,
+                                expected_revision: None,
+                                payload,
+                            },
+                        )
+                        .collect(),
+                    facts: snapshot.runtime_facts.to_vec(),
+                },
+                context: (!spec.initial_context.is_empty()).then_some(
+                    pl_core::thread::ReplaceContext {
+                        expected_revision: snapshot.context.revision,
+                        reason: pl_core::thread::ContextReplacementReason::Rebuild,
+                        records: spec.initial_context,
+                    },
+                ),
+            });
             let update = pl_core::thread::RuntimeBundle {
-                base: thread.runtime_bundle_base(&thread.snapshot()),
+                base: thread.runtime_bundle_base(&snapshot),
                 desired: format!("initial:{}", spec.id).into(),
                 model: spec.model,
                 model_context_revision: None,
@@ -893,7 +943,7 @@ impl SessionRuntime {
                     binding: runtime_binding,
                     facts: spec.initial_runtime_facts,
                 }),
-                application: None,
+                application,
                 is_current: Arc::new(move || {
                     cancellation
                         .as_ref()
@@ -924,36 +974,6 @@ impl SessionRuntime {
                 if let Some(services) = self.0.state().agent_services.as_ref() {
                     services.factory.notify_lsp_binding_changed();
                 }
-            }
-            thread.set_resources(spec.resources).await?;
-            thread.set_capacity(spec.capacity).await?;
-            if let Some(store) = spec.history_sink {
-                self.attach_execution_storage(&spec.id, store).await?;
-            }
-            if !spec.initial_extensions.is_empty() {
-                thread
-                    .mutate_extensions(
-                        spec.initial_extensions
-                            .into_iter()
-                            .map(|(id, payload)| {
-                                pl_core::thread::extensions::ExtensionMutation::Put {
-                                    id,
-                                    expected_revision: None,
-                                    payload,
-                                }
-                            })
-                            .collect(),
-                    )
-                    .await?;
-            }
-            if !spec.initial_context.is_empty() {
-                thread
-                    .replace_context(pl_core::thread::ReplaceContext {
-                        expected_revision: 0,
-                        reason: pl_core::thread::ContextReplacementReason::Rebuild,
-                        records: spec.initial_context,
-                    })
-                    .await?;
             }
             // Freeze the observer's recovery baseline before exposing this owner to execution.
             // Observers may query the registry, so invoke them without its lock held.

@@ -21,7 +21,6 @@ pub(crate) struct ToolBinding {
     pub catalog: Option<std::sync::Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub initial_skill_prompt: String,
     pub policy_key: String,
-    pub permission_mode: crate::approval::PermissionMode,
     pub policies:
         std::collections::BTreeMap<String, pl_core::tool::execution_policy::ExecutionPolicyHandle>,
     pub project: WorkspaceRecord,
@@ -86,51 +85,7 @@ impl Default for ThreadToolLifetime {
     }
 }
 
-struct PermissionModeObserver {
-    scopes: std::sync::Weak<super::NativeResourceScopes>,
-}
-
-impl crate::config::SettingsCommitObserver for PermissionModeObserver {
-    fn settings_committed(&self, settings: &crate::ConfigRuntimeSnapshot) {
-        let Some(scopes) = self.scopes.upgrade() else {
-            return;
-        };
-        let scopes = scopes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .filter_map(std::sync::Weak::upgrade)
-            .collect::<Vec<_>>();
-        let permission_mode = settings.config.runtime.permission_mode;
-        for scope in scopes {
-            let changed = scope.with_binding(|binding| {
-                binding.is_some_and(|binding| {
-                    if binding.permission_mode == permission_mode
-                        || !binding.authorization.is_active()
-                    {
-                        return false;
-                    }
-                    binding.authorization.revoke();
-                    true
-                })
-            });
-            if changed {
-                scope.authorization_changed();
-            }
-        }
-    }
-}
-
 impl StudioThreadFactory {
-    pub(crate) fn observe_permission_mode(&self) -> anyhow::Result<()> {
-        self.services
-            .config_runtime
-            .install_settings_observer(std::sync::Arc::new(PermissionModeObserver {
-                scopes: std::sync::Arc::downgrade(&self.scopes),
-            }))?;
-        Ok(())
-    }
-
     pub(crate) fn binding_snapshots(&self) -> std::collections::BTreeMap<String, ToolBinding> {
         let scopes = self
             .scopes
@@ -186,19 +141,6 @@ impl StudioThreadFactory {
         self.binding_snapshot(id)
             .as_ref()
             .map(|binding| binding.project.clone())
-    }
-
-    pub(crate) fn tool_authority_invalidated(&self, id: &str) -> anyhow::Result<bool> {
-        let mode = self
-            .services
-            .config_runtime
-            .read()?
-            .config
-            .runtime
-            .permission_mode;
-        Ok(self.binding_snapshot(id).is_some_and(|binding| {
-            binding.permission_mode != mode || !binding.authorization.is_active()
-        }))
     }
 
     pub(crate) fn revoke_tool_binding(&self, id: &str, binding: &ToolBinding) {
@@ -363,6 +305,7 @@ impl StudioThreadFactory {
             .into_iter()
             .find(|project| project.id == thread.workspace_id)
             .ok_or_else(|| {
+                self.revoke_tool_binding(id, &binding);
                 ThreadAssemblyError::InvalidatedBinding(
                     "project target disappeared; reactivate this Thread".into(),
                 )
@@ -382,8 +325,17 @@ impl StudioThreadFactory {
                 .into_owned();
             project.ssh_alias = None;
         }
-        ensure_same_target(&binding.project, &project)?;
-        ensure_frozen_ssh_profile(&self.services.ssh_manager, binding.ssh_profile.as_ref()).await?;
+        if let Err(error) = ensure_same_target(&binding.project, &project) {
+            self.revoke_tool_binding(id, &binding);
+            return Err(error);
+        }
+        if let Err(error) =
+            ensure_frozen_ssh_profile(&self.services.ssh_manager, binding.ssh_profile.as_ref())
+                .await
+        {
+            self.revoke_tool_binding(id, &binding);
+            return Err(error);
+        }
         let child = thread.parent_thread_id.is_some();
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode workspace binding", error))?;
@@ -429,6 +381,7 @@ impl StudioThreadFactory {
                     result = opening => result.map_err(|error| resource_error("reopen Thread remote workspace", error))?,
                 };
                 if host.files().canonical_path() != requested.as_str() {
+                    self.revoke_tool_binding(id, &binding);
                     return Err(ThreadAssemblyError::InvalidatedBinding(
                         "remote workspace target changed; reactivate this Thread".into(),
                     ));
@@ -554,7 +507,6 @@ impl StudioThreadFactory {
             remote: prepared.remote.clone(),
             catalog: prepared.catalog.clone(),
             policy_key: super::thread_tools::approval_policy_key(config, route),
-            permission_mode: config.runtime.permission_mode,
             policies: prepared.tools.approval_policies.clone(),
             ..binding
         };

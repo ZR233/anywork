@@ -2255,7 +2255,6 @@ pub(crate) mod tests {
             catalog: None,
             initial_skill_prompt: String::new(),
             policy_key: String::new(),
-            permission_mode: crate::approval::PermissionMode::default(),
             policies: BTreeMap::new(),
             project: WorkspaceRecord {
                 id: "early-close-project".into(),

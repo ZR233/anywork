@@ -57,10 +57,6 @@ pub(in crate::studio) struct StudioThreadServices {
     pub run_export: Option<Arc<crate::studio::runtime::run_export::RunExportCoordinator>>,
 }
 
-type NativeResourceScopes = std::sync::Mutex<
-    std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
->;
-
 /// Assembles fresh model and tool instances from product inputs.
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
@@ -68,7 +64,11 @@ pub(crate) struct StudioThreadFactory {
     // instead of inlining it into every preparation permit and suspended operation.
     services: Arc<StudioThreadServices>,
     lsp_binding_updates: Arc<tokio::sync::Notify>,
-    scopes: Arc<NativeResourceScopes>,
+    scopes: Arc<
+        std::sync::Mutex<
+            std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
+        >,
+    >,
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<
