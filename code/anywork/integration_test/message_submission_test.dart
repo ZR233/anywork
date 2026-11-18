@@ -599,7 +599,7 @@ void main() {
       () =>
           session.state.runtime?.execution == null &&
           session.state.runtime?.continuation?.sourceTurnId == stoppedTurnId &&
-          session.state.runtime?.continuation?.claimed == false &&
+          session.state.runtime?.continuation != null &&
           find.byKey(const ValueKey('composer-continue')).evaluate().length ==
               1,
       'stopped execution ended and canonical continuation is available',

@@ -236,7 +236,7 @@ mod tests {
     }
     fn input(id: &str) -> InputRecord {
         InputRecord {
-        accepted_sequence: 7, continuation: None, delivery: Default::default(),
+        accepted_sequence: 7,  delivery: Default::default(),
         input: ThreadInput { id: id.into(), purpose: InputPurpose::Message,
             payload: OpaquePayload::new("pl.studio.prompt",1,
                 "{\"text\":\"已接纳\\n🦀\",\"presentation\":\"visible\",\"attachments\":[],\"request\":null}").unwrap(),
@@ -307,8 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn only_explicit_hidden_or_control_qualifications_return_none_and_corruption_propagates()
-    -> Result<()> {
+    fn hidden_input_is_omitted_and_legacy_control_or_corruption_is_rejected() -> Result<()> {
         let thread = Thread::placeholder("thread");
         let mut record = input("hidden");
         record.input.payload = OpaquePayload::new(
@@ -319,8 +318,8 @@ mod tests {
         assert!(accepted_input_draft(&thread, &record, at(), 123, "database")?.is_none());
         record.input.payload = OpaquePayload::new("pl.studio.prompt", 1, "{broken")?;
         assert!(accepted_input_draft(&thread, &record, at(), 123, "database").is_err());
-        record.input = ThreadInput::for_continuation("control", "point", None);
-        assert!(accepted_input_draft(&thread, &record, at(), 123, "database")?.is_none());
+        record.input.purpose = pl_core::thread::input::InputPurpose::Continuation;
+        assert!(accepted_input_draft(&thread, &record, at(), 123, "database").is_err());
         record.input = input("wrong-admission").input;
         record.accepted_sequence = 8;
         assert!(accepted_input_draft(&thread, &record, at(), 123, "database").is_err());

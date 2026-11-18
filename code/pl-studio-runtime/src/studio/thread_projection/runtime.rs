@@ -196,7 +196,7 @@ fn project_with_mode(
         }),
         // The owed work is part of this Thread's own state: the client's first continue needs this
         // identity, and only the owner can publish it. It is never derived from history or guessed
-        // locally, and `claimed` separates "can continue" from "continue already accepted".
+        // locally. Acceptance consumes the token and retains the original operation receipt.
         continuation: state.continuation.as_ref().map(|point| {
             crate::ContinuationView::new(
                 point.id.clone(),
@@ -219,7 +219,6 @@ fn project_with_mode(
                     }
                 }),
                 point.created_at,
-                point.claim.is_some(),
             )
         }),
         usage,

@@ -34,11 +34,14 @@ pub(super) enum MailboxCommand {
         Option<String>,
         oneshot::Sender<Result<u64, ThreadError>>,
     ),
-    /// Body-less continuation of the work this Thread already owes.
-    ContinueThread(
-        String,
+    Resume(
+        ResumeRequest,
         input::InputDriverOptions,
-        oneshot::Sender<Result<input::InputRecord, ThreadError>>,
+        oneshot::Sender<Result<ContinuationOperation, ThreadError>>,
+    ),
+    ReadResume(
+        ResumeRequest,
+        oneshot::Sender<Result<ContinuationRead, ThreadError>>,
     ),
     QueueRuntimeFacts(Vec<RuntimeFact>, oneshot::Sender<Result<(), ThreadError>>),
     /// One accepted increment of a running tool call's live output.
@@ -133,7 +136,7 @@ pub(super) enum MailboxCommand {
         String,
         oneshot::Sender<Result<input::InputRecord, ThreadError>>,
     ),
-    RetryToolCommits(oneshot::Sender<Result<(), ThreadError>>),
+    RetryHistoryAdmission(oneshot::Sender<Result<(), ThreadError>>),
     /// Continues new model/tool admission after a hard storage fault was recovered.
     ///
     /// The explicit resume must reach an owner that is already *inside* a running Turn: a paused
@@ -159,12 +162,7 @@ pub(super) enum MailboxCommand {
     /// paused Turn only services this mailbox, and a flush waiting on the outer channel there would
     /// wait for a Turn that cannot end on its own. The target is the admitted watermark this owner
     /// has when it handles the request, so a later admission never extends the barrier.
-    Flush(oneshot::Sender<Result<cold::ColdFlushTicket, ThreadError>>),
-    /// Publishes the caller-held wait result for its fixed target; no I/O runs here.
-    CompleteFlush {
-        result: Result<u64, Arc<cold::ColdStoreError>>,
-        reply: oneshot::Sender<()>,
-    },
+    Flush(oneshot::Sender<Result<(), ThreadError>>),
     ToolCancelTask {
         caller: String,
         authorization: Option<crate::tool::opaque::ToolAuthorization>,
@@ -212,17 +210,32 @@ impl Owner {
             MailboxCommand::ReadCurrent { captured, reply } => {
                 let _ = reply.send(self.read_current(captured));
             }
-            MailboxCommand::InvokeNested { reply, .. } => {
-                let _ = reply.send(Err(ThreadError::Closed));
-            }
+            MailboxCommand::InvokeNested {
+                caller,
+                executor,
+                tool_id,
+                arguments,
+                cancellation,
+                reply,
+            } => match self.begin_nested(caller, executor, tool_id, arguments, cancellation) {
+                Ok(id) => {
+                    self.nested_replies.insert(id, reply);
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error));
+                }
+            },
             MailboxCommand::ContinueInput(input, options, reply) => {
                 let _ = reply.send(self.continue_input(input, options));
             }
             MailboxCommand::ContinueMessage(message, options, receipt, reply) => {
                 let _ = reply.send(self.continue_message(message, options, receipt.as_deref()));
             }
-            MailboxCommand::ContinueThread(input_id, options, reply) => {
-                let _ = reply.send(self.continue_thread(input_id, options));
+            MailboxCommand::Resume(request, options, reply) => {
+                let _ = reply.send(self.resume(request, options));
+            }
+            MailboxCommand::ReadResume(request, reply) => {
+                let _ = reply.send(self.read_resume(&request));
             }
             MailboxCommand::QueueRuntimeFacts(facts, reply) => {
                 let _ = reply.send(self.queue_runtime_facts(facts));
@@ -294,7 +307,6 @@ impl Owner {
                         .iter()
                         .any(|record| record.sequence > self.state.consumed_messages)
                     && self.pending.is_empty()
-                    && self.uncommitted_tools.is_empty()
                     && self.pending_effects.is_empty()
                     && self.output_obligations.is_empty()
                     && self.pending_output_repairs.is_empty()
@@ -313,7 +325,7 @@ impl Owner {
                     match self.publish() {
                         Ok(()) => true,
                         Err(error) => {
-                            self.input_driver.fail(Arc::new(error));
+                            self.policy.fail(Arc::new(error));
                             false
                         }
                     }
@@ -348,7 +360,12 @@ impl Owner {
                 let result = if running {
                     self.interrupted_turn = Some(expected.clone());
                     let result = self.cancel_turn_tasks(&expected);
-                    let interrupted = self.interrupt.interrupt();
+                    // Internal draining preserves the execution policy; a later explicit Stop
+                    // still advances the stop generation and wins over this transition.
+                    let interrupted = self.active.as_ref().is_some_and(|run| {
+                        run.input.cancellation.cancel();
+                        true
+                    });
                     self.publish_snapshot();
                     result.map(|()| interrupted)
                 } else {
@@ -431,15 +448,14 @@ impl Owner {
             }
 
             MailboxCommand::SubmitInput(submission, reply) => {
-                let result =
-                    self.accept_input_with_policy(submission.input, submission.policy, None);
+                let result = self.accept_input_with_policy(submission.input, submission.policy);
                 if result
                     .as_ref()
                     .is_ok_and(|record| record.state == input::InputState::Pending)
                     && let Some(options) = submission.drive
                     && let Err(error) = self.resume_inputs(options)
                 {
-                    self.input_driver.fail(Arc::new(error));
+                    self.policy.fail(Arc::new(error));
                     self.publish_snapshot();
                 }
                 let _ = reply.send(result);
@@ -525,7 +541,7 @@ impl Owner {
                     && let Err(error) = self.resume_inputs(options)
                 {
                     // Admission is already committed: report its receipt even if close raced the drive request.
-                    self.input_driver.fail(Arc::new(error));
+                    self.policy.fail(Arc::new(error));
                     self.publish_snapshot();
                 }
                 let _ = reply.send(result);
@@ -533,8 +549,8 @@ impl Owner {
             MailboxCommand::DiscardInput(id, reply) => {
                 let _ = reply.send(self.discard_input(&id));
             }
-            MailboxCommand::RetryToolCommits(reply) => {
-                let _ = reply.send(self.retry_tool_commits());
+            MailboxCommand::RetryHistoryAdmission(reply) => {
+                let _ = reply.send(self.retry_history_admission());
             }
             MailboxCommand::ResumeStorage { generation, reply } => {
                 let result = if self.interrupt.is_closing() {
@@ -606,7 +622,7 @@ impl Owner {
                 let result = if self.interrupt.is_closing() {
                     Err(ThreadError::Closed)
                 } else {
-                    self.receive_message(message, drive, None, None)
+                    self.receive_message(message, drive, None)
                 };
                 let _ = reply.send(result);
             }
@@ -638,181 +654,10 @@ impl Owner {
             } => {
                 let _ = reply.send(self.wake_accepted_message(&id, sequence, options));
             }
-            MailboxCommand::Flush(reply) => {
-                let result = self.prepare_flush();
-                let _ = reply.send(result);
-            }
-            MailboxCommand::CompleteFlush { result, reply } => {
-                match result {
-                    Ok(through) => {
-                        self.confirm_flush(through);
-                        self.refresh_storage_pressure();
-                    }
-                    Err(error) => {
-                        self.state.persistence.error = Some(error.to_string());
-                        self.cold_error = Some(error);
-                    }
-                }
-                self.publish_snapshot();
-                let _ = reply.send(());
-            }
+            MailboxCommand::Flush(reply) => self.start_flush(reply),
             // Handled by `dispatch_mailbox`, which is the only place that may await the machine.
             MailboxCommand::RetryOutputStorage(reply) => {
-                let _ = reply.send(OutputRetryReply::Finished(Err(ThreadError::Closed)));
-            }
-        }
-    }
-
-    /// Services one mailbox command, awaiting the ones that need the machine.
-    ///
-    /// Public flush only prepares a fixed ticket synchronously. The caller owns its disk wait.
-    /// Output repair retains its original retry obligation.
-    pub(super) async fn dispatch_mailbox(&mut self, command: MailboxCommand) {
-        match command {
-            MailboxCommand::InvokeNested {
-                caller,
-                executor,
-                tool_id,
-                arguments,
-                cancellation,
-                reply,
-            } => {
-                let result =
-                    Box::pin(self.begin_nested(caller, executor, tool_id, arguments, cancellation))
-                        .await;
-                match result {
-                    Ok(id) => {
-                        self.nested_replies.insert(id, reply);
-                    }
-                    Err(error) => {
-                        let _ = reply.send(Err(error));
-                    }
-                }
-            }
-            MailboxCommand::RetryOutputStorage(reply) => {
-                if let Some(finished) = &self.output_retry_finished {
-                    let _ = reply.send(OutputRetryReply::Waiting(finished.clone()));
-                    return;
-                }
-                let finished = CancellationToken::new();
-                let _completion = finished.clone().drop_guard();
-                self.output_retry_finished = Some(finished);
-                // A retry may service this same dispatcher while its I/O is in flight. The single
-                // completion signal above keeps a second request from re-entering the obligation.
-                let result = Box::pin(self.retry_output_obligation()).await;
-                self.output_retry_finished = None;
-                let _ = reply.send(OutputRetryReply::Finished(result));
-            }
-            other => self.process_mailbox(other),
-        }
-    }
-
-    pub(super) async fn await_with_mailbox<T>(
-        &mut self,
-        operation: impl std::future::Future<Output = T> + Send,
-    ) -> T {
-        tokio::pin!(operation);
-        // 同一代次 token 的取消不产生 mailbox 消息，也不一定立刻产生新的进度观察：直接等待
-        // 它，才能在生产者停住时也立即发布一次撤销快照。token 在进入这里时克隆一次，等待期间
-        // 不再持有 interrupt 锁；已取消的 token 永远就绪，所以该分支只处理一次，避免空转。
-        // 等待 future 只构造一次：否则每次 watch 更新都要重新注册一个 waker。
-        let cancellation = self.interrupt.active_token();
-        let mut cancellation_observed = false;
-        let cancelled = async {
-            match cancellation.as_ref() {
-                Some(token) => token.cancelled().await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::pin!(cancelled);
-        // Establish the watch before polling the operation. Notifications are wake-ups; only the
-        // backend's real receipt can advance durability and release the effect window.
-        let mut pressure_updates = self.subscribe_pressure();
-        // subscribe considers its current value seen. Re-sample after registration so a receipt or
-        // fault arriving since the last admission cannot disappear into that initial seen value.
-        self.admit_cold();
-        self.refresh_storage_pressure();
-        if self.cold_error.is_some() {
-            self.state.persistence.resume_required = true;
-        }
-        self.publish_snapshot();
-        loop {
-            tokio::select! {
-                result = &mut operation => return result,
-                Some(admission) = async {
-                    match self.model_members.as_mut() {
-                        Some(call) => call.receiver.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => self.admit_model_member(admission),
-                () = &mut cancelled, if !cancellation_observed => {
-                    cancellation_observed = true;
-                    self.publish_snapshot();
-                },
-                update = async {
-                    match pressure_updates.as_mut() {
-                        Some(update) => update.changed().await.is_ok(),
-                        None => std::future::pending::<bool>().await,
-                    }
-                } => {
-                    if !update {
-                        pressure_updates = None;
-                        self.pressure_watch_closed = true;
-                    }
-                    self.admit_cold();
-                    self.refresh_storage_pressure();
-                    if self.cold_error.is_some() {
-                        self.state.persistence.resume_required = true;
-                    }
-                    self.publish_snapshot();
-                },
-                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
-                Some(reply) = async {
-                    match self.compaction_call.as_mut() {
-                        Some(call) => call.receiver.recv().await,
-                        None => std::future::pending().await,
-                    }
-                } => self.admit_context_compaction(reply),
-                changed = async {
-                    match self.model_progress.as_mut() {
-                        Some((_, receiver)) => receiver.changed().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    if changed.is_ok() { self.publish_snapshot(); }
-                    else {
-                        if let Some(call) = self.model_members.as_mut()
-                            && let Some((_, receiver)) = self.model_progress.as_ref()
-                        {
-                            call.generation = receiver.borrow().observation().generation;
-                        }
-                        self.model_progress = None;
-                    }
-                },
-                refusal = self.output_refusal_rx.changed() => {
-                    // A producer that could not retain the next chunk reports it here the moment it
-                    // happens: a slow tool would otherwise hold the typed fault and the admission
-                    // block invisible until it finally returned. The latching is idempotent, so the
-                    // release path observing the same refusal again is a no-op.
-                    if refusal.is_ok() {
-                        let reported = self.output_refusal_rx.borrow_and_update().clone();
-                        if let Some(refusal) = reported {
-                            self.latch_output_budget_fault(
-                                &refusal.operation_id,
-                                refusal.accepted,
-                                refusal.limit,
-                            );
-                        }
-                    }
-                },
-                Some(completion) = futures::StreamExt::next(&mut self.background), if !self.background.is_empty() => {
-                    self.finish_background(completion);
-                },
-                message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => {
-                    if let Some(message) = message {
-                        self.dispatch_mailbox(message).await;
-                    }
-                }
+                self.start_output_retry(reply);
             }
         }
     }

@@ -629,7 +629,7 @@ abstract class RustLibApi extends BaseApi {
   Future<BridgeContinueThreadReply> crateApiStudioHandlersPromptContinueThread({
     required String operationId,
     required String threadId,
-    required String expectedContinuationId,
+    required String expectedContinuationToken,
     required BigInt expectedModelRouteRevision,
   });
 
@@ -822,6 +822,7 @@ abstract class RustLibApi extends BaseApi {
   crateApiStudioHandlersPromptReadContinuationOperation({
     required String threadId,
     required String operationId,
+    required String expectedContinuationToken,
   });
 
   Future<BridgeDeepSeekWebSearchSettingsDto>
@@ -4990,7 +4991,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   Future<BridgeContinueThreadReply> crateApiStudioHandlersPromptContinueThread({
     required String operationId,
     required String threadId,
-    required String expectedContinuationId,
+    required String expectedContinuationToken,
     required BigInt expectedModelRouteRevision,
   }) {
     return handler.executeNormal(
@@ -4999,7 +5000,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(operationId, serializer);
           sse_encode_String(threadId, serializer);
-          sse_encode_String(expectedContinuationId, serializer);
+          sse_encode_String(expectedContinuationToken, serializer);
           sse_encode_u_64(expectedModelRouteRevision, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
@@ -5016,7 +5017,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argValues: [
           operationId,
           threadId,
-          expectedContinuationId,
+          expectedContinuationToken,
           expectedModelRouteRevision,
         ],
         apiImpl: this,
@@ -5030,7 +5031,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         argNames: [
           "operationId",
           "threadId",
-          "expectedContinuationId",
+          "expectedContinuationToken",
           "expectedModelRouteRevision",
         ],
       );
@@ -6564,6 +6565,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiStudioHandlersPromptReadContinuationOperation({
     required String threadId,
     required String operationId,
+    required String expectedContinuationToken,
   }) {
     return handler.executeNormal(
       NormalTask(
@@ -6571,6 +6573,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(threadId, serializer);
           sse_encode_String(operationId, serializer);
+          sse_encode_String(expectedContinuationToken, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -6584,7 +6587,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersPromptReadContinuationOperationConstMeta,
-        argValues: [threadId, operationId],
+        argValues: [threadId, operationId, expectedContinuationToken],
         apiImpl: this,
       ),
     );
@@ -6594,7 +6597,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersPromptReadContinuationOperationConstMeta =>
       const TaskConstMeta(
         debugName: "read_continuation_operation",
-        argNames: ["threadId", "operationId"],
+        argNames: ["threadId", "operationId", "expectedContinuationToken"],
       );
 
   @override
@@ -10869,6 +10872,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeContinuationDisposition
+  dco_decode_box_autoadd_bridge_continuation_disposition(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_continuation_disposition(raw);
+  }
+
+  @protected
   BridgeContinuationReason dco_decode_box_autoadd_bridge_continuation_reason(
     dynamic raw,
   ) {
@@ -11677,6 +11687,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_stopped_resource(raw);
+  }
+
+  @protected
+  BridgeStudioCommandReceipt
+  dco_decode_box_autoadd_bridge_studio_command_receipt(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_studio_command_receipt(raw);
   }
 
   @protected
@@ -16217,21 +16234,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeContinuationOperationState
-  dco_decode_bridge_continuation_operation_state(dynamic raw) {
+  BridgeContinuationDisposition dco_decode_bridge_continuation_disposition(
+    dynamic raw,
+  ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
       case 0:
-        return BridgeContinuationOperationState_Pending();
+        return BridgeContinuationDisposition_Scheduled();
       case 1:
-        return BridgeContinuationOperationState_Consumed(
-          turnId: dco_decode_String(raw[1]),
-        );
+        return BridgeContinuationDisposition_Effective();
       case 2:
-        return BridgeContinuationOperationState_Discarded();
+        return BridgeContinuationDisposition_NotExecuted(
+          reason: dco_decode_String(raw[1]),
+        );
       default:
         throw Exception("unreachable");
     }
+  }
+
+  @protected
+  BridgeContinuationOperationState
+  dco_decode_bridge_continuation_operation_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return BridgeContinuationOperationState.values[raw as int];
   }
 
   @protected
@@ -16240,16 +16265,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 7)
-      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return BridgeContinuationOperationView(
       threadId: dco_decode_String(arr[0]),
       operationId: dco_decode_String(arr[1]),
-      inputId: dco_decode_String(arr[2]),
-      continuationId: dco_decode_String(arr[3]),
-      acceptedSequence: dco_decode_u_64(arr[4]),
-      state: dco_decode_bridge_continuation_operation_state(arr[5]),
-      receipt: dco_decode_bridge_studio_command_receipt(arr[6]),
+      expectedContinuationToken: dco_decode_String(arr[2]),
+      state: dco_decode_bridge_continuation_operation_state(arr[3]),
+      acceptanceEpoch: dco_decode_opt_String(arr[4]),
+      executionId: dco_decode_opt_String(arr[5]),
+      turnId: dco_decode_opt_String(arr[6]),
+      acceptedRevision: dco_decode_opt_box_autoadd_u_64(arr[7]),
+      disposition: dco_decode_opt_box_autoadd_bridge_continuation_disposition(
+        arr[8],
+      ),
+      receipt: dco_decode_opt_box_autoadd_bridge_studio_command_receipt(arr[9]),
     );
   }
 
@@ -16263,14 +16293,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeContinuationView dco_decode_bridge_continuation_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return BridgeContinuationView(
       id: dco_decode_String(arr[0]),
       sourceTurnId: dco_decode_opt_String(arr[1]),
       reason: dco_decode_opt_box_autoadd_bridge_continuation_reason(arr[2]),
       createdAt: dco_decode_i_64(arr[3]),
-      claimed: dco_decode_bool(arr[4]),
     );
   }
 
@@ -23785,6 +23814,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeContinuationDisposition?
+  dco_decode_opt_box_autoadd_bridge_continuation_disposition(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_continuation_disposition(raw);
+  }
+
+  @protected
   BridgeContinuationReason?
   dco_decode_opt_box_autoadd_bridge_continuation_reason(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -24188,6 +24226,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeStateError? dco_decode_opt_box_autoadd_bridge_state_error(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_bridge_state_error(raw);
+  }
+
+  @protected
+  BridgeStudioCommandReceipt?
+  dco_decode_opt_box_autoadd_bridge_studio_command_receipt(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null
+        ? null
+        : dco_decode_box_autoadd_bridge_studio_command_receipt(raw);
   }
 
   @protected
@@ -26525,6 +26572,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeContinuationDisposition
+  sse_decode_box_autoadd_bridge_continuation_disposition(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_continuation_disposition(deserializer));
+  }
+
+  @protected
   BridgeContinuationReason sse_decode_box_autoadd_bridge_continuation_reason(
     SseDeserializer deserializer,
   ) {
@@ -27457,6 +27513,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_stopped_resource(deserializer));
+  }
+
+  @protected
+  BridgeStudioCommandReceipt
+  sse_decode_box_autoadd_bridge_studio_command_receipt(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_studio_command_receipt(deserializer));
   }
 
   @protected
@@ -33301,22 +33366,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeContinuationOperationState
-  sse_decode_bridge_continuation_operation_state(SseDeserializer deserializer) {
+  BridgeContinuationDisposition sse_decode_bridge_continuation_disposition(
+    SseDeserializer deserializer,
+  ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     var tag_ = sse_decode_i_32(deserializer);
     switch (tag_) {
       case 0:
-        return BridgeContinuationOperationState_Pending();
+        return BridgeContinuationDisposition_Scheduled();
       case 1:
-        var var_turnId = sse_decode_String(deserializer);
-        return BridgeContinuationOperationState_Consumed(turnId: var_turnId);
+        return BridgeContinuationDisposition_Effective();
       case 2:
-        return BridgeContinuationOperationState_Discarded();
+        var var_reason = sse_decode_String(deserializer);
+        return BridgeContinuationDisposition_NotExecuted(reason: var_reason);
       default:
         throw UnimplementedError('');
     }
+  }
+
+  @protected
+  BridgeContinuationOperationState
+  sse_decode_bridge_continuation_operation_state(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var inner = sse_decode_i_32(deserializer);
+    return BridgeContinuationOperationState.values[inner];
   }
 
   @protected
@@ -33326,20 +33400,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_threadId = sse_decode_String(deserializer);
     var var_operationId = sse_decode_String(deserializer);
-    var var_inputId = sse_decode_String(deserializer);
-    var var_continuationId = sse_decode_String(deserializer);
-    var var_acceptedSequence = sse_decode_u_64(deserializer);
+    var var_expectedContinuationToken = sse_decode_String(deserializer);
     var var_state = sse_decode_bridge_continuation_operation_state(
       deserializer,
     );
-    var var_receipt = sse_decode_bridge_studio_command_receipt(deserializer);
+    var var_acceptanceEpoch = sse_decode_opt_String(deserializer);
+    var var_executionId = sse_decode_opt_String(deserializer);
+    var var_turnId = sse_decode_opt_String(deserializer);
+    var var_acceptedRevision = sse_decode_opt_box_autoadd_u_64(deserializer);
+    var var_disposition =
+        sse_decode_opt_box_autoadd_bridge_continuation_disposition(
+          deserializer,
+        );
+    var var_receipt = sse_decode_opt_box_autoadd_bridge_studio_command_receipt(
+      deserializer,
+    );
     return BridgeContinuationOperationView(
       threadId: var_threadId,
       operationId: var_operationId,
-      inputId: var_inputId,
-      continuationId: var_continuationId,
-      acceptedSequence: var_acceptedSequence,
+      expectedContinuationToken: var_expectedContinuationToken,
       state: var_state,
+      acceptanceEpoch: var_acceptanceEpoch,
+      executionId: var_executionId,
+      turnId: var_turnId,
+      acceptedRevision: var_acceptedRevision,
+      disposition: var_disposition,
       receipt: var_receipt,
     );
   }
@@ -33364,13 +33449,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       deserializer,
     );
     var var_createdAt = sse_decode_i_64(deserializer);
-    var var_claimed = sse_decode_bool(deserializer);
     return BridgeContinuationView(
       id: var_id,
       sourceTurnId: var_sourceTurnId,
       reason: var_reason,
       createdAt: var_createdAt,
-      claimed: var_claimed,
     );
   }
 
@@ -43324,6 +43407,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeContinuationDisposition?
+  sse_decode_opt_box_autoadd_bridge_continuation_disposition(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_continuation_disposition(
+        deserializer,
+      ));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   BridgeContinuationReason?
   sse_decode_opt_box_autoadd_bridge_continuation_reason(
     SseDeserializer deserializer,
@@ -43956,6 +44055,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
     if (sse_decode_bool(deserializer)) {
       return (sse_decode_box_autoadd_bridge_state_error(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
+  BridgeStudioCommandReceipt?
+  sse_decode_opt_box_autoadd_bridge_studio_command_receipt(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_bridge_studio_command_receipt(
+        deserializer,
+      ));
     } else {
       return null;
     }
@@ -46689,6 +46804,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_continuation_disposition(
+    BridgeContinuationDisposition self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_continuation_disposition(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_continuation_reason(
     BridgeContinuationReason self,
     SseSerializer serializer,
@@ -47685,6 +47809,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_bridge_stopped_resource(self, serializer);
+  }
+
+  @protected
+  void sse_encode_box_autoadd_bridge_studio_command_receipt(
+    BridgeStudioCommandReceipt self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_studio_command_receipt(self, serializer);
   }
 
   @protected
@@ -52515,20 +52648,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_continuation_disposition(
+    BridgeContinuationDisposition self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeContinuationDisposition_Scheduled():
+        sse_encode_i_32(0, serializer);
+      case BridgeContinuationDisposition_Effective():
+        sse_encode_i_32(1, serializer);
+      case BridgeContinuationDisposition_NotExecuted(reason: final reason):
+        sse_encode_i_32(2, serializer);
+        sse_encode_String(reason, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_bridge_continuation_operation_state(
     BridgeContinuationOperationState self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case BridgeContinuationOperationState_Pending():
-        sse_encode_i_32(0, serializer);
-      case BridgeContinuationOperationState_Consumed(turnId: final turnId):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(turnId, serializer);
-      case BridgeContinuationOperationState_Discarded():
-        sse_encode_i_32(2, serializer);
-    }
+    sse_encode_i_32(self.index, serializer);
   }
 
   @protected
@@ -52539,11 +52681,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.threadId, serializer);
     sse_encode_String(self.operationId, serializer);
-    sse_encode_String(self.inputId, serializer);
-    sse_encode_String(self.continuationId, serializer);
-    sse_encode_u_64(self.acceptedSequence, serializer);
+    sse_encode_String(self.expectedContinuationToken, serializer);
     sse_encode_bridge_continuation_operation_state(self.state, serializer);
-    sse_encode_bridge_studio_command_receipt(self.receipt, serializer);
+    sse_encode_opt_String(self.acceptanceEpoch, serializer);
+    sse_encode_opt_String(self.executionId, serializer);
+    sse_encode_opt_String(self.turnId, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.acceptedRevision, serializer);
+    sse_encode_opt_box_autoadd_bridge_continuation_disposition(
+      self.disposition,
+      serializer,
+    );
+    sse_encode_opt_box_autoadd_bridge_studio_command_receipt(
+      self.receipt,
+      serializer,
+    );
   }
 
   @protected
@@ -52568,7 +52719,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_i_64(self.createdAt, serializer);
-    sse_encode_bool(self.claimed, serializer);
   }
 
   @protected
@@ -60459,6 +60609,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_continuation_disposition(
+    BridgeContinuationDisposition? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_continuation_disposition(self, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_continuation_reason(
     BridgeContinuationReason? self,
     SseSerializer serializer,
@@ -61045,6 +61208,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_bridge_state_error(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_studio_command_receipt(
+    BridgeStudioCommandReceipt? self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_bridge_studio_command_receipt(self, serializer);
     }
   }
 

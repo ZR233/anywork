@@ -225,7 +225,7 @@ final class ComposerPrimaryAction {
         blocker: blocker,
       );
     }
-    if (continuationAccepted || (continuation?.claimed ?? false)) {
+    if (continuationAccepted) {
       return ComposerPrimaryAction(
         kind: ComposerPrimaryActionKind.continuing,
         enabled: false,
@@ -233,7 +233,7 @@ final class ComposerPrimaryAction {
         blocker: blocker,
       );
     }
-    final unclaimed = continuation != null && !continuation.claimed;
+    final unclaimed = continuation != null;
     if (unclaimed) {
       if (hasContent) {
         // 内容提交在受理时认领同一继续点，不额外创建控制输入。

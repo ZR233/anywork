@@ -26,7 +26,6 @@ final _continuation = ContinuationView(
   sourceTurnId: 'turn-1',
   reason: ContinuationReason.userStop,
   createdAt: DateTime.utc(2026, 1, 1),
-  claimed: false,
 );
 
 /// 记录停止/继续目标并按脚本受理或拒绝；canonical 执行与继续点由测试注入。

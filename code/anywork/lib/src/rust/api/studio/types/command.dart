@@ -19,7 +19,7 @@ import 'settings.dart';
 import 'thread_stream.dart';
 part 'command.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeArchiveThreadCommandReply {
   final ArchiveThreadResult result;
@@ -47,47 +47,58 @@ enum BridgeCommandDisposition { applied, noChange }
 enum BridgeCommandEffectPoint { immediate, nextTurn, futureSession }
 
 @freezed
-sealed class BridgeContinuationOperationState
-    with _$BridgeContinuationOperationState {
-  const BridgeContinuationOperationState._();
+sealed class BridgeContinuationDisposition
+    with _$BridgeContinuationDisposition {
+  const BridgeContinuationDisposition._();
 
-  const factory BridgeContinuationOperationState.pending() =
-      BridgeContinuationOperationState_Pending;
-  const factory BridgeContinuationOperationState.consumed({
-    required String turnId,
-  }) = BridgeContinuationOperationState_Consumed;
-  const factory BridgeContinuationOperationState.discarded() =
-      BridgeContinuationOperationState_Discarded;
+  const factory BridgeContinuationDisposition.scheduled() =
+      BridgeContinuationDisposition_Scheduled;
+  const factory BridgeContinuationDisposition.effective() =
+      BridgeContinuationDisposition_Effective;
+  const factory BridgeContinuationDisposition.notExecuted({
+    required String reason,
+  }) = BridgeContinuationDisposition_NotExecuted;
 }
 
-/// 继续操作的只读回查结果；查询本身不激活执行。
+/// 一次继续操作的当前阶段，由输入事实唯一推导。
+enum BridgeContinuationOperationState { known, notAccepted }
+
 class BridgeContinuationOperationView {
   final String threadId;
   final String operationId;
-  final String inputId;
-  final String continuationId;
-  final BigInt acceptedSequence;
+  final String expectedContinuationToken;
   final BridgeContinuationOperationState state;
-  final BridgeStudioCommandReceipt receipt;
+  final String? acceptanceEpoch;
+  final String? executionId;
+  final String? turnId;
+  final BigInt? acceptedRevision;
+  final BridgeContinuationDisposition? disposition;
+  final BridgeStudioCommandReceipt? receipt;
 
   const BridgeContinuationOperationView({
     required this.threadId,
     required this.operationId,
-    required this.inputId,
-    required this.continuationId,
-    required this.acceptedSequence,
+    required this.expectedContinuationToken,
     required this.state,
-    required this.receipt,
+    this.acceptanceEpoch,
+    this.executionId,
+    this.turnId,
+    this.acceptedRevision,
+    this.disposition,
+    this.receipt,
   });
 
   @override
   int get hashCode =>
       threadId.hashCode ^
       operationId.hashCode ^
-      inputId.hashCode ^
-      continuationId.hashCode ^
-      acceptedSequence.hashCode ^
+      expectedContinuationToken.hashCode ^
       state.hashCode ^
+      acceptanceEpoch.hashCode ^
+      executionId.hashCode ^
+      turnId.hashCode ^
+      acceptedRevision.hashCode ^
+      disposition.hashCode ^
       receipt.hashCode;
 
   @override
@@ -97,10 +108,13 @@ class BridgeContinuationOperationView {
           runtimeType == other.runtimeType &&
           threadId == other.threadId &&
           operationId == other.operationId &&
-          inputId == other.inputId &&
-          continuationId == other.continuationId &&
-          acceptedSequence == other.acceptedSequence &&
+          expectedContinuationToken == other.expectedContinuationToken &&
           state == other.state &&
+          acceptanceEpoch == other.acceptanceEpoch &&
+          executionId == other.executionId &&
+          turnId == other.turnId &&
+          acceptedRevision == other.acceptedRevision &&
+          disposition == other.disposition &&
           receipt == other.receipt;
 }
 

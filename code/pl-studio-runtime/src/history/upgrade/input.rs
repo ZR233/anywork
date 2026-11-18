@@ -1,6 +1,7 @@
 //! Frozen encoding of imported schema-24 admission metadata. Execution never reads it.
 use super::super::*;
-use pl_core::thread::input::{InputContinuation, InputDelivery, InputPurpose, InputState};
+use crate::studio::storage::state::LegacyInputContinuation;
+use pl_core::thread::input::{InputDelivery, InputPurpose, InputState};
 use std::sync::Arc;
 const INPUT_FACT_FORMAT: &str = "pl.studio.input-fact";
 const INPUT_FACT_VERSION: u32 = 1;
@@ -15,7 +16,7 @@ pub(super) struct InputAdmission {
     pub(super) digest: String,
     /// Hash of the host request and presentation when the payload is a Studio prompt.
     pub(super) request_digest: Option<String>,
-    pub(super) continuation: Option<InputContinuation>,
+    pub(super) continuation: Option<LegacyInputContinuation>,
     pub(super) delivery: InputDelivery,
     pub(super) purpose: InputPurpose,
     pub(super) ordinal: u64,

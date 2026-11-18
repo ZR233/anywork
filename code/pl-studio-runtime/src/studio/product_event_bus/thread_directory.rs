@@ -2001,7 +2001,6 @@ pub(super) mod tests {
                     source_turn_id: None,
                     reason: None,
                     created_at: 1,
-                    claim: None,
                 }),
                 ..Default::default()
             };

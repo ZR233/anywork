@@ -325,6 +325,47 @@ impl Drop for InFlightTool {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn ordinary_tool_segment_starts_together_before_its_shared_deadline() {
+    let (model, _) = ScriptedModel::new(&["first", "second"]);
+    let thread =
+        ThreadHandle::start("concurrent-segment".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    thread
+        .register_tools(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| {
+                    Registration::prepare(id.into(), OpaquePayload::text(id))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
+                            events: events.clone(),
+                            release: release.clone(),
+                        }))
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let started_at = tokio::time::Instant::now();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("concurrent")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    assert_eq!(received.recv().await, Some("executing"));
+    let spread = started_at.elapsed();
+    release.notify_waiters();
+    let result = running.await.unwrap();
+    thread.close().await.unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        spread < std::time::Duration::from_secs(1),
+        "second task only started after {spread:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
     replaced_executor_result_is_committed(false).await;

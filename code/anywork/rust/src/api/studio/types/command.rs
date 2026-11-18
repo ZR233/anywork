@@ -93,21 +93,29 @@ pub struct BridgeStopThreadReply {
 /// 一次继续操作的当前阶段，由输入事实唯一推导。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeContinuationOperationState {
-    Pending,
-    Consumed { turn_id: String },
-    Discarded,
+    Known,
+    NotAccepted,
 }
 
-/// 继续操作的只读回查结果；查询本身不激活执行。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeContinuationDisposition {
+    Scheduled,
+    Effective,
+    NotExecuted { reason: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeContinuationOperationView {
     pub thread_id: String,
     pub operation_id: String,
-    pub input_id: String,
-    pub continuation_id: String,
-    pub accepted_sequence: u64,
+    pub expected_continuation_token: String,
     pub state: BridgeContinuationOperationState,
-    pub receipt: BridgeStudioCommandReceipt,
+    pub acceptance_epoch: Option<String>,
+    pub execution_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub accepted_revision: Option<u64>,
+    pub disposition: Option<BridgeContinuationDisposition>,
+    pub receipt: Option<BridgeStudioCommandReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

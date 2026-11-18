@@ -547,15 +547,12 @@ async fn failed_completion_keeps_tool_discovery_private_through_retries_and_empt
         thread
             .execute_tool("tool-turn-controlled".into(), CancellationToken::new())
             .await,
-        Err(ThreadError::RevisionExhausted)
+        Err(ThreadError::Tool(ref error)) if error.source.downcast_ref::<ThreadError>().is_some_and(|error| matches!(error, ThreadError::RevisionExhausted))
     ));
     assert!(thread.snapshot().discovered_tools.is_empty());
     thread.reveal_tools(vec![]).await.unwrap();
     let after_empty_reveal = thread.snapshot().discovered_tools;
-    assert!(matches!(
-        thread.retry_tool_commits().await,
-        Err(ThreadError::RevisionExhausted)
-    ));
+    thread.retry_history_admission().await.unwrap();
     thread.reveal_tools(vec![]).await.unwrap();
     let after_retry = thread.snapshot();
     at(
@@ -569,7 +566,7 @@ async fn failed_completion_keeps_tool_discovery_private_through_retries_and_empt
         "uncommitted discovery escaped the manager"
     );
     assert!(after_retry.discovered_tools.is_empty());
-    assert_eq!(after_retry.pending_tool_commits, ["tool-turn-controlled"]);
+
     assert!(after_retry.interactions.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
@@ -597,7 +594,7 @@ async fn successful_completion_commits_discovery_together_with_its_interaction()
         thread.snapshot().discovered_tools,
         committed.discovered_tools
     );
-    assert!(thread.snapshot().pending_tool_commits.is_empty());
+
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     thread.close().await.unwrap();
 }
@@ -656,7 +653,7 @@ async fn permission_record_changes_and_actual_task_pruning_advance_the_joint_col
 }
 
 #[tokio::test]
-async fn a_completed_tool_is_retained_on_revision_exhaustion_without_reexecution() {
+async fn a_rejected_interaction_is_a_terminal_known_result_without_reexecution() {
     let (thread, release, executions, capture) = tool_thread(u64::MAX, false).await;
     release.cancel();
     assert!(matches!(
@@ -665,34 +662,31 @@ async fn a_completed_tool_is_retained_on_revision_exhaustion_without_reexecution
             thread.execute_tool("tool-turn-controlled".into(), CancellationToken::new()),
         )
         .await,
-        Err(ThreadError::RevisionExhausted)
+        Err(ThreadError::Tool(ref error)) if error.source.downcast_ref::<ThreadError>().is_some_and(|error| matches!(error, ThreadError::RevisionExhausted))
     ));
     let snapshot = thread.snapshot();
     assert_eq!(snapshot.interaction_collection_revision, u64::MAX);
     assert!(snapshot.interactions.is_empty());
-    assert_eq!(snapshot.pending_tool_commits, ["tool-turn-controlled"]);
+
     assert!(snapshot.deliveries.is_empty());
     assert_eq!(
-        snapshot.tasks["task:tool-turn-controlled"].status,
-        pl_core::thread::task::TaskStatus::Running
+        snapshot
+            .terminal_tasks
+            .iter()
+            .find(|task| task.call_id == "tool-turn-controlled")
+            .unwrap()
+            .status,
+        pl_core::thread::task::TaskStatus::Failed
     );
-    assert!(matches!(
-        at("retry interaction completion", thread.retry_tool_commits()).await,
-        Err(ThreadError::RevisionExhausted)
-    ));
+    at(
+        "retry independent history admission",
+        thread.retry_history_admission(),
+    )
+    .await
+    .unwrap();
     assert_eq!(executions.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        thread.snapshot().pending_tool_commits,
-        snapshot.pending_tool_commits
-    );
     assert!(capture.last().state.interactions.is_empty());
-    // The isolated fixture has no user data. Explicit deletion releases the retained completion
-    // after checking that preserving close cannot claim it was saved.
-    assert!(matches!(
-        at("preserve retained completion", thread.close()).await,
-        Err(ThreadError::RevisionExhausted)
-    ));
-    at("delete retained completion", thread.close_for_deletion())
+    at("preserve rejected control result", thread.close())
         .await
         .unwrap();
 }
@@ -748,11 +742,18 @@ async fn permission_exhaustion_rejects_decisions_and_retains_results_that_cannot
             ));
             let retained = thread.snapshot();
             assert_eq!(retained.permissions, allowed.permissions);
-            assert_eq!(retained.context, allowed.context);
+            assert_ne!(
+                retained.context, allowed.context,
+                "known output remains accepted when History cannot prune its permission"
+            );
             assert_eq!(retained.interaction_collection_revision, u64::MAX);
-            assert_eq!(retained.pending_tool_commits, ["tool-turn-controlled"]);
+
             assert!(matches!(
-                at("retry permission completion", thread.retry_tool_commits()).await,
+                at(
+                    "retry permission completion",
+                    thread.retry_history_admission()
+                )
+                .await,
                 Err(ThreadError::RevisionExhausted)
             ));
             at("delete permission completion", thread.close_for_deletion())

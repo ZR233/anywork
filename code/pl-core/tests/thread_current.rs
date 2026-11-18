@@ -143,6 +143,7 @@ fn schema_one_is_complete_inline_and_excludes_legacy_fences() {
         "lifecycle",
         "execution",
         "continuation",
+        "continuationOperations",
         "inputs",
         "inputOrdinal",
         "terminalInputs",
@@ -904,7 +905,7 @@ impl pl_agent_tool::Tool for KnownBeforeCommitTool {
 }
 
 #[tokio::test]
-async fn retained_uncommitted_tool_completion_is_known_current_data_not_an_unknown_call() {
+async fn rejected_tool_control_still_accepts_known_output_once_without_an_executor_retry() {
     let state = ThreadSnapshot {
         interaction_collection_revision: u64::MAX,
         ..Default::default()
@@ -946,27 +947,32 @@ async fn retained_uncommitted_tool_completion_is_known_current_data_not_an_unkno
         .await;
     assert!(matches!(
         result,
-        Err(pl_core::thread::ThreadError::RevisionExhausted)
+        Err(pl_core::thread::ThreadError::Tool(ref error)) if error.source.downcast_ref::<pl_core::thread::ThreadError>().is_some_and(|error| matches!(error, pl_core::thread::ThreadError::RevisionExhausted))
     ));
     assert!(
-        thread.snapshot().deliveries.is_empty(),
-        "the ordinary local commit was rolled back"
+        thread.snapshot().interactions.is_empty(),
+        "the failed control never installed an interaction"
     );
     let mut current = thread
         .capture_current(CancellationToken::new())
         .await
         .unwrap();
-    assert_eq!(current.state.deliveries.len(), 1);
+    assert!(
+        current.state.deliveries.is_empty(),
+        "the known result already entered confirmed context"
+    );
+    let effects = thread.effects().await.unwrap();
+    let delivery = effects
+        .iter()
+        .flat_map(|effect| effect.deliveries.iter())
+        .find(|delivery| delivery.call_id == "known-before-commit")
+        .unwrap();
     assert_eq!(
-        current.state.deliveries[0].output.payload().content(),
+        delivery.output.payload().content(),
         "full result before local commit"
     );
     assert_eq!(
-        current.state.deliveries[0]
-            .output
-            .interaction()
-            .unwrap()
-            .content(),
+        delivery.output.interaction().unwrap().content(),
         "complete proposed question"
     );
     current.apply_saved_local_deliveries_once().unwrap();
@@ -981,10 +987,10 @@ async fn retained_uncommitted_tool_completion_is_known_current_data_not_an_unkno
         ContextSource::ToolResult { ref call_id, .. } if call_id == "known-before-commit")
         })
         .unwrap();
-    assert_eq!(result.content, vec![text("known external result")]);
+    assert_eq!(result.content.first(), Some(&text("known external result")));
+    assert!(result.content.iter().any(|content| matches!(content, ContextContent::Text { text } if text.contains("revision exhausted"))));
     assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
-    // This fixture owns no durable data. Dispose only its synthetic retained completion so its
-    // intentionally exhausted old commit path cannot keep an owner/resource alive after the test.
+    // The rejected control left no pending installation or executor to replay.
     thread.close_for_deletion().await.unwrap();
 }
 
@@ -1356,7 +1362,6 @@ async fn failed_preparation_keeps_direct_and_queued_input_for_a_new_attempt() {
     ));
     saved.state.inputs = vec![input::InputRecord {
         accepted_sequence: 0,
-        continuation: None,
         delivery: input::InputDelivery::NextTurn,
         input: input::ThreadInput {
             id: "queued".into(),
@@ -1759,7 +1764,6 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
         };
         current.state.inputs = vec![input::InputRecord {
             accepted_sequence: 0,
-            continuation: None,
             delivery: input::InputDelivery::NextTurn,
             input: input::ThreadInput {
                 id: "input".into(),

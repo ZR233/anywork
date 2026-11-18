@@ -13,7 +13,7 @@ part of 'command.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
-mixin _$BridgeContinuationOperationState {
+mixin _$BridgeContinuationDisposition {
 
 
 
@@ -21,7 +21,7 @@ mixin _$BridgeContinuationOperationState {
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationOperationState);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationDisposition);
 }
 
 
@@ -30,20 +30,20 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-    return 'BridgeContinuationOperationState()';
+    return 'BridgeContinuationDisposition()';
 }
 
 
 }
 
 /// @nodoc
-class $BridgeContinuationOperationStateCopyWith<$Res>  {
-$BridgeContinuationOperationStateCopyWith(BridgeContinuationOperationState _, $Res Function(BridgeContinuationOperationState) __);
+class $BridgeContinuationDispositionCopyWith<$Res>  {
+$BridgeContinuationDispositionCopyWith(BridgeContinuationDisposition _, $Res Function(BridgeContinuationDisposition) __);
 }
 
 
-/// Adds pattern-matching-related methods to [BridgeContinuationOperationState].
-extension BridgeContinuationOperationStatePatterns on BridgeContinuationOperationState {
+/// Adds pattern-matching-related methods to [BridgeContinuationDisposition].
+extension BridgeContinuationDispositionPatterns on BridgeContinuationDisposition {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -56,13 +56,13 @@ extension BridgeContinuationOperationStatePatterns on BridgeContinuationOperatio
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContinuationOperationState_Pending value)?  pending,TResult Function( BridgeContinuationOperationState_Consumed value)?  consumed,TResult Function( BridgeContinuationOperationState_Discarded value)?  discarded,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeContinuationDisposition_Scheduled value)?  scheduled,TResult Function( BridgeContinuationDisposition_Effective value)?  effective,TResult Function( BridgeContinuationDisposition_NotExecuted value)?  notExecuted,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending() when pending != null:
-return pending(_that);case BridgeContinuationOperationState_Consumed() when consumed != null:
-return consumed(_that);case BridgeContinuationOperationState_Discarded() when discarded != null:
-return discarded(_that);case _:
+case BridgeContinuationDisposition_Scheduled() when scheduled != null:
+return scheduled(_that);case BridgeContinuationDisposition_Effective() when effective != null:
+return effective(_that);case BridgeContinuationDisposition_NotExecuted() when notExecuted != null:
+return notExecuted(_that);case _:
   return orElse();
 
 }
@@ -80,13 +80,13 @@ return discarded(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContinuationOperationState_Pending value)  pending,required TResult Function( BridgeContinuationOperationState_Consumed value)  consumed,required TResult Function( BridgeContinuationOperationState_Discarded value)  discarded,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeContinuationDisposition_Scheduled value)  scheduled,required TResult Function( BridgeContinuationDisposition_Effective value)  effective,required TResult Function( BridgeContinuationDisposition_NotExecuted value)  notExecuted,}){
 final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending():
-return pending(_that);case BridgeContinuationOperationState_Consumed():
-return consumed(_that);case BridgeContinuationOperationState_Discarded():
-return discarded(_that);}
+case BridgeContinuationDisposition_Scheduled():
+return scheduled(_that);case BridgeContinuationDisposition_Effective():
+return effective(_that);case BridgeContinuationDisposition_NotExecuted():
+return notExecuted(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -100,13 +100,13 @@ return discarded(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContinuationOperationState_Pending value)?  pending,TResult? Function( BridgeContinuationOperationState_Consumed value)?  consumed,TResult? Function( BridgeContinuationOperationState_Discarded value)?  discarded,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeContinuationDisposition_Scheduled value)?  scheduled,TResult? Function( BridgeContinuationDisposition_Effective value)?  effective,TResult? Function( BridgeContinuationDisposition_NotExecuted value)?  notExecuted,}){
 final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending() when pending != null:
-return pending(_that);case BridgeContinuationOperationState_Consumed() when consumed != null:
-return consumed(_that);case BridgeContinuationOperationState_Discarded() when discarded != null:
-return discarded(_that);case _:
+case BridgeContinuationDisposition_Scheduled() when scheduled != null:
+return scheduled(_that);case BridgeContinuationDisposition_Effective() when effective != null:
+return effective(_that);case BridgeContinuationDisposition_NotExecuted() when notExecuted != null:
+return notExecuted(_that);case _:
   return null;
 
 }
@@ -123,12 +123,12 @@ return discarded(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  pending,TResult Function( String turnId)?  consumed,TResult Function()?  discarded,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  scheduled,TResult Function()?  effective,TResult Function( String reason)?  notExecuted,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending() when pending != null:
-return pending();case BridgeContinuationOperationState_Consumed() when consumed != null:
-return consumed(_that.turnId);case BridgeContinuationOperationState_Discarded() when discarded != null:
-return discarded();case _:
+case BridgeContinuationDisposition_Scheduled() when scheduled != null:
+return scheduled();case BridgeContinuationDisposition_Effective() when effective != null:
+return effective();case BridgeContinuationDisposition_NotExecuted() when notExecuted != null:
+return notExecuted(_that.reason);case _:
   return orElse();
 
 }
@@ -146,12 +146,12 @@ return discarded();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  pending,required TResult Function( String turnId)  consumed,required TResult Function()  discarded,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  scheduled,required TResult Function()  effective,required TResult Function( String reason)  notExecuted,}) {final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending():
-return pending();case BridgeContinuationOperationState_Consumed():
-return consumed(_that.turnId);case BridgeContinuationOperationState_Discarded():
-return discarded();}
+case BridgeContinuationDisposition_Scheduled():
+return scheduled();case BridgeContinuationDisposition_Effective():
+return effective();case BridgeContinuationDisposition_NotExecuted():
+return notExecuted(_that.reason);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -165,12 +165,12 @@ return discarded();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  pending,TResult? Function( String turnId)?  consumed,TResult? Function()?  discarded,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  scheduled,TResult? Function()?  effective,TResult? Function( String reason)?  notExecuted,}) {final _that = this;
 switch (_that) {
-case BridgeContinuationOperationState_Pending() when pending != null:
-return pending();case BridgeContinuationOperationState_Consumed() when consumed != null:
-return consumed(_that.turnId);case BridgeContinuationOperationState_Discarded() when discarded != null:
-return discarded();case _:
+case BridgeContinuationDisposition_Scheduled() when scheduled != null:
+return scheduled();case BridgeContinuationDisposition_Effective() when effective != null:
+return effective();case BridgeContinuationDisposition_NotExecuted() when notExecuted != null:
+return notExecuted(_that.reason);case _:
   return null;
 
 }
@@ -181,8 +181,8 @@ return discarded();case _:
 /// @nodoc
 
 
-class BridgeContinuationOperationState_Pending extends BridgeContinuationOperationState {
-  const BridgeContinuationOperationState_Pending(): super._();
+class BridgeContinuationDisposition_Scheduled extends BridgeContinuationDisposition {
+  const BridgeContinuationDisposition_Scheduled(): super._();
 
 
 
@@ -192,7 +192,7 @@ class BridgeContinuationOperationState_Pending extends BridgeContinuationOperati
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationOperationState_Pending);
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationDisposition_Scheduled);
 }
 
 
@@ -201,7 +201,7 @@ int get hashCode => runtimeType.hashCode;
 
 @override
 String toString() {
-    return 'BridgeContinuationOperationState.pending()';
+    return 'BridgeContinuationDisposition.scheduled()';
 }
 
 
@@ -213,45 +213,77 @@ String toString() {
 /// @nodoc
 
 
-class BridgeContinuationOperationState_Consumed extends BridgeContinuationOperationState {
-  const BridgeContinuationOperationState_Consumed({required this.turnId}): super._();
+class BridgeContinuationDisposition_Effective extends BridgeContinuationDisposition {
+  const BridgeContinuationDisposition_Effective(): super._();
 
 
- final  String turnId;
 
-/// Create a copy of BridgeContinuationOperationState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeContinuationOperationState_ConsumedCopyWith<BridgeContinuationOperationState_Consumed> get copyWith => _$BridgeContinuationOperationState_ConsumedCopyWithImpl<BridgeContinuationOperationState_Consumed>(this, _$identity);
+
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationOperationState_Consumed&&(identical(other.turnId, turnId) || other.turnId == turnId));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationDisposition_Effective);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeContinuationDisposition.effective()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeContinuationDisposition_NotExecuted extends BridgeContinuationDisposition {
+  const BridgeContinuationDisposition_NotExecuted({required this.reason}): super._();
+
+
+ final  String reason;
+
+/// Create a copy of BridgeContinuationDisposition
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeContinuationDisposition_NotExecutedCopyWith<BridgeContinuationDisposition_NotExecuted> get copyWith => _$BridgeContinuationDisposition_NotExecutedCopyWithImpl<BridgeContinuationDisposition_NotExecuted>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationDisposition_NotExecuted&&(identical(other.reason, reason) || other.reason == reason));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,turnId);
+    return Object.hash(runtimeType,reason);
 }
 
 @override
 String toString() {
-    return 'BridgeContinuationOperationState.consumed(turnId: $turnId)';
+    return 'BridgeContinuationDisposition.notExecuted(reason: $reason)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeContinuationOperationState_ConsumedCopyWith<$Res> implements $BridgeContinuationOperationStateCopyWith<$Res> {
-  factory $BridgeContinuationOperationState_ConsumedCopyWith(BridgeContinuationOperationState_Consumed value, $Res Function(BridgeContinuationOperationState_Consumed) _then) = _$BridgeContinuationOperationState_ConsumedCopyWithImpl;
+abstract mixin class $BridgeContinuationDisposition_NotExecutedCopyWith<$Res> implements $BridgeContinuationDispositionCopyWith<$Res> {
+  factory $BridgeContinuationDisposition_NotExecutedCopyWith(BridgeContinuationDisposition_NotExecuted value, $Res Function(BridgeContinuationDisposition_NotExecuted) _then) = _$BridgeContinuationDisposition_NotExecutedCopyWithImpl;
 @useResult
 $Res call({
- String turnId
+ String reason
 });
 
 
@@ -259,55 +291,23 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeContinuationOperationState_ConsumedCopyWithImpl<$Res>
-    implements $BridgeContinuationOperationState_ConsumedCopyWith<$Res> {
-  _$BridgeContinuationOperationState_ConsumedCopyWithImpl(this._self, this._then);
+class _$BridgeContinuationDisposition_NotExecutedCopyWithImpl<$Res>
+    implements $BridgeContinuationDisposition_NotExecutedCopyWith<$Res> {
+  _$BridgeContinuationDisposition_NotExecutedCopyWithImpl(this._self, this._then);
 
-  final BridgeContinuationOperationState_Consumed _self;
-  final $Res Function(BridgeContinuationOperationState_Consumed) _then;
+  final BridgeContinuationDisposition_NotExecuted _self;
+  final $Res Function(BridgeContinuationDisposition_NotExecuted) _then;
 
-/// Create a copy of BridgeContinuationOperationState
+/// Create a copy of BridgeContinuationDisposition
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? turnId = null,}) {
-  return _then(BridgeContinuationOperationState_Consumed(
-turnId: null == turnId ? _self.turnId : turnId // ignore: cast_nullable_to_non_nullable
+@pragma('vm:prefer-inline') $Res call({Object? reason = null,}) {
+  return _then(BridgeContinuationDisposition_NotExecuted(
+reason: null == reason ? _self.reason : reason // ignore: cast_nullable_to_non_nullable
 as String,
   ));
 }
 
 
 }
-
-/// @nodoc
-
-
-class BridgeContinuationOperationState_Discarded extends BridgeContinuationOperationState {
-  const BridgeContinuationOperationState_Discarded(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeContinuationOperationState_Discarded);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeContinuationOperationState.discarded()';
-}
-
-
-}
-
-
-
 
 // dart format on

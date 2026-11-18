@@ -17,14 +17,12 @@ enum ContinuationReason {
 
 /// 会话当前继续点的只读投影。
 ///
-/// 它只回答「这个会话还有哪些因中断未完成的工作」，不复制任务正文；`claimed` 区分
-/// 「可以继续」与「继续已受理、仍在准备或等待准入」。客户端不从轮次终态或最后一条
-/// 消息推断能否继续，也不在本地生成这个身份。
+/// 它只描述当前未消费的 token，不复制任务正文。受理进度通过原操作回执查询；
+/// 客户端不从轮次终态推断能否继续，也不在本地生成这个身份。
 final class ContinuationView {
   const ContinuationView({
     required this.id,
     required this.createdAt,
-    required this.claimed,
     this.sourceTurnId,
     this.reason,
   });
@@ -38,9 +36,6 @@ final class ContinuationView {
   final ContinuationReason? reason;
   final DateTime createdAt;
 
-  /// 本次继续意图已被认可（或已被另一次受理认领），不能再发起新的继续。
-  final bool claimed;
-
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -48,11 +43,10 @@ final class ContinuationView {
           id == other.id &&
           sourceTurnId == other.sourceTurnId &&
           reason == other.reason &&
-          createdAt == other.createdAt &&
-          claimed == other.claimed;
+          createdAt == other.createdAt;
 
   @override
-  int get hashCode => Object.hash(id, sourceTurnId, reason, createdAt, claimed);
+  int get hashCode => Object.hash(id, sourceTurnId, reason, createdAt);
 }
 
 class RuntimeCostView {

@@ -31,7 +31,6 @@ enum StudioFailureReason {
   continuationUnavailable,
 
   /// 目标继续点已被另一次受理认领。
-  continuationClaimed,
 
   /// 调用方冻结的继续点已经不是当前继续点。
   staleContinuation,
@@ -68,7 +67,6 @@ enum StudioFailureReason {
     'childThreadRequiresParentScheduling' =>
       StudioFailureReason.childThreadRequiresParentScheduling,
     'continuationUnavailable' => StudioFailureReason.continuationUnavailable,
-    'continuationClaimed' => StudioFailureReason.continuationClaimed,
     'staleContinuation' => StudioFailureReason.staleContinuation,
     'staleExecution' => StudioFailureReason.staleExecution,
     'executionInProgress' => StudioFailureReason.executionInProgress,

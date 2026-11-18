@@ -31,7 +31,6 @@ void main() {
         sourceTurnId: 'turn',
         reason: ContinuationReason.userStop,
         createdAt: DateTime.utc(2026),
-        claimed: false,
       );
       const running = AgentExecutionView(
         id: 'exec',

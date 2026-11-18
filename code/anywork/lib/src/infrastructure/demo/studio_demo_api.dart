@@ -5200,6 +5200,16 @@ class DemoStudioTransport extends StudioTransport
     }
     final turnId = execution.turnId;
     final stopped = turnId != null && _interruptDemoTurn(threadId, turnId);
+    if (stopped) {
+      for (final accepted in _demoContinuations.values) {
+        if (accepted.threadId == threadId &&
+            accepted.turnId == turnId &&
+            accepted.disposition == ContinuationDisposition.scheduled) {
+          accepted.disposition = ContinuationDisposition.notExecuted;
+          accepted.notExecutedReason = 'stopped';
+        }
+      }
+    }
     return StopThreadCommandReply(
       threadId: threadId,
       executionId: executionId,
@@ -5296,15 +5306,6 @@ class DemoStudioTransport extends StudioTransport
         reason: StudioFailureReason.continuationUnavailable,
       );
     }
-    if (point.claimed) {
-      throw const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'The continuation point is already claimed',
-        retryable: false,
-        correlationId: 'demo-continue-claimed',
-        reason: StudioFailureReason.continuationClaimed,
-      );
-    }
     if (point.id != continuationId) {
       throw const StudioFailure(
         code: StudioFailureCode.conflict,
@@ -5323,14 +5324,7 @@ class DemoStudioTransport extends StudioTransport
         reason: StudioFailureReason.staleContinuation,
       );
     }
-    // The claim is published as a canonical fact before the Turn exists.
-    _demoContinuationPoints[threadId] = ContinuationView(
-      id: point.id,
-      sourceTurnId: point.sourceTurnId,
-      reason: point.reason,
-      createdAt: point.createdAt,
-      claimed: true,
-    );
+    _demoContinuationPoints.remove(threadId);
     final generation = _promptGenerations.update(
       threadId,
       (value) => value + 1,
@@ -5351,6 +5345,7 @@ class DemoStudioTransport extends StudioTransport
       inputId: operationId.value,
       continuationId: continuationId,
       expectedModelRouteRevision: expectedModelRouteRevision,
+      turnId: turnId,
       acceptedSequence: workspace.revision + 1,
       receipt: receipt,
     );
@@ -5390,10 +5385,11 @@ class DemoStudioTransport extends StudioTransport
         trimmedPrompt: '继续未完成的任务',
         generation: generation,
         startedAt: now,
-        onAdmitted: () => accepted.turnId = turnId,
+        onAdmitted: () =>
+            accepted.disposition = ContinuationDisposition.effective,
       ),
     );
-    // The control input was consumed by the new Turn, so the point is gone.
+    // Acceptance consumed the one-shot token.
     _demoContinuationPoints.remove(threadId);
     final current = _workspaces[threadId];
     if (current != null && current.runtime.continuation != null) {
@@ -5419,25 +5415,46 @@ class DemoStudioTransport extends StudioTransport
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   ) async {
     final accepted = _demoContinuations[operationId];
     if (accepted == null || accepted.threadId != threadId) {
+      if (_demoContinuationPoints[threadId]?.id != expectedContinuationToken) {
+        throw const StudioFailure(
+          code: StudioFailureCode.conflict,
+          message: 'Stale continuation token',
+          retryable: false,
+          correlationId: 'demo-stale-continuation',
+          reason: StudioFailureReason.staleContinuation,
+        );
+      }
+      return ContinuationOperationView(
+        threadId: threadId,
+        operationId: operationId,
+        expectedContinuationToken: expectedContinuationToken,
+        state: ContinuationOperationState.notAccepted,
+      );
+    }
+    if (accepted.continuationId != expectedContinuationToken) {
       throw const StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'No accepted continuation operation carries this identity',
+        code: StudioFailureCode.conflict,
+        message: 'Stale continuation token',
         retryable: false,
-        correlationId: 'demo-continuation-not-found',
+        correlationId: 'demo-stale-continuation',
+        reason: StudioFailureReason.staleContinuation,
       );
     }
     return ContinuationOperationView(
       threadId: accepted.threadId,
       operationId: operationId,
-      inputId: accepted.inputId,
-      continuationId: accepted.continuationId,
-      acceptedSequence: accepted.acceptedSequence,
-      state: accepted.turnId == null
-          ? const PendingContinuation()
-          : ConsumedContinuation(accepted.turnId!),
+      expectedContinuationToken: accepted.continuationId,
+      state: ContinuationOperationState.known,
+      acceptanceEpoch: 'demo',
+      executionId: _demoExecutionId(accepted.turnId),
+      turnId: accepted.turnId,
+      acceptedRevision: accepted.acceptedSequence,
+      disposition: accepted.disposition,
+      notExecutedReason: accepted.notExecutedReason,
       receipt: accepted.receipt,
     );
   }
@@ -5561,7 +5578,6 @@ class DemoStudioTransport extends StudioTransport
       sourceTurnId: turnId,
       reason: ContinuationReason.userStop,
       createdAt: DateTime.now(),
-      claimed: false,
     );
     _promptGenerations.update(
       threadId,
@@ -7153,6 +7169,7 @@ final class _DemoContinuation {
     required this.inputId,
     required this.continuationId,
     required this.expectedModelRouteRevision,
+    required this.turnId,
     required this.acceptedSequence,
     required this.receipt,
   });
@@ -7166,8 +7183,9 @@ final class _DemoContinuation {
   final int acceptedSequence;
   final StudioCommandReceipt receipt;
 
-  /// 控制输入被实际轮次消费后的接续轮次；准入即确定，不等待整轮完成。
-  String? turnId;
+  final String turnId;
+  ContinuationDisposition disposition = ContinuationDisposition.scheduled;
+  String? notExecutedReason;
 
   /// 同一个操作身份是否描述同一份请求事实。
   bool matches(String thread, String continuation, int routeRevision) =>

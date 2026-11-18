@@ -2,7 +2,7 @@
 use super::*;
 
 impl Owner {
-    pub(super) async fn begin_nested(
+    pub(super) fn begin_nested(
         &mut self,
         caller: String,
         authority: crate::tool::opaque::ExecutionAuthority,
@@ -40,10 +40,11 @@ impl Owner {
             .checked_add(1)
             .ok_or(ThreadError::RevisionExhausted)?;
         let id = format!("{}:nested:{}", parent.call_id, self.nested_sequence);
-        self.await_storage_admission(&cancellation).await?;
+        if !self.storage_admission_ready() {
+            return Err(ThreadError::StoragePressure);
+        }
         let operation = super::tool_execution::tool_output_operation(&id);
-        self.reserve_operation_output(&operation, &cancellation)
-            .await?;
+        self.try_reserve_operation_output(&operation)?;
         if !authority.remains_authorized(&self.tools)
             || cancellation.is_cancelled()
             || !self

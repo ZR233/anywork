@@ -154,6 +154,8 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   final List<StreamController<ThreadStreamFrame>> threadBindings = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
+  StudioFailure? continuationReadFailure;
+  final Map<String, ContinuationOperationView> continuationReplies = {};
   int continuationReadCalls = 0;
   List<ChildInteractionSummary> childInteractions = const [];
   int childInteractionReads = 0;
@@ -302,15 +304,17 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   ) async {
     continuationReadCalls += 1;
-    final reply = continuationReadReply;
+    if (continuationReadFailure case final failure?) throw failure;
+    final reply = continuationReplies[operationId] ?? continuationReadReply;
     if (reply == null) {
-      throw const StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'no accepted continuation carries this identity',
-        retryable: false,
-        correlationId: 'stale-continuation-read',
+      return ContinuationOperationView(
+        threadId: threadId,
+        operationId: operationId,
+        expectedContinuationToken: expectedContinuationToken,
+        state: ContinuationOperationState.notAccepted,
       );
     }
     continuationReads.add(reply);
@@ -759,13 +763,11 @@ ContinuationView _continuation({
   String id = 'continuation-1',
   String? sourceTurnId = 'turn',
   ContinuationReason? reason = ContinuationReason.userStop,
-  bool claimed = false,
 }) => ContinuationView(
   id: id,
   sourceTurnId: sourceTurnId,
   reason: reason,
   createdAt: DateTime.utc(2026),
-  claimed: claimed,
 );
 
 Future<void> _applyOwnerUpdate(
@@ -4106,6 +4108,29 @@ void main() {
             turnId: 'turn-continued',
           ),
         );
+        ContinuationOperationView ownerView(
+          OperationHandle handle,
+          String token,
+          ContinuationDisposition disposition,
+        ) => ContinuationOperationView(
+          threadId: 'thread',
+          operationId: handle.id.value,
+          expectedContinuationToken: token,
+          state: ContinuationOperationState.known,
+          acceptanceEpoch: 'owner',
+          executionId: 'execution-continued',
+          turnId: 'turn-continued',
+          acceptedRevision: 4,
+          disposition: disposition,
+          receipt: _identityReceipt(handle.id),
+        );
+        transport.continuationReplies[operation.id.value] = ownerView(
+          operation,
+          'continuation-1',
+          framesFirst
+              ? ContinuationDisposition.effective
+              : ContinuationDisposition.scheduled,
+        );
         if (framesFirst) {
           await client.conversations
               .session('thread')
@@ -4191,12 +4216,26 @@ void main() {
           );
           expect(newerOperation!.state.value.observed, isFalse);
         }
+        transport.continuationReplies[operation.id.value] = ownerView(
+          operation,
+          'continuation-1',
+          ContinuationDisposition.effective,
+        );
+        if (newerOperation != null)
+          transport.continuationReplies[newerOperation!.id.value] = ownerView(
+            newerOperation!,
+            'continuation-2',
+            ContinuationDisposition.effective,
+          );
         // The canonical new Turn is what proves the continuation became effective.
         if (!framesFirst) {
           await client.conversations
               .session('thread')
               .deliverWorkspace(newTurn);
         }
+        await operation.state.waitFor((state) => state.observed);
+        if (newerOperation != null)
+          await newerOperation!.state.waitFor((state) => state.observed);
         // retainUntilSettled：带回执的 syncFailed 同样保留原 identity 观察，
         // canonical Turn 到达后观察完成并生效，无例外。
         expect(operation.state.value.observed, isTrue);
@@ -4220,14 +4259,20 @@ void main() {
           reason: 'Exactly one request per distinct continuation intent',
         );
 
+        transport.continuationReplies.remove(operation.id.value);
         // A lost receipt is reconciled by the original identity, never resent.
         transport.continuationReadReply = ContinuationOperationView(
           threadId: 'thread',
           operationId: operation.id.value,
-          inputId: operation.id.value,
-          continuationId: 'continuation-1',
-          acceptedSequence: 4,
-          state: ConsumedContinuation('turn-continued'),
+
+          expectedContinuationToken: 'continuation-1',
+          acceptedRevision: 4,
+          state: ContinuationOperationState.known,
+          acceptanceEpoch: 'owner',
+          executionId: 'execution-continued',
+          turnId: 'turn-continued',
+          disposition: ContinuationDisposition.effective,
+
           receipt: _identityReceipt(operation.id),
         );
         final reread = await client.threadCommands.continueThread(
@@ -4236,12 +4281,23 @@ void main() {
           expectedModelRouteRevision: 1,
         );
         expect(reread.inputId, operation.id.value);
-        expect(transport.continuationReads, hasLength(1));
+        expect(
+          transport.continuationReads,
+          hasLength(
+            framesFirst
+                ? 2
+                : reenter
+                ? 4
+                : 3,
+          ),
+        );
         final view = await client.threadCommands.readContinuationOperation(
           'thread',
           operation.id.value,
+          'continuation-1',
         );
-        expect(view.state, const ConsumedContinuation('turn-continued'));
+        expect(view.disposition, ContinuationDisposition.effective);
+        expect(view.acceptanceEpoch, 'owner');
         expect(
           client.mutations.operations.where(
             (value) => value.target == 'continue:thread',
@@ -4326,10 +4382,15 @@ void main() {
     transport.continuationReadReply = ContinuationOperationView(
       threadId: 'thread',
       operationId: operation.id.value,
-      inputId: operation.id.value,
-      continuationId: 'continuation-1',
-      acceptedSequence: 4,
-      state: ConsumedContinuation('turn-continued'),
+
+      expectedContinuationToken: 'continuation-1',
+      acceptedRevision: 4,
+      state: ContinuationOperationState.known,
+      acceptanceEpoch: 'owner',
+      executionId: 'execution-continued',
+      turnId: 'turn-continued',
+      disposition: ContinuationDisposition.effective,
+
       receipt: _identityReceipt(operation.id),
     );
     final reread = await client.threadCommands.continueThread(
@@ -4339,13 +4400,15 @@ void main() {
     );
     expect(reread.inputId, operation.id.value);
     expect(transport.continueCalls, 1);
-    expect(transport.continuationReadCalls, 1);
+    expect(transport.continuationReadCalls, 3);
     expect(transport.continuationReads, hasLength(1));
     final view = await client.threadCommands.readContinuationOperation(
       'thread',
       operation.id.value,
+      'continuation-1',
     );
-    expect(view.state, const ConsumedContinuation('turn-continued'));
+    expect(view.disposition, ContinuationDisposition.effective);
+    expect(view.acceptanceEpoch, 'owner');
     expect(
       client.mutations.operations.where(
         (value) => value.target == 'continue:thread',
@@ -4355,44 +4418,311 @@ void main() {
     );
   });
 
-  test(
-    'missing current continuation keeps the outcome unknown without resending',
-    () async {
-      final transport = _Transport();
-      final client = await _client(transport);
-      final entered = transport.continues.stream.first;
-      final first = client.threadCommands.continueThread(
-        'thread',
-        _continuation(),
-        expectedModelRouteRevision: 1,
-      );
-      final call = await entered;
-      final operation = client.mutations.latest('continue:thread')!;
-      call.reply.completeError(StateError('continue response was lost'));
-      await expectLater(first, throwsA(isA<StateError>()));
-      transport.continuationReadReply = null;
-      for (final route in [9, 10]) {
-        await expectLater(
-          client.threadCommands.continueThread(
-            'thread',
-            _continuation(),
-            expectedModelRouteRevision: route,
-          ),
-          throwsA(
-            isA<StudioFailure>().having(
-              (error) => error.code,
-              'code',
-              StudioFailureCode.notFound,
-            ),
+  test('a lost continue receipt resends the frozen input under the original identity', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final entered = transport.continues.stream.first;
+    final first = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    call.reply.completeError(StateError('continue response was lost'));
+    await expectLater(first, throwsA(isA<StateError>()));
+    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+
+    // 后续点击传不同 route：仍按原身份回查；回查 NotAccepted 证明从未受理后，
+    // 以冻结的原 route CAS 与同一 OperationId 再发。
+    transport.continuationReadReply = null;
+    final second = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 9,
+    );
+    final resent = await transport.continues.stream.first;
+    expect(resent.operationId, call.operationId);
+    expect(resent.expectedModelRouteRevision, 1);
+    expect(resent.continuationId, call.continuationId);
+    expect(transport.continuationReadCalls, 1);
+    resent.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: resent.operationId.value,
+        continuationId: resent.continuationId,
+        cursor: 6,
+        receipt: _identityReceipt(resent.operationId),
+      ),
+    );
+    final reply = await second;
+    expect(reply.inputId, resent.operationId.value);
+    expect(transport.continueCalls, 2);
+    expect(
+      client.mutations.operations.where(
+        (value) => value.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: '原身份再发不分配第二个操作',
+    );
+    expect(operation.state.value.receipt, isNotNull);
+    expect(operation.state.value.failurePhase, isNull);
+  });
+
+  for (final outcome in ['stale', 'notExecuted']) {
+    test(
+      'original Resume settles $outcome feedback without a resend or fake input',
+      () async {
+        final transport = _Transport();
+        final client = await _client(transport);
+        final entered = transport.continues.stream.first;
+        final continuing = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        final call = await entered;
+        call.reply.complete(
+          ContinueThreadCommandReply(
+            threadId: 'thread',
+            inputId: call.operationId.value,
+            continuationId: call.continuationId,
+            cursor: 4,
+            receipt: _identityReceipt(call.operationId),
           ),
         );
-      }
-      expect(transport.continueCalls, 1);
-      expect(transport.continuationReadCalls, 2);
-      expect(operation.state.value.phase, OperationPhase.unknownOutcome);
-      expect(client.mutations.latest('continue:thread')!.id, operation.id);
-    },
-  );
+        await continuing;
+        final operation = client.mutations.lookup(call.operationId)!;
+        if (outcome == 'stale') {
+          transport.continuationReadFailure = const StudioFailure(
+            code: StudioFailureCode.conflict,
+            message: 'The original token expired',
+            retryable: false,
+            correlationId: 'stale-owner',
+            reason: StudioFailureReason.staleContinuation,
+          );
+          await expectLater(
+            client.threadCommands.continueThread(
+              'thread',
+              _continuation(),
+              expectedModelRouteRevision: 1,
+            ),
+            throwsA(same(transport.continuationReadFailure)),
+          );
+        } else {
+          transport.continuationReadReply = ContinuationOperationView(
+            threadId: 'thread',
+            operationId: call.operationId.value,
+            expectedContinuationToken: call.continuationId,
+            state: ContinuationOperationState.known,
+            acceptanceEpoch: 'owner',
+            executionId: 'original-execution',
+            turnId: 'original-turn',
+            acceptedRevision: 4,
+            disposition: ContinuationDisposition.notExecuted,
+            notExecutedReason: 'RestoredPaused',
+            receipt: _identityReceipt(call.operationId),
+          );
+          await client.threadCommands.continueThread(
+            'thread',
+            _continuation(),
+            expectedModelRouteRevision: 1,
+          );
+        }
+        expect(operation.state.value.failurePhase, OperationPhase.rejected);
+        expect(operation.state.value.observed, isFalse);
+        expect(transport.continueCalls, 1);
+        expect(
+          client.mutations.operations.where(
+            (operation) => operation.target == 'continue:thread',
+          ),
+          hasLength(1),
+        );
+      },
+    );
+  }
+
+  test('a determined rejection after NotAccepted resends nothing and keeps the identity', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final entered = transport.continues.stream.first;
+    final first = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    final operation = client.mutations.latest('continue:thread')!;
+    // A typed conflict from the transport is a determined rejection: the
+    // intent keeps its frozen identity but never dispatches again.
+    final conflict = StudioFailure(
+      code: StudioFailureCode.conflict,
+      message: 'The continuation token is no longer current',
+      retryable: false,
+      correlationId: 'client-test-conflict',
+      reason: StudioFailureReason.staleContinuation,
+    );
+    call.reply.completeError(conflict);
+    await expectLater(first, throwsA(same(conflict)));
+    expect(operation.state.value.failurePhase, OperationPhase.rejected);
+
+    transport.continuationReadReply = null;
+    final blocked = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    await expectLater(blocked, throwsA(same(conflict)));
+    expect(transport.continuationReadCalls, 1);
+    expect(transport.continueCalls, 1);
+    expect(operation.state.value.failurePhase, OperationPhase.rejected);
+    expect(
+      client.mutations.operations.where(
+        (value) => value.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'A determined rejection never re-begins or re-sends',
+    );
+  });
+
+  for (final blocked in ['execution', 'closed', 'storage']) {
+    test(
+      'a resend blocked after NotAccepted keeps the unknown identity ($blocked)',
+      () async {
+        final transport = _Transport();
+        final client = await _client(transport);
+        final entered = transport.continues.stream.first;
+        final first = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        final call = await entered;
+        final operation = client.mutations.latest('continue:thread')!;
+        call.reply.completeError(StateError('response lost while blocked'));
+        await expectLater(first, throwsA(isA<StateError>()));
+        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+        transport.continuationReadReply = null;
+
+        if (blocked == 'execution') {
+          client.recovery.apply(
+            RecoveryStateSnapshot(
+              revision: 2,
+              values: const [
+                StudioRecoveryIssue(
+                  id: 'resend-execution-paused',
+                  scope: RecoveryIssueScope.thread,
+                  category: RecoveryIssueCategory.storage,
+                  impact: RecoveryIssueImpact.executionBlocked,
+                  availableActions: [],
+                  workspaceId: 'project',
+                  threadId: 'thread',
+                  detail: 'Execution is paused before the resend',
+                ),
+              ],
+            ),
+          );
+        } else if (blocked == 'closed') {
+          transport.emitThread(
+            _row().copyWith(
+              backend: const NativeAgentBackendView(
+                config: NativeAgentConfigView(),
+                status: ThreadStatusView.closing,
+              ),
+            ),
+            'thread',
+            revision: 2,
+          );
+          await Future<void>.delayed(Duration.zero);
+        } else {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(
+                _workspace(
+                  revision: 2,
+                  storage: const ThreadStorageStateView(
+                    execution: ThreadStorageExecution.paused,
+                    resumeRequired: true,
+                    lastError: 'writer paused before the resend',
+                  ),
+                ),
+              );
+        }
+
+        // 回查仍允许（只读），但再发被 guard 阻断：原 typed 错误返回调用方，
+        // 意图、原 unknown 操作与观察责任保持不变，零新发送。
+        final blockedClick = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 1,
+        );
+        Object? failure;
+        try {
+          await blockedClick;
+        } on Object catch (error) {
+          failure = error;
+        }
+        expect(failure, isA<StudioFailure>());
+        expect(transport.continuationReadCalls, 1);
+        expect(transport.continueCalls, 1);
+        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+        // The blocked resend leaves the original unknown disposition intact:
+        // phase comes from failurePhase, so both must stay unknownOutcome.
+        expect(
+          operation.state.value.failurePhase,
+          OperationPhase.unknownOutcome,
+        );
+        expect(
+          client.mutations.operations.where(
+            (value) => value.target == 'continue:thread',
+          ),
+          hasLength(1),
+        );
+
+        if (blocked == 'execution') {
+          client.recovery.apply(
+            RecoveryStateSnapshot(revision: 3, values: const []),
+          );
+        } else if (blocked == 'closed') {
+          transport.emitThread(_row(), 'thread', revision: 3);
+          await Future<void>.delayed(Duration.zero);
+        } else {
+          await client.conversations
+              .session('thread')
+              .deliverWorkspace(_workspace(revision: 3));
+        }
+        // 解除后下一次点击仍先回查原身份；再次 NotAccepted 才以同 ID 再发。
+        final retry = client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: 4,
+        );
+        final resent = await transport.continues.stream.first;
+        expect(resent.operationId, call.operationId);
+        expect(
+          resent.expectedModelRouteRevision,
+          1,
+          reason: '冻结的原 route CAS 不被后续点击覆盖',
+        );
+        expect(
+          transport.continuationReadCalls,
+          2,
+          reason: '不缓存 NotAccepted：每次点击都先回查',
+        );
+        resent.reply.complete(
+          ContinueThreadCommandReply(
+            threadId: 'thread',
+            inputId: resent.operationId.value,
+            continuationId: resent.continuationId,
+            cursor: 7,
+            receipt: _identityReceipt(resent.operationId),
+          ),
+        );
+        await retry;
+        expect(transport.continueCalls, 2);
+      },
+    );
+  }
 
   test('continuation reentry shares one future and close releases the retained observer', () async {
     final transport = _Transport();
@@ -4507,6 +4837,7 @@ void main() {
         client.threadCommands.readContinuationOperation(
           'thread',
           call.operationId.value,
+          call.continuationId,
         ),
         throwsA(
           isA<StudioFailure>().having(
@@ -4516,10 +4847,74 @@ void main() {
           ),
         ),
       );
-      expect(transport.continuationReadCalls, 0);
+      expect(
+        transport.continuationReadCalls,
+        1,
+        reason:
+            'The blocked reads add no lookup after initial receipt observation',
+      );
       expect(transport.continueCalls, 1);
     },
   );
+
+  test('a not-found continue identity cannot send a new request through storage pause', () async {
+    final transport = _Transport();
+    final client = await _client(transport);
+    final entered = transport.continues.stream.first;
+    final continuing = client.threadCommands.continueThread(
+      'thread',
+      _continuation(),
+      expectedModelRouteRevision: 1,
+    );
+    final call = await entered;
+    call.reply.complete(
+      ContinueThreadCommandReply(
+        threadId: 'thread',
+        inputId: call.operationId.value,
+        continuationId: call.continuationId,
+        cursor: 4,
+        receipt: _identityReceipt(call.operationId),
+      ),
+    );
+    await continuing;
+    expect(transport.continueCalls, 1);
+
+    await client.conversations
+        .session('thread')
+        .deliverWorkspace(
+          _workspace(
+            revision: 2,
+            storage: const ThreadStorageStateView(
+              execution: ThreadStorageExecution.paused,
+              resumeRequired: true,
+              lastError: 'writer recovery still requires an explicit continue',
+            ),
+          ),
+        );
+    await expectLater(
+      client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      ),
+      throwsA(
+        isA<StudioFailure>().having(
+          (failure) => failure.code,
+          'code',
+          StudioFailureCode.storage,
+        ),
+      ),
+    );
+    expect(transport.continuationReadCalls, 3);
+    expect(transport.continueCalls, 1);
+    expect(
+      client.mutations.operations.where(
+        (operation) => operation.target == 'continue:thread',
+      ),
+      hasLength(1),
+      reason: 'A missing old operation does not allocate a new blocked request',
+    );
+  });
 
   test('a storage gate discovered while continue waits in the lane rejects the unsent identity', () async {
     final transport = _Transport();
@@ -4587,7 +4982,12 @@ void main() {
     );
     await retry;
     expect(transport.continueCalls, 1);
-    expect(transport.continuationReadCalls, 0);
+    expect(
+      transport.continuationReadCalls,
+      1,
+      reason:
+          'Only the successfully sent retry starts owner receipt observation',
+    );
   });
 
   test('a post-transport storage failure remains unknown and re-reads the original identity', () async {
@@ -4645,10 +5045,15 @@ void main() {
     transport.continuationReadReply = ContinuationOperationView(
       threadId: 'thread',
       operationId: operation.id.value,
-      inputId: operation.id.value,
-      continuationId: call.continuationId,
-      acceptedSequence: 5,
-      state: const ConsumedContinuation('continued-turn'),
+
+      expectedContinuationToken: call.continuationId,
+      acceptedRevision: 5,
+      state: ContinuationOperationState.known,
+      acceptanceEpoch: 'owner',
+      executionId: 'execution-continued',
+      turnId: 'continued-turn',
+      disposition: ContinuationDisposition.effective,
+
       receipt: _identityReceipt(operation.id),
     );
     final reconciled = await client.threadCommands.continueThread(
@@ -4669,7 +5074,7 @@ void main() {
     );
   });
 
-  test('the canonical continuation projection feeds continue and a claimed point sends nothing', () async {
+  test('the canonical continuation projection feeds continue and receipt observation consumes it', () async {
     final transport = _Transport();
     final client = await _client(transport);
     final published = _continuation();
@@ -4699,6 +5104,19 @@ void main() {
       ),
     );
     await continuing;
+    transport.continuationReplies[call.operationId.value] =
+        ContinuationOperationView(
+          threadId: 'thread',
+          operationId: call.operationId.value,
+          expectedContinuationToken: published.id,
+          state: ContinuationOperationState.known,
+          acceptanceEpoch: 'owner',
+          executionId: 'execution-continued',
+          turnId: 'turn-continued',
+          acceptedRevision: 4,
+          disposition: ContinuationDisposition.effective,
+          receipt: _identityReceipt(call.operationId),
+        );
     // The canonical new Turn proves the accepted continuation took effect.
     await client.conversations
         .session('thread')
@@ -4710,47 +5128,21 @@ void main() {
               id: 'execution-continued',
               turnId: 'turn-continued',
             ),
-            continuation: _continuation(claimed: true),
+            continuation: null,
           ),
         );
+    await client.mutations
+        .lookup(call.operationId)!
+        .state
+        .waitFor((state) => state.observed);
     expect(
       client.mutations.lookup(call.operationId)!.state.value.observed,
       isTrue,
     );
-    // A point another acceptance already claimed never dispatches a request.
-    final claimed = _continuation(id: 'continuation-2', claimed: true);
+    final fresh = _continuation(id: 'continuation-2');
     await client.conversations
         .session('thread')
-        .deliverWorkspace(
-          _workspace(
-            revision: 3,
-            activeTurn: _turn(turnId: 'turn-continued'),
-            execution: _execution(
-              id: 'execution-continued',
-              turnId: 'turn-continued',
-            ),
-            continuation: claimed,
-          ),
-        );
-    await expectLater(
-      client.threadCommands.continueThread(
-        'thread',
-        claimed,
-        expectedModelRouteRevision: 1,
-      ),
-      throwsA(
-        isA<StudioFailure>().having(
-          (error) => error.reason,
-          'reason',
-          StudioFailureReason.continuationClaimed,
-        ),
-      ),
-    );
-    expect(
-      transport.continueCalls,
-      1,
-      reason: 'A claimed continuation sends nothing',
-    );
+        .deliverWorkspace(_workspace(revision: 3, continuation: fresh));
     // An older increment cannot replace the newer continuation projection.
     final session = client.conversations.session('thread');
     await session.deliverNotification(
@@ -4767,7 +5159,7 @@ void main() {
     );
     expect(
       client.threadCommands.continuation('thread')!.id,
-      claimed.id,
+      fresh.id,
       reason: 'A lowered frame revision never rewrites the projection',
     );
     // The consumed Turn clears the point: nothing local is offered afterwards.
@@ -4787,7 +5179,11 @@ void main() {
     expect(client.threadCommands.continuation('thread'), isNull);
     // Nothing derived locally: the point only comes from the canonical snapshot.
     expect(client.threadCommands.continuation('thread'), isNull);
-    expect(transport.continuationReads, isEmpty);
+    expect(
+      transport.continuationReads,
+      hasLength(1),
+      reason: 'Only the accepted original operation was observed',
+    );
   });
 
   test('continue is rejected for a child Thread before any request', () async {

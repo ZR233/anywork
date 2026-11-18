@@ -58,8 +58,7 @@ pub enum AgentExecutionPhase {
 /// 该会话当前仍然欠着的继续点；`None` 表示没有可继续的工作。
 ///
 /// 它是执行事实的投影，不是客户端或本地可推导的资格：第一次点击「继续」所需的
-/// `id` 只能来自这里，不能被猜出或本地生成。`claimed` 说明这个点是否已被某个操作认领，
-/// 客户端据此区分「可以继续」与「继续已受理、正在准备」。
+/// `id` 只能来自这里，不能被猜出或本地生成。受理时消费该 token；操作进度通过原回执查询。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinuationView {
@@ -72,8 +71,6 @@ pub struct ContinuationView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<ContinuationReason>,
     created_at: i64,
-    /// 是否已有输入或消息认领了该点；认领不等于已生效。
-    claimed: bool,
 }
 
 impl ContinuationView {
@@ -82,14 +79,12 @@ impl ContinuationView {
         source_turn_id: Option<String>,
         reason: Option<ContinuationReason>,
         created_at: i64,
-        claimed: bool,
     ) -> Self {
         Self {
             id: id.into(),
             source_turn_id,
             reason,
             created_at,
-            claimed,
         }
     }
 
@@ -107,10 +102,6 @@ impl ContinuationView {
 
     pub fn created_at(&self) -> i64 {
         self.created_at
-    }
-
-    pub fn claimed(&self) -> bool {
-        self.claimed
     }
 }
 

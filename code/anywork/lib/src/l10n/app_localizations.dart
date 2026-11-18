@@ -10713,12 +10713,6 @@ abstract class AppLocalizations {
   /// **'There is no interrupted work left to continue.'**
   String get composerFailureContinuationUnavailable;
 
-  /// No description provided for @composerFailureContinuationClaimed.
-  ///
-  /// In en, this message translates to:
-  /// **'The continuation was already accepted and is being prepared.'**
-  String get composerFailureContinuationClaimed;
-
   /// No description provided for @composerFailureStaleContinuation.
   ///
   /// In en, this message translates to:

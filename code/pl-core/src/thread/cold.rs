@@ -428,7 +428,8 @@ pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
     /// Optional notification for a change in durable progress or fault state.
     ///
     /// A Thread waits for this signal at a storage safety point while still servicing its
-    /// mailbox. Backends without a notification are polled at a bounded interval.
+    /// control and producer channels. Backends which can regain capacity must notify the owner;
+    /// there is no periodic budget polling.
     fn subscribe_pressure(&self, _thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
@@ -714,162 +715,46 @@ pub enum StorageExecutionPhase {
 
 impl Owner {
     /// Wait at an execution safety point without failing the active Turn or starving control.
-    pub(super) async fn await_storage_admission(
-        &mut self,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), ThreadError> {
-        let mut updates = self.subscribe_pressure();
-        loop {
-            self.admit_cold();
-            self.refresh_storage_pressure();
-            if self.cold_error.is_some() {
-                // A failed save is not pressure: new model/tool work stops here until an explicit
-                // resume. Only the caller that recovered (and verified generation and watermarks)
-                // may release it, so recovery never silently continues execution on its own.
-                self.state.persistence.resume_required = true;
-            }
-            // The gate covers the byte threshold and effects still owned here, not `pressure_paused`:
-            // the latter also carries the
-            // transient "an in-flight operation could not reserve its output" backpressure, and that
-            // is resolved by the reservation attempt itself. Gating the safety point on it would
-            // wait for a fact only the code after this gate can clear.
-            let healthy = !self.threshold_paused
-                && (self.cold.is_none() || self.pending_effects.is_empty())
-                && self.cold_error.is_none();
-            if healthy && !self.state.persistence.resume_required {
-                if self.state.persistence.execution_phase != StorageExecutionPhase::Running {
-                    self.state.persistence.execution_phase = StorageExecutionPhase::Running;
-                    self.publish_snapshot();
-                }
-                self.note_execution_phase(self.execution_progress_phase());
-                return Ok(());
-            }
-            if self.state.persistence.execution_phase != StorageExecutionPhase::PausedForStorage {
-                self.state.persistence.execution_phase = StorageExecutionPhase::PausingForStorage;
-                self.publish_snapshot();
-                self.state.persistence.execution_phase = StorageExecutionPhase::PausedForStorage;
-                self.publish_snapshot();
-                // A wait for storage is a preparation phase like any other: stopping it is what the
-                // caller asked for, and the execution stays visible while it cannot proceed.
-                self.note_execution_phase(ExecutionPhase::AwaitingStorage);
-            }
-            let cancelled = self
-                .wait_for_storage_change(&mut updates, cancellation)
-                .await;
-            if cancelled || self.interrupt.is_closing() {
-                return Err(ThreadError::Cancelled);
-            }
+    pub(super) fn pause_for_output_capacity(&mut self) {
+        self.output_backpressure = true;
+        self.state.persistence.pressure_paused = true;
+        self.state.persistence.execution_phase = StorageExecutionPhase::PausedForStorage;
+        self.note_execution_phase(ExecutionPhase::AwaitingStorage);
+        self.publish_snapshot();
+    }
+
+    pub(super) fn output_capacity_admitted(&mut self) {
+        self.output_backpressure = false;
+        self.refresh_storage_pressure();
+        if let Some(turn_id) = self
+            .state
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.turn_id.clone())
+        {
+            self.enter_running_execution(&turn_id);
         }
     }
 
-    /// Waits for a storage wake-up while the owner continues servicing control and member IO.
-    async fn wait_for_storage_change(
-        &mut self,
-        updates: &mut Option<tokio::sync::watch::Receiver<()>>,
-        cancellation: &CancellationToken,
-    ) -> bool {
-        let mut closed = false;
-        let cancelled = self
-            .await_with_mailbox(async {
-                tokio::select! {
-                    () = cancellation.cancelled() => true,
-                    available = async {
-                        match updates.as_mut() {
-                            Some(update) => update.changed().await.is_ok(),
-                            None => std::future::pending::<bool>().await,
-                        }
-                    } => {
-                        if !available {
-                            *updates = None;
-                            closed = true;
-                        }
-                        false
-                    },
-                    () = tokio::time::sleep(std::time::Duration::from_secs(1)) => false,
-                }
-            })
-            .await;
-        if closed {
-            self.pressure_watch_closed = true;
+    pub(super) fn storage_admission_ready(&mut self) -> bool {
+        self.admit_cold();
+        self.refresh_storage_pressure();
+        if self.cold_error.is_some() {
+            self.state.persistence.resume_required = true;
         }
-        cancelled
-    }
-
-    /// Waits for the fixed durable watermark a claimed continuation owes.
-    ///
-    /// The claim is only an authorization once the commit that admitted it is durable, so a new
-    /// model request waits here for exactly that sequence. The wait is a host wait, not a lock: the
-    /// mailbox stays reachable, so a stop, a close, a message or a storage repair still arrives, and
-    /// a stop answers [`ThreadError::Cancelled`] without consuming a single input. A real storage
-    /// fault keeps the existing explicit-resume semantics instead of pretending the claim is saved,
-    /// and a host without a cold store never claims durability, so it is not held back either.
-    pub(super) async fn await_continuation_durability(
-        &mut self,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), ThreadError> {
-        if self.current_task_start_ordinal.is_some() {
-            self.state.required_durable_sequence = None;
-            return Ok(());
-        }
-        let Some(required) = self.state.required_durable_sequence else {
-            return Ok(());
+        let healthy = !self.threshold_paused
+            && (self.cold.is_none() || self.pending_effects.is_empty())
+            && self.cold_error.is_none()
+            && !self.state.persistence.resume_required;
+        self.state.persistence.execution_phase = if healthy {
+            StorageExecutionPhase::Running
+        } else {
+            StorageExecutionPhase::PausedForStorage
         };
-        let Some(_store) = self.cold.as_ref() else {
-            // A host without a cold store cannot claim durability at all, so the obligation is
-            // released together with the claim it named instead of waiting for a watermark no backend
-            // here can ever advance: keeping it would block the first request of a store attached
-            // later on a sequence from a host that never saved anything.
-            self.state.required_durable_sequence = None;
-            self.publish_snapshot();
-            return Ok(());
-        };
-        let mut updates = self.subscribe_pressure();
-        let mut pressure_closed = false;
-        loop {
-            self.admit_cold();
-            self.refresh_storage_pressure();
-            if let Some(error) = &self.cold_error {
-                self.state.persistence.resume_required = true;
-                self.publish_snapshot();
-                return Err(ThreadError::Storage(error.clone()));
-            }
-            if self.state.persistence.durable_sequence >= required {
-                // The claim and everything that references it are durable now, so the requirement is
-                // discharged instead of being awaited again by the next request.
-                self.state.required_durable_sequence = None;
-                self.publish_snapshot();
-                return Ok(());
-            }
+        if !healthy {
             self.note_execution_phase(ExecutionPhase::AwaitingStorage);
-            let cancelled = self
-                .await_with_mailbox(async {
-                    tokio::select! {
-                        () = cancellation.cancelled() => true,
-                        available = async {
-                            match updates.as_mut() {
-                                Some(update) => update.changed().await.is_ok(),
-                                // A backend without a notification is polled at a bounded interval
-                                // instead of waiting forever for a wake-up that cannot arrive.
-                                None => std::future::pending::<bool>().await,
-                            }
-                        } => {
-                            if !available {
-                                updates = None;
-                                pressure_closed = true;
-                            }
-                            false
-                        }
-                        () = tokio::time::sleep(std::time::Duration::from_secs(1)), if updates.is_none() => false,
-                    }
-                })
-                .await;
-            if pressure_closed {
-                self.pressure_watch_closed = true;
-            }
-            if cancelled || self.interrupt.is_closing() {
-                return Err(ThreadError::Cancelled);
-            }
         }
+        healthy
     }
 
     /// Continues new model/tool admission after a hard storage fault was recovered.
@@ -973,38 +858,65 @@ impl Owner {
     /// Returns the retry's own typed storage failure (the obligation stays owed), or
     /// [`ThreadError::StorageRecoveryUnverified`] when the attached backend cannot own the
     /// obligation at all, so the caller learns the retry could not have stored those bytes.
-    pub(super) async fn retry_output_obligation(&mut self) -> Result<(), ThreadError> {
-        if self.output_obligations.is_empty() {
-            return Ok(());
+    pub(super) fn start_output_retry(
+        &mut self,
+        reply: oneshot::Sender<super::mailbox::OutputRetryReply>,
+    ) {
+        if let Some(active) = &self.output_retry_active {
+            let _ = reply.send(super::mailbox::OutputRetryReply::Waiting(active.clone()));
+            return;
         }
-        // Every outstanding obligation is retried, not only one: two parallel operations that both
-        // failed must both be re-stored before the Thread can continue. A snapshot of the identities
-        // is taken first so the retries never borrow the map they mutate, and a stable identity is
-        // what makes a repeated call idempotent.
-        let owed: Vec<(String, Arc<dyn OutputRetryObligation>)> = self
+        let owed: Vec<_> = self
             .output_obligations
             .iter()
-            .map(|(identity, (_, obligation))| (identity.clone(), obligation.clone()))
+            .map(|(id, (generation, obligation))| (id.clone(), *generation, obligation.clone()))
             .collect();
-        let generation = self.state.persistence.fault_generation;
+        let finished = CancellationToken::new();
+        self.output_retry_active = Some(finished.clone());
+        self.maintenance.push(Box::pin(async move {
+            let mut results = Vec::new();
+            for (id, generation, obligation) in owed {
+                let result = obligation.retry().await;
+                let failed = result.is_err();
+                results.push((id, generation, result));
+                if failed {
+                    break;
+                }
+            }
+            super::execution::MaintenanceCompletion::OutputRetry {
+                results,
+                reply,
+                finished,
+            }
+        }));
+    }
+
+    pub(super) fn finish_output_retry(
+        &mut self,
+        results: Vec<(String, u64, Result<OutputRetryOutcome, ColdStoreError>)>,
+    ) -> Result<(), ThreadError> {
         let mut unsupported = false;
-        let mut repairs: Vec<OutputRepair> = Vec::new();
-        for (identity, obligation) in owed {
-            match self.await_with_mailbox(obligation.retry()).await {
+        let mut failure = None;
+        let mut repairs = Vec::new();
+        for (identity, generation, result) in results {
+            // An old completion can discharge only the obligation it actually retried.
+            if !self
+                .output_obligations
+                .get(&identity)
+                .is_some_and(|(current, _)| *current == generation)
+            {
+                continue;
+            }
+            match result {
                 Ok(OutputRetryOutcome::Stored) => {
                     self.output_obligations.remove(&identity);
                     self.satisfied_output_obligations.insert(identity);
                 }
-                // The bytes are durable, but the committed tool result still lacks the reference the
-                // producer could not project on the first attempt. Collect it and attach it to the
-                // same result after every obligation of this generation has been retried.
                 Ok(OutputRetryOutcome::StoredWithRepair(repair)) => {
                     self.output_obligations.remove(&identity);
                     self.satisfied_output_obligations.insert(identity);
                     repairs.push(repair);
                 }
-                // The backend that re-saves this obligation does not own it, so its bytes could not
-                // have been stored; keep it owed and tell the caller rather than releasing the pause.
                 Ok(OutputRetryOutcome::Unsupported) => unsupported = true,
                 Err(error) => {
                     let error = Arc::new(error);
@@ -1012,28 +924,25 @@ impl Owner {
                     self.cold_error = Some(error.clone());
                     self.state.persistence.resume_required = true;
                     self.state.persistence.resume_ready = false;
-                    self.sync_output_obligation_state();
-                    self.publish_snapshot();
-                    return Err(ThreadError::Storage(error));
+                    failure = Some(ThreadError::Storage(error));
                 }
             }
         }
-        // Attach every stored reference to the already-committed result it belongs to before the
-        // readiness predicate is recomputed, so a reader that observes the released pause always sees
-        // the repaired output too.
         if !repairs.is_empty() {
             self.apply_output_repairs(repairs)?;
         }
         self.sync_output_obligation_state();
-        if unsupported {
-            return Err(ThreadError::StorageRecoveryUnverified { generation });
-        }
-        // The obligations no longer block, but the fence and the backend verdict still have to hold;
-        // re-read them so readiness is published from the same predicate that releases the pause
-        // instead of from the retry alone.
         self.admit_cold();
         self.refresh_storage_pressure();
         self.publish_snapshot();
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if unsupported {
+            return Err(ThreadError::StorageRecoveryUnverified {
+                generation: self.state.persistence.fault_generation,
+            });
+        }
         Ok(())
     }
 
@@ -1046,13 +955,12 @@ impl Owner {
     ///
     /// # Errors
     /// Returns cancellation when the wait is interrupted or the owner is closing.
-    pub(super) async fn reserve_operation_output(
+    pub(super) fn try_reserve_operation_output(
         &mut self,
         operation_id: &str,
-        cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<Arc<crate::model::OutputBudget>, ThreadError> {
-        loop {
-            match crate::model::OutputBudget::reserve(
+        let budget = Arc::new(
+            crate::model::OutputBudget::reserve(
                 self.cold.clone(),
                 &self.id,
                 operation_id,
@@ -1060,46 +968,12 @@ impl Owner {
                 Some(crate::model::OutputRefusalNotice::new(
                     self.output_refusals.clone(),
                 )),
-            ) {
-                Ok(budget) => {
-                    let budget = Arc::new(budget);
-                    self.operation_budgets
-                        .insert(operation_id.to_owned(), budget.clone());
-                    if self.output_backpressure {
-                        self.output_backpressure = false;
-                        self.refresh_storage_pressure();
-                        self.publish_snapshot();
-                    }
-                    return Ok(budget);
-                }
-                Err(_error) => {
-                    if !self.output_backpressure {
-                        self.output_backpressure = true;
-                        self.state.persistence.pressure_warning = true;
-                        self.refresh_storage_pressure();
-                        self.publish_snapshot();
-                    }
-                    let cancelled = self
-                        .await_with_mailbox(async {
-                            tokio::select! {
-                                () = cancellation.cancelled() => true,
-                                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => false,
-                            }
-                        })
-                        .await;
-                    if cancelled || self.interrupt.is_closing() {
-                        // The wait is over: this owner owes no further reservation, so the transient
-                        // admission backpressure it published goes with the cancelled attempt.
-                        if self.output_backpressure {
-                            self.output_backpressure = false;
-                            self.refresh_storage_pressure();
-                            self.publish_snapshot();
-                        }
-                        return Err(ThreadError::Cancelled);
-                    }
-                }
-            }
-        }
+            )
+            .map_err(|_| ThreadError::StoragePressure)?,
+        );
+        self.operation_budgets
+            .insert(operation_id.to_owned(), budget.clone());
+        Ok(budget)
     }
 
     /// Ends one operation's live quota after its call returned and its fact left this owner.
@@ -1658,6 +1532,7 @@ impl Owner {
         // whole session's effects until the next explicit `flush`.
         let pressure = store.0.pressure(&self.id);
         self.apply_durable_receipt(&pressure);
+        self.release_retired_task_metadata();
     }
 
     pub(super) fn prepare_flush(&mut self) -> Result<ColdFlushTicket, ThreadError> {
@@ -1702,72 +1577,5 @@ impl Owner {
             self.state.persistence.durable_sequence.max(through);
         self.effect_window
             .release_through(self.state.persistence.durable_sequence);
-    }
-
-    pub(super) async fn flush_cold(&mut self) -> Result<(), ThreadError> {
-        if self.current_task_start_ordinal.is_some() {
-            self.admit_cold();
-            return Ok(());
-        }
-        // Preserving close also owes the final facts the bounded queue could not take yet. Wait
-        // only for their handover, then fix the normal admitted watermark. Hard failures still
-        // return immediately, and permanent deletion remains the only cancellation of preservation.
-        let mut updates = self.subscribe_pressure();
-        let deletion = self.interrupt.deletion_token();
-        while self.cold.is_some() && !self.pending_effects.is_empty() {
-            self.admit_cold();
-            self.refresh_storage_pressure();
-            if let Some(error) = self.cold_error.clone() {
-                self.publish_snapshot();
-                return Err(ThreadError::Storage(error));
-            }
-            if self.pending_effects.is_empty() {
-                break;
-            }
-            self.publish_snapshot();
-            if self.wait_for_storage_change(&mut updates, &deletion).await {
-                return Err(ThreadError::Closed);
-            }
-        }
-        let ticket = self.prepare_flush()?;
-        let through = match &ticket {
-            ColdFlushTicket::AlreadySatisfied => self.state.persistence.durable_sequence,
-            ColdFlushTicket::Pending { through, .. } => *through,
-        };
-        let result = self.await_with_mailbox(ticket.wait()).await;
-        match result {
-            Ok(()) => {
-                // New admissions while waiting do not extend this barrier's proof.
-                self.confirm_flush(through);
-            }
-            Err(ThreadError::Storage(error)) => {
-                // A caller that asked for a fixed durable target and did not get it has a terminal
-                // fact: answer with it directly instead of letting the pressure mirror below
-                // mistake the store's momentary report for recovery.
-                self.state.persistence.error = Some(error.to_string());
-                self.cold_error = Some(error.clone());
-                self.publish_snapshot();
-                return Err(ThreadError::Storage(error));
-            }
-            Err(error) => return Err(error),
-        }
-        self.refresh_storage_pressure();
-        self.publish_snapshot();
-        // Final close may service a late repair/control while this fixed ticket waits. Such a
-        // commit is retained, but N does not prove its durability: keep the owner for the next
-        // preserving close instead of releasing it on a proof for the earlier prefix.
-        if self.state.lifecycle == ThreadLifecycle::Closed
-            && self.cold.is_some()
-            && self.state.persistence.durable_sequence < self.state.commit_sequence
-        {
-            return Err(ThreadError::StorageRecoveryPending {
-                durable: self.state.persistence.durable_sequence,
-                required: self.state.commit_sequence,
-            });
-        }
-        match &self.cold_error {
-            Some(error) => Err(ThreadError::Storage(error.clone())),
-            None => Ok(()),
-        }
     }
 }

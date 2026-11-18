@@ -689,8 +689,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   /// (会话, 继续点) 意图只允许一个 OperationId；结果未知时按原操作回查，不换编号重发。
   ///
   /// [continuation] 必须来自规范运行时投影（`ThreadRuntimeView.continuation`）：
-  /// 已认领的点（`claimed`）表示继续已被受理或仍在准备，不再发送新请求；客户端不
-  /// 本地生成继续点身份，也不从轮次终态推断能否继续。
+  /// 受理后 token 被消费；客户端查询原操作回执，不在本地生成继续点或推断执行生效。
   Future<ContinueThreadCommandReply> continueThread(
     String threadId,
     ContinuationView continuation, {
@@ -742,19 +741,6 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         threadStorageContinuationFailure(storage!),
       );
     }
-    if (continuation.claimed) {
-      // The canonical projection already says this intent was claimed: another
-      // acceptance (or an unresolvable earlier one) owns it, so nothing is sent.
-      final claimed = StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'The continuation point is already claimed',
-        retryable: false,
-        correlationId: 'client-continuation-claimed',
-        reason: StudioFailureReason.continuationClaimed,
-      );
-      _fail('continue:$threadId', threadId, claimed);
-      return Future<ContinueThreadCommandReply>.error(claimed);
-    }
     final key = 'continue:$threadId';
     // The intent and its shared join exist before any synchronously reentrant
     // publication: a reentrant click during begin/board publication joins
@@ -778,10 +764,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       _watchPredicate(
         operation,
         _client.conversations.session(threadId).source,
-        (state) =>
-            state.hasSnapshot &&
-            (state.runtime?.execution != null ||
-                (state.activeTurn?.state.isBusy ?? false)),
+        (state) {
+          unawaited(_refreshContinuationIntent(intent));
+          return false;
+        },
         () => _clear(key),
         policy: _ObservationFailurePolicy.retainUntilSettled,
       );
@@ -807,7 +793,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return tracked;
   }
 
-  /// 首次发送与已查明 NotFound 的原身份再发共用同一发送 helper。
+  /// 首次发送与已查明 NotAccepted 的原身份再发共用同一发送 helper。
   ///
   /// 发送本次意图冻结的 thread/continuation/route CAS 与 OperationId。
   Future<ContinueThreadCommandReply> _sendContinuation(
@@ -860,6 +846,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             _markAccepted(key);
           }
         }
+        unawaited(_refreshContinuationIntent(intent));
         return reply;
       } catch (error) {
         if (transportInvoked) {
@@ -884,11 +871,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   ) {
     _ensureOpen();
     return _lane.run(() {
       _throwIfAccessBlockedForThread(threadId);
-      return _api.readContinuationOperation(threadId, operationId);
+      return _api.readContinuationOperation(
+        threadId,
+        operationId,
+        expectedContinuationToken,
+      );
     });
   }
 
@@ -1427,7 +1419,11 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return false;
   }
 
-  /// 仅查询当前 owner 仍保留的操作；NotFound 不证明未受理，不触发重发。
+  /// 已存在意图按原身份回查一次；仅回查本身的 NotAccepted 才允许原身份再发。
+  ///
+  /// 已受理就沿用原回执；NotAccepted 证明该身份从未被受理，此时在串行 lane 内
+  /// 复核准入后以冻结输入与**同一 OperationId** 再发，不换编号、不递归公共
+  /// continueThread；其它回查错误原样上抛，保留未知结果，不盲目重发。
   Future<ContinueThreadCommandReply> _reconcileExistingIntent(
     _ContinuationIntent intent,
   ) async {
@@ -1436,56 +1432,62 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       throw StateError('A continuation intent has no operation identity');
     }
     final ContinuationOperationView view;
-    // A missing current identity is not proof that the command was never admitted.
-    // Keep the unknown result for observation; never resend from a negative read.
-    view = await _lane.run(() {
-      _throwIfAccessBlockedForThread(intent.threadId);
-      return _api.readContinuationOperation(
-        intent.threadId,
-        operation.id.value,
-      );
-    });
+    // A determined rejection proves this intent reached a terminal local
+    // disposition. Re-sending it after a NotAccepted would admit a second attempt
+    // under the frozen identity and only then reject the handle after the
+    // transport accepted it: fail closed instead. A held receipt is different:
+    // the original acceptance keeps its observation duty and later guards
+    // still return their typed failures through the normal resend path.
+    void throwIfDefinitelyDisposed() {
+      final state = operation.state.value;
+      if (state.failurePhase == OperationPhase.rejected) {
+        throw state.error ??
+            StateError('The continuation intent was already rejected');
+      }
+    }
+
+    try {
+      view = await _lane.run(() {
+        _throwIfAccessBlockedForThread(intent.threadId);
+        return _api.readContinuationOperation(
+          intent.threadId,
+          operation.id.value,
+          intent.continuationId,
+        );
+      });
+    } on StudioFailure catch (error) {
+      if (error.reason == StudioFailureReason.staleContinuation)
+        operation.reject(error);
+      rethrow;
+    }
     if (view.threadId != intent.threadId ||
-        view.operationId != operation.id.value) {
+        view.operationId != operation.id.value ||
+        view.expectedContinuationToken != intent.continuationId) {
       throw StateError('Continuation read did not match the frozen identity');
     }
-    // Use the original handle directly: a missing or already-rejected identity
-    // is an incompatible state that must fail closed instead of re-beginning.
-    operation.accept(view.receipt.toCommitReceipt());
-    switch (view.state) {
-      case ConsumedContinuation():
-        // A consumed control input is a canonical fact about the new Turn: the
-        // effect happened even though the original receipt was lost.
-        if (operation.state.value.receipt != null) {
-          if (!operation.state.value.effective) operation.markEffective();
-          if (!operation.state.value.observed) operation.markObserved();
-        }
-      case DiscardedContinuation():
-        // A discarded control input never runs; it must not stay pending.
-        operation.reject(
-          StudioFailure(
-            code: StudioFailureCode.conflict,
-            message: 'The continuation intent was discarded',
-            retryable: false,
-            correlationId: 'client-continuation-discarded',
-            reason: StudioFailureReason.continuationUnavailable,
-          ),
-        );
-      case PendingContinuation():
-        // Still admitted and unconsumed: the identity observer registered at
-        // dispatch settles it when the canonical Turn appears.
-        break;
+    if (view.state == ContinuationOperationState.notAccepted) {
+      throwIfDefinitelyDisposed();
+      return _sendContinuation(intent, resend: true);
     }
+    final receipt = view.receipt;
+    if (receipt == null ||
+        view.executionId == null ||
+        view.turnId == null ||
+        view.expectedContinuationToken != intent.continuationId) {
+      throw StateError('Known continuation has no matching owner receipt');
+    }
+    operation.accept(receipt.toCommitReceipt());
+    _applyContinuationDisposition(intent, view);
     if (_client.mutations.latest('continue:${intent.threadId}')?.id ==
         operation.id) {
       _clear('continue:${intent.threadId}');
     }
     return ContinueThreadCommandReply(
       threadId: view.threadId,
-      inputId: view.inputId,
-      continuationId: view.continuationId,
-      cursor: view.acceptedSequence,
-      receipt: view.receipt,
+      inputId: view.operationId,
+      continuationId: view.expectedContinuationToken,
+      cursor: view.acceptedRevision!,
+      receipt: receipt,
     );
   }
 
@@ -1503,6 +1505,95 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return selection.selectedThreadId == threadId
         ? selection.selectedProjectId
         : null;
+  }
+
+  Future<void> _refreshContinuationIntent(_ContinuationIntent intent) async {
+    final operation = intent.operation;
+    if (operation == null ||
+        operation.state.value.receipt == null ||
+        operation.state.value.observed ||
+        operation.state.value.failurePhase == OperationPhase.rejected)
+      return;
+    if (intent.observing) {
+      intent.observeAgain = true;
+      return;
+    }
+    intent.observing = true;
+    try {
+      final view = await _lane.run(() {
+        _throwIfAccessBlockedForThread(intent.threadId);
+        return _api.readContinuationOperation(
+          intent.threadId,
+          operation.id.value,
+          intent.continuationId,
+        );
+      });
+      if (view.state == ContinuationOperationState.known)
+        _applyContinuationDisposition(intent, view);
+    } catch (error) {
+      if (error is StudioFailure &&
+          error.reason == StudioFailureReason.staleContinuation) {
+        operation.reject(error);
+      } else if (operation.state.value.receipt != null) {
+        operation.syncFailed(error);
+      }
+    } finally {
+      intent.observing = false;
+      if (intent.observeAgain && !_client.isClosed) {
+        intent.observeAgain = false;
+        unawaited(_refreshContinuationIntent(intent));
+      }
+    }
+  }
+
+  void _applyContinuationDisposition(
+    _ContinuationIntent intent,
+    ContinuationOperationView view,
+  ) {
+    final operation = intent.operation!;
+    if (view.threadId != intent.threadId ||
+        view.operationId != operation.id.value ||
+        view.expectedContinuationToken != intent.continuationId ||
+        view.executionId == null ||
+        view.turnId == null ||
+        view.acceptanceEpoch == null ||
+        view.acceptedRevision == null ||
+        view.disposition == null ||
+        view.receipt?.operationId != operation.id) {
+      throw StateError('Continuation read did not match the frozen operation');
+    }
+    final accepted = intent.ownerAcceptance;
+    if (accepted != null &&
+        (accepted.acceptanceEpoch != view.acceptanceEpoch ||
+            accepted.executionId != view.executionId ||
+            accepted.turnId != view.turnId ||
+            accepted.acceptedRevision != view.acceptedRevision)) {
+      throw StateError(
+        'Continuation owner changed the original acceptance identity',
+      );
+    }
+    intent.ownerAcceptance ??= view;
+    if (operation.state.value.receipt == null) {
+      if (view.receipt case final receipt?)
+        operation.accept(receipt.toCommitReceipt());
+    }
+    switch (view.disposition) {
+      case ContinuationDisposition.effective:
+        if (!operation.state.value.effective) operation.markEffective();
+        if (!operation.state.value.observed) operation.markObserved();
+      case ContinuationDisposition.notExecuted:
+        operation.reject(
+          StudioFailure(
+            code: StudioFailureCode.conflict,
+            message: 'Continuation was not executed: ${view.notExecutedReason}',
+            retryable: false,
+            correlationId: 'client-continuation-not-executed',
+            reason: StudioFailureReason.continuationUnavailable,
+          ),
+        );
+      case ContinuationDisposition.scheduled || null:
+        break;
+    }
   }
 
   StudioRecoveryIssue? _accessBlockerForThread(String threadId) =>
@@ -1833,7 +1924,9 @@ final class _StopFlight {
 /// 一个 (会话, 继续点) 意图的一次性冻结身份与唯一在途结果。
 ///
 /// Thread、continuation 身份、route CAS 与 OperationId 在首次创建时冻结；
-/// 回执丢失后保持原意图供当前态观察；未知结果不自动重发。
+/// 回执丢失或页面离开后，这个身份仍然可用：再次显式点击先按它回查原操作，
+/// 仅当回查证明 NotAccepted 时才以同一身份再发冻结输入，不换编号，也不会同时
+/// 存在两个操作。
 final class _ContinuationIntent {
   _ContinuationIntent({
     required this.threadId,
@@ -1847,6 +1940,9 @@ final class _ContinuationIntent {
 
   /// 分配一次；任何后续路径不得重新 begin 或替换该身份。
   OperationHandle? operation;
+  ContinuationOperationView? ownerAcceptance;
+  bool observing = false;
+  bool observeAgain = false;
 
   /// 当前在途结果；同一意图的所有调用共享同一个 future。
   Future<ContinueThreadCommandReply>? inFlight;

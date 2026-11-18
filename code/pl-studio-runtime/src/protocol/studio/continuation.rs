@@ -1,7 +1,7 @@
 //! 停止与继续的产品请求、回执和只读回查视图。
 //!
 //! 两条命令都是「受理」而不是「完成」：停止回执只证明目标执行的停止请求已被 owner 接受，
-//! 继续回执只证明控制输入与继续点认领已被受理并进入保存。生效条件分别是目标执行及其清理
+//! 继续回执只证明控制意图已被 owner 接纳并预约执行。生效条件分别是目标执行及其清理
 //! 真正结束、以及模型请求真正准入，因此两者都要求身份观察。
 
 use serde::{Deserialize, Serialize};
@@ -11,14 +11,14 @@ use super::StudioCommandReceipt;
 
 /// 用户无新内容继续主会话。
 ///
-/// `operation_id` 同时就是控制输入身份。仅当前 owner 保留的输入可识别重复请求；
-/// 不查询历史，不承诺永久幂等或原始回执重放。`expected_continuation_id` 与
+/// `operation_id` 是控制请求身份；同一 owner 的最近 64 条缓存按原回执回答，不再次消费
+/// token。缓存之外不回读持久化补永久去重。`expected_continuation_token` 与
 /// `expected_model_route_revision` 是调用方冻结的观察结果，用于拒绝过时点击。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinueThreadRequest {
     pub operation_id: String,
-    pub expected_continuation_id: String,
+    pub expected_continuation_token: String,
     pub expected_model_route_revision: u64,
 }
 
@@ -53,33 +53,34 @@ pub struct StopThreadResponse {
     pub receipt: StudioCommandReceipt,
 }
 
-/// 控制输入当前阶段；由输入事实唯一推导，不是另一份可写状态。
+/// 回查区分同一 owner 尚未接纳与已知回执；过期 token 由 typed StaleContinuation 拒绝。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    tag = "kind"
-)]
+#[serde(rename_all = "camelCase")]
 pub enum ContinuationOperationState {
-    /// 已受理、尚未消费。
-    Pending,
-    /// 已随某个轮次的模型请求一起消费。
-    Consumed { turn_id: String },
-    /// 已被放弃，例如被新的明确授权取代。
-    Discarded,
+    Known,
+    NotAccepted,
 }
 
-/// 一次继续操作的只读回查结果。
-///
-/// 仅观察当前 owner 保留的输入事实；不回读持久化，也不承诺重现已裁剪的旧回执。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "reason")]
+pub enum ContinuationDisposition {
+    Scheduled,
+    Effective,
+    NotExecuted(String),
+}
+
+/// 有界控制回执。accepted_revision 是 RAM 逻辑版本，History 保存不影响控制准入。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinuationOperationView {
     pub thread_id: String,
     pub operation_id: String,
-    pub input_id: String,
-    pub continuation_id: String,
-    pub accepted_sequence: u64,
+    pub expected_continuation_token: String,
     pub state: ContinuationOperationState,
-    pub receipt: StudioCommandReceipt,
+    pub acceptance_epoch: Option<String>,
+    pub execution_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub accepted_revision: Option<u64>,
+    pub disposition: Option<ContinuationDisposition>,
+    pub receipt: Option<StudioCommandReceipt>,
 }

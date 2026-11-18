@@ -96,7 +96,6 @@ pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
     ensure!(
         snapshot.execution.is_none()
             && snapshot.model_execution.is_none()
-            && snapshot.pending_tool_commits.is_empty()
             && snapshot.deliveries.is_empty()
             && !matches!(
                 snapshot.input_execution,

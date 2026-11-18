@@ -1668,7 +1668,7 @@ class FrbStudioTransport
       () => frb.continueThread(
         operationId: operationId.value,
         threadId: threadId,
-        expectedContinuationId: continuationId,
+        expectedContinuationToken: continuationId,
         expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
       ),
     );
@@ -1685,22 +1685,46 @@ class FrbStudioTransport
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   ) async {
     await _ensureReady();
     final response = await _bridgeCall(
       () => frb.readContinuationOperation(
         threadId: threadId,
         operationId: operationId,
+        expectedContinuationToken: expectedContinuationToken,
       ),
     );
     return ContinuationOperationView(
       threadId: response.threadId,
       operationId: response.operationId,
-      inputId: response.inputId,
-      continuationId: response.continuationId,
-      acceptedSequence: response.acceptedSequence.toInt(),
-      state: _continuationStateFromFrb(response.state),
-      receipt: _commandReceiptFromFrb(response.receipt),
+      expectedContinuationToken: response.expectedContinuationToken,
+      state:
+          response.state == frb_command.BridgeContinuationOperationState.known
+          ? ContinuationOperationState.known
+          : ContinuationOperationState.notAccepted,
+      acceptanceEpoch: response.acceptanceEpoch,
+      executionId: response.executionId,
+      turnId: response.turnId,
+      acceptedRevision: response.acceptedRevision?.toInt(),
+      disposition: response.disposition == null
+          ? null
+          : switch (response.disposition!) {
+              frb_command.BridgeContinuationDisposition_Scheduled() =>
+                ContinuationDisposition.scheduled,
+              frb_command.BridgeContinuationDisposition_Effective() =>
+                ContinuationDisposition.effective,
+              frb_command.BridgeContinuationDisposition_NotExecuted() =>
+                ContinuationDisposition.notExecuted,
+            },
+      notExecutedReason: switch (response.disposition) {
+        frb_command.BridgeContinuationDisposition_NotExecuted(:final reason) =>
+          reason,
+        _ => null,
+      },
+      receipt: response.receipt == null
+          ? null
+          : _commandReceiptFromFrb(response.receipt!),
     );
   }
 

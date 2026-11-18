@@ -228,8 +228,8 @@ pub struct ThreadRuntimeSnapshot {
     pub execution: Option<crate::AgentExecution>,
     /// 该会话当前仍然欠着的继续点；`None` 表示没有可继续的工作。
     ///
-    /// 继续命令的 `expectedContinuationId` 只能来自这里：它是执行事实的投影，客户端不能猜、
-    /// 不能本地生成。`claimed` 为真表示已有操作认领该点（继续已受理、可能仍在准备）。
+    /// 继续命令的 `expectedContinuationToken` 只能来自这里：它是执行事实的投影，客户端不能猜、
+    /// 不能本地生成。受理消费 token；进度通过原操作回执查询。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<crate::ContinuationView>,
     pub updated_at: i64,

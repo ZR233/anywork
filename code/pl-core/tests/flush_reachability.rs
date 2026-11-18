@@ -42,7 +42,6 @@ struct Store {
     entered: mpsc::Sender<u64>,
     updates: watch::Sender<()>,
     handoff: Option<PressureHandoff>,
-    handoff_armed: AtomicBool,
     handoff_delivered: CancellationToken,
 }
 
@@ -65,7 +64,6 @@ impl Store {
                 entered,
                 updates,
                 handoff,
-                handoff_armed: AtomicBool::new(false),
                 handoff_delivered: CancellationToken::new(),
             }),
             calls,
@@ -105,16 +103,24 @@ impl ColdStore for Storage {
             });
         }
         let sequence = write.effect.sequence;
-        if self.handoff.is_some()
+        let running_handoff = self.handoff.is_some()
             && write
                 .effect
                 .attempt
                 .as_ref()
-                .is_some_and(|attempt| matches!(attempt.outcome, AttemptOutcome::Running))
-        {
-            self.handoff_armed.store(true, Ordering::SeqCst);
-        }
+                .is_some_and(|attempt| matches!(attempt.outcome, AttemptOutcome::Running));
         self.writes.lock().unwrap().push(write);
+        if running_handoff {
+            match self.handoff {
+                Some(PressureHandoff::Durable) => self.save(sequence),
+                Some(PressureHandoff::Fault) => {
+                    self.unavailable.store(true, Ordering::SeqCst);
+                    self.updates.send_replace(());
+                }
+                None => unreachable!(),
+            }
+            self.handoff_delivered.cancel();
+        }
         if self.automatic.load(Ordering::SeqCst) {
             self.save(sequence);
         }
@@ -141,22 +147,6 @@ impl ColdStore for Storage {
     }
 
     fn subscribe_pressure(&self, _: &str) -> Option<watch::Receiver<()>> {
-        if self.handoff_armed.swap(false, Ordering::SeqCst) {
-            // The Running effect's last pressure sample is already complete. Deliver the writer's
-            // next report immediately before subscribe, so this new receiver considers it seen.
-            match self.handoff {
-                Some(PressureHandoff::Durable) => {
-                    let through = self.writes.lock().unwrap().last().unwrap().effect.sequence;
-                    self.save(through);
-                }
-                Some(PressureHandoff::Fault) => {
-                    self.unavailable.store(true, Ordering::SeqCst);
-                    self.updates.send_replace(());
-                }
-                None => unreachable!("only handoff tests arm delivery"),
-            }
-            self.handoff_delivered.cancel();
-        }
         Some(self.updates.subscribe())
     }
 
@@ -475,7 +465,7 @@ async fn pressure_receipt_advances_durability_while_idle() {
     receipt_releases_window(false).await;
 }
 
-async fn report_at_subscription_handoff(handoff: PressureHandoff) {
+async fn report_at_running_handoff(handoff: PressureHandoff) {
     let (store, _calls) = Store::with_handoff(Some(handoff));
     let (ready, receiver) = oneshot::channel();
     let thread = ThreadHandle::start(
@@ -535,10 +525,7 @@ async fn report_at_subscription_handoff(handoff: PressureHandoff) {
     store.finish_saves();
     within(thread.close()).await.unwrap();
 
-    assert!(
-        delivered,
-        "the controlled subscription handoff must be exercised"
-    );
+    assert!(delivered, "the controlled writer handoff must be exercised");
     assert!(target > 0);
     assert!(matches!(settled, Err(ThreadError::Cancelled)));
     match handoff {
@@ -546,7 +533,7 @@ async fn report_at_subscription_handoff(handoff: PressureHandoff) {
             assert_eq!(backend_durable, target);
             assert_eq!(
                 snapshot.persistence.durable_sequence, target,
-                "a durable report at subscribe must fold without a redundant notification"
+                "a durable report at admission must fold without a redundant notification"
             );
             assert_eq!(window_start, Some(target + 1));
         }
@@ -554,7 +541,7 @@ async fn report_at_subscription_handoff(handoff: PressureHandoff) {
             assert_eq!(
                 snapshot.persistence.fault,
                 Some(StorageFaultKind::WriteFailed),
-                "a fault report at subscribe must fold before entering the network wait"
+                "a fault report at admission must fold before entering the network wait"
             );
             assert!(snapshot.persistence.error.is_some());
             assert_eq!(
@@ -569,13 +556,13 @@ async fn report_at_subscription_handoff(handoff: PressureHandoff) {
 }
 
 #[tokio::test]
-async fn durable_report_at_subscription_handoff_folds_before_network_wait() {
-    report_at_subscription_handoff(PressureHandoff::Durable).await;
+async fn durable_report_at_running_handoff_folds_before_network_wait() {
+    report_at_running_handoff(PressureHandoff::Durable).await;
 }
 
 #[tokio::test]
-async fn fault_report_at_subscription_handoff_latches_before_network_wait() {
-    report_at_subscription_handoff(PressureHandoff::Fault).await;
+async fn fault_report_at_running_handoff_latches_before_network_wait() {
+    report_at_running_handoff(PressureHandoff::Fault).await;
 }
 
 #[tokio::test]

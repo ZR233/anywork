@@ -2,7 +2,7 @@ use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::commands::command_receipt;
 use crate::api::studio::convert::thread_stream::{bridge_child_interaction, bridge_interaction};
 use crate::api::studio::types::{
-    BridgeChildInteractionSummary, BridgeContinuationOperationState,
+    BridgeChildInteractionSummary, BridgeContinuationDisposition, BridgeContinuationOperationState,
     BridgeContinuationOperationView, BridgeContinueThreadReply, BridgeError,
     BridgeInteractionCommandReply, BridgeInteractionResolution, BridgeStopThreadReply,
     BridgeStudioPromptInput, BridgeToolApprovalResolution, SubmitPromptResponse,
@@ -64,7 +64,7 @@ pub async fn stop_thread(
 pub async fn continue_thread(
     operation_id: String,
     thread_id: String,
-    expected_continuation_id: String,
+    expected_continuation_token: String,
     expected_model_route_revision: u64,
 ) -> Result<BridgeContinueThreadReply, BridgeError> {
     let bridge = active_bridge().await?;
@@ -74,7 +74,7 @@ pub async fn continue_thread(
             thread_id,
             pl_studio_runtime::ContinueThreadRequest {
                 operation_id,
-                expected_continuation_id,
+                expected_continuation_token,
                 expected_model_route_revision,
             },
         )
@@ -91,30 +91,41 @@ pub async fn continue_thread(
 pub async fn read_continuation_operation(
     thread_id: String,
     operation_id: String,
+    expected_continuation_token: String,
 ) -> Result<BridgeContinuationOperationView, BridgeError> {
     let bridge = active_bridge().await?;
     let view = bridge
         .studio
-        .read_continuation_operation(thread_id, operation_id)
+        .read_continuation_operation(thread_id, operation_id, expected_continuation_token)
         .await?;
     Ok(BridgeContinuationOperationView {
-        accepted_sequence: view.accepted_sequence,
-        state: match view.state {
-            pl_studio_runtime::ContinuationOperationState::Pending => {
-                BridgeContinuationOperationState::Pending
-            }
-            pl_studio_runtime::ContinuationOperationState::Consumed { turn_id } => {
-                BridgeContinuationOperationState::Consumed { turn_id }
-            }
-            pl_studio_runtime::ContinuationOperationState::Discarded => {
-                BridgeContinuationOperationState::Discarded
-            }
-        },
         thread_id: view.thread_id,
         operation_id: view.operation_id,
-        input_id: view.input_id,
-        continuation_id: view.continuation_id,
-        receipt: command_receipt(view.receipt),
+        expected_continuation_token: view.expected_continuation_token,
+        state: match view.state {
+            pl_studio_runtime::ContinuationOperationState::Known => {
+                BridgeContinuationOperationState::Known
+            }
+            pl_studio_runtime::ContinuationOperationState::NotAccepted => {
+                BridgeContinuationOperationState::NotAccepted
+            }
+        },
+        acceptance_epoch: view.acceptance_epoch,
+        execution_id: view.execution_id,
+        turn_id: view.turn_id,
+        accepted_revision: view.accepted_revision,
+        disposition: view.disposition.map(|d| match d {
+            pl_studio_runtime::ContinuationDisposition::Scheduled => {
+                BridgeContinuationDisposition::Scheduled
+            }
+            pl_studio_runtime::ContinuationDisposition::Effective => {
+                BridgeContinuationDisposition::Effective
+            }
+            pl_studio_runtime::ContinuationDisposition::NotExecuted(reason) => {
+                BridgeContinuationDisposition::NotExecuted { reason }
+            }
+        }),
+        receipt: view.receipt.map(command_receipt),
     })
 }
 

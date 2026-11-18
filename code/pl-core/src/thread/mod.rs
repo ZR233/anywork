@@ -10,7 +10,12 @@ pub(crate) mod checkpoint_usage;
 pub mod cold;
 pub mod context_preparation;
 mod continuation;
+pub use continuation::{
+    ContinuationDisposition, ContinuationNotExecuted, ContinuationOperation, ContinuationRead,
+    ResumeRequest,
+};
 pub mod current;
+mod execution;
 pub mod extensions;
 mod facts;
 pub mod history_sink;

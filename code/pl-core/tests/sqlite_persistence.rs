@@ -1435,16 +1435,12 @@ async fn sqlite_migration_converts_schema_4_with_old_or_current_tables() {
         assert!(restored.state.continuation.is_none());
         assert!(restored.state.execution.is_none());
         assert_eq!(restored.state.execution_sequence, 0);
-        assert_eq!(restored.state.required_durable_sequence, None);
         assert!(
             restored
                 .state
                 .terminal_inputs
                 .iter()
-                .all(
-                    |identity| identity.purpose == pl_core::thread::input::InputPurpose::Message
-                        && identity.continuation.is_none()
-                )
+                .all(|identity| identity.purpose == pl_core::thread::input::InputPurpose::Message)
         );
         assert!(
             !restored.state.terminal_inputs.is_empty(),

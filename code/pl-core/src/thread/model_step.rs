@@ -1,95 +1,22 @@
-//! Frozen model preparation, admission, retry and output commit.
+//! Frozen model operations and the single synchronous result reducer.
 use super::*;
 
+pub(super) struct StepWork {
+    pub(super) input: StepInput,
+    pub(super) plan: crate::tool::opaque::ToolPlan,
+    pub(super) retry_of: Option<String>,
+    pub(super) frozen_input: Vec<ContextRecord>,
+    pub(super) consumed_messages: u64,
+    pub(super) steering_ids: Vec<String>,
+    pub(super) context: ContextSnapshot,
+    pub(super) base_context_revision: u64,
+    pub(super) tool_projection: Option<OpaquePayload>,
+    pub(super) preparation_refresh: u8,
+    pub(super) admitted_attempt: Option<RequestAttempt>,
+    pub(super) recovery_error: Option<Arc<ModelError>>,
+}
+
 impl Owner {
-    pub(super) async fn replace_model(
-        &mut self,
-        factory: crate::model::ModelFactory,
-    ) -> Result<(), ThreadError> {
-        if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
-            return Err(ThreadError::Closed);
-        }
-        if !self.pending.is_empty() {
-            return Err(ThreadError::PendingTools);
-        }
-        if !self.uncommitted_tools.is_empty() {
-            return Err(ThreadError::PendingToolCommit);
-        }
-        if let Some(mut previous) = self.model.take()
-            && let Err(error) = self.await_with_mailbox(previous.close()).await
-        {
-            self.model = Some(previous);
-            self.publish_snapshot();
-            return Err(ThreadError::Model(Arc::new(error)));
-        }
-        self.retry_plan = None;
-        self.publish()?;
-        self.publish_snapshot();
-        if self.interrupt.is_closing() {
-            return Err(ThreadError::Closed);
-        }
-        let opened = self.await_with_mailbox(factory.open_session()).await;
-        self.model = Some(opened.map_err(|error| ThreadError::Model(Arc::new(error)))?);
-        self.publish_snapshot();
-        if self.interrupt.is_closing() {
-            return Err(ThreadError::Closed);
-        }
-        Ok(())
-    }
-
-    pub(super) async fn retry_attempt(
-        &mut self,
-        source: String,
-        attempt: String,
-        cancellation: CancellationToken,
-    ) -> Result<ModelStepOutput, ThreadError> {
-        let previous = self
-            .state
-            .attempts
-            .last()
-            .filter(|previous| previous.attempt_id == source)
-            .ok_or(ThreadError::InvalidIdentity)?;
-        if !matches!(
-            previous.status,
-            AttemptStatus::Failed | AttemptStatus::Cancelled
-        ) || previous.input_revision != self.state.context.revision
-        {
-            return Err(ThreadError::InvalidContext);
-        }
-        let (id, plan) = self
-            .retry_plan
-            .as_ref()
-            .ok_or(ThreadError::InvalidContext)?;
-        if id != &source || !plan.retry_compatible(&self.tools.freeze()) {
-            return Err(ThreadError::InvalidContext);
-        }
-        let plan = plan.clone();
-        let input = StepInput {
-            turn_id: previous.turn_id.clone(),
-            attempt_id: attempt,
-            content: Vec::new(),
-            cancellation,
-        };
-        self.step_with_plan(input, plan, Some(source), &mut false)
-            .await
-    }
-
-    pub(super) async fn step(&mut self, input: StepInput) -> Result<ModelStepOutput, ThreadError> {
-        let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, None, &mut false).await
-    }
-
-    pub(super) async fn step_in_turn(
-        &mut self,
-        input: StepInput,
-        source: Option<String>,
-        recovery_used: &mut bool,
-    ) -> Result<ModelStepOutput, ThreadError> {
-        let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, source, recovery_used)
-            .await
-    }
-
     fn output_violation(
         &self,
         attempt_id: &str,
@@ -168,43 +95,6 @@ impl Owner {
             .then_some(ModelOutputViolation::SoloBatch { tool_ids: solo })
     }
 
-    async fn ensure_model_admission(
-        &mut self,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(), ThreadError> {
-        if !self.uncommitted_tools.is_empty() {
-            return Err(ThreadError::PendingToolCommit);
-        }
-        self.await_storage_admission(cancellation).await?;
-        // A claimed continuation only authorizes a model request once its own admission commit is
-        // durable. The wait is a host wait: stop, close and messages still arrive, and a stop answers
-        // cancellation before any input was consumed.
-        self.await_continuation_durability(cancellation).await?;
-        self.publish_snapshot();
-        if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
-            return Err(ThreadError::Closed);
-        }
-        if !self
-            .model
-            .as_ref()
-            .is_some_and(DynModelSession::is_available)
-        {
-            return Err(ThreadError::ModelUnavailable);
-        }
-        if self
-            .state
-            .interactions
-            .values()
-            .any(|record| record.state == interactions::InteractionState::Pending)
-        {
-            return Err(ThreadError::PendingInteraction);
-        }
-        if !self.pending.is_empty() {
-            return Err(ThreadError::PendingTools);
-        }
-        Ok(())
-    }
-
     pub(super) fn validate_step_identity(&self, input: &StepInput) -> Result<(), ThreadError> {
         if self.current_saved_lifecycle.is_some() {
             return Err(ThreadError::CurrentPaused);
@@ -230,55 +120,6 @@ impl Owner {
         Ok(())
     }
 
-    async fn step_with_plan(
-        &mut self,
-        input: StepInput,
-        plan: crate::tool::opaque::ToolPlan,
-        retry_of: Option<String>,
-        recovery_used: &mut bool,
-    ) -> Result<ModelStepOutput, ThreadError> {
-        // The explicit execution phase describes live execution only: clear it on every exit path
-        // (success, failure, cancellation and error) so a projection never reads a phase left over
-        // from a finished step.
-        self.validate_step_identity(&input)?;
-        let attempt_id = input.attempt_id.clone();
-        let turn_id = input.turn_id.clone();
-        self.begin_current_step(&input, &plan);
-        let result = self.run_step(input, plan, retry_of, recovery_used).await;
-        // The call is over on every exit path — success, failure, cancellation or an early error —
-        // so the live quota is handed back here once: a call that never reserved (or already
-        // released) is a no-op, and a refusal latched during the call becomes the typed fault that
-        // stops new model/tool work. The hand-over check keeps the release from running ahead of the
-        // fact the step published — the batch `run_step` committed is enrolled by `publish`/`admit`,
-        // and only once that really completed does the ceiling come back. Doing it in the wrapper
-        // covers the early returns between the reservation and the provider call that a call-site
-        // release would miss.
-        self.settle_operation_output(&attempt_id);
-        if !self.state.attempt_ids.contains_key(&attempt_id) {
-            // Preparation can install an observation receiver before admission. A refused attempt
-            // owns no running observation, and must leave no receiver for a later attempt to inherit.
-            self.model_progress = None;
-        }
-        if self.state.model_execution.is_some() {
-            self.state.model_execution = None;
-            self.publish_snapshot();
-        }
-        if self.current_task_start_ordinal.is_some() {
-            self.state.live_calls.clear();
-            self.state.attempt_ids.clear();
-            if self.state.turns.is_empty() {
-                self.finish_execution(&turn_id);
-            }
-        }
-        if result.is_ok() {
-            self.finish_current_work_if_idle();
-        }
-        if !self.current_model_running {
-            self.current_capture = None;
-        }
-        result
-    }
-
     /// Publishes the explicit model execution phase at the exact boundary it describes.
     pub(super) fn enter_model_execution(&mut self, phase: ModelExecutionPhase) {
         if self.state.model_execution == Some(phase) {
@@ -288,75 +129,40 @@ impl Owner {
         self.publish_snapshot();
     }
 
-    pub(super) async fn compact_idle_context(
-        &mut self,
-        revision: u64,
-        cancellation: CancellationToken,
-    ) -> Result<ContextSnapshot, ThreadError> {
-        self.ensure_idle(false)?;
-        if self.state.context.revision != revision {
-            return Err(ThreadError::ContextConflict {
-                expected: revision,
-                actual: self.state.context.revision,
-            });
+    pub(super) fn check_model_admission(&mut self) -> Result<(), ThreadError> {
+        if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
+            return Err(ThreadError::Closed);
         }
-        self.apply_model_update().await?;
-        self.ensure_idle(false)?;
-        // Completed Turn rows may have left the resident journal. Compaction owns an auxiliary
-        // call identity, without creating a Turn or depending on its hot retention.
-        let turn_id = self
+        if !self
+            .model
+            .as_ref()
+            .is_some_and(DynModelSession::is_available)
+        {
+            return Err(ThreadError::ModelUnavailable);
+        }
+        if self
             .state
-            .context
-            .records
-            .iter()
-            .rev()
-            .find_map(|record| record.turn_id.clone())
-            .unwrap_or_else(|| format!("context:{}", self.state.commit_sequence));
-        let input = StepInput {
-            turn_id,
-            attempt_id: format!("manual-compaction:{}", self.state.commit_sequence),
-            content: Vec::new(),
-            cancellation,
-        };
-        if !self.recover_context(&input, None).await? {
-            return Err(ThreadError::InvalidContext);
+            .interactions
+            .values()
+            .any(|r| r.state == interactions::InteractionState::Pending)
+        {
+            return Err(ThreadError::PendingInteraction);
         }
-        Ok(self.state.context.clone())
+        if !self.pending.is_empty() {
+            return Err(ThreadError::PendingTools);
+        }
+        Ok(())
     }
 
-    /// Reduces an already-admitted request after a typed service capacity refusal.
-    pub(super) async fn recover_context(
-        &mut self,
-        input: &StepInput,
-        source_attempt_id: Option<&str>,
-    ) -> Result<bool, ThreadError> {
-        let result = async {
-            self.enter_model_execution(ModelExecutionPhase::Admitting);
-            self.ensure_model_admission(&input.cancellation).await?;
-            let mut plan = self.tools.freeze();
-            self.prepare_context(input, &mut plan, &[], true, source_attempt_id)
-                .await
-        }
-        .await;
-        self.state.model_execution = None;
-        self.publish_snapshot();
-        result
-    }
-
-    async fn run_step(
+    pub(super) fn freeze_step(
         &mut self,
         input: StepInput,
-        mut plan: crate::tool::opaque::ToolPlan,
+        plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
-        recovery_used: &mut bool,
-    ) -> Result<ModelStepOutput, ThreadError> {
-        // The first boundary is admission, not a provider call: the driver may wait for storage
-        // admission before it even knows whether the context hook runs.
-        self.enter_model_execution(ModelExecutionPhase::Admitting);
-        self.ensure_model_admission(&input.cancellation).await?;
-        if input.cancellation.is_cancelled() {
-            return Err(ThreadError::Cancelled);
-        }
+    ) -> Result<StepWork, ThreadError> {
+        self.validate_step_identity(&input)?;
+        self.check_model_admission()?;
+        self.begin_current_step(&input, &plan);
         let correcting = retry_of.as_ref().is_some_and(|source| {
             self.state.attempts.last().is_some_and(|previous| {
                 previous.attempt_id == *source
@@ -395,33 +201,35 @@ impl Owner {
             });
         }
         frozen_input.extend(steering);
-        if retry_of.is_none() || correcting {
-            self.enter_model_execution(ModelExecutionPhase::PreparingContext);
-            self.apply_pending_runtime_facts()?;
-            for refresh in 0..=1 {
-                let prepared = self
-                    .prepare_context(&input, &mut plan, &frozen_input, false, None)
-                    .await;
-                if refresh == 0
-                    && matches!(
-                        prepared,
-                        Err(ThreadError::ContextConflict { .. }
-                            | ThreadError::ExtensionConflict { .. })
-                    )
-                {
-                    continue;
-                }
-                prepared?;
-                break;
-            }
-            self.enter_model_execution(ModelExecutionPhase::Admitting);
-            self.ensure_model_admission(&input.cancellation).await?;
-        }
+
+        Ok(StepWork {
+            input,
+            plan,
+            retry_of,
+            frozen_input,
+            consumed_messages,
+            steering_ids,
+            context: self.state.context.clone(),
+            base_context_revision: self.state.context.revision,
+            tool_projection: None,
+            preparation_refresh: 0,
+            admitted_attempt: None,
+            recovery_error: None,
+        })
+    }
+
+    pub(super) fn build_model_request(&mut self, mut step: StepWork) -> Result<(), ThreadError> {
+        let StepWork {
+            ref input,
+            ref plan,
+            ref frozen_input,
+            ..
+        } = step;
         self.enter_model_execution(ModelExecutionPhase::BuildingRequest);
         let mut records = self.state.context.records.to_vec();
         let changed = !frozen_input.is_empty();
-        records.extend_from_slice(&frozen_input);
-        let mut input_revision = if changed {
+        records.extend_from_slice(frozen_input);
+        let input_revision = if changed {
             self.state
                 .context
                 .revision
@@ -430,7 +238,7 @@ impl Owner {
         } else {
             self.state.context.revision
         };
-        let mut context = ContextSnapshot {
+        let context = ContextSnapshot {
             revision: input_revision,
             records: records.into(),
         };
@@ -442,8 +250,10 @@ impl Owner {
         // this is the admission reservation, and it waits at a storage safety point instead of
         // starting a call whose result could not be retained.
         let output_budget = self
-            .reserve_operation_output(&input.attempt_id, &input.cancellation)
-            .await?;
+            .operation_budgets
+            .get(&input.attempt_id)
+            .cloned()
+            .ok_or(ThreadError::InvalidIdentity)?;
         let (progress, observations) = crate::model::ModelProgressSender::channel(
             self.cold.clone(),
             &self.id,
@@ -456,8 +266,8 @@ impl Owner {
             crate::model::ModelMemberSender::channel(&input.turn_id, &input.attempt_id);
         let members = members.with_output(output_budget.clone());
         let member_registry = members.registry();
-        let mut tools = plan.declarations();
-        let mut request = ModelRequest {
+        let tools = plan.declarations();
+        let request = ModelRequest {
             tool_call_mode: plan.call_mode(),
             solo_tool_ids: plan.solo_tool_ids(),
             progress: Some(progress),
@@ -476,76 +286,51 @@ impl Owner {
             call.tool_call_mode = request.tool_call_mode;
             call.solo_tool_ids = request.solo_tool_ids.clone();
         }
-        // Preparing the request runs inside the model implementation (freezing, encoding, estimating)
-        // before any provider call exists, so this is still preparation, not a wait for output.
+        self.model_members = Some(super::model_members::MemberCall::new(
+            member_receiver,
+            input,
+            member_registry,
+        ));
+        step.base_context_revision = self.state.context.revision;
+        step.context = context;
+        let mut model = self.model.take().ok_or(ThreadError::ModelUnavailable)?;
         self.enter_model_execution(ModelExecutionPhase::PreparingRequest);
-        let prepared = loop {
-            let mut model = self.model.take().ok_or(ThreadError::Closed)?;
-            self.preparing_model_available = model.is_available();
-            let prepared = self
-                .await_with_mailbox(model.prepare(request.clone()))
-                .await;
-            self.model = Some(model);
-            self.preparing_model_available = false;
-            self.publish_snapshot();
-            match prepared {
-                Err(error)
-                    if input.cancellation.is_cancelled()
-                        && error.kind == crate::model::ModelFailureKind::Cancelled =>
-                {
-                    return Err(ThreadError::Cancelled);
-                }
-                Err(error)
-                    if error.kind == crate::model::ModelFailureKind::ContextLimit
-                        && !*recovery_used
-                        && retry_of.is_none() =>
-                {
-                    *recovery_used = true;
-                    let compacted = self
-                        .prepare_context(&input, &mut plan, &frozen_input, true, None)
-                        .await?;
-                    if !compacted {
-                        return Err(ThreadError::Model(Arc::new(error)));
-                    }
-                    let mut records = self.state.context.records.to_vec();
-                    records.extend_from_slice(&frozen_input);
-                    input_revision = if changed {
-                        self.state
-                            .context
-                            .revision
-                            .checked_add(1)
-                            .ok_or(ThreadError::RevisionExhausted)?
-                    } else {
-                        self.state.context.revision
-                    };
-                    context = ContextSnapshot {
-                        revision: input_revision,
-                        records: records.into(),
-                    };
-                    context.validate_complete()?;
-                    tools = plan.declarations();
-                    request.tools = tools.clone();
-                    request.tool_call_mode = plan.call_mode();
-                    request.solo_tool_ids = plan.solo_tool_ids();
-                    request.context = context.clone();
-                    request.committed_private_context = self.state.private_context.clone();
-                    if let Some(call) = &mut self.current_call {
-                        call.tools = request.tools.clone();
-                        call.tool_call_mode = request.tool_call_mode;
-                        call.solo_tool_ids = request.solo_tool_ids.clone();
-                    }
-                    self.enter_model_execution(ModelExecutionPhase::PreparingRequest);
-                }
-                other => break other.map_err(|error| ThreadError::Model(Arc::new(error)))?,
+        let available = model.is_available();
+        self.primary = Some(super::execution::PrimaryWork::new(available, async move {
+            let result = model.prepare(request).await;
+            super::execution::PrimaryCompletion::PreparedModel {
+                model,
+                step,
+                result,
             }
-        };
-        let output_revision = input_revision
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
-        let tool_context = context.clone();
+        }));
+        Ok(())
+    }
+
+    pub(super) fn admit_prepared_model(
+        &mut self,
+        mut step: StepWork,
+        prepared: crate::model::PreparedModelCall,
+    ) -> Result<(), ThreadError> {
+        let StepWork {
+            ref input,
+            ref plan,
+            ref steering_ids,
+            ref context,
+            consumed_messages,
+            ..
+        } = step;
+        let input_revision = context.revision;
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
         }
+        if self.state.context.revision != step.base_context_revision {
+            return Err(ThreadError::ContextConflict {
+                expected: step.base_context_revision,
+                actual: self.state.context.revision,
+            });
+        }
+        let tools = plan.declarations();
         let input_estimate = prepared.input_estimate();
         let request_metadata = prepared.request_metadata().cloned();
         let usage_binding = prepared.usage_binding().cloned();
@@ -564,12 +349,12 @@ impl Owner {
         // the model implementation.
         self.enter_model_execution(ModelExecutionPhase::Admitting);
         self.capacity.admit(input_estimate)?;
-        self.ensure_model_admission(&input.cancellation).await?;
+        self.check_model_admission()?;
         let mut attempts = self.state.attempts.to_vec();
         attempts.push(RequestAttempt {
             turn_id: input.turn_id.clone(),
             attempt_id: input.attempt_id.clone(),
-            retry_of,
+            retry_of: step.retry_of.clone(),
             input_revision,
             status: AttemptStatus::Running,
             usage: None,
@@ -584,12 +369,13 @@ impl Owner {
                 request_metadata,
                 usage_binding,
                 tool_projection: tool_projection.clone(),
-                tools,
+                tools: plan.declarations(),
                 outcome: AttemptOutcome::Running,
                 input_estimate,
             }),
         });
-        self.validate_steering(&steering_ids)?;
+        step.admitted_attempt = attempts.last().cloned();
+        self.validate_steering(steering_ids)?;
         // Consumption can retire the task/permission that still owns an undelivered result.
         // Keep the entire synchronous admission atomic, including the owner fields outside state:
         // no snapshot may expose it until publish has reserved both resource cuts.
@@ -599,9 +385,9 @@ impl Owner {
         let previous_claim = self.pending_output_claim.clone();
         let admission = (|| {
             self.consume_active_input(&input.turn_id, &input.attempt_id)?;
-            self.consume_steering(&steering_ids, &input.turn_id, &input.attempt_id)?;
+            self.consume_steering(steering_ids, &input.turn_id, &input.attempt_id)?;
             self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
-            self.state.context = context;
+            self.state.context = context.clone();
             // Direct input enters confirmed context and loses its temporary ownership in this
             // same synchronous transition. Streaming cannot be published before this point.
             if let Some(call) = &mut self.current_call {
@@ -625,10 +411,12 @@ impl Owner {
                         })
                     });
             self.state.consumed_messages = consumed_messages;
-            // The point a claimed input or message stood for is cleared in the very commit that consumes
-            // that fact. A point whose work this batch did not carry stays exactly as it is, so a stop
-            // right before admission leaves the owed work untouched.
-            self.settle_continuation_claim(ran_queued_work);
+            // Actual submitted content supersedes owed work when its frozen batch is admitted.
+            // Resume already consumed its one-shot token when reserving this execution.
+            if ran_queued_work {
+                self.state.continuation = None;
+            }
+            self.mark_resume_effective();
             self.state.attempts = attempts.clone().into();
             self.state
                 .attempt_ids
@@ -649,14 +437,29 @@ impl Owner {
             return Err(error);
         }
         drop((previous, previous_retry_plan, previous_claim));
-        self.model_members = Some(super::model_members::MemberCall::new(
-            member_receiver,
-            &input,
-            member_registry,
-        ));
-        let exit = self
-            .await_with_mailbox(prepared.execute_with_current())
-            .await;
+        step.tool_projection = tool_projection;
+        let model = self.model.take().ok_or(ThreadError::ModelUnavailable)?;
+        let available = model.is_available();
+        self.primary = Some(super::execution::PrimaryWork::new(available, async move {
+            let exit = prepared.execute_with_current().await;
+            super::execution::PrimaryCompletion::Model { model, step, exit }
+        }));
+        Ok(())
+    }
+
+    pub(super) fn reduce_model_result(
+        &mut self,
+        step: &StepWork,
+        exit: crate::model::ModelCallExit,
+    ) -> Result<ModelStepOutput, ThreadError> {
+        let input = &step.input;
+        let plan = &step.plan;
+        let input_revision = step.context.revision;
+        let output_revision = input_revision
+            .checked_add(1)
+            .ok_or(ThreadError::RevisionExhausted)?;
+        let tool_context = step.context.clone();
+        let tool_projection = step.tool_projection.clone();
         self.current_model_running = false;
         self.current_capture = None;
         self.current_snapshot_missing = exit.current.is_none();
@@ -665,6 +468,17 @@ impl Owner {
         {
             call.phase = current::SavedModelPhase::Streaming { stream };
         }
+        let mut attempts = self.state.attempts.to_vec();
+        if let Some(admitted) = &step.admitted_attempt {
+            if let Some(attempt) = attempts
+                .iter_mut()
+                .find(|a| a.attempt_id == admitted.attempt_id)
+            {
+                *attempt = admitted.clone();
+            } else {
+                attempts.push(admitted.clone());
+            }
+        }
         let result = exit.result.map_err(Arc::new);
         let member_error = self.finish_model_members();
         if input.cancellation.is_cancelled()
@@ -672,7 +486,7 @@ impl Owner {
             && let Err(error) = &result
             && error.kind != crate::model::ModelFailureKind::Cancelled
         {
-            self.input_driver
+            self.policy
                 .fail(Arc::new(ThreadError::Model(error.clone())));
             self.pause_inputs();
         }
@@ -683,7 +497,7 @@ impl Owner {
             )
         } else {
             let violation = result.as_ref().ok().and_then(|output| {
-                self.output_violation(&input.attempt_id, input_revision, &plan, output)
+                self.output_violation(&input.attempt_id, input_revision, plan, output)
             });
             match (result, violation) {
                 (Err(error), _) => (
@@ -790,5 +604,16 @@ impl Owner {
             }))),
             None => result,
         }
+    }
+
+    pub(super) fn finish_step(&mut self, attempt_id: &str) {
+        self.settle_operation_output(attempt_id);
+        self.model_progress = None;
+        self.model_members = None;
+        self.state.model_execution = None;
+        if !self.current_model_running {
+            self.current_capture = None;
+        }
+        self.publish_snapshot();
     }
 }

@@ -369,9 +369,6 @@ pub struct ThreadSnapshot {
     /// Live session availability; replay never constructs physical model resources.
     #[serde(skip)]
     pub model_available: bool,
-    /// Completed executions retained in memory until their atomic result commit succeeds.
-    #[serde(skip)]
-    pub pending_tool_commits: Vec<String>,
     /// Tasks that are still running or whose result has not reached model context yet.
     #[serde(default)]
     pub tasks: std::collections::BTreeMap<String, task::TaskRecord>,
@@ -383,12 +380,12 @@ pub struct ThreadSnapshot {
     pub lifecycle: ThreadLifecycle,
     /// Work this Thread still owes after an interruption; `None` when nothing is owed.
     ///
-    /// It is the one durable logical fact a body-less continuation relies on: it names the work,
-    /// never copies its content, and only references an existing input or inbox message as its
-    /// claim. The commit that admits the claimed model request clears it, so a Thread that finished
-    /// normally never offers an empty continuation.
+    /// The one-shot token names owed work without repeating its content. Resume consumes it
+    /// when its new execution is reserved; the bounded operation cache retains acceptance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<ContinuationPoint>,
+    #[serde(default)]
+    pub continuation_operations: std::collections::VecDeque<ContinuationOperation>,
     /// Identity and phase of the execution this owner currently owns.
     ///
     /// Allocated once the driver has selected work and before any Turn record or storage wait
@@ -405,13 +402,6 @@ pub struct ThreadSnapshot {
     /// never address a newer execution.
     #[serde(default)]
     pub execution_sequence: u64,
-    /// Fixed durable watermark a claimed continuation has to reach before a new model request.
-    ///
-    /// Set in the same commit that admits the claim, so the requirement always names the commit that
-    /// carries it. A host without a cold store never claims durability, so the wait is skipped there
-    /// instead of pretending the fact was saved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub required_durable_sequence: Option<u64>,
     pub context: ContextSnapshot,
     /// Attempts of turns that are still unfinished; their identity and order are needed for
     /// retry, correction and usage observation inside the live Turn.
@@ -610,7 +600,6 @@ impl ThreadSnapshot {
         self.active_context_compaction = None;
         self.tool_progress.clear();
         self.model_available = false;
-        self.pending_tool_commits.clear();
         self.input_execution = Default::default();
         self.persistence = Default::default();
     }
@@ -909,14 +898,12 @@ pub struct ReplaceContext {
 
 /// Durable fact that this Thread still owes work because execution was interrupted.
 ///
-/// A point names the work, never its content: it carries a stable identity, the Turn it came from
-/// when there is one, the reason only when the interruption really established one, the moment it
-/// was formed and an optional claim that references an already admitted input or inbox message.
-/// Claiming never deletes the point; the commit that admits the claimed model request clears it.
+/// The token names owed work and its interruption source without copying content. Resume
+/// consumes it at acceptance, and a later pause or cold activation issues a fresh token.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContinuationPoint {
-    /// Stable identity derived from the forming commit and its source, so it is never reused.
+    /// One-shot identity; current owners issue a fresh UUID for each new pause.
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_turn_id: Option<String>,
@@ -924,8 +911,6 @@ pub struct ContinuationPoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<ContinuationReason>,
     pub created_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claim: Option<ContinuationClaim>,
 }
 
 impl ContinuationPoint {
@@ -945,7 +930,6 @@ impl ContinuationPoint {
             source_turn_id,
             reason,
             created_at: crate::time::unix_seconds(),
-            claim: None,
         }
     }
 
@@ -959,22 +943,6 @@ impl ContinuationPoint {
         reason: Option<ContinuationReason>,
     ) -> bool {
         self.source_turn_id.as_deref() == source_turn_id && self.reason == reason
-    }
-
-    /// The input identity this point is claimed by, when the claim is input-shaped.
-    pub fn claimed_input(&self) -> Option<&str> {
-        match self.claim.as_ref()? {
-            ContinuationClaim::Input { input_id } => Some(input_id),
-            ContinuationClaim::InboxMessage { .. } => None,
-        }
-    }
-
-    /// The inbox message sequence this point is claimed by, when the claim is message-shaped.
-    pub fn claimed_message(&self) -> Option<u64> {
-        match self.claim.as_ref()? {
-            ContinuationClaim::InboxMessage { sequence, .. } => Some(*sequence),
-            ContinuationClaim::Input { .. } => None,
-        }
     }
 }
 
@@ -992,21 +960,6 @@ pub enum ContinuationReason {
     StepLimit,
     /// Execution failed with a typed error.
     ExecutionFailed,
-}
-
-/// Already admitted fact that currently carries one continuation point.
-///
-/// A claim only references an existing input or inbox message; it never creates a second queue, a
-/// pause table or a shadow copy of the operation's state.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    tag = "kind"
-)]
-pub enum ContinuationClaim {
-    Input { input_id: String },
-    InboxMessage { message_id: String, sequence: u64 },
 }
 
 /// One execution this owner owns, from work selection until it is settled.
@@ -1030,7 +983,7 @@ pub struct ActiveExecution {
 pub enum ExecutionPhase {
     /// Work was selected; no Turn record and no storage wait exist yet.
     Preparing,
-    /// Waiting for the claimed facts to become durable.
+    /// Waiting for actual storage or output capacity.
     AwaitingStorage,
     /// Waiting for the Turn admission gate.
     AwaitingAdmission,
@@ -1469,16 +1422,14 @@ pub enum ThreadError {
     InputInUse,
     #[error("a control input carries no user content, so it cannot be built with context")]
     InvalidControlInput,
-    #[error("Thread has no claimable continuation point")]
-    NoContinuation,
+    #[error("the continuation token is stale")]
+    StaleContinuation,
     #[error("input was already consumed")]
     InputConsumed,
     #[error("Thread model session is unavailable; replace the model binding to continue")]
     ModelUnavailable,
     #[error("frozen tool permissions were revoked before admission or execution")]
     ToolPermissionRevoked,
-    #[error("completed tool results are waiting for a successful Thread commit")]
-    PendingToolCommit,
     #[error("task control is not granted to this tool")]
     TaskAccessDenied,
     #[error("task control caller is no longer running")]

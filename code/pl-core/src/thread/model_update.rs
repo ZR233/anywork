@@ -4,9 +4,9 @@ use super::*;
 /// A host-frozen configuration; identity is compared without interpreting provider parameters.
 #[derive(Debug, Clone)]
 pub struct DeferredModelUpdate {
-    identity: String,
-    factory: crate::model::ModelFactory,
-    preparation: Option<context_preparation::ContextPreparer>,
+    pub(super) identity: String,
+    pub(super) factory: crate::model::ModelFactory,
+    pub(super) preparation: Option<context_preparation::ContextPreparer>,
 }
 
 /// Host-owned facts that must still match before a deferred model binding is queued.
@@ -99,29 +99,5 @@ impl Owner {
         self.pending_model_update = pending;
         self.publish()?;
         Ok(self.state.clone())
-    }
-    pub(super) async fn apply_model_update(&mut self) -> Result<(), ThreadError> {
-        let Some(update) = self.pending_model_update.take() else {
-            return Ok(());
-        };
-        if self.model_identity.as_deref() == Some(&update.identity) {
-            return Ok(());
-        }
-        // While cleanup/open is in flight, reverting to the previous identity is a real update.
-        self.model_identity = None;
-        match self.replace_model(update.factory.clone()).await {
-            Ok(()) => {
-                self.model_identity = Some(update.identity);
-                self.context_preparation = update.preparation;
-                Ok(())
-            }
-            Err(error) => {
-                // A newer configuration can supersede a failed update while cleanup is awaited.
-                if self.pending_model_update.is_none() {
-                    self.pending_model_update = Some(update);
-                }
-                Err(error)
-            }
-        }
     }
 }

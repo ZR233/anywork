@@ -12,34 +12,39 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::ContinueInput(
-                input, options, reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::ContinueInput(input, options, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Continues already owed work with a body-less control input.
-    ///
-    /// `input_id` is the operation identity, so a repeated call answers with the original receipt
-    /// instead of claiming the continuation again or waking execution a second time. The control
-    /// input is built by this trusted entry point, so it can never be confused with a user message,
-    /// and it carries no user content of its own.
-    ///
-    /// # Errors
-    /// Rejects a Thread that owes no claimable continuation, a pending interaction or permission, a
-    /// closing owner and a storage fault or pressure, without consuming or claiming anything.
-    pub async fn continue_thread(
+    /// Accepts a typed, idempotent Resume control without manufacturing user input.
+    pub async fn resume_execution(
         &self,
-        input_id: String,
+        request: ResumeRequest,
         options: input::InputDriverOptions,
-    ) -> Result<input::InputRecord, ThreadError> {
+    ) -> Result<ContinuationOperation, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::ContinueThread(
-                input_id, options, reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::Resume(request, options, reply),
+            ))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    pub async fn read_resume(
+        &self,
+        request: ResumeRequest,
+    ) -> Result<ContinuationRead, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::ReadResume(request, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -58,9 +63,9 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::ResumeInputs(
-                options, reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::ResumeInputs(options, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -73,8 +78,10 @@ impl ThreadHandle {
     /// Returns an error if the owner is no longer reachable.
     pub async fn pause_inputs(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::PauseInputs(reply))
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::PauseInputs(reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)
@@ -89,9 +96,9 @@ impl ThreadHandle {
         input: input::ThreadInput,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::Input(
-                input, None, reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::Input(input, None, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -112,11 +119,9 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::Input(
-                input,
-                Some(options),
-                reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::Input(input, Some(options), reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -129,9 +134,9 @@ impl ThreadHandle {
     /// Rejects missing, consumed or currently preparing input identities.
     pub async fn discard_input(&self, id: String) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(crate::thread::mailbox::MailboxCommand::DiscardInput(
-                id, reply,
+        self.commands
+            .send(Command::Control(
+                crate::thread::mailbox::MailboxCommand::DiscardInput(id, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;

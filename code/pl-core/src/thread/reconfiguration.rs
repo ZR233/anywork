@@ -48,7 +48,6 @@ impl Owner {
                 .values()
                 .any(|task| task.status == task::TaskStatus::Running)
             || !self.pending.is_empty()
-            || !self.uncommitted_tools.is_empty()
         {
             return Err(ThreadError::InputRequiresIdle);
         }

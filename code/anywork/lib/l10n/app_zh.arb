@@ -2347,7 +2347,6 @@
   "composerBlockerUnknown": "上一次操作未能确认，请先核对会话状态再重试。",
   "composerFailureChildRequiresParentScheduling": "子智能体只能由主智能体调度。",
   "composerFailureContinuationUnavailable": "当前没有可继续的中断工作。",
-  "composerFailureContinuationClaimed": "继续已被受理，正在准备。",
   "composerFailureStaleContinuation": "观察到的继续点已经过期。",
   "composerFailureStaleExecution": "观察到的执行已结束或被新的执行替代。",
   "composerFailureExecutionInProgress": "会话仍在执行或清理中。",

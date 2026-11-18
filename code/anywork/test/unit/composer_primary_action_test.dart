@@ -33,15 +33,6 @@ final _continuation = ContinuationView(
   sourceTurnId: 'turn-1',
   reason: ContinuationReason.userStop,
   createdAt: DateTime.utc(2026, 1, 1),
-  claimed: false,
-);
-
-final _claimed = ContinuationView(
-  id: 'continuation-1',
-  sourceTurnId: 'turn-1',
-  reason: ContinuationReason.userStop,
-  createdAt: DateTime.utc(2026, 1, 1),
-  claimed: true,
 );
 
 ComposerPrimaryAction _resolve({
@@ -114,7 +105,7 @@ void main() {
     test('新执行替代继续请求后，不受旧pending/accepted继续回执锁定', () {
       final action = _resolve(
         execution: _execution,
-        continuation: _claimed,
+        continuation: _continuation,
         continuationAccepted: true,
         continuationPending: true,
         hasContent: true,
@@ -221,22 +212,22 @@ void main() {
   });
 
   group('continuation', () {
-    test('未认领继续点的空输入必须显式点击，回车不提交', () {
+    test('未消费继续点的空输入必须显式点击，回车不提交', () {
       final action = _resolve(continuation: _continuation);
       expect(action.kind, ComposerPrimaryActionKind.continueConversation);
       expect(action.enabled, isTrue);
       expect(action.enterSubmits, isFalse);
     });
 
-    test('未认领继续点有草稿时发送并继续', () {
+    test('未消费继续点有草稿时发送并继续', () {
       final action = _resolve(continuation: _continuation, hasContent: true);
       expect(action.kind, ComposerPrimaryActionKind.sendAndContinue);
       expect(action.enabled, isTrue);
       expect(action.enterSubmits, isTrue);
     });
 
-    test('已认领的继续点显示正在继续且不可重复提交', () {
-      for (final continuation in [_claimed, _continuation]) {
+    test('已受理的继续操作显示正在继续且不可重复提交', () {
+      for (final continuation in [null, _continuation]) {
         final action = _resolve(
           continuation: continuation,
           continuationAccepted: true,
@@ -245,7 +236,7 @@ void main() {
         expect(action.enabled, isFalse);
       }
       expect(
-        _resolve(continuation: _claimed).kind,
+        _resolve(continuation: _continuation, continuationAccepted: true).kind,
         ComposerPrimaryActionKind.continuing,
       );
     });
@@ -273,7 +264,7 @@ void main() {
     test('继续点已被执行取代时回到运行中按钮', () {
       final action = _resolve(
         execution: _execution,
-        continuation: _claimed,
+        continuation: _continuation,
         continuationAccepted: true,
       );
       expect(action.kind, ComposerPrimaryActionKind.stop);

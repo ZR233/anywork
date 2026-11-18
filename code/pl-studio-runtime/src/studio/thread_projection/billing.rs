@@ -139,6 +139,7 @@ mod tests {
             permissions: Default::default(),
             wake_messages_through: None,
             inputs: Default::default(),
+            continuations: Default::default(),
             tasks: Default::default(),
             thread_id: "thread".into(),
             sequence: 1,

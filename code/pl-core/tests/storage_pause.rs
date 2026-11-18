@@ -75,6 +75,13 @@ struct StoreState {
     verified_generation: Option<u64>,
     reject_terminal: bool,
     terminal_presentations: Vec<Arc<ThreadEffectBatch>>,
+    denied_operation: Option<String>,
+    deny_receipts: bool,
+    reservations: Vec<(String, u64)>,
+    charges: Vec<(String, u64)>,
+    releases: BTreeSet<String>,
+    started_calls: BTreeSet<String>,
+    known_deliveries: Vec<pl_core::thread::ToolDelivery>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +110,13 @@ impl GatedStore {
                 verified_generation: None,
                 reject_terminal: false,
                 terminal_presentations: Vec::new(),
+                denied_operation: None,
+                deny_receipts: false,
+                reservations: Vec::new(),
+                charges: Vec::new(),
+                releases: BTreeSet::new(),
+                started_calls: BTreeSet::new(),
+                known_deliveries: Vec::new(),
             })),
             changed: Arc::new(Mutex::new(Some(changed))),
             subscriptions: Arc::new(AtomicUsize::new(0)),
@@ -203,13 +217,300 @@ fn storage_error() -> ColdStoreError {
     }
 }
 
+#[derive(Debug)]
+struct BudgetTool(mpsc::UnboundedSender<String>, Duration);
+
+impl pl_agent_tool::Tool for BudgetTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text("BudgetTool", "Observe actual starts").unwrap()
+            });
+        &DEFINITION
+    }
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.0.send(context.call_id).unwrap();
+        tokio::time::sleep(self.1).await;
+        Ok(ToolOutput::new(input.clone(), vec![text(input.content())]))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn sliced_tool_batch_services_control_and_reports_unstarted_capacity_failure_in_order() {
+    let store = GatedStore::new(Failure::Admission);
+    {
+        let mut state = store.state.lock().unwrap();
+        state.armed = false;
+        state.denied_operation = Some("task-metadata:batch-tool-8".into());
+    }
+    let ids: Vec<_> = (0..17).map(|index| format!("tool-{index}")).collect();
+    let (model, requests) = ScriptedModel::new(&ids.iter().map(String::as_str).collect::<Vec<_>>());
+    let thread = ThreadHandle::start("sliced-batch".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    let (started, mut starts) = mpsc::unbounded_channel();
+    thread
+        .register_tools(
+            ids.iter()
+                .enumerate()
+                .map(|(index, id)| {
+                    Registration::prepare(id.clone(), OpaquePayload::text(id.as_str()))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(BudgetTool(
+                            started.clone(),
+                            Duration::from_millis(200 - index as u64),
+                        )))
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let now = tokio::time::Instant::now();
+    let run = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("batch")).await })
+    };
+    starts.recv().await.unwrap();
+    within(thread.set_capacity(Default::default()))
+        .await
+        .unwrap();
+    assert_eq!(
+        now.elapsed(),
+        Duration::ZERO,
+        "control must be applied while all tools are pending"
+    );
+    let mut executed = BTreeSet::new();
+    while executed.len() < 15 {
+        executed.insert(starts.recv().await.unwrap());
+    }
+    assert_eq!(
+        now.elapsed(),
+        Duration::ZERO,
+        "more than eight tools start before the shared deadline"
+    );
+    assert!(!executed.contains("batch-tool-8"));
+    within(run).await.unwrap().unwrap();
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        2,
+        "capacity rejection is final and must not invoke a tool or API retry"
+    );
+    let paired: Vec<_> = requests[1]
+        .records
+        .iter()
+        .filter_map(|record| match &record.source {
+            ContextSource::ToolResult { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        paired,
+        ids.iter()
+            .map(|id| format!("batch-{id}"))
+            .collect::<Vec<_>>()
+    );
+    let failure = store
+        .state
+        .lock()
+        .unwrap()
+        .known_deliveries
+        .iter()
+        .find(|delivery| delivery.call_id == "batch-tool-8")
+        .unwrap()
+        .clone();
+    let error: serde_json::Value =
+        serde_json::from_str(failure.output.payload().content()).unwrap();
+    assert_eq!(error["code"], "capacity_unavailable");
+    assert_eq!(error["notStarted"], true);
+    assert!(matches!(
+        failure.outcome,
+        pl_core::thread::ToolOutcome::Failed(_)
+    ));
+    {
+        let state = store.state.lock().unwrap();
+        assert!(!state.started_calls.contains("batch-tool-8"));
+        assert_eq!(state.started_calls.len(), 16);
+        assert!(
+            state
+                .reservations
+                .iter()
+                .any(|(id, bytes)| id == "task:batch-tool-0" && *bytes == 16 * 1024 * 1024)
+        );
+        assert!(
+            state
+                .charges
+                .iter()
+                .all(|(_, bytes)| *bytes < 16 * 1024 * 1024),
+            "an output ceiling must not be precharged"
+        );
+        assert_eq!(
+            state
+                .releases
+                .iter()
+                .filter(|id| id.starts_with("task-metadata:"))
+                .count(),
+            16
+        );
+    }
+    drop(requests);
+    thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn model_output_admission_waits_on_capacity_without_preparing_or_consuming_again() {
+    let store = GatedStore::new(Failure::Admission);
+    {
+        let mut state = store.state.lock().unwrap();
+        state.armed = false;
+        state.denied_operation = Some("attempt-budget-wait:0".into());
+    }
+    let (model, requests) = ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("model-capacity".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    let run = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("budget-wait")).await })
+    };
+    await_snapshot(&thread, |snapshot| {
+        snapshot.persistence.execution_phase == StorageExecutionPhase::PausedForStorage
+    })
+    .await;
+    assert!(
+        requests.lock().unwrap().is_empty(),
+        "capacity waits before model.prepare"
+    );
+    thread
+        .send_message(pl_core::thread::inbox::ThreadMessage {
+            id: "after-freeze".into(),
+            source_id: "test".into(),
+            kind: Default::default(),
+            payload: OpaquePayload::text("late"),
+            context: vec![text("late")],
+        })
+        .await
+        .unwrap();
+    let recovered = tokio::time::Instant::now();
+    store.state.lock().unwrap().denied_operation = None;
+    store.notify();
+    run.await.unwrap().unwrap();
+    assert_eq!(recovered.elapsed(), Duration::ZERO);
+    let requests = requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0]
+            .records
+            .iter()
+            .filter(|record| matches!(record.source, ContextSource::User))
+            .count(),
+        1
+    );
+    assert_eq!(
+        thread.snapshot().inbox.len(),
+        1,
+        "a later message is not consumed by the frozen request"
+    );
+    assert!(!thread.snapshot().persistence.pressure_paused);
+    thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn receipt_capacity_recovery_uses_a_notification_without_another_model_request_or_timer() {
+    let store = GatedStore::new(Failure::Admission);
+    {
+        let mut state = store.state.lock().unwrap();
+        state.armed = false;
+        state.deny_receipts = true;
+    }
+    let (model, requests) = ScriptedModel::new(&["first", "second"]);
+    let thread =
+        ThreadHandle::start("receipt-capacity".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    let (started, mut starts) = mpsc::unbounded_channel();
+    thread
+        .register_tools(
+            ["first", "second"]
+                .map(|id| {
+                    Registration::prepare(id.into(), OpaquePayload::text(id))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(BudgetTool(
+                            started.clone(),
+                            Duration::ZERO,
+                        )))
+                })
+                .into_iter()
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let run = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("receipt")).await })
+    };
+    loop {
+        thread.set_capacity(Default::default()).await.unwrap();
+        if store
+            .state
+            .lock()
+            .unwrap()
+            .reservations
+            .iter()
+            .any(|(id, _)| id.starts_with("batch-receipts:"))
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert!(starts.try_recv().is_err());
+    let recovered = tokio::time::Instant::now();
+    store.state.lock().unwrap().deny_receipts = false;
+    store.notify();
+    starts.recv().await.unwrap();
+    starts.recv().await.unwrap();
+    assert_eq!(recovered.elapsed(), Duration::ZERO);
+    run.await.unwrap().unwrap();
+    assert_eq!(requests.lock().unwrap().len(), 2);
+    thread.close().await.unwrap();
+}
+
 impl ColdStore for GatedStore {
     fn reserve_operation_output(
         &self,
         _thread_id: &str,
-        _operation_id: &str,
+        operation_id: &str,
         max_bytes: u64,
     ) -> Result<u64, ColdStoreError> {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.reservations.push((operation_id.into(), max_bytes));
+            if state.denied_operation.as_deref() == Some(operation_id)
+                || (state.deny_receipts && operation_id.starts_with("batch-receipts:"))
+            {
+                return Err(storage_error());
+            }
+        }
+        if operation_id.starts_with("task-metadata:") || operation_id.starts_with("batch-receipts:")
+        {
+            return Ok(max_bytes);
+        }
         Ok(self
             .state
             .lock()
@@ -221,9 +522,18 @@ impl ColdStore for GatedStore {
     fn charge_operation_output(
         &self,
         _thread_id: &str,
-        _operation_id: &str,
+        operation_id: &str,
         accepted_bytes: u64,
     ) -> Result<(), ColdStoreError> {
+        self.state
+            .lock()
+            .unwrap()
+            .charges
+            .push((operation_id.into(), accepted_bytes));
+        if operation_id.starts_with("task-metadata:") || operation_id.starts_with("batch-receipts:")
+        {
+            return Ok(());
+        }
         let limit = self.state.lock().unwrap().operation_limit;
         if limit.is_some_and(|limit| accepted_bytes > limit) {
             return Err(storage_error());
@@ -231,7 +541,13 @@ impl ColdStore for GatedStore {
         Ok(())
     }
 
-    fn release_operation_output(&self, _thread_id: &str, _operation_id: &str) {}
+    fn release_operation_output(&self, _thread_id: &str, operation_id: &str) {
+        self.state
+            .lock()
+            .unwrap()
+            .releases
+            .insert(operation_id.into());
+    }
 
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
         let state = self.state.lock().unwrap();
@@ -302,6 +618,17 @@ impl ColdStore for GatedStore {
         if state.active && self.failure == Failure::Admission {
             return Err(storage_error());
         }
+        for task in write
+            .effect
+            .tasks
+            .iter()
+            .filter(|task| task.status == TaskStatus::Running)
+        {
+            state.started_calls.insert(task.call_id.clone());
+        }
+        state
+            .known_deliveries
+            .extend(write.effect.deliveries.iter().cloned());
         state.accepted.insert(write.effect.sequence);
         Ok(())
     }
@@ -1122,6 +1449,150 @@ struct BlockingObligation {
     release: tokio_util::sync::CancellationToken,
     attempts: AtomicUsize,
     stored: AtomicUsize,
+}
+
+struct ModelDuringRetry {
+    inner: ScriptedModel,
+    active: tokio_util::sync::CancellationToken,
+    finish: tokio_util::sync::CancellationToken,
+}
+
+impl pl_core::model::ModelSession for ModelDuringRetry {
+    async fn prepare(
+        &mut self,
+        request: pl_core::model::ModelRequest,
+    ) -> Result<pl_core::model::PreparedModelCall, pl_core::model::ModelError> {
+        if request
+            .context
+            .records
+            .iter()
+            .any(|record| matches!(record.source, ContextSource::ToolResult { .. }))
+        {
+            let active = self.active.clone();
+            let finish = self.finish.clone();
+            Ok(pl_core::model::PreparedModelCall::new(async move {
+                active.cancel();
+                finish.cancelled().await;
+                Ok(support::response(&request, vec![]))
+            }))
+        } else {
+            self.inner.prepare(request).await
+        }
+    }
+    async fn close(&mut self) -> Result<(), pl_core::model::ModelError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FaultDuringModel {
+    active: tokio_util::sync::CancellationToken,
+    obligation: Arc<BlockingObligation>,
+}
+
+impl pl_agent_tool::Tool for FaultDuringModel {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<pl_agent_tool::ToolDefinition> =
+            std::sync::LazyLock::new(|| {
+                pl_agent_tool::ToolDefinition::text(
+                    "FaultDuringModel",
+                    "Archive failure while model is running",
+                )
+                .unwrap()
+            });
+        &DEFINITION
+    }
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.active.cancelled().await;
+        let fault = Arc::new(
+            OutputStorageFault::new(StorageFaultKind::WriteFailed, Arc::new(storage_error()))
+                .with_obligation(self.obligation.clone()),
+        );
+        context
+            .tasks
+            .unwrap()
+            .report_output_storage_fault(fault)
+            .await
+            .unwrap();
+        Ok(ToolOutput::new(input, vec![text("known output")]))
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn archive_retry_keeps_polling_the_original_model_future() {
+    let active = tokio_util::sync::CancellationToken::new();
+    let finish = tokio_util::sync::CancellationToken::new();
+    let obligation = Arc::new(BlockingObligation {
+        entered: Default::default(),
+        release: Default::default(),
+        attempts: AtomicUsize::new(0),
+        stored: AtomicUsize::new(0),
+    });
+    let (inner, requests) = ScriptedModel::new(&["archive"]);
+    let thread = ThreadHandle::start(
+        "model-during-retry".into(),
+        DynModelSession::new(ModelDuringRetry {
+            inner,
+            active: active.clone(),
+            finish: finish.clone(),
+        }),
+    )
+    .unwrap();
+    let store = GatedStore::new(Failure::Admission);
+    store.state.lock().unwrap().armed = false;
+    thread
+        .attach_storage(ColdStoreHandle::new(store))
+        .await
+        .unwrap();
+    thread
+        .register_tools(vec![
+            Registration::prepare("archive".into(), OpaquePayload::text("archive"))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(FaultDuringModel {
+                    active: active.clone(),
+                    obligation: obligation.clone(),
+                })),
+        ])
+        .await
+        .unwrap();
+    let run = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("retry")).await })
+    };
+    within(active.cancelled()).await;
+    await_snapshot(&thread, |snapshot| {
+        !snapshot.persistence.output_obligations.is_empty()
+    })
+    .await;
+    let retry = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.retry_output_storage().await })
+    };
+    within(obligation.entered.cancelled()).await;
+    finish.cancel();
+    let result = within(run).await.unwrap().unwrap();
+    assert_eq!(result.outcome, TurnOutcome::Completed);
+    assert!(
+        !retry.is_finished(),
+        "model completed while the original archive retry is still blocked"
+    );
+    assert_eq!(
+        requests.lock().unwrap().len(),
+        1,
+        "only the original first prepare, never an extra API retry"
+    );
+    assert_eq!(obligation.attempts.load(Ordering::SeqCst), 1);
+    obligation.release.cancel();
+    within(retry).await.unwrap().unwrap();
+    thread.close().await.unwrap();
 }
 
 impl OutputRetryObligation for BlockingObligation {

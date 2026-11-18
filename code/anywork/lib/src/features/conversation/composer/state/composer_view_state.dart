@@ -144,13 +144,11 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
       continuation != null &&
       continueCommand?.target.label == continuation!.id &&
       (continueCommand?.isPending ?? false) &&
-      !(continueCommand?.accepted ?? false) &&
-      !continuation!.claimed;
+      !(continueCommand?.accepted ?? false);
   bool get continuationAccepted =>
-      continuation?.claimed == true ||
       (continuation != null &&
-          continueCommand?.target.label == continuation!.id &&
-          (continueCommand?.accepted ?? false));
+      continueCommand?.target.label == continuation!.id &&
+      (continueCommand?.accepted ?? false));
   ComposerBlocker? get operationFailure {
     final command =
         continueCommand?.phase == CommandPhase.failed &&
