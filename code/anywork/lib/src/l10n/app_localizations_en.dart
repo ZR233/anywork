@@ -1700,6 +1700,13 @@ class AppLocalizationsEn extends AppLocalizations {
       'The SSH alias for this project is no longer in ~/.ssh/config';
 
   @override
+  String get statisticsAcpTextEstimate => 'ACP text estimate';
+
+  @override
+  String get acpEstimatedOutputSpeed =>
+      'Estimated ACP text speed (includes the first-chunk wait)';
+
+  @override
   String get statusLastConfirmedAgentTokenSpeed =>
       'Last confirmed output speed (includes the first-token wait)';
 

@@ -411,7 +411,7 @@ async fn run_session<S: Future<Output = CancellationSignal>>(
             return Ok(());
         };
         match event {
-            AcpSessionEvent::Update { update } => {
+            AcpSessionEvent::Update { update, .. } => {
                 if let SessionUpdate::AgentMessageChunk(chunk) = update.update
                     && let ContentBlock::Text(text) = chunk.content
                 {

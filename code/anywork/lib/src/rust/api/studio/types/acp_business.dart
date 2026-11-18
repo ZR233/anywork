@@ -14,7 +14,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp_business.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 class BridgeAcpAgentCapabilities {
   final bool image;
@@ -267,6 +267,7 @@ class BridgeAcpCompletedRun {
   final BridgeAcpPromptResult result;
   final String summary;
   final bool truncated;
+  final BridgeAcpTextPerformance? textPerformance;
 
   const BridgeAcpCompletedRun({
     required this.run,
@@ -274,6 +275,7 @@ class BridgeAcpCompletedRun {
     required this.result,
     required this.summary,
     required this.truncated,
+    this.textPerformance,
   });
 
   @override
@@ -282,7 +284,8 @@ class BridgeAcpCompletedRun {
       completionSequence.hashCode ^
       result.hashCode ^
       summary.hashCode ^
-      truncated.hashCode;
+      truncated.hashCode ^
+      textPerformance.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -293,7 +296,8 @@ class BridgeAcpCompletedRun {
           completionSequence == other.completionSequence &&
           result == other.result &&
           summary == other.summary &&
-          truncated == other.truncated;
+          truncated == other.truncated &&
+          textPerformance == other.textPerformance;
 }
 
 @freezed
@@ -913,6 +917,7 @@ sealed class BridgeAcpSessionEvent with _$BridgeAcpSessionEvent {
   }) = BridgeAcpSessionEvent_Initialized;
   const factory BridgeAcpSessionEvent.update({
     required BridgeAcpSessionNotification update,
+    BridgeAcpTextPerformance? textPerformance,
   }) = BridgeAcpSessionEvent_Update;
   const factory BridgeAcpSessionEvent.ready({
     required BridgeAcpNewSessionResponse response,
@@ -1059,6 +1064,27 @@ enum BridgeAcpStopReason {
   maxTurnRequests,
   refusal,
   cancelled,
+}
+
+class BridgeAcpTextPerformance {
+  final BigInt estimatedOutputTokens;
+  final BigInt responseMillis;
+
+  const BridgeAcpTextPerformance({
+    required this.estimatedOutputTokens,
+    required this.responseMillis,
+  });
+
+  @override
+  int get hashCode => estimatedOutputTokens.hashCode ^ responseMillis.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpTextPerformance &&
+          runtimeType == other.runtimeType &&
+          estimatedOutputTokens == other.estimatedOutputTokens &&
+          responseMillis == other.responseMillis;
 }
 
 enum BridgeAcpWorkspaceMode { local, worktree }

@@ -4,6 +4,8 @@
 
 use super::*;
 
+pub(crate) const ACP_TEXT_ESTIMATE: &str = "acpTextEstimate";
+
 pub(crate) const PERFORMANCE_SAMPLE_LIMIT: usize = 3_000;
 
 /// 一条成功调用样本；未测得的时延保持 `None`，绝不折叠成零时延。
@@ -26,6 +28,27 @@ pub(super) struct PerformanceSample {
     pub(super) ttft_millis: Option<i64>,
     pub(super) decode_millis: Option<i64>,
     pub(super) response_millis: Option<i64>,
+}
+
+impl PerformanceSample {
+    pub(super) fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + self.thread_id.len()
+            + self.call_id.len()
+            + [
+                &self.purpose,
+                &self.account_id,
+                &self.account_display_name,
+                &self.model_id,
+                &self.sent_model,
+                &self.reported_model,
+                &self.effort,
+            ]
+            .into_iter()
+            .flatten()
+            .map(String::len)
+            .sum::<usize>()
+    }
 }
 
 /// 从轻量日志记录构造性能样本；旧统计口径的记录只保留为原始调用日志。
@@ -196,9 +219,10 @@ pub(super) async fn read_summary(db: &impl ConnectionTrait) -> Result<Vec<Perfor
          WHERE account_id IS NOT NULL AND account_id<>'' AND model_id IS NOT NULL AND model_id<>''
            AND throughput_valid=1 AND output_tokens>0 AND response_millis>0
            AND usage_status NOT IN ('invalid','legacyUnknown')
+           AND (purpose IS NULL OR purpose<>?)
          GROUP BY account_id,model_id,effort
          ORDER BY account_id,model_id,effort IS NOT NULL,effort",
-            vec![],
+            vec![ACP_TEXT_ESTIMATE.into()],
         ))
         .await?;
     rows.iter().map(performance_summary_row).collect()

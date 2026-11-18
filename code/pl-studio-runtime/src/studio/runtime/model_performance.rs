@@ -1048,6 +1048,9 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
 
 fn ttft_availability(row: &PerformanceSampleRow) -> crate::MetricAvailability {
     use crate::{FirstOutputSource, MetricAvailability as Availability};
+    if row.purpose.as_deref() == Some(crate::studio::storage::calls::ACP_TEXT_ESTIMATE) {
+        return Availability::NotCollected;
+    }
     match (row.ttft_millis, row.decode_millis, row.response_millis) {
         (Some(ttft), Some(decode), Some(response))
             if ttft <= response && decode == response - ttft =>

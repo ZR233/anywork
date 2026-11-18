@@ -64,7 +64,13 @@ pub struct OpenRequest {
     /// Some 要求 initialize.agentInfo.version 精确相等；None 仅校验 ACP V1。
     pub expected_server_version: Option<String>,
     pub prepare: Option<PrepareOpen>,
+    /// Called once for a successful text sample. The callback must only enqueue
+    /// data and must not call back into the session.
+    pub on_text_performance: Option<OnTextPerformance>,
 }
+
+pub type OnTextPerformance =
+    Arc<dyn Fn(RunId, TextPerformance, Option<String>, Option<String>) + Send + Sync>;
 
 impl fmt::Debug for OpenRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -129,6 +135,14 @@ pub struct Completed {
     pub result: Result<PromptResponse, agent_client_protocol::Error>,
     pub summary: String,
     pub truncated: bool,
+    pub text_performance: Option<TextPerformance>,
+}
+
+/// Client-observed visible text and elapsed time from prompt dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPerformance {
+    pub characters: u64,
+    pub response_millis: u64,
 }
 
 /// 只读当前态，不包含 transcript；配置和模式保持官方类型及 None/空列表差异。
@@ -328,6 +342,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         last_completed: None,
         completion_changes: Some(completion_changes),
         prompt_instructions: None,
+        on_text_performance: request.on_text_performance.clone(),
         next_run: 0,
         permission_sequence: 0,
         permissions: Vec::new(),
@@ -375,6 +390,21 @@ struct Active {
     summary: String,
     truncated: bool,
     cancelling: bool,
+    started: tokio::time::Instant,
+    text_characters: Option<u64>,
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+impl Active {
+    fn text_performance(&self) -> Option<TextPerformance> {
+        let characters = self.text_characters.filter(|count| *count > 0)?;
+        let response_millis = u64::try_from(self.started.elapsed().as_millis()).ok()?;
+        (response_millis > 0 && !self.cancelling).then_some(TextPerformance {
+            characters,
+            response_millis,
+        })
+    }
 }
 
 struct Permission {
@@ -401,6 +431,7 @@ pub(crate) struct State {
     last_completed: Option<Completed>,
     completion_changes: Option<watch::Sender<u64>>,
     prompt_instructions: Option<String>,
+    on_text_performance: Option<OnTextPerformance>,
     next_run: u64,
     permission_sequence: u64,
     permissions: Vec<Permission>,
@@ -497,6 +528,7 @@ impl State {
         if self.finished || self.session_id.as_ref() != Some(&notification.session_id) {
             return;
         }
+        let mut text_performance = None;
         match &notification.update {
             SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = Some(update.config_options.clone());
@@ -507,6 +539,25 @@ impl State {
                 }
             }
             SessionUpdate::AgentMessageChunk(chunk) => {
+                if let Some(run) = &mut self.active {
+                    match &chunk.content {
+                        ContentBlock::Text(text)
+                            if !text.text.is_empty()
+                                && text
+                                    .annotations
+                                    .as_ref()
+                                    .and_then(|annotations| annotations.audience.as_ref())
+                                    .is_none_or(|audience| audience.contains(&Role::User)) =>
+                        {
+                            run.text_characters = run.text_characters.and_then(|count| {
+                                count.checked_add(text.text.chars().count() as u64)
+                            });
+                            text_performance = run.text_performance();
+                        }
+                        ContentBlock::Text(_) => {}
+                        _ => run.text_characters = None,
+                    }
+                }
                 if let (Some(run), ContentBlock::Text(text)) = (&mut self.active, &chunk.content)
                     && !run.truncated
                 {
@@ -519,10 +570,15 @@ impl State {
                     run.truncated |= end != text.text.len();
                 }
             }
+            SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_) => {
+                if let Some(run) = &mut self.active {
+                    run.text_characters = None;
+                }
+            }
             _ => {}
         }
         let size = message_size(&notification);
-        self.emit(Event::Update(notification), size);
+        self.emit(Event::Update(notification, text_performance), size);
     }
 
     pub(crate) fn setup(
@@ -603,6 +659,11 @@ impl State {
         request: RequestPermissionRequest,
         responder: Responder<RequestPermissionResponse>,
     ) {
+        if self.session_id.as_ref() == Some(&request.session_id)
+            && let Some(run) = &mut self.active
+        {
+            run.text_characters = None;
+        }
         let observable = self.events.gap().is_none();
         if !observable {
             self.cancel_permissions();
@@ -1140,11 +1201,26 @@ fn start_prompt(
         instance: owner.instance,
         sequence: owner.next_run,
     };
+    let selected = |category| {
+        owner.config_options.as_ref()?.iter().find_map(|option| {
+            if option.category.as_ref() == Some(&category)
+                && let SessionConfigKind::Select(select) = &option.kind
+            {
+                Some(select.current_value.to_string())
+            } else {
+                None
+            }
+        })
+    };
     owner.active = Some(Active {
         id,
         summary: String::new(),
         truncated: false,
         cancelling: false,
+        started: tokio::time::Instant::now(),
+        text_characters: Some(0),
+        model: selected(SessionConfigOptionCategory::Model),
+        effort: selected(SessionConfigOptionCategory::ThoughtLevel),
     });
     let state = state.clone();
     let result = connection
@@ -1154,6 +1230,16 @@ fn start_prompt(
             if !owner.finished && owner.active.as_ref().map(|run| run.id) == Some(id) {
                 let active = owner.active.take().expect("matched run");
                 owner.cancel_permissions();
+                let text_performance = result
+                    .as_ref()
+                    .ok()
+                    .filter(|response| response.stop_reason == StopReason::EndTurn)
+                    .and_then(|_| active.text_performance());
+                if let (Some(report), Some(performance)) =
+                    (&owner.on_text_performance, text_performance)
+                {
+                    report(id, performance, active.model, active.effort);
+                }
                 let completed = Completed {
                     run: id,
                     completion_sequence: owner
@@ -1163,6 +1249,7 @@ fn start_prompt(
                     result,
                     summary: active.summary,
                     truncated: active.truncated,
+                    text_performance,
                 };
                 let size = completed
                     .result
@@ -1607,6 +1694,7 @@ mod tests {
                 cwd: "/workspace/real-business".into(),
                 intent,
                 cleanup,
+                on_text_performance: None,
                 expected_server_version: scenario.expected_server_version.clone(),
                 prepare: scenario.prepare.clone(),
             });
@@ -2143,7 +2231,7 @@ mod tests {
                 text("received during host preparation"),
             )])
             .await;
-        assert!(matches!(harness.event().await, Event::Update(_)));
+        assert!(matches!(harness.event().await, Event::Update(..)));
         assert!(!harness.session.snapshot().await.unwrap().ready);
         assert!(matches!(
             harness.session.submit(input("too early")).await,
@@ -2207,6 +2295,7 @@ mod tests {
             cwd: "/unused".into(),
             intent: Open::New,
             cleanup: CleanupBudget::new(Duration::from_secs(2)),
+            on_text_performance: None,
             expected_server_version: None,
             prepare: Some(Arc::new(|_| {
                 panic!("invalid protocol must not invoke prepare")
@@ -2368,6 +2457,67 @@ mod tests {
         }
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn text_performance_counts_only_the_active_pure_text_turn() {
+        let mut harness = Harness::new(Open::New, Scenario::default());
+        harness.ready().await;
+
+        for (index, disqualify) in [false, true].into_iter().enumerate() {
+            let run = harness.session.submit(input("text")).await.unwrap();
+            harness
+                .wait(|state| state.prompt_requests.len() == index + 1)
+                .await;
+            tokio::time::advance(Duration::from_millis(300)).await;
+            harness.updates(vec![update("business", text("风🌧"))]).await;
+            let Event::Update(_, Some(live)) = harness.event().await else {
+                panic!("expected live sample before the prompt response");
+            };
+            assert_eq!(
+                live,
+                TextPerformance {
+                    characters: 2,
+                    response_millis: 300
+                }
+            );
+
+            if disqualify {
+                harness.control.send(PeerCommand::Permission).await.unwrap();
+                let Event::Permission { id, .. } = harness.event().await else {
+                    panic!("expected permission request");
+                };
+                harness.session.answer_permission(id, None).await.unwrap();
+            }
+            tokio::time::advance(Duration::from_millis(200)).await;
+            harness
+                .updates(vec![update("business", text("云雨雪"))])
+                .await;
+            let Event::Update(_, later) = harness.event().await else {
+                panic!("expected a text update");
+            };
+            assert_eq!(
+                later,
+                (!disqualify).then_some(TextPerformance {
+                    characters: 5,
+                    response_millis: 500,
+                })
+            );
+            tokio::time::advance(Duration::from_millis(100)).await;
+            harness.complete(StopReason::EndTurn).await;
+            let Event::Completed(completed) = harness.event().await else {
+                panic!("expected the real prompt response");
+            };
+            assert_eq!(completed.run, run);
+            assert_eq!(
+                completed.text_performance,
+                (!disqualify).then_some(TextPerformance {
+                    characters: 5,
+                    response_millis: 600,
+                })
+            );
+        }
+        harness.finish().await;
+    }
+
     #[tokio::test]
     async fn official_new_load_resume_and_realtime_load_replay() {
         for intent in [
@@ -2389,17 +2539,23 @@ mod tests {
             if matches!(intent, Open::Load(_)) {
                 assert!(matches!(
                     harness.event().await,
-                    Event::Update(SessionNotification {
-                        update: SessionUpdate::AgentMessageChunk(_),
-                        ..
-                    })
+                    Event::Update(
+                        SessionNotification {
+                            update: SessionUpdate::AgentMessageChunk(_),
+                            ..
+                        },
+                        _
+                    )
                 ));
                 assert!(matches!(
                     harness.event().await,
-                    Event::Update(SessionNotification {
-                        update: SessionUpdate::ConfigOptionUpdate(_),
-                        ..
-                    })
+                    Event::Update(
+                        SessionNotification {
+                            update: SessionUpdate::ConfigOptionUpdate(_),
+                            ..
+                        },
+                        _
+                    )
                 ));
                 let replaying = harness.session.snapshot().await.unwrap();
                 assert!(
@@ -2693,6 +2849,7 @@ mod tests {
             cwd: "/unused".into(),
             intent: Open::New,
             cleanup: CleanupBudget::new(Duration::from_secs(1)),
+            on_text_performance: None,
             expected_server_version: None,
             prepare: None,
         });
@@ -2717,6 +2874,7 @@ mod tests {
             cwd: "/unused".into(),
             intent: Open::New,
             cleanup: CleanupBudget::new(Duration::from_secs(1)),
+            on_text_performance: None,
             expected_server_version: None,
             prepare: None,
         });
@@ -2941,7 +3099,7 @@ mod tests {
         harness
             .updates(vec![update("business", text("legal tail"))])
             .await;
-        assert!(matches!(harness.event().await, Event::Update(_)));
+        assert!(matches!(harness.event().await, Event::Update(..)));
         harness.complete(StopReason::Cancelled).await;
         assert!(matches!(harness.event().await, Event::Completed(_)));
         let second = replacement.await.unwrap().unwrap();
@@ -3012,7 +3170,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(config.await.unwrap(), Err(Error::Rpc(_))));
-        assert!(matches!(harness.event().await, Event::Update(_)));
+        assert!(matches!(harness.event().await, Event::Update(..)));
         assert_eq!(
             harness.session.snapshot().await.unwrap().config_options,
             Some(configs("b"))
@@ -3334,7 +3492,7 @@ mod tests {
         harness
             .updates(vec![update("business", text("final tail"))])
             .await;
-        assert!(matches!(harness.event().await, Event::Update(_)));
+        assert!(matches!(harness.event().await, Event::Update(..)));
         harness.complete(StopReason::Cancelled).await;
         assert!(matches!(harness.event().await, Event::Completed(_)));
         let exit = harness.driver.await.unwrap();
@@ -3536,7 +3694,7 @@ mod tests {
             harness
                 .updates(vec![update("business", text(&"界".repeat(1024 * 1024)))])
                 .await;
-            assert!(matches!(harness.event().await, Event::Update(_)));
+            assert!(matches!(harness.event().await, Event::Update(..)));
         }
         harness
             .updates(vec![update("business", text(&"x".repeat(8 * 1024 * 1024)))])
@@ -3726,7 +3884,7 @@ mod tests {
                         SessionUpdate::CurrentModeUpdate(CurrentModeUpdate::new("ask")),
                     )])
                     .await;
-                assert!(matches!(harness.event().await, Event::Update(_)));
+                assert!(matches!(harness.event().await, Event::Update(..)));
                 assert_eq!(
                     harness
                         .session

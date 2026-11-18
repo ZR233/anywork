@@ -14,12 +14,14 @@ class AcpStatusBarView extends StatelessWidget {
     required this.status,
     required this.contextUsage,
     required this.cost,
+    this.throughput = const SizedBox.shrink(),
     required this.externalHistory,
   });
 
   final Widget status;
   final Widget contextUsage;
   final Widget cost;
+  final Widget throughput;
   final Widget externalHistory;
 
   @override
@@ -44,7 +46,7 @@ class AcpStatusBarView extends StatelessWidget {
                   const SizedBox(width: 12),
                   Row(
                     mainAxisSize: MainAxisSize.min,
-                    children: [contextUsage, cost, externalHistory],
+                    children: [contextUsage, throughput, cost, externalHistory],
                   ),
                 ],
               ),

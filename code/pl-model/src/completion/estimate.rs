@@ -1,6 +1,11 @@
 //! Explicitly approximate text-only estimation, independent of service-reported usage.
 use super::{CompletionRequest, ContentPart, ModelContextItem};
 
+/// Heuristic for plain text. Callers count Unicode scalar values across all deltas.
+pub fn estimate_text_tokens(characters: u64) -> u64 {
+    characters.div_ceil(4)
+}
+
 /// Estimates text input using four Unicode scalar values per token.
 ///
 /// This is a heuristic, not a provider tokenizer or a capacity guarantee. Native opaque
@@ -41,7 +46,5 @@ pub fn estimate_text_input_tokens(request: &CompletionRequest) -> Option<u64> {
     for tool in &request.tools {
         characters = characters.checked_add(serde_json::to_string(tool).ok()?.chars().count())?;
     }
-    u64::try_from(characters)
-        .ok()
-        .map(|characters| characters.div_ceil(4))
+    u64::try_from(characters).ok().map(estimate_text_tokens)
 }

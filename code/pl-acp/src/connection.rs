@@ -374,7 +374,7 @@ mod tests {
                     assert_eq!(request.session_id.to_string(), expected);
                     return id;
                 }
-                session::Event::Update(update) => {
+                session::Event::Update(update, _) => {
                     assert_eq!(update.session_id.to_string(), expected)
                 }
                 _ => {}
@@ -520,6 +520,7 @@ mod tests {
                     cwd: cwd.into(),
                     intent: session::Open::New,
                     cleanup: CleanupBudget::new(Duration::from_secs(2)),
+                    on_text_performance: None,
                     expected_server_version: None,
                     prepare: None,
                 })
@@ -589,7 +590,7 @@ mod tests {
                     .unwrap();
                 assert!(matches!(
                     updates_b.recv().await,
-                    Some(session::Event::Update(_))
+                    Some(session::Event::Update(..))
                 ));
             }
             // Duplicate restore cannot attach a second active state to the same remote identity.
@@ -597,6 +598,7 @@ mod tests {
                 cwd: "/b".into(),
                 intent: session::Open::Load("/b".into()),
                 cleanup: CleanupBudget::new(Duration::from_secs(2)),
+                on_text_performance: None,
                 expected_server_version: None,
                 prepare: None,
             });
@@ -742,6 +744,7 @@ mod tests {
                 cwd: cwd.into(),
                 intent: session::Open::New,
                 cleanup: CleanupBudget::new(Duration::from_secs(1)),
+                on_text_performance: None,
                 expected_server_version: None,
                 prepare: None,
             };

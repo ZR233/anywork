@@ -180,6 +180,12 @@ fn prompt_response(v: s::PromptResponse) -> R<BridgeAcpPromptResponse> {
         meta: json::opt_meta(v.meta)?,
     })
 }
+fn text_performance(v: p::AcpTextPerformance) -> BridgeAcpTextPerformance {
+    BridgeAcpTextPerformance {
+        estimated_output_tokens: v.estimated_output_tokens,
+        response_millis: v.response_millis,
+    }
+}
 fn completed(v: p::AcpCompletedRun) -> R<BridgeAcpCompletedRun> {
     Ok(BridgeAcpCompletedRun {
         run: v.run.into(),
@@ -194,6 +200,7 @@ fn completed(v: p::AcpCompletedRun) -> R<BridgeAcpCompletedRun> {
         },
         summary: v.summary,
         truncated: v.truncated,
+        text_performance: v.text_performance.map(text_performance),
     })
 }
 pub(crate) fn list(v: s::ListSessionsResponse) -> R<BridgeAcpListResponse> {
@@ -295,8 +302,12 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
                         },
                     }
                 }
-                p::AcpSessionEvent::Update { update } => BridgeAcpSessionEvent::Update {
+                p::AcpSessionEvent::Update {
+                    update,
+                    text_performance: performance,
+                } => BridgeAcpSessionEvent::Update {
                     update: notification::notification(update)?,
+                    text_performance: performance.map(text_performance),
                 },
                 p::AcpSessionEvent::Ready { response: v } => BridgeAcpSessionEvent::Ready {
                     response: BridgeAcpNewSessionResponse {
@@ -875,6 +886,7 @@ mod tests {
                 result: Err(failure),
                 summary: "summary".into(),
                 truncated: true,
+                text_performance: None,
             }),
             owner_failures: vec![p::AcpMemberCloseFailure {
                 thread_id: "child-id".into(),

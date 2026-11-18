@@ -199,6 +199,7 @@ final class StatisticsSample {
   final String threadId;
   final String callId;
   final String? purpose;
+  bool get isAcpTextEstimate => purpose == 'acpTextEstimate';
   final FirstOutputSource firstOutputSource;
   final UsageReportStatus usageStatus;
   final MetricAvailability ttftAvailability;

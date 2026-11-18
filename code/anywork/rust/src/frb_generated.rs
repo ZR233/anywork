@@ -10882,12 +10882,16 @@ impl SseDecode for crate::api::studio::types::acp_business::BridgeAcpCompletedRu
             );
         let mut var_summary = <String>::sse_decode(deserializer);
         let mut var_truncated = <bool>::sse_decode(deserializer);
+        let mut var_textPerformance = <Option<
+            crate::api::studio::types::acp_business::BridgeAcpTextPerformance,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::acp_business::BridgeAcpCompletedRun {
             run: var_run,
             completion_sequence: var_completionSequence,
             result: var_result,
             summary: var_summary,
             truncated: var_truncated,
+            text_performance: var_textPerformance,
         };
     }
 }
@@ -12510,8 +12514,12 @@ impl SseDecode for crate::api::studio::types::acp_business::BridgeAcpSessionEven
             }
             1 => {
                 let mut var_update = <crate::api::studio::types::acp_business::notification::BridgeAcpSessionNotification>::sse_decode(deserializer);
+                let mut var_textPerformance = <Option<
+                    crate::api::studio::types::acp_business::BridgeAcpTextPerformance,
+                >>::sse_decode(deserializer);
                 return crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Update {
                     update: var_update,
+                    text_performance: var_textPerformance,
                 };
             }
             2 => {
@@ -12910,6 +12918,18 @@ impl SseDecode for crate::api::studio::types::acp_business::notification::Bridge
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp_business::BridgeAcpTextPerformance {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_estimatedOutputTokens = <u64>::sse_decode(deserializer);
+        let mut var_responseMillis = <u64>::sse_decode(deserializer);
+        return crate::api::studio::types::acp_business::BridgeAcpTextPerformance {
+            estimated_output_tokens: var_estimatedOutputTokens,
+            response_millis: var_responseMillis,
+        };
     }
 }
 
@@ -26355,6 +26375,21 @@ impl SseDecode for Option<crate::api::studio::types::acp_business::BridgeAcpSess
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::acp_business::BridgeAcpTextPerformance> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::acp_business::BridgeAcpTextPerformance>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode
     for Option<crate::api::studio::types::acp_business::notification::BridgeAcpToolKind>
 {
@@ -30770,6 +30805,7 @@ impl flutter_rust_bridge::IntoDart
             self.result.into_into_dart().into_dart(),
             self.summary.into_into_dart().into_dart(),
             self.truncated.into_into_dart().into_dart(),
+            self.text_performance.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -32828,9 +32864,15 @@ impl flutter_rust_bridge::IntoDart
             crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Initialized {
                 capabilities,
             } => [0.into_dart(), capabilities.into_into_dart().into_dart()].into_dart(),
-            crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Update { update } => {
-                [1.into_dart(), update.into_into_dart().into_dart()].into_dart()
-            }
+            crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Update {
+                update,
+                text_performance,
+            } => [
+                1.into_dart(),
+                update.into_into_dart().into_dart(),
+                text_performance.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
             crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Ready { response } => {
                 [2.into_dart(), response.into_into_dart().into_dart()].into_dart()
             }
@@ -33207,6 +33249,31 @@ impl
     fn into_into_dart(
         self,
     ) -> crate::api::studio::types::acp_business::notification::BridgeAcpStringField {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::acp_business::BridgeAcpTextPerformance
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.estimated_output_tokens.into_into_dart().into_dart(),
+            self.response_millis.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp_business::BridgeAcpTextPerformance
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::acp_business::BridgeAcpTextPerformance,
+    > for crate::api::studio::types::acp_business::BridgeAcpTextPerformance
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp_business::BridgeAcpTextPerformance {
         self
     }
 }
@@ -49394,6 +49461,10 @@ impl SseEncode for crate::api::studio::types::acp_business::BridgeAcpCompletedRu
         );
         <String>::sse_encode(self.summary, serializer);
         <bool>::sse_encode(self.truncated, serializer);
+        <Option<crate::api::studio::types::acp_business::BridgeAcpTextPerformance>>::sse_encode(
+            self.text_performance,
+            serializer,
+        );
     }
 }
 
@@ -50678,9 +50749,13 @@ impl SseEncode for crate::api::studio::types::acp_business::BridgeAcpSessionEven
                     serializer,
                 );
             }
-            crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Update { update } => {
+            crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Update {
+                update,
+                text_performance,
+            } => {
                 <i32>::sse_encode(1, serializer);
                 <crate::api::studio::types::acp_business::notification::BridgeAcpSessionNotification>::sse_encode(update, serializer);
+                <Option<crate::api::studio::types::acp_business::BridgeAcpTextPerformance>>::sse_encode(text_performance, serializer);
             }
             crate::api::studio::types::acp_business::BridgeAcpSessionEvent::Ready { response } => {
                 <i32>::sse_encode(2, serializer);
@@ -50955,6 +51030,14 @@ crate::api::studio::types::acp_business::notification::BridgeAcpStringField::Nul
 crate::api::studio::types::acp_business::notification::BridgeAcpStringField::Value{value} => { <i32>::sse_encode(2, serializer); <String>::sse_encode(value, serializer);
  }
  _ => { unimplemented!(""); }}
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp_business::BridgeAcpTextPerformance {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.estimated_output_tokens, serializer);
+        <u64>::sse_encode(self.response_millis, serializer);
     }
 }
 
@@ -61361,6 +61444,18 @@ impl SseEncode for Option<crate::api::studio::types::acp_business::BridgeAcpSess
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::acp_business::BridgeAcpSessionFrame>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::acp_business::BridgeAcpTextPerformance> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::acp_business::BridgeAcpTextPerformance>::sse_encode(
                 value, serializer,
             );
         }

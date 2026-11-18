@@ -54,7 +54,7 @@ mod summary;
 pub use summary::summary_request;
 
 mod estimate;
-pub use estimate::estimate_text_input_tokens;
+pub use estimate::{estimate_text_input_tokens, estimate_text_tokens};
 
 // Channel vocabulary used directly in completion signatures.
 pub use pl_core::model::ModelTextChannel;

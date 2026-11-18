@@ -1606,6 +1606,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sessionOpenServerMissing => '该项目的 SSH 别名已不在 ~/.ssh/config 中';
 
   @override
+  String get statisticsAcpTextEstimate => 'ACP 正文估算';
+
+  @override
+  String get acpEstimatedOutputSpeed => 'ACP 正文估算速度（含首段等待）';
+
+  @override
   String get statusLastConfirmedAgentTokenSpeed => '最近已确认输出速度（含首字等待）';
 
   @override

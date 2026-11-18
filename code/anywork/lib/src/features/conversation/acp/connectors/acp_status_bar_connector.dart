@@ -1,9 +1,12 @@
 import 'dart:async';
 
+import 'package:anywork_client/models.dart' show tokenThroughput;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../../status/thread_status_bar.dart';
 import '../state/acp_view_state.dart';
+import '../view_models/acp_session_view_model.dart';
 import '../view_models/acp_external_history_view_model.dart';
 import '../view_models/acp_status_bar_view_model.dart';
 import '../views/acp_status_bar_view.dart';
@@ -20,8 +23,30 @@ class AcpStatusBarConnector extends StatelessWidget {
     status: AcpConnectionStatusConnector(threadId: threadId),
     contextUsage: AcpContextUsageConnector(threadId: threadId),
     cost: AcpCostConnector(threadId: threadId),
+    throughput: _AcpThroughputConnector(threadId: threadId),
     externalHistory: AcpExternalHistoryButtonConnector(threadId: threadId),
   );
+}
+
+class _AcpThroughputConnector extends ConsumerWidget {
+  const _AcpThroughputConnector({required this.threadId});
+
+  final String threadId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sample = ref.watch(
+      acpConversationStateProvider(threadId)
+          .select((state) => state.value?.textPerformance),
+    );
+    return TokenThroughputReadout(
+      estimated: true,
+      tokensPerSecond: tokenThroughput(
+        sample?.estimatedOutputTokens,
+        sample?.responseMillis,
+      ),
+    );
+  }
 }
 
 class AcpConnectionStatusConnector extends ConsumerWidget {

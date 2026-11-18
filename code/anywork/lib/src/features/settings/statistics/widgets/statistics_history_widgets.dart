@@ -171,6 +171,18 @@ class StatisticsWideHistoryHeader extends StatelessWidget {
   }
 }
 
+String _sampleSpeed(BuildContext context, StatisticsSample sample) {
+  final value = formatStatisticsSampleSpeed(context, sample.tokensPerSecond);
+  return sample.isAcpTextEstimate && sample.tokensPerSecond != null
+      ? '≈ $value'
+      : value;
+}
+
+String _sampleTokens(StatisticsSample sample) {
+  final value = formatTokenCount(sample.completionTokens);
+  return sample.isAcpTextEstimate ? '≈ $value' : value;
+}
+
 class StatisticsWideHistoryRow extends StatelessWidget {
   const StatisticsWideHistoryRow({required this.sample, super.key});
 
@@ -186,12 +198,12 @@ class StatisticsWideHistoryRow extends StatelessWidget {
         Text(
           sample.completionTokens == null
               ? context.l10n.usageUnknown
-              : formatTokenCount(sample.completionTokens),
+              : _sampleTokens(sample),
         ),
         Text(formatStatisticsSampleMillis(context, sample.ttftMillis)),
         Text(formatStatisticsSampleMillis(context, sample.decodeMillis)),
         Text(formatStatisticsSampleMillis(context, sample.totalResponseMillis)),
-        Text(formatStatisticsSampleSpeed(context, sample.tokensPerSecond)),
+        Text(_sampleSpeed(context, sample)),
       ],
     );
   }
@@ -271,13 +283,13 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
               ),
               SettingsMetric(
                 context.l10n.statisticsSpeed,
-                formatStatisticsSampleSpeed(context, sample.tokensPerSecond),
+                _sampleSpeed(context, sample),
               ),
               SettingsMetric(
                 context.l10n.statisticsOutputTokens,
                 sample.completionTokens == null
                     ? context.l10n.usageUnknown
-                    : formatTokenCount(sample.completionTokens),
+                    : _sampleTokens(sample),
               ),
               SettingsMetric(
                 'TTFT',
@@ -321,13 +333,15 @@ class _ModelIdentity extends StatelessWidget {
         sent != null && reported != null && reported != sent;
     final mismatched =
         sample.modelMatchState == StatisticsModelMatchState.mismatched;
-    final neutralStatus = switch (sample.modelMatchState) {
-      StatisticsModelMatchState.unreported =>
-        context.l10n.statisticsModelUnreported,
-      StatisticsModelMatchState.legacyUnknown =>
-        context.l10n.statisticsModelLegacyUnknown,
-      _ => null,
-    };
+    final neutralStatus = sample.isAcpTextEstimate
+        ? context.l10n.statisticsAcpTextEstimate
+        : switch (sample.modelMatchState) {
+            StatisticsModelMatchState.unreported =>
+              context.l10n.statisticsModelUnreported,
+            StatisticsModelMatchState.legacyUnknown =>
+              context.l10n.statisticsModelLegacyUnknown,
+            _ => null,
+          };
     final detailStyle = context.text.labelSmall?.copyWith(
       color: context.colors.onSurfaceVariant,
     );

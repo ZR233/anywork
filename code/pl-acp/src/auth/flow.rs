@@ -195,6 +195,7 @@ impl Session<'_> {
             cwd: self.probe_cwd.to_owned(),
             intent: Open::New,
             cleanup: self.cleanup.clone(),
+            on_text_performance: None,
             expected_server_version: None,
             prepare: None,
         });
@@ -268,14 +269,17 @@ impl Session<'_> {
             let mut exceeded = false;
             while let Some(event) = observer.recv().await {
                 match event {
-                    Event::Update(SessionNotification {
-                        update:
-                            SessionUpdate::AgentMessageChunk(ContentChunk {
-                                content: ContentBlock::Text(text),
-                                ..
-                            }),
-                        ..
-                    }) => {
+                    Event::Update(
+                        SessionNotification {
+                            update:
+                                SessionUpdate::AgentMessageChunk(ContentChunk {
+                                    content: ContentBlock::Text(text),
+                                    ..
+                                }),
+                            ..
+                        },
+                        _,
+                    ) => {
                         if output.len().saturating_add(text.text.len()) > request.max_bytes {
                             exceeded = true;
                         } else if !exceeded {

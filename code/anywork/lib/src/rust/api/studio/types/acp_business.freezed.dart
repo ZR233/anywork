@@ -3466,11 +3466,11 @@ return gap(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeAcpAgentCapabilities capabilities)?  initialized,TResult Function( BridgeAcpSessionNotification update)?  update,TResult Function( BridgeAcpNewSessionResponse response)?  ready,TResult Function( BridgeAcpBusinessFailure failure)?  failed,TResult Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)?  permission,TResult Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)?  configured,TResult Function( BridgeAcpModeId modeId)?  modeSet,TResult Function( BridgeAcpCompletedRun completed)?  completed,TResult Function( BridgeAcpObservationGap gap)?  gap,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeAcpAgentCapabilities capabilities)?  initialized,TResult Function( BridgeAcpSessionNotification update,  BridgeAcpTextPerformance? textPerformance)?  update,TResult Function( BridgeAcpNewSessionResponse response)?  ready,TResult Function( BridgeAcpBusinessFailure failure)?  failed,TResult Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)?  permission,TResult Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)?  configured,TResult Function( BridgeAcpModeId modeId)?  modeSet,TResult Function( BridgeAcpCompletedRun completed)?  completed,TResult Function( BridgeAcpObservationGap gap)?  gap,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAcpSessionEvent_Initialized() when initialized != null:
 return initialized(_that.capabilities);case BridgeAcpSessionEvent_Update() when update != null:
-return update(_that.update);case BridgeAcpSessionEvent_Ready() when ready != null:
+return update(_that.update,_that.textPerformance);case BridgeAcpSessionEvent_Ready() when ready != null:
 return ready(_that.response);case BridgeAcpSessionEvent_Failed() when failed != null:
 return failed(_that.failure);case BridgeAcpSessionEvent_Permission() when permission != null:
 return permission(_that.id,_that.request);case BridgeAcpSessionEvent_Configured() when configured != null:
@@ -3495,11 +3495,11 @@ return gap(_that.gap);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeAcpAgentCapabilities capabilities)  initialized,required TResult Function( BridgeAcpSessionNotification update)  update,required TResult Function( BridgeAcpNewSessionResponse response)  ready,required TResult Function( BridgeAcpBusinessFailure failure)  failed,required TResult Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)  permission,required TResult Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)  configured,required TResult Function( BridgeAcpModeId modeId)  modeSet,required TResult Function( BridgeAcpCompletedRun completed)  completed,required TResult Function( BridgeAcpObservationGap gap)  gap,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeAcpAgentCapabilities capabilities)  initialized,required TResult Function( BridgeAcpSessionNotification update,  BridgeAcpTextPerformance? textPerformance)  update,required TResult Function( BridgeAcpNewSessionResponse response)  ready,required TResult Function( BridgeAcpBusinessFailure failure)  failed,required TResult Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)  permission,required TResult Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)  configured,required TResult Function( BridgeAcpModeId modeId)  modeSet,required TResult Function( BridgeAcpCompletedRun completed)  completed,required TResult Function( BridgeAcpObservationGap gap)  gap,}) {final _that = this;
 switch (_that) {
 case BridgeAcpSessionEvent_Initialized():
 return initialized(_that.capabilities);case BridgeAcpSessionEvent_Update():
-return update(_that.update);case BridgeAcpSessionEvent_Ready():
+return update(_that.update,_that.textPerformance);case BridgeAcpSessionEvent_Ready():
 return ready(_that.response);case BridgeAcpSessionEvent_Failed():
 return failed(_that.failure);case BridgeAcpSessionEvent_Permission():
 return permission(_that.id,_that.request);case BridgeAcpSessionEvent_Configured():
@@ -3520,11 +3520,11 @@ return gap(_that.gap);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeAcpAgentCapabilities capabilities)?  initialized,TResult? Function( BridgeAcpSessionNotification update)?  update,TResult? Function( BridgeAcpNewSessionResponse response)?  ready,TResult? Function( BridgeAcpBusinessFailure failure)?  failed,TResult? Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)?  permission,TResult? Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)?  configured,TResult? Function( BridgeAcpModeId modeId)?  modeSet,TResult? Function( BridgeAcpCompletedRun completed)?  completed,TResult? Function( BridgeAcpObservationGap gap)?  gap,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeAcpAgentCapabilities capabilities)?  initialized,TResult? Function( BridgeAcpSessionNotification update,  BridgeAcpTextPerformance? textPerformance)?  update,TResult? Function( BridgeAcpNewSessionResponse response)?  ready,TResult? Function( BridgeAcpBusinessFailure failure)?  failed,TResult? Function( BridgeAcpPermissionId id,  BridgeAcpPermissionRequest request)?  permission,TResult? Function( List<BridgeAcpConfigOption> configOptions,  Map<String, BridgeAcpJsonValue>? meta)?  configured,TResult? Function( BridgeAcpModeId modeId)?  modeSet,TResult? Function( BridgeAcpCompletedRun completed)?  completed,TResult? Function( BridgeAcpObservationGap gap)?  gap,}) {final _that = this;
 switch (_that) {
 case BridgeAcpSessionEvent_Initialized() when initialized != null:
 return initialized(_that.capabilities);case BridgeAcpSessionEvent_Update() when update != null:
-return update(_that.update);case BridgeAcpSessionEvent_Ready() when ready != null:
+return update(_that.update,_that.textPerformance);case BridgeAcpSessionEvent_Ready() when ready != null:
 return ready(_that.response);case BridgeAcpSessionEvent_Failed() when failed != null:
 return failed(_that.failure);case BridgeAcpSessionEvent_Permission() when permission != null:
 return permission(_that.id,_that.request);case BridgeAcpSessionEvent_Configured() when configured != null:
@@ -3611,10 +3611,11 @@ as BridgeAcpAgentCapabilities,
 
 
 class BridgeAcpSessionEvent_Update extends BridgeAcpSessionEvent {
-  const BridgeAcpSessionEvent_Update({required this.update}): super._();
+  const BridgeAcpSessionEvent_Update({required this.update, this.textPerformance}): super._();
 
 
  final  BridgeAcpSessionNotification update;
+ final  BridgeAcpTextPerformance? textPerformance;
 
 /// Create a copy of BridgeAcpSessionEvent
 /// with the given fields replaced by the non-null parameter values.
@@ -3626,18 +3627,18 @@ $BridgeAcpSessionEvent_UpdateCopyWith<BridgeAcpSessionEvent_Update> get copyWith
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpSessionEvent_Update&&(identical(other.update, update) || other.update == update));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpSessionEvent_Update&&(identical(other.update, update) || other.update == update)&&(identical(other.textPerformance, textPerformance) || other.textPerformance == textPerformance));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,update);
+    return Object.hash(runtimeType,update,textPerformance);
 }
 
 @override
 String toString() {
-    return 'BridgeAcpSessionEvent.update(update: $update)';
+    return 'BridgeAcpSessionEvent.update(update: $update, textPerformance: $textPerformance)';
 }
 
 
@@ -3648,7 +3649,7 @@ abstract mixin class $BridgeAcpSessionEvent_UpdateCopyWith<$Res> implements $Bri
   factory $BridgeAcpSessionEvent_UpdateCopyWith(BridgeAcpSessionEvent_Update value, $Res Function(BridgeAcpSessionEvent_Update) _then) = _$BridgeAcpSessionEvent_UpdateCopyWithImpl;
 @useResult
 $Res call({
- BridgeAcpSessionNotification update
+ BridgeAcpSessionNotification update, BridgeAcpTextPerformance? textPerformance
 });
 
 
@@ -3665,10 +3666,11 @@ class _$BridgeAcpSessionEvent_UpdateCopyWithImpl<$Res>
 
 /// Create a copy of BridgeAcpSessionEvent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? update = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? update = null,Object? textPerformance = freezed,}) {
   return _then(BridgeAcpSessionEvent_Update(
 update: null == update ? _self.update : update // ignore: cast_nullable_to_non_nullable
-as BridgeAcpSessionNotification,
+as BridgeAcpSessionNotification,textPerformance: freezed == textPerformance ? _self.textPerformance : textPerformance // ignore: cast_nullable_to_non_nullable
+as BridgeAcpTextPerformance?,
   ));
 }
 

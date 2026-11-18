@@ -6,8 +6,10 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_co
 import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:anywork_client/statistics.dart' show StatisticsSample;
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -17,6 +19,7 @@ import 'package:path/path.dart' as p;
 import 'support/agy_remote_workspace.dart';
 import 'support/agy_phase_runner.dart';
 import 'support/agy_load_only.dart';
+import 'support/observed.dart';
 import 'support/presentation_capture.dart';
 import 'support/production_studio_harness.dart';
 
@@ -78,6 +81,7 @@ void main() {
       // Managed acceptance uses the product template and a verified installation
       // prepared under this isolated home's studio directory, never a raw command.
       final managed = Platform.environment['ANYWORK_AGY_MANAGED'] == '1';
+      final verifySpeed = remote == null && !managed;
       if (remote != null && managed) {
         throw StateError(
           'Remote process evidence requires an explicit local '
@@ -154,8 +158,11 @@ void main() {
         tester,
         logicalWidth: 1440,
         logicalHeight: 1000,
-        requireNativeResize: true,
+        // The local speed assertion uses the produced widget values and works
+        // at the current viewport, including a native integration runner on Xvfb.
+        requireNativeResize: !verifySpeed,
       );
+      await record('native-viewport-ready');
       const serviceId = 'agy-live-acceptance';
       const serviceName = 'AGY live acceptance';
       const childProfileId = 'agy-live-acceptance-child';
@@ -170,6 +177,7 @@ void main() {
         expectedDocumentRevision: null,
       );
       expect(saved.failurePhase, isNull);
+      await record('isolated-account-save-returned');
       await scene.until(
         () => graph.accounts.state.value.accounts.any(
           (account) =>
@@ -178,6 +186,7 @@ void main() {
         ),
         'saved isolated ACP definition is observed',
       );
+      await record('isolated-account-directory-observed');
       if (remote != null) {
         // Isolated Studio configuration only, through the ordinary public
         // command also used by Settings. Never touch the operator's profiles.
@@ -213,30 +222,32 @@ void main() {
       final revision = graph.accounts.state.value
           .account(identity)!
           .acpConnectionRevision!;
-      Future<void> backgroundReady() => scene.until(
-        () {
-          final account = graph.acp.auth.value.value?.account(
-            serviceId,
-            connectionRevision: revision,
+      Future<void> backgroundReady() => untilObserved(graph.acp.auth, (
+        resource,
+      ) {
+        if (resource.failure case final failure?) throw failure;
+        final account = resource.value?.account(
+          serviceId,
+          connectionRevision: revision,
+        );
+        final auth = account?.state;
+        if (auth is AcpRequiredState) {
+          throw StateError('Existing agy credentials require explicit login');
+        }
+        if (account?.connection case AcpConnectionBlockedState(
+          :final failure,
+        )) {
+          throw StateError(
+            'Background connection blocked: ${failure.code.name}',
           );
-          final auth = account?.state;
-          if (auth is AcpRequiredState) {
-            throw StateError('Existing agy credentials require explicit login');
-          }
-          if (account?.connection case AcpConnectionBlockedState(
-            :final failure,
-          )) {
-            throw StateError(
-              'Background connection blocked: ${failure.code.name}',
-            );
-          }
-          return account?.connection is AcpConnectionReadyState &&
-              auth is AcpVerifiedState &&
-              account?.activeOperation == null;
-        },
-        'enabled ACP account prepares and verifies login without an explicit check',
-        timeout: const Duration(seconds: 90),
-      );
+        }
+        if (auth is AcpFailedState) {
+          throw StateError('Background auth failed: ${auth.failure.code}');
+        }
+        return account?.connection is AcpConnectionReadyState &&
+            auth is AcpVerifiedState &&
+            account?.activeOperation == null;
+      }).timeout(const Duration(seconds: 90));
       await backgroundReady();
       evidence['backgroundPreparedWithoutExplicitCheck'] = true;
       final accountProcesses = !managed && Platform.isLinux
@@ -275,10 +286,12 @@ void main() {
         projectPath,
         sshAlias: remote?.alias,
       );
+      await record('isolated-project-opened');
       await scene.until(
         () => find.byType(StartModelSelectorView).evaluate().length == 1,
         'project start page exposes the unified model selector',
       );
+      await record('project-model-selector-visible');
       await scene.capture('ordinary-start-card');
       await tester.tap(
         find.descendant(
@@ -479,10 +492,25 @@ void main() {
       final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
       final prompt = remote?.promptA('${marker}A') ?? 'hi';
       final startupMarker = '${marker}READY';
+      const speedPrompt =
+          'Respond with a numbered list of 40 original short '
+          'sentences about clouds. Reply only with the list. Do not use tools.';
+      final observedSpeeds = <AcpTextPerformanceView>{};
+      if (verifySpeed) {
+        final samples = owner.source.watch((state) {
+          if (state.activeRun != null || state.sendPending) {
+            if (state.textPerformance case final sample?) {
+              observedSpeeds.add(sample);
+            }
+          }
+        });
+        addTearDown(samples.cancel);
+      }
       final startupPrompt = remote == null
-          ? 'hi'
+          ? (verifySpeed ? speedPrompt : 'hi')
           : 'Reply with exactly $startupMarker and nothing else. '
                 'Do not call tools, run commands, use the network, or read or write any files.';
+      evidence['promptCount'] = 1;
       await tester.enterText(
         find.descendant(
           of: find.byType(AcpStartComposerView),
@@ -492,7 +520,6 @@ void main() {
       );
       await tester.pumpAndSettle();
       await scene.capture('agy-live-start-card');
-      evidence['promptCount'] = 1;
       await tester.tap(
         find.byKey(ValueKey(AcpViewKeyValues.startSubmit(project.id))),
       );
@@ -615,7 +642,7 @@ void main() {
             );
         final blocks = mapAcpMessageBlocks(user, itemId: 'startup-user');
         expect(blocks, hasLength(1));
-        expect((blocks.single as AcpTextBlockPresentation).text, 'hi');
+        expect((blocks.single as AcpTextBlockPresentation).text, startupPrompt);
         expect(
           find.descendant(
             of: find.byWidgetPredicate(
@@ -623,7 +650,7 @@ void main() {
                   widget is AcpTimelineEntryView &&
                   widget.item is AcpTimelineUserMessage,
             ),
-            matching: find.text('hi', findRichText: true),
+            matching: find.text(startupPrompt, findRichText: true),
           ),
           findsOneWidget,
         );
@@ -638,6 +665,52 @@ void main() {
           .whereType<AcpConversationUpdateItem>()
           .map((item) => item.update.runtimeType.toString())
           .toList();
+      if (verifySpeed) {
+        final performance = owner.state.lastCompleted!.textPerformance;
+        expect(
+          performance,
+          isNotNull,
+          reason: 'Agy produced no text speed sample',
+        );
+        expect(owner.state.textPerformance, performance);
+        final finalSpeed =
+            performance!.estimatedOutputTokens *
+            1000 /
+            performance.responseMillis;
+        await tester.pump();
+        final readout = tester.widget<TokenThroughputReadout>(
+          find.byWidgetPredicate(
+            (widget) => widget is TokenThroughputReadout && widget.estimated,
+          ),
+        );
+        expect(readout.tokensPerSecond, closeTo(finalSpeed, 0.0001));
+        expect(observedSpeeds, isNotEmpty, reason: 'No pre-completion speed');
+        final statistics = graph.statisticsRepository;
+        final demand = statistics.acquireVisibleDemand();
+        addTearDown(demand.release);
+        List<StatisticsSample>? samples() => statistics.state.snapshot?.history
+            .where(
+              (sample) =>
+                  sample.threadId == threadId && sample.isAcpTextEstimate,
+            )
+            .toList();
+        await scene.until(
+          () => samples()?.isNotEmpty == true,
+          'ACP speed reaches production statistics',
+        );
+        final sample = samples()!.single;
+        expect(sample.completionTokens, performance.estimatedOutputTokens);
+        expect(sample.totalResponseMillis, performance.responseMillis);
+        expect(sample.tokensPerSecond, closeTo(finalSpeed, 0.0001));
+        evidence['textPerformance'] = {
+          'liveSamples': observedSpeeds.length,
+          'estimatedOutputTokens': performance.estimatedOutputTokens,
+          'responseMillis': performance.responseMillis,
+          'tokensPerSecond': finalSpeed,
+        };
+        demand.release();
+        await record('real-agy-speed-visible-and-recorded');
+      }
       final draft = graph.client.drafts.composer(threadId);
       expect(draft.state.draft, isEmpty);
       await tester.enterText(

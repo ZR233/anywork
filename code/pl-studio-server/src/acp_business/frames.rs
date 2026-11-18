@@ -119,7 +119,10 @@ mod tests {
         }))
         .unwrap();
         let events = stream::iter([
-            AcpSessionEvent::Update { update },
+            AcpSessionEvent::Update {
+                update,
+                text_performance: None,
+            },
             AcpSessionEvent::Ready {
                 response: serde_json::from_value(serde_json::json!({
                     "sessionId": "remote-session"

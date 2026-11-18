@@ -225,6 +225,20 @@ void main() {
     await tester.pumpAndSettle();
     expectChanges([1, 0, 0, 0]);
     h.emit(
+      const AcpUpdateEventView(
+        AcpSessionNotificationView(
+          sessionId: acpRemoteFixture,
+          update: AcpAgentMessageChunkView(
+            AcpContentChunkView(content: AcpTextContentView(text: 'answer')),
+          ),
+        ),
+        textPerformance: (estimatedOutputTokens: 4, responseMillis: 100),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('≈ 40 词元/秒'), findsOneWidget);
+    expectChanges([0, 0, 0, 0]);
+    h.emit(
       AcpCompletedEventView(
         AcpCompletedRunView(
           run: run,
@@ -239,6 +253,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expectChanges([1, 0, 0, 0]);
+    expect(find.text('≈ 40 词元/秒'), findsNothing);
     expect(
       tester
           .widget<AcpConnectionStatusView>(find.byType(AcpConnectionStatusView))

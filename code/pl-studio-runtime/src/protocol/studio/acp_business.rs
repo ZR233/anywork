@@ -119,6 +119,13 @@ pub enum AcpObservationGap {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpTextPerformance {
+    pub estimated_output_tokens: u64,
+    pub response_millis: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpCompletedRun {
     pub run: AcpRunId,
     pub completion_sequence: u64,
@@ -126,6 +133,7 @@ pub struct AcpCompletedRun {
     pub result: Result<PromptResponse, AcpBusinessFailure>,
     pub summary: String,
     pub truncated: bool,
+    pub text_performance: Option<AcpTextPerformance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -142,6 +150,7 @@ pub enum AcpSessionEvent {
     Update {
         #[schema(value_type = Object)]
         update: SessionNotification,
+        text_performance: Option<AcpTextPerformance>,
     },
     Ready {
         #[schema(value_type = Object)]

@@ -725,6 +725,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpTextPerformance dco_decode_box_autoadd_bridge_acp_text_performance(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAcpToolCall dco_decode_box_autoadd_bridge_acp_tool_call(dynamic raw);
 
   @protected
@@ -2174,6 +2179,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpStringField dco_decode_bridge_acp_string_field(dynamic raw);
+
+  @protected
+  BridgeAcpTextPerformance dco_decode_bridge_acp_text_performance(dynamic raw);
 
   @protected
   BridgeAcpToolCall dco_decode_bridge_acp_tool_call(dynamic raw);
@@ -4577,6 +4585,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpTextPerformance?
+  dco_decode_opt_box_autoadd_bridge_acp_text_performance(dynamic raw);
+
+  @protected
   BridgeAcpToolKind? dco_decode_opt_box_autoadd_bridge_acp_tool_kind(
     dynamic raw,
   );
@@ -5751,6 +5763,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpStringField sse_decode_box_autoadd_bridge_acp_string_field(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpTextPerformance sse_decode_box_autoadd_bridge_acp_text_performance(
     SseDeserializer deserializer,
   );
 
@@ -7654,6 +7671,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpStringField sse_decode_bridge_acp_string_field(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpTextPerformance sse_decode_bridge_acp_text_performance(
     SseDeserializer deserializer,
   );
 
@@ -10659,6 +10681,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpTextPerformance?
+  sse_decode_opt_box_autoadd_bridge_acp_text_performance(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeAcpToolKind? sse_decode_opt_box_autoadd_bridge_acp_tool_kind(
     SseDeserializer deserializer,
   );
@@ -12065,6 +12093,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_acp_string_field(
     BridgeAcpStringField self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_acp_text_performance(
+    BridgeAcpTextPerformance self,
     SseSerializer serializer,
   );
 
@@ -14252,6 +14286,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_string_field(
     BridgeAcpStringField self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_text_performance(
+    BridgeAcpTextPerformance self,
     SseSerializer serializer,
   );
 
@@ -17879,6 +17919,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_acp_session_frame(
     BridgeAcpSessionFrame? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_text_performance(
+    BridgeAcpTextPerformance? self,
     SseSerializer serializer,
   );
 

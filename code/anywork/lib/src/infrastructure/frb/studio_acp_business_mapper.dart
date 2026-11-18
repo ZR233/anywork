@@ -467,6 +467,14 @@ AcpResultView<AcpPromptResponseView> _promptResult(b.BridgeAcpPromptResult v) =>
         ),
       ),
     };
+AcpTextPerformanceView? _textPerformance(b.BridgeAcpTextPerformance? value) =>
+    value == null
+    ? null
+    : (
+        estimatedOutputTokens: value.estimatedOutputTokens.toInt(),
+        responseMillis: value.responseMillis.toInt(),
+      );
+
 AcpCompletedRunView _completed(b.BridgeAcpCompletedRun v) =>
     AcpCompletedRunView(
       run: acpRunFromFrb(v.run),
@@ -474,6 +482,7 @@ AcpCompletedRunView _completed(b.BridgeAcpCompletedRun v) =>
       result: _promptResult(v.result),
       summary: v.summary,
       truncated: v.truncated,
+      textPerformance: _textPerformance(v.textPerformance),
     );
 AcpBusinessSnapshotView acpSnapshotFromFrb(b.BridgeAcpBusinessSnapshot v) =>
     AcpBusinessSnapshotView(
@@ -544,13 +553,15 @@ AcpSessionFrameView acpFrameFromFrb(b.BridgeAcpSessionFrame v) => switch (v) {
             resumeSession: capabilities.resumeSession,
           ),
         ),
-      b.BridgeAcpSessionEvent_Update(:final update) => AcpUpdateEventView(
-        AcpSessionNotificationView(
-          sessionId: AcpRemoteSessionId(update.sessionId.value),
-          update: acpUpdateFromFrb(update.update),
-          meta: acpMetaFromFrb(update.meta),
+      b.BridgeAcpSessionEvent_Update(:final update, :final textPerformance) =>
+        AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: AcpRemoteSessionId(update.sessionId.value),
+            update: acpUpdateFromFrb(update.update),
+            meta: acpMetaFromFrb(update.meta),
+          ),
+          textPerformance: _textPerformance(textPerformance),
         ),
-      ),
       b.BridgeAcpSessionEvent_Ready(:final response) => AcpReadyEventView(
         _ready(response),
       ),
