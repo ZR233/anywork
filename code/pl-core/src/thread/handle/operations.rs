@@ -159,13 +159,8 @@ impl ThreadHandle {
         model: Option<DynModelSession>,
     ) -> Result<Self, current::CurrentError> {
         let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::FreshCurrent(Box::new(current)),
-            None,
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+        Self::spawn_owner(id, model, InitialState::FreshCurrent(Box::new(current)))
+            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     /// Installs only logical current data under a fresh paused owner. No history is read, no old
@@ -176,46 +171,8 @@ impl ThreadHandle {
     ) -> Result<Self, current::CurrentError> {
         let id = current.thread_id.clone();
         let current = current.activate_paused(&id)?;
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::RestoredCurrent(Box::new(current)),
-            None,
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
-    }
-
-    /// Starts a fresh current owner with its admission gate installed before any direct input.
-    pub fn start_current_with_turn_admission_gate(
-        id: String,
-        model: DynModelSession,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, current::CurrentError> {
-        let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
-        Self::spawn_owner(
-            id,
-            Some(model),
-            InitialState::FreshCurrent(Box::new(current)),
-            Some(gate),
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
-    }
-
-    /// Restores paused logical data with a gate installed before user-authorized continuation.
-    pub fn restore_current_with_turn_admission_gate(
-        current: current::ThreadCurrent,
-        model: Option<DynModelSession>,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, current::CurrentError> {
-        let id = current.thread_id.clone();
-        let current = current.activate_paused(&id)?;
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::RestoredCurrent(Box::new(current)),
-            Some(gate),
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+        Self::spawn_owner(id, model, InitialState::RestoredCurrent(Box::new(current)))
+            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     /// Starts or resumes one owner from a direct current-state checkpoint.
@@ -224,7 +181,7 @@ impl ThreadHandle {
         model: DynModelSession,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, Some(model), checkpoint, None)
+        Self::resume_with_model(id, Some(model), checkpoint)
     }
 
     /// Starts or resumes one owner without opening a physical model session.
@@ -232,41 +189,18 @@ impl ThreadHandle {
         id: String,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, None, checkpoint, None)
-    }
-
-    /// Starts or resumes one owner with a Turn admission gate installed before any Turn can run.
-    ///
-    /// The gate is part of the incarnation instead of something installed later, which is what makes
-    /// it hold back the very Turn recovery would resume: no input can be admitted while the owner is
-    /// assembled, so the gate exists before any Turn can reach it. Passing `None` for `model` opens
-    /// no physical model session, exactly like [`Self::resume_without_model`].
-    ///
-    /// The gate starts open, and an owner assembled without one admits Turns unconditionally, so
-    /// this entry point only changes the behavior of consumers that ask for it.
-    ///
-    /// # Errors
-    /// Rejects an empty Thread identity or an unusable checkpoint before spawning the owner.
-    pub fn resume_with_turn_admission_gate(
-        id: String,
-        model: Option<DynModelSession>,
-        checkpoint: Option<ThreadCheckpoint>,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, model, checkpoint, Some(gate))
+        Self::resume_with_model(id, None, checkpoint)
     }
 
     fn resume_with_model(
         id: String,
         model: Option<DynModelSession>,
         checkpoint: Option<ThreadCheckpoint>,
-        turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
         Self::spawn_owner(
             id,
             model,
             InitialState::Checkpoint(checkpoint.map(Box::new)),
-            turn_admission,
         )
     }
 
@@ -274,7 +208,6 @@ impl ThreadHandle {
         id: String,
         model: Option<DynModelSession>,
         initial: InitialState,
-        turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
         if id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -361,8 +294,6 @@ impl ThreadHandle {
             } else {
                 input::ExecutionPolicy::Paused(input::PauseReason::Initial)
             },
-            turn_admission,
-            turn_admission_waiting: false,
             interrupt: interrupt.clone(),
             mailbox: mailbox_receiver,
             task_commands: mailbox.downgrade(),
@@ -1390,8 +1321,6 @@ impl ThreadHandle {
     }
 
     /// Runs a bounded model/tool loop without interleaving another submitted Turn.
-    /// The loop starts only once the Turn admission gate admits this Turn; while a gate reason is
-    /// held, this call stays pending without consuming input or creating a Turn record.
     ///
     /// # Errors
     /// Returns model/admission/cancellation errors; committed tool failures remain available to the next step.

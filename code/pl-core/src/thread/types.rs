@@ -984,7 +984,7 @@ pub enum ExecutionPhase {
     Preparing,
     /// Waiting for actual storage or output capacity.
     AwaitingStorage,
-    /// Waiting for the Turn admission gate.
+    /// Historical preparation phase retained for decoding saved execution state.
     AwaitingAdmission,
     /// The Turn is executing inside the owner.
     Running,

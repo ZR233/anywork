@@ -21,7 +21,6 @@ impl PrimaryWork {
 }
 
 pub(super) enum PrimaryCompletion {
-    Admission(Result<admission::TurnAdmissionPermit, ThreadError>),
     Preparation {
         step: StepWork,
         completion: context_preparation::PreparationCompletion,
@@ -93,7 +92,6 @@ impl RunReply {
 }
 
 pub(super) enum RunPhase {
-    Admission,
     Starting,
     NextStep {
         content: Vec<ContextContent>,
@@ -116,7 +114,6 @@ pub(super) struct ActiveRun {
     pub(super) operation_id: Option<String>,
     pub(super) start_stops: u64,
     pub(super) restored: bool,
-    pub(super) permit: Option<admission::TurnAdmissionPermit>,
     // Own the cancellation installation until all primary work really returns.
     pub(super) _cancellation: cancellation::ActiveExecution,
 }
@@ -314,7 +311,7 @@ impl Owner {
         cancellation: CancellationToken,
         reply: oneshot::Sender<Result<ContextSnapshot, ThreadError>>,
     ) {
-        let validation = self.ensure_idle(false).and_then(|()| {
+        let validation = self.ensure_idle().and_then(|()| {
             if revision == self.state.context.revision {
                 Ok(())
             } else {
@@ -730,7 +727,7 @@ impl Owner {
         self.active = Some(ActiveRun {
             input,
             reply,
-            phase: RunPhase::Admission,
+            phase: RunPhase::Starting,
             started: tokio::time::Instant::now(),
             steps: 0,
             operation_id: None,
@@ -738,7 +735,6 @@ impl Owner {
             restored: false,
             next_attempt: Some(first.attempt_id),
             recovery_used: false,
-            permit: None,
             _cancellation: cancellation,
         });
         Ok(())
@@ -771,39 +767,6 @@ impl Owner {
         };
         let phase = std::mem::replace(&mut run.phase, RunPhase::Preparing);
         match phase {
-            RunPhase::Admission => {
-                let gate = self.turn_admission.clone();
-                let cancellation = run.input.cancellation.clone();
-                run.phase = RunPhase::Starting;
-                if let Some(gate) = gate {
-                    if let Some(permit) = gate.try_admit() {
-                        run.permit = Some(permit);
-                    } else {
-                        self.turn_admission_waiting = true;
-                        self.note_execution_phase(ExecutionPhase::AwaitingAdmission);
-                        self.primary = Some(PrimaryWork::new(false, async move {
-                            let mut transitions = gate.subscribe();
-                            let result = loop {
-                                if cancellation.is_cancelled() {
-                                    break Err(ThreadError::Cancelled);
-                                }
-                                if let Some(permit) = gate.try_admit() {
-                                    break Ok(permit);
-                                }
-                                tokio::select! {
-                                    () = cancellation.cancelled() => break Err(ThreadError::Cancelled),
-                                    changed = transitions.changed() => if !changed { break Err(ThreadError::Closed); },
-                                }
-                            };
-                            PrimaryCompletion::Admission(result)
-                        }));
-                    }
-                } else {
-                    run.permit = Some(admission::TurnAdmissionPermit::ungated());
-                }
-                self.active = Some(run);
-                Ok(self.primary.is_none())
-            }
             RunPhase::Starting => {
                 if let Some(update) = self.pending_model_update.take() {
                     run.phase = RunPhase::Starting;
@@ -980,13 +943,6 @@ impl Owner {
         completion: PrimaryCompletion,
     ) -> Result<(), ThreadError> {
         match completion {
-            PrimaryCompletion::Admission(result) => {
-                self.turn_admission_waiting = false;
-                self.active
-                    .as_mut()
-                    .ok_or(ThreadError::InvalidIdentity)?
-                    .permit = Some(result?);
-            }
             PrimaryCompletion::Preparation {
                 mut step,
                 completion,

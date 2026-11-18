@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
-pub mod admission;
 mod background;
 mod cancellation;
 mod checkpoint;

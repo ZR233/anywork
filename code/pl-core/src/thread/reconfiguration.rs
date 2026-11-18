@@ -14,7 +14,7 @@ pub struct IdleReconfiguration {
 }
 
 impl Owner {
-    pub(super) fn ensure_idle(&self, allow_admission_boundary: bool) -> Result<(), ThreadError> {
+    pub(super) fn ensure_idle(&self) -> Result<(), ThreadError> {
         if self.current_task_start_ordinal.is_some() && self.current_model_running {
             return Err(ThreadError::InputRequiresIdle);
         }
@@ -23,25 +23,17 @@ impl Owner {
         if self.current_saved_lifecycle.is_some() && !self.interrupt.is_closing() {
             return Ok(());
         }
-        // A closed admission boundary has no executing Turn. Its queued input identities
-        // remain owned by this Thread while the host replaces generation-bound services.
-        let admission_boundary = allow_admission_boundary
-            && self
-                .turn_admission
-                .as_ref()
-                .is_some_and(|gate| !gate.is_open() && gate.admitted_turns() == 0);
-        if (!self.active_inputs.is_empty() && !(admission_boundary && self.turn_admission_waiting))
+        if !self.active_inputs.is_empty()
             || self
                 .state
                 .turns
                 .iter()
                 .any(|turn| turn.state == TurnState::Running)
-            || (!admission_boundary
-                && self
-                    .state
-                    .inputs
-                    .iter()
-                    .any(|input| input.state == input::InputState::Pending))
+            || self
+                .state
+                .inputs
+                .iter()
+                .any(|input| input.state == input::InputState::Pending)
             || self
                 .state
                 .tasks
@@ -81,7 +73,7 @@ impl Owner {
                 actual: self.state.commit_sequence,
             });
         }
-        self.ensure_idle(true)?;
+        self.ensure_idle()?;
         let mut candidate = self.state.clone();
         let pending_model_update = update
             .model_update
