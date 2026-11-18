@@ -237,104 +237,109 @@ class _TimelineConnectorBodyState
     }
 
     final plan = widget.planConfirmation;
-    return TimelineView(
-      key: lease.chatKey,
-      threadId: threadId,
-      view: view,
-      submissions: _submissions,
-      submissionControlsBuilder: (submission) => ComposerSubmissionControls(
-        target: ComposerTarget.thread(threadId: widget.threadId),
-        submission: submission,
-      ),
-      controls: lease,
-      canonicalPresentationBuilder: (item, render) =>
-          TimelineCanonicalPayloadConnector(
-            key: ValueKey((lease.generation, item.id)),
-            item: item,
-            threadId: threadId,
-            openHistory: () => lease.openHistoryScope(),
-            retirement: lease.retirement,
-            isActive: active,
-            render: render,
-          ),
-      groupMembersBuilder: (unit) => CompletionRunConnector(
-        unit: unit,
+    return TimelineInitialHistoryContent(
+      content: lease.initialHistoryContent,
+      child: TimelineView(
+        key: lease.chatKey,
         threadId: threadId,
-        content: lease,
-        images: lease.imageResources,
-        readAttachment: readAttachment,
+        view: view,
+        submissions: _submissions,
+        submissionControlsBuilder: (submission) => ComposerSubmissionControls(
+          target: ComposerTarget.thread(threadId: widget.threadId),
+          submission: submission,
+        ),
+        controls: lease,
+        canonicalPresentationBuilder: (item, render) =>
+            TimelineCanonicalPayloadConnector(
+              key: ValueKey((lease.generation, item.id)),
+              item: item,
+              threadId: threadId,
+              openHistory: () => lease.openHistoryScope(),
+              retirement: lease.retirement,
+              isActive: active,
+              render: render,
+            ),
+        groupMembersBuilder: (unit) => CompletionRunConnector(
+          unit: unit,
+          threadId: threadId,
+          content: lease,
+          images: lease.imageResources,
+          readAttachment: readAttachment,
+          monotonicMicros: () => owner.monotonicMicros,
+          onContentLayout: (itemId, micros) {
+            if (active()) owner.recordContentLayout(lease, itemId, micros);
+          },
+          onCurrentContentLayout: (itemId, micros) {
+            if (active()) {
+              owner.recordCurrentContentLayout(lease, itemId, micros);
+            }
+          },
+          onCurrentContentUnmounted: (itemId) {
+            if (active()) {
+              owner.recordCurrentContentUnmounted(lease, itemId);
+            }
+          },
+        ),
         monotonicMicros: () => owner.monotonicMicros,
-        onContentLayout: (itemId, micros) {
-          if (active()) owner.recordContentLayout(lease, itemId, micros);
-        },
-        onCurrentContentLayout: (itemId, micros) {
+        isDisplayActive: active,
+        onContentLayout: (itemId, completedMicros) {
           if (active()) {
-            owner.recordCurrentContentLayout(lease, itemId, micros);
+            owner.recordContentLayout(lease, itemId, completedMicros);
+          }
+        },
+        onCurrentContentLayout: (itemId, completedMicros) {
+          if (active()) {
+            owner.recordCurrentContentLayout(lease, itemId, completedMicros);
           }
         },
         onCurrentContentUnmounted: (itemId) {
+          if (active()) owner.recordCurrentContentUnmounted(lease, itemId);
+        },
+        onLoadOlder: () => active()
+            ? owner.loadOlder(threadId, generation: lease.generation)
+            : Future.value(),
+        onRetryOlder: () => active()
+            ? owner.retryOlder(threadId, generation: lease.generation)
+            : Future.value(),
+        onReturnLive: () =>
+            active() ? owner.returnToLive(threadId) : Future.value(),
+        onEnterHistory: () {
           if (active()) {
-            owner.recordCurrentContentUnmounted(lease, itemId);
+            unawaited(
+              owner
+                  .dispatch(threadId, const TimelineEnterHistory())
+                  .catchError((Object _, StackTrace _) {}),
+            );
           }
         },
-      ),
-      monotonicMicros: () => owner.monotonicMicros,
-      isDisplayActive: active,
-      onContentLayout: (itemId, completedMicros) {
-        if (active()) owner.recordContentLayout(lease, itemId, completedMicros);
-      },
-      onCurrentContentLayout: (itemId, completedMicros) {
-        if (active()) {
-          owner.recordCurrentContentLayout(lease, itemId, completedMicros);
-        }
-      },
-      onCurrentContentUnmounted: (itemId) {
-        if (active()) owner.recordCurrentContentUnmounted(lease, itemId);
-      },
-      onLoadOlder: () => active()
-          ? owner.loadOlder(threadId, generation: lease.generation)
-          : Future.value(),
-      onRetryOlder: () => active()
-          ? owner.retryOlder(threadId, generation: lease.generation)
-          : Future.value(),
-      onReturnLive: () =>
-          active() ? owner.returnToLive(threadId) : Future.value(),
-      onEnterHistory: () {
-        if (active()) {
-          unawaited(
-            owner
-                .dispatch(threadId, const TimelineEnterHistory())
-                .catchError((Object _, StackTrace _) {}),
-          );
-        }
-      },
-      onRetryConnection: () {
-        if (active()) retry();
-      },
-      attachmentBuilder: (item) => TimelineAttachmentsConnector(
-        key: ValueKey((lease.generation, item.id)),
-        item: item,
-        resources: lease.imageResources,
-        readAttachment: readAttachment,
-        isActive: active,
-      ),
-      onLink: link,
-      isSafeLink: (url) => safeExternalWebUrl(url) != null,
-      remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
-      pendingPlanInteractionId: plan?.interactionId,
-      planSummary: plan == null
-          ? null
-          : Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: SelectionContainer.disabled(
-                child: PlanSummaryCard(
-                  key: StudioDriverKeys.planSummary,
-                  title: plan.title,
-                  expanded: widget.planExpanded,
-                  onToggle: widget.onPlanToggle,
+        onRetryConnection: () {
+          if (active()) retry();
+        },
+        attachmentBuilder: (item) => TimelineAttachmentsConnector(
+          key: ValueKey((lease.generation, item.id)),
+          item: item,
+          resources: lease.imageResources,
+          readAttachment: readAttachment,
+          isActive: active,
+        ),
+        onLink: link,
+        isSafeLink: (url) => safeExternalWebUrl(url) != null,
+        remoteImageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
+        pendingPlanInteractionId: plan?.interactionId,
+        planSummary: plan == null
+            ? null
+            : Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: SelectionContainer.disabled(
+                  child: PlanSummaryCard(
+                    key: StudioDriverKeys.planSummary,
+                    title: plan.title,
+                    expanded: widget.planExpanded,
+                    onToggle: widget.onPlanToggle,
+                  ),
                 ),
               ),
-            ),
+      ),
     );
   }
 }

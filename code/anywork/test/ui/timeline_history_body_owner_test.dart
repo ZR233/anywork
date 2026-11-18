@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_history_item_content.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -268,23 +270,20 @@ void main() {
             ),
           ),
         );
-        final body = ChatItemView(
-          item: item,
-          bodyBuilder: (_, text) => Text(text),
-        );
-        await tester.pumpWidget(
-          MaterialApp(
-            theme: pureStudioTheme(),
-            locale: const Locale('zh'),
-            localizationsDelegates: [
-              AppLocalizations.delegate,
-              ...GlobalMaterialLocalizations.delegates,
-            ],
-            supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: transferred
-                  ? TimelineInitialBodyReads(
-                      results: {
+        final original = ChatItemPresentation.forUnit(unit);
+        final prototype = ChatItemPresentation.forRecord(
+          (unit.body as SingleDisplayBlock).record,
+          id: unit.id,
+        ).resolvePresentation(item);
+        final body = transferred
+            ? TimelineInitialHistoryContent(
+                content: (
+                  identity: timelineHistoryItemIdentity(prototype),
+                  result: AsyncSnapshot.withData(
+                    ConnectionState.done,
+                    TimelineHistoryItemContent(
+                      item: prototype,
+                      bodyReads: {
                         historyBodyIdentity(
                           item.bodies.single.historyReference!,
                         ): failed
@@ -303,10 +302,32 @@ void main() {
                                 ),
                               ),
                       },
-                      child: body,
-                    )
-                  : body,
-            ),
+                    ),
+                  ),
+                ),
+                child: TimelineCanonicalPayloadConnector(
+                  item: original,
+                  threadId: 'thread',
+                  isActive: () => true,
+                  openHistory: () =>
+                      throw StateError('unexpected second query'),
+                  render: (resolved) => ChatItemView(
+                    item: resolved,
+                    bodyBuilder: (_, text) => Text(text),
+                  ),
+                ),
+              )
+            : ChatItemView(item: item, bodyBuilder: (_, text) => Text(text));
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: pureStudioTheme(),
+            locale: const Locale('zh'),
+            localizationsDelegates: [
+              AppLocalizations.delegate,
+              ...GlobalMaterialLocalizations.delegates,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
+            home: Scaffold(body: body),
           ),
         );
         await tester.pumpAndSettle();

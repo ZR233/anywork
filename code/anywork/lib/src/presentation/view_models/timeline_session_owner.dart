@@ -5,13 +5,16 @@ import 'dart:math';
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
-import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
+import 'package:flutter/widgets.dart'
+    show AsyncSnapshot, ConnectionState, ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
 import '../../features/conversation/timeline/live_status/live_status_state.dart'
     show LiveStatusView;
 import '../../features/conversation/timeline/state/content_reference_identity.dart';
+import '../../features/conversation/timeline/state/chat_item_presentation.dart';
+import '../../features/conversation/timeline/state/timeline_history_item_content.dart';
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
@@ -50,6 +53,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.history,
     this.selectionId,
     this.selectionStartedMicros,
+    this.initialHistoryContent,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
@@ -74,6 +78,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   LiveStatusView? liveStatus;
   final int? selectionId;
   final int? selectionStartedMicros;
+  final TimelinePreparedHistoryItem? initialHistoryContent;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
@@ -811,12 +816,15 @@ final class TimelineSessionOwner {
         ),
       );
       if (!_ownsRead(read)) return;
+      final content = await _prepareInitialHistoryItem(read, initial);
+      if (!_ownsRead(read)) return;
       await _serialize(
         () => _set(
           read,
           initial.entries,
           cut: initial.cut,
           olderCursor: initial.next,
+          initialContent: content,
         ),
       );
       unawaited(_connectCurrent(read, demand));
@@ -861,6 +869,53 @@ final class TimelineSessionOwner {
     } finally {
       await read.close();
     }
+  }
+
+  Future<TimelinePreparedHistoryItem?> _prepareInitialHistoryItem(
+    _TimelineRead read,
+    HistoryTimelinePage page,
+  ) async {
+    for (final entry in page.entries) {
+      final block = TimelineHistoryProjection.block(entry, cut: page.cut);
+      if (block == null) continue;
+      final body = block.body;
+      if (body is! SingleDisplayBlock ||
+          body.visibility != HistorySingleVisibility.content ||
+          (body.record.atom.kind != ChatAtomKind.text &&
+              body.record.atom.kind != ChatAtomKind.input)) {
+        continue;
+      }
+      final item = ChatItemPresentation.forRecord(body.record, id: block.id);
+      if (item.observationUnavailable || item.historyEventId == null) continue;
+      final scope = HistoryReadScope(
+        threadId: read.session.threadId,
+        generation: read.selection,
+        reader: read.history!,
+        isEligible: () => _ownsRead(read),
+      );
+      final identity = timelineHistoryItemIdentity(item);
+      try {
+        final content = await readTimelineHistoryItem(scope, item);
+        return (
+          identity: identity,
+          result: AsyncSnapshot.withData(ConnectionState.done, content),
+        );
+      } catch (error, stack) {
+        if (!_ownsRead(read)) return null;
+        return (
+          identity: identity,
+          result: AsyncSnapshot<TimelineHistoryItemContent>.withError(
+            ConnectionState.done,
+            error,
+            stack,
+          ),
+        );
+      } finally {
+        scope.retire();
+        await scope.close();
+      }
+    }
+    return null;
   }
 
   Future<void> _openCurrent(_TimelineRead read, ReadDemand demand) async {
@@ -1356,6 +1411,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     List<HistoryTimelineEntry> entries, {
     required HistoryCut cut,
     required String? olderCursor,
+    TimelinePreparedHistoryItem? initialContent,
   }) async {
     final session = read.session;
     final next = TimelineDisplayLease._(
@@ -1370,6 +1426,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       selectionStartedMicros: _selectionTarget == session.threadId
           ? _selectionStartedMicros
           : null,
+      initialHistoryContent: initialContent,
     );
     _preparingDisplays.add(next);
     try {
