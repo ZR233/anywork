@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
-import 'package:anywork/src/features/conversation/acp/state/acp_timeline_row.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_timeline_view_model.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -596,21 +595,20 @@ final class _Phases {
               index,
         ];
         expect(userIndexes, hasLength(2));
-        for (final index in userIndexes.reversed) {
-          final userItem = rowAt(index);
-          await scene.tester.scrollUntilVisible(
-            userItem,
-            -250,
-            scrollable: scrollable,
-          );
-          expect(
-            find.descendant(
-              of: userItem,
-              matching: find.text(spec.prompt, findRichText: true),
-            ),
-            findsOneWidget,
-          );
-        }
+        // The startup message was verified separately and may request a long reply.
+        final userItem = rowAt(userIndexes.last);
+        await scene.tester.scrollUntilVisible(
+          userItem,
+          -250,
+          scrollable: scrollable,
+        );
+        expect(
+          find.descendant(
+            of: userItem,
+            matching: find.text(spec.prompt, findRichText: true),
+          ),
+          findsOneWidget,
+        );
       }
       result['verdict'] = 'passed';
       return result;
