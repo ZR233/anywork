@@ -21,6 +21,137 @@ use support::{Environment, current_demand, prompt_step, reached};
 fn demand() -> HistoryDemand {
     HistoryDemand::default()
 }
+
+#[tokio::test]
+async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Result<()> {
+    use pl_studio_runtime::{
+        CreateThreadRequest, InteractionResolution, NewThreadModelRoute, StudioPromptInput,
+        ThreadWorkspaceMode, UserInputAnswer, UserInputResolution, mode::ThreadModeId,
+    };
+
+    let plan = "# Restart plan\n\nImplement the approved isolated task and report its result.";
+    let continuation = pl_provider_fixture::ReplyStage::new();
+    let mut env = Environment::new(
+        vec![
+            prompt_step(
+                "reopened-plan",
+                0,
+                support::tool_reply(
+                    "plan_submit",
+                    "saved-plan",
+                    serde_json::json!({"expectedRevision":0,"plan":plan}),
+                ),
+            ),
+            prompt_step(plan, 1, support::held_reply(&continuation, "approved")),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let created = env
+            .runtime
+            .create_thread_command(
+                env.project.id.clone(),
+                CreateThreadRequest {
+                    title: Some("Reopened plan".into()),
+                    input: StudioPromptInput {
+                        input_id: "input-reopened-plan".into(),
+                        text: "reopened-plan".into(),
+                        attachment_draft_ids: Vec::new(),
+                    },
+                    mode: ThreadModeId::task().to_string(),
+                    route: NewThreadModelRoute {
+                        account_id: "root-fixture".into(),
+                        model_id: support::MODEL.into(),
+                        effort: None,
+                    },
+                    delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
+                    delegation_preference: None,
+                    workspace_mode: ThreadWorkspaceMode::Local,
+                },
+                None,
+            )
+            .await?;
+        let id = created.thread.id;
+        support::completed_prompt(&env.runtime, &id, "reopened-plan").await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        env.restart().await?;
+        let reader = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let view = reader.snapshot(current_demand()).await?;
+        let interactions = view
+            .projection
+            .interactions
+            .context("reopened Plan collection")?;
+        let page = reader
+            .page_collection(interactions, None, current_demand())
+            .await?;
+        let entry = page
+            .entries
+            .into_iter()
+            .next()
+            .context("reopened pending Plan")?;
+        let bytes = match entry.payload {
+            pl_studio_runtime::CurrentPayloadData::Inline { bytes } => bytes,
+            pl_studio_runtime::CurrentPayloadData::Deferred { reference, .. } => {
+                read_current_body(&reader, &reference).await?
+            }
+        };
+        let pending: pl_studio_runtime::InteractionRequest = serde_json::from_slice(&bytes)?;
+        let metadata = reader.watch(None, current_demand()).await?;
+        ensure!(
+            env.root_provider.recorded().len() == 1,
+            "passive restore invoked a model"
+        );
+        env.runtime
+            .resolve_interaction(
+                "approve-reopened-plan".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id.clone(),
+                InteractionResolution::UserInput(UserInputResolution {
+                    answers: std::collections::HashMap::from([(
+                        pl_studio_runtime::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                        UserInputAnswer {
+                            answers: vec!["Approve".into()],
+                        },
+                    )]),
+                }),
+            )
+            .await?;
+        reached(&continuation).await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let input = loop {
+            ensure!(
+                metadata.next().await?.is_some(),
+                "Current ended before the approved continuation"
+            );
+            let active = reader.snapshot(current_demand()).await?;
+            if let Some(input) = active.state.active_turn.and_then(|turn| turn.input_id)
+                && input != "input-reopened-plan"
+            {
+                break input;
+            }
+        };
+        continuation.release();
+        support::terminal(&env.runtime, &id, Some(&input)).await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        metadata.close().await?;
+        reader.close().await?;
+        ensure!(
+            env.root_provider.recorded().len() == 2,
+            "approval did not issue exactly one continuation"
+        );
+        Ok(())
+    })
+    .await
+    .context("reopened Plan approval did not settle")
+    .and_then(|result| result);
+    continuation.release();
+    env.finish(result).await
+}
 fn entity(id: &str, run: RuntimeEpoch, active: bool) -> HistoryEntityHead {
     HistoryEntityHead {
         entity_id: id.into(),
@@ -166,16 +297,20 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
     use pl_provider_fixture::ReplyStage;
 
     let stage = ReplyStage::new();
+    let terminal_stage = ReplyStage::new();
     let head = "流".repeat(33_000);
+    let deltas = ["中🙂", "1", "2", "3", "4", "5", "6", "7"];
+    let streamed_prefix = format!("{head}{}", deltas.concat());
     let tail = "🎉完整终稿";
-    let expected = format!("{head}{tail}").into_bytes();
-    let mut frames = pl_provider_fixture::responses_text_chunks(
-        &[head.as_str(), tail],
-        "current-history",
-        support::MODEL,
-    );
-    let after: Vec<_> = frames.split_off(3);
-    let reply = ReplyStage::staged(vec![frames, after], &[&stage]);
+    let expected = format!("{streamed_prefix}{tail}").into_bytes();
+    let mut chunks = vec![head.as_str()];
+    chunks.extend(deltas);
+    chunks.push(tail);
+    let mut frames =
+        pl_provider_fixture::responses_text_chunks(&chunks, "current-history", support::MODEL);
+    let terminal = frames.split_off(3 + deltas.len());
+    let middle = frames.split_off(3);
+    let reply = ReplyStage::staged(vec![frames, middle, terminal], &[&stage, &terminal_stage]);
     let mut env = Environment::new(vec![prompt_step("current-history", 0, reply)], vec![]).await?;
     let result = async {
         let thread = env
@@ -325,7 +460,30 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             })
             .await
             .context("periodic Current did not save the held provider prefix")??;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let archive = env
+            .runtime
+            .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let before_deltas = archive.head().await?;
         stage.release();
+        reached(&terminal_stage).await?;
+        loop {
+            let window = body
+                .next()
+                .await?
+                .context("Current body ended during pure deltas")?;
+            ensure!(!window.sealed, "provider terminal was still held");
+            if window.available_through == streamed_prefix.len() as u64 {
+                break;
+            }
+        }
+        ensure!(
+            archive.head().await? == before_deltas,
+            "pure stream deltas entered immutable History"
+        );
+        archive.close().await;
+        terminal_stage.release();
         let terminal = loop {
             let Some(frame) = metadata.next().await? else {
                 anyhow::bail!("Current watch ended before the provider Turn completed");
@@ -464,6 +622,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
     }
     .await;
     stage.release();
+    terminal_stage.release();
     env.finish(result).await
 }
 

@@ -126,6 +126,9 @@ impl CurrentFile {
             thread_id = self.thread_id,
             current_load_ms = started.elapsed().as_secs_f64() * 1000.0,
             current_json_bytes = bytes.len(),
+            current_snapshot_age_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |now| now.as_millis().saturating_sub(current.saved_at.max(0) as u128)) as u64,
             "current loaded without history"
         );
         Ok(Some((current, bytes)))

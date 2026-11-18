@@ -204,6 +204,8 @@ fn project_invocation(
                 }
             }
         }
+    } else if let Some(output) = completed_interaction_output(snapshot, &id, invocation.name()) {
+        ThreadToolState::Succeeded(crate::SucceededThreadTool::new(updated_at, output))
     } else {
         ThreadToolState::Queued(crate::QueuedThreadTool)
     };
@@ -250,6 +252,31 @@ fn project_invocation(
         ExecutionShape::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
     ));
     Ok(items)
+}
+
+fn completed_interaction_output(
+    snapshot: &ThreadSnapshot,
+    call_id: &str,
+    tool_id: &str,
+) -> Option<ThreadToolOutput> {
+    // Core admits a tool-produced interaction with its successful result. After restart its task
+    // and delivery can be gone while the interaction and the paired result still belong to Current.
+    if !snapshot.interactions.values().any(|record| {
+        pl_core::tool::opaque::interaction_tool_call_id(&record.request.id) == Some(call_id)
+    }) {
+        return None;
+    }
+    let result = snapshot.context.records.iter().find(|record| {
+        matches!(&record.source, pl_core::context::ContextSource::ToolResult {
+            call_id: known_call, tool_id: known_tool,
+        } if known_call == call_id && known_tool == tool_id)
+    })?;
+    Some(ThreadToolOutput::new(
+        text_content(&result.content),
+        Vec::new(),
+        Vec::new(),
+        None,
+    ))
 }
 
 pub(super) fn delivery_context(delivery: &ToolDelivery) -> &[pl_core::context::ContextContent] {

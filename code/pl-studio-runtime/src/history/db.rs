@@ -107,7 +107,9 @@ pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
             "SELECT COALESCE(MAX(seq),0) AS seq FROM history_events",
             vec![],
         ))
-        .await?
+        .await.inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?
         .ok_or_else(|| HistoryError::Integrity("history head query returned no row".into()))?;
     u64::try_from(row.try_get::<i64>("", "seq")?)
         .map_err(|_| HistoryError::Integrity("negative history head".into()))

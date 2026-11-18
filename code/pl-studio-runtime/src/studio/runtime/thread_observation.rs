@@ -1509,23 +1509,33 @@ impl LiveOwner {
         if write.effect.delivery_repairs.is_empty() && write.effect.interactions.is_empty() {
             return Ok(());
         }
-        let history = services.store.history(thread_id).await?;
-        crate::studio::thread_projection::seed_repaired_targets(
-            &mut self.retained.projection,
-            &history,
-            &write.effect,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
-        crate::studio::thread_projection::seed_interaction_targets(
-            &mut self.retained.projection,
-            thread_id,
-            &history,
-            &write.effect,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("live Thread user-input seed failed: {error}"))?;
-        Ok(())
+        let result = async {
+            let history = services.store.history(thread_id).await?;
+            crate::studio::thread_projection::seed_repaired_targets(
+                &mut self.retained.projection,
+                &history,
+                &write.effect,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
+            crate::studio::thread_projection::seed_interaction_targets(
+                &mut self.retained.projection,
+                thread_id,
+                &history,
+                &write.effect,
+                &write.state,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("live Thread user-input seed failed: {error}"))
+        }
+        .await;
+        // Seeding is part of preparation. Its failure owes the same explicit channel fault as a
+        // later projection failure; otherwise new work only sees a 60-second no-progress timeout.
+        if let Err(error) = &result {
+            self.channel
+                .fail_projection(write.effect.sequence, error.to_string());
+        }
+        result
     }
 
     /// Folds one admitted write into the shared session and the reliable save channel.

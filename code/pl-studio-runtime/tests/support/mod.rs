@@ -115,7 +115,7 @@ pub fn current_demand() -> ReadDemand {
     }
 }
 
-async fn terminal(
+pub async fn terminal(
     runtime: &StudioRuntime,
     id: &str,
     input: Option<&str>,

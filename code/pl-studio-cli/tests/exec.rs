@@ -415,108 +415,6 @@ async fn environment_credentials_follow_native_protocol_requirements_without_key
     Ok(())
 }
 
-#[tokio::test]
-async fn root_and_child_share_the_explicit_readonly_skill_policy() -> Result<()> {
-    const CHILD_INPUT: &str = "child-policy-input";
-    const SKILL: &str = "cli-policy-skill";
-    const MARKER: &str = "CLI_EXPLICIT_SKILL_BODY";
-    let child_stage = ReplyStage::new();
-    let root_stage = ReplyStage::new();
-    let child = FixtureServer::start(vec![
-        Step::prompt(Protocol::ResponsesHttp, CHILD_INPUT, 0, native_tool("skill_view", "child-view", serde_json::json!({"name":SKILL}))),
-        Step::tool_output(Protocol::ResponsesHttp, "child-view", MARKER, 1, child_stage.gated(vec![serde_json::json!({"type":"response.created","response":{"id":"child-done","model":MODEL}})], pl_provider_fixture::responses_text("child finished", "child-done", MODEL).into_iter().skip(1).collect())),
-    ]).await?;
-    let root = FixtureServer::start(vec![
-        Step::prompt(Protocol::ResponsesHttp, PROMPT, 0, native_tool("skill_view", "root-view", serde_json::json!({"name":SKILL}))),
-        Step::tool_output(Protocol::ResponsesHttp, "root-view", MARKER, 1, Reply::Sse(pl_provider_fixture::responses_tool_calls("spawn", MODEL, &[pl_provider_fixture::RealtimeToolCall { item_id: "spawn", call_id: "spawn", name: "spawn_agent", arguments: serde_json::json!({"profileId":"cli_child","taskSummary":"check child skills","message":CHILD_INPUT}).to_string() }]))),
-        Step::tool_output(Protocol::ResponsesHttp, "spawn", "agentId", 2, root_stage.gated(vec![serde_json::json!({"type":"response.created","response":{"id":"root-done","model":MODEL}})], pl_provider_fixture::responses_text("root finished", "root-done", MODEL).into_iter().skip(1).collect())),
-    ]).await?;
-    let environment = Environment::new(&root.base_url())?;
-    let paths = ConfigPaths::from_config_dir(&environment.home);
-    let store = ConfigStore::new(paths.clone());
-    let mut config = store.load()?;
-    let mut account = config.models.accounts[&AccountId::new("fixture")?].clone();
-    account.base_url = child.base_url();
-    account.bearer_token_env = Some("ANYWK_TEST_ENV_TOKEN".into());
-    config
-        .models
-        .accounts
-        .insert(AccountId::new("child")?, account);
-    store.save(&config)?;
-    pl_studio_runtime::config::save_user_agent_profile(
-        &paths,
-        "cli_child",
-        &pl_studio_runtime::UserAgentProfile {
-            enabled: true,
-            display_name: "CLI Child".into(),
-            description: "CLI child test".into(),
-            when_to_use: "CLI child test".into(),
-            binding: pl_studio_runtime::AgentBinding::Native(
-                pl_studio_runtime::NativeAgentConfig {
-                    route: Some(pl_studio_runtime::NewThreadModelRoute {
-                        account_id: "child".into(),
-                        model_id: MODEL.into(),
-                        effort: None,
-                    }),
-                    system_instructions: Some("Use the configured skill".into()),
-                },
-            ),
-            workspace_mode: pl_studio_runtime::AgentWorkspaceMode::Directory,
-        },
-        &config,
-        &Default::default(),
-    )?;
-    let collection = environment.temporary.path().join("evaluation-skills");
-    let skill = collection.join(SKILL);
-    std::fs::create_dir_all(&skill)?;
-    std::fs::write(
-        skill.join("SKILL.md"),
-        format!("---\nname: {SKILL}\ndescription: CLI policy test\n---\n{MARKER}\n"),
-    )?;
-    let mut command = environment.command();
-    command
-        .args(["--skill-dir", "evaluation-skills"])
-        .env("ANYWK_TEST_ENV_TOKEN", "synthetic-environment-token");
-    let process = command.spawn()?;
-    tokio::time::timeout(Duration::from_secs(60), async {
-        tokio::join!(child_stage.wait_reached(), root_stage.wait_reached());
-    })
-    .await?;
-    child_stage.release();
-    root_stage.release();
-    let result =
-        tokio::time::timeout(Duration::from_secs(60), process.wait_with_output()).await??;
-    assert_eq!(
-        result.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    assert_eq!(String::from_utf8(result.stdout)?, "root finished\n");
-    for (provider, call) in [(&root, "root-view"), (&child, "child-view")] {
-        assert!(provider.recorded().iter().any(|request| {
-            pl_provider_fixture::observed_tool_output(&request.body, call)
-                .is_some_and(|text| text.contains(MARKER))
-        }));
-        assert!(
-            provider
-                .recorded()
-                .first()
-                .unwrap()
-                .body
-                .to_string()
-                .contains(SKILL)
-        );
-    }
-    assert!(
-        !skill.join(".usage.json").exists(),
-        "External reads cannot update usage in the collection"
-    );
-    root.finish().await?;
-    child.finish().await?;
-    Ok(())
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn native_signals_cancel_the_same_runtime_and_release_its_lock() -> Result<()> {
@@ -751,6 +649,28 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     assert_eq!(
         String::from_utf8(result.stdout)?,
         format!("{huge_answer}\n")
+    );
+
+    // The same real root/child journey proves the explicit collection policy without
+    // a second fixture whose shutdown races the child's terminal report.
+    for (provider, call) in [(&root, "root-view"), (&child, "child-view")] {
+        assert!(provider.recorded().iter().any(|request| {
+            pl_provider_fixture::observed_tool_output(&request.body, call)
+                .is_some_and(|text| text.contains(MARKER))
+        }));
+        assert!(
+            provider
+                .recorded()
+                .first()
+                .unwrap()
+                .body
+                .to_string()
+                .contains(SKILL)
+        );
+    }
+    assert!(
+        !skill.join(".usage.json").exists(),
+        "External reads cannot update usage in the collection"
     );
 
     // Verify no leftover temp files remain in export_dir or contents/.

@@ -3559,33 +3559,28 @@ pub(in crate::studio) async fn seed_repaired_targets(
     Ok(())
 }
 
-/// Reads the tool items an effect's user-input interactions name, when this projection holds no
-/// canonical body for them.
+/// Reads a pruned interaction's original tool only when the accepted Current cut no longer owns
+/// its invocation. A pending Plan can have no immutable terminal original yet; Current remains
+/// sufficient to project its answer after restart.
 ///
-/// A pending question outlives the Turn that asked it: the asking call is already terminal, its body
-/// leaves the retained window, and a projection seeded after a restart never saw the call at all.
-/// The answering effect carries only the interaction and the hidden continuation, so the answer can
-/// only land on the call's own item if the owner reads that one identity back from reliable history
-/// and hands it to the projection as a fact — the same shape as a reliable-output repair target. A
-/// Plan confirmation is answered after the same `plan_submit` call is already terminal, so it needs
-/// the same identity read-back. Nothing else is read: no Turn is scanned, no tool is activated, no
-/// model step starts. A missing or non-tool durable
-/// item fails explicitly, because an accepted answer must never be dropped or published as a
-/// fabricated row.
+/// Only a call pruned from Current and this projection needs an indexed lookup of its original.
+/// No Turn is scanned and no tool or model is activated. A missing or non-tool original then fails
+/// explicitly: a placement placeholder cannot own an answer.
 pub(in crate::studio) async fn seed_interaction_targets(
     projection: &mut LiveProjection,
     thread_id: &str,
     history: &crate::history::HistoryStore,
     effect: &ThreadEffectBatch,
+    state: &ThreadSnapshot,
 ) -> Result<(), ProjectionError> {
     let mut seeded = Vec::new();
     for record in effect.interactions.iter() {
         let Some(user_input) = super::user_input::project_user_input(thread_id, record)? else {
             continue;
         };
-        let tool_id =
+        let call_id =
             match pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id()) {
-                Some(call_id) => super::order::tool_id(call_id),
+                Some(call_id) => call_id,
                 None => {
                     return Err(ProjectionError::UserInput(format!(
                         "user-input interaction `{}` names no tool call",
@@ -3593,7 +3588,16 @@ pub(in crate::studio) async fn seed_interaction_targets(
                     )));
                 }
             };
-        if projection.holds_tool_body(&tool_id) {
+        let tool_id = super::order::tool_id(call_id);
+        // project_effect_items resolves these same accepted invocations locally. Looking for a
+        // terminal History original first would make a valid Current-only decision depend on it.
+        if projection.holds_tool_body(&tool_id)
+            || state.context.records.iter().any(|record| {
+                record.turn_id.is_some()
+                    && record.tool_calls.iter().any(|call| call.call_id == call_id)
+            })
+            || state.tasks.values().any(|task| task.call_id == call_id)
+        {
             continue;
         }
         let item = historical_execution_item(history, thread_id, &tool_id)
