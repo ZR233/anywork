@@ -63,7 +63,9 @@ pub(super) fn run(
             let home = retained["home"]
                 .as_str()
                 .context("Profile seed home missing")?;
-            copy_closed_home(Path::new(home), context.home)?;
+            // The supplied synthetic home is closed. WAL may persist after
+            // closure and is part of the database, so preserve it in the copy.
+            copy_startup_evidence(Path::new(home), context.home)?;
         } else {
             let project = context.working.join("conversation-read-profile-project");
             init_git_project(&project)?;
