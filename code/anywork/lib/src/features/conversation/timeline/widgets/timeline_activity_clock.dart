@@ -47,14 +47,30 @@ String activityDurationLabel(
 class TimelineActivityClock extends StatefulWidget {
   const TimelineActivityClock({
     required this.builder,
-    this.startedAt,
-    this.finishedAt,
+    this.startedAtMillis,
+    this.finishedAtMillis,
     this.running = false,
     this.now,
     super.key,
   });
-  final int? startedAt;
-  final int? finishedAt;
+
+  /// 原子活动沿用生产者的 Unix 秒时间戳。
+  const TimelineActivityClock.fromUnixSeconds({
+    required this.builder,
+    int? startedAt,
+    int? finishedAt,
+    this.running = false,
+    super.key,
+  }) : startedAtMillis = startedAt == null
+           ? null
+           : startedAt * Duration.millisecondsPerSecond,
+       finishedAtMillis = finishedAt == null
+           ? null
+           : finishedAt * Duration.millisecondsPerSecond,
+       now = null;
+
+  final int? startedAtMillis;
+  final int? finishedAtMillis;
   final bool running;
   final DateTime Function()? now;
   final Widget Function(BuildContext, int?) builder;
@@ -78,8 +94,8 @@ class _ClockState extends State<TimelineActivityClock> {
 
   void _sync() {
     if (widget.running &&
-        widget.startedAt != null &&
-        widget.finishedAt == null &&
+        widget.startedAtMillis != null &&
+        widget.finishedAtMillis == null &&
         TickerMode.valuesOf(context).enabled) {
       _timer ??= Timer.periodic(
         const Duration(seconds: 1),
@@ -99,15 +115,15 @@ class _ClockState extends State<TimelineActivityClock> {
 
   @override
   Widget build(BuildContext context) {
-    final start = widget.startedAt;
+    final start = widget.startedAtMillis;
     final end =
-        widget.finishedAt ??
+        widget.finishedAtMillis ??
         (widget.running
-            ? (widget.now ?? DateTime.now)().millisecondsSinceEpoch ~/ 1000
+            ? (widget.now ?? DateTime.now)().millisecondsSinceEpoch
             : null);
-    return widget.builder(
-      context,
-      start == null || end == null || end < start ? null : end - start,
-    );
+    final seconds = start == null || end == null || end < start
+        ? null
+        : (end - start) ~/ Duration.millisecondsPerSecond;
+    return widget.builder(context, seconds);
   }
 }

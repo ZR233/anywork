@@ -11,7 +11,10 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../integration_test/support/timeline_observation.dart';
 
-const _summary = WorkTiming(startedAt: 1000, finishedAt: 1002);
+const _summary = WorkTiming(
+  startedAtMillis: 1_000_000,
+  finishedAtMillis: 1_002_000,
+);
 
 Widget _host(
   WorkDisplayLocation location, {
@@ -28,13 +31,13 @@ Widget _host(
     body: CompletionRunView(
       id: 'observed-work',
       timing: location == WorkDisplayLocation.live
-          ? const WorkTiming(startedAt: 1000)
+          ? const WorkTiming(startedAtMillis: 1_000_000)
           : _summary,
       location: location,
       activity: activity,
       executionPresent: location == WorkDisplayLocation.live,
       initiallyExpanded: false,
-      now: () => DateTime.fromMillisecondsSinceEpoch(1002000, isUtc: true),
+      now: () => DateTime.fromMillisecondsSinceEpoch(1_002_000, isUtc: true),
       childBuilder: (_) => const Text('exact Work body'),
     ),
   ),

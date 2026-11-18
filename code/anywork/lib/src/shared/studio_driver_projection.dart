@@ -383,10 +383,15 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
       message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
   if (unit != null) {
     final atom = unit.atom;
+    final finishedAtMillis = unit.timing?.finishedAtMillis;
     final item = chatItemPresentationOf(message);
     return TimelineItemFacts(
       id: message.id,
-      sealedAt: atom?.finishedAt ?? unit.timing?.finishedAt,
+      sealedAt:
+          atom?.finishedAt ??
+          (finishedAtMillis == null
+              ? null
+              : finishedAtMillis ~/ Duration.millisecondsPerSecond),
       compatibility: 'current',
       omittedBytes: null,
       kind: unit.timing == null ? atom?.kind.name ?? 'single' : 'work',

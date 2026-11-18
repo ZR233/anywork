@@ -88,8 +88,8 @@ class _CompletionRunViewState extends State<CompletionRunView> {
           onTap: _disclosure.toggle,
           borderRadius: BorderRadius.circular(8),
           child: TimelineActivityClock(
-            startedAt: widget.timing.startedAt,
-            finishedAt: widget.timing.finishedAt,
+            startedAtMillis: widget.timing.startedAtMillis,
+            finishedAtMillis: widget.timing.finishedAtMillis,
             running: live,
             now: widget.now,
             builder: (context, seconds) => _WorkHeader(
@@ -100,11 +100,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
               executionPresent: widget.executionPresent,
               state: widget.state,
               activity: widget.activity,
-              seconds:
-                  widget.timing.startedAt == null ||
-                      (!live && widget.timing.finishedAt == null)
-                  ? null
-                  : seconds ?? 0,
+              seconds: seconds,
               expanded: _disclosure.isExpanded,
             ),
           ),

@@ -1,7 +1,9 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
@@ -50,7 +52,7 @@ void main() {
       _host(
         CompletionRunView(
           id: 'imported',
-          timing: const WorkTiming(startedAt: null),
+          timing: const WorkTiming(startedAtMillis: null),
           location: WorkDisplayLocation.history,
           initiallyExpanded: false,
           childBuilder: (_) => const SizedBox(),
@@ -70,7 +72,7 @@ void main() {
         _host(
           CompletionRunView(
             id: 'clock',
-            timing: const WorkTiming(startedAt: 1000),
+            timing: const WorkTiming(startedAtMillis: 1_000_000),
             location: WorkDisplayLocation.live,
             executionPresent: false,
             initiallyExpanded: false,
@@ -112,7 +114,7 @@ void main() {
           enabled: visible,
           child: CompletionRunView(
             id: 'hidden',
-            timing: const WorkTiming(startedAt: 1000),
+            timing: const WorkTiming(startedAtMillis: 1_000_000),
             location: WorkDisplayLocation.live,
             initiallyExpanded: false,
             now: () => _at(seconds),
@@ -140,7 +142,10 @@ void main() {
           _host(
             CompletionRunView(
               id: 'sealed',
-              timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
+              timing: const WorkTiming(
+                startedAtMillis: 1_000_000,
+                finishedAtMillis: 1_125_000,
+              ),
               state: DisplayBlockState.sealed,
               location: location,
               hasUnfinishedMembers: true,
@@ -179,28 +184,53 @@ void main() {
     );
   }
 
-  for (final (end, label) in [
-    (1000, '工作了不到 1 秒'),
-    (1009, '工作了 9 秒'),
-    (1120, '工作了 2 分'),
-    (1125, '工作了 2 分 5 秒'),
+  for (final (elapsedMillis, label) in [
+    (null, '工作记录'),
+    (-1, '工作记录'),
+    (0, '工作了不到 1 秒'),
     (999, '工作了不到 1 秒'),
+    (6000, '工作了 6 秒'),
+    (7000, '工作了 7 秒'),
+    (120_000, '工作了 2 分'),
+    (125_000, '工作了 2 分 5 秒'),
   ]) {
     testWidgets(
-      'completed interval $end formats and clamps a backwards wall clock',
+      'history Work interval of $elapsedMillis milliseconds displays $label',
       (tester) async {
+        const startedAt = 1_785_000_000_800;
+        final block = TimelineHistoryProjection.block(
+          HistoryTimelineEntry(
+            rowKey: 'work:history',
+            anchorSeq: 1,
+            headSeq: 2,
+            head: WorkHistoryRow(
+              HistoryWorkHead(
+                groupId: 'history',
+                startedAt: startedAt,
+                boundaryAt: elapsedMillis == null
+                    ? null
+                    : startedAt + elapsedMillis,
+                closed: true,
+                memberCount: 1,
+                unfinishedCount: 0,
+                executionPresent: true,
+              ),
+            ),
+          ),
+          cut: const HistoryCut('work-history-cut'),
+        )!;
         await tester.pumpWidget(
           _host(
-            CompletionRunView(
-              id: 'format',
-              timing: WorkTiming(startedAt: 1000, finishedAt: end),
-              location: WorkDisplayLocation.history,
-              initiallyExpanded: false,
-              childBuilder: (_) => const SizedBox(),
+            TimelineDisplayUnitView(
+              unit: TimelineDisplayUnit(block: block),
+              childBuilder: (_) => throw StateError('Work is collapsed'),
             ),
           ),
         );
-        expect(find.text(label), findsOneWidget);
+        final header = find.byKey(
+          const ValueKey('completion-run-header:work:history'),
+        );
+        expect(tester.widget<Text>(_workTitle(header)).data, label);
         await tester.pumpWidget(const SizedBox());
       },
     );
@@ -214,7 +244,7 @@ void main() {
         _host(
           CompletionRunView(
             id: 'narrow',
-            timing: const WorkTiming(startedAt: 1000),
+            timing: const WorkTiming(startedAtMillis: 1_000_000),
             thinkingSummary:
                 '核对 **组件边界** 与 `LiveStatusBar` [本组摘要](https://example.com) ' *
                 5,
@@ -257,7 +287,10 @@ void main() {
           SingleChildScrollView(
             child: CompletionRunView(
               id: 'history',
-              timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
+              timing: const WorkTiming(
+                startedAtMillis: 1_000_000,
+                finishedAtMillis: 1_125_000,
+              ),
               location: WorkDisplayLocation.history,
               initiallyExpanded: true,
               childBuilder: (_) => const Column(

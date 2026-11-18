@@ -84,8 +84,8 @@ void main() {
       Finder workHeader(int index) =>
           find.byKey(ValueKey('completion-run-header:spacing-group-$index'));
       for (final work in tester.widgetList<CompletionRunView>(workHeaders)) {
-        expect(work.timing.startedAt, 100);
-        expect(work.timing.finishedAt, 225);
+        expect(work.timing.startedAtMillis, 100_000);
+        expect(work.timing.finishedAtMillis, 225_000);
         expect(work.location, WorkDisplayLocation.history);
         expect(work.initiallyExpanded, isFalse);
       }
