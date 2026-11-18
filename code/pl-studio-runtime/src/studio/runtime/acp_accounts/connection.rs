@@ -680,9 +680,30 @@ mod tests {
         predicate: impl Fn(&AcpAuthAccount) -> bool,
     ) -> AcpAuthAccount {
         tokio::time::timeout(Duration::from_secs(20), async {
+            let mut updates = runtime
+                .subscribe_product_topic(crate::StudioProductTopic::AcpAuth)
+                .await
+                .expect("auth topic opens");
             loop {
-                if let Some(state) = runtime
-                    .read_acp_auth_state()
+                let snapshot = match updates
+                    .recv()
+                    .await
+                    .expect("auth subscription succeeds")
+                    .expect("auth topic remains open")
+                {
+                    crate::StudioProductFrame::Baseline(baseline) => match baseline.state {
+                        crate::StudioProductBaselineState::AcpAuth(snapshot) => *snapshot,
+                        other => panic!("unexpected auth baseline: {other:?}"),
+                    },
+                    crate::StudioProductFrame::Event(event) => match event.kind {
+                        crate::StudioProductEventKind::AcpAuthStateChanged(snapshot) => *snapshot,
+                        other => panic!("unexpected auth event: {other:?}"),
+                    },
+                    crate::StudioProductFrame::Lagged { dropped, .. } => {
+                        panic!("lost {dropped} auth changes")
+                    }
+                };
+                if let Some(state) = snapshot
                     .accounts
                     .into_iter()
                     .find(|state| state.account_id == account)
@@ -690,7 +711,6 @@ mod tests {
                 {
                     return state;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await

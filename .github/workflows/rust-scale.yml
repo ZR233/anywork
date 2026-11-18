@@ -53,17 +53,16 @@ jobs:
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: false
           cache-bin: false
-      - name: Verify the hundred-thousand-member index
+      - name: Verify indexed history at one hundred thousand records
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
-            studio::thread_projection::presentation::tests::hundred_thousand_members_have_a_bounded_head_delta_and_no_inline_saved_bodies \
+            studio::storage::history::conversation::record_read_tests::hundred_thousand_records_use_index_seeks_without_loading_bodies \
             -- --exact --ignored --nocapture
-      - name: Verify hundred-thousand frozen waiting blocks
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
-            studio::thread_projection::presentation::tests::hundred_thousand_waiting_blocks_reclaim_before_frontier_and_advance_without_a_walk \
-            -- --exact --ignored --nocapture
-      - name: Verify both two-thousand-item consumers
+      - name: Verify current and history at two thousand items
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite \
-            --test runtime_conversation_feed _scale -- --ignored --nocapture
+            --test runtime_conversation_feed current_and_history_2000_item_scale -- --exact --ignored --nocapture
+      - name: Verify the complete model stream
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-model --test protocol_wire \
+            full_gui_stress_stream_reaches_model_public_api_without_loss -- --exact --ignored --nocapture

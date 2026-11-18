@@ -2711,7 +2711,12 @@ async fn whole_body_timeout_and_future_drop_release_borrow_without_changing_last
         if cancel {
             drop(future);
         } else {
-            assert_eq!(future.await.unwrap_err(), ModelCatalogQueryError::Timeout);
+            // The peer acknowledged a partial body. Only the operation deadline may end it.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(10)).await;
+            let result = future.await;
+            tokio::time::resume();
+            assert_eq!(result.unwrap_err(), ModelCatalogQueryError::Timeout);
         }
         // Moving the cache proves the query no longer retains the borrowed snapshot.
         let retained_cache = cache;

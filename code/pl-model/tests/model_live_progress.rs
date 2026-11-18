@@ -1685,19 +1685,15 @@ fn legacy_binding() -> Value {
 
 #[tokio::test]
 async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns() {
+    let failure_stage = pl_provider_fixture::ReplyStage::new();
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::Chat,
         "failed live pair",
         0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 200,
-            events: vec![
+        failure_stage.gated(vec![
                 json!({"id":"chat-fail","model":"live-fixture","choices":[{"delta":{"content":"partial"},"finish_reason":null}]}),
                 json!({"id":"chat-fail","model":"live-fixture","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":7}}),
-                json!({"type":"error","error":{"code":"invalid_request_error","message":"provider failed mid stream"}}),
-            ],
-        },
+            ], vec![json!({"type":"error","error":{"code":"invalid_request_error","message":"provider failed mid stream"}})]),
     )])
     .await
     .expect("fixture starts");
@@ -1746,27 +1742,35 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
         .prepare(request)
         .await
         .expect("the fixture request prepares");
-    let running = tokio::spawn(async move { call.execute().await });
+    let running = call.execute();
+    tokio::pin!(running);
     // 失败之前的成对样本必须真的出现过：等到 provider 已报告输出词元并已发布响应耗时。
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let complete = sender.latest().usage_observation().is_some_and(|usage| {
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            use std::task::Poll;
+            assert!(
+                running.as_mut().poll(cx).is_pending(),
+                "failure gate still holds the attempt"
+            );
+            if sender.latest().usage_observation().is_some_and(|usage| {
                 usage.completion_tokens == Some(7) && usage.response_millis.is_some()
-            });
-            if complete {
-                break;
+            }) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
+        }),
+    )
     .await
     .expect("the partial pair is observable before the failure");
-
+    failure_stage.release();
     let error = tokio::time::timeout(Duration::from_secs(10), running)
         .await
         .expect("the failure arrives")
-        .expect("the call task joins")
         .expect_err("the provider fails mid stream");
+
     let receipt = model_failure_receipt(&error)
         .expect("the receipt decodes")
         .expect("the failure carries a receipt");

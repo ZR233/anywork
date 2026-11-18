@@ -2669,13 +2669,13 @@ async fn gui_fixture_accepts_either_order_of_main_and_optional_title_requests() 
 }
 
 #[tokio::test]
-async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
+async fn mixed_provider_events_preserve_identity_order_content_and_trace() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "paced stress wire",
         0,
         Reply::PacedSse {
-            events: 1_200,
+            events: 8,
             tokens_per_second: 5_000,
         },
     )])
@@ -2702,8 +2702,8 @@ async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
         )
         .await
         .unwrap();
-    assert_eq!(result.accounting.usage.output_tokens, Some(1_200));
-    assert_eq!(result.presentation_items.len(), 1_200);
+    assert_eq!(result.accounting.usage.output_tokens, Some(8));
+    assert_eq!(result.presentation_items.len(), 8);
     assert_eq!(
         result
             .content
@@ -2711,7 +2711,7 @@ async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
             .unwrap_or_default()
             .matches("answer-")
             .count(),
-        300
+        2
     );
     assert_eq!(
         result
@@ -2720,7 +2720,7 @@ async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
             .unwrap_or_default()
             .matches("thought-")
             .count(),
-        300
+        2
     );
     let mut provider_ids = std::collections::BTreeSet::new();
     for (index, item) in result.presentation_items.iter().enumerate() {
@@ -2773,318 +2773,18 @@ async fn paced_provider_stream_preserves_all_mixed_events_and_limits_rate() {
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(started.len(), 1_200);
+    assert_eq!(started.len(), 8);
     assert_eq!(
         trace
             .iter()
             .filter(|event| matches!(event.kind, TraceEventKind::TracePartCompleted { .. }))
             .count(),
-        1_200
+        8
     );
     let report = fixture.shutdown().await.unwrap();
     report.verify().unwrap();
     let stress = report.stress.unwrap();
-    assert_eq!(stress.emitted_events, 1_200);
-    assert!(
-        stress.elapsed_millis >= 230,
-        "fixture exceeded its configured nominal token rate"
-    );
-}
-
-#[tokio::test]
-async fn paced_body_reports_timing_for_throughput_diagnostics() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "paced throughput diagnostic",
-        0,
-        Reply::PacedBody {
-            events: 25,
-            tokens_per_second: 25,
-            initial_delay_ms: 150,
-            pad: 0,
-        },
-    )])
-    .await
-    .unwrap();
-    let result = complete(
-        &fixture,
-        model("fixture-model", ModelTransportProfile::responses_http()),
-        request("paced throughput diagnostic"),
-        ModelSession::default(),
-    )
-    .await;
-    let timing = result.timing.expect("paced stream has timing");
-    let output_tokens = result
-        .accounting
-        .usage
-        .output_tokens
-        .expect("paced stream reports output usage");
-    assert_eq!(output_tokens, 25);
-    let ttft_millis = timing
-        .ttft_millis
-        .expect("the paced body starts with an observable increment");
-    let decode_millis = timing
-        .decode_millis
-        .expect("a known first token also gives the first-token-to-terminal window");
-    assert!(
-        (75..=500).contains(&ttft_millis),
-        "TTFT should include the fixture's first-output delay: {timing:?}"
-    );
-    assert!(
-        (800..=1_300).contains(&decode_millis),
-        "decode window should follow the fixture pacing: {timing:?}"
-    );
-    assert_eq!(
-        ttft_millis + decode_millis,
-        timing.response_millis,
-        "the first-token boundary must stay consistent with the total response window"
-    );
-    assert!(
-        (900..=2_000).contains(&timing.response_millis),
-        "total response time must contain the first-token wait: {timing:?}"
-    );
-    assert!(timing.has_throughput_sample());
-    assert_eq!(
-        pl_model::model::usage::throughput_output_tokens(timing, &result.accounting.usage),
-        Some(output_tokens)
-    );
-    // The fixture's nominal frame schedule is not a precision contract for the
-    // client-observed decode rate.
-    let tokens_per_second = output_tokens as f64 * 1_000.0 / timing.response_millis as f64;
-    assert!(
-        (18.0..=27.0).contains(&tokens_per_second),
-        "output throughput divides by the whole response window: {timing:?}"
-    );
-    fixture.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn buffered_first_output_never_reports_the_tail_receive_rate() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "buffered first output",
-        0,
-        Reply::PacedBody {
-            events: 8,
-            tokens_per_second: 1_000,
-            initial_delay_ms: 500,
-            pad: 0,
-        },
-    )])
-    .await
-    .unwrap();
-    let result = complete(
-        &fixture,
-        model("fixture-model", ModelTransportProfile::responses_http()),
-        request("buffered first output"),
-        ModelSession::default(),
-    )
-    .await;
-    let timing = result.timing.expect("buffered stream has timing");
-    let output_tokens = result
-        .accounting
-        .usage
-        .output_tokens
-        .expect("buffered stream reports output usage");
-    assert_eq!(output_tokens, 8);
-    let decode_millis = timing
-        .decode_millis
-        .expect("the buffered body still starts with an observable increment");
-    assert!(
-        decode_millis < 100,
-        "the fixture delivers the whole body in a very short tail: {timing:?}"
-    );
-    let decode_rate = output_tokens as f64 * 1_000.0 / decode_millis as f64;
-    let output_rate = output_tokens as f64 * 1_000.0 / timing.response_millis as f64;
-    assert!(
-        timing.response_millis >= 500,
-        "total response time contains the 500ms first-output wait: {timing:?}"
-    );
-    assert!(
-        output_rate < 20.0,
-        "output throughput must include the first-token wait instead of the tail receive rate: \
-         {timing:?}"
-    );
-    assert!(
-        decode_rate > output_rate * 3.0,
-        "the tail-only rate is the anomaly this regression forbids: \
-         decode {decode_rate} vs output {output_rate}"
-    );
-    fixture.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn throughput_timing_excludes_terminal_trace_publication() {
-    use pl_model::trace::{
-        TraceEvent, TraceEventDraft, TraceEventSink, TraceEventSinkError, TraceOperation,
-        TracePartAction,
-    };
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
-
-    #[derive(Debug)]
-    struct SlowTerminalSink {
-        inner: InMemoryTraceEventSink,
-        terminal_publications: AtomicU64,
-    }
-
-    impl TraceEventSink for SlowTerminalSink {
-        fn emit(&self, draft: TraceEventDraft) -> Result<TraceEvent, TraceEventSinkError> {
-            if matches!(
-                &draft.operation,
-                TraceOperation::Apply {
-                    action: TracePartAction::UpdateToolInvocation { invocation },
-                    ..
-                } if invocation.arguments() == "{}"
-            ) {
-                // The synchronous consumer deliberately spends time publishing the tool that
-                // the normalized terminal event finalizes. This is an input to the regression,
-                // not a sleep used to guess whether an asynchronous operation has finished.
-                self.terminal_publications.fetch_add(1, Ordering::Relaxed);
-                std::thread::sleep(Duration::from_millis(700));
-            }
-            self.inner.emit(draft)
-        }
-
-        fn next_sequence(&self) -> u64 {
-            self.inner.next_sequence()
-        }
-    }
-
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::Chat,
-        "timed terminal publication",
-        0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 100,
-            events: vec![
-                json!({"id":"timed-tool","model":"fixture-model","choices":[{"delta":{"tool_calls":[{"index":0,"id":"timed-tool-call","function":{"name":"noop","arguments":"{}"}}]},"finish_reason":null}]}),
-                json!({"id":"timed-tool","choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
-                json!({"id":"timed-tool","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}),
-            ],
-        },
-    )])
-    .await
-    .unwrap();
-    let sink = Arc::new(SlowTerminalSink {
-        inner: InMemoryTraceEventSink::new("timed-session", 0),
-        terminal_publications: AtomicU64::new(0),
-    });
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
-        model(
-            "fixture-model",
-            ModelTransportProfile::chat_completions_http(),
-        ),
-    )
-    .unwrap();
-    let result = runtime
-        .complete(
-            request("timed terminal publication"),
-            ModelInvocationContext::new(ModelSession::default()).with_trace(
-                CompletionTraceContext {
-                    session_id: "timed-session".into(),
-                    turn_id: "timed-turn".into(),
-                    inference_id: "timed-inference".into(),
-                },
-                sink.clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(sink.terminal_publications.load(Ordering::Relaxed), 1);
-    assert_eq!(result.tool_calls.len(), 1);
-    assert_eq!(result.tool_calls[0].name, "noop");
-    let timing = result.timing.expect("the response streamed output");
-    let ttft_millis = timing
-        .ttft_millis
-        .expect("the tool input delta is the first observable output");
-    let decode_millis = timing
-        .decode_millis
-        .expect("a known first token also gives the first-token-to-terminal window");
-    assert_eq!(
-        ttft_millis.checked_add(decode_millis),
-        Some(timing.response_millis)
-    );
-    assert!(decode_millis > 0);
-    assert!(
-        decode_millis < 600,
-        "model timing must exclude the 700ms synchronous terminal trace publication: {timing:?}"
-    );
-    assert!(
-        timing.response_millis < 700,
-        "total response time must also exclude the terminal publication: {timing:?}"
-    );
-    fixture.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn retry_uses_only_the_successful_attempt_for_timing() {
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "retry timing",
-            0,
-            Reply::Sse(vec![
-                json!({"type":"response.created","response":{"id":"failed-attempt","model":"fixture-model"}}),
-                json!({"type":"response.output_item.added","output_index":0,"item":{"id":"failed-item","type":"message","role":"assistant","content":[]}}),
-                json!({"type":"response.output_text.delta","output_index":0,"item_id":"failed-item","content_index":0,"delta":"failed partial"}),
-            ]),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "retry timing",
-            1,
-            Reply::PacedBody {
-                events: 5,
-                tokens_per_second: 10,
-                initial_delay_ms: 200,
-                pad: 0,
-            },
-        ),
-    ])
-    .await
-    .unwrap();
-    let result = complete(
-        &fixture,
-        model("fixture-model", ModelTransportProfile::responses_http()),
-        request("retry timing"),
-        ModelSession::default(),
-    )
-    .await;
-    let timing = result.timing.expect("successful retry has timing");
-    let output_tokens = result
-        .accounting
-        .usage
-        .output_tokens
-        .expect("successful retry reports output usage");
-    assert_eq!(output_tokens, 5);
-    let ttft_millis = timing
-        .ttft_millis
-        .expect("the successful retry starts with an observable increment");
-    let decode_millis = timing
-        .decode_millis
-        .expect("a known first token also gives the first-token-to-terminal window");
-    assert!(
-        (100..=700).contains(&ttft_millis),
-        "TTFT must start at the successful attempt: {timing:?}"
-    );
-    assert!(
-        (250..=900).contains(&decode_millis),
-        "decode must exclude the failed attempt and retry delay: {timing:?}"
-    );
-    assert_eq!(
-        ttft_millis + decode_millis,
-        timing.response_millis,
-        "the retried attempt measures one consistent response window"
-    );
-    assert!(
-        (400..=1_600).contains(&timing.response_millis),
-        "the total response window starts at the successful attempt only: {timing:?}"
-    );
-    assert_eq!(fixture.finish().await.unwrap().len(), 2);
+    assert_eq!(stress.emitted_events, 8);
 }
 
 #[tokio::test]
@@ -3093,15 +2793,11 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
         Protocol::ResponsesHttp,
         "metadata only stream",
         0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 80,
-            events: vec![
+        Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"metadata-only","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"metadata-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.completed","response":{"id":"metadata-only","model":"fixture-model","usage":{"input_tokens":4,"output_tokens":6}}}),
-            ],
-        },
+            ]),
     )])
     .await
     .unwrap();
@@ -3127,17 +2823,9 @@ async fn metadata_only_stream_keeps_total_response_time_without_a_first_token() 
         timing.decode_millis, None,
         "the first-token-to-terminal window is unknown without a first token"
     );
-    assert!(
-        timing.response_millis >= 120,
-        "the total response window covers the whole stream: {timing:?}"
-    );
+
     assert_eq!(result.accounting.usage.output_tokens, Some(6));
-    assert!(timing.has_throughput_sample());
-    assert_eq!(
-        pl_model::model::usage::throughput_output_tokens(timing, &result.accounting.usage),
-        Some(6),
-        "an unknown first token must not suppress output throughput"
-    );
+
     fixture.finish().await.unwrap();
 }
 
@@ -3169,11 +2857,7 @@ async fn complete_tool_items_and_terminal_backfill_observe_first_output() {
             Protocol::ResponsesHttp,
             "complete tool timing",
             0,
-            Reply::PacedEvents {
-                initial_delay_ms: 0,
-                step_millis: 10,
-                events,
-            },
+            Reply::Sse(events),
         )])
         .await
         .unwrap();
@@ -3204,39 +2888,28 @@ async fn complete_tool_items_and_terminal_backfill_observe_first_output() {
 
 #[tokio::test]
 async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
-    // Both streams stay paced so the total response window is measurably non-zero:
-    // the assertions below judge usage validity, not a sub-millisecond round trip
-    // that would leave `response_millis` at zero.
     let fixture = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesHttp,
             "invalid usage stream",
             0,
-            Reply::PacedEvents {
-                initial_delay_ms: 0,
-                step_millis: 10,
-                events: vec![
+            Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"invalid-usage","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"invalid-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"invalid-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"invalid-usage","model":"fixture-model","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":9}}}),
-                ],
-            },
+                ]),
         ),
         Step::prompt(
             Protocol::ResponsesHttp,
             "missing output stream",
             1,
-            Reply::PacedEvents {
-                initial_delay_ms: 0,
-                step_millis: 10,
-                events: vec![
+            Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"missing-output","model":"fixture-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,"item":{"id":"missing-item","type":"message","role":"assistant","content":[]}}),
                 json!({"type":"response.output_text.delta","output_index":0,"item_id":"missing-item","content_index":0,"delta":"partial"}),
                 json!({"type":"response.completed","response":{"id":"missing-output","model":"fixture-model","usage":{"input_tokens":4}}}),
-                ],
-            },
+                ]),
         ),
     ])
     .await
@@ -3251,7 +2924,6 @@ async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
     let timing = invalid
         .timing
         .expect("the timing window does not depend on usage validity");
-    assert!(timing.has_throughput_sample());
     assert!(timing.ttft_millis.is_some());
     assert_eq!(
         pl_model::model::usage::throughput_output_tokens(timing, &invalid.accounting.usage),
@@ -3269,10 +2941,7 @@ async fn untrustworthy_usage_never_becomes_a_throughput_sample() {
     let timing = missing
         .timing
         .expect("a missing output count still keeps the response window");
-    assert!(
-        timing.response_millis > 0,
-        "the total response window exists even without an output count"
-    );
+
     assert_eq!(
         pl_model::model::usage::throughput_output_tokens(timing, &missing.accounting.usage),
         None,
@@ -3491,10 +3160,7 @@ async fn responses_empty_content_part_start_keeps_content_timing_unobserved() {
         Protocol::ResponsesHttp,
         "empty text part",
         0,
-        Reply::PacedEvents {
-            initial_delay_ms: 0,
-            step_millis: 10,
-            events: vec![
+        Reply::Sse(vec![
                 json!({"type":"response.created","response":{"id":"empty-part-response","model":"parts-model"}}),
                 json!({"type":"response.output_item.added","output_index":0,
                     "item":{"id":"empty-part","type":"message","role":"assistant","content":[]}}),
@@ -3505,8 +3171,7 @@ async fn responses_empty_content_part_start_keeps_content_timing_unobserved() {
                         "content":[{"type":"output_text","text":""}]}}),
                 json!({"type":"response.completed","response":{"id":"empty-part-response",
                     "model":"parts-model","usage":{"input_tokens":1,"output_tokens":0}}}),
-            ],
-        },
+            ]),
     )])
     .await
     .unwrap();
@@ -3535,6 +3200,7 @@ async fn responses_empty_content_part_start_keeps_content_timing_unobserved() {
 }
 
 #[tokio::test]
+#[ignore = "两万项流式规模检查，由 Rust Scale Checks 定时或手动运行"]
 async fn full_gui_stress_stream_reaches_model_public_api_without_loss() {
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,

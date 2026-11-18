@@ -29,7 +29,7 @@ fn question(id: &str, turn_id: &str) -> InteractionRequest {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn closing_the_thread_keeps_a_pending_interaction_recoverable() {
     let (model, _) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("plan-pending".into(), DynModelSession::new(model)).unwrap();
@@ -93,7 +93,7 @@ async fn closing_the_thread_keeps_a_pending_interaction_recoverable() {
     resumed.close().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempotent() {
     let (model, _) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("plan-answer".into(), DynModelSession::new(model)).unwrap();
@@ -183,14 +183,15 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
         .await
         .unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while resumed
-            .snapshot()
+        let mut updates = resumed.subscribe();
+        while updates
+            .next()
+            .await
+            .expect("continuation owner remains open")
             .inputs
             .iter()
             .any(|record| record.input.id == "interaction:plan-1:continuation")
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        {}
     })
     .await
     .expect("continuation turn finishes");
@@ -198,7 +199,7 @@ async fn a_recovered_interaction_resolves_once_and_repeated_answers_stay_idempot
     resumed.close().await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_explicitly_cancelled_interaction_is_not_resurrected_by_recovery() {
     let (model, _) = ScriptedModel::new(&[]);
     let thread = ThreadHandle::start("plan-cancelled".into(), DynModelSession::new(model)).unwrap();
@@ -307,7 +308,7 @@ impl pl_agent_tool::Tool for AwaitingPermission {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn close_stops_runtime_resources_while_preserving_the_pending_interaction() {
     let (model, _) = ScriptedModel::new(&["await"]);
     let thread = ThreadHandle::start("plan-resources".into(), DynModelSession::new(model)).unwrap();
@@ -339,13 +340,15 @@ async fn close_stops_runtime_resources_while_preserving_the_pending_interaction(
         panic!("the awaiting tool must run as a task")
     };
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while !thread
-            .snapshot()
+        let mut updates = thread.subscribe();
+        while !updates
+            .next()
+            .await
+            .expect("permission owner remains open")
             .permissions
             .values()
             .any(|record| record.state == pl_core::thread::permissions::PermissionState::Pending)
         {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await

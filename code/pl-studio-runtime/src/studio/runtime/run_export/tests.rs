@@ -707,13 +707,13 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
         })
         .await;
 
-    // Wait briefly for initial RunStarted + AgentRegistered to settle, then pause writer.
+    // Pause the writer before filling its bounded queue.
     let queue = coordinator.queue();
     queue.set_paused(true);
 
-    // Fill queue past MAX_QUEUED_BATCHES (256) in a background producer and prove it blocks.
+    // Poll the original producer to the full queue, then release the writer.
     let queue_clone = queue.clone();
-    let producer = tokio::spawn(async move {
+    let producer = async move {
         for idx in 0..=MAX_QUEUED_BATCHES {
             let res = queue_clone
                 .admit(
@@ -735,25 +735,16 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
             }
         }
         true
-    });
-
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let (batches, _) = queue.queued_counts();
-            if batches >= MAX_QUEUED_BATCHES {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await?;
+    };
+    tokio::pin!(producer);
     assert!(
-        !producer.is_finished(),
+        futures::poll!(&mut producer).is_pending(),
         "bounded queue must apply backpressure"
     );
+    assert_eq!(queue.queued_counts().0, MAX_QUEUED_BATCHES);
 
     queue.set_paused(false);
-    assert!(tokio::time::timeout(Duration::from_secs(5), producer).await??);
+    assert!(tokio::time::timeout(Duration::from_secs(5), producer).await?);
 
     let history_cut = history_checkpoint(&history_reader).await?;
     let cut = RetiredThreadCut {
@@ -794,7 +785,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     let coord2 = exp2.coordinator();
     let q2 = coord2.queue();
     q2.set_paused(true);
-    let blocked = tokio::spawn({
+    let blocked = {
         let q = q2.clone();
         async move {
             for _ in 0..=MAX_QUEUED_BATCHES + 1 {
@@ -819,17 +810,14 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
             }
             true
         }
-    });
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while q2.queued_counts().0 < MAX_QUEUED_BATCHES {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await?;
+    };
+    tokio::pin!(blocked);
+    assert!(futures::poll!(&mut blocked).is_pending());
+    assert_eq!(q2.queued_counts().0, MAX_QUEUED_BATCHES);
     let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
     coord2.arm_shutdown_deadline(Some(deadline));
     coord2.close_admission_on_producer_timeout();
-    assert!(!tokio::time::timeout(Duration::from_secs(2), blocked).await??);
+    assert!(!tokio::time::timeout(Duration::from_secs(2), blocked).await?);
     let report2 = coord2
         .finalize_internal(None, false, false, Some(1), Some(deadline))
         .await;

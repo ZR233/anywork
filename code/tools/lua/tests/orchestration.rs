@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use tokio::sync::{Notify, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
@@ -11,6 +12,42 @@ struct Host {
     active: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
+    started: Arc<Notify>,
+    gate: Option<mpsc::UnboundedSender<oneshot::Sender<()>>>,
+}
+
+impl Host {
+    fn gated() -> (Self, mpsc::UnboundedReceiver<oneshot::Sender<()>>) {
+        let (gate, calls) = mpsc::unbounded_channel();
+        (
+            Self {
+                gate: Some(gate),
+                ..Self::default()
+            },
+            calls,
+        )
+    }
+}
+
+async fn release_batches(
+    mut calls: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
+    count: usize,
+    width: usize,
+) {
+    for offset in (0..count).step_by(width) {
+        let mut batch = Vec::new();
+        for _ in 0..width.min(count - offset) {
+            batch.push(calls.recv().await.expect("the next call is admitted"));
+        }
+        assert!(
+            calls.try_recv().is_err(),
+            "another call bypassed the concurrency limit"
+        );
+        // Complete in reverse order; the caller must still return results in input order.
+        for release in batch.into_iter().rev() {
+            release.send(()).expect("admitted call is still waiting");
+        }
+    }
 }
 impl ToolHost for Host {
     fn bindings(&self) -> Vec<Binding> {
@@ -29,7 +66,13 @@ impl ToolHost for Host {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(active, Ordering::SeqCst);
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        self.started.notify_one();
+        if let Some(gate) = &self.gate {
+            let (release, wait) = oneshot::channel();
+            gate.send(release)
+                .expect("the test observes every admitted call");
+            wait.await.expect("the test releases the admitted call");
+        }
         self.active.fetch_sub(1, Ordering::SeqCst);
         if value == json!("fail") {
             return Err(pl_tool_lua::CallFailure {
@@ -43,8 +86,20 @@ impl ToolHost for Host {
 
 #[tokio::test]
 async fn nested_parallel_keeps_the_program_wide_limit() {
-    let host = Host::default();
-    let result = execute(input("local jobs={}; for i=1,4 do jobs[i]=function() return parallel({function() return tools.read(1) end,function() return tools.read(2) end,function() return tools.read(3) end,function() return tools.read(4) end}) end end; return parallel(jobs)"), host.clone(), CancellationToken::new()).await.unwrap();
+    let (host, calls) = Host::gated();
+    let run = execute(
+        input(
+            "local jobs={}; for i=1,4 do jobs[i]=function() return parallel({function() return tools.read(1) end,function() return tools.read(2) end,function() return tools.read(3) end,function() return tools.read(4) end}) end end; return parallel(jobs)",
+        ),
+        host.clone(),
+        CancellationToken::new(),
+    );
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::join!(run, release_batches(calls, 16, 4))
+    })
+    .await
+    .expect("nested calls must make progress");
+    let result = result.unwrap();
     assert_eq!(result.error, None);
     assert_eq!(host.peak.load(Ordering::SeqCst), 4);
     assert_eq!(host.calls.load(Ordering::SeqCst), 16);
@@ -91,13 +146,19 @@ async fn selects_results_preserves_json_and_handles_tool_failure() {
 #[tokio::test]
 async fn overlaps_reads_but_serializes_mutations_and_keeps_result_order() {
     for (name, expected_peak) in [("read", 4), ("write", 1)] {
-        let host = Host::default();
+        let (host, calls) = Host::gated();
         let code = format!(
             r#"return parallel({{function() return tools.{name}(1).value end,function() return tools.{name}(2).value end,function() return tools.{name}(3).value end,function() return tools.{name}(4).value end,function() return tools.{name}(5).value end}})"#
         );
-        let result = execute(input(&code), host.clone(), CancellationToken::new())
-            .await
-            .unwrap();
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::join!(
+                execute(input(&code), host.clone(), CancellationToken::new()),
+                release_batches(calls, 5, expected_peak)
+            )
+        })
+        .await
+        .expect("admitted calls must settle");
+        let result = result.unwrap();
         assert_eq!(result.error, None);
         assert_eq!(result.output, "[1,2,3,4,5]");
         assert_eq!(host.peak.load(Ordering::SeqCst), expected_peak);
@@ -129,13 +190,15 @@ async fn bounds_cpu_memory_and_capture_and_keeps_prior_output() {
 #[tokio::test]
 async fn cancellation_stops_a_catch_loop_and_fresh_calls_cannot_access_os_or_old_state() {
     let token = CancellationToken::new();
+    let host = Host::default();
+    let started = host.started.clone();
     let run = execute(
-        input("while true do pcall(function() while true do end end) end"),
-        Host::default(),
+        input("while true do pcall(function() tools.read('entered'); while true do end end) end"),
+        host,
         token.clone(),
     );
     let cancel = async {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        started.notified().await;
         token.cancel();
     };
     let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
