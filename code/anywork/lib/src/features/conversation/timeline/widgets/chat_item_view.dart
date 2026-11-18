@@ -395,7 +395,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     );
   }
 
-  Widget _tool(BuildContext context) {
+  Widget _tool(BuildContext context, {String? arguments}) {
     final input = item.data['userInput'];
     if (input != null) {
       return Column(
@@ -406,7 +406,30 @@ class _ChatItemViewState extends State<ChatItemView> {
         ],
       );
     }
-    final reading = item.toolCard;
+    final argumentBody = item.body('tool.arguments');
+    // A mounted historical tool needs its small semantic input to build the
+    // same card as Current. Large inputs keep their explicit bounded reader.
+    // The existing body owner revokes this read with the enclosing Work.
+    if (arguments == null &&
+        argumentBody?.historyReference != null &&
+        argumentBody!.byteLength <= 64 * 1024 &&
+        argumentBody.byteLength == argumentBody.historyReference!.byteLength) {
+      return TimelineOwnedBodyConnector(
+        itemId: item.id,
+        contentKey: argumentBody.key,
+        label: context.l10n.timelineToolArguments,
+        historyReference: argumentBody.historyReference,
+        disclosed: true,
+        witness: (_, child) => child,
+        bodyBuilder: (text) =>
+            utf8.encode(text).length == argumentBody.byteLength
+            ? _tool(context, arguments: text)
+            : _unavailable('工具参数不完整', '参数窗口未包含完整正文'),
+      );
+    }
+    final reading = arguments == null
+        ? item.toolCard
+        : readToolCard(item, arguments: arguments);
     final Widget card;
     if (reading is DecodedToolCard) {
       final tool = reading.value;
@@ -414,17 +437,33 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (identity != null && identity.callId != tool.toolCallId) {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
-      final declaredContents = item.currentContents;
-      final hasDeclaredBodies = declaredContents.any(
-        (content) =>
-            content.role == ChatContentRole.toolArguments ||
-            content.role == ChatContentRole.toolOutput,
-      );
+      final declaredContents = [
+        for (final content in item.currentContents)
+          if (content.role == ChatContentRole.toolArguments ||
+              content.role == ChatContentRole.toolOutput)
+            (
+              role: content.role,
+              key: content.reference.contentKey,
+              current: content.reference,
+              history: null as HistoryEventBodyRef?,
+            ),
+        for (final body in item.bodies)
+          if (body.historyReference != null &&
+              (body.key == 'tool.arguments' || body.key == 'tool.result'))
+            (
+              role: body.key == 'tool.arguments'
+                  ? ChatContentRole.toolArguments
+                  : ChatContentRole.toolOutput,
+              key: body.key,
+              current: null as CurrentContentRef?,
+              history: body.historyReference,
+            ),
+      ];
+      final hasDeclaredBodies = declaredContents.isNotEmpty;
       final spec = toolDisplayRegistry[tool.presentationContract]!;
       final outputReference = declaredContents
           .where((content) => content.role == ChatContentRole.toolOutput)
-          .firstOrNull
-          ?.reference;
+          .firstOrNull;
       // 只有补丁／文件内容读取输入窗口，查询等纯语义输入已在内联参数中。
       final contents = declaredContents
           .where(
@@ -453,7 +492,9 @@ class _ChatItemViewState extends State<ChatItemView> {
             ? (
                 outputReference == null
                     ? null
-                    : currentContentIdentity(outputReference),
+                    : outputReference.current != null
+                    ? currentContentIdentity(outputReference.current!)
+                    : historyBodyIdentity(outputReference.history!),
                 hasDeclaredBodies,
               )
             : null,
@@ -476,11 +517,12 @@ class _ChatItemViewState extends State<ChatItemView> {
                     ),
                     child: TimelineOwnedBodyConnector(
                       itemId: item.id,
-                      contentKey: content.reference.contentKey,
+                      contentKey: content.key,
                       label: content.role == ChatContentRole.toolArguments
                           ? context.l10n.timelineToolArguments
                           : context.l10n.timelineToolOutput,
-                      currentReference: content.reference,
+                      currentReference: content.current,
+                      historyReference: content.history,
                       witness: _contentWitness,
                     ),
                   ),
@@ -557,7 +599,10 @@ class _ChatItemViewState extends State<ChatItemView> {
       label: label,
       icon: icon,
       documentVersion: version is int ? version : null,
-      children: [for (final body in item.bodies) _body(body), _rawRecord()],
+      children: [
+        for (final body in item.bodies) _body(body, disclosed: true),
+        _rawRecord(),
+      ],
     );
   }
 
@@ -640,7 +685,7 @@ class _ChatItemViewState extends State<ChatItemView> {
         children: [
           Text('问题 ${index + 1}', style: context.text.titleSmall),
           for (final key in ['$questionKey.header', '$questionKey.body'])
-            for (final body in field(key)) _body(body),
+            for (final body in field(key)) _body(body, disclosed: true),
           if (optionCount > 0) ...[
             const SizedBox(height: 6),
             Text('可选项', style: labelStyle),
@@ -659,7 +704,8 @@ class _ChatItemViewState extends State<ChatItemView> {
                             '$questionKey.option.$option.label',
                             '$questionKey.option.$option.description',
                           ])
-                            for (final body in field(key)) _body(body),
+                            for (final body in field(key))
+                              _body(body, disclosed: true),
                         ],
                       ),
                     ),
@@ -672,7 +718,7 @@ class _ChatItemViewState extends State<ChatItemView> {
             Text('实际回答', style: labelStyle),
             for (var value = 0; value < answerCount; value++)
               for (final body in field('tool.user-input.answer.$index.$value'))
-                _body(body),
+                _body(body, disclosed: true),
           ],
         ],
       ),

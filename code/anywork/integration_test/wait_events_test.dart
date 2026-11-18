@@ -127,11 +127,7 @@ void main() {
     expect(completed.inputId, isNotNull);
     bool isObservedWait(ChatAtom? atom) =>
         atom?.tool?.name == 'wait' &&
-        atom?.source == ForegroundTurnChatSource(turnId: completed.turnId) &&
-        switch (atom?.wait?.intent) {
-          ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
-          _ => false,
-        };
+        atom?.source == ForegroundTurnChatSource(turnId: completed.turnId);
     await _until(
       tester,
       () => graph.timeline.lease(threadId!) != null,
@@ -171,18 +167,7 @@ void main() {
                   ForegroundTurnChatSource(turnId: completed.turnId)) {
             return false;
           }
-          return switch (head.head.wait) {
-            InlineHistoryWait(:final presentation) => switch (presentation
-                .intent) {
-              ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
-              _ => false,
-            },
-            DeferredHistoryWait(
-              intent: EventsHistoryWaitIntent(:final targetCount),
-            ) =>
-              targetCount == 2,
-            _ => false,
-          };
+          return true;
         })) {
           matchingWork = candidate;
           break;
@@ -198,45 +183,38 @@ void main() {
     );
     final work = matchingWork!;
     final header = find.byKey(ValueKey('completion-run-header:${work.id}'));
-    await observed.until(
-      () => header.hitTestable().evaluate().length == 1,
-      'hittable Work header',
-    );
-    await tester.tap(header);
-    await tester.pump();
+    await observed.reveal(header, work.id);
+    await observed.tap(header);
 
     await _until(
       tester,
       () => observed.mountedMembers.any(isObservedWait),
       'historical wait tool member',
     );
-    final atom = observed.mountedMembers.singleWhere(isObservedWait);
-    expect(atom.wait?.state, ThreadWaitStateView.ready);
-    expect(atom.lifecycle, isA<TerminalChatAtom>());
-
+    late TimelineWaitPanel panel;
     late ChatItemPresentation waitItem;
     await _until(tester, () {
       final matches = tester
-          .widgetList<ChatItemView>(find.byType(ChatItemView))
-          .where((view) => isObservedWait(view.item.atom))
+          .widgetList<TimelineWaitPanel>(find.byType(TimelineWaitPanel))
+          .where(
+            (value) => switch (value.presentation.intent) {
+              ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
+              _ => false,
+            },
+          )
           .toList();
       if (matches.length != 1) return false;
-      waitItem = matches.single.item;
+      panel = matches.single;
+      waitItem = tester
+          .widget<ChatItemView>(observed.itemRow(panel.identity))
+          .item;
+      expect(isObservedWait(waitItem.atom), isTrue);
       return waitItem.compatibility == ChatItemCompatibility.current;
     }, 'wait tool canonical original');
+    expect(waitItem.atom!.lifecycle, isA<TerminalChatAtom>());
+    expect(panel.presentation.state, ThreadWaitStateView.ready);
     expect(waitItem.displayRecord?.contentSource, isA<CompletedOriginal>());
-    final toolRow = find.byWidgetPredicate(
-      (widget) => widget is ChatItemView && isObservedWait(widget.item.atom),
-    );
-
-    final panel = tester
-        .widgetList<TimelineWaitPanel>(find.byType(TimelineWaitPanel))
-        .singleWhere(
-          (value) =>
-              value.presentation.intent is ThreadWaitEventsIntentView &&
-              value.presentation.state == ThreadWaitStateView.ready,
-        );
-    expect(panel.presentation.messagesReady, isFalse);
+    final toolRow = observed.itemRow(panel.identity);
     final card = find.byKey(StudioDriverKeys.waitingCard(panel.identity));
     await observed.tap(card);
     await observed.until(
@@ -255,7 +233,10 @@ void main() {
     expect(details.presentation.state, ThreadWaitStateView.ready);
     expect(
       (details.presentation.intent as ThreadWaitEventsIntentView).targets,
-      isNotEmpty,
+      hasLength(2),
+    );
+    await observed.tap(
+      find.byKey(StudioDriverKeys.waitingDiagnostics(panel.identity)),
     );
     TimelineContentRangeView? resultWindow;
     await _until(tester, () {
@@ -276,6 +257,7 @@ void main() {
     final result = jsonDecode(utf8.decode(resultWindow!.window!.bytes)) as Map;
     expect(result['timedOut'], isFalse);
     expect(result['tasks'], isA<List>());
+    expect(result['messagesReady'], panel.presentation.messagesReady);
 
     expect(completed.state, HistoryTurnState.completed);
     graph.setConversationPageVisible(false);

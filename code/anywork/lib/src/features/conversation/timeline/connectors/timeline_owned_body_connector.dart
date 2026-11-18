@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../state/timeline_display_unit.dart';
+import '../state/content_reference_identity.dart';
 import '../widgets/timeline_content_range_view.dart';
 
 /// Reads a body through the Current or History owner of the enclosing renderer.
@@ -19,6 +20,7 @@ class TimelineOwnedBodyConnector extends StatefulWidget {
     this.historyReference,
     this.currentReference,
     this.disclosed = false,
+    this.bodyBuilder,
     super.key,
   }) : assert(
          (historyReference == null) != (currentReference == null),
@@ -31,6 +33,7 @@ class TimelineOwnedBodyConnector extends StatefulWidget {
   final HistoryEventBodyRef? historyReference;
   final CurrentContentRef? currentReference;
   final bool disclosed;
+  final Widget Function(String text)? bodyBuilder;
   final Widget Function(String text, Widget child) witness;
 
   @override
@@ -53,6 +56,9 @@ class _TimelineOwnedBodyConnectorState
   bool _loading = false;
   bool _declaredRead = false;
   int _request = 0;
+  ContentWindow? _reportedWindow;
+  ValueChanged<ContentWindow>? _reportedRead;
+  Object? _reportedQualification;
 
   bool get _active =>
       mounted &&
@@ -61,6 +67,19 @@ class _TimelineOwnedBodyConnectorState
       identical(_generation, _intent!.bodyGeneration) &&
       _intent!.current != null &&
       !_intent!.isRetired;
+
+  @override
+  void didUpdateWidget(covariant TimelineOwnedBodyConnector oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    Object? identity(TimelineOwnedBodyConnector value) =>
+        value.historyReference != null
+        ? historyBodyIdentity(value.historyReference!)
+        : currentContentIdentity(value.currentReference!);
+    if (identity(oldWidget) != identity(widget)) {
+      _cancel();
+      _changed();
+    }
+  }
 
   @override
   void didChangeDependencies() {
@@ -250,6 +269,33 @@ class _TimelineOwnedBodyConnectorState
 
   @override
   Widget build(BuildContext context) {
+    final onRead = TimelineBodyReadIntent.onReadOf(context);
+    final qualification = TimelineBodyReadQualification.of(context);
+    final window = _window;
+    if (window != null &&
+        onRead != null &&
+        (!identical(window, _reportedWindow) ||
+            onRead != _reportedRead ||
+            !identical(qualification, _reportedQualification))) {
+      _reportedWindow = window;
+      _reportedRead = onRead;
+      _reportedQualification = qualification;
+      // A semantic reader may update its enclosing card. Publish after layout,
+      // and retain the same body/disclosure qualification as the read itself.
+      final generation = _generation;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_active &&
+            identical(generation, _generation) &&
+            identical(window, _window) &&
+            onRead == TimelineBodyReadIntent.onReadOf(context) &&
+            identical(
+              qualification,
+              TimelineBodyReadQualification.of(context),
+            )) {
+          onRead(window);
+        }
+      });
+    }
     final end = _window == null ? 0 : _window!.offset + _window!.bytes.length;
     final canNext =
         _window != null &&
@@ -260,7 +306,7 @@ class _TimelineOwnedBodyConnectorState
       itemId: widget.itemId,
       contentKey: widget.contentKey,
       label: widget.label,
-      disclosed: widget.disclosed,
+      disclosed: widget.disclosed || TimelineBodyReadIntent.of(context),
       loading: _loading,
       active: _active,
       canRead:
@@ -276,6 +322,8 @@ class _TimelineOwnedBodyConnectorState
       onNext: canNext ? _next : null,
       onCopy: _window == null ? null : () => unawaited(_copy()),
       witness: widget.witness,
+      bodyBuilder:
+          widget.bodyBuilder ?? TimelineBodyReadIntent.bodyBuilderOf(context),
     );
   }
 }

@@ -468,12 +468,17 @@ void main() {
     expect(completedOriginalId(canonicalBody.record), isNotNull);
     await observed.revealSingle(canonical);
     final row = observed.itemRow(canonical.id);
-    expect(row.hitTestable(), findsOneWidget);
+    final canonicalText = find.descendant(
+      of: row,
+      matching: find.text(_second, findRichText: true),
+    );
+    await observed.reveal(canonicalText, canonical.id);
+    expect(canonicalText.hitTestable(), findsOneWidget);
     expect(
       tester.widget<ChatItemView>(row).item.atom!.source,
       InputChatSource(inputId: inputId),
     );
-    expect(find.text(_second), findsOneWidget);
+    expect(canonicalText, findsOneWidget);
     expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     record('canonical-painted-without-duplicate', {
       'inputId': inputId,

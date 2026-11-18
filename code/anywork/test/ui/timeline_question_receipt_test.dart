@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -107,6 +110,97 @@ void main() {
         ),
       ],
     ),
+  );
+
+  testWidgets(
+    'expanding a historical receipt reads public fields and never secret bodies',
+    (tester) async {
+      final inline = receipt();
+      final bodies = {for (final body in inline.bodies) body.key: body.inline!};
+      final unit = TimelineDisplayUnit(
+        block: DisplayBlock(
+          id: 'qa',
+          blockOrder: 1,
+          body: SingleDisplayBlock(
+            visibility: HistorySingleVisibility.content,
+            record: DisplayRecord(
+              historyEventId: 'event',
+              contentSource: const CompletedOriginal(completionId: 'event'),
+              atom: inline.atom!,
+            ),
+          ),
+        ),
+      );
+      unit.expansion.current = unit;
+      final reads = <String>[];
+      unit.expansion.readHistoryBody = (generation, reference, range) async {
+        expect(identical(generation, unit.expansion.bodyGeneration), isTrue);
+        expect(reference.ownerEventId, 'event');
+        expect(range.offset, 0);
+        reads.add(reference.bodyKey);
+        final bytes = bodies[reference.bodyKey]!;
+        return ContentWindow(
+          offset: 0,
+          bytes: bytes,
+          generation: reference.bodyId,
+          availableThrough: bytes.length,
+          sealed: true,
+        );
+      };
+      final item = ChatItemPresentation.forUnit(unit).resolvePayload(
+        InlinePayload(
+          bytes: utf8.encode(
+            jsonEncode({
+              'contract': 'anywork.chat/1',
+              'type': inline.type,
+              'data': inline.data,
+              'bodies': [
+                for (final entry in bodies.entries)
+                  {
+                    'key': entry.key,
+                    'byteLength': entry.value.length,
+                    'reference': {
+                      'databaseId': 'db',
+                      'ownerEventId': 'event',
+                      'bodyKey': entry.key,
+                      'bodyId': 'body-${entry.key}',
+                      'byteStart': 0,
+                      'byteLength': entry.value.length,
+                    },
+                  },
+              ],
+            }),
+          ),
+        ),
+      );
+      await pumpReceipt(tester, item);
+      await tester.pumpAndSettle();
+      expect(reads, isEmpty);
+      await tester.tap(find.byKey(StudioDriverKeys.timelineUserInput('qa')));
+      await tester.pumpAndSettle();
+      expect(find.text('公开问题'), findsOneWidget);
+      expect(find.text('Which option?'), findsOneWidget);
+      expect(find.text('Option A'), findsNWidgets(2));
+      expect(find.text('Option B'), findsOneWidget);
+      expect(find.text('free second'), findsOneWidget);
+      expect(find.text('敏感内容已隐藏'), findsOneWidget);
+      expect(
+        reads,
+        unorderedEquals([
+          'tool.user-input.question.0.header',
+          'tool.user-input.question.0.body',
+          'tool.user-input.question.0.option.0.label',
+          'tool.user-input.question.0.option.1.label',
+          'tool.user-input.answer.0.0',
+          'tool.user-input.answer.0.1',
+        ]),
+      );
+      expect(find.textContaining('PRIVATE'), findsNothing);
+      expect(find.textContaining('secret-token'), findsNothing);
+      await tester.pumpWidget(const SizedBox.shrink());
+      expect(unit.expansion.bodyActive, isFalse);
+      expect(tester.takeException(), isNull);
+    },
   );
 
   for (final reversed in [false, true]) {
