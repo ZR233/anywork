@@ -201,14 +201,12 @@ impl StudioRuntime {
         if let Some(thread) = self
             .session_of(&thread_id)
             .and_then(|session| session.thread(&thread_id))
-        {
-            if let pl_core::thread::ContinuationRead::Known(operation) = thread
+            && let pl_core::thread::ContinuationRead::Known(operation) = thread
                 .read_resume(core_request.clone())
                 .await
                 .map_err(control_error)?
-            {
-                return Ok(self.continue_response(thread_id, operation));
-            }
+        {
+            return Ok(self.continue_response(thread_id, operation));
         }
         let lifecycle_guard = self.lifecycle_lock.lock().await;
         let (_, thread, agent_operation) = self
