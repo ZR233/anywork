@@ -22,9 +22,15 @@ async fn t06_close_does_not_block_on_inflight_call_tool() -> anyhow::Result<()> 
     );
     #[cfg(not(target_os = "linux"))]
     let source = STDIO_MCP_SCRIPT.to_owned();
+    let entered = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = entered.local_addr()?;
+    // Receiving this connection proves tools/call reached the real child before cancellation.
+    let source = source.replace(
+        "elif method == \"tools/call\":",
+        &format!("elif method == \"tools/call\":\n        import socket\n        gate = socket.create_connection(('127.0.0.1', {}))\n        gate.recv(1)", address.port()),
+    );
     let script = write_python_mcp_server(temp.path(), "server.py", &source);
-    let mut env = BTreeMap::new();
-    env.insert("MCP_HANG_CALL_MS".to_owned(), "10000".to_owned());
+    let env = BTreeMap::new();
 
     let connector = McpConnector::default();
     let config = stdio_effective_config(
@@ -51,7 +57,7 @@ async fn t06_close_does_not_block_on_inflight_call_tool() -> anyhow::Result<()> 
             .await
     });
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (_gate, _) = tokio::time::timeout(Duration::from_secs(5), entered.accept()).await??;
     let close_start = Instant::now();
     session.close().await?;
     assert!(

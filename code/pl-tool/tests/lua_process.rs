@@ -319,6 +319,10 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
     use serde_json::json;
 
     let root = tempfile::tempdir().unwrap();
+    let gate = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    std::fs::write(root.path().join("business.py"), format!(
+        "import os, socket\ns=socket.create_connection(('127.0.0.1', {}))\nprint('ready', flush=True)\ns.sendall((str(os.getpid())+'\\n').encode())\nassert s.recv(1) == b'x'\nprint('finished', flush=True)\n", gate.local_addr().unwrap().port()
+    )).unwrap();
     std::fs::write(
         root.path().join("search-probe.txt"),
         "default-stdin-probe\n",
@@ -395,7 +399,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         (
             "slow-program",
             "exec",
-            json!({"code": "local r=tools.exec_command({command=[=[echo $$ > business.pid; printf 'ready\\n'; while [ ! -f release ]; do sleep 0.02; done; printf 'finished\\n']=],timeoutSeconds=15}); assert(r.exitCode==0); return r", "timeoutMs":20000}),
+            json!({"code": "local r=tools.exec_command({command=[=[python3 -u business.py]=],timeoutSeconds=15}); assert(r.exitCode==0); return r", "timeoutMs":20000}),
         ),
         (
             "wait-slow-program",
@@ -493,22 +497,41 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         let thread = thread.clone();
         async move { thread.run_turn(input).await }
     });
-    let pid = tokio::time::timeout(Duration::from_secs(10), async {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let (socket, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut socket = tokio::io::BufReader::new(socket);
+    let mut identity = String::new();
+    tokio::time::timeout(Duration::from_secs(10), socket.read_line(&mut identity))
+        .await
+        .unwrap()
+        .unwrap();
+    let pid: u32 = identity.trim().parse().unwrap();
+    // Only the Thread's delivery clock advances. The original process stays behind its gate.
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(1200)).await;
+    tokio::time::resume();
+    let mut snapshots = thread.subscribe();
+    let running = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(text) = tokio::fs::read_to_string(root.path().join("business.pid")).await
-                && let Ok(pid) = text.trim().parse::<u32>()
+            let snapshot = snapshots
+                .next()
+                .await
+                .expect("the running owner remains observable");
+            if requests.lock().unwrap().len() >= 2
+                && snapshot
+                    .tasks
+                    .values()
+                    .any(|t| t.tool_id == "exec_command" && t.status == TaskStatus::Running)
             {
-                break pid;
+                break snapshot;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .unwrap();
-    // Cross the ordinary one-second background delivery window. The Lua invocation still owns
-    // this command and waits, while the public Thread snapshot remains responsive and accurate.
-    tokio::time::sleep(Duration::from_millis(1200)).await;
-    let running = thread.snapshot();
+    .expect("background delivery wakes the model without ending the process");
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
     let process = running
         .tasks
@@ -529,17 +552,17 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         "a message wake must not let the simulated model assume command completion"
     );
     let wait_cancellation = tokio_util::sync::CancellationToken::new();
-    let pending_wait = tokio::spawn({
+    let pending_wait = {
         let thread = thread.clone();
         let id = process.id.clone();
         let cancellation = wait_cancellation.clone();
         async move { thread.wait_task(&id, cancellation).await }
-    });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(!pending_wait.is_finished());
+    };
+    tokio::pin!(pending_wait);
+    assert!(futures::poll!(&mut pending_wait).is_pending());
     wait_cancellation.cancel();
     assert!(matches!(
-        pending_wait.await.unwrap(),
+        pending_wait.await,
         Err(pl_core::thread::ThreadError::Cancelled)
     ));
     assert_eq!(
@@ -547,9 +570,7 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
         TaskStatus::Running
     );
     assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
-    tokio::fs::write(root.path().join("release"), b"finish")
-        .await
-        .unwrap();
+    socket.get_mut().write_all(b"x").await.unwrap();
     let terminal = tokio::time::timeout(
         Duration::from_secs(10),
         thread.wait_task(&process.id, tokio_util::sync::CancellationToken::new()),

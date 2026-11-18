@@ -868,7 +868,7 @@ pub(crate) mod tests {
         captured_dart_sdk_handshake(McpServerStartupMode::Auto, Duration::ZERO).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn explicit_initialize_accepts_cold_captured_dart_sdk_response() {
         captured_dart_sdk_handshake(McpServerStartupMode::Initialize, Duration::from_secs(11))
             .await;

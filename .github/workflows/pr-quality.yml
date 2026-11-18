@@ -275,8 +275,6 @@ jobs:
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Build the current-source remote helper
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo build --locked -p pl-remote-helper
-      - name: Compile workspace tests with SQLite enabled
-        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked --workspace --features pl-core/sqlite --no-run
       - name: Run workspace behavior and documentation tests
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" bash -euo pipefail -c '

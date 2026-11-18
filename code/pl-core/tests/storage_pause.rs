@@ -2103,7 +2103,7 @@ struct ProgressingTool {
     started: mpsc::UnboundedSender<()>,
     accepted: mpsc::UnboundedSender<()>,
     release: Arc<Notify>,
-    preview_rejected: Arc<Mutex<bool>>,
+    preview_rejected: Arc<Notify>,
 }
 
 impl pl_agent_tool::Tool for ProgressingTool {
@@ -2148,7 +2148,7 @@ impl pl_agent_tool::Tool for ProgressingTool {
             .await
             .is_err()
         {
-            *self.preview_rejected.lock().unwrap() = true;
+            self.preview_rejected.notify_one();
         }
         // The refusal must not make the owner wait for this call: the test keeps the tool blocked so
         // it can read the published fault while the preview's producer is still in flight.
@@ -2175,7 +2175,7 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
     let (started, mut starts) = mpsc::unbounded_channel();
     let (accepted, mut acceptances) = mpsc::unbounded_channel();
     let release = Arc::new(Notify::new());
-    let preview_rejected = Arc::new(Mutex::new(false));
+    let preview_rejected = Arc::new(Notify::new());
     thread
         .register_tools(vec![
             Registration::prepare("stream".into(), OpaquePayload::text("Tool stream"))
@@ -2209,7 +2209,6 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
         .expect("the tool reports the preview the owner accepted")
         .expect("the accepted preview reached the owner");
     // The dispatch returns with the call still in flight: the tool stays blocked on its release.
-    let _ = tokio::time::timeout(Duration::from_secs(5), runner).await;
     let mut snapshots = thread.subscribe();
     let generation = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -2253,16 +2252,9 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
         "a refused preview must publish the typed fault without waiting for the call to return",
     );
     // The reply reaches the producer right after the latch, so it is observed a moment later.
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if *preview_rejected.lock().unwrap() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the producer must see the refusal it was charged for");
+    tokio::time::timeout(Duration::from_secs(5), preview_rejected.notified())
+        .await
+        .expect("the producer must see the refusal it was charged for");
 
     release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -2279,6 +2271,12 @@ async fn refused_tool_preview_publishes_the_fault_before_the_tool_returns() {
     })
     .await
     .expect("the released tool commits its accepted result");
+
+    tokio::time::timeout(Duration::from_secs(5), runner)
+        .await
+        .expect("the turn owner joins")
+        .expect("the turn task did not panic")
+        .expect("the bounded turn finishes");
 
     store.commit_durable();
     within(thread.resume_storage(generation)).await.unwrap();
