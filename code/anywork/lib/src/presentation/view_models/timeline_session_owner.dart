@@ -11,6 +11,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import '../../domain/models/timeline_commands.dart';
 import '../../features/conversation/timeline/live_status/live_status_state.dart'
     show LiveStatusView;
+import '../../features/conversation/timeline/state/content_reference_identity.dart';
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
@@ -287,14 +288,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
           !scope.isActive) {
         throw const StaleConversationScope();
       }
-      return ContentWindow(
-        offset: value.offset,
-        bytes: value.bytes,
-        generation:
-            '${reference.bodyId}:${reference.byteStart}:${reference.byteLength}',
-        availableThrough: value.totalLength,
-        sealed: true,
-      );
+      return historyBodyWindow(reference, value);
     };
     intent.readCurrentBody = (generation, reference, range) async {
       final scope = _currentQueries;

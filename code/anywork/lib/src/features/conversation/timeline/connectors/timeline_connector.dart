@@ -18,6 +18,7 @@ import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/plan_summary_card.dart';
 import 'timeline_media_connector.dart';
+import 'timeline_read_demand_viewport.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
 
@@ -39,7 +40,7 @@ class TimelineConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final owner = ref.watch(timelineSessionOwnerProvider);
-    return _TimelineDemandViewport(
+    return TimelineReadDemandViewport(
       ownerIdentity: owner,
       onDemand: owner.updateReadDemand,
       child: _TimelineConnectorBody(
@@ -50,51 +51,6 @@ class TimelineConnector extends ConsumerWidget {
       ),
     );
   }
-}
-
-class _TimelineDemandViewport extends StatefulWidget {
-  const _TimelineDemandViewport({
-    required this.ownerIdentity,
-    required this.onDemand,
-    required this.child,
-  });
-  final Object ownerIdentity;
-  final ValueChanged<ReadDemand> onDemand;
-  final Widget child;
-  @override
-  State<_TimelineDemandViewport> createState() =>
-      _TimelineDemandViewportState();
-}
-
-class _TimelineDemandViewportState extends State<_TimelineDemandViewport> {
-  int? _items;
-  Object? _owner;
-  ReadDemand? _pending;
-  @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final height = constraints.hasBoundedHeight
-          ? constraints.maxHeight
-          : MediaQuery.sizeOf(context).height;
-      if (height.isFinite && height > 0) {
-        final items = (height / 72).ceil();
-        if (_items != items || !identical(_owner, widget.ownerIdentity)) {
-          _items = items;
-          _owner = widget.ownerIdentity;
-          final demand = ReadDemand(maxItems: items, maxBytes: 256 * 1024);
-          _pending = demand;
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted &&
-                identical(_pending, demand) &&
-                identical(_owner, widget.ownerIdentity)) {
-              widget.onDemand(demand);
-            }
-          });
-        }
-      }
-      return widget.child;
-    },
-  );
 }
 
 class _TimelineConnectorBody extends ConsumerStatefulWidget {

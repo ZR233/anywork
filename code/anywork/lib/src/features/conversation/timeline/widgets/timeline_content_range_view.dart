@@ -5,7 +5,29 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../state/content_reference_identity.dart';
 import 'timeline_activity_row.dart';
+
+/// Completed bounded reads handed off by this row's original metadata reader.
+class TimelineInitialBodyReads extends InheritedWidget {
+  const TimelineInitialBodyReads({
+    super.key,
+    required this.results,
+    required super.child,
+  });
+  final Map<Object, AsyncSnapshot<ContentWindow>> results;
+
+  static AsyncSnapshot<ContentWindow>? read(
+    BuildContext context,
+    HistoryEventBodyRef reference,
+  ) => context
+      .getInheritedWidgetOfExactType<TimelineInitialBodyReads>()
+      ?.results[historyBodyIdentity(reference)];
+
+  @override
+  bool updateShouldNotify(TimelineInitialBodyReads oldWidget) =>
+      !identical(results, oldWidget.results);
+}
 
 /// A presentation owner's stable read epoch; this grants no query permission.
 class TimelineBodyReadQualification extends InheritedWidget {

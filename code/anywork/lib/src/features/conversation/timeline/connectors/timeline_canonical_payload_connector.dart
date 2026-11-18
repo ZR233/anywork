@@ -6,10 +6,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../state/chat_item_presentation.dart';
+import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../view_models/timeline_view_model.dart';
+import '../widgets/timeline_content_range_view.dart';
 
-/// Resolves only the mounted completion's metadata, never its body or siblings.
+/// Resolves the mounted completion's metadata and automatically disclosed text.
 /// The original content owner tracks this scope through retirement/cleanup join.
 class TimelineCanonicalPayloadConnector extends StatefulWidget {
   const TimelineCanonicalPayloadConnector({
@@ -38,6 +40,7 @@ class _TimelineCanonicalPayloadConnectorState
     extends State<TimelineCanonicalPayloadConnector> {
   HistoryReadScope? _historyScope;
   ChatItemPresentation? _resolved;
+  Map<Object, AsyncSnapshot<ContentWindow>> _initialBodyReads = const {};
   String? _error;
   int _request = 0;
   bool _scheduled = false;
@@ -110,6 +113,7 @@ class _TimelineCanonicalPayloadConnectorState
         oldWidget.threadId != widget.threadId) {
       _cancel();
       _resolved = null;
+      _initialBodyReads = const {};
       _error = null;
     }
     if (!_active) _cancel();
@@ -148,7 +152,7 @@ class _TimelineCanonicalPayloadConnectorState
       return;
     }
     _scheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    scheduleMicrotask(() {
       _scheduled = false;
       if (_active &&
           _historyScope == null &&
@@ -241,7 +245,37 @@ class _TimelineCanonicalPayloadConnectorState
         setState(() => _error = '完成内容格式无法解析');
         return;
       }
-      setState(() => _resolved = resolved);
+      final initialReads = <Object, AsyncSnapshot<ContentWindow>>{};
+      if (resolved.type == 'text' || resolved.type == 'input') {
+        for (final body in resolved.bodies) {
+          final reference = body.historyReference;
+          if (body.key != 'body' || reference == null) continue;
+          final key = historyBodyIdentity(reference);
+          try {
+            final window = await history.readBody(
+              reference: reference,
+              offset: 0,
+              maxBytes: 64 * 1024,
+            );
+            if (!eligible()) return;
+            initialReads[key] = AsyncSnapshot.withData(
+              ConnectionState.done,
+              historyBodyWindow(reference, window),
+            );
+          } catch (error, stack) {
+            if (!eligible()) return;
+            initialReads[key] = AsyncSnapshot.withError(
+              ConnectionState.done,
+              error,
+              stack,
+            );
+          }
+        }
+      }
+      setState(() {
+        _resolved = resolved;
+        _initialBodyReads = Map.unmodifiable(initialReads);
+      });
     } catch (_) {
       if (eligible()) setState(() => _error = '完成内容读取失败');
     } finally {
@@ -265,7 +299,12 @@ class _TimelineCanonicalPayloadConnectorState
       return widget.render(widget.item);
     }
     if (widget.item.historyEventId != null) {
-      if (_resolved case final item?) return widget.render(item);
+      if (_resolved case final item?) {
+        return TimelineInitialBodyReads(
+          results: _initialBodyReads,
+          child: widget.render(item),
+        );
+      }
       return Text(_error ?? '正在读取当前内容…');
     }
     if (widget.item.compatibility != ChatItemCompatibility.deferred) {

@@ -105,6 +105,8 @@ Work 的成员引用和组关闭等 metadata 必须来自该行接纳的同一 c
 
 所有历史 apply 串行执行：前一个 controller 操作完成后才启动下一次 UI 应用。generation 覆盖换 Thread、换 reader、页面销毁和显示接管；旧 query 成功、失败或 finally 不能写入新 generation。普通绘制、动画或滚动不进业务 apply 队列，也不构成 ACK。
 
+主工作区在选择会话前向原时间线 owner 提供实际视口预算，时间线挂载后再按自身尺寸细化；首屏查询不等待一次额外绘制来建立预算。已经挂载且有读取资格的历史行解析 canonical metadata 后，普通公开文本由同一 History scope 读取首个 64 KiB 正文窗口，与 metadata 一并交给原正文组件。交接的是已读的不可变窗口或真实读取错误，不是另一份正文权威；正文失败不遮蔽已解析的 metadata，不自动重读。后续范围仍沿原引用与读取 owner 获取，折叠工具和未公开正文不提前读取。查询开始不以绘制回执为前提。
+
 controller 调用异常时，无法证明列表未被部分修改，因此终止当前 generation，并以新 HistoryReader 的 Set 重建；不盲重放 Prepend。重建成功前保留旧画面，成功后一次替换；失败显示真实错误，不删除草稿、Current 状态或无关会话。
 
 同组 Current 行与历史 row 以业务身份合并，不依赖到达顺序。Current 可显示执行资格和最新正文；canonical 历史出现后仍保留同一 row/entity 身份。旧组只读历史自身 bytes，不用后来 Current 内容替换。若两个存储短暂不一致，保留最后已见真实状态和等待说明，不伪造成功终态。
