@@ -266,6 +266,8 @@ ChatGPT 安装身份保存在 `<Studio home>/data/chatgpt-host.toml`，具有独
 
 `ConversationStore` 只负责当前产品绑定、允许真正发布的事实进入对应端口，并保留执行与读取责任；它不把持久化历史复制成第二份完成集合。`PreparedEffect` 携带当前 State、typed Turn/Source 变化、History 事件与 `retained_resources`。`retained_resources` 只记录本 effect 中真实 delivery 或 delivery repair 的资源引用及可缺省的 `turn_id`，不复制 `latestTask` 或另建 `history_tool_tasks` 事实。
 
+工具的完整结果随最终工具原件保存。`get_tool_task` 从任务编号取得调用编号，按对应的原件事件标识回读。后台完成的工具结果虽然在时间线中归入收件箱消息，仍可按原任务编号分页读取。
+
 Current writer 与 History writer 从同一已准备业务批次取得各自需要的事实后分别保存。History writer 先接纳完整事件批次，再由现有通道 flush 到 schema 25；Current writer 的周期捕获与覆盖写不由 History flush 确认。任一 writer 失败都保留自己的 dirty/pending 和错误，不能通过关闭另一个 writer 或丢弃资源引用制造成功。
 
 Turn、source、业务回执与资源 repair 作为 typed History 事件保存；执行恢复仍由完整 current 承担。历史不依赖 Core checkpoint、`history_meta`、`conversation_items` 或展示表，SDK 也不持第二份历史镜像。

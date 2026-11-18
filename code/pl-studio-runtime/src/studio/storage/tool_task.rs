@@ -70,14 +70,13 @@ pub(in crate::studio) async fn read(
         max_rows: 64,
         max_bytes: 256 * 1024,
     };
-    let Some(event) = reader
-        .original_for_entity(
-            crate::studio::thread_projection::order::tool_id(call_id),
-            demand,
-        )
-        .await?
-    else {
-        return Ok(None);
+    // The final event is keyed by call ID even when the timeline places it under an inbox
+    // message. Reading by tool entity can select the earlier background handoff receipt.
+    let original_id = crate::studio::thread_projection::order::tool_id(call_id);
+    let event = match reader.read_event(original_id, demand).await {
+        Ok(event) => event,
+        Err(HistoryError::NotFound(_)) => return Ok(None),
+        Err(error) => return Err(error),
     };
     if event.header.call_id.as_deref() != Some(call_id) {
         return Err(HistoryError::Integrity(
