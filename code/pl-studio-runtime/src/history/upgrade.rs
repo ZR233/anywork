@@ -1,4 +1,4 @@
-//! One-shot schema 24 → 25 upgrade.
+//! One-shot legacy history upgrade to schema 25.
 //!
 //! This module is intentionally outside normal history reads and writes. It pins one writer,
 //! first publishes a self-contained current file and a logical backup, and only then lets the
@@ -17,7 +17,11 @@ use super::{
     },
     schema,
 };
-use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
+use crate::studio::storage::history::schema::{
+    initialize as prepare_schema24,
+    v24_presentation::{DisplayHeader, DisplayMemberWrite},
+    v24_presentation_types as v24_display,
+};
 use crate::{
     ChatAtom, ChatAtomLifecycle, ChatSourceLifecycle, ContentOwner, ContentRef, ContentTarget,
     PayloadData, Turn,
@@ -89,6 +93,13 @@ const LEGACY_SOURCE_TABLES: &[&str] = &[
     "completion_boundary_archive_content_chunks",
 ];
 
+// The legacy WorkSnapshots migration created these archives only when it upgraded
+// an existing display. Its canonical output is in the conversation_display_* tables.
+const LEGACY_WORK_SNAPSHOT_ARCHIVES: &[&str] = &[
+    "work_snapshot_migration_headers",
+    "work_snapshot_migration_members",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpgradeReport {
@@ -112,8 +123,16 @@ pub enum UpgradeStatus {
 
 #[derive(Debug, PartialEq, Eq)]
 enum SourceFormat {
-    Schema24,
+    Legacy(i64),
     Schema25,
+}
+
+#[derive(PartialEq, Eq)]
+struct LegacyIdentity {
+    version: i64,
+    database_id: String,
+    thread_id: String,
+    watermark: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -141,8 +160,12 @@ struct WriterLease {
 pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Result<bool> {
     let read = schema::connect(path, true, false).await?;
     let required = match classify_source(&read).await? {
-        SourceFormat::Schema24 => {
+        SourceFormat::Legacy(24) => {
             legacy_identity(&read, thread_id).await?;
+            true
+        }
+        SourceFormat::Legacy(_) => {
+            crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
             true
         }
         SourceFormat::Schema25 => {
@@ -188,13 +211,25 @@ pub async fn upgrade_history(
         return complete_schema25_entry(&pending_report, thread_id, database_id);
     }
     crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
-    let identity = legacy_identity(&read, thread_id).await?;
+    let original_identity = read_legacy_identity(&read).await?;
     read.close().await?;
-    discard_rolled_back_pending_report(&pending_report, thread_id, &identity.0)?;
 
     let operation_id = uuid::Uuid::new_v4().to_string();
     let operation_dir = session_dir.join(BACKUP_ROOT).join(&operation_id);
-    prepare_directory(&session_dir, &operation_dir)?;
+    let identity = if original_identity.version == 24 {
+        let identity = original_identity.into_schema24(thread_id)?;
+        discard_rolled_back_pending_report(&pending_report, thread_id, &identity.0)?;
+        prepare_directory(&session_dir, &operation_dir)?;
+        identity
+    } else {
+        if pending_report.try_exists()? {
+            return Err(HistoryError::Conflict(
+                "pre-schema 24 history has a pending schema 25 report".into(),
+            ));
+        }
+        prepare_directory(&session_dir, &operation_dir)?;
+        prepare_older_history(&history_path, &operation_dir, thread_id, original_identity).await?
+    };
     let (backup_path, backup_counts) = make_backup(
         &history_path,
         &operation_dir,
@@ -233,6 +268,11 @@ pub async fn upgrade_history(
                     .ok_or_else(|| HistoryError::Integrity("archive row count overflow".into()))
             })?;
         backup_only_categories.insert("completion_boundary_archive_*".into(), archived_rows);
+        for &table in LEGACY_WORK_SNAPSHOT_ARCHIVES {
+            if let Some(&rows) = counts.get(table) {
+                backup_only_categories.insert(table.into(), rows);
+            }
+        }
         let report = UpgradeReport {
             operation_id,
             thread_id: report_thread_id,
@@ -296,10 +336,21 @@ async fn classify_source(db: &DatabaseConnection) -> Result<SourceFormat> {
     let old = table_exists(db, "history_meta").await?;
     let new = table_exists(db, "history_store_meta").await?;
     match (old, new) {
-        (true, false) => Ok(SourceFormat::Schema24),
+        (true, false) => {
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM history_meta WHERE id=1",
+                    vec![],
+                ))
+                .await?
+                .ok_or_else(|| {
+                    HistoryError::Integrity("legacy history identity is missing".into())
+                })?;
+            Ok(SourceFormat::Legacy(row.try_get_by_index(0)?))
+        }
         (false, true) => Ok(SourceFormat::Schema25),
         (true, true) => Err(HistoryError::Integrity(
-            "database contains both schema 24 and schema 25 identity tables".into(),
+            "database contains both legacy and schema 25 identity tables".into(),
         )),
         (false, false) => Err(HistoryError::Integrity(
             "database has no recognizable history identity table".into(),
@@ -323,24 +374,37 @@ fn db_u64(value: i64, field: &str) -> Result<u64> {
 }
 
 async fn legacy_identity(db: &DatabaseConnection, thread_id: &str) -> Result<(String, u64)> {
+    read_legacy_identity(db).await?.into_schema24(thread_id)
+}
+
+async fn read_legacy_identity(db: &DatabaseConnection) -> Result<LegacyIdentity> {
     let row = db
         .query_one_raw(statement(
-            "SELECT database_id,applied_write_seq,thread_id FROM history_meta WHERE id=1",
+            "SELECT schema_version,database_id,applied_write_seq,thread_id FROM history_meta WHERE id=1",
             vec![],
         ))
         .await?
-        .ok_or_else(|| HistoryError::Integrity("schema 24 identity is missing".into()))?;
-    let database_id: String = row.try_get("", "database_id")?;
-    if database_id.is_empty() || row.try_get::<String>("", "thread_id")? != thread_id {
-        return Err(HistoryError::Integrity(
-            "schema 24 database identity differs".into(),
-        ));
+        .ok_or_else(|| HistoryError::Integrity("legacy history identity is missing".into()))?;
+    Ok(LegacyIdentity {
+        version: row.try_get("", "schema_version")?,
+        database_id: row.try_get("", "database_id")?,
+        thread_id: row.try_get("", "thread_id")?,
+        watermark: db_u64(
+            row.try_get::<i64>("", "applied_write_seq")?,
+            "history_meta.applied_write_seq",
+        )?,
+    })
+}
+
+impl LegacyIdentity {
+    fn into_schema24(self, thread_id: &str) -> Result<(String, u64)> {
+        if self.version != 24 || self.database_id.is_empty() || self.thread_id != thread_id {
+            return Err(HistoryError::Integrity(
+                "schema 24 database identity differs".into(),
+            ));
+        }
+        Ok((self.database_id, self.watermark))
     }
-    let applied = db_u64(
-        row.try_get::<i64>("", "applied_write_seq")?,
-        "history_meta.applied_write_seq",
-    )?;
-    Ok((database_id, applied))
 }
 
 fn prepare_directory(anchor: &Path, target: &Path) -> Result<()> {
@@ -374,13 +438,67 @@ async fn make_backup(
     database_id: &str,
     watermark: u64,
 ) -> Result<(PathBuf, BTreeMap<String, u64>)> {
+    let temporary = vacuum_backup_candidate(history_path, operation_dir, 24).await?;
+    let backup_read = schema::connect(&temporary, true, false).await?;
+    crate::studio::storage::history::validate_layout_source(&backup_read, thread_id).await?;
+    if legacy_identity(&backup_read, thread_id).await? != (database_id.to_owned(), watermark) {
+        return Err(HistoryError::Integrity(
+            "schema 24 backup identity or watermark differs".into(),
+        ));
+    }
+    quick_check(&backup_read).await?;
+    let counts = database_table_rows(&backup_read).await?;
+    backup_read.close().await?;
+    let target = operation_dir.join("history.v24.sqlite");
+    publish_backup(&temporary, &target, thread_id)?;
+    Ok((target, counts))
+}
+
+async fn prepare_older_history(
+    history_path: &Path,
+    operation_dir: &Path,
+    thread_id: &str,
+    original: LegacyIdentity,
+) -> Result<(String, u64)> {
+    let version = original.version;
+    let temporary = vacuum_backup_candidate(history_path, operation_dir, version).await?;
+    let backup = schema::connect(&temporary, true, false).await?;
+    crate::studio::storage::history::validate_layout_source(&backup, thread_id).await?;
+    if read_legacy_identity(&backup).await? != original {
+        return Err(HistoryError::Integrity(
+            "pre-schema 24 backup identity or watermark differs".into(),
+        ));
+    }
+    quick_check(&backup).await?;
+    backup.close().await?;
+    let target = operation_dir.join(format!("history.v{version}.sqlite"));
+    publish_backup(&temporary, &target, thread_id)?;
+
+    // The outer upgrade holds the same writer lease across both format changes.
+    let writer = schema::connect(history_path, false, false).await?;
+    prepare_schema24(&writer, thread_id).await?;
+    let schema24 = legacy_identity(&writer, thread_id).await?;
+    writer.close().await?;
+    if !original.database_id.is_empty() && schema24.0 != original.database_id {
+        return Err(HistoryError::Integrity(
+            "preparation changed the legacy database identity".into(),
+        ));
+    }
+    Ok(schema24)
+}
+
+async fn vacuum_backup_candidate(
+    history_path: &Path,
+    operation_dir: &Path,
+    version: i64,
+) -> Result<PathBuf> {
     let db = schema::connect(history_path, false, false).await?;
     db.execute_raw(statement("PRAGMA synchronous=FULL", Vec::new()))
         .await?;
     // Match sqlite_file_options: keep the native canonical prefix for deep Windows
     // session paths, including when SQLite opens the VACUUM target itself.
     let temporary = std::fs::canonicalize(operation_dir)?.join(format!(
-        ".history-v24-{}.sqlite",
+        ".history-v{version}-{}.sqlite",
         uuid::Uuid::new_v4().simple()
     ));
     let temporary_sql = temporary
@@ -392,24 +510,15 @@ async fn make_backup(
     ))
     .await?;
     db.close().await?;
+    Ok(temporary)
+}
 
-    let backup_read = schema::connect(&temporary, true, false).await?;
-    crate::studio::storage::history::validate_layout_source(&backup_read, thread_id).await?;
-    if legacy_identity(&backup_read, thread_id).await? != (database_id.to_owned(), watermark) {
-        return Err(HistoryError::Integrity(
-            "schema 24 backup identity or watermark differs".into(),
-        ));
-    }
-    quick_check(&backup_read).await?;
-    let counts = database_table_rows(&backup_read).await?;
-    backup_read.close().await?;
+fn publish_backup(temporary: &Path, target: &Path, thread_id: &str) -> Result<()> {
     // Windows FlushFileBuffers requires a writable handle; opening does not truncate.
-    File::options().write(true).open(&temporary)?.sync_all()?;
+    File::options().write(true).open(temporary)?.sync_all()?;
     fail_backup_publish_once(thread_id)?;
-    let target = operation_dir.join("history.v24.sqlite");
-    pl_tool::workspace::move_owned_path(&temporary, &target)?;
-    sync_parent(&target)?;
-    Ok((target, counts))
+    pl_tool::workspace::move_owned_path(temporary, target)?;
+    sync_parent(target)
 }
 
 async fn quick_check(db: &DatabaseConnection) -> Result<()> {
@@ -428,7 +537,21 @@ async fn quick_check(db: &DatabaseConnection) -> Result<()> {
 
 async fn source_table_rows(source: &V24HistorySource) -> Result<BTreeMap<String, u64>> {
     let mut rows = BTreeMap::new();
-    for table in LEGACY_SOURCE_TABLES {
+    for table in LEGACY_SOURCE_TABLES
+        .iter()
+        .chain(LEGACY_WORK_SNAPSHOT_ARCHIVES)
+    {
+        if LEGACY_WORK_SNAPSHOT_ARCHIVES.contains(table)
+            && source
+                .query_one(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
+                    vec![(*table).into()],
+                )
+                .await?
+                .is_none()
+        {
+            continue;
+        }
         let row = source
             .query_one(
                 &format!("SELECT count(*) AS count FROM {table}"),
@@ -446,7 +569,13 @@ async fn source_table_rows(source: &V24HistorySource) -> Result<BTreeMap<String,
 
 async fn database_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>> {
     let mut rows = BTreeMap::new();
-    for table in LEGACY_SOURCE_TABLES {
+    for table in LEGACY_SOURCE_TABLES
+        .iter()
+        .chain(LEGACY_WORK_SNAPSHOT_ARCHIVES)
+    {
+        if LEGACY_WORK_SNAPSHOT_ARCHIVES.contains(table) && !table_exists(db, table).await? {
+            continue;
+        }
         let row = db
             .query_one_raw(statement(
                 &format!("SELECT count(*) AS count FROM {table}"),
@@ -1104,6 +1233,7 @@ async fn assert_known_source_tables(source: &V24HistorySource) -> Result<()> {
     for row in rows {
         let name: String = row.try_get("", "name")?;
         if !LEGACY_SOURCE_TABLES.contains(&name.as_str())
+            && !LEGACY_WORK_SNAPSHOT_ARCHIVES.contains(&name.as_str())
             && name != "seaql_migrations"
             && ![
                 "history_store_meta",
@@ -1625,31 +1755,6 @@ async fn read_legacy_product_blob(
         .map_err(HistoryError::from)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DisplayHeaderRow {
-    version: u32,
-    id: String,
-    source: crate::ChatSourceId,
-    block_order: u64,
-    boundary: Option<crate::ChatFactPosition>,
-    first_content_at: Option<crate::ChatFactPosition>,
-    sealed: bool,
-    unfinished: u64,
-    next_member: u64,
-    revision: u64,
-    body: v24_display::DisplayBlockBody,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DisplayMemberRow {
-    block_id: String,
-    association_key: String,
-    terminal: bool,
-    head: v24_display::DisplayMemberHead,
-}
-
 fn source_from_parts(kind: &str, identity: String) -> Result<HistorySource> {
     Ok(match kind {
         "foregroundTurn" => HistorySource::ForegroundTurn { turn_id: identity },
@@ -1966,7 +2071,10 @@ async fn import_sources<C: ConnectionTrait>(
                 source_key: row.try_get("", "source_key")?,
                 started_effect: row.try_get("", "started_effect")?,
                 ended_effect: row.try_get("", "ended_effect")?,
-                active_observed: row.try_get("", "active_observed")?,
+                active_observed: row
+                    .try_get::<Option<i64>>("", "active_observed")?
+                    .map(|value| db_u64(value, "conversation_sources.active_observed"))
+                    .transpose()?,
                 outcome: row
                     .try_get::<Option<String>>("", "outcome")?
                     .map(|value| serde_json::from_str(&value))
@@ -2687,19 +2795,15 @@ async fn import_display<C: ConnectionTrait>(
                 "header",
             )
             .await?;
-            let header: DisplayHeaderRow = serde_json::from_slice(&header_bytes)?;
-            if header.version != 5 || header.id != block_id || header.block_order != block_order {
+            let header: DisplayHeader = serde_json::from_slice(&header_bytes)?;
+            if header.version != 5
+                || header.id != block_id
+                || header.block_order.get() != block_order
+            {
                 return Err(HistoryError::Integrity(
                     "schema 24 display block identity differs".into(),
                 ));
             }
-            let _ = (
-                &header.source,
-                header.boundary,
-                header.first_content_at,
-                header.next_member,
-                header.revision,
-            );
             match header.body {
                 v24_display::DisplayBlockBody::Work { timing, .. } => {
                     let member_count = source
@@ -2756,6 +2860,30 @@ async fn import_display<C: ConnectionTrait>(
                     .await?;
                 }
                 v24_display::DisplayBlockBody::Single { record, visibility } => {
+                    let members = source
+                        .query_all(
+                            "SELECT member_order,member_key FROM conversation_display_members WHERE block_id=? LIMIT 2",
+                            vec![block_id.clone().into()],
+                        )
+                        .await?;
+                    match members.as_slice() {
+                        [] => {}
+                        [row] => {
+                            let member = read_display_member(source, &block_id, row).await?;
+                            if &member.head.record != record.as_ref() {
+                                return Err(HistoryError::Integrity(
+                                    "schema 24 Single member differs from its display record"
+                                        .into(),
+                                ));
+                            }
+                            counts.backup_only("display_single_members", 1);
+                        }
+                        _ => {
+                            return Err(HistoryError::Integrity(
+                                "schema 24 Single has more than one member".into(),
+                            ));
+                        }
+                    }
                     let id = deterministic_event_id(
                         "conversation_display_blocks",
                         &[block_id.clone().into()],
@@ -2805,36 +2933,9 @@ async fn import_work_members<C: ConnectionTrait>(
             break;
         }
         for row in rows {
-            let member_order = db_u64(
-                row.try_get::<i64>("", "member_order")?,
-                "conversation_display_members.member_order",
-            )?;
-            let member_key: String = row.try_get("", "member_key")?;
-            after = member_order;
-            let member_bytes = read_legacy_product_blob(
-                source,
-                "conversation_display_members",
-                "member_key",
-                &member_key,
-                "metadata",
-            )
-            .await?;
-            let member: DisplayMemberRow = serde_json::from_slice(&member_bytes)?;
-            if member.block_id != block_id
-                || member.head.member_key != member_key
-                || member.head.member_order != member_order
-                || member.association_key.is_empty()
-                || member.terminal
-                    != matches!(
-                        &member.head.record.atom.lifecycle,
-                        ChatAtomLifecycle::Terminal { .. }
-                    )
-            {
-                return Err(HistoryError::Integrity(
-                    "schema 24 display member identity or order differs".into(),
-                ));
-            }
-            let expected_id = display_member_event_id(block_id, &member_key);
+            let member = read_display_member(source, block_id, &row).await?;
+            after = member.head.member_order;
+            let expected_id = display_member_event_id(block_id, &member.head.member_key);
             import_entity_anchor(
                 connection,
                 import,
@@ -2854,6 +2955,42 @@ async fn import_work_members<C: ConnectionTrait>(
         }
     }
     Ok(())
+}
+
+async fn read_display_member(
+    source: &V24HistorySource,
+    block_id: &str,
+    row: &sea_orm::QueryResult,
+) -> Result<DisplayMemberWrite> {
+    let member_order = db_u64(
+        row.try_get::<i64>("", "member_order")?,
+        "conversation_display_members.member_order",
+    )?;
+    let member_key: String = row.try_get("", "member_key")?;
+    let member_bytes = read_legacy_product_blob(
+        source,
+        "conversation_display_members",
+        "member_key",
+        &member_key,
+        "metadata",
+    )
+    .await?;
+    let member: DisplayMemberWrite = serde_json::from_slice(&member_bytes)?;
+    if member.block_id != block_id
+        || member.head.member_key != member_key
+        || member.head.member_order != member_order
+        || member.association_key.is_empty()
+        || member.terminal
+            != matches!(
+                &member.head.record.atom.lifecycle,
+                ChatAtomLifecycle::Terminal { .. }
+            )
+    {
+        return Err(HistoryError::Integrity(
+            "schema 24 display member identity or order differs".into(),
+        ));
+    }
+    Ok(member)
 }
 
 struct EntityAnchorImport<'a> {
@@ -2878,7 +3015,7 @@ async fn import_entity_anchor<C: ConnectionTrait>(
         database_id,
         event_id,
         group_id,
-        mut atom,
+        atom,
         visibility,
         content_source,
         recorded_at,
@@ -2898,7 +3035,10 @@ async fn import_entity_anchor<C: ConnectionTrait>(
             captured_at: milliseconds(*captured_at)?,
         },
         v24_display::DisplayContentSource::CurrentAtom => {
-            HistoryObservation::Boundary { captured_at: None }
+            // A live atom is not a captured history body. Its references can
+            // outlive the draft that owned them.
+            counts.backup_only("display_current_atom_material", 1);
+            HistoryObservation::UnavailableLegacy { captured_at: None }
         }
     };
     let frozen_payload = matches!(
@@ -2907,13 +3047,6 @@ async fn import_entity_anchor<C: ConnectionTrait>(
             available: true,
             ..
         }
-    );
-    let owns_payload = matches!(
-        &content_source,
-        v24_display::DisplayContentSource::FrozenObservation {
-            available: true,
-            ..
-        } | v24_display::DisplayContentSource::CurrentAtom
     );
     if frozen_payload {
         let Some(PayloadData::Deferred { reference, .. }) = &atom.payload else {
@@ -2980,31 +3113,6 @@ async fn import_entity_anchor<C: ConnectionTrait>(
                 &staged_payload,
             )
             .await?;
-    } else if owns_payload {
-        for content in &atom.contents {
-            plan_content_reference(
-                connection,
-                source,
-                database_id,
-                event_id,
-                &content.reference,
-            )
-            .await?;
-        }
-        if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
-            plan_content_reference(connection, source, database_id, event_id, reference).await?;
-        }
-        let metadata =
-            plan_and_rewrite_atom_references(connection, &mut atom, database_id, event_id).await?;
-        copy_vector_body(
-            import,
-            event_id,
-            "canonical_payload",
-            HistoryBodyRole::CanonicalPayload,
-            0,
-            serde_json::to_vec(&metadata)?,
-        )
-        .await?;
     }
     let completed = atom.completion_item_id.clone();
     let original_completion = match &content_source {
@@ -3022,6 +3130,14 @@ async fn import_entity_anchor<C: ConnectionTrait>(
     }
     let entity_turn_id = atom.turn_id.clone();
     let mut head = HistoryEntityHead::from_atom(&atom, None)?;
+    if matches!(
+        content_source,
+        v24_display::DisplayContentSource::CurrentAtom
+    ) && matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
+    {
+        // A tool can have finished producing a draft while its plan still awaits a decision.
+        head.finished_at = None;
+    }
     let boundary_observation = matches!(&observation, HistoryObservation::Boundary { .. });
     head.observation = observation;
     match &head.observation {
@@ -3047,7 +3163,7 @@ async fn import_entity_anchor<C: ConnectionTrait>(
         }
     }
     head.single_visibility = visibility.map(single_visibility);
-    let first_content_ordinal = if owns_payload { 1 } else { 0 };
+    let first_content_ordinal = u64::from(frozen_payload);
     fit_entity_head(
         import,
         &mut head,
@@ -3056,17 +3172,11 @@ async fn import_entity_anchor<C: ConnectionTrait>(
         first_content_ordinal,
     )
     .await?;
-    if owns_payload {
+    if frozen_payload {
         copy_planned_bodies(connection, import, source).await?;
-    }
-    if owns_payload {
         for content in &atom.contents {
             let plan =
                 payload_reference(connection, &content.reference, database_id, event_id).await?;
-            import.validate_body_reference(&plan).await?;
-        }
-        if !frozen_payload && let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
-            let plan = payload_reference(connection, reference, database_id, event_id).await?;
             import.validate_body_reference(&plan).await?;
         }
     }
@@ -3084,12 +3194,10 @@ async fn import_entity_anchor<C: ConnectionTrait>(
     event.header.source = Some(head.source.clone());
     event.header.call_id = head.tool.as_ref().map(|tool| tool.call_id.clone());
     event.header.occurred_at = event_time(&atom)?;
-    if let Some(group_id) = group_id {
-        event.header.group_id = Some(group_id.to_owned());
-        event.header.row_key = Some(format!("member:{group_id}:{}", head.entity_id));
-    } else {
-        event.header.row_key = Some(format!("single:{}", head.entity_id));
-    }
+    event.header.group_id = group_id.map(str::to_owned);
+    // Separate published observations can share the same logical entity.
+    // The legacy anchor ID is derived from the original block and member identities.
+    event.header.row_key = Some(event_id.to_owned());
     event.is_anchor = true;
     event.head = Some(if group_id.is_some() {
         HistoryRowHead::Member(head)
@@ -3097,7 +3205,7 @@ async fn import_entity_anchor<C: ConnectionTrait>(
         HistoryRowHead::Single(head)
     });
     event.payload_body_id =
-        owns_payload.then(|| deterministic_body_id(event_id, "canonical_payload"));
+        frozen_payload.then(|| deterministic_body_id(event_id, "canonical_payload"));
     import.insert_event(event).await?;
     if group_id.is_some() {
         counts.imported("display_member_anchors", 1);
@@ -3334,18 +3442,15 @@ async fn verify_display_order(tx: &impl ConnectionTrait, source: &V24HistorySour
         .try_get::<i64>("", "count")?,
         "imported member count",
     )?;
-    let all_source_members = db_u64(
-        source
-            .query_one(
-                "SELECT count(*) AS count FROM conversation_display_members",
-                Vec::new(),
-            )
-            .await?
-            .ok_or_else(|| HistoryError::Integrity("source member total failed".into()))?
-            .try_get::<i64>("", "count")?,
-        "source member count",
-    )?;
-    if source_members != all_source_members || source_members != target_members {
+    let orphan = source
+        .query_one(
+            "SELECT 1 FROM conversation_display_members member
+             LEFT JOIN conversation_display_blocks block ON block.block_id=member.block_id
+             WHERE block.block_id IS NULL LIMIT 1",
+            Vec::new(),
+        )
+        .await?;
+    if orphan.is_some() || source_members != target_members {
         return Err(HistoryError::Integrity(
             "member display anchors contain a missing or extra group".into(),
         ));
@@ -3679,6 +3784,7 @@ async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Resul
         "history_meta",
     ]
     .into_iter()
+    .chain(LEGACY_WORK_SNAPSHOT_ARCHIVES.iter().copied())
     .enumerate()
     {
         tx.execute_raw(statement(
@@ -3768,6 +3874,7 @@ mod migration_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::studio::storage::history::schema::v24_presentation::BlockOrder;
     use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
     use crate::thread_assembler::{
         agent_review::review_message_id,
@@ -3803,6 +3910,8 @@ mod migration_tests {
         tool::ToolOutput,
     };
     use sea_orm::ConnectionTrait;
+
+    const INLINE_BODY: &[u8] = b"legacy inline body\x00\xff";
 
     struct V24Fixture {
         database_id: String,
@@ -4129,11 +4238,18 @@ mod migration_tests {
                 payload["bodies"]
                     .as_array_mut()
                     .ok_or_else(|| HistoryError::Integrity("fixture payload has no bodies".into()))?
-                    .push(serde_json::json!({
-                        "key":"tool.output-artifacts",
-                        "byteLength":host_body.len() as u64,
-                        "reference":host_reference
-                    }));
+                    .extend([
+                        serde_json::json!({
+                            "key": "tool.output-artifacts",
+                            "byteLength": host_body.len(),
+                            "reference": host_reference
+                        }),
+                        serde_json::json!({
+                            "key": "inline-preview",
+                            "byteLength": INLINE_BODY.len(),
+                            "inline": INLINE_BODY
+                        }),
+                    ]);
                 serde_json::to_vec(&payload)?
             } else {
                 completion.payload.to_vec()
@@ -4262,23 +4378,29 @@ mod migration_tests {
             let source = ChatSourceId::ForegroundTurn {
                 turn_id: "turn-1".into(),
             };
-            let header = serde_json::to_vec(&serde_json::json!({
-                "version": 5,
-                "id": block_id,
-                "source": source.clone(),
-                "blockOrder": 1,
-                "boundary": null,
-                "firstContentAt": null,
-                "sealed": true,
-                "unfinished": 0,
-                "nextMember": 3,
-                "revision": 1,
-                "body": {
-                    "kind": "work",
-                    "timing": {"startedAt": 1, "finishedAt": 2},
-                    "members": {"databaseId": database_id.clone(), "blockId": block_id}
-                }
-            }))?;
+            let header = serde_json::to_vec(&DisplayHeader {
+                version: 5,
+                id: block_id.into(),
+                source: source.clone(),
+                block_order: BlockOrder::try_from(1)?,
+                boundary: None,
+                first_content_at: None,
+                sealed: true,
+                unfinished: 0,
+                next_member: 3,
+                revision: 1,
+                thinking_summary: None,
+                body: v24_display::DisplayBlockBody::Work {
+                    timing: v24_display::WorkTiming {
+                        started_at: Some(1),
+                        finished_at: Some(2),
+                    },
+                    members: v24_display::DisplayBlockRef {
+                        database_id: database_id.clone(),
+                        block_id: block_id.into(),
+                    },
+                },
+            })?;
             db.execute_raw(statement(
                 "INSERT INTO conversation_display_blocks(
                     block_id,source_key,block_order,sealed,updated_effect,header
@@ -4412,12 +4534,12 @@ mod migration_tests {
                         content_source,
                     },
                 };
-                let metadata = serde_json::to_vec(&serde_json::json!({
-                    "blockId": block_id,
-                    "associationKey": member_key,
-                    "terminal": true,
-                    "head": head
-                }))?;
+                let metadata = serde_json::to_vec(&DisplayMemberWrite {
+                    block_id: block_id.into(),
+                    association_key: member_key.into(),
+                    terminal: true,
+                    head,
+                })?;
                 db.execute_raw(statement(
                     "INSERT INTO conversation_display_members(
                         terminal,completion_id,association_key,updated_effect,metadata,
@@ -4539,20 +4661,142 @@ mod migration_tests {
         Ok(())
     }
 
+    async fn write_live_single_fixture(db: &DatabaseConnection, database_id: &str) -> Result<()> {
+        let bytes: Vec<u8> = db
+            .query_one_raw(statement(
+                "SELECT metadata FROM conversation_items WHERE item_id='original-large'",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get_by_index(0)?;
+        let mut atom: ChatAtom = serde_json::from_slice(&bytes)?;
+        atom.id = "draft-plan".into();
+        atom.completion_item_id = None;
+        atom.completion_seq = None;
+        atom.kind = crate::ChatAtomKind::Plan;
+        atom.lifecycle = ChatAtomLifecycle::Active {
+            started: None,
+            status: crate::ChatActiveStatus::Waiting,
+        };
+        atom.finished_at = Some(2);
+        atom.payload = None;
+        atom.contents = vec![ChatAtomContent {
+            role: ChatContentRole::ToolArguments,
+            reference: ContentRef {
+                database_id: database_id.into(),
+                target: ContentTarget::Body {
+                    owner: ContentOwner::Item {
+                        item_id: atom.id.clone(),
+                    },
+                    key: "tool.arguments".into(),
+                },
+            },
+        }];
+        let record = v24_display::DisplayRecord {
+            atom,
+            start_fact: None,
+            end_fact: None,
+            content_source: v24_display::DisplayContentSource::CurrentAtom,
+        };
+        for (order, block_id) in [(2, "single-plan"), (3, "later-plan-observation")] {
+            let header = DisplayHeader {
+                version: 5,
+                id: block_id.into(),
+                source: record.atom.source.clone(),
+                block_order: BlockOrder::try_from(order)?,
+                boundary: None,
+                first_content_at: None,
+                sealed: false,
+                unfinished: 1,
+                next_member: 1,
+                revision: 1,
+                thinking_summary: None,
+                body: v24_display::DisplayBlockBody::Single {
+                    record: Box::new(record.clone()),
+                    visibility: v24_display::SingleVisibility::Content,
+                },
+            };
+            let member = DisplayMemberWrite {
+                block_id: header.id.clone(),
+                association_key: block_id.into(),
+                terminal: false,
+                head: v24_display::DisplayMemberHead {
+                    member_key: block_id.into(),
+                    member_order: 1,
+                    record: record.clone(),
+                },
+            };
+            db.execute_raw(statement(
+                "INSERT INTO conversation_display_blocks(block_id,source_key,block_order,sealed,updated_effect,header)
+                 VALUES(?,?,?,0,1,?)",
+                vec![
+                    block_id.into(),
+                    serde_json::to_string(&header.source)?.into(),
+                    db::number(order)?.into(),
+                    serde_json::to_vec(&header)?.into(),
+                ],
+            ))
+            .await?;
+            db.execute_raw(statement(
+                "INSERT INTO conversation_display_members(block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata)
+                 VALUES(?1,1,?1,?1,0,NULL,1,?2)",
+                vec![block_id.into(), serde_json::to_vec(&member)?.into()],
+            ))
+            .await?;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn real_schema24_upgrade_preserves_canonical_current_and_display_facts() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history_path = directory.path().join("history.sqlite");
         let thread_id = "migration-integration";
         let fixture = write_v24_fixture(&history_path, thread_id, true).await?;
+        let source = schema::connect(&history_path, false, false).await?;
+        write_live_single_fixture(&source, &fixture.database_id).await?;
+        let source_key = serde_json::to_string(&ChatSourceId::ForegroundTurn {
+            turn_id: "legacy-source".into(),
+        })?;
+        source
+            .execute_raw(statement(
+                "INSERT INTO conversation_sources(source_key,active_observed) VALUES(?,1)",
+                vec![source_key.clone().into()],
+            ))
+            .await?;
+        source
+            .execute_unprepared(
+                "CREATE TABLE work_snapshot_migration_headers AS SELECT * FROM conversation_display_blocks;
+                 CREATE TABLE work_snapshot_migration_members AS SELECT * FROM conversation_display_members;",
+            )
+            .await?;
+        let source_counts = database_table_rows(&source).await?;
+        source.close().await?;
 
         let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
         assert_eq!(report.status, UpgradeStatus::Upgraded);
         assert_eq!(report.database_id, fixture.database_id);
         assert_eq!(report.backup_only_categories["timeline_records"], 1);
-        assert!(report.backup.as_ref().is_some_and(|path| path.is_file()));
+        assert_eq!(
+            report.backup_only_categories["work_snapshot_migration_headers"],
+            3
+        );
+        assert_eq!(
+            report.backup_only_categories["work_snapshot_migration_members"],
+            4
+        );
+        assert_eq!(report.backup_only_categories["display_single_members"], 2);
+        assert_eq!(
+            report.backup_only_categories["display_current_atom_material"],
+            2
+        );
+        let backup = schema::connect(report.backup.as_deref().unwrap(), true, false).await?;
+        assert_eq!(database_table_rows(&backup).await?, source_counts);
+        backup.close().await?;
         assert_eq!(report.imported_categories["canonical_originals"], 2);
         assert_eq!(report.imported_categories["turns"], 1);
+        assert_eq!(report.imported_categories["sources"], 1);
         assert_eq!(report.imported_categories["costs"], 1);
         assert_eq!(report.imported_categories["tool_resources"], 1);
         assert_eq!(report.imported_categories["tool_deliveries"], 1);
@@ -4583,6 +4827,16 @@ mod migration_tests {
         let store =
             CurrentHistoryStore::open(&history_path, thread_id, HistoryLimits::default()).await?;
         let reader = store.reader();
+        let source_event = reader
+            .read_event(
+                deterministic_event_id("conversation_sources", &[source_key.into()], "anchor"),
+                HistoryDemand::default(),
+            )
+            .await?;
+        assert!(matches!(
+            source_event.head,
+            Some(HistoryRowHead::Source(head)) if head.lifecycle == ChatSourceLifecycle::Active
+        ));
         let resources = FileResourceStore::new(directory.path().join("resources"));
         assert_eq!(
             crate::studio::history_resources::read(&reader, &resources, &fixture.resource_id)
@@ -4635,6 +4889,7 @@ mod migration_tests {
             )
             .await?;
         assert_eq!(originals.entries.len(), 2);
+        let mut inline_body_verified = false;
         for (item_id, expected) in &fixture.canonical_payloads {
             let event = originals
                 .entries
@@ -4660,8 +4915,14 @@ mod migration_tests {
                 assert!(body["reference"].is_object());
                 assert!(body["inline"].is_null());
                 assert_eq!(body["reference"]["byteLength"], body["byteLength"]);
+                if body["key"] == "inline-preview" {
+                    let inline_reference = serde_json::from_value(body["reference"].clone())?;
+                    assert_eq!(read_all_body(&reader, inline_reference).await?, INLINE_BODY);
+                    inline_body_verified = true;
+                }
             }
         }
+        assert!(inline_body_verified);
 
         let target = schema::connect(&history_path, true, false).await?;
         for (item_id, expected) in [
@@ -4757,6 +5018,20 @@ mod migration_tests {
         let main = reader
             .timeline_page(None, None, HistoryDemand::default())
             .await?;
+        assert_eq!(
+            main.entries
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.head,
+                    HistoryRowHead::Single(head)
+                        if head.entity_id == "draft-plan"
+                            && head.observation == HistoryObservation::UnavailableLegacy { captured_at: None }
+                            && head.finished_at.is_none()
+                            && head.body_manifest_event_id.is_none()
+                ))
+                .count(),
+            2
+        );
         let work = main
             .entries
             .iter()

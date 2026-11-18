@@ -830,6 +830,57 @@ mod tests {
     async fn old_table(db: &impl ConnectionTrait) -> Result<bool> {
         Ok(db.query_one_raw(statement("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='history_items'",vec![])).await?.is_some())
     }
+
+    #[tokio::test]
+    async fn published_schema23_reaches_append_only_history_and_preserves_its_original()
+    -> Result<()> {
+        use crate::history::{HistoryLimits, HistoryStore, UpgradeStatus, upgrade_history};
+        use crate::studio::paths::{SqliteFileMode, sqlite_file_options};
+
+        let (directory, source) = fixture().await?;
+        let source_key = serde_json::to_string(&crate::ChatSourceId::ForegroundTurn {
+            turn_id: "published-turn".into(),
+        })?;
+        source
+            .execute_raw(statement(
+                "INSERT INTO conversation_sources(source_key,active_observed) VALUES(?,1)",
+                vec![source_key.clone().into()],
+            ))
+            .await?;
+        source.close().await?;
+
+        let path = directory.path().join("history.sqlite");
+        let report = upgrade_history(&path, THREAD, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(report.imported_categories["sources"], 1);
+        let original = report
+            .backup
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .context("migration operation directory missing")?
+            .join("history.v23.sqlite");
+        let original = Database::connect(
+            sqlite_file_options(&original, SqliteFileMode::ReadOnly, |options| options).await?,
+        )
+        .await?;
+        assert_eq!(version(&original).await?, 23);
+        assert!(old_table(&original).await?);
+        let kept = original
+            .query_one_raw(statement(
+                "SELECT active_observed FROM conversation_sources WHERE source_key=?",
+                vec![source_key.into()],
+            ))
+            .await?
+            .context("original source observation missing")?;
+        assert_eq!(kept.try_get_by_index::<i64>(0)?, 1);
+        original.close().await?;
+
+        let reader = HistoryStore::open_reader(&path, THREAD, HistoryLimits::default()).await?;
+        assert!(reader.head().await? > 0);
+        reader.close().await;
+        Ok(())
+    }
+
     async fn seed(db: &impl ConnectionTrait) -> Result<(Vec<u8>, Vec<u8>)> {
         let metadata = super::super::super::conversation::tests::metadata("raw-original");
         let mut draft = pl_core::chat::ChatDraft::new(

@@ -619,11 +619,11 @@ v24 中的完成原件、内容分块、执行生命周期、Turn、来源、输
 
 schema 24 的完成/展示 wire 类型、表与 reader 只在 17.21 的显式迁移期间解码。正常 schema 25 reader 不接受 `CompletedEntry`、`ChatBatch`、`ChatPlacement`、`LegacyExecutionEvidence` 或旧 presentation 类型；稳定兼容只保留在冻结的 v24 迁移类型中。
 
-迁移将 `conversation_items` 的 canonical 原件导入 schema 25 事件，`event_id` 直接使用原 `item_id`；普通产品 payload/metadata 改写为新不可变 `HistoryEventBodyRef`，producer opaque 字节保持。展示块和成员按原 `block_order`／`member_order` 建立 Work、Single、member anchors 与 typed heads，边界观察保留自身 bytes。旧表本身不成为新运行结构。
+迁移将 `conversation_items` 的 canonical 原件导入 schema 25 事件，`event_id` 直接使用原 `item_id`；普通产品 payload/metadata 改写为新不可变 `HistoryEventBodyRef`，producer opaque 字节保持。展示块和成员按原 `block_order`／`member_order` 建立 Work、Single、member anchors 与 typed heads，同一实体的多条旧展示各自沿用原块或成员身份。边界观察保留自身 bytes，旧表本身不成为新运行结构。
 
 后台结果、Turn、来源、输入/消息身份、任务交付、费用和回执只在能证明真实身份与事实时迁移。已被 canonical 原件等价覆盖的重复 task/delivery 不重复入历史；缺失或冲突的旧证明不推导新身份。旧展示中的普通工具 Single 按 [26](./26-timeline-content.md) 转为单成员 Work，保留原块和成员身份、显示顺序及原件引用；已经发布的其他块不重排或反向合组。
 
-未被 canonical 完成事件引用的旧半成品、开放组材料和档案只进入完整 v24 备份或迁移报告，不转换为完成正文。被完成事件引用的正文、附件和真实来源证据必须完整迁入或明确失败回滚；不能按未封口标记、表名或 owner 前缀删除用户数据。
+未被 canonical 完成事件引用的旧半成品、开放组材料和档案只进入完整 v24 备份或迁移报告，不转换为完成正文。旧展示引用可变 Current 时，迁移保留展示位置和已保存的小型状态，并明确标记旧历史正文不可用。Single 若同时保存一条相同的成员记录，迁移验证其身份与内容，成员副本完整留在备份并计数。被完成事件引用的正文、附件和真实来源证据必须完整迁入或明确失败回滚；不能按未封口标记、表名或 owner 前缀删除用户数据。
 
 以下 DDL 仅说明 v24 冻结迁移输入；其中 `seq`、Run 列、内容 owner/key 和生命周期水位不是 schema 25 运行契约。
 
@@ -682,7 +682,7 @@ v24 的 `conversation_items`、内容表与 typed metadata 只由迁移器读取
 
 `execution_lifecycle`、`history_turns`、来源、任务、身份和回执只在仍具有当前恢复、查询或展示意义时导入 schema 25；已被 canonical 原件等价覆盖的重复事实不重复生成。旧 checkpoint/context 只用于构造自足 current，不从完成历史推断运行状态。
 
-迁移前后核对 payload、metadata、正文分块、输入身份、回执与资源引用。产品已知类型按 v24 decoder 读取并改写为新引用；producer opaque 内容保持原字节。完整旧容器只在 v24 备份中保留，不要求改写后容器字节相同。
+迁移前后核对 payload、metadata、正文分块、输入身份、回执与资源引用。展示头和成员复用 v24 发布时的持久化类型读取。产品正文无论内联还是按引用存放，都以原字节写入新正文；producer opaque 内容保持原字节。旧 Work 快照迁移留下的归档头和成员表完整保留在 v24 备份中，按表记录行数，当前展示只从已归并的展示表导入。
 
 正文迁移以 64 KiB 为目标块，不复用旧 chunk 边界；普通产品引用改写为不可变 `HistoryEventBodyRef`，producer opaque、工具参数/输出和边界观察字节保持。没有正常查询用途的旧 manifest、未完成前缀和档案只留在完整 v24 备份中，不进入 schema 25 运行表。
 
@@ -721,6 +721,8 @@ Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/upd
 [#470](https://github.com/ZR233/anywork/issues/470) 将 Native 会话统一切换到独立 Current、schema 25 追加历史、separate readers 和 V3 run export。以下规定唯一的 v24 升级与回滚边界；合同已经确认，实际迁移、故障恢复和跨层验证仍由对应 PR 和测试提供证据。Current 的恢复合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)，独立历史沿用该文的追加存储合同。
 
 升级在会话的独占维护阶段完成，不启动执行，不允许旧 writer、新执行所有者或第二个迁移者同时接管。先严格验证来源版本、会话与数据库身份及源结构，再在迁移事务之外通过 `VACUUM INTO` 制作包含已提交 WAL 内容的完整一致性备份。校验备份结构、身份和完整性并完成文件与目录同步后，才发布备份；失败的临时副本不视为可恢复备份。
+
+仍在第 24 版以前的合法 v2 会话库先在本次操作目录发布相应版本的原库备份，再由同一维护锁内的既有内容迁移序列接续至第 24 版。内容步骤依其应用记录重试，保留之前发布的备份。到达第 24 版后，继续执行下文规定的备份、Current 准备和追加历史迁移。
 
 数据库身份是原样保留的不透明限定值，旧 `history-db-*` 身份不能按新建数据库的 UUID 外观拒绝或重写。schema 24 仍保留的 `timeline_records` 容器逐项核对已被 canonical `conversation_items` 承接，原容器完整留在备份并单列仅备份计数，不重复导入原件；存在未承接原件时停止升级。成功事务显式移除两个旧容器。
 
