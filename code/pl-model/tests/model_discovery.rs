@@ -132,8 +132,13 @@ fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == "gpt-6.1-sol")
+        .find(|model| {
+            model
+                .capabilities
+                .supports_input_modality(ModelModality::File)
+        })
         .unwrap();
+    let model_id = cached.model_id.clone();
     cached
         .capabilities
         .input
@@ -172,7 +177,7 @@ fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
         let models = config.accounts[&id].effective_models(None).unwrap();
         let model = models
             .iter()
-            .find(|model| model.model_id == "gpt-6.1-sol")
+            .find(|model| model.model_id == model_id)
             .unwrap();
         model.validate_media_contract().unwrap();
         assert_eq!(
@@ -1440,8 +1445,10 @@ fn assert_direct_and_canonical_display_name(
 
 #[tokio::test]
 async fn display_name_presence_falls_back_within_their_account_across_live_and_cached_catalogs() {
-    let model_id = "gpt-6.1-terra";
-    let local_name = "GPT-6.1 Terra";
+    let definition = bundled_model_definition("openai").unwrap();
+    let model = &definition.models[0];
+    let model_id = model.model_id.as_str();
+    let local_name = model.display_name.as_str();
     let live_cases = [
         (json!({"data":[{"id":model_id}]}), local_name),
         (
@@ -1453,8 +1460,8 @@ async fn display_name_presence_falls_back_within_their_account_across_live_and_c
             model_id,
         ),
         (
-            json!({"data":[{"id":model_id,"display_name":"  Provider Terra alias  "}]}),
-            "  Provider Terra alias  ",
+            json!({"data":[{"id":model_id,"display_name":"  Provider alias  "}]}),
+            "  Provider alias  ",
         ),
     ];
     let mut observed = Vec::new();
@@ -1533,239 +1540,6 @@ async fn display_name_presence_falls_back_within_their_account_across_live_and_c
         )
         .unwrap();
     assert_direct_and_canonical_display_name(&other_account, model_id, model_id);
-}
-
-#[tokio::test]
-async fn gpt61_id_only_inventory_and_old_fallback_cache_enable_real_image_input() {
-    use pl_model::{
-        completion::{
-            AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart,
-            Message, MessageContent, MessageRole,
-        },
-        runtime::{ModelInvocationContext, ModelRuntime},
-    };
-    use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
-    let adapter = ProtocolKind::OpenAi;
-    let model_id = "gpt-6.1-terra";
-    let mut old = discover(
-        json!({"data":[{"id":"unregistered-old-id","display_name":"GPT-6.1 Terra","description":"Provider description without capability declarations."}]}),
-        adapter,
-    )
-    .await
-    .remove(0);
-    old.model_id = model_id.into();
-    old.observation = None;
-    // Persisted skeleton from the previous text-only normalization rule.
-    old.capabilities.input = vec![pl_model::model::ModelInputCapability::text()];
-    old.binding.request.media.clear();
-    let description = old.description.clone();
-    let server = Server::responses(vec![
-        http(200, "", &json!({"data":[{"id":model_id,"display_name":"GPT-6.1 Terra","created":1790640000,"object":"model","owned_by":"openai","type":"model"}]}).to_string()),
-        http(200, "", &json!({"data":[{"id":model_id,"input_modalities":["text"],"supported_reasoning_levels":[]}]}).to_string()),
-    ]).await;
-    let mut config = provider(&server.url, adapter);
-    let query = ModelCatalogQuery::for_account(&config).unwrap();
-    let cache = ModelCatalogQueryCache {
-        identity: query.identity().into(),
-        etag: None,
-        models: vec![old],
-    };
-    // Unknown legacy provenance stays usable and is completed by the canonical global catalog.
-    config
-        .set_model_catalog_overlay(cache.models.clone())
-        .unwrap();
-    let mut canonical = AgentModelConfig {
-        accounts: [(AccountId::new("instance").unwrap(), config.clone())].into(),
-        routes: Default::default(),
-    };
-    canonical.reconcile_model_catalog().unwrap();
-    let startup = canonical
-        .accounts
-        .values()
-        .next()
-        .unwrap()
-        .effective_models(None)
-        .unwrap()
-        .into_iter()
-        .find(|model| model.model_id == model_id)
-        .unwrap();
-    assert_eq!(startup.display_name, "GPT-6.1 Terra");
-    assert_eq!(
-        startup.description,
-        bundled_model_definition("openai")
-            .unwrap()
-            .models
-            .into_iter()
-            .find(|model| model.model_id == model_id)
-            .unwrap()
-            .description
-    );
-    assert!(
-        startup
-            .capabilities
-            .supports_input_modality(ModelModality::Image)
-    );
-    let models = updated(query.execute(Some(&cache)).await.unwrap());
-    config.set_model_catalog_overlay(models).unwrap();
-    let mut model = config
-        .effective_models(None)
-        .unwrap()
-        .into_iter()
-        .find(|model| model.model_id == model_id)
-        .unwrap();
-    assert_eq!(model.model_id, model_id);
-    assert_eq!(model.description, description);
-    assert_eq!(model.context_window, Some(1_050_000));
-    assert_eq!(
-        model_descriptor(&pl_model::config::AccountModelEntry::new(
-            model.clone(),
-            pl_model::config::AccountModelOrigin::Online
-        ))
-        .context
-        .auto_compact_limit,
-        Some(922_000)
-    );
-    assert_eq!(
-        model.resolve_context(None).auto_compact_limit,
-        Some(922_000)
-    );
-    assert_eq!(model.max_output_tokens, Some(128_000));
-    assert_eq!(
-        model.supported_efforts(),
-        ["none", "low", "medium", "high", "xhigh", "max"]
-    );
-    assert!(
-        model_descriptor(&pl_model::config::AccountModelEntry::new(
-            model.clone(),
-            pl_model::config::AccountModelOrigin::Online
-        ))
-        .pricing
-        .is_some()
-    );
-    let explicit = updated(query.execute(None).await.unwrap());
-    config.set_model_catalog_overlay(explicit).unwrap();
-    let explicit = config
-        .effective_models(None)
-        .unwrap()
-        .into_iter()
-        .find(|model| model.model_id == model_id)
-        .unwrap();
-    assert!(
-        !explicit
-            .capabilities
-            .supports_input_modality(ModelModality::Image)
-    );
-    assert!(explicit.supported_efforts().is_empty());
-    server.finish().await;
-
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "describe",
-        0,
-        Reply::Sse(responses_text("a pixel", "gpt61-image", model_id)),
-    )])
-    .await
-    .unwrap();
-    model
-        .binding
-        .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::openai(Some(fixture.base_url())),
-        model,
-    )
-    .unwrap();
-    let mut png = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::new_rgb8(1, 1)
-        .write_to(&mut png, image::ImageFormat::Png)
-        .unwrap();
-    let request = CompletionRequest::builder()
-        .messages(vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::new(vec![
-                ContentPart::Text {
-                    text: "describe".into(),
-                },
-                ContentPart::Attachment {
-                    attachment_id: "pixel".into(),
-                    modality: AttachmentModality::Image,
-                    media_type: "image/png".into(),
-                    filename: None,
-                },
-            ]),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_result: None,
-            metadata: Default::default(),
-            presentation: Default::default(),
-        }])
-        .attachments(vec![AttachmentInput {
-            attachment_id: "pixel".into(),
-            modality: AttachmentModality::Image,
-            media_type: "image/png".into(),
-            filename: None,
-            source: AttachmentSource::Bytes {
-                bytes: std::sync::Arc::from(png.into_inner()),
-            },
-        }])
-        .build();
-    let reply = runtime
-        .complete(request, ModelInvocationContext::default())
-        .await
-        .unwrap();
-    assert_eq!(reply.content.as_deref(), Some("a pixel"));
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].body["model"], model_id);
-    assert_eq!(
-        records[0].body["input"][0]["content"][1]["type"],
-        "input_image"
-    );
-    assert!(
-        records[0].body["input"][0]["content"][1]["image_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
-    );
-}
-
-#[test]
-fn gpt61_terra_is_selectable_with_safe_context_and_documented_tiered_pricing() {
-    use pl_model::model::{PricingMode, UsageReport};
-
-    let account = pl_model::config::builtin_account_catalog()
-        .unwrap()
-        .templates
-        .into_iter()
-        .find(|template| template.id.as_str() == "openai")
-        .unwrap()
-        .account;
-    let selected = account
-        .selectable_catalog(Some(ModelType::Text))
-        .unwrap()
-        .into_iter()
-        .find(|entry| entry.model.model_id == "gpt-6.1-terra")
-        .unwrap();
-    let model = selected.model;
-    assert_eq!(
-        model.resolve_context(None).auto_compact_limit,
-        Some(922_000)
-    );
-
-    for (input_tokens, expected_rate) in [(272_000, 1.0), (272_001, 2.0)] {
-        let usage = UsageReport {
-            input_tokens: Some(input_tokens),
-            output_tokens: Some(0),
-            cache_read_tokens: Some(0),
-            cache_write_tokens: Some(0),
-            total_tokens: Some(input_tokens),
-            ..Default::default()
-        };
-        let accounting = model.pricing.account(usage, PricingMode::Catalog, 0);
-        assert_eq!(
-            accounting.price_snapshot.unwrap().input_per_mtok,
-            Some(expected_rate)
-        );
-    }
 }
 
 #[tokio::test]

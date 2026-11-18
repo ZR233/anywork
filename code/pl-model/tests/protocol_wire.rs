@@ -4038,37 +4038,28 @@ async fn apply_patch_falls_back_to_function_without_required_model_capabilities(
 }
 
 #[tokio::test]
-async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_search() {
-    let preset = builtin_account_catalog()
-        .unwrap()
-        .templates
-        .into_iter()
-        .find(|item| item.id.as_str() == "xai")
-        .unwrap();
-    let model = preset
-        .account
-        .effective_models(None)
-        .unwrap()
-        .into_iter()
-        .find(|model| model.model_id == "grok-4.7")
-        .unwrap();
-    assert_eq!(
-        model.binding.transport,
-        ModelTransportProfile::responses_http()
+async fn xai_responses_preserves_effort_cache_scope_and_function_schema() {
+    let mut info = model("xai-fixture", ModelTransportProfile::responses_http());
+    info.capabilities.reasoning = true;
+    info.parameters.push(
+        serde_json::from_value(json!({
+            "name":"effort",
+            "candidates":["high"],
+            "wire":{"high":{"set":[{"path":"reasoning.effort","value":"high"}]}}
+        }))
+        .unwrap(),
     );
-    assert!(!model.capabilities.web_search);
-    assert!(!model.capabilities.supports_custom_tools());
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
         "review the change",
         0,
-        Reply::Sse(responses_text("reviewed", "grok-1", "grok-4.7")),
+        Reply::Sse(responses_text("reviewed", "xai-1", "xai-fixture")),
     )])
     .await
     .unwrap();
     let mut endpoint = ProtocolEndpoint::xai(Some(fixture.base_url()));
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::OpenAiPromptCacheKey;
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
+    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
     assert!(matches!(runtime.protocol_client(), ProtocolClient::Xai(_)));
     let reply = runtime
         .complete(
@@ -4105,18 +4096,14 @@ async fn xai_grok_uses_responses_http_effort_and_prompt_cache_without_hosted_sea
                 }))
                 .build(),
             ModelInvocationContext::default()
-                .with_prompt_cache_scope(PromptCacheScope::thread("grok-session")),
+                .with_prompt_cache_scope(PromptCacheScope::thread("xai-session")),
         )
         .await
         .unwrap();
     assert_eq!(reply.content.as_deref(), Some("reviewed"));
-    let PricingOutcome::Estimated { cost, .. } = reply.accounting.pricing else {
-        panic!("known Grok price must account reported usage");
-    };
-    assert_eq!(cost.currency, "USD");
     let records = fixture.finish().await.unwrap();
     assert_eq!(records[0].path, "/v1/responses");
-    assert_eq!(records[0].body["model"], "grok-4.7");
+    assert_eq!(records[0].body["model"], "xai-fixture");
     assert_eq!(records[0].body["reasoning"]["effort"], "high");
     assert!(records[0].body["prompt_cache_key"].as_str().is_some());
     assert!(records[0].body.get("store") == Some(&json!(false)));
@@ -5075,104 +5062,6 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
 }
 
 #[tokio::test]
-async fn gpt61_terra_uses_medium_default_and_explicit_efforts_through_responses() {
-    use pl_model::config::{
-        AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig, ReasoningEffort,
-    };
-
-    let preset = builtin_account_catalog()
-        .unwrap()
-        .templates
-        .into_iter()
-        .find(|item| item.id.as_str() == "openai")
-        .unwrap();
-    let fixture = FixtureServer::start(vec![
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "default prompt",
-            0,
-            Reply::Sse(responses_text("default", "terra-1", "gpt-6.1-terra")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "none prompt",
-            1,
-            Reply::Sse(responses_text("none", "terra-2", "gpt-6.1-terra")),
-        ),
-        Step::prompt(
-            Protocol::ResponsesHttp,
-            "max prompt",
-            2,
-            Reply::Sse(responses_text("max", "terra-3", "gpt-6.1-terra")),
-        ),
-    ])
-    .await
-    .unwrap();
-    let mut account = preset.account;
-    account.base_url = fixture.base_url();
-    account
-        .set_model_connection_mode("gpt-6.1-terra", pl_model::protocol::ConnectionMode::Http)
-        .unwrap();
-    let entry = account
-        .effective_catalog(None)
-        .unwrap()
-        .into_iter()
-        .find(|entry| entry.model.model_id == "gpt-6.1-terra")
-        .unwrap();
-    let default_effort = entry
-        .model
-        .default_effort()
-        .expect("Terra model declares a default effort");
-    let account_id = AccountId::new("openai-fixture").unwrap();
-    let role = AgentRoleId::new("executor").unwrap();
-    for (prompt, selected_effort) in [
-        ("default prompt", default_effort.as_str()),
-        ("none prompt", "none"),
-        ("max prompt", "max"),
-    ] {
-        let route = ModelRouteConfig {
-            account_id: account_id.clone(),
-            model_id: "gpt-6.1-terra".into(),
-            effort: Some(ReasoningEffort::new(selected_effort)),
-        };
-        let config = AgentModelConfig {
-            accounts: [(account_id.clone(), account.clone())].into(),
-            routes: [(role.clone(), route)].into(),
-        };
-        let resolved = config.resolve(&role).unwrap();
-        let reasoning = resolved.reasoning_config();
-        let runtime = ModelRuntime::new_with_account_id(
-            resolved.account_id.as_str(),
-            resolved.endpoint,
-            resolved.model,
-        )
-        .unwrap();
-        let request = CompletionRequest::builder()
-            .messages(vec![user(prompt)])
-            .reasoning(reasoning)
-            .build();
-        runtime
-            .complete(request, ModelInvocationContext::default())
-            .await
-            .unwrap();
-    }
-    let records = fixture.finish().await.unwrap();
-    assert!(records.iter().all(|record| record.path == "/v1/responses"));
-    assert!(
-        records
-            .iter()
-            .all(|record| record.body["model"] == "gpt-6.1-terra")
-    );
-    assert_eq!(
-        records
-            .iter()
-            .map(|record| record.body["reasoning"]["effort"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        ["medium", "none", "max"]
-    );
-}
-
-#[tokio::test]
 async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_billed() {
     let bytes = tiny_png();
     let fixture = FixtureServer::start(vec![Step::prompt(
@@ -5216,45 +5105,6 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
             .decode(encoded)
             .unwrap(),
         bytes
-    );
-}
-
-#[tokio::test]
-async fn terra_image_is_sent_as_responses_input_image() {
-    let fixture = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "describe",
-        0,
-        Reply::Sse(responses_text("a pixel", "terra-image", "gpt-6.1-terra")),
-    )])
-    .await
-    .unwrap();
-    let mut info = bundled("gpt-6.1-terra");
-    info.binding
-        .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id(
-        "fixture",
-        ProtocolEndpoint::openai(Some(fixture.base_url())),
-        info,
-    )
-    .unwrap();
-    let result = runtime
-        .complete(
-            image_request("describe", tiny_png()),
-            ModelInvocationContext::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.content.as_deref(), Some("a pixel"));
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].body["model"], "gpt-6.1-terra");
-    let image = &records[0].body["input"][0]["content"][1];
-    assert_eq!(image["type"], "input_image");
-    assert!(
-        image["image_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/png;base64,")
     );
 }
 

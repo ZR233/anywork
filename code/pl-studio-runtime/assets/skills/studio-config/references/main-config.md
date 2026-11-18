@@ -148,6 +148,14 @@ from the URL. Optional
 Use the account editor for protocol-specific capabilities, manual model definitions
 and connection settings so their typed validation remains visible.
 
+The built-in OpenAI template recommends `gpt-6.2-sol` with `medium` effort for new
+selections. `gpt-6.2-astra` and `gpt-6.2-sol` both default to `medium` and support
+`low`, `medium`, `high`, `xhigh` and `max`; `none` and `minimal` are not supported.
+Their built-in automatic compaction threshold is 475,000 tokens. Use the account's
+model settings to override that threshold; restoring automatic mode uses the
+built-in value. These recommendations do not replace saved routes, Thread model
+selections or explicit compaction overrides.
+
 ### Prompt cache hints for compatible Responses endpoints
 
 A compatible endpoint does not inherit OpenAI service capabilities. After confirming

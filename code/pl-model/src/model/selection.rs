@@ -178,10 +178,74 @@ pub fn bundled_selection_guides() -> &'static [BundledSelectionGuide] {
 /// 2026-10-22（UTC）的核验时间；本批次资料统一在该日期核对来源。
 const VERIFIED_AT: i64 = 1_792_627_200;
 const TERRA_VERIFIED_AT: i64 = 1_793_059_200;
+const GPT62_VERIFIED_AT: i64 = 1_794_960_000;
 
 const OPENAI_MODELS_DOC: &str = "https://developers.openai.com/api/docs/models";
 
 static BUNDLED_SELECTION_GUIDES: &[BundledSelectionGuide] = &[
+    BundledSelectionGuide {
+        catalogs: &["openai"],
+        model_id: "gpt-6.2-astra",
+        guide: ModelSelectionGuide {
+            summary: "OpenAI 复杂推理、编码与专业工作的旗舰型号，适合高难度、长流程任务，以及需要结合图像与文档的分析。",
+            task_suitability: &[
+                AgentTaskCategory::Reasoning,
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::Multimodal,
+            ],
+            limitations: &[
+                "相对 GPT-6.2 Sol 单价更高，应按任务难度选择",
+                "不支持 none 或 minimal 思考档位；工具调用须使用 Responses API",
+                "修改已有上下文前缀时，服务端可能丢弃后续推理项，影响质量、用量与延迟",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+                    verified_at: GPT62_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/guides/latest-model",
+                    verified_at: GPT62_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
+        },
+    },
+    BundledSelectionGuide {
+        catalogs: &["openai"],
+        model_id: "gpt-6.2-sol",
+        guide: ModelSelectionGuide {
+            summary: "面向日常编码、自然写作与多步智能体工作的 OpenAI 主力型号，相对 GPT-6.2 Astra 成本更低，适合作为常用实现与协作模型。",
+            task_suitability: &[
+                AgentTaskCategory::Coding,
+                AgentTaskCategory::Tooling,
+                AgentTaskCategory::General,
+            ],
+            limitations: &[
+                "最困难的推理和专业任务可评估 GPT-6.2 Astra，主力定位不保证适合所有任务",
+                "不支持 none 或 minimal 思考档位；工具调用须使用 Responses API",
+                "修改已有上下文前缀时，服务端可能丢弃后续推理项，影响质量、用量与延迟",
+            ],
+            sources: &[
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+                    verified_at: GPT62_VERIFIED_AT,
+                    measurement: None,
+                },
+                ModelSelectionSource {
+                    kind: ModelSelectionSourceKind::Official,
+                    url: "https://developers.openai.com/api/docs/guides/latest-model",
+                    verified_at: GPT62_VERIFIED_AT,
+                    measurement: None,
+                },
+            ],
+        },
+    },
     BundledSelectionGuide {
         catalogs: &["openai"],
         model_id: "gpt-6-astra",
