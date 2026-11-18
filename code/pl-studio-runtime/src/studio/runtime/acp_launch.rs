@@ -93,8 +93,14 @@ mod tests {
     use super::*;
     use crate::studio::runtime::acp_worker::{AcpSpawnError, AcpSpawnRequest, AcpWorker, Reclaim};
     use pl_remote_helper::Executor;
+    use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    fn process_disappeared(error: &std::io::Error) -> bool {
+        // procfs can also return ESRCH if the process is reaped after the open.
+        matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH))
+    }
 
     #[tokio::test]
     async fn real_child_uses_frozen_path_env_argv_cwd_and_confirms_root_exit() {
@@ -182,6 +188,13 @@ wait
             observed
         })
         .await;
+        let root_stat = observed.as_ref().ok().map(|observed| {
+            std::fs::File::open(
+                std::path::Path::new("/proc")
+                    .join(&observed[5])
+                    .join("stat"),
+            )
+        });
         // Always join the actual process owner before asserting fixture output.
         let reclaimed =
             tokio::time::timeout(std::time::Duration::from_secs(10), worker.reclaim()).await;
@@ -202,6 +215,21 @@ wait
             !std::path::Path::new("/proc").join(&observed[5]).exists(),
             "the direct child was reaped"
         );
+        // Keep the proc descriptor open across reaping to exercise the same disappearance
+        // that can race a descendant's open/read pair, without relying on scheduler timing.
+        let mut root_stat = root_stat
+            .expect("fixture output arrived")
+            .expect("open the live root's proc state");
+        let error = root_stat
+            .read_to_string(&mut String::new())
+            .expect_err("a reaped process cannot retain readable proc state");
+        assert!(
+            process_disappeared(&error),
+            "recognize the reaped proc descriptor: {error}"
+        );
+        assert!(!process_disappeared(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
         // Root exit does not synchronize with the descendant's exit. Wait for its actual
         // terminal state; an orphaned zombie may still await reaping by the system parent.
         let descendant = std::path::Path::new("/proc")
@@ -211,10 +239,7 @@ wait
         loop {
             let stat = match std::fs::read_to_string(&descendant) {
                 Ok(stat) => stat,
-                // procfs can also return ESRCH if the process is reaped after the open.
-                Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
-                    break;
-                }
+                Err(error) if process_disappeared(&error) => break,
                 Err(error) => panic!("read descendant state: {error}"),
             };
             if stat
