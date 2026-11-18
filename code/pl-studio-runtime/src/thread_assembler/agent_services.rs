@@ -1053,10 +1053,13 @@ mod tests {
             matches!(execution, Err(pl_core::thread::ThreadError::Cancelled)),
             "the deliberately cancelled model must finish through the typed cancellation path"
         );
+        // This fixture owns its projection task instead of installing the product observer's
+        // drain hook. Stop the producer, then drain every admitted fact before joining its writer.
+        root.close().await?;
+        wait_history_projection(&store, "root").await?;
         let closed = owner.close_session().await;
         assert!(closed.is_empty(), "{closed:?}");
-        projection.abort();
-        let _ = projection.await;
+        projection.await?;
         blocker.close().await?;
         fixture.shutdown().await?;
         store.close().await?;
