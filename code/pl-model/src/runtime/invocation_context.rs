@@ -120,11 +120,21 @@ impl Default for ModelInvocationContext {
 }
 
 /// Parameters that belong only to this invocation, never to the shared model binding.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) enum InvocationPurpose {
     Completion,
     RemoteCompaction {
         headers: std::collections::HashMap<String, String>,
         body: serde_json::Map<String, serde_json::Value>,
     },
+}
+
+// The purpose is diagnostic; compaction headers and the frozen prompt are not.
+impl std::fmt::Debug for InvocationPurpose {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Completion => "Completion",
+            Self::RemoteCompaction { .. } => "RemoteCompaction",
+        })
+    }
 }
