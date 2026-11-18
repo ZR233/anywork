@@ -812,6 +812,7 @@ pub fn resolve_document_path(
     Ok(paths.config_dir().join(&document.relative_path))
 }
 
+/// A positive digest of the path and document bytes that round-trips through Dart's native int.
 pub fn document_revision(relative_path: &str, bytes: &[u8]) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(relative_path.as_bytes());
@@ -820,7 +821,7 @@ pub fn document_revision(relative_path: &str, bytes: &[u8]) -> u64 {
     let digest = hasher.finalize();
     let mut raw = [0u8; 8];
     raw.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(raw).max(1)
+    (u64::from_be_bytes(raw) & i64::MAX as u64).max(1)
 }
 
 /// Initializes the 4 built-in Zhipu MCP files under `<StudioHome>/mcp/host/` once on a fresh installation
@@ -1962,6 +1963,16 @@ pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()
 mod tests {
     use super::*;
     use crate::config::StudioConfig;
+
+    #[test]
+    fn document_revisions_fit_desktop_integers_and_distinguish_edits() {
+        let path = "mcp/host/fixture.toml";
+        let before = document_revision(path, b"previous contents");
+        let after = document_revision(path, b"new contents");
+        assert!((1..=i64::MAX as u64).contains(&before));
+        assert!((1..=i64::MAX as u64).contains(&after));
+        assert_ne!(before, after);
+    }
 
     #[test]
     fn configuration_authority_tracks_effective_scopes_not_catalog_noise() -> Result<()> {
