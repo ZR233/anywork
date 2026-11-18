@@ -1,7 +1,7 @@
 use pl_core::{
     context::{ContextContent, ContextSource},
     model::ModelFactory,
-    thread::{AttemptOutcome, ModelStepLimit, ThreadHandle, TurnInput, TurnOutcome, TurnState},
+    thread::{AttemptOutcome, ModelStepLimit, ThreadHandle, TurnInput, TurnOutcome},
 };
 use pl_model::completion::{ToolCallCaller, ToolResultRecord};
 use pl_model::model::PricingOutcome;
