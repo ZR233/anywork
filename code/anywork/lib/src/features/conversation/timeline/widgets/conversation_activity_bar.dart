@@ -159,7 +159,7 @@ class ConversationResponseView extends StatelessWidget {
   Widget build(BuildContext context) => TimelineActivitySection(
     maxBodyHeight: 196,
     followOutput: active,
-    header: TimelineActivityClock(
+    header: TimelineActivityClock.fromUnixSeconds(
       startedAt: startedAt,
       finishedAt: finishedAt,
       running: active,

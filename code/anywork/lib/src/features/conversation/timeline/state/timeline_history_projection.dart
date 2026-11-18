@@ -69,8 +69,8 @@ abstract final class TimelineHistoryProjection {
         }
         body = WorkDisplayBlock(
           timing: WorkTiming(
-            startedAt: head.startedAt,
-            finishedAt: head.boundaryAt,
+            startedAtMillis: head.startedAt,
+            finishedAtMillis: head.boundaryAt,
           ),
           members: DisplayBlockRef(
             blockId: head.groupId,
@@ -179,8 +179,12 @@ abstract final class TimelineHistoryProjection {
         : ChatToolIdentity(callId: head.tool!.callId, name: head.tool!.name),
     textChannel: head.textChannel,
     contentPresent: head.contentPresent,
-    startedAt: head.startedAt,
-    finishedAt: head.finishedAt,
+    startedAt: _atomSeconds(head.startedAt),
+    finishedAt: _atomSeconds(head.finishedAt),
     contents: const [],
   );
+
+  // ChatAtom retains the native producer's Unix seconds.
+  static int? _atomSeconds(int? millis) =>
+      millis == null ? null : millis ~/ Duration.millisecondsPerSecond;
 }

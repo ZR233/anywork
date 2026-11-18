@@ -4,7 +4,8 @@ import 'package:anywork/src/features/conversation/timeline/view_models/timeline_
 
 import 'chat_fixtures.dart';
 
-WorkTiming displayTiming() => const WorkTiming(startedAt: 0, finishedAt: 1);
+WorkTiming displayTiming() =>
+    const WorkTiming(startedAtMillis: 0, finishedAtMillis: 1_000);
 
 DisplayBlock displayWork(String id, int pos) => DisplayBlock(
   id: id,
@@ -89,11 +90,11 @@ HistoryTimelinePage historyFixturePage(
         anchorSeq: block.blockOrder,
         headSeq: block.blockOrder,
         head: switch (block.body) {
-          WorkDisplayBlock(:final members) => WorkHistoryRow(
+          WorkDisplayBlock(:final members, :final timing) => WorkHistoryRow(
             HistoryWorkHead(
               groupId: members.blockId,
-              startedAt: 0,
-              boundaryAt: 1,
+              startedAt: timing.startedAtMillis,
+              boundaryAt: timing.finishedAtMillis,
               closed: true,
               memberCount: 0,
               unfinishedCount: 0,
@@ -119,8 +120,8 @@ HistoryTimelinePage historyFixturePage(
                     outcome: outcome,
                   ),
                 },
-                startedAt: record.atom.startedAt,
-                finishedAt: record.atom.finishedAt,
+                startedAt: _historyMillis(record.atom.startedAt),
+                finishedAt: _historyMillis(record.atom.finishedAt),
                 textChannel: record.atom.textChannel,
                 tool: record.atom.tool,
                 contentPresent: record.atom.contentPresent,
@@ -137,3 +138,6 @@ HistoryTimelinePage historyFixturePage(
   ],
   next: update.before,
 );
+
+int? _historyMillis(int? seconds) =>
+    seconds == null ? null : seconds * Duration.millisecondsPerSecond;

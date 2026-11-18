@@ -16,7 +16,8 @@ extension DisplayRecordTime on DisplayRecord {
     _ => atom.startedAt,
   };
   int? get displayObservedThrough => switch (contentSource) {
-    FrozenObservation(:final capturedAt) => capturedAt,
+    FrozenObservation(:final capturedAt) =>
+      capturedAt == null ? null : capturedAt ~/ Duration.millisecondsPerSecond,
     _ => atom.finishedAt,
   };
 }

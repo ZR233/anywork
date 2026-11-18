@@ -569,7 +569,8 @@ abstract final class TimelinePreviewFixtures {
         ),
       );
 
-  static WorkTiming workTiming() => WorkTiming(startedAt: 100, finishedAt: 225);
+  static WorkTiming workTiming() =>
+      const WorkTiming(startedAtMillis: 100_000, finishedAtMillis: 225_000);
 
   static Map<String, Object?> _imageMetadata(String id) => {
     'id': id,

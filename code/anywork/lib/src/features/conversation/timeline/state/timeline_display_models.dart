@@ -30,11 +30,11 @@ final class DisplayBlockRef {
   int get hashCode => Object.hash(blockId, cut, anchorSeq, headSeq);
 }
 
-/// Wall-clock interval owned by the Work block, in Unix seconds.
+/// Wall-clock interval owned by the Work block, in Unix milliseconds.
 final class WorkTiming {
-  const WorkTiming({required this.startedAt, this.finishedAt});
-  final int? startedAt;
-  final int? finishedAt;
+  const WorkTiming({required this.startedAtMillis, this.finishedAtMillis});
+  final int? startedAtMillis;
+  final int? finishedAtMillis;
 }
 
 sealed class DisplayBlockBody {
@@ -109,6 +109,8 @@ final class CurrentAtomSource extends DisplayContentSource {
 
 final class FrozenObservation extends DisplayContentSource {
   const FrozenObservation({this.capturedAt, required this.available});
+
+  /// The original History boundary timestamp in Unix milliseconds.
   final int? capturedAt;
   final bool available;
 }
@@ -139,8 +141,8 @@ bool sameDisplayBlock(DisplayBlock first, DisplayBlock second) =>
 bool sameDisplayBlockBody(DisplayBlockBody first, DisplayBlockBody second) {
   if (first is WorkDisplayBlock && second is WorkDisplayBlock) {
     return first.members == second.members &&
-        first.timing.startedAt == second.timing.startedAt &&
-        first.timing.finishedAt == second.timing.finishedAt &&
+        first.timing.startedAtMillis == second.timing.startedAtMillis &&
+        first.timing.finishedAtMillis == second.timing.finishedAtMillis &&
         first.executionPresent == second.executionPresent &&
         first.memberCount == second.memberCount &&
         first.unfinishedCount == second.unfinishedCount &&
