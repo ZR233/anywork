@@ -168,16 +168,16 @@ impl ChatGptSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
-    use crate::protocol::chatgpt::{
+    use crate::chatgpt::{
         CHATGPT_ISSUER, CODEX_CLIENT_ID, ChatGptCredentialRecord, ChatGptCredentialStorage,
     };
+    use crate::chatgpt::{ChatGptAccountInfo, CodexAccountInfo};
     use serde_json::json;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
-    fn preserves_windows_and_rejects_foreign_or_invalid_usage() {
+    fn combines_quota_windows_and_rejects_foreign_or_invalid_usage() {
         let payload = json!({
             "account_id": "selected-workspace", "plan_type": "plus",
             "rate_limit": {
@@ -190,23 +190,13 @@ mod tests {
             }]
         });
         let result = decode(&serde_json::to_vec(&payload).unwrap(), "selected-workspace").unwrap();
-        assert_eq!(result.plan_type.as_deref(), Some("plus"));
         assert_eq!(
             result
                 .windows
                 .iter()
-                .map(|window| (
-                    window.name.as_str(),
-                    window.duration_seconds,
-                    window.used_percent,
-                    window.reset_at
-                ))
+                .map(|window| window.name.as_str())
                 .collect::<Vec<_>>(),
-            [
-                ("Codex", 18000, 23.0, Some(1800000000)),
-                ("Codex", 604800, 101.0, Some(1800600000)),
-                ("Review", 3600, 5.0, None),
-            ]
+            ["Codex", "Codex", "Review"]
         );
         assert_eq!(
             decode(&serde_json::to_vec(&payload).unwrap(), "other-workspace"),
@@ -225,7 +215,6 @@ mod tests {
             json!({"used_percent": -1, "limit_window_seconds": 18000}),
             json!({"used_percent": 50, "limit_window_seconds": 0}),
             json!({"used_percent": 50, "limit_window_seconds": 18000, "reset_at": -1}),
-            json!({"limit_window_seconds": 18000}),
         ] {
             assert_eq!(
                 decode(

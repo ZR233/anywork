@@ -41,6 +41,67 @@ Widget _host(
 );
 
 void main() {
+  testWidgets('tap reacquires a control remounted during reveal', (
+    tester,
+  ) async {
+    final scroll = ScrollController();
+    final shown = ValueNotifier(true);
+    var remounted = false;
+    var taps = 0;
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      scroll.dispose();
+      shown.dispose();
+    });
+    scroll.addListener(() {
+      if (remounted || scroll.offset == 0) return;
+      remounted = true;
+      shown.value = false;
+      tester.binding.addPostFrameCallback((_) {
+        tester.binding.addPostFrameCallback((_) => shown.value = true);
+      });
+    });
+    const key = ValueKey('remounted-control');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            controller: scroll,
+            child: Column(
+              children: [
+                const SizedBox(height: 1200),
+                ValueListenableBuilder(
+                  valueListenable: shown,
+                  builder: (_, visible, _) => SizedBox(
+                    height: 48,
+                    child: visible
+                        ? TextButton(
+                            key: key,
+                            onPressed: () => taps++,
+                            child: const Text('Reveal control'),
+                          )
+                        : null,
+                  ),
+                ),
+                const SizedBox(height: 600),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    final control = find.byKey(key);
+    expect(control, findsOneWidget);
+    expect(control.hitTestable(), findsNothing);
+    final observed = TimelineObservation(
+      tester,
+      () => throw StateError('Tapping does not borrow timeline data'),
+    );
+    await observed.tap(control);
+    expect(remounted, isTrue);
+    expect(taps, 1);
+  });
+
   testWidgets(
     'Work observer reads real Expansible and clicks original header',
     (tester) async {

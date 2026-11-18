@@ -152,9 +152,7 @@ pub fn model_failure_receipt(
 
 pub(super) fn presentation_item_kind(kind: CompletionPresentationItemKind) -> ObservedItemKind {
     match kind {
-        CompletionPresentationItemKind::Text(channel) => {
-            ObservedItemKind::Text(text_channel(channel))
-        }
+        CompletionPresentationItemKind::Text(channel) => ObservedItemKind::Text(channel),
         CompletionPresentationItemKind::Reasoning => ObservedItemKind::Reasoning,
     }
 }
@@ -164,14 +162,6 @@ pub(super) fn presentation_part_kind(kind: CompletionPresentationPartKind) -> Ob
         CompletionPresentationPartKind::OutputText => ObservedPartKind::OutputText,
         CompletionPresentationPartKind::ReasoningText => ObservedPartKind::ReasoningText,
         CompletionPresentationPartKind::SummaryText => ObservedPartKind::SummaryText,
-    }
-}
-
-fn text_channel(channel: crate::trace::TraceTextChannel) -> pl_core::model::ModelTextChannel {
-    match channel {
-        crate::trace::TraceTextChannel::User => pl_core::model::ModelTextChannel::User,
-        crate::trace::TraceTextChannel::Commentary => pl_core::model::ModelTextChannel::Commentary,
-        crate::trace::TraceTextChannel::Final => pl_core::model::ModelTextChannel::Final,
     }
 }
 

@@ -9,6 +9,7 @@ default = []
 live-tests = []
 
 [dependencies]
+pl-model-auth = { workspace = true }
 pl-agent-tool = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
@@ -28,14 +29,7 @@ tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 hyper = { workspace = true }
-hyper-util = { workspace = true }
 sse-stream = { workspace = true }
-enum_dispatch = { workspace = true }
-oauth2 = { workspace = true }
-openidconnect = { workspace = true }
-url = { workspace = true }
-fs4 = { workspace = true }
-axum = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

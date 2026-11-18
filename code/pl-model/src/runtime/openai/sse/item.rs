@@ -4,13 +4,13 @@ use crate::completion::{
 };
 use serde_json::Value;
 
+use crate::completion::ModelTextChannel;
 use crate::completion::stream::event::WebSearchAction;
 use crate::completion::stream::event::{
     ModelStreamEvent, ToolInputDeltaPayload, ToolInputPayloadKind,
 };
 use crate::completion::{ResponsesContextItem, ToolCallCaller};
 use crate::runtime::openai::identity::responses_tool_identity;
-use crate::trace::TraceTextChannel;
 
 pub(super) fn output_item_tool_started(item: &Value) -> Option<ModelStreamEvent> {
     let kind = item.get("type")?.as_str()?;
@@ -181,7 +181,7 @@ fn web_search_action(value: Option<&Value>) -> WebSearchAction {
 
 pub(super) fn assistant_message_identity(
     item: Option<&Value>,
-) -> Option<(String, TraceTextChannel)> {
+) -> Option<(String, ModelTextChannel)> {
     let item = item?;
     if item.get("type")?.as_str()? != "message" {
         return None;
@@ -195,9 +195,9 @@ pub(super) fn assistant_message_identity(
     }
     let item_id = item.get("id")?.as_str()?.to_string();
     let channel = match item.get("phase").and_then(Value::as_str) {
-        Some("commentary") => TraceTextChannel::Commentary,
-        Some("final_answer" | "final") => TraceTextChannel::Final,
-        _ => TraceTextChannel::Final,
+        Some("commentary") => ModelTextChannel::Commentary,
+        Some("final_answer" | "final") => ModelTextChannel::Final,
+        _ => ModelTextChannel::Final,
     };
     Some((item_id, channel))
 }

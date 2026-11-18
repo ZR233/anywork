@@ -2,7 +2,7 @@
 pub(crate) mod decode;
 pub(crate) use decode::enrich_unknown_model_fallback;
 
-use super::{ProtocolAdaptation, ProtocolEndpoint, ProtocolKind};
+use super::{ProtocolEndpoint, ProtocolKind};
 use crate::{
     config::{AccountConfig, AccountModelCatalogConfig},
     model::ModelInfo,
@@ -294,9 +294,10 @@ impl ModelCatalogQuery {
             }
             bytes.extend_from_slice(&chunk);
         }
-        let models = super::ProtocolAdapter::of(self.endpoint.protocol).decode_catalog(
+        let models = decode::models(
             &bytes,
             &self.discovery,
+            decode::DiscoveryDialect::of(self.endpoint.protocol),
             previous.map(|p| p.models.as_slice()),
             &self.defaults,
         )?;

@@ -48,7 +48,6 @@ pub use pl_agent_tool::ToolDefinition;
 pub use tool_schema::{ToolCallPolicy, tool_definition_to_spec};
 
 mod stable_schema;
-pub(crate) use stable_schema::canonicalize_json;
 pub use stable_schema::stable_tool_schemas;
 
 mod summary;
@@ -56,3 +55,6 @@ pub use summary::summary_request;
 
 mod estimate;
 pub use estimate::estimate_text_input_tokens;
+
+// Channel vocabulary used directly in completion signatures.
+pub use pl_core::model::ModelTextChannel;

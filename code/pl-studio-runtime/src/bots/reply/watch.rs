@@ -580,6 +580,10 @@ mod tests {
                 .thread;
             let turn =
                 support::completed_prompt(&env.runtime, &thread.id, "binding-explicit").await?;
+            // File routing consumes a saved reply, after the original History handoff is durable.
+            env.runtime
+                .synchronize_thread_observation(&thread.id)
+                .await?;
             let mut watch = ReplyWatch::open(&env.runtime, &thread.id).await?;
             let observed = async {
                 watch

@@ -144,8 +144,12 @@ final class TimelineObservation {
       if (clock.elapsed >= timeout) {
         fail('Timed out waiting for hittable production control');
       }
-      await Scrollable.ensureVisible(tester.element(target));
-      await tester.pump();
+      final elements = target.evaluate();
+      if (elements.isNotEmpty) {
+        expect(elements, hasLength(1));
+        await Scrollable.ensureVisible(elements.single);
+      }
+      await tester.pump(const Duration(milliseconds: 16));
       expect(tester.takeException(), isNull);
     }
     await tester.tap(target);

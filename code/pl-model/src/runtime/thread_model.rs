@@ -366,7 +366,7 @@ impl CoreModelSession for ThreadModelSession {
 pub fn thread_tool_declaration(spec: &ToolSpec) -> Result<OpaquePayload, ModelError> {
     let mut value = serde_json::to_value(spec)
         .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-    crate::completion::canonicalize_json(&mut value);
+    value.sort_all_objects();
     OpaquePayload::new("pl.model.tool-spec", 1, value.to_string())
         .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))
 }

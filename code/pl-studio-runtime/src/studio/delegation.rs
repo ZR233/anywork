@@ -156,12 +156,10 @@ mod tests {
     use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig, ReasoningEffort},
-        protocol::{
-            ProtocolEndpoint,
-            chatgpt::{
-                ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
-            },
-        },
+        protocol::ProtocolEndpoint,
+    };
+    use pl_model_auth::chatgpt::{
+        ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
     use std::sync::Arc;
 

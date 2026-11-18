@@ -1,12 +1,12 @@
 //! Native remote compaction reuses the complete inference lifecycle and accounting.
-use super::{InvocationRunner, ModelInvocationContext};
+use super::{ModelInvocationContext, ModelRuntime};
 use crate::completion::ModelContextItem;
 use crate::completion::tool_schema::ToolProjection;
 use crate::completion::{
     CompletionFailure, ModelCompactionRequest, ModelCompactionResponse, OpenAiCompactionMode,
 };
 use crate::protocol::WireApi;
-use crate::runtime::openai::{OpenAiBase, OpenAiRequestBody};
+use crate::runtime::openai::{self, OpenAiRequestBody};
 use pl_protocol::{PureError, Result};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -14,9 +14,9 @@ use std::collections::HashMap;
 const REMOTE_COMPACTION_V2_FEATURE: &str = "remote_compaction_v2";
 
 pub(super) async fn compact_context(
-    provider: &InvocationRunner,
+    provider: &ModelRuntime,
     request: ModelCompactionRequest,
-    context: ModelInvocationContext,
+    mut context: ModelInvocationContext,
 ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
     if !provider.endpoint().service_capabilities.remote_compaction
         || provider.model().binding.transport.protocol != WireApi::Responses
@@ -60,10 +60,9 @@ pub(super) async fn compact_context(
         REMOTE_COMPACTION_V2_FEATURE,
     );
     let completion = request.prefix;
-    let response = provider
-        .for_compaction(headers, body)
-        .complete(completion, context)
-        .await?;
+    context.purpose =
+        super::invocation_context::InvocationPurpose::RemoteCompaction { headers, body };
+    let response = provider.complete(completion, context).await?;
     let model_observation = response.model_observation.clone();
     let accounting = response.accounting;
     let mut checkpoints = response
@@ -101,7 +100,7 @@ pub(super) async fn compact_context(
 }
 
 fn build_compaction_body(
-    provider: &InvocationRunner,
+    provider: &ModelRuntime,
     request: &ModelCompactionRequest,
     prompt_cache_key: Option<&str>,
 ) -> Result<(Map<String, Value>, HashMap<String, String>)> {
@@ -117,7 +116,7 @@ fn build_compaction_body(
         .endpoint()
         .protocol
         .instruction_wire_role(WireApi::Responses);
-    let OpenAiRequestBody::Responses(mut body) = OpenAiBase.build_request(
+    let OpenAiRequestBody::Responses(mut body) = openai::build_request(
         WireApi::Responses,
         instruction_role,
         &completion,

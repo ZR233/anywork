@@ -13,7 +13,8 @@ pl-studio-server / pl-studio-cli → pl-studio-update
 pl-studio-cli → pl-tool
 pl-studio-update → pl-remote-helper
 pl-model / pl-tool / pl-studio-statistics → pl-protocol
-pl-model → pl-core
+pl-model → pl-core / pl-model-auth
+pl-studio-runtime → pl-model-auth
 pl-tool → pl-core / pl-model
 pl-tool → 独立工具 crate → pl-agent-tool / 最小领域支持
 pl-core / pl-model / pl-tool / pl-studio-runtime → pl-agent-tool
@@ -31,7 +32,7 @@ pl-trace → pl-core
 - `pl-core` 不依赖 `pl-protocol`、`pl-model`、`pl-tool`、`pl-trace`、`pl-output` 或 Studio 层组件（含测试依赖）。新增概念须先甄别是否属于通用的会话线程编排；账号、工具和产品专属概念分别归入对应适配层，不得通过 `pl-core` 门面镜像导出。
 - 工作区完整成员清单以根目录 `Cargo.toml` 为准；Flutter 应用目录本身不是 Cargo 工作区成员，其 Rust 桥接库 `pl-studio-bridge` 单独纳入工作区。
 - 厂商协议的 HTTP 客户端（模型目录发现、文件上传与图像生成）归属 `pl-model`，与账号配置、协议端点、模型目录及凭据解析保持同源，并由 `pl-model` 公开 API 的集成测试覆盖；`pl-tool` 仅负责参数校验、结果编排与媒体文件归档，不维护第二套协议或凭据逻辑。
-- 原生账号的 OAuth/OIDC 协议、身份校验与请求凭据刷新归属 `pl-model`；Studio 装配受保护存储并持有登录操作、编辑意图绑定、配置提交及关闭责任。认证不会引入第二个模型执行器，公共状态由 `pl-studio-runtime` 向 HTTP、FRB 和 Client 发布，具体认证契约见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。
+- 原生账号的 OAuth/OIDC 协议、身份校验、凭据会话与配额查询归属独立的 `pl-model-auth`，它不依赖 `pl-model`、`pl-core` 或 Studio；`pl-model` 仅消费已绑定的认证会话并在发送前解析凭据；Studio 装配受保护存储并持有登录操作、编辑意图绑定、配置提交及关闭责任。认证不会引入第二个模型执行器，公共状态由 `pl-studio-runtime` 向 HTTP、FRB 和 Client 发布，具体认证契约见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。
 - ACP 是外部智能体接入协议，不属于原生模型的 HTTP 协议族。`pl-acp` 消费宿主提供的受监督字节流，负责 ACP 握手协商、认证及业务会话的类型化请求与有序更新；它不依赖 Studio、`pl-model` 或 `pl-tool`，不读取产品配置与凭据，也不直接创建操作系统进程。Studio 层负责装配进程监督器，管理接入配置、固定 1.4.5 版本的官方服务端准备、启动资格与认证流程；固定厂商版本策略不下沉到通用 `pl-acp` 协议库，协议库仅校验宿主显式传入的期望服务端版本，并在版本不匹配时拦截后续认证与会话请求（详见 [28](./28-acp.md)）。`pl-studio-runtime` 可精确依赖同次锁定的官方 `agent-client-protocol-schema` 纯数据类型，承载 ACP 内容块、会话更新、权限及配置载荷；协议 DTO 不耦合 ACP 连接实现。HTTP 使用该官方序列化形状，FRB 与 Client 在各自边界做薄类型转换，不用 JSON 字符串或另写协议解析器替代类型契约。
 
 ## 2.2 稳定职责
@@ -45,6 +46,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-lifecycle` | 弱作用域能力、父子资源归属、同步解绑、异步构造接管、关闭回执与失败原实例重试；不拥有业务数据或业务关闭顺序 |
 | `pl-core` | 上下文、模型与会话线程的通用契约，Anywork 工具上下文与结果特化、注册/冻结/授权/退休治理，内存 Thread owner、完整 Current 与有界 effect window；产品 History、Work/Single 分组和 GUI 读取归 Studio |
 | `pl-model` | 账号配置、厂商协议与传输层、模型目录、配置值对象、路由解析、厂商图像 API、媒体编码、提示缓存、用量计量及核心模型会话适配 |
+| `pl-model-auth` | 模型账号认证协议、身份值对象、凭据刷新会话与配额查询；存储由宿主注入，不拥有产品登录操作、配置提交或模型执行 |
 | `pl-acp` | 外部智能体的 ACP 协商、认证与业务会话协议，类型化请求、有序更新及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
 | 独立工具家族 crate | 文件、命令、Git、LSP、MCP、搜索、媒体与文件展示、技能、机器人各自聚合相关工具，以模块保存各工具的声明、校验、领域编排、结果与错误；通过 `pl-agent-tool` 被独立宿主消费，跨家族只共享必要的窄领域支持 |

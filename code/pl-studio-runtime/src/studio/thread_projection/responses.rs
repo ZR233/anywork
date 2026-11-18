@@ -5,8 +5,7 @@ use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem, ThreadThi
 use pl_core::{
     context::ContextContent,
     model::{
-        AggregateChannel, ModelStepOutput, ModelTextChannel, ObservedItemKind,
-        ObservedPartIdentity, ObservedPartKind,
+        AggregateChannel, ModelStepOutput, ObservedItemKind, ObservedPartIdentity, ObservedPartKind,
     },
     thread::{AttemptOutcome, ThreadSnapshot},
 };
@@ -536,11 +535,11 @@ fn project_presentation_items(
                     }),
                 ) => {
                     let channel = match channel {
-                        pl_model::trace::TraceTextChannel::User => ThreadTextChannel::User,
-                        pl_model::trace::TraceTextChannel::Commentary => {
+                        pl_model::completion::ModelTextChannel::User => ThreadTextChannel::User,
+                        pl_model::completion::ModelTextChannel::Commentary => {
                             ThreadTextChannel::Commentary
                         }
-                        pl_model::trace::TraceTextChannel::Final => ThreadTextChannel::Final,
+                        pl_model::completion::ModelTextChannel::Final => ThreadTextChannel::Final,
                     };
                     ExecutionShape::Text(ThreadTextItem::new(
                         channel,
@@ -850,9 +849,7 @@ fn progress_content(
             ObservedPartIdentity::Provider(identity) => identity,
         };
         let kind = match identity.item_kind {
-            ObservedItemKind::Text(channel) => {
-                CompletionPresentationItemKind::Text(trace_channel(channel))
-            }
+            ObservedItemKind::Text(channel) => CompletionPresentationItemKind::Text(channel),
             ObservedItemKind::Reasoning => CompletionPresentationItemKind::Reasoning,
         };
         let part_kind = match identity.part {
@@ -906,14 +903,6 @@ fn progress_content(
         presentation_items: items,
         observation: progress.observation().clone(),
     })
-}
-
-fn trace_channel(channel: ModelTextChannel) -> pl_model::trace::TraceTextChannel {
-    match channel {
-        ModelTextChannel::User => pl_model::trace::TraceTextChannel::User,
-        ModelTextChannel::Commentary => pl_model::trace::TraceTextChannel::Commentary,
-        ModelTextChannel::Final => pl_model::trace::TraceTextChannel::Final,
-    }
 }
 
 fn response_content(output: &ModelStepOutput) -> Result<ResponseContent, ProjectionError> {

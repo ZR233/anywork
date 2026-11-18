@@ -3,8 +3,7 @@
 //! [`decode_raw_event_stream`] 把 provider 原始流解码为 canonical 事件流，
 //! [`collect_completion_event_stream_with_idle_timeout`] 驱动 [`StreamCompletionAccumulator`]
 //! 累积出 `CompletionResponse`。生命周期合法性（`lifecycle`）、工具调用增量
-//! （`tool_stream`）、标签式可见输出（`tagged_output`）与 trace 投影
-//! （`trace_projection`）是独立子状态机。
+//! （`tool_stream`）与标签式可见输出（`tagged_output`）按各自职责维护。
 
 mod accumulator;
 pub(crate) mod current;
@@ -14,18 +13,15 @@ pub(crate) mod decode;
 pub(crate) mod event;
 mod lifecycle;
 pub(crate) mod replay;
-mod state;
 mod tagged_output;
+mod tool_identity;
 mod tool_stream;
-mod trace_projection;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
 use tracing::Instrument;
 
-use crate::trace::{AgentEventSender, TraceEventSink};
 use pl_protocol::PureError;
 
 use crate::completion::CompletionTraceContext;
@@ -44,11 +40,9 @@ enum StreamAdmissionError {
     Member(#[from] pl_core::model::ModelMemberError),
 }
 
-/// 流收集期间的宿主上下文：事件输出、trace 目标与取消信号。
+/// 流收集期间的诊断身份、可靠成员端口与取消信号。
 pub(crate) struct StreamCollectContext<'a> {
-    pub(crate) event_tx: &'a AgentEventSender,
     pub(crate) trace: Option<CompletionTraceContext>,
-    pub(crate) trace_sink: Option<Arc<dyn TraceEventSink>>,
     pub(crate) cancellation: Option<tokio_util::sync::CancellationToken>,
     pub(crate) model_observation: Option<crate::completion::InferenceModelObservation>,
     pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
@@ -73,18 +67,15 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
 ) -> std::result::Result<crate::completion::CompletionResponse, crate::completion::CompletionFailure>
 {
     let StreamCollectContext {
-        event_tx,
-        trace,
-        trace_sink,
+        trace: _,
         cancellation,
         model_observation,
         on_stream_end,
         members,
         generation,
     } = context;
-    let mut accumulator = accumulator.unwrap_or_else(|| {
-        StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation)
-    });
+    let mut accumulator =
+        accumulator.unwrap_or_else(|| StreamCompletionAccumulator::new(model_observation));
 
     loop {
         let next_event = async {
@@ -117,7 +108,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         let next_event = match next_event {
             Err(()) => {
                 on_stream_end();
-                accumulator.cancel_attempt("model invocation cancelled", event_tx);
+                accumulator.cancel_attempt("model invocation cancelled");
                 if let Some(current) = current.as_deref_mut() {
                     current.freeze(&accumulator);
                 }
@@ -142,7 +133,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 let error = PureError::transient_model_transport(
                     "stream error: idle timeout waiting for provider event",
                 );
-                accumulator.fail_attempt(&error, event_tx);
+                accumulator.fail_attempt(&error);
                 if let Some(current) = current.as_deref_mut() {
                     current.freeze(&accumulator);
                 }
@@ -161,7 +152,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             Ok(event) => event,
             Err(error) => {
                 on_stream_end();
-                accumulator.fail_attempt(&error, event_tx);
+                accumulator.fail_attempt(&error);
                 if let Some(current) = current.as_deref_mut() {
                     current.freeze(&accumulator);
                 }
@@ -178,7 +169,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         };
         let admission = async {
             for event in accumulator.normalize(event)? {
-                accumulator.apply_normalized(event, event_tx)?;
+                accumulator.apply_normalized(event)?;
                 if let Some(current) = current.as_deref_mut() {
                     current.mark_dirty();
                 }
@@ -231,7 +222,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 error,
                 StreamAdmissionError::Member(pl_core::model::ModelMemberError::Cancelled)
             ) {
-                accumulator.cancel_attempt("model invocation cancelled", event_tx);
+                accumulator.cancel_attempt("model invocation cancelled");
                 if let Some(current) = current.as_deref_mut() {
                     current.freeze(&accumulator);
                 }
@@ -249,7 +240,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 StreamAdmissionError::Completion(error) => error,
                 StreamAdmissionError::Member(error) => PureError::LlmError(error.to_string()),
             };
-            accumulator.fail_attempt(&error, event_tx);
+            accumulator.fail_attempt(&error);
             if let Some(current) = current.as_deref_mut() {
                 current.freeze(&accumulator);
             }
@@ -270,7 +261,7 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
     if let Some(current) = current.as_deref_mut() {
         current.freeze(&accumulator);
     }
-    accumulator.finish(event_tx).map_err(|source| {
+    accumulator.finish().map_err(|source| {
         if let Some(current) = current.as_deref_mut() {
             current.fail_snapshot(source.to_string());
         }
@@ -306,6 +297,7 @@ mod admission_tests {
             cold::{ColdStore, ColdStoreError, ColdStoreHandle, ThreadWrite},
         },
     };
+    use std::sync::Arc;
     use std::sync::{
         Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -365,7 +357,6 @@ mod admission_tests {
             *self.state.cancellation.lock().unwrap() = Some(request.cancellation.clone());
             let failure = self.failure.take().unwrap();
             Ok(PreparedModelCall::new(async move {
-                let (events, _) = tokio::sync::broadcast::channel(16);
                 let item = CompletionPresentationItem {
                     provider_item_id: "complete-unsent".into(),
                     output_index: Some(0),
@@ -392,9 +383,8 @@ mod admission_tests {
                 let result = collect_completion_event_stream_with_idle_timeout(
                     stream,
                     StreamCollectContext {
-                        event_tx: &events,
                         trace: None,
-                        trace_sink: None,
+
                         cancellation: Some(request.cancellation),
                         model_observation: None,
                         on_stream_end: &|| {},

@@ -1,3 +1,4 @@
+use super::tool_identity::{ToolIdentity, resolve_key};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use pl_protocol::{PureError, Result};
@@ -345,7 +346,7 @@ impl StreamLifecycle {
                 call_id: call_id.cloned(),
                 name: None,
             });
-        let call_id_was_item_fallback = entry.call_id.as_deref() == Some(entry.item_id.as_str());
+        let accepts_call_id = entry.identity().accepts_call_id();
         if entry.stream_id.as_ref().is_none_or(String::is_empty)
             && let Some(stream_id) = stream_id.filter(|value| !value.is_empty())
         {
@@ -354,9 +355,7 @@ impl StreamLifecycle {
         if entry.item_id.is_empty() && !item_id.is_empty() {
             entry.item_id = item_id.to_string();
         }
-        if (entry.call_id.as_ref().is_none_or(String::is_empty) || call_id_was_item_fallback)
-            && let Some(call_id) = call_id.filter(|value| !value.is_empty())
-        {
+        if accepts_call_id && let Some(call_id) = call_id.filter(|value| !value.is_empty()) {
             entry.call_id = Some(call_id.clone());
         }
         if entry.name.as_ref().is_none_or(String::is_empty)
@@ -372,53 +371,23 @@ impl StreamLifecycle {
         call_id: Option<&String>,
         item_id: &str,
     ) -> String {
-        let key = tool_key(stream_id, call_id, item_id);
-        if self.open_tools.contains_key(&key) {
-            return key;
-        }
-        self.open_tools
-            .iter()
-            .find_map(|(key, tool)| tool.matches_identity(call_id, item_id).then(|| key.clone()))
-            .or_else(|| self.unique_item_fallback_key(stream_id, call_id, item_id))
-            .unwrap_or(key)
-    }
-
-    fn unique_item_fallback_key(
-        &self,
-        stream_id: Option<&String>,
-        call_id: Option<&String>,
-        item_id: &str,
-    ) -> Option<String> {
-        // Some Responses-compatible streams first expose an item id, then only
-        // expose a distinct call id. Without another correlation key, upgrading
-        // is safe only while exactly one fallback-backed tool remains open.
-        if stream_id.is_some_and(|value| !value.is_empty())
-            || !call_id.is_some_and(|value| !value.is_empty() && value == item_id)
-        {
-            return None;
-        }
-
-        let mut candidates = self
-            .open_tools
-            .iter()
-            .filter(|(_, tool)| tool.uses_item_id_as_call_id());
-        let (key, _) = candidates.next()?;
-        candidates.next().is_none().then(|| key.clone())
+        resolve_key(
+            &self.open_tools,
+            OpenToolInput::identity,
+            stream_id,
+            call_id,
+            item_id,
+        )
     }
 }
 
 impl OpenToolInput {
-    fn matches_identity(&self, call_id: Option<&String>, item_id: &str) -> bool {
-        let call_id_matches = call_id
-            .filter(|value| !value.is_empty())
-            .zip(self.call_id.as_ref())
-            .is_some_and(|(left, right)| left == right);
-        let item_id_matches = !item_id.is_empty() && self.item_id == item_id;
-        call_id_matches || item_id_matches
-    }
-
-    fn uses_item_id_as_call_id(&self) -> bool {
-        !self.item_id.is_empty() && self.call_id.as_deref() == Some(self.item_id.as_str())
+    fn identity(&self) -> ToolIdentity<'_> {
+        ToolIdentity {
+            item_id: &self.item_id,
+            call_id: self.call_id.as_deref(),
+            stable_item: !self.item_id.is_empty(),
+        }
     }
 }
 
@@ -432,15 +401,6 @@ fn block_kind_label(kind: ModelBlockKind) -> &'static str {
         ModelBlockKind::Text { channel } => channel.as_str(),
         ModelBlockKind::ReasoningSummary => "reasoning.summary",
     }
-}
-
-fn tool_key(stream_id: Option<&String>, call_id: Option<&String>, item_id: &str) -> String {
-    stream_id
-        .filter(|value| !value.is_empty())
-        .cloned()
-        .or_else(|| call_id.filter(|value| !value.is_empty()).cloned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| item_id.to_string())
 }
 
 pub(crate) fn tool_start_payload(kind: ToolInputPayloadKind) -> ToolInputDeltaPayload {

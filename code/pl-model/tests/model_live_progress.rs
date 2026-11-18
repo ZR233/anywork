@@ -21,6 +21,7 @@ use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, ToolError},
 };
+use pl_model::completion::ModelTextChannel;
 use pl_model::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind, CompletionRequest, Message, MessageContent, MessageRole,
@@ -31,7 +32,6 @@ use pl_model::runtime::{
     ModelInvocationContext, ModelRuntime, ModelSession, model_failure_receipt,
     thread_tool_declaration,
 };
-use pl_model::trace::TraceTextChannel;
 use pl_protocol::PureError;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use serde_json::{Value, json};
@@ -421,7 +421,7 @@ async fn late_commentary_phase_corrects_text_metadata_without_final_authorizatio
                 let receipt = pl_model::runtime::model_member_receipt(members[0]).unwrap();
                 assert_eq!(
                     receipt.item.kind,
-                    CompletionPresentationItemKind::Text(TraceTextChannel::Commentary)
+                    CompletionPresentationItemKind::Text(ModelTextChannel::Commentary)
                 );
                 assert!(effects.iter().any(|e| matches!(
                     e.attempt.as_ref().map(|a| &a.outcome),
@@ -442,7 +442,7 @@ async fn late_commentary_phase_corrects_text_metadata_without_final_authorizatio
                 assert_eq!(response.presentation_items.len(), 1);
                 assert_eq!(
                     response.presentation_items[0].kind,
-                    CompletionPresentationItemKind::Text(TraceTextChannel::Commentary)
+                    CompletionPresentationItemKind::Text(ModelTextChannel::Commentary)
                 );
                 assert_eq!(response.presentation_items[0].parts[0].text, "working");
             }
@@ -738,7 +738,7 @@ async fn admitted_member_survives_safe_recovery_after_clean_eof() {
             1,
             1,
             "recovered-answer",
-            CompletionPresentationItemKind::Text(TraceTextChannel::Final),
+            CompletionPresentationItemKind::Text(ModelTextChannel::Final),
             "successful answer",
             ObservedPartKind::OutputText,
         ),
@@ -1848,7 +1848,7 @@ fn legacy_failure_receipt_keeps_the_partial_text_it_had_already_received() {
     let item = CompletionPresentationItem {
         provider_item_id: "message-1".into(),
         output_index: Some(0),
-        kind: CompletionPresentationItemKind::Text(TraceTextChannel::Final),
+        kind: CompletionPresentationItemKind::Text(ModelTextChannel::Final),
         parts: vec![CompletionPresentationPart {
             content_index: 0,
             provider_part_id: None,

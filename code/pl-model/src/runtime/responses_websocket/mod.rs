@@ -24,15 +24,18 @@ use crate::runtime::transport_policy::{
 
 mod dialer;
 pub(crate) mod error;
-mod state;
 
 use error::{
     close_error, connection_error, continuation_id_invalid, continuation_retry_error,
     handshake_error, handshake_timeout_error, protocol_error, server_error,
 };
-use state::{
-    ClosedResponsesStream, CompletedResponsesStream, FailedResponsesStream, ResponsesStreamState,
-};
+#[derive(Debug)]
+enum ResponsesStreamState {
+    Open,
+    Completed(Box<SseStreamEvent>),
+    Failed { detail: String },
+    Closed,
+}
 
 pub(super) struct StreamResponsesInput<'a> {
     pub api_base: String,
@@ -70,7 +73,7 @@ pub(super) async fn stream_responses(
     // Own invalidation before the first await that can publish/send a request.
     let mut state = WebSocketEventState {
         guard: model_session.lock_responses_websocket().await,
-        state: ResponsesStreamState::open(),
+        state: ResponsesStreamState::Open,
         used_continuation: false,
         full_request: body.clone(),
         model_session: model_session.clone(),
@@ -149,7 +152,7 @@ pub(super) async fn stream_responses(
     Ok(OpenedResponsesStream {
         stream: futures::stream::unfold(state, |mut state| async move {
             match &state.state {
-                ResponsesStreamState::Open(_) => {}
+                ResponsesStreamState::Open => {}
                 ResponsesStreamState::Completed(_) => {
                     if let Err(error) = state.finish_completed_response() {
                         let error = state.fail(error);
@@ -157,14 +160,11 @@ pub(super) async fn stream_responses(
                     }
                     return None;
                 }
-                ResponsesStreamState::Failed(failed) => {
-                    tracing::debug!(
-                        detail = failed.detail(),
-                        "Responses WebSocket stream stopped"
-                    );
+                ResponsesStreamState::Failed { detail } => {
+                    tracing::debug!(detail, "Responses WebSocket stream stopped");
                     return None;
                 }
-                ResponsesStreamState::Closed(_) => return None,
+                ResponsesStreamState::Closed => return None,
             }
             let event = state.next_event().await;
             Some((event, state))
@@ -442,15 +442,13 @@ impl WebSocketEventState {
                     }
                     match event.kind.as_str() {
                         "response.completed" => {
-                            self.state = ResponsesStreamState::Completed(Box::new(
-                                CompletedResponsesStream::new(event.clone()),
-                            ));
+                            self.state = ResponsesStreamState::Completed(Box::new(event.clone()));
                         }
                         "response.failed" | "response.incomplete" => {
                             self.guard.invalidate();
-                            self.state = ResponsesStreamState::Failed(FailedResponsesStream::new(
-                                "provider returned terminal response",
-                            ));
+                            self.state = ResponsesStreamState::Failed {
+                                detail: "provider returned terminal response".into(),
+                            };
                         }
                         _ => {}
                     }
@@ -475,7 +473,9 @@ impl WebSocketEventState {
 
     fn fail(&mut self, error: PureError) -> PureError {
         self.guard.invalidate();
-        self.state = ResponsesStreamState::Failed(FailedResponsesStream::new(error.to_string()));
+        self.state = ResponsesStreamState::Failed {
+            detail: error.to_string(),
+        };
         error
     }
 
@@ -516,19 +516,19 @@ impl WebSocketEventState {
         let ResponsesStreamState::Completed(completed) = &self.state else {
             return Ok(());
         };
-        let event = completed.event().clone();
+        let event = completed.as_ref().clone();
         self.commit_completed_response(&event)?;
         if self.used_continuation {
             self.model_session.record_continuation_used();
         }
-        self.state = ResponsesStreamState::Closed(ClosedResponsesStream::new());
+        self.state = ResponsesStreamState::Closed;
         Ok(())
     }
 }
 
 impl Drop for WebSocketEventState {
     fn drop(&mut self) {
-        if !matches!(self.state, ResponsesStreamState::Closed(_)) {
+        if !matches!(self.state, ResponsesStreamState::Closed) {
             self.guard.invalidate();
         }
     }

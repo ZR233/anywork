@@ -96,7 +96,7 @@ pub struct ModelStreamContentPart {
 pub struct ModelStreamBlock {
     pub id: String,
     pub kind: CompletionPresentationPartKind,
-    pub channel: Option<crate::trace::TraceTextChannel>,
+    pub channel: Option<crate::completion::ModelTextChannel>,
     pub provider_item_id: Option<String>,
     pub provider_metadata: Option<serde_json::Value>,
     pub closed: bool,

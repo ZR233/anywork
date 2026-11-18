@@ -1,3 +1,4 @@
+use super::tool_identity::{ToolIdentity, resolve_key};
 use std::collections::HashMap;
 
 use pl_protocol::{PureError, Result};
@@ -26,19 +27,14 @@ impl ToolStream {
         call_id: Option<&String>,
         name: Option<String>,
         payload_delta: ToolInputDeltaPayload,
-    ) -> ToolInputSnapshot {
+    ) {
         let key = self.resolve_key(stream_id, call_id, &item_id);
         let acc = self.get_or_insert_accumulator(&key, call_id, &item_id, || {
             ToolCallPayloadAccumulator::FunctionArguments(String::new())
         });
         acc.merge_metadata(stream_id, &item_id, call_id, name);
-        let delta_text = payload_delta.text().to_string();
         acc.push_delta(payload_delta);
         acc.phase = ModelStreamToolInputPhase::Streaming;
-        ToolInputSnapshot {
-            tool: acc.snapshot(),
-            delta: delta_text,
-        }
     }
 
     pub(crate) fn start_input(
@@ -48,16 +44,12 @@ impl ToolStream {
         call_id: Option<&String>,
         name: Option<String>,
         payload: ToolInputDeltaPayload,
-    ) -> ToolInputSnapshot {
+    ) {
         let key = self.resolve_key(stream_id, call_id, &item_id);
         let acc = self.get_or_insert_accumulator(&key, call_id, &item_id, || {
             ToolCallPayloadAccumulator::from_payload(payload)
         });
         acc.merge_metadata(stream_id, &item_id, call_id, name);
-        ToolInputSnapshot {
-            tool: acc.snapshot(),
-            delta: String::new(),
-        }
     }
 
     pub(crate) fn finish_ready(
@@ -147,43 +139,13 @@ impl ToolStream {
         call_id: Option<&String>,
         item_id: &str,
     ) -> String {
-        let key = tool_call_accumulator_key(stream_id, call_id, item_id);
-        if self.accumulators.contains_key(&key) {
-            return key;
-        }
-
-        self.accumulators
-            .iter()
-            .find_map(|(key, accumulator)| {
-                accumulator
-                    .matches_identity(call_id, item_id)
-                    .then(|| key.clone())
-            })
-            .or_else(|| self.unique_item_fallback_key(stream_id, call_id, item_id))
-            .unwrap_or(key)
-    }
-
-    fn unique_item_fallback_key(
-        &self,
-        stream_id: Option<&String>,
-        call_id: Option<&String>,
-        item_id: &str,
-    ) -> Option<String> {
-        // Some Responses-compatible streams first expose an item id, then only
-        // expose a distinct call id. Without another correlation key, upgrading
-        // is safe only while exactly one fallback-backed tool remains open.
-        if stream_id.is_some_and(|stream_id| !stream_id.is_empty())
-            || !call_id.is_some_and(|call_id| !call_id.is_empty() && call_id == item_id)
-        {
-            return None;
-        }
-
-        let mut candidates = self
-            .accumulators
-            .iter()
-            .filter(|(_, accumulator)| accumulator.uses_item_id_as_call_id());
-        let (key, _) = candidates.next()?;
-        candidates.next().is_none().then(|| key.clone())
+        resolve_key(
+            &self.accumulators,
+            ToolCallAccumulator::identity,
+            stream_id,
+            call_id,
+            item_id,
+        )
     }
 
     fn remove_accumulator(&mut self, key: &str) -> Option<ToolCallAccumulator> {
@@ -246,7 +208,7 @@ impl ToolStream {
                     input: input.clone(),
                     phase: acc.phase,
                     stream_aliases: acc.stream_id.iter().cloned().collect(),
-                    item_aliases: unique_identities(Some(&acc.trace_id), Some(&acc.id)),
+                    item_aliases: unique_identities(Some(&acc.initial_item_id), Some(&acc.id)),
                     call_aliases: unique_identities(
                         acc.initial_call_id.as_ref(),
                         acc.call_id.as_ref(),
@@ -261,11 +223,6 @@ impl ToolStream {
         });
         inputs
     }
-}
-
-pub(crate) struct ToolInputSnapshot {
-    pub(crate) tool: ToolCallAccumulatorSnapshot,
-    pub(crate) delta: String,
 }
 
 fn unique_identities(first: Option<&String>, current: Option<&String>) -> Vec<String> {
@@ -284,7 +241,7 @@ fn unique_identities(first: Option<&String>, current: Option<&String>) -> Vec<St
 
 struct ToolCallAccumulator {
     id: String,
-    trace_id: String,
+    initial_item_id: String,
     has_stable_id: bool,
     call_id: Option<String>,
     name: String,
@@ -295,20 +252,28 @@ struct ToolCallAccumulator {
 }
 
 impl ToolCallAccumulator {
+    fn identity(&self) -> ToolIdentity<'_> {
+        ToolIdentity {
+            item_id: &self.id,
+            call_id: self.call_id.as_deref(),
+            stable_item: self.has_stable_id,
+        }
+    }
+
     fn new(
         key: &str,
         call_id: Option<&String>,
         item_id: &str,
         payload: ToolCallPayloadAccumulator,
     ) -> Self {
-        let trace_id = trace_tool_part_id(call_id, item_id, key);
+        let initial_item_id = initial_item_id(call_id, item_id, key);
         Self {
             id: if item_id.is_empty() {
                 key.to_string()
             } else {
                 item_id.to_string()
             },
-            trace_id,
+            initial_item_id,
             has_stable_id: !item_id.is_empty(),
             call_id: call_id
                 .filter(|call_id| !call_id.is_empty())
@@ -321,25 +286,12 @@ impl ToolCallAccumulator {
         }
     }
 
-    fn matches_identity(&self, call_id: Option<&String>, item_id: &str) -> bool {
-        let call_id_matches = call_id
-            .filter(|call_id| !call_id.is_empty())
-            .zip(self.call_id.as_ref())
-            .is_some_and(|(left, right)| left == right);
-        let item_id_matches = !item_id.is_empty() && self.id == item_id;
-        call_id_matches || item_id_matches
-    }
-
     fn matches_tool_call_identity(&self, call: &ToolCall) -> bool {
         call.id == self.id
             || self
                 .call_id
                 .as_deref()
                 .is_some_and(|call_id| call_id == call.call_id)
-    }
-
-    fn uses_item_id_as_call_id(&self) -> bool {
-        self.has_stable_id && self.call_id.as_deref() == Some(self.id.as_str())
     }
 
     fn merge_metadata(
@@ -358,14 +310,12 @@ impl ToolCallAccumulator {
         if self.initial_call_id.is_none() {
             self.initial_call_id = call_id.filter(|id| !id.is_empty()).cloned();
         }
-        let call_id_was_item_fallback = self.call_id.as_deref() == Some(self.id.as_str());
+        let accepts_call_id = self.identity().accepts_call_id();
         if !item_id.is_empty() && !self.has_stable_id {
             self.id = item_id.to_string();
             self.has_stable_id = true;
         }
-        if (self.call_id.is_none() || call_id_was_item_fallback)
-            && let Some(call_id) = call_id.filter(|call_id| !call_id.is_empty())
-        {
+        if accepts_call_id && let Some(call_id) = call_id.filter(|call_id| !call_id.is_empty()) {
             self.call_id = Some(call_id.clone());
         }
         if let Some(name) = name
@@ -403,15 +353,6 @@ impl ToolCallAccumulator {
                 ToolCallPayloadAccumulator::CustomInput(input)
             }
         };
-    }
-
-    fn snapshot(&self) -> ToolCallAccumulatorSnapshot {
-        ToolCallAccumulatorSnapshot {
-            id: self.id.clone(),
-            trace_id: self.trace_id.clone(),
-            call_id: self.call_id.clone(),
-            name: self.name.clone(),
-        }
     }
 
     fn validate_identity(&self) -> Result<()> {
@@ -462,14 +403,7 @@ impl ToolCallPayloadAccumulator {
     }
 }
 
-pub(crate) struct ToolCallAccumulatorSnapshot {
-    pub(crate) id: String,
-    pub(crate) trace_id: String,
-    pub(crate) call_id: Option<String>,
-    pub(crate) name: String,
-}
-
-fn trace_tool_part_id(call_id: Option<&String>, id: &str, fallback_id: &str) -> String {
+fn initial_item_id(call_id: Option<&String>, id: &str, fallback_id: &str) -> String {
     if !id.is_empty() {
         return id.to_string();
     }
@@ -477,21 +411,4 @@ fn trace_tool_part_id(call_id: Option<&String>, id: &str, fallback_id: &str) -> 
         .filter(|call_id| !call_id.is_empty())
         .cloned()
         .unwrap_or_else(|| fallback_id.to_string())
-}
-
-pub(crate) fn tool_call_accumulator_key(
-    stream_id: Option<&String>,
-    call_id: Option<&String>,
-    item_id: &str,
-) -> String {
-    stream_id
-        .filter(|stream_id| !stream_id.is_empty())
-        .cloned()
-        .or_else(|| {
-            call_id
-                .filter(|call_id| !call_id.is_empty())
-                .map(ToOwned::to_owned)
-        })
-        .or_else(|| (!item_id.is_empty()).then(|| item_id.to_string()))
-        .unwrap_or_else(|| "tool_call".to_string())
 }

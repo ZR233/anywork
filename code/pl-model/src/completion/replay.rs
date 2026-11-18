@@ -36,7 +36,7 @@ impl AssistantReplay {
             }
             Self::Chat { content } => {
                 use super::CompletionPresentationItemKind::Text;
-                use crate::trace::TraceTextChannel::{Commentary, Final};
+                use crate::completion::ModelTextChannel::{Commentary, Final};
                 let segments =
                     super::stream::chat_presentation::completed_chat_presentation(content, None)?;
                 Ok(segments.iter().any(|item| item.kind == Text(Commentary))

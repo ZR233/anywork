@@ -1,4 +1,4 @@
-//! A single completion facade backed by concrete, accessible provider clients.
+//! Model execution, physical session lifetime and Core adaptation.
 pub use pl_core::{context::ContextContent, model::ModelError};
 
 mod client;
@@ -11,6 +11,7 @@ pub use hosted::HostedTool;
 mod attachments;
 mod billing;
 mod invocation;
+mod invocation_context;
 pub(crate) mod openai;
 mod provider_error;
 mod responses_websocket;
@@ -24,8 +25,7 @@ pub(crate) mod wire_capture;
 pub use billing::model_attempt_billing;
 pub use client::{ModelRuntime, NativeCompactionCheckpoint, RemoteCompaction};
 pub use clock::InferenceClock;
-pub(crate) use invocation::InvocationRunner;
-pub use invocation::ModelInvocationContext;
+pub use invocation_context::ModelInvocationContext;
 pub(crate) use provider_error::provider_stream_failure;
 pub use session::ModelSession;
 
@@ -54,3 +54,7 @@ pub use thread_model::{
     model_failure_receipt, model_member_receipt, model_request_receipt, model_response_receipt,
     thread_tool_declaration, validate_attachment_content,
 };
+
+#[cfg(test)]
+#[path = "tests/http_lifecycle.rs"]
+mod http_lifecycle;

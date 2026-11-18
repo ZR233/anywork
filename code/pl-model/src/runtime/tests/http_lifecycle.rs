@@ -1,13 +1,12 @@
-use pl_model::trace::{AgentEvent, InMemoryTraceEventSink, TracePartKind};
-use pl_model::{
+use crate::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
+use pl_core::model::ModelProgressSender;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -154,8 +153,9 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
     for native in [false, true] {
         let (base, sender, server) = server().await;
         let runtime = runtime(base, native);
-        let (events, mut received) = tokio::sync::broadcast::channel(64);
-        let context = traced(ModelSession::default(), events);
+        let events = ModelProgressSender::detached(16 * 1024 * 1024);
+        let mut received = events.clone();
+        let context = observed(ModelSession::default(), events);
         let invocation = tokio::spawn(async move {
             if native {
                 let response = runtime
@@ -166,7 +166,7 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
                     .unwrap();
                 assert!(matches!(
                     response.item,
-                    pl_model::completion::ModelContextItem::Compaction { .. }
+                    crate::completion::ModelContextItem::Compaction { .. }
                 ));
             } else {
                 assert_eq!(
@@ -241,10 +241,11 @@ async fn session_close_cancels_an_active_http_body_and_seals_admission() {
     .unwrap();
     let runtime = runtime(fixture.base_url(), false);
     let session = ModelSession::default();
-    let (events, mut received) = tokio::sync::broadcast::channel(64);
+    let events = ModelProgressSender::detached(16 * 1024 * 1024);
+    let mut received = events.clone();
     let caller_cancellation = tokio_util::sync::CancellationToken::new();
     let context =
-        traced(session.clone(), events).with_cancellation(Some(caller_cancellation.clone()));
+        observed(session.clone(), events).with_cancellation(Some(caller_cancellation.clone()));
     let invocation = tokio::spawn({
         let runtime = runtime.clone();
         async move { runtime.complete(request(), context).await }
@@ -283,8 +284,8 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
     .unwrap();
     let runtime = runtime(fixture.base_url(), false);
     let mut input = request();
-    input.tools.push(pl_model::completion::ToolSpec::WebSearch {
-        options: pl_model::completion::HostedWebSearchOptions::OpenAi {
+    input.tools.push(crate::completion::ToolSpec::WebSearch {
+        options: crate::completion::HostedWebSearchOptions::OpenAi {
             external_web_access: false,
             indexed_web_access: None,
             filters: None,
@@ -293,10 +294,11 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
             search_content_types: None,
         },
     });
-    let (events, mut received) = tokio::sync::broadcast::channel(64);
+    let events = ModelProgressSender::detached(16 * 1024 * 1024);
+    let mut received = events.clone();
     let invocation = tokio::spawn(async move {
         runtime
-            .complete(input, traced(ModelSession::default(), events))
+            .complete(input, observed(ModelSession::default(), events))
             .await
     });
     wait_text(&mut received).await;
@@ -364,30 +366,19 @@ async fn stalled_authentication_error_body_keeps_status_and_finishes_within_15_s
     assert!(server.await.unwrap_err().is_cancelled());
 }
 
-fn traced(
-    session: ModelSession,
-    events: pl_model::trace::AgentEventSender,
-) -> ModelInvocationContext {
-    ModelInvocationContext::new(session)
-        .with_events(events)
-        .with_trace(
-            pl_model::completion::CompletionTraceContext {
-                session_id: "http-lifecycle".into(),
-                turn_id: "turn".into(),
-                inference_id: "call".into(),
-            },
-            Arc::new(InMemoryTraceEventSink::new("http-lifecycle", 0)),
-        )
+fn observed(session: ModelSession, progress: ModelProgressSender) -> ModelInvocationContext {
+    ModelInvocationContext::new(session).with_progress(Some(progress))
 }
 
-async fn wait_text(received: &mut pl_model::trace::AgentEventReceiver) {
+async fn wait_text(progress: &mut ModelProgressSender) {
     tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if let AgentEvent::TracePartDelta { event } = received.recv().await.unwrap()
-                && event.kind() == TracePartKind::Text
-            {
-                break;
-            }
+        while !progress
+            .latest()
+            .parts()
+            .iter()
+            .any(|part| !part.text().is_empty())
+        {
+            tokio::task::yield_now().await;
         }
     })
     .await

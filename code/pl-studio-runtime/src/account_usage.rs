@@ -564,7 +564,7 @@ pub(crate) async fn query_account_usage(
 }
 
 async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageState {
-    use pl_model::protocol::chatgpt::CodexUsageError;
+    use pl_model_auth::chatgpt::CodexUsageError;
     let Some(session) = &provider.chatgpt_session else {
         return AccountUsageState::missing_credential("ChatGPT sign-in is required");
     };

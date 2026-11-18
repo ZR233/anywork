@@ -77,10 +77,8 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         metadata: Default::default(),
     };
     let completion = review_completion(&binding.route.endpoint, binding.reasoning.clone(), message);
-    let (events, _) = tokio::sync::broadcast::channel(1);
     let inference_id = crate::studio::new_id("review");
     let invocation = ModelInvocationContext::new(Default::default())
-        .with_events(events)
         .with_prompt_cache_scope(pl_model::runtime::PromptCacheScope::auxiliary(
             &request.thread_id,
             "tool-review",
@@ -188,7 +186,7 @@ fn parse_reviewer_decision(content: &str) -> Result<ToolApprovalDecision, Review
 mod tests {
     use super::*;
     use crate::ChatGptAccountInfo;
-    use pl_model::protocol::chatgpt::{
+    use pl_model_auth::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
 

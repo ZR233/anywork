@@ -1,9 +1,9 @@
 use serde::Deserialize;
 
+use crate::completion::ModelTextChannel;
 use crate::completion::stream::event::{ModelStreamEvent, ToolInputDeltaPayload};
 use crate::runtime::openai::identity::responses_tool_identity;
 use crate::runtime::openai::usage::ProviderTokenUsage;
-use crate::trace::TraceTextChannel;
 
 mod decoder;
 mod item;
@@ -116,7 +116,7 @@ fn chat_choice_events(event: &SseStreamEvent) -> Option<Vec<ModelStreamEvent>> {
     {
         events.push(ModelStreamEvent::text_delta(
             DEFAULT_TEXT_ID.to_string(),
-            TraceTextChannel::Final,
+            ModelTextChannel::Final,
             content.clone(),
             None,
         ));
