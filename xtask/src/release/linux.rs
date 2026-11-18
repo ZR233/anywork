@@ -257,7 +257,7 @@ fn validate_bundle(bundle: &Path, version: &Version) -> Result<()> {
     )?;
     crate::cli_bundle::validate(
         &bundle.join("bin"),
-        "x86_64-unknown-linux-musl",
+        "x86_64-unknown-linux-gnu",
         &version.to_string(),
     )?;
     for executable in ["anywork", UPDATE_HELPER] {
@@ -582,11 +582,9 @@ mod tests {
             )?;
             let cli = bundle.join("bin");
             fs::create_dir_all(&cli)?;
-            // Static PIE has a dynamic section but no loader or shared-library imports.
             fs::write(root.join("cli.c"), "int main(void) { return 0; }\n")?;
             checked(
                 Command::new("cc")
-                    .arg("-static-pie")
                     .arg(root.join("cli.c"))
                     .arg("-o")
                     .arg(cli.join("anywk")),
@@ -594,7 +592,7 @@ mod tests {
             fs::write(
                 cli.join("build-info.json"),
                 serde_json::to_vec(&serde_json::json!({
-                    "version": "1.2.3", "gitCommit": null, "target": "x86_64-unknown-linux-musl",
+                    "version": "1.2.3", "gitCommit": null, "target": "x86_64-unknown-linux-gnu",
                     "buildEnvironment": "test",
                     "binarySha256": sha256_file(&cli.join("anywk"))?,
                     "resultSchemaVersions": [2], "eventSchemaVersions": [2]
@@ -642,7 +640,6 @@ mod tests {
     #[test]
     fn release_linux_stage_inspect_extract_verify_and_tampering() -> Result<()> {
         let fixture = Fixture::new()?;
-        assert!(!inspect_elfs(&fixture.bundle)?.contains(&fixture.bundle.join("bin/anywk")));
         fixture.stage()?;
         verify(&fixture.release, &fixture.version)?;
         let fields = checked(Command::new("dpkg-deb").arg("--field").arg(fixture.deb()))?;
@@ -732,16 +729,17 @@ mod tests {
     }
 
     #[test]
-    fn release_linux_rejects_dynamic_cli_declared_as_musl() -> Result<()> {
+    fn release_linux_rejects_cli_declared_as_musl() -> Result<()> {
         let fixture = Fixture::new()?;
-        let cli = fixture.bundle.join("bin/anywk");
-        fs::copy(fixture.bundle.join("anywork"), &cli)?;
         let metadata = fixture.bundle.join("bin/build-info.json");
         let mut info: serde_json::Value = serde_json::from_slice(&fs::read(&metadata)?)?;
-        info["binarySha256"] = sha256_file(&cli)?.into();
+        info["target"] = "x86_64-unknown-linux-musl".into();
         fs::write(metadata, serde_json::to_vec(&info)?)?;
         let error = fixture.stage().unwrap_err().to_string();
-        assert!(error.contains("must be statically linked"), "{error}");
+        assert!(
+            error.contains("bundled anywk build identity mismatch"),
+            "{error}"
+        );
         assert!(!fixture.release.exists());
         Ok(())
     }

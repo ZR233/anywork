@@ -578,12 +578,12 @@ jobs:
           LINUX_IMAGE_REF: ${{ needs.linux-environment.outputs.imageRef }}
         run: bash .github/scripts/linux-build-handoff.sh
 
-      - name: Restore Linux workspace dependencies
+      - name: Cache Linux release workspace dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
+          shared-key: linux-release-workspace-${{ needs.linux-environment.outputs.key }}
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: false
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
           cache-bin: false
       - name: Restore engineering-tool dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -594,15 +594,6 @@ jobs:
           cache-bin: false
           workspaces: |
             . -> target/xtask
-      - name: Cache Linux musl release dependencies for anywk
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: linux-anywk-${{ needs.linux-environment.outputs.key }}-x86_64-unknown-linux-musl
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-          cache-bin: false
-          workspaces: |
-            . -> target/x86_64-unknown-linux-musl
 
       - name: Build GUI with same-run prebuilt helpers
         run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-gui

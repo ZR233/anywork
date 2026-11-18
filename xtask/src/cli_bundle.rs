@@ -29,8 +29,8 @@ fn binary_name(target: &str) -> &'static str {
 
 fn host_target(os: &str, arch: &str) -> Result<&'static str> {
     match (os, arch) {
-        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
-        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-gnu"),
         ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
         ("windows", "aarch64") => Ok("aarch64-pc-windows-msvc"),
         ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
@@ -60,36 +60,21 @@ pub(crate) fn build_and_stage(workspace: &Path, destination: &Path, version: &st
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         });
     let mut command = Command::new("cargo");
-    command
-        .current_dir(workspace)
-        .args([
-            if target.ends_with("-linux-musl") {
-                "zigbuild"
-            } else {
-                "build"
-            },
-            "--release",
-            "--locked",
-            "-p",
-            "pl-studio-cli",
-            "--bin",
-            "anywk",
-            "--target",
-            target,
-        ])
-        .env("PL_BUILD_TARGET", target);
-    if let Some(commit) = &commit {
-        command.env("PL_GIT_COMMIT", commit);
-    } else {
-        command.env_remove("PL_GIT_COMMIT");
-    }
+    command.current_dir(workspace).args([
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "pl-studio-cli",
+        "--bin",
+        "anywk",
+    ]);
     pl_dev_support::process::run_checked(&mut command, "build bundled anywk")?;
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("target"));
     let binary = workspace
         .join(target_dir)
-        .join(target)
         .join("release")
         .join(binary_name(target));
     let output = Command::new(&binary).arg("--version").output()?;
@@ -160,28 +145,6 @@ pub(crate) fn validate(directory: &Path, target: &str, version: &str) -> Result<
         "bundled anywk digest mismatch"
     );
     crate::remote_helper::verify_target_image(&bytes, target)?;
-    if target.ends_with("-linux-musl") {
-        let output = Command::new("readelf")
-            .args(["--wide", "--program-headers", "--dynamic"])
-            .arg(&binary)
-            .output()
-            .context("inspect bundled anywk ELF linkage")?;
-        ensure!(
-            output.status.success(),
-            "readelf failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let linkage = String::from_utf8(output.stdout)?;
-        ensure!(
-            !linkage
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some("INTERP"))
-                && !linkage.contains("(NEEDED)"),
-            "bundled musl anywk must be statically linked: {}",
-            binary.display()
-        );
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -198,10 +161,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_targets_use_musl_on_linux_and_native_targets_elsewhere() -> Result<()> {
+    fn cli_targets_match_native_desktop_targets() -> Result<()> {
         for (os, arch, target) in [
-            ("linux", "x86_64", "x86_64-unknown-linux-musl"),
-            ("linux", "aarch64", "aarch64-unknown-linux-musl"),
+            ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
+            ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
             ("windows", "x86_64", "x86_64-pc-windows-msvc"),
             ("windows", "aarch64", "aarch64-pc-windows-msvc"),
             ("macos", "x86_64", "x86_64-apple-darwin"),
