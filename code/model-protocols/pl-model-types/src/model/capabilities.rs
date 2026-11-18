@@ -208,10 +208,17 @@ pub struct ReasoningInterleaved {
     pub field: ReasoningInterleavedField,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReasoningInterleavedField {
-    Reasoning,
-    ReasoningContent,
-    ReasoningDetails,
+/// Provider-selected representation for interleaved reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReasoningInterleavedField(crate::ProtocolId);
+
+impl ReasoningInterleavedField {
+    pub const fn from_static(field: &'static str) -> Self {
+        Self(crate::ProtocolId::from_static(field))
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
 }

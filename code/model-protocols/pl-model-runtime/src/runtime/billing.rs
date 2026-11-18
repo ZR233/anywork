@@ -381,7 +381,7 @@ mod tests {
 
     fn binding() -> serde_json::Value {
         json!({
-            "accountId":"account", "modelId":"frozen-model", "protocol":crate::protocol::ProtocolKind::OpenAi,
+            "accountId":"account", "modelId":"frozen-model", "protocol":crate::protocol::ProtocolId::from_static("open_ai"),
             "wireApi":crate::protocol::WireApi::Responses, "isolation":"frozen-route", "purpose":"turn",
             "contextWindow": 16000
         })
@@ -511,7 +511,10 @@ mod tests {
         for (field, conflicting) in [
             ("accountId", json!("other-account")),
             ("modelId", json!("other-model")),
-            ("protocol", json!(crate::protocol::ProtocolKind::DeepSeek)),
+            (
+                "protocol",
+                json!(crate::protocol::ProtocolId::from_static("deep_seek")),
+            ),
             ("wireApi", json!(crate::protocol::WireApi::ChatCompletions)),
             ("isolation", json!("other-route")),
             ("purpose", json!("title")),

@@ -114,7 +114,6 @@ fn build_compaction_body(
     completion.validate_against(&model_info.model_id, &effective_capabilities)?;
     let instruction_role = provider
         .endpoint()
-        .protocol
         .instruction_wire_role(WireApi::Responses);
     let OpenAiRequestBody::Responses(mut body) = openai::build_request(
         WireApi::Responses,

@@ -13,7 +13,6 @@ tokio-util = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 base64 = { workspace = true }
 serde = { workspace = true }
-pl-model-types = { workspace = true }
 pl-model-openai-wire = { workspace = true }
 
 [dev-dependencies]

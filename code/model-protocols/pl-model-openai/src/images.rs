@@ -24,7 +24,7 @@ use futures::StreamExt;
 use reqwest::Url;
 use serde::Deserialize;
 
-use pl_model_types::protocol::{ImageGenerationDialect, ProtocolEndpoint};
+use pl_model_openai_wire::protocol::{ImageGenerationDialect, ProtocolEndpoint};
 
 pub use pl_protocol::ProviderFailureKind;
 

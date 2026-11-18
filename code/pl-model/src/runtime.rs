@@ -1,15 +1,16 @@
 //! Product model assembly over the shared invocation runtime.
-use crate::{
-    Result,
-    config::ResolvedModelRoute,
-    model::ModelInfo,
-    protocol::{FileUploadCapability, ProtocolEndpoint},
-};
+use crate::{Result, config::ResolvedModelRoute, model::ModelInfo, protocol::ProtocolEndpoint};
 pub use pl_model_runtime::runtime::*;
 
 /// Creates the runtime for the account and model selected by the product.
 pub fn from_route(route: &ResolvedModelRoute) -> Result<ModelRuntime> {
-    ModelRuntime::bind_route(route, upload_for(&route.endpoint))
+    let registry = crate::protocol::builtin_protocols();
+    let mut route = route.clone();
+    registry
+        .resolve(&route.endpoint.protocol)?
+        .bind(&mut route.endpoint, &mut route.model);
+    let upload = registry.file_upload(&route.endpoint.service_capabilities.files)?;
+    ModelRuntime::bind_route(route, upload)
 }
 
 /// Binds an explicit account endpoint and model to their protocol services.
@@ -18,15 +19,25 @@ pub fn new_with_account_id(
     endpoint: ProtocolEndpoint,
     model: ModelInfo,
 ) -> Result<ModelRuntime> {
-    let upload = upload_for(&endpoint);
-    ModelRuntime::bind(account_id, endpoint, model, upload)
+    new_with_registry(
+        account_id,
+        endpoint,
+        model,
+        crate::protocol::builtin_protocols(),
+    )
 }
 
-fn upload_for(endpoint: &ProtocolEndpoint) -> Option<pl_model_types::files::UploadFile> {
-    match endpoint.service_capabilities.files {
-        FileUploadCapability::None => None,
-        FileUploadCapability::DeepSeek => Some(pl_model_openai_deepseek::UPLOAD),
-    }
+pub fn new_with_registry(
+    account_id: impl Into<String>,
+    mut endpoint: ProtocolEndpoint,
+    mut model: ModelInfo,
+    registry: crate::protocol::ProtocolRegistry<'_>,
+) -> Result<ModelRuntime> {
+    registry
+        .resolve(&endpoint.protocol)?
+        .bind(&mut endpoint, &mut model);
+    let upload = registry.file_upload(&endpoint.service_capabilities.files)?;
+    ModelRuntime::bind(account_id, endpoint, model, upload)
 }
 
 /// Constructs the host-facing completion client using the selected protocol.

@@ -15,7 +15,7 @@ use crate::completion::{
     ResolvedAttachment,
 };
 use crate::model::{ModelInfo, ModelModality};
-use crate::protocol::{FileUploadCapability, ProtocolEndpoint};
+use crate::protocol::ProtocolEndpoint;
 
 pub(super) enum UploadState {
     Pending,
@@ -24,7 +24,7 @@ pub(super) enum UploadState {
 }
 
 pub(super) struct AttachmentBackend<'a> {
-    pub upload: Option<pl_model_types::files::UploadFile>,
+    pub upload: Option<&'static pl_model_openai_wire::files::FileUploadService>,
     pub endpoint: &'a ProtocolEndpoint,
     pub model: &'a ModelInfo,
     pub client: &'a reqwest::Client,
@@ -156,7 +156,7 @@ impl AttachmentBackend<'_> {
             }];
             if let Some(url) = remote_url {
                 sources.push(AttachmentRepresentation::RemoteUrl { url });
-            } else if self.endpoint.service_capabilities.files != FileUploadCapability::None
+            } else if self.upload.is_some()
                 && self.model.binding.transport.protocol == crate::protocol::WireApi::Responses
                 && let Some(id) = self.upload(attachment, &bytes).await?
             {
@@ -234,11 +234,16 @@ impl AttachmentBackend<'_> {
     }
 
     async fn upload(&self, input: &AttachmentInput, bytes: &[u8]) -> Result<Option<String>> {
+        let service = self.upload.ok_or_else(|| {
+            PureError::ConfigError(
+                "endpoint declares file upload without a protocol implementation".into(),
+            )
+        })?;
         let key = (
             self.fingerprint,
             format!(
                 "{}:{}",
-                self.endpoint.service_capabilities.files.policy_key(),
+                service.cache_revision,
                 hex::encode(Sha256::digest(bytes))
             ),
         );
@@ -252,12 +257,7 @@ impl AttachmentBackend<'_> {
             }
             cache.insert(key.clone(), UploadState::Pending);
         }
-        let upload = self.upload.ok_or_else(|| {
-            PureError::ConfigError(
-                "endpoint declares file upload without a protocol implementation".into(),
-            )
-        })?;
-        let uploaded = upload(pl_model_types::files::FileUploadRequest {
+        let uploaded = (service.upload)(pl_model_openai_wire::files::FileUploadRequest {
             client: self.client,
             endpoint: self.endpoint,
             model_headers: &self.model.binding.request.headers,

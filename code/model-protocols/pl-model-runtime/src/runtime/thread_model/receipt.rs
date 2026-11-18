@@ -2,7 +2,7 @@
 use crate::completion::{CompletionPresentationItemKind, CompletionPresentationPartKind};
 use crate::{
     completion::CompletionResponse,
-    protocol::{ProtocolKind, WireApi},
+    protocol::{ProtocolId, WireApi},
     runtime::ModelRuntime,
 };
 use pl_core::model::{
@@ -23,7 +23,7 @@ pub const REQUEST_RECEIPT_VERSION: u32 = 2;
 pub struct ModelCallBinding {
     pub account_id: String,
     pub model_id: String,
-    pub protocol: ProtocolKind,
+    pub protocol: ProtocolId,
     pub wire_api: WireApi,
     pub isolation: String,
     pub purpose: String,
@@ -50,9 +50,12 @@ pub struct ModelCallBinding {
 impl ModelCallBinding {
     /// Stable provenance for the selected account, vendor protocol, wire API and model.
     pub fn route_identity(&self) -> String {
+        let label = super::migration::historical_protocol_identity_label(&self.protocol)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("protocol-id:{}", self.protocol));
         crate::runtime::derive_prompt_cache_key(
             &self.isolation,
-            &format!("{}:{:?}", self.account_id, self.protocol),
+            &format!("{}:{label}", self.account_id),
             &self.model_id,
             self.wire_api,
         )
@@ -80,7 +83,7 @@ impl ModelCallBinding {
         Self {
             account_id: runtime.account_id().to_owned(),
             model_id: runtime.model().model_id.clone(),
-            protocol: runtime.endpoint().protocol,
+            protocol: runtime.endpoint().protocol.clone(),
             wire_api: runtime.model().binding.transport.protocol,
             isolation: crate::runtime::binding_cache_namespace(
                 runtime.account_id(),

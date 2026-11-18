@@ -2,7 +2,7 @@
 //! Only the selected credential owner supplies the bearer token and workspace.
 
 use futures::StreamExt;
-use pl_model_types::authorization::BearerCredential;
+use pl_model_openai_wire::authorization::BearerCredential;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,4 +1,4 @@
-use pl_model_types::discovery::ModelCatalogQueryError;
+use crate::discovery::ModelCatalogQueryError;
 pub fn query_transport_error(error: reqwest::Error) -> ModelCatalogQueryError {
     if error.is_timeout() {
         return ModelCatalogQueryError::Timeout;

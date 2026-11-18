@@ -160,15 +160,15 @@ mod cache_tests {
     use crate::model::ModelInfo;
     use crate::model::{ModelParameter, ModelTransportProfile, ParameterWire, WireAssignment};
     use crate::protocol::PromptCacheDialect;
-    use crate::protocol::ProtocolEndpoint;
+
     use crate::runtime::invocation_context::InvocationPurpose;
     use serde_json::json;
 
     fn runner(enabled: bool) -> ModelRuntime {
-        let mut endpoint = ProtocolEndpoint::compatible("cache", "http://127.0.0.1:1");
+        let mut endpoint =
+            pl_model_openai::endpoint::compatible_endpoint("cache", "http://127.0.0.1:1");
         if enabled {
-            endpoint.service_capabilities.prompt_cache.dialect =
-                PromptCacheDialect::OpenAiPromptCacheKey;
+            endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::ExplicitKey;
         }
         let mut model = ModelInfo::compatible("cache-model");
         model
@@ -280,7 +280,7 @@ mod chatgpt_tests {
     use super::*;
     use crate::completion::{Message, MessageContent, MessageRole, ToolCallKind};
     use crate::completion::{SystemPrompt, ToolSpec};
-    use crate::protocol::ProtocolEndpoint;
+
     use crate::runtime::invocation_context::InvocationPurpose;
     use pl_model_auth::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
@@ -324,15 +324,17 @@ mod chatgpt_tests {
             earliest_refresh_at: None,
             refresh_in_flight: false,
         };
-        let mut endpoint = ProtocolEndpoint::openai(None);
-        endpoint.authorization = Some(pl_model_types::authorization::EndpointAuthorization::new(
-            ChatGptSession::new(
-                &record,
-                Arc::new(NoCredentialIo),
-                temp.path().join("must-not-lock"),
-            )
-            .unwrap(),
-        ));
+        let mut endpoint = pl_model_openai::endpoint::endpoint(None);
+        endpoint.authorization = Some(
+            pl_model_openai_wire::authorization::EndpointAuthorization::new(
+                ChatGptSession::new(
+                    &record,
+                    Arc::new(NoCredentialIo),
+                    temp.path().join("must-not-lock"),
+                )
+                .unwrap(),
+            ),
+        );
         let mut info = crate::model::ModelInfo::compatible("fixture-model");
         info.binding.transport = crate::model::ModelTransportProfile::responses_http();
         info.binding.request = crate::model::ModelRequestProfile::responses();
@@ -675,14 +677,13 @@ mod chatgpt_tests {
         ] {
             let mut selected = request();
             // Test the opaque input path without introducing a second codec or network bypass.
-            selected
-                .input
-                .push(crate::completion::ModelContextItem::Responses {
-                    item: crate::completion::ResponsesContextItem {
-                        kind: crate::completion::ResponsesContextItemKind::Unknown,
-                        value,
-                    },
-                });
+            selected.input.push(
+                crate::completion::ResponsesContextItem {
+                    kind: crate::completion::ResponsesContextItemKind::Unknown,
+                    value,
+                }
+                .into(),
+            );
             assert!(
                 runner
                     .prepare_request_body(selected, None, &InvocationPurpose::Completion)
@@ -692,14 +693,13 @@ mod chatgpt_tests {
         let mut selected = request();
         let reasoning =
             json!({"type":"reasoning","id":"r","encrypted_content":"opaque","status":"completed"});
-        selected
-            .input
-            .push(crate::completion::ModelContextItem::Responses {
-                item: crate::completion::ResponsesContextItem {
-                    kind: crate::completion::ResponsesContextItemKind::Reasoning,
-                    value: reasoning.clone(),
-                },
-            });
+        selected.input.push(
+            crate::completion::ResponsesContextItem {
+                kind: crate::completion::ResponsesContextItemKind::Reasoning,
+                value: reasoning.clone(),
+            }
+            .into(),
+        );
         assert_eq!(body(&runner, selected)["input"][2], reasoning);
     }
 

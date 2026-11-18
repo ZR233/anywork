@@ -1571,7 +1571,7 @@ pub(crate) mod archive_tests {
             pricing_mode: Default::default(),
             role: crate::config::root_agent_route_id(),
             account_id: pl_model::config::AccountId::new("archive-fixture").unwrap(),
-            endpoint: pl_model::protocol::ProtocolEndpoint::compatible(
+            endpoint: pl_model::protocol::providers::openai::compatible_endpoint(
                 "archive fixture",
                 "http://127.0.0.1:0",
             ),

@@ -62,7 +62,6 @@ impl ChatRequestBody {
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
         let reasoning_fields =
             |message: &crate::completion::Message| -> Result<(Option<String>, Option<String>)> {
-                use crate::model::ReasoningInterleavedField;
                 let Some(content) = message
                     .reasoning_content
                     .as_ref()
@@ -74,15 +73,20 @@ impl ChatRequestBody {
                     .capabilities
                     .interleaved
                     .as_ref()
-                    .map(|capability| capability.field)
+                    .map(|capability| &capability.field)
                 {
-                    Some(ReasoningInterleavedField::ReasoningContent) => {
+                    Some(field) if *field == crate::model::reasoning_fields::REASONING_CONTENT => {
                         Ok((Some(content.clone()), None))
                     }
-                    Some(ReasoningInterleavedField::Reasoning) => Ok((None, Some(content.clone()))),
-                    Some(ReasoningInterleavedField::ReasoningDetails) => Err(protocol_error(
-                        "typed reasoning_details cannot be reconstructed from text reasoning history",
-                    )),
+                    Some(field) if *field == crate::model::reasoning_fields::REASONING => {
+                        Ok((None, Some(content.clone())))
+                    }
+                    Some(field) if *field == crate::model::reasoning_fields::REASONING_DETAILS => {
+                        Err(protocol_error(
+                            "typed reasoning_details cannot be reconstructed from text reasoning history",
+                        ))
+                    }
+                    Some(_) => Err(protocol_error("unsupported interleaved reasoning field")),
                     None => Ok((None, None)),
                 }
             };
@@ -114,7 +118,7 @@ impl ChatRequestBody {
                         "Chat Completions cannot consume remote compaction items",
                     ));
                 }
-                crate::completion::ModelContextItem::Responses { .. } => {
+                crate::completion::ModelContextItem::Native { .. } => {
                     return Err(protocol_error(
                         "Chat Completions cannot consume Responses native items",
                     ));

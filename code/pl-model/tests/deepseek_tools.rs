@@ -1,10 +1,7 @@
 use pl_model::config::{
     AccountCapabilitySelection, AccountConfig, AccountTemplateId, ModelCatalogId,
 };
-use pl_model::protocol::{
-    ProtocolEndpoint, ProtocolServiceCapabilities, StandaloneWebSearchDialect,
-    WebSearchServiceCapabilities,
-};
+use pl_model::protocol::{ProtocolServiceCapabilities, WebSearchServiceCapabilities};
 
 /// 公开配置解析的搜索能力门控：canonical preset 继承 DeepSeek 官方工具方言，非 canonical
 /// DeepSeek TemplateDefaults 仅撤销该 DeepSeek 方言，Explicit 声明仍可 opt-in。该撤销只针对
@@ -15,7 +12,7 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
     let capabilities = canonical.service_capabilities().unwrap();
     assert_eq!(
         capabilities.web_search.standalone,
-        Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
+        Some(pl_model::protocol::providers::deepseek::SEARCH_DIALECT)
     );
     assert!(!capabilities.web_search.hosted_responses);
 
@@ -27,7 +24,7 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
 
     custom.capabilities = AccountCapabilitySelection::Explicit(ProtocolServiceCapabilities {
         web_search: WebSearchServiceCapabilities {
-            standalone: Some(StandaloneWebSearchDialect::DeepSeekToolsApi),
+            standalone: Some(pl_model::protocol::providers::deepseek::SEARCH_DIALECT),
             ..WebSearchServiceCapabilities::default()
         },
         ..ProtocolServiceCapabilities::default()
@@ -35,11 +32,11 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
     let capabilities = custom.service_capabilities().unwrap();
     assert_eq!(
         capabilities.web_search.standalone,
-        Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
+        Some(pl_model::protocol::providers::deepseek::SEARCH_DIALECT)
     );
 
     let openai_custom = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some("https://ai.muxai.net".to_string())),
+        pl_model::protocol::providers::openai::endpoint(Some("https://ai.muxai.net".to_string())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
@@ -47,7 +44,7 @@ fn deepseek_tools_capability_gating_follows_canonical_preset_and_explicit_opt_in
     let capabilities = openai_custom.service_capabilities().unwrap();
     assert_eq!(
         capabilities.web_search.standalone,
-        Some(StandaloneWebSearchDialect::OpenAiSearchApi)
+        Some(pl_model::protocol::providers::openai::SEARCH_DIALECT)
     );
     assert_eq!(
         capabilities.prompt_cache.dialect,

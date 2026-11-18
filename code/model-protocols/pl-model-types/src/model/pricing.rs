@@ -24,7 +24,7 @@ pub struct TokenPriceTier {
 
 impl TokenPriceTier {
     /// A rate table applying to all request lengths.
-    pub fn flat(
+    pub const fn flat(
         input: f64,
         output: f64,
         cache_read: Option<f64>,

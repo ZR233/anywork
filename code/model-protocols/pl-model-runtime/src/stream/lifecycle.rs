@@ -271,8 +271,8 @@ impl StreamLifecycle {
             ModelStreamEvent::ToolCallCaller { item_id, caller } => {
                 vec![ModelStreamEvent::ToolCallCaller { item_id, caller }]
             }
-            ModelStreamEvent::ResponsesContextItem { item } => {
-                vec![ModelStreamEvent::ResponsesContextItem { item }]
+            ModelStreamEvent::NativeContext { payload } => {
+                vec![ModelStreamEvent::NativeContext { payload }]
             }
             ModelStreamEvent::PresentationItem { item, state } => {
                 vec![ModelStreamEvent::PresentationItem { item, state }]

@@ -1,17 +1,16 @@
 //! Xiaomi MiMo 内建模型目录（OpenAI-compatible Chat Completions）。
 
-use pl_model_types::model::capabilities::{
+use pl_model_openai_wire::model::capabilities::{
     ModelCapabilities, ModelInputCapability, ModelInputSource, ModelModality,
-    PromptCacheModelCapabilities, ReasoningInterleaved, ReasoningInterleavedField,
-    ToolCapabilities,
+    PromptCacheModelCapabilities, ReasoningInterleaved, ToolCapabilities,
 };
-use pl_model_types::model::family::{ModelFamily, ModelInstanceSpec};
-use pl_model_types::model::info::{
+use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
+use pl_model_openai_wire::model::info::{
     MaxTokensField, MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile,
     TruncationMode,
 };
-use pl_model_types::model::parameter::ModelParameter;
-use pl_model_types::model::pricing::{ModelPricing, TokenPriceTier};
+use pl_model_openai_wire::model::parameter::ModelParameter;
+use pl_model_openai_wire::model::pricing::{ModelPricing, TokenPriceTier};
 
 const MIMO_DEFAULT_MODEL_MODEL_IDS: &[&str] = &["mimo-v2.5-pro", "mimo-v2.5"];
 
@@ -53,9 +52,9 @@ fn mimo_vision_family() -> ModelFamily {
     mimo_family(
         "mimo-vision",
         mimo_vision_capabilities(),
-        pl_model_types::model::image_media_profiles(
+        pl_model_openai_wire::model::image_media_profiles(
             MediaWireFormat::ChatImageUrl,
-            pl_model_types::model::MediaSendOrder::DataUrlOnly,
+            pl_model_openai_wire::model::MediaSendOrder::DataUrlOnly,
         ),
     )
 }
@@ -64,7 +63,7 @@ fn mimo_vision_family() -> ModelFamily {
 fn mimo_family(
     id: &'static str,
     capabilities: ModelCapabilities,
-    media: Vec<pl_model_types::model::ModelMediaInputProfile>,
+    media: Vec<pl_model_openai_wire::model::ModelMediaInputProfile>,
 ) -> ModelFamily {
     ModelFamily {
         id,
@@ -74,8 +73,8 @@ fn mimo_family(
         parameters: vec![mimo_effort_parameter()],
         transport: ModelTransportProfile::chat_completions_http(),
         request_profile: ModelRequestProfile {
-            protocol: pl_model_types::model::ModelProtocolOptions::ChatCompletions(
-                pl_model_types::model::ChatRequestOptions {
+            protocol: pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(
+                pl_model_openai_wire::model::ChatRequestOptions {
                     max_tokens_field: MaxTokensField::MaxCompletionTokens,
                     ..Default::default()
                 },
@@ -99,7 +98,7 @@ fn mimo_effort_parameter() -> ModelParameter {
             .map(|value| {
                 (
                     value.to_string(),
-                    pl_model_types::model::wire_set_one("thinking.type", value),
+                    pl_model_openai_wire::model::wire_set_one("thinking.type", value),
                 )
             })
             .collect(),
@@ -133,7 +132,7 @@ fn mimo_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
             programmatic_tool_calling: false,
         },
         interleaved: Some(ReasoningInterleaved {
-            field: ReasoningInterleavedField::ReasoningContent,
+            field: pl_model_openai_wire::model::reasoning_fields::REASONING_CONTENT,
         }),
         prompt_cache: PromptCacheModelCapabilities::default(),
         instruction_snapshot_overrides: false,

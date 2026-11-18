@@ -70,7 +70,6 @@ impl ModelRuntime {
         let mut body = crate::runtime::openai::build_request(
             self.model.binding.transport.protocol,
             self.endpoint
-                .protocol
                 .instruction_wire_role(self.model.binding.transport.protocol),
             &request,
             &self.model,

@@ -1,10 +1,10 @@
 //! OpenAI Models API (`data`/`id`) and the currently deployed Codex rich `models`/`slug`
 //! declaration. Codex-only defaults belong to this boundary only.
-use pl_model_types::discovery::reasoning::ReasoningDeclaration;
-use pl_model_types::discovery::{
-    Capabilities, DiscoveryDialect, ModelCatalogQueryError, Record, nullable, presentation_name,
+use pl_model_openai_wire::discovery::reasoning::ReasoningDeclaration;
+use pl_model_openai_wire::discovery::{
+    Capabilities, ModelCatalogQueryError, Record, nullable, presentation_name,
 };
-use pl_model_types::model::*;
+use pl_model_openai_wire::model::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -67,7 +67,7 @@ impl WireRecord {
         Ok(id.to_owned())
     }
 
-    fn into_record(self, dialect: DiscoveryDialect) -> Result<Record, ModelCatalogQueryError> {
+    fn into_record(self) -> Result<Record, ModelCatalogQueryError> {
         let id = self.identifier()?;
         Ok(Record {
             id,
@@ -89,16 +89,13 @@ impl WireRecord {
             binding: self.binding,
             capabilities: self.capabilities,
             pricing: None,
-            unknown_default_input: Some(dialect.unknown_input_modalities()),
+            unknown_default_input: Some(super::adapter::CATALOG.unknown_input.to_vec()),
             thinking_base_body: false,
         })
     }
 }
 
-pub fn records(
-    bytes: &[u8],
-    dialect: DiscoveryDialect,
-) -> Result<Vec<Record>, ModelCatalogQueryError> {
+pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
     let envelope: Envelope =
         serde_json::from_slice(bytes).map_err(|_| ModelCatalogQueryError::Protocol)?;
     if envelope.error.is_some() || envelope.success == Some(false) {
@@ -108,8 +105,5 @@ pub fn records(
         (Some(records), None) | (None, Some(records)) => records,
         _ => return Err(ModelCatalogQueryError::Protocol),
     };
-    records
-        .into_iter()
-        .map(|record| record.into_record(dialect))
-        .collect()
+    records.into_iter().map(WireRecord::into_record).collect()
 }

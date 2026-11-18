@@ -291,7 +291,6 @@ mod tests {
         use crate::{
             completion::{CompletionRequest, Message, MessageContent, MessageRole},
             model::{ModelInfo, ModelTransportProfile},
-            protocol::ProtocolEndpoint,
         };
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
         use std::future::{Future, poll_fn};
@@ -319,7 +318,7 @@ mod tests {
             .set_transport(ModelTransportProfile::responses_websocket());
         let runner = ModelRuntime::bind(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
             None,
         )
@@ -488,7 +487,6 @@ mod tests {
         use crate::{
             completion::{CompletionRequest, Message, MessageContent, MessageRole},
             model::{ModelInfo, ModelTransportProfile},
-            protocol::ProtocolEndpoint,
         };
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
         use std::{
@@ -520,7 +518,7 @@ mod tests {
             .set_transport(ModelTransportProfile::responses_http());
         let runner = ModelRuntime::bind(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
             None,
         )

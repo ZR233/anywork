@@ -4053,7 +4053,6 @@ dependencies = [
  "pl-model-openai-wire",
  "pl-model-openai-xai",
  "pl-model-runtime",
- "pl-model-types",
  "pl-protocol",
  "pl-provider-fixture",
  "pretty_assertions",
@@ -4105,7 +4104,6 @@ dependencies = [
  "pl-model-auth",
  "pl-model-openai-wire",
  "pl-model-runtime",
- "pl-model-types",
  "pl-protocol",
  "pl-tool-search",
  "pretty_assertions",
@@ -4127,7 +4125,6 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
- "pl-model-types",
  "pl-protocol",
  "reqwest",
  "serde",
@@ -4144,7 +4141,6 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
- "pl-model-types",
  "serde_json",
  "tokio",
 ]
@@ -4156,7 +4152,6 @@ dependencies = [
  "clap",
  "pl-model-openai-wire",
  "pl-model-runtime",
- "pl-model-types",
  "tokio",
 ]
 
@@ -4164,17 +4159,23 @@ dependencies = [
 name = "pl-model-openai-wire"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "futures",
  "hyper",
+ "pl-agent-tool",
+ "pl-core",
  "pl-model-types",
  "pl-protocol",
  "pretty_assertions",
  "reqwest",
+ "schemars 1.2.3",
  "serde",
  "serde_json",
  "sse-stream 0.3.0",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
@@ -4182,8 +4183,8 @@ name = "pl-model-openai-xai"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "pl-model-openai-wire",
  "pl-model-runtime",
- "pl-model-types",
  "serde",
  "serde_json",
  "tokio",
@@ -4201,8 +4202,8 @@ dependencies = [
  "pl-agent-tool",
  "pl-core",
  "pl-model-auth",
+ "pl-model-openai",
  "pl-model-openai-wire",
- "pl-model-types",
  "pl-protocol",
  "pl-provider-fixture",
  "pretty_assertions",
@@ -4222,8 +4223,6 @@ dependencies = [
 name = "pl-model-types"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
- "pl-agent-tool",
  "pl-core",
  "pl-protocol",
  "reqwest",

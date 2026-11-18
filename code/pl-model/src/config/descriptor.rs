@@ -33,7 +33,7 @@ pub struct AccountTemplateDescriptor {
     pub base_url: String,
     pub credential: CredentialDescriptorDto,
     pub model_catalog_id: String,
-    /// 模板默认的厂商协议选择；与 `ProtocolKind` 的 wire 值一致，不从模板 ID/URL 推断。
+    /// 模板默认的厂商协议选择；与 `ProtocolId` 的 wire 值一致，不从模板 ID/URL 推断。
     pub protocol: String,
     pub default_billing_kind: BillingKind,
     pub supports_model_discovery: bool,

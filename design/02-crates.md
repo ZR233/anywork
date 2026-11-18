@@ -49,9 +49,9 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-lifecycle` | 弱作用域能力、父子资源归属、同步解绑、异步构造接管、关闭回执与失败原实例重试；不拥有业务数据或业务关闭顺序 |
 | `pl-core` | 上下文、模型与会话线程的通用契约，Anywork 工具上下文与结果特化、注册/冻结/授权/退休治理，内存 Thread owner、完整 Current 与有界 effect window；产品 History、Work/Single 分组和 GUI 读取归 Studio |
 | `pl-model` | 账号配置、有效模型目录、正式路由与协议装配 |
-| `pl-model-types` | 规范请求、响应、流事件、模型元数据和端点能力 |
+| `pl-model-types` | 通用消息、流事件、模型元数据和开放协议标识 |
 | `pl-model-runtime` | Core 会话适配、请求执行、连接和续接、重试、取消、附件缓存与计量 |
-| `pl-model-openai-wire` | Chat Completions 与 Responses 的共享编解码和 HTTP 工具 |
+| `pl-model-openai-wire` | Chat Completions 与 Responses 的模型绑定、共享编解码和 HTTP 工具 |
 | `code/model-protocols/` 中的厂商 crate | 目录解释、内置模型声明与服务实现，派生协议组合共享 wire |
 | `pl-model-auth` | 模型账号认证协议、身份值对象与凭据刷新会话；存储由宿主注入，不拥有产品登录操作、配置提交或模型执行 |
 | `pl-acp` | 外部智能体的 ACP 协商、认证与业务会话协议，类型化请求、有序更新及错误定义；不持有产品业务状态或操作系统进程 |

@@ -1182,7 +1182,6 @@ mod tests {
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
         model::{ModelInfo, ModelTransportProfile},
-        protocol::ProtocolEndpoint,
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     use serde_json::json;
@@ -1256,7 +1255,7 @@ mod tests {
             config.models.accounts.insert(
                 AccountId::new(id)?,
                 AccountConfig::from_explicit_models(
-                    ProtocolEndpoint::compatible(id, endpoint),
+                    pl_model::protocol::providers::openai::compatible_endpoint(id, endpoint),
                     vec![model],
                 ),
             );

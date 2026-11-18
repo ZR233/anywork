@@ -18,10 +18,11 @@ metadata:
 文档、组件 API、目标平台及错误/取消契约。不能复用时先调研并取得用户对自研范围的明确选择，
 不默认新增框架、wrapper、fallback 或 SDK。
 
-模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。`ProtocolKind` 决定受信指令角色和
-目录方言，`WireApi` 选择共享 Chat/Responses 编解码，真实厂商差异落在 typed parser、模型绑定
-及服务能力。把厂商目录、服务和模型声明放在 `code/model-protocols/` 下对应的协议 crate。
-通用兼容端点用 OpenAI crate，端点能力独立声明。
+模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。`ProtocolId` 是开放的稳定标识，
+产品通过静态 `ProtocolRegistry` 选择厂商 `Adapter`。派生协议在自己的 crate 声明端点默认值、
+目录解析与归一化策略、指令角色、原生请求选项及服务。新增派生协议时在产品装配注册，
+共享类型与执行器只消费已冻结的通用契约。Chat Completions 和 Responses 的线协议类型由
+`pl-model-openai-wire` 持有。通用兼容端点用 OpenAI crate，端点能力独立声明。
 异步重试、取消、连接、continuation、流和计量由唯一执行流程拥有；不使用 async_trait 或
 隐藏 Future 的 Send。普通完成与原生压缩仅携带各自的调用级用途材料。
 `pl-model-auth::chatgpt` 持有 OAuth/OIDC、身份类型和刷新会话；OpenAI 协议持有 Codex wire 和配额查询。
@@ -37,7 +38,8 @@ Responses 兼容不自动意味着支持这些能力；自定义地址的服务�
 1. **账号模板**：在唯一模板目录声明默认 endpoint、厂商协议、凭据提示、模型目录和推荐选择。
    现有模板可重复创建账号，账号名默认取模板展示名，账号 ID 只分配一次；不增加第二套 GUI 默认值。
 2. **模型定义与绑定**：定义元数据、能力和参数声明；绑定 wire API、连接矩阵、请求/媒体编码、
-   参数 wire 与价格。未知值保持未知，不从模型名、URL 或厂商名称猜测能力。
+   参数 wire 与价格。内置目录用 Rust 类型声明，共用家族预设。较多模型放在 `models/`，每个模型一个模块。
+   未知值保持未知，不从模型名、URL 或厂商名称猜测能力。
 3. **目录解析**：按各家官方接口解释 envelope、字段、单位与明确/缺失/null/空集合。
    OpenAI/Codex 富声明不自动适用于 DeepSeek 或 xAI；无公开列表接口的模板保留明确静态目录。
    保留路径前缀、鉴权、超时/大小限制、合法空名单和最后成功回退，不额外插入 /v1 或推理探针。

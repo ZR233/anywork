@@ -13,10 +13,12 @@
 //! 出现的 `pl-protocol` 类型，错误基础类型（`PureError`/`Result`）在根重导出，
 //! 消费方无需为命名完整签名而额外依赖 `pl-protocol`。
 
-pub use pl_model_types::completion;
+pub use pl_model_openai_wire::completion;
 pub mod config;
 pub mod model;
 pub mod protocol;
 pub mod runtime;
 
 pub use pl_protocol::{PureError, Result};
+
+mod selection;

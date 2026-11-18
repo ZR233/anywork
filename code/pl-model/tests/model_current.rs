@@ -55,7 +55,7 @@ fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
     ModelFactory::new(ThreadModel::new(
         pl_model::runtime::new_with_account_id(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", base_url),
+            pl_model::protocol::providers::openai::compatible_endpoint("fixture", base_url),
             model,
         )
         .unwrap(),
@@ -109,7 +109,7 @@ fn recovery_factory(
     hosted: Vec<HostedTool>,
 ) -> ModelFactory {
     recovery_factory_with_endpoint(
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         info,
         reasoning,
         hosted,

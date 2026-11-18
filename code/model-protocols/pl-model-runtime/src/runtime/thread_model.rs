@@ -405,7 +405,7 @@ mod contract_tests {
 
         let runtime = ModelRuntime::bind(
             "fixture",
-            crate::protocol::ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1/v1"),
+            pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
             crate::model::ModelInfo::compatible("contract-model"),
             None,
         )

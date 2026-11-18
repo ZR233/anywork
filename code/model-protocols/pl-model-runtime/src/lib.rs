@@ -1,7 +1,7 @@
 //! Shared model invocation and session execution.
 pub mod runtime;
 mod stream;
-use pl_model_types::{completion, config, model};
+use pl_model_openai_wire::{completion, config, model};
 mod protocol;
 pub use pl_protocol::{PureError, Result};
 

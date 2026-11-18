@@ -17,7 +17,6 @@ use pl_core::{
 };
 use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
     runtime::{ThreadModel, model_failure_receipt, model_member_receipt},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
@@ -44,7 +43,7 @@ async fn thread(fixture: &FixtureServer) -> ThreadHandle {
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model,
     )
     .unwrap();

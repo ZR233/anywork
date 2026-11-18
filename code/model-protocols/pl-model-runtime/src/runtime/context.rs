@@ -32,7 +32,7 @@ pub(super) fn validate(protocol: WireApi, items: &[ModelContextItem]) -> Result<
     }
     for item in items {
         match item {
-            ModelContextItem::Compaction { .. } | ModelContextItem::Responses { .. } => {
+            ModelContextItem::Compaction { .. } | ModelContextItem::Native { .. } => {
                 return Err(PureError::ConfigError(
                     "session history contains native Responses context (for example an encrypted \
                      compaction checkpoint) that a Chat Completions model cannot consume; use a \
@@ -75,7 +75,7 @@ pub(super) fn project_request(
             .interleaved
             .as_ref()
             .is_some_and(|capability| {
-                capability.field == crate::model::ReasoningInterleavedField::ReasoningDetails
+                capability.field == crate::model::reasoning_fields::REASONING_DETAILS
             })
         && request
             .input

@@ -1,6 +1,6 @@
 use clap::Parser;
+use pl_model_openai_wire::protocol::WireApi;
 use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
-use pl_model_types::protocol::{ProtocolEndpoint, WireApi};
 
 #[derive(Parser)]
 struct Args {
@@ -15,7 +15,7 @@ async fn main() -> ExampleResult {
     let args = Args::parse();
     let endpoint = args
         .target
-        .endpoint(|url| ProtocolEndpoint::zhipu(Some(url)))?;
+        .endpoint(|url| pl_model_openai_glm::endpoint::endpoint(Some(url)))?;
     live_example::run(endpoint, async move |endpoint| {
         args.command
             .execute(
@@ -28,9 +28,8 @@ async fn main() -> ExampleResult {
                         models.extend(pl_model_openai_glm::models::responses_models());
                         models
                     },
-                    parse: pl_model_openai_glm::generic_catalog::records,
+                    adapter: &pl_model_openai_glm::adapter::ADAPTER,
                     allow_tool_stream: true,
-                    upload: None,
                 },
             )
             .await

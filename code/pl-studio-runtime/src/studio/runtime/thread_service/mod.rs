@@ -99,7 +99,6 @@ mod s2_delete_recovery_tests {
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
         model::ModelInfo,
-        protocol::ProtocolEndpoint,
     };
     use std::path::Path;
 
@@ -124,7 +123,7 @@ mod s2_delete_recovery_tests {
         config.models.accounts.insert(
             account_id,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "S2 deletion fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),

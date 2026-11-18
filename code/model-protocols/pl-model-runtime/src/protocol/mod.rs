@@ -1,1 +1,1 @@
-pub use pl_model_types::protocol::*;
+pub use pl_model_openai_wire::protocol::*;

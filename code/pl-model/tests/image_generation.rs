@@ -8,10 +8,7 @@ use pl_model::{
         ImageGenerationBackend, ImageGenerationService, ModelCatalogId,
     },
     model::{ModelInfo, ModelModality, ModelTransportProfile, ModelType},
-    protocol::{
-        ImageGenerationCapabilities, ImageGenerationDialect, ProtocolEndpoint,
-        ProtocolServiceCapabilities,
-    },
+    protocol::{ImageGenerationCapabilities, ImageGenerationDialect, ProtocolServiceCapabilities},
 };
 use pretty_assertions::assert_eq;
 fn account_id(id: &str) -> AccountId {
@@ -38,7 +35,7 @@ fn image_output(slug: &str) -> ModelInfo {
 
 fn openai_account(url: &str) -> AccountConfig {
     AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some(url.into())),
+        pl_model::protocol::providers::openai::endpoint(Some(url.into())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
@@ -91,7 +88,7 @@ fn observed_models(slugs: &[&str]) -> Vec<ModelInfo> {
 #[test]
 fn template_keeps_image_generation_when_base_url_is_overridden() {
     let account = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some("https://proxy.example.com".into())),
+        pl_model::protocol::providers::openai::endpoint(Some("https://proxy.example.com".into())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
@@ -200,7 +197,7 @@ fn image_generation_models_come_from_the_effective_catalog() {
     // 手工模型与在线观察都算目录成员：命中前缀即进入库存，按字典序去重。
     let manual = ModelInfo::compatible("gpt-image-1");
     let mut account = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some("http://127.0.0.1:1".into())),
+        pl_model::protocol::providers::openai::endpoint(Some("http://127.0.0.1:1".into())),
         ModelCatalogId::new("openai").unwrap(),
         vec![manual],
     );
@@ -224,7 +221,7 @@ fn image_generation_models_come_from_the_effective_catalog() {
 
     // 未声明能力的 account 返回 None。
     let zhipu = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::zhipu(None),
+        pl_model::protocol::providers::glm::endpoint(None),
         ModelCatalogId::new("zhipu").unwrap(),
         Vec::new(),
     );
@@ -327,7 +324,7 @@ fn declared_but_unavailable_capability_is_reported_without_a_backend() {
     let undeclared = config(vec![(
         "zhipu",
         AccountConfig::from_bundled_catalog(
-            ProtocolEndpoint::zhipu(None),
+            pl_model::protocol::providers::glm::endpoint(None),
             ModelCatalogId::new("zhipu").unwrap(),
             Vec::new(),
         ),

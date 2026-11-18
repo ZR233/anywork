@@ -1,5 +1,5 @@
+use crate::discovery::ModelCatalogQueryError;
 use futures::StreamExt;
-use pl_model_types::discovery::ModelCatalogQueryError;
 use reqwest::{
     Url,
     header::{ETAG, HeaderMap, IF_NONE_MATCH},

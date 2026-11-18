@@ -1,5 +1,5 @@
 //! Model contracts and built-in inventory assembled from the selected protocol crates.
-pub use pl_model_types::model::*;
+pub use pl_model_openai_wire::model::*;
 
 pub fn bundled_model_definition(
     catalog: &str,
@@ -20,3 +20,5 @@ pub fn default_models() -> Result<Vec<ModelInfo>, ModelDefinitionError> {
     models.extend(pl_model_openai_glm::models::models());
     Ok(models)
 }
+
+pub use crate::selection::{bundled_selection_guide, bundled_selection_guides};

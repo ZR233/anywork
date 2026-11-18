@@ -10,7 +10,7 @@ use pl_model_openai_deepseek::tools::{
     CancellationToken, FetchRequest, FetchResponse, Observed, SearchRequest, ToolsClient,
     ToolsError, ToolsOptions,
 };
-use pl_model_types::protocol::ProtocolEndpoint;
+use pl_model_openai_wire::protocol::ProtocolEndpoint;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -200,7 +200,7 @@ fn reason(status: u16) -> &'static str {
 }
 
 fn endpoint(base_url: impl Into<String>, credential: Option<&str>) -> ProtocolEndpoint {
-    let mut endpoint = ProtocolEndpoint::deepseek(Some(base_url.into()));
+    let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(base_url.into()));
     endpoint.bearer_token = credential.map(str::to_string);
     endpoint
 }
@@ -313,15 +313,16 @@ fn deepseek_tools_derives_endpoints_from_provider_base_url() {
         "https://api.deepseek.com/v1",
         "https://api.deepseek.com/v1/",
     ] {
-        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
         assert_eq!(client.search_endpoint(), expected_search, "base url {base}");
         assert_eq!(client.fetch_endpoint(), expected_fetch, "base url {base}");
     }
 
-    let mut endpoint =
-        ProtocolEndpoint::deepseek(Some("https://proxy.example.com/proxy".to_string()));
+    let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(
+        "https://proxy.example.com/proxy".to_string(),
+    ));
     endpoint.bearer_token = Some("k".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     assert_eq!(
@@ -333,8 +334,9 @@ fn deepseek_tools_derives_endpoints_from_provider_base_url() {
         "https://proxy.example.com/proxy/v1/tools/fetch"
     );
 
-    let mut endpoint =
-        ProtocolEndpoint::deepseek(Some("http://127.0.0.1:8080/proxy/v1".to_string()));
+    let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(
+        "http://127.0.0.1:8080/proxy/v1".to_string(),
+    ));
     endpoint.bearer_token = Some("k".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     assert_eq!(
@@ -357,7 +359,7 @@ fn deepseek_tools_rejects_anthropic_compatible_base_urls() {
         "https://proxy.example.com/proxy/anthropic",
         "http://127.0.0.1:8080/proxy/anthropic/v1",
     ] {
-        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let result = ToolsClient::new(&endpoint, ToolsOptions::default());
         match result {
@@ -384,7 +386,7 @@ fn deepseek_tools_rejects_invalid_base_urls() {
         "not a url",
         "https://",
     ] {
-        let mut endpoint = ProtocolEndpoint::deepseek(Some(base.to_string()));
+        let mut endpoint = pl_model_openai_deepseek::endpoint::endpoint(Some(base.to_string()));
         endpoint.bearer_token = Some("k".to_string());
         let result = ToolsClient::new(&endpoint, ToolsOptions::default());
         assert!(
@@ -401,7 +403,8 @@ fn deepseek_tools_rejects_invalid_base_urls() {
 /// `Debug` 输出不泄漏凭据，只展示解析出的端点。
 #[test]
 fn deepseek_tools_debug_does_not_leak_the_credential() {
-    let mut endpoint = ProtocolEndpoint::deepseek(Some("https://api.deepseek.com".to_string()));
+    let mut endpoint =
+        pl_model_openai_deepseek::endpoint::endpoint(Some("https://api.deepseek.com".to_string()));
     endpoint.bearer_token = Some("super-secret-token".to_string());
     let client = ToolsClient::new(&endpoint, ToolsOptions::default()).unwrap();
     let rendered = format!("{client:?}");

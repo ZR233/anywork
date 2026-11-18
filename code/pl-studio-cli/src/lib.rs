@@ -801,7 +801,6 @@ mod tests {
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
         model::{ModelInfo, ModelTransportProfile},
-        protocol::ProtocolEndpoint,
     };
 
     #[tokio::test]
@@ -821,7 +820,10 @@ mod tests {
             config.models.accounts.insert(
                 AccountId::new("fixture")?,
                 AccountConfig::from_explicit_models(
-                    ProtocolEndpoint::compatible("fixture", server.base_url()),
+                    pl_model::protocol::providers::openai::compatible_endpoint(
+                        "fixture",
+                        server.base_url(),
+                    ),
                     vec![model],
                 ),
             );

@@ -2,7 +2,7 @@
 use pl_model_openai::images::{
     ImageGenerationBackground, ImageGenerationRequest, ImagesClient, ImagesError,
 };
-use pl_model_types::protocol::ProtocolEndpoint;
+use pl_model_openai_wire::protocol::ProtocolEndpoint;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -108,7 +108,7 @@ fn http(status: u16, headers: &str, body: &str) -> String {
 }
 
 fn endpoint(url: &str, token: Option<&str>) -> ProtocolEndpoint {
-    let mut endpoint = ProtocolEndpoint::openai(Some(url.to_string()));
+    let mut endpoint = pl_model_openai::endpoint::endpoint(Some(url.to_string()));
     endpoint.bearer_token = token.map(str::to_owned);
     endpoint
 }

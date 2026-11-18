@@ -6,7 +6,7 @@ use crate::completion::{
 use crate::model::PricingMode;
 use crate::model::{ModelCapabilities, ModelInfo};
 use crate::protocol::{FileUploadCapability, ProtocolEndpoint, WireApi};
-use pl_model_types::files::UploadFile;
+use pl_model_openai_wire::files::FileUploadService;
 use pl_protocol::PureError;
 use pl_protocol::Result;
 use std::sync::Arc;
@@ -20,7 +20,7 @@ pub struct ModelRuntime {
     pub(super) model: ModelInfo,
     pub(super) clock: Arc<dyn super::InferenceClock>,
     pub(super) pricing_mode: PricingMode,
-    pub(super) upload: Option<UploadFile>,
+    pub(super) upload: Option<&'static FileUploadService>,
     context: crate::model::ModelContextResolution,
 }
 
@@ -30,18 +30,18 @@ impl ModelRuntime {
     /// # Errors
     /// Rejects invalid endpoint or model configuration.
     pub fn bind_route(
-        route: &crate::config::ResolvedModelRoute,
-        upload: Option<UploadFile>,
+        route: crate::config::ResolvedModelRoute,
+        upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         let runtime = Self::bind(
             route.account_id.as_str(),
-            route.endpoint.clone(),
-            route.model.clone(),
+            route.endpoint,
+            route.model,
             upload,
         )?
         .with_pricing_mode(route.pricing_mode);
         Ok(Self {
-            context: route.context.clone(),
+            context: route.context,
             ..runtime
         })
     }
@@ -53,9 +53,12 @@ impl ModelRuntime {
         account_id: impl Into<String>,
         endpoint: ProtocolEndpoint,
         model: ModelInfo,
-        upload: Option<UploadFile>,
+        upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
-        if endpoint.service_capabilities.files != FileUploadCapability::None && upload.is_none() {
+        if match upload {
+            Some(service) => service.id != endpoint.service_capabilities.files,
+            None => endpoint.service_capabilities.files != FileUploadCapability::NONE,
+        } {
             return Err(PureError::ConfigError(
                 "endpoint declares file upload without a protocol implementation".into(),
             ));

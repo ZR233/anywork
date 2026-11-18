@@ -113,8 +113,9 @@ pub(super) fn output_item_tool_completed(item: &Value) -> Option<Vec<ModelStream
 }
 
 pub(super) fn output_item_native_context(item: &Value) -> Option<ModelStreamEvent> {
-    ResponsesContextItem::from_wire(item.clone())
-        .map(|item| ModelStreamEvent::ResponsesContextItem { item })
+    ResponsesContextItem::from_wire(item.clone()).map(|item| ModelStreamEvent::NativeContext {
+        payload: item.to_payload(),
+    })
 }
 
 fn tool_caller_event(item: &Value, item_id: &str) -> Option<ModelStreamEvent> {

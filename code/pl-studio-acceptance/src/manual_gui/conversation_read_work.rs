@@ -8,7 +8,6 @@ use super::*;
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::protocol::ProtocolEndpoint;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     CHAT_BATCH_MAX_BYTES, CurrentFrame, ReadDemand, ThreadNotification, ThreadStatus,
@@ -559,7 +558,10 @@ fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
     config.models.accounts.insert(
         account_id.clone(),
         AccountConfig::from_explicit_models(
-            ProtocolEndpoint::compatible("conversation read fixture", base_url),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "conversation read fixture",
+                base_url,
+            ),
             vec![model],
         ),
     );

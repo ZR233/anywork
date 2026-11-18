@@ -7,7 +7,7 @@ use super::receipt::{
 use crate::runtime::PromptPrefixChangedReason;
 use crate::{
     completion::CompletionResponse,
-    protocol::{ProtocolKind, WireApi},
+    protocol::{ProtocolId, WireApi},
 };
 use pl_core::{
     context::ContextContent,
@@ -374,15 +374,15 @@ enum LegacyProtocolKind {
     OpenAiCompatible,
 }
 
-impl From<LegacyProtocolKind> for ProtocolKind {
+impl From<LegacyProtocolKind> for ProtocolId {
     fn from(kind: LegacyProtocolKind) -> Self {
         match kind {
-            LegacyProtocolKind::OpenAi => Self::OpenAi,
-            LegacyProtocolKind::DeepSeek => Self::DeepSeek,
-            LegacyProtocolKind::Zhipu => Self::Zhipu,
-            LegacyProtocolKind::MiMo => Self::MiMo,
-            LegacyProtocolKind::Xai => Self::Xai,
-            LegacyProtocolKind::OpenAiCompatible => Self::OpenAiCompatible,
+            LegacyProtocolKind::OpenAi => ProtocolId::from_static("open_ai"),
+            LegacyProtocolKind::DeepSeek => ProtocolId::from_static("deep_seek"),
+            LegacyProtocolKind::Zhipu => ProtocolId::from_static("zhipu"),
+            LegacyProtocolKind::MiMo => ProtocolId::from_static("mi_mo"),
+            LegacyProtocolKind::Xai => ProtocolId::from_static("xai"),
+            LegacyProtocolKind::OpenAiCompatible => ProtocolId::from_static("open_ai_compatible"),
         }
     }
 }
@@ -832,4 +832,18 @@ fn decode_frame_legacy(payload: &OpaquePayload) -> Result<AssistantFrame, ModelE
         ));
     }
     Ok(frame)
+}
+
+/// Frozen pre-ProtocolId hash inputs. New protocol IDs use the new namespace
+/// and never need an entry in this historical mapping.
+pub(super) fn historical_protocol_identity_label(id: &ProtocolId) -> Option<&'static str> {
+    match id.as_str() {
+        "open_ai" => Some("OpenAi"),
+        "deep_seek" => Some("DeepSeek"),
+        "zhipu" => Some("Zhipu"),
+        "mi_mo" => Some("MiMo"),
+        "xai" => Some("Xai"),
+        "open_ai_compatible" => Some("OpenAiCompatible"),
+        _ => None,
+    }
 }

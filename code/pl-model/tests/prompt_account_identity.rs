@@ -54,7 +54,10 @@ fn recorded(
 
 #[test]
 fn stable_account_id_drives_snapshot_and_hash_not_display_name() {
-    let endpoint = ProtocolEndpoint::compatible("Display A", "http://127.0.0.1:1");
+    let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Display A",
+        "http://127.0.0.1:1",
+    );
     let (metadata, first) = recorded("acc-a", &endpoint, "model");
     assert_eq!(
         first.account_id, "acc-a",
@@ -63,7 +66,10 @@ fn stable_account_id_drives_snapshot_and_hash_not_display_name() {
     assert!(!first.account_hash.is_empty());
 
     // 同一账号改显示名：诊断身份和 hash 不变，不产生新 generation。
-    let renamed = ProtocolEndpoint::compatible("Display B", "http://127.0.0.1:1");
+    let renamed = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Display B",
+        "http://127.0.0.1:1",
+    );
     assert!(
         prompt_diagnostics(&metadata, input("acc-a", &renamed, "model"))
             .expect("diagnostics encode")
@@ -86,7 +92,10 @@ fn stable_account_id_drives_snapshot_and_hash_not_display_name() {
 
 #[test]
 fn a_legacy_snapshot_without_a_stable_id_is_never_matched_by_its_old_display_name() {
-    let endpoint = ProtocolEndpoint::compatible("Display A", "http://127.0.0.1:1");
+    let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Display A",
+        "http://127.0.0.1:1",
+    );
     let (mut metadata, mut legacy) = recorded("acc-a", &endpoint, "model");
     // 旧快照只记录了 endpoint 显示名，没有真实账号 ID。
     legacy.account_id.clear();

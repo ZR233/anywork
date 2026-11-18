@@ -521,12 +521,12 @@ mod migration_tests {
     use pl_model::{
         config::ModelCatalogId,
         model::{ModelMetadataField, ModelObservation, ModelTransportProfile},
-        protocol::{ProtocolEndpoint, ProtocolKind, discovery::ModelCatalogQueryResult},
+        protocol::discovery::ModelCatalogQueryResult,
     };
 
     fn bundled_account() -> AccountConfig {
         AccountConfig::from_bundled_catalog(
-            ProtocolEndpoint::openai(None),
+            pl_model::protocol::providers::openai::endpoint(None),
             ModelCatalogId::new("openai").unwrap(),
             vec![],
         )
@@ -699,7 +699,7 @@ mod migration_tests {
     ) -> (AccountId, AccountConfig, String, Vec<u8>) {
         let id = AccountId::new("migration-instance").unwrap();
         let account = AccountConfig::from_bundled_catalog(
-            ProtocolEndpoint::openai(None),
+            pl_model::protocol::providers::openai::endpoint(None),
             ModelCatalogId::new("openai").unwrap(),
             vec![],
         );
@@ -878,7 +878,8 @@ mod migration_tests {
         assert!(!observation.cache.as_ref().unwrap().is_verified());
 
         let mut switched = config.clone();
-        switched.models.accounts.get_mut(&id).unwrap().protocol = ProtocolKind::DeepSeek;
+        switched.models.accounts.get_mut(&id).unwrap().protocol =
+            pl_model::protocol::providers::deepseek::ID;
         let second = reconcile(&paths, &switched, &first, 2).unwrap();
         let observation = second.get(&id).unwrap();
         assert_eq!(observation.generation, 2);
@@ -933,7 +934,7 @@ mod migration_tests {
 
         // 认领先落盘：中断后另一协议身份不会把同一份旧快照导入自己的目录。
         let mut switched = account.clone();
-        switched.protocol = ProtocolKind::DeepSeek;
+        switched.protocol = pl_model::protocol::providers::deepseek::ID;
         let other = ModelCatalogQuery::for_account(&switched).unwrap();
         assert!(
             import_legacy_cache(&paths, &id, &other, &switched)

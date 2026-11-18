@@ -1292,7 +1292,7 @@ mod storage_fault_tests {
                     role: crate::config::root_agent_route_id(),
                     account_id: pl_model::config::AccountId::new("reactivation-account")
                         .map_err(storage_error)?,
-                    endpoint: pl_model::protocol::ProtocolEndpoint::compatible(
+                    endpoint: pl_model::protocol::providers::openai::compatible_endpoint(
                         "storage fixture",
                         "http://127.0.0.1:0",
                     ),

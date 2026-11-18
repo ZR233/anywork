@@ -1,9 +1,9 @@
 //! Endpoint-owned model discovery, independent of inference/model selection.
 
-pub(crate) use pl_model_types::discovery::enrich_unknown_model_fallback;
-use pl_model_types::discovery::{DiscoveryDialect, models};
+pub(crate) use pl_model_openai_wire::discovery::enrich_unknown_model_fallback;
+use pl_model_openai_wire::{adapter::Adapter, discovery::models};
 
-use super::{ProtocolEndpoint, ProtocolKind};
+use super::{ProtocolEndpoint, ProtocolId};
 use crate::{
     config::{AccountConfig, AccountModelCatalogConfig},
     model::ModelInfo,
@@ -15,7 +15,7 @@ use std::{collections::HashMap, time::Duration};
 
 pub use pl_protocol::ProviderFailureKind;
 
-pub use pl_model_types::discovery::ModelCatalogQueryError;
+pub use pl_model_openai_wire::discovery::ModelCatalogQueryError;
 
 /// Only a successful, same-query observation may be used as a conditional request or metadata source.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +47,7 @@ pub struct ModelCatalogQuery {
     /// 上一版查询身份，仅用于配置迁移定位旧缓存文件。
     legacy_v1_identity: String,
     defaults: Vec<ModelInfo>,
+    adapter: &'static Adapter,
     discovery: crate::config::ModelCatalogDiscovery,
 }
 
@@ -64,26 +65,24 @@ impl ModelCatalogQuery {
     /// # Errors
     /// Unsupported source/adapter, malformed URL/header or bundled packaging failure.
     pub fn for_account(account: &AccountConfig) -> Result<Self, ModelCatalogQueryError> {
+        Self::for_account_with_registry(account, super::builtin_protocols())
+    }
+
+    pub fn for_account_with_registry(
+        account: &AccountConfig,
+        registry: super::ProtocolRegistry<'_>,
+    ) -> Result<Self, ModelCatalogQueryError> {
         let AccountModelCatalogConfig::Bundled { catalog, .. } = &account.catalog else {
             return Err(ModelCatalogQueryError::Unsupported);
         };
-        let Some(discovery) = account
-            .discovery_profile()
-            .map_err(|_| ModelCatalogQueryError::Configuration)?
-        else {
-            return Err(ModelCatalogQueryError::Unsupported);
-        };
-        let defaults = match crate::model::bundled_model_definition(catalog.as_str()) {
-            Ok(definition) => definition.models,
-            Err(crate::model::ModelDefinitionError::Unsupported) => {
-                crate::config::builtin_model_catalog(catalog)
-                    .map_err(|_| ModelCatalogQueryError::Configuration)?
-                    .models
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let bundled = crate::config::builtin_model_catalog(catalog)
+            .map_err(|_| ModelCatalogQueryError::Configuration)?;
+        let discovery = bundled
+            .discovery
+            .ok_or(ModelCatalogQueryError::Unsupported)?;
+        let defaults = bundled.models;
         let endpoint = account
-            .to_endpoint()
+            .to_endpoint_with_registry(registry)
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
         let mut url =
             Url::parse(&endpoint.base_url).map_err(|_| ModelCatalogQueryError::Configuration)?;
@@ -116,7 +115,7 @@ impl ModelCatalogQuery {
         // 不能被复用。
         let identity = query_identity(
             b"model-catalog-query-v2",
-            Some(endpoint.protocol),
+            Some(&endpoint.protocol),
             catalog.as_str(),
             discovery_transport_id(&discovery.transport),
             url.as_str(),
@@ -138,7 +137,11 @@ impl ModelCatalogQuery {
             url.as_str(),
             &headers,
         );
+        let adapter = registry
+            .resolve(&endpoint.protocol)
+            .map_err(|_| ModelCatalogQueryError::Unsupported)?;
         Ok(Self {
+            adapter,
             endpoint,
             url,
             identity,
@@ -227,23 +230,11 @@ impl ModelCatalogQuery {
                 });
             }
         };
-        let dialect = DiscoveryDialect::of(self.endpoint.protocol);
-        let records = match self.endpoint.protocol {
-            ProtocolKind::OpenAi => pl_model_openai::openai_catalog::records(&bytes, dialect),
-            ProtocolKind::OpenAiCompatible => {
-                pl_model_openai::generic_catalog::records(&bytes, dialect)
-            }
-            ProtocolKind::Zhipu => pl_model_openai_glm::generic_catalog::records(&bytes, dialect),
-            ProtocolKind::MiMo => pl_model_openai_mimo::generic_catalog::records(&bytes, dialect),
-            ProtocolKind::DeepSeek => {
-                pl_model_openai_deepseek::deepseek_catalog::records(&bytes, dialect)
-            }
-            ProtocolKind::Xai => pl_model_openai_xai::xai_catalog::records(&bytes, dialect),
-        }?;
+        let records = (self.adapter.parse_catalog)(&bytes)?;
         let models = models(
             records,
             &self.discovery,
-            dialect,
+            self.adapter.discovery,
             previous.map(|p| p.models.as_slice()),
             &self.defaults,
         )?;
@@ -255,12 +246,12 @@ impl ModelCatalogQuery {
     }
 }
 
-pub(crate) use pl_model_types::discovery::valid_discovery_transport;
+pub(crate) use pl_model_openai_wire::discovery::valid_discovery_transport;
 
 /// Length-prefixed canonical query identity; vendor protocol is part of the current version.
 fn query_identity(
     magic: &[u8],
-    protocol: Option<ProtocolKind>,
+    protocol: Option<&ProtocolId>,
     catalog: &str,
     discovery_transport: &str,
     url: &str,

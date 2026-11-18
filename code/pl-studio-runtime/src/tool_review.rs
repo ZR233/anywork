@@ -226,7 +226,7 @@ mod tests {
             earliest_refresh_at: None,
             refresh_in_flight: false,
         };
-        let mut endpoint = ProtocolEndpoint::openai(None);
+        let mut endpoint = pl_model::protocol::providers::openai::endpoint(None);
         let reasoning = Some(ReasoningConfig {
             effort: Some("low".into()),
             summary: Some(ReasoningSummary::Enabled),

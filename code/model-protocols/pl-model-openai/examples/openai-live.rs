@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use pl_model_openai::{generic_catalog, images, openai_catalog, search};
+use pl_model_openai::{images, search};
+use pl_model_openai_wire::protocol::{ImageGenerationCapabilities, WireApi};
 use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
-use pl_model_types::protocol::{ImageGenerationCapabilities, ProtocolEndpoint, WireApi};
 use pl_tool_search::tools::web_search::{SearchCommands, SearchQuery};
 
 #[derive(Parser)]
@@ -44,9 +44,9 @@ async fn main() -> ExampleResult {
     let args = Args::parse();
     let endpoint = args.target.endpoint(|url| {
         if args.compatible {
-            ProtocolEndpoint::compatible("manual compatible endpoint", url)
+            pl_model_openai::endpoint::compatible_endpoint("manual compatible endpoint", url)
         } else {
-            ProtocolEndpoint::openai(Some(url))
+            pl_model_openai::endpoint::endpoint(Some(url))
         }
     })?;
     live_example::run(endpoint, async move |mut endpoint| {
@@ -67,15 +67,12 @@ async fn main() -> ExampleResult {
                             } else {
                                 pl_model_openai::bundled_definition()?.models
                             },
-                            parse: |bytes: &[u8], dialect| {
-                                if args.compatible {
-                                    generic_catalog::records(bytes, dialect)
-                                } else {
-                                    openai_catalog::records(bytes, dialect)
-                                }
+                            adapter: if args.compatible {
+                                &pl_model_openai::adapter::COMPATIBLE_ADAPTER
+                            } else {
+                                &pl_model_openai::adapter::ADAPTER
                             },
                             allow_tool_stream: false,
-                            upload: None,
                         },
                     )
                     .await?;

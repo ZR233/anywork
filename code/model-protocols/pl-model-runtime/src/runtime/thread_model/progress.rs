@@ -263,7 +263,7 @@ impl ProgressProjection {
             ModelStreamEvent::ResponseStarted { .. }
             | ModelStreamEvent::ResponseModelObserved { .. }
             | ModelStreamEvent::ToolCallCaller { .. }
-            | ModelStreamEvent::ResponsesContextItem { .. }
+            | ModelStreamEvent::NativeContext { .. }
             | ModelStreamEvent::Replay(_)
             | ModelStreamEvent::WebSearchStarted { .. }
             | ModelStreamEvent::WebSearchCompleted { .. } => {}

@@ -1,6 +1,6 @@
 use clap::Parser;
+use pl_model_openai_wire::protocol::WireApi;
 use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
-use pl_model_types::protocol::{ProtocolEndpoint, ProtocolKind, WireApi};
 
 #[derive(Parser)]
 struct Args {
@@ -13,9 +13,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> ExampleResult {
     let args = Args::parse();
-    let endpoint = args.target.endpoint(|url| {
-        ProtocolEndpoint::compatible("MiMo", url).with_protocol(ProtocolKind::MiMo)
-    })?;
+    let endpoint = args
+        .target
+        .endpoint(|url| pl_model_openai_mimo::endpoint::endpoint("MiMo", url))?;
     live_example::run(endpoint, async move |endpoint| {
         args.command
             .execute(
@@ -24,9 +24,8 @@ async fn main() -> ExampleResult {
                     default_wire: Wire::Chat,
                     supported: &[WireApi::ChatCompletions],
                     defaults: pl_model_openai_mimo::models::models(),
-                    parse: pl_model_openai_mimo::generic_catalog::records,
+                    adapter: &pl_model_openai_mimo::adapter::ADAPTER,
                     allow_tool_stream: false,
-                    upload: None,
                 },
             )
             .await

@@ -121,7 +121,7 @@ pub enum ToolCallKind {
     Custom,
 }
 
-/// Responses Programmatic Tool Calling 中嵌套工具调用的来源。
+/// 编程式调用中嵌套工具调用的来源。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolCallCaller {

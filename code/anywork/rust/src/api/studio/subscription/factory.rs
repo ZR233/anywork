@@ -57,7 +57,6 @@ pub(crate) mod tests {
             use pl_model::{
                 config::{AccountConfig, AccountId, ModelRouteConfig},
                 model::{ModelInfo, ModelTransportProfile},
-                protocol::ProtocolEndpoint,
             };
             use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
             use pl_studio_runtime::{
@@ -105,7 +104,10 @@ pub(crate) mod tests {
                 config.models.accounts.insert(
                     account_id.clone(),
                     AccountConfig::from_explicit_models(
-                        ProtocolEndpoint::compatible(ACCOUNT, provider.base_url()),
+                        pl_model::protocol::providers::openai::compatible_endpoint(
+                            ACCOUNT,
+                            provider.base_url(),
+                        ),
                         vec![model],
                     ),
                 );

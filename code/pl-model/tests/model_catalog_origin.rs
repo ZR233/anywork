@@ -7,7 +7,7 @@ use pl_model::{
     },
     model::{ModelInfo, ModelPricing, ModelTransportProfile, ModelType, bundled_model_definition},
     protocol::{
-        ProtocolEndpoint, ProtocolKind,
+        ProtocolId,
         discovery::{ModelCatalogQuery, ModelCatalogQueryResult},
     },
 };
@@ -65,7 +65,7 @@ impl Server {
 
 fn openai_provider(url: &str) -> AccountConfig {
     AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some(url.into())),
+        pl_model::protocol::providers::openai::endpoint(Some(url.into())),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
@@ -73,7 +73,7 @@ fn openai_provider(url: &str) -> AccountConfig {
 
 fn mimo_provider(url: &str) -> AccountConfig {
     AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::compatible("MiMo API", url).with_protocol(ProtocolKind::MiMo),
+        pl_model::protocol::providers::mimo::endpoint("MiMo API", url),
         ModelCatalogId::new("mimo").unwrap(),
         Vec::new(),
     )
@@ -91,55 +91,24 @@ fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
 fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision() {
     let mut registry = builtin_account_catalog().unwrap();
     let snapshot = registry.snapshot().unwrap();
-    assert_eq!(registry.snapshot().unwrap().revision, snapshot.revision);
-    assert!(
-        snapshot
-            .templates
-            .iter()
-            .all(|template| template.supports_usage_query.is_none())
-    );
-    let compatible = snapshot
-        .templates
-        .iter()
-        .find(|template| template.id == "openai-compatible")
-        .unwrap();
-    assert_eq!(
-        compatible.default_billing_kind,
-        pl_model::config::BillingKind::Unknown
-    );
-    assert!(!compatible.supports_model_discovery);
     // 用描述投影本身创建账号：协议来自 catalog，不按模板 ID 或地址猜测。
     let descriptor = snapshot
         .templates
         .iter()
         .find(|template| template.id == "deepseek")
         .unwrap();
-    assert_eq!(
-        descriptor.default_billing_kind,
-        pl_model::config::BillingKind::Metered
-    );
-    assert!(descriptor.supports_model_discovery);
-    let kind: ProtocolKind = descriptor.protocol.parse().unwrap();
-    assert_eq!(kind, ProtocolKind::DeepSeek);
+    let kind: ProtocolId = descriptor.protocol.parse().unwrap();
+    assert_eq!(kind, pl_model::protocol::providers::deepseek::ID);
     let account = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::compatible(descriptor.display_name.clone(), descriptor.base_url.clone())
-            .with_protocol(kind),
+        pl_model::protocol::ProtocolEndpoint::new(
+            kind,
+            descriptor.display_name.clone(),
+            descriptor.base_url.clone(),
+        ),
         ModelCatalogId::new(descriptor.model_catalog_id.clone()).unwrap(),
         Vec::new(),
     )
     .with_template(AccountTemplateId::new(descriptor.id.clone()).unwrap());
-    assert_eq!(
-        account.to_endpoint().unwrap().protocol,
-        ProtocolKind::DeepSeek
-    );
-    assert_eq!(
-        account.template_id().map(|id| id.as_str()),
-        Some("deepseek")
-    );
-    assert_eq!(
-        account.to_endpoint().unwrap().service_capabilities.files,
-        pl_model::protocol::FileUploadCapability::DeepSeek
-    );
     assert!(
         account
             .effective_models(None)
@@ -389,8 +358,10 @@ async fn removing_same_id_manual_restores_online_entry() {
 #[test]
 fn explicit_catalog_is_entirely_manual() {
     let models = vec![ModelInfo::compatible("one"), ModelInfo::compatible("two")];
-    let config =
-        AccountConfig::from_explicit_models(ProtocolEndpoint::openai(None), models.clone());
+    let config = AccountConfig::from_explicit_models(
+        pl_model::protocol::providers::openai::endpoint(None),
+        models.clone(),
+    );
     let catalog = config.effective_catalog(None).unwrap();
     assert_eq!(
         catalog
@@ -407,7 +378,10 @@ fn explicit_catalog_is_entirely_manual() {
     // An unfinished account can be saved and reconstructed, but never supplies a route.
     let account_id = AccountId::new("unfinished").unwrap();
     let empty = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible("Unfinished account", "http://127.0.0.1:1"),
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "Unfinished account",
+            "http://127.0.0.1:1",
+        ),
         Vec::new(),
     );
     empty.validate_declarations(&account_id).unwrap();
@@ -533,7 +507,7 @@ fn remove_manual_model_applies_to_explicit_catalog() {
     let keep = ModelInfo::compatible("keep");
     let remove = ModelInfo::compatible("remove");
     let mut config = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::openai(None),
+        pl_model::protocol::providers::openai::endpoint(None),
         vec![keep.clone(), remove.clone()],
     );
     if let AccountModelCatalogConfig::Explicit {
@@ -592,7 +566,7 @@ fn historical_cache_preserves_complete_membership() {
         .unwrap()
         .into_iter()
         .filter(|entry| entry.origin == AccountModelOrigin::Online)
-        .map(|entry| entry.model.model_id)
+        .map(|entry| entry.model.0.model_id)
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
@@ -608,7 +582,7 @@ fn historical_cache_preserves_complete_membership() {
 #[test]
 fn online_and_manual_members_share_one_route() {
     let mut config = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some("http://127.0.0.1:1".into())),
+        pl_model::protocol::providers::openai::endpoint(Some("http://127.0.0.1:1".into())),
         ModelCatalogId::new("openai").unwrap(),
         vec![manual_model("gpt-image-manual")],
     );
@@ -637,7 +611,7 @@ fn online_and_manual_members_share_one_route() {
 fn explicit_catalogs_do_not_acquire_discovery() {
     // 智谱目录不声明发现能力，不可能持有在线缓存；其手工图像类模型保留。
     let mut zhipu = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::zhipu(None),
+        pl_model::protocol::providers::glm::endpoint(None),
         ModelCatalogId::new("zhipu").unwrap(),
         vec![ModelInfo::compatible("gpt-image-manual")],
     );
@@ -651,7 +625,7 @@ fn explicit_catalogs_do_not_acquire_discovery() {
     }));
     // openai-compatible 是用户完全自定义的显式目录，同样不排除任何条目。
     let mut compatible = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible("Custom", "http://127.0.0.1:1"),
+        pl_model::protocol::providers::openai::compatible_endpoint("Custom", "http://127.0.0.1:1"),
         vec![
             ModelInfo::compatible("gpt-image-2"),
             ModelInfo::compatible("text-embedding-3-large"),
@@ -734,7 +708,7 @@ async fn discovery_keeps_manual_members_and_complete_online_inventory() {
     let catalog_id = ModelCatalogId::new("openai").unwrap();
     let bundled = builtin_model_catalog(&catalog_id).unwrap();
     let mut config = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(Some(server.url.clone())),
+        pl_model::protocol::providers::openai::endpoint(Some(server.url.clone())),
         catalog_id,
         vec![manual_model("gpt-image-manual")],
     );

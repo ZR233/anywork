@@ -85,8 +85,8 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 ### 协议栈分工与执行器单点所有权
 
-- `pl-model` 根据账号配置和 `ProtocolKind` 选择适配器，合成账号有效目录。端点能力控制文件、图像、托管工具和缓存。OpenAI 官方和通用自定义端点由 `pl-model-openai` 处理，自定义端点沿用显式配置能力和保守默认值。
-- GLM、DeepSeek、xAI 和 MiMo 各持有自己的目录解释和模型声明。它们组合 `pl-model-openai-wire` 中的共享 Chat Completions 或 Responses 编解码。HTTP/SSE 与 WebSocket 使用同一份 Responses 事件契约。
+- `pl-model` 通过静态 `ProtocolRegistry` 按开放的 `ProtocolId` 装配协议。账户保存稳定 ID，配置装配拒绝未注册的协议，历史回执独立读取原始 ID。端点能力控制文件、图像、托管工具和缓存。OpenAI 官方和通用自定义端点由同一 crate 提供独立装配，分别声明默认能力。
+- `pl-model-types` 只定义通用消息、元数据、流事件和身份。Chat Completions、Responses、其模型绑定及原生回放归 `pl-model-openai-wire`。Responses 原生上下文在内存中携带带格式与版本的 `OpaquePayload`，按现有 Responses 形状读写历史。派生协议各自定义目录解释、请求配置、指令角色和服务。HTTP/SSE 与 WebSocket 使用同一份 Responses 事件契约。
 - `pl-model-runtime` 持有冻结模型绑定和 HTTP 客户端。普通完成与原生压缩共用执行器、取消、恢复、续接和计量，文件上传由装配层注入对应实现。流累积器拥有规范事件；Core 的实时 progress、可靠成员交付和 Current 捕获消费同一次执行的观察结果。
 - SSE 增量扫描新到达的字节，兼容 LF、CRLF、CR 和跨网络分块的 UTF-8。取消或提前结束时，请求与未完成缓冲区随读取器释放。
 - `pl-model-auth` 持有 OAuth/OIDC、身份和刷新状态，运行时通过已绑定的凭据接口按请求获取令牌。OpenAI 协议持有 Codex 请求格式和订阅用量查询。API Key 协议示例可以独立运行。使用命令见 [协议示例](../code/model-protocols/README.md)。
@@ -105,6 +105,8 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 ### 工具下发与账号模板路由
 
 `pl-core` 负责冻结每步的工具计划（`ToolPlan`）并管理权限审批、并发调度与结果提交；`pl-model` 厂商适配边界负责落实原生的函数/自定义工具、编程式调用方（programmatic caller）、托管搜索（hosted search）、思考开关与工具流优化。启用厂商原生优化不得丢失其他已注册工具，且推理内容、调用方标识、不透明上下文与工具结果的配对关系在多轮对话、自动重试与冷恢复中必须保持完整。是否启用特定优化严格取决于模型与端点的显式能力声明，不根据 `model_id` 或 URL 字符串猜测。
+
+内置模型由对应协议 crate 用 Rust 类型声明。模型较多时用 `models/` 下独立模块保存型号差异，共享家族预设负责构造模型绑定和能力。账号模板从目录读取推荐模型，在线目录仍由供应商响应归一化。
 
 每个账号实例保存模板身份、端点覆盖项、凭据关联、自定义请求头、工具线协议策略、服务能力与模型目录绑定；具体使用哪个模型由角色路由（route）指定，账号自身不维护第二份默认模型。唯一有效模型目录由统一解析入口产出，每个目录成员均标记明确来源（内置默认 `bundled`、在线同步 `online`、用户手动添加 `manual`），不由外层投影或界面自行推导。
 
@@ -240,8 +242,8 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 | 厂商协议 / 模型系列 | 候选值域（`candidates`） | 字段写入规则（`set`） | 字段移除规则（`remove`） |
 | --- | --- | --- | --- |
-| OpenAI | 模型有效声明的候选集（内置源自 `model.json`，在线源自 API） | `reasoning.effort` = 选中值 | — |
-| DeepSeek | 模型有效声明的候选集（内置源自 `model.json`，在线源自 API） | `reasoning_effort` = 选中值（存在 `effort` 时固定注入 `thinking.type = enabled` 作为基础请求体） | — |
+| OpenAI | 模型有效声明的候选集（内置源自协议 crate 的 Rust 声明，在线源自 API） | `reasoning.effort` = 选中值 | — |
+| DeepSeek | 模型有效声明的候选集（内置源自协议 crate 的 Rust 声明，在线源自 API） | `reasoning_effort` = 选中值（存在 `effort` 时固定注入 `thinking.type = enabled` 作为基础请求体） | — |
 | 智谱通用模型 | `none` / `enabled` | `thinking.type` = 选中值 | — |
 | `GLM-5.2` | `none` / `high` / `max` | `high` / `max`：设置 `reasoning_effort` + `thinking.type = enabled` + `thinking.clear_thinking = false`；`none`：设置 `thinking.type = disabled` | `none` 时移除 `reasoning_effort` |
 | `GLM-5.3` / `GLM-5.3-Flash`（通用 Chat API） | `low` / `high` / `max` | 三档均设置 `reasoning_effort` + `thinking.type = enabled` + `thinking.clear_thinking = false` | — |

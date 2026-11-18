@@ -640,7 +640,7 @@ pub(crate) fn validate_user_agent_profile_id(profile_id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::DelegationMode;
-    use pl_model::{config::AccountConfig, model::ModelInfo, protocol::ProtocolEndpoint};
+    use pl_model::{config::AccountConfig, model::ModelInfo};
 
     #[test]
     fn automatic_profile_diagnostics_exclude_unused_native_routes() -> anyhow::Result<()> {
@@ -652,7 +652,10 @@ mod tests {
         let mut config = StudioConfig::default_config()?;
         config.models.accounts.clear();
         let mut account = AccountConfig::from_explicit_models(
-            ProtocolEndpoint::compatible("Disabled preset", "http://127.0.0.1:1"),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "Disabled preset",
+                "http://127.0.0.1:1",
+            ),
             vec![ModelInfo::compatible("disabled")],
         );
         account.set_model_enabled("disabled", false)?;

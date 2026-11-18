@@ -118,7 +118,7 @@ pub(crate) fn resolve_child_selection(
 pub(crate) fn validate_credential(
     route: &pl_model::config::ResolvedModelRoute,
 ) -> crate::Result<()> {
-    if route.endpoint.protocol != pl_model::protocol::ProtocolKind::OpenAiCompatible
+    if route.endpoint.protocol != pl_model::protocol::providers::openai::COMPATIBLE_ID
         && route.endpoint.authorization.is_none()
         && route
             .endpoint
@@ -154,10 +154,7 @@ pub(crate) fn preference_prompt(selection: DelegationSettings) -> Option<&'stati
 mod tests {
     use super::*;
     use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
-    use pl_model::{
-        config::{AccountConfig, AccountId, ModelRouteConfig, ReasoningEffort},
-        protocol::ProtocolEndpoint,
-    };
+    use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig, ReasoningEffort};
     use pl_model_auth::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
@@ -295,7 +292,10 @@ mod tests {
         config.models.accounts.insert(
             selector.account_id.clone(),
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible("Local admission fixture", "http://127.0.0.1:1"),
+                pl_model::protocol::providers::openai::compatible_endpoint(
+                    "Local admission fixture",
+                    "http://127.0.0.1:1",
+                ),
                 vec![pl_model::model::ModelInfo::compatible(&selector.model_id)],
             ),
         );

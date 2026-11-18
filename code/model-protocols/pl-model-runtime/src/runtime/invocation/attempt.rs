@@ -84,7 +84,7 @@ impl ModelRuntime {
                             if let Ok(event) = &event
                                 && (has_hosted_tools
                                     || (is_compaction && matches!(event,
-                                        crate::stream::event::ModelStreamEvent::ResponsesContextItem { .. }))
+                                        crate::stream::event::ModelStreamEvent::NativeContext { .. }))
                                     || matches!(event,
                                     crate::stream::event::ModelStreamEvent::Usage(_)
                                     | crate::stream::event::ModelStreamEvent::Completed { .. }))

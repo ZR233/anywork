@@ -163,8 +163,9 @@ impl ResponsesRequestBody {
                     ));
                     continue;
                 }
-                crate::completion::ModelContextItem::Responses { item } => {
-                    input.push(ResponsesInputItem::replay(item.value.clone(), chatgpt)?);
+                crate::completion::ModelContextItem::Native { payload } => {
+                    let item = crate::completion::ResponsesContextItem::from_payload(payload)?;
+                    input.push(ResponsesInputItem::replay(item.value, chatgpt)?);
                     continue;
                 }
                 crate::completion::ModelContextItem::ToolMedia { .. } => unreachable!(),
@@ -451,7 +452,7 @@ enum ResponsesTool {
     },
     ProgrammaticToolCalling,
     #[serde(rename = "web_search")]
-    DeepSeekWebSearch,
+    BareWebSearch,
     WebSearch {
         external_web_access: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -501,7 +502,7 @@ impl From<&ToolSpec> for ResponsesTool {
             },
             ToolSpec::ProgrammaticToolCalling => Self::ProgrammaticToolCalling,
             ToolSpec::WebSearch { options } => match options {
-                crate::completion::HostedWebSearchOptions::DeepSeek => Self::DeepSeekWebSearch,
+                crate::completion::HostedWebSearchOptions::Bare => Self::BareWebSearch,
                 crate::completion::HostedWebSearchOptions::OpenAi {
                     external_web_access,
                     indexed_web_access,

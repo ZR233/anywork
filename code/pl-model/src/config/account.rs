@@ -10,7 +10,7 @@ use super::{
 use crate::model::ModelInfo;
 use crate::protocol::{
     ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
-    ProtocolServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy, WireApi,
+    ProtocolServiceCapabilities, ToolWirePolicy, WireApi,
 };
 use pl_model_auth::chatgpt::ChatGptAccountInfo;
 
@@ -155,8 +155,8 @@ pub struct AccountConfig {
     pub chatgpt_session: Option<pl_model_auth::chatgpt::ChatGptSession>,
     #[serde(skip)]
     pub delegated_authorization: Option<crate::protocol::EndpointAuthorization>,
-    #[serde(default)]
-    pub protocol: crate::protocol::ProtocolKind,
+    #[serde(default = "default_protocol")]
+    pub protocol: crate::protocol::ProtocolId,
     /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
     /// canonical endpoint 推导。
     ///
@@ -192,11 +192,15 @@ pub struct AccountConfig {
     resolved_catalog: Option<Vec<AccountModelEntry>>,
 }
 
+fn default_protocol() -> crate::protocol::ProtocolId {
+    crate::protocol::providers::openai::COMPATIBLE_ID
+}
+
 impl AccountConfig {
     /// 构造内置 DeepSeek account template，不附带任何产品角色默认值。
     pub fn deepseek_template() -> Self {
         Self::from_bundled_catalog(
-            ProtocolEndpoint::deepseek(None),
+            crate::protocol::providers::deepseek::endpoint(None),
             ModelCatalogId::new("deepseek").expect("static model catalog id is valid"),
             Vec::new(),
         )
@@ -275,7 +279,14 @@ impl AccountConfig {
     ///
     /// 这是服务能力的唯一解析入口：声明不一致在此处失败，调用方不会拿到无效声明。
     pub fn service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
-        let mut capabilities = self.resolve_service_capabilities()?;
+        self.service_capabilities_with_registry(crate::protocol::builtin_protocols())
+    }
+
+    fn service_capabilities_with_registry(
+        &self,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<ProtocolServiceCapabilities> {
+        let mut capabilities = self.resolve_service_capabilities(registry)?;
         if self.authentication == AccountAuthenticationMethod::ChatGpt {
             capabilities.files = Default::default();
             capabilities.image_generation = None;
@@ -287,7 +298,11 @@ impl AccountConfig {
         Ok(capabilities)
     }
 
-    fn resolve_service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
+    fn resolve_service_capabilities(
+        &self,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<ProtocolServiceCapabilities> {
+        let override_policy = registry.resolve(&self.protocol)?.on_base_url_override;
         match &self.capabilities {
             AccountCapabilitySelection::Explicit(capabilities) => Ok(capabilities.clone()),
             AccountCapabilitySelection::TemplateDefaults => match self.template_id() {
@@ -306,14 +321,8 @@ impl AccountConfig {
                             capabilities.responses_tools = Default::default();
                             capabilities.web_search.hosted_responses = false;
                             capabilities.prompt_cache = Default::default();
-                            // 仅撤销 DeepSeek 原生 standalone 搜索：非 canonical DeepSeek endpoint
-                            // 必须显式声明该方言。其余 standalone（如 OpenAI `/alpha/search`）
-                            // 保留既有继承语义，不因 base_url 覆盖被禁用。
-                            if matches!(
-                                capabilities.web_search.standalone,
-                                Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
-                            ) {
-                                capabilities.web_search.standalone = None;
+                            if let Some(restrict) = override_policy {
+                                restrict(&mut capabilities);
                             }
                         }
                         capabilities
@@ -340,7 +349,7 @@ impl AccountConfig {
         let models = self
             .selectable_catalog(None)?
             .into_iter()
-            .map(|entry| entry.model.model_id)
+            .map(|entry| entry.model.0.model_id)
             .filter(|slug| {
                 capabilities
                     .model_prefixes
@@ -383,11 +392,20 @@ impl AccountConfig {
         &self,
         model_type: Option<crate::model::ModelType>,
     ) -> Result<Vec<AccountModelEntry>> {
+        self.effective_catalog_with_registry(model_type, crate::protocol::builtin_protocols())
+    }
+
+    /// Resolve the effective model inventory with the protocol registry used for discovery.
+    pub fn effective_catalog_with_registry(
+        &self,
+        model_type: Option<crate::model::ModelType>,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<Vec<AccountModelEntry>> {
         let catalog = if let Some(catalog) = &self.resolved_catalog {
             catalog.clone()
         } else {
             apply_connection_overrides(
-                self.catalog_membership()?,
+                self.catalog_membership(registry)?,
                 self.connection_overrides(),
                 self.discovery_profile()?.is_some(),
                 self.editable_models(),
@@ -537,7 +555,10 @@ impl AccountConfig {
         ))
     }
 
-    fn catalog_membership(&self) -> Result<Vec<AccountModelEntry>> {
+    fn catalog_membership(
+        &self,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<Vec<AccountModelEntry>> {
         let (defaults, additional) = match &self.catalog {
             AccountModelCatalogConfig::Bundled {
                 catalog,
@@ -570,6 +591,7 @@ impl AccountConfig {
         };
         let mut entries = local.clone();
         let discovery = self.discovery_profile()?;
+        let policy = registry.resolve(&self.protocol)?.discovery;
         for observed in overlay {
             let declared = local.get(&observed.model_id);
             let enriched = declared.and_then(|entry| {
@@ -578,7 +600,7 @@ impl AccountConfig {
                         observed,
                         &entry.model,
                         &discovery.transport,
-                        self.protocol,
+                        policy,
                     )
                 })
             });
@@ -787,7 +809,7 @@ impl AccountConfig {
 
     /// 为 account 实例中的某个模型选择连接方式。
     pub fn set_model_connection_mode(&mut self, model: &str, mode: ConnectionMode) -> Result<()> {
-        let catalog = self.catalog_membership()?;
+        let catalog = self.catalog_membership(crate::protocol::builtin_protocols())?;
         let selected = catalog
             .iter()
             .find(|candidate| candidate.model.model_id == model)
@@ -921,6 +943,13 @@ impl AccountConfig {
 
     /// 解析不包含模型与 transport 事实的 runtime endpoint。
     pub fn to_endpoint(&self) -> Result<ProtocolEndpoint> {
+        self.to_endpoint_with_registry(crate::protocol::builtin_protocols())
+    }
+
+    pub fn to_endpoint_with_registry(
+        &self,
+        registry: crate::protocol::ProtocolRegistry<'_>,
+    ) -> Result<ProtocolEndpoint> {
         if self.authentication == AccountAuthenticationMethod::ChatGpt {
             pl_model_auth::chatgpt::ChatGptSession::validate_account_resource(
                 self.chatgpt_account
@@ -931,7 +960,10 @@ impl AccountConfig {
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
         }
         Ok(ProtocolEndpoint {
-            protocol: self.protocol,
+            protocol: self.protocol.clone(),
+            responses_instruction_role: registry
+                .resolve(&self.protocol)?
+                .responses_instruction_role,
             name: self.name.clone(),
             base_url: self.base_url.clone(),
             bearer_token: self.resolved_bearer_token(),
@@ -943,7 +975,7 @@ impl AccountConfig {
             http_headers: self.http_headers.clone(),
             tool_wire_policy: self.tool_wire_policy,
             apply_patch_tool_type: self.apply_patch_tool_type,
-            service_capabilities: self.service_capabilities()?,
+            service_capabilities: self.service_capabilities_with_registry(registry)?,
         })
     }
 
@@ -971,7 +1003,7 @@ impl AccountConfig {
     fn validate_structure(&self, account_id: &AccountId, strict_availability: bool) -> Result<()> {
         if self.authentication == AccountAuthenticationMethod::ChatGpt {
             if self.template.as_ref().map(|id| id.as_str()) != Some("openai")
-                || self.protocol != crate::protocol::ProtocolKind::OpenAi
+                || self.protocol != crate::protocol::providers::openai::ID
                 || self.chatgpt_account.is_none()
                 || self.bearer_token.is_some()
                 || self.bearer_token_env.is_some()
@@ -1017,7 +1049,7 @@ impl AccountConfig {
         }
         self.validate_template_binding(account_id)?;
         let models = apply_connection_overrides(
-            self.catalog_membership()?,
+            self.catalog_membership(crate::protocol::builtin_protocols())?,
             self.connection_overrides(),
             !strict_availability && self.discovery_profile()?.is_some(),
             self.editable_models(),

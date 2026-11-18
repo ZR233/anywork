@@ -190,14 +190,6 @@ impl StreamCompletionAccumulator {
         self.model_observation = Some(observation);
     }
 
-    #[cfg(test)]
-    pub(crate) fn apply(&mut self, stream_event: ModelStreamEvent) -> Result<()> {
-        for event in self.normalize(stream_event)? {
-            self.apply_normalized(event)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn normalize(
         &mut self,
         stream_event: ModelStreamEvent,
@@ -461,8 +453,10 @@ impl StreamCompletionAccumulator {
                     self.tool_call_callers.insert(item_id, caller);
                 }
             }
-            ModelStreamEvent::ResponsesContextItem { item } => {
-                self.responses_context_items.push(item);
+            ModelStreamEvent::NativeContext { payload } => {
+                self.responses_context_items.push(
+                    crate::completion::ResponsesContextItem::from_payload(&payload)?,
+                );
             }
             ModelStreamEvent::PresentationItem { item, state } => {
                 let state = state.ok_or_else(|| {
@@ -1298,7 +1292,23 @@ fn stream_orchestration_metrics(
 }
 
 #[cfg(test)]
+mod test_support {
+    use super::*;
+
+    pub(super) fn apply_event(
+        accumulator: &mut StreamCompletionAccumulator,
+        event: ModelStreamEvent,
+    ) -> Result<()> {
+        for event in accumulator.normalize(event)? {
+            accumulator.apply_normalized(event)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
 mod current_tests {
+    use super::test_support::apply_event;
     use super::*;
     use crate::runtime::openai::{VisibleOutputProtocol, sse::OpenAiStreamDecoder};
     use serde_json::json;
@@ -1309,7 +1319,7 @@ mod current_tests {
         wire: serde_json::Value,
     ) {
         for event in decoder.decode(&serde_json::from_value(wire).unwrap()) {
-            acc.apply(event).unwrap();
+            apply_event(acc, event).unwrap();
         }
     }
 
@@ -1326,19 +1336,21 @@ mod current_tests {
             item_id: "reasoning".into(),
             content_index: 7,
         });
-        acc.apply(ModelStreamEvent::reasoning_summary_started(
-            "block".into(),
-            None,
-            provider.clone(),
-        ))
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::reasoning_summary_started("block".into(), None, provider.clone()),
+        )
         .unwrap();
         for (section, text) in [(0, "first"), (1, " second")] {
-            acc.apply(ModelStreamEvent::reasoning_summary_delta(
-                "block".into(),
-                section,
-                text.into(),
-                provider.clone(),
-            ))
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::reasoning_summary_delta(
+                    "block".into(),
+                    section,
+                    text.into(),
+                    provider.clone(),
+                ),
+            )
             .unwrap();
         }
         let saved = snapshot(&acc);
@@ -1368,14 +1380,14 @@ mod current_tests {
             &mut acc,
             &mut decoder,
             json!({"type":"response.output_item.added","output_index":0,
-            "item":{"id":"reasoning","type":"reasoning","summary":[]}}),
+        "item":{"id":"reasoning","type":"reasoning","summary":[]}}),
         );
         feed(
             &mut acc,
             &mut decoder,
             json!({"type":"response.output_item.done","output_index":0,
-            "item":{"id":"reasoning","type":"reasoning","status":"completed",
-                "summary":[{"type":"summary_text","text":text}],"signature":"unchanged"}}),
+        "item":{"id":"reasoning","type":"reasoning","status":"completed",
+            "summary":[{"type":"summary_text","text":text}],"signature":"unchanged"}}),
         );
         assert!(acc.presentation_bytes < MAX_OUTPUT_BYTES);
         assert_eq!(acc.presentation_items[0].parts[0].text, text);
@@ -1407,7 +1419,7 @@ mod current_tests {
         };
 
         assert!(
-            acc.apply(oversized).is_err(),
+            apply_event(&mut acc, oversized).is_err(),
             "the existing presentation ceiling must still reject oversized output"
         );
         assert_eq!(acc.presentation_items.len(), 1);
@@ -1418,30 +1430,39 @@ mod current_tests {
         use super::super::event::ToolInputPayloadKind;
         let mut acc = StreamCompletionAccumulator::new(None);
 
-        acc.apply(ModelStreamEvent::ToolInputStarted {
-            stream_id: Some("stream".into()),
-            item_id: "real-item".into(),
-            call_id: Some("real-item".into()),
-            name: Some("lookup".into()),
-            payload_kind: ToolInputPayloadKind::FunctionArguments,
-        })
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::ToolInputStarted {
+                stream_id: Some("stream".into()),
+                item_id: "real-item".into(),
+                call_id: Some("real-item".into()),
+                name: Some("lookup".into()),
+                payload_kind: ToolInputPayloadKind::FunctionArguments,
+            },
+        )
         .unwrap();
-        acc.apply(ModelStreamEvent::ToolInputDelta {
-            stream_id: Some("stream".into()),
-            item_id: "real-item".into(),
-            call_id: Some("real-call".into()),
-            name: None,
-            payload_delta: ToolInputDeltaPayload::FunctionArguments("{\"q\":".into()),
-        })
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::ToolInputDelta {
+                stream_id: Some("stream".into()),
+                item_id: "real-item".into(),
+                call_id: Some("real-call".into()),
+                name: None,
+                payload_delta: ToolInputDeltaPayload::FunctionArguments("{\"q\":".into()),
+            },
+        )
         .unwrap();
         for index in 0..2048 {
-            acc.apply(ModelStreamEvent::ToolInputDelta {
-                stream_id: Some("stream".into()),
-                item_id: format!("unused-item-{index}"),
-                call_id: Some(format!("unused-call-{index}")),
-                name: None,
-                payload_delta: ToolInputDeltaPayload::FunctionArguments(String::new()),
-            })
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::ToolInputDelta {
+                    stream_id: Some("stream".into()),
+                    item_id: format!("unused-item-{index}"),
+                    call_id: Some(format!("unused-call-{index}")),
+                    name: None,
+                    payload_delta: ToolInputDeltaPayload::FunctionArguments(String::new()),
+                },
+            )
             .unwrap();
         }
         let saved = snapshot(&acc);
@@ -1468,7 +1489,7 @@ mod current_tests {
             &mut acc,
             &mut decoder,
             json!({"type":"response.output_item.added","output_index":0,
-            "item":{"id":"commentary","type":"message","role":"assistant","phase":"commentary","content":[]}}),
+        "item":{"id":"commentary","type":"message","role":"assistant","phase":"commentary","content":[]}}),
         );
         feed(
             &mut acc,
@@ -1496,7 +1517,7 @@ mod current_tests {
                 &mut acc,
                 &mut decoder,
                 json!({"type":"response.output_item.added","output_index":index,
-                "item":{"id":id,"type":"reasoning","summary":[],"encrypted_content":"cipher","signature":"opaque-signature"}}),
+            "item":{"id":id,"type":"reasoning","summary":[],"encrypted_content":"cipher","signature":"opaque-signature"}}),
             );
             feed(
                 &mut acc,
@@ -1512,17 +1533,17 @@ mod current_tests {
                 &mut acc,
                 &mut decoder,
                 json!({"type":"response.output_item.done","output_index":index,
-                "item":{"id":id,"type":"reasoning","status":"completed",
-                    "content":[{"type":"reasoning_text","text":raw}],
-                    "summary":[{"type":"summary_text","text":summary}],
-                    "encrypted_content":"cipher","signature":"opaque-signature","unknown":{"nested":[1,"untouched"]}}}),
+            "item":{"id":id,"type":"reasoning","status":"completed",
+                "content":[{"type":"reasoning_text","text":raw}],
+                "summary":[{"type":"summary_text","text":summary}],
+                "encrypted_content":"cipher","signature":"opaque-signature","unknown":{"nested":[1,"untouched"]}}}),
             );
         }
         feed(
             &mut acc,
             &mut decoder,
             json!({"type":"response.output_item.added","output_index":3,
-            "item":{"id":"tool-item","call_id":"call_0","type":"function_call","name":"read_file","arguments":"","signature":"native-tool-signature","unknown":{"x":true}}}),
+        "item":{"id":"tool-item","call_id":"call_0","type":"function_call","name":"read_file","arguments":"","signature":"native-tool-signature","unknown":{"x":true}}}),
         );
         let partial = "{\"path\":\"src/ma";
         feed(
@@ -1531,10 +1552,13 @@ mod current_tests {
             json!({"type":"response.function_call_arguments.delta","item_id":"tool-item","call_id":"call_0","delta":partial}),
         );
 
-        acc.apply(ModelStreamEvent::Usage(UsageReport {
-            output_tokens: Some(17),
-            ..Default::default()
-        }))
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::Usage(UsageReport {
+                output_tokens: Some(17),
+                ..Default::default()
+            }),
+        )
         .unwrap();
 
         let saved = snapshot(&acc);
@@ -1614,7 +1638,7 @@ mod current_tests {
             &mut acc,
             &mut decoder,
             json!({"type":"response.output_item.added","output_index":0,
-            "item":{"id":"late-item","type":"function_call","name":"lookup"}}),
+        "item":{"id":"late-item","type":"function_call","name":"lookup"}}),
         );
         feed(
             &mut acc,
@@ -1638,7 +1662,7 @@ mod current_tests {
                 .contains(&"call_0".into())
         );
         let item = json!({"id":"late-item","call_id":"call_0","type":"function_call","name":"lookup",
-            "arguments":"{\"q\":1}","status":"completed","signature":"signed","future":{"flag":true}});
+        "arguments":"{\"q\":1}","status":"completed","signature":"signed","future":{"flag":true}});
         feed(
             &mut acc,
             &mut decoder,
@@ -1670,6 +1694,7 @@ mod current_tests {
 
 #[cfg(test)]
 mod member_tests {
+    use super::test_support::apply_event;
     use super::*;
     use crate::completion::{CompletionPresentationItemKind, CompletionPresentationPartKind};
     use crate::runtime::ModelMemberState;
@@ -1692,20 +1717,26 @@ mod member_tests {
     fn rejected_member_status_does_not_close_an_accepted_open_block() {
         let mut acc = StreamCompletionAccumulator::new(None);
 
-        acc.apply(ModelStreamEvent::reasoning_summary_started(
-            "open-reasoning".into(),
-            None,
-            Some(super::super::event::ProviderBlockIdentity {
-                item_id: member().provider_item_id,
-                content_index: 2,
-            }),
-        ))
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::reasoning_summary_started(
+                "open-reasoning".into(),
+                None,
+                Some(super::super::event::ProviderBlockIdentity {
+                    item_id: member().provider_item_id,
+                    content_index: 2,
+                }),
+            ),
+        )
         .unwrap();
         assert!(
-            acc.apply(ModelStreamEvent::PresentationItem {
-                item: member(),
-                state: None
-            })
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::PresentationItem {
+                    item: member(),
+                    state: None
+                }
+            )
             .is_err()
         );
         let saved = acc.current("source", 0);
@@ -1718,31 +1749,36 @@ mod member_tests {
         acc: &mut StreamCompletionAccumulator,
         item: CompletionPresentationItem,
     ) -> Result<()> {
-        acc.apply(ModelStreamEvent::PresentationItem {
-            item,
-            state: Some(ModelMemberState::Interrupted),
-        })
+        apply_event(
+            acc,
+            ModelStreamEvent::PresentationItem {
+                item,
+                state: Some(ModelMemberState::Interrupted),
+            },
+        )
     }
 
     #[test]
     fn authoritative_close_exposes_content_before_any_terminal_presentation_item() {
         let mut acc = StreamCompletionAccumulator::new(None);
 
-        acc.apply(ModelStreamEvent::text_started(
-            "text".into(),
-            ModelTextChannel::Final,
-            None,
-        ))
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::text_started("text".into(), ModelTextChannel::Final, None),
+        )
         .unwrap();
         let starts = acc.take_started_members();
         assert_eq!(starts.len(), 1);
         assert!(acc.take_content_available_members().is_empty());
-        acc.apply(ModelStreamEvent::text_completed(
-            "text".into(),
-            ModelTextChannel::Final,
-            Some(" \n".into()),
-            None,
-        ))
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::text_completed(
+                "text".into(),
+                ModelTextChannel::Final,
+                Some(" \n".into()),
+                None,
+            ),
+        )
         .unwrap();
         assert_eq!(acc.take_content_available_members(), starts);
         assert!(acc.take_content_available_members().is_empty());
@@ -1793,11 +1829,14 @@ mod member_tests {
                 item_id: "real-reasoning".into(),
                 content_index: 3,
             };
-            acc.apply(ModelStreamEvent::reasoning_summary_started(
-                "block".into(),
-                None,
-                Some(provider.clone()),
-            ))
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::reasoning_summary_started(
+                    "block".into(),
+                    None,
+                    Some(provider.clone()),
+                ),
+            )
             .unwrap();
             assert!(
                 acc.take_started_members().is_empty(),
@@ -1809,14 +1848,11 @@ mod member_tests {
             } else {
                 None
             };
-            let error = acc
-                .apply(ModelStreamEvent::reasoning_summary_delta(
-                    "block".into(),
-                    3,
-                    "x".into(),
-                    provider,
-                ))
-                .unwrap_err();
+            let error = apply_event(
+                &mut acc,
+                ModelStreamEvent::reasoning_summary_delta("block".into(), 3, "x".into(), provider),
+            )
+            .unwrap_err();
             if exhausted {
                 assert!(matches!(error, PureError::MemoryError(_)));
             } else {
@@ -1870,9 +1906,12 @@ mod member_tests {
         );
         assert_eq!(acc.presentation_items, vec![item.clone()]);
 
-        acc.apply(ModelStreamEvent::Completed {
-            response_id: Some("response".into()),
-        })
+        apply_event(
+            &mut acc,
+            ModelStreamEvent::Completed {
+                response_id: Some("response".into()),
+            },
+        )
         .unwrap();
         assert_eq!(acc.finish().unwrap().presentation_items, vec![item]);
     }
@@ -1914,10 +1953,13 @@ mod member_tests {
         let mut acc = StreamCompletionAccumulator::new(None);
 
         assert!(
-            acc.apply(ModelStreamEvent::PresentationItem {
-                item: member(),
-                state: None
-            })
+            apply_event(
+                &mut acc,
+                ModelStreamEvent::PresentationItem {
+                    item: member(),
+                    state: None
+                }
+            )
             .is_err()
         );
         assert!(acc.take_completed_member().is_none());

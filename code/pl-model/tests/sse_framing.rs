@@ -1,7 +1,6 @@
 //! Public model completion over deliberately fragmented HTTP/SSE framing.
 use pl_model::completion::{CompletionRequest, Message, MessageContent, MessageRole};
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{ModelInvocationContext, ModelSession};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -60,7 +59,8 @@ async fn decoded_provider_failures_keep_the_redacted_http_request_id() {
                 model
                     .binding
                     .set_transport(ModelTransportProfile::responses_http());
-                let mut endpoint = ProtocolEndpoint::compatible("fixture", endpoint);
+                let mut endpoint =
+                    pl_model::protocol::providers::openai::compatible_endpoint("fixture", endpoint);
                 endpoint.bearer_token = Some("reflected-credential".into());
                 let runtime =
                     pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
@@ -175,7 +175,7 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
                 .set_transport(ModelTransportProfile::chat_completions_http());
             let result = pl_model::runtime::new_with_account_id(
                 "fixture",
-                ProtocolEndpoint::compatible("fixture", endpoint),
+                pl_model::protocol::providers::openai::compatible_endpoint("fixture", endpoint),
                 model,
             )
             .unwrap()
@@ -290,7 +290,8 @@ async fn native_compaction_retries_frozen_history_only_before_receiving_checkpoi
             model
                 .binding
                 .set_transport(ModelTransportProfile::responses_http());
-            let mut endpoint = ProtocolEndpoint::compatible("fixture", endpoint);
+            let mut endpoint =
+                pl_model::protocol::providers::openai::compatible_endpoint("fixture", endpoint);
             endpoint.service_capabilities.remote_compaction = true;
             let runtime =
                 pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
@@ -388,7 +389,7 @@ async fn fragmented_sse_preserves_unicode_multiline_data_and_all_line_endings() 
             .set_transport(ModelTransportProfile::chat_completions_http());
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", endpoint),
+            pl_model::protocol::providers::openai::compatible_endpoint("fixture", endpoint),
             model,
         )
         .unwrap();

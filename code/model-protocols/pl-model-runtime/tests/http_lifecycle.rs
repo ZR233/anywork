@@ -1,10 +1,9 @@
-use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
-use pl_model_types::completion::stream::event::{ModelBlockKind, ModelStreamEvent};
-use pl_model_types::{
+use pl_model_openai_wire::completion::stream::event::{ModelBlockKind, ModelStreamEvent};
+use pl_model_openai_wire::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
 };
+use pl_model_runtime::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
 use std::sync::Arc;
@@ -31,7 +30,7 @@ fn runtime(base: String, native: bool) -> ModelRuntime {
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     model.capabilities.web_search = true;
-    let mut endpoint = ProtocolEndpoint::compatible("fixture", base);
+    let mut endpoint = pl_model_openai::endpoint::compatible_endpoint("fixture", base);
     endpoint.service_capabilities.remote_compaction = native;
     ModelRuntime::bind("fixture", endpoint, model, None).unwrap()
 }
@@ -108,7 +107,7 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
                     .unwrap();
                 assert!(matches!(
                     response.item,
-                    pl_model_types::completion::ModelContextItem::Compaction { .. }
+                    pl_model_openai_wire::completion::ModelContextItem::Compaction { .. }
                 ));
             } else {
                 assert_eq!(
@@ -234,8 +233,8 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
     let mut input = request();
     input
         .tools
-        .push(pl_model_types::completion::ToolSpec::WebSearch {
-            options: pl_model_types::completion::HostedWebSearchOptions::OpenAi {
+        .push(pl_model_openai_wire::completion::ToolSpec::WebSearch {
+            options: pl_model_openai_wire::completion::HostedWebSearchOptions::OpenAi {
                 external_web_access: false,
                 indexed_web_access: None,
                 filters: None,

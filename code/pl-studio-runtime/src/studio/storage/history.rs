@@ -5638,7 +5638,7 @@ mod storage_fault_tests {
                 binding: pl_model::runtime::ModelCallBinding {
                     account_id: "frozen-account".into(),
                     model_id: "frozen-model".into(),
-                    protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
+                    protocol: pl_model::protocol::providers::openai::COMPATIBLE_ID,
                     wire_api: pl_model::protocol::WireApi::Responses,
                     isolation: "frozen-namespace".into(),
                     purpose: "compaction".into(),

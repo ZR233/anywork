@@ -12,12 +12,11 @@ use pl_model::model::{
     ModelInfo, ModelSelectionGuide, ModelSelectionSource, ModelSelectionSourceKind, ModelType,
     bundled_selection_guide,
 };
-use pl_model::protocol::ProtocolEndpoint;
 use pretty_assertions::assert_eq;
 
 fn openai_account() -> AccountConfig {
     AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(None),
+        pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),
         Vec::new(),
     )
@@ -37,7 +36,7 @@ fn selectable_ids(account: &AccountConfig) -> Vec<String> {
         .selectable_catalog(Some(ModelType::Text))
         .unwrap()
         .into_iter()
-        .map(|entry| entry.model.model_id)
+        .map(|entry| entry.model.0.model_id)
         .collect()
 }
 
@@ -392,8 +391,9 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
 
     // 同一模板 + 非 canonical endpoint：生效类别是未知，不会被模板写成订阅。
     let proxied = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::compatible("Local proxy", "https://example.test/v1")
-            .with_protocol(pl_model::protocol::ProtocolKind::Zhipu),
+        pl_model::protocol::providers::glm::coding_plan_endpoint(Some(
+            "https://example.test/v1".into(),
+        )),
         ModelCatalogId::new("zhipu-responses").unwrap(),
         Vec::new(),
     )
@@ -449,7 +449,10 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
     );
     let reference = model.pricing.catalog_pricing();
     let mut account = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible("Synthetic", "https://example.test/v1"),
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "Synthetic",
+            "https://example.test/v1",
+        ),
         vec![model],
     );
     account.billing_kind = Some(BillingKind::NoCharge);
@@ -599,7 +602,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
         .clone();
     manual.display_name = "Astra (local proxy)".into();
     let overridden = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(None),
+        pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),
         vec![manual],
     );
@@ -616,7 +619,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
 
     // 显式自定义目录没有内置资料。
     let explicit = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::openai(None),
+        pl_model::protocol::providers::openai::endpoint(None),
         account.effective_models(None).unwrap(),
     );
     assert!(
@@ -634,7 +637,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
         .clone();
     broken.binding.transport.supported_connection_modes.clear();
     let broken = AccountConfig::from_bundled_catalog(
-        ProtocolEndpoint::openai(None),
+        pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),
         vec![broken],
     );

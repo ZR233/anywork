@@ -33,7 +33,7 @@ impl MediaRepresentationPlan {
                     tool_media = tool_media_content(items);
                     &tool_media
                 }
-                ModelContextItem::Compaction { .. } | ModelContextItem::Responses { .. } => {
+                ModelContextItem::Compaction { .. } | ModelContextItem::Native { .. } => {
                     continue;
                 }
             };

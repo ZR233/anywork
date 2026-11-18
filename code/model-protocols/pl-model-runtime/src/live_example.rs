@@ -9,14 +9,15 @@ use std::{
 
 use clap::{Args, Subcommand, ValueEnum};
 use pl_model_openai_wire::catalog_http::{self, CatalogResponse};
-use pl_model_types::{
+use pl_model_openai_wire::{
+    adapter::Adapter,
     completion::{
         CompletionRequest, Message, MessageContent, MessageRole, ModelTextChannel, ReasoningConfig,
         ToolSpec, completion_response_message_text,
         stream::event::{ModelBlockKind, ModelStreamEvent},
     },
     config::ModelCatalogDiscovery,
-    discovery::{self, DiscoveryDialect, ModelCatalogQueryError, Record},
+    discovery::{self, ModelCatalogQueryError},
     model::{ModelInfo, ModelProtocolOptions},
     protocol::{ConnectionMode, ProtocolEndpoint, WireApi},
 };
@@ -143,31 +144,22 @@ pub enum CommonCommand {
 }
 
 /// The protocol capabilities selected by an individual example.
-pub struct Profile<Parse> {
+pub struct Profile {
     pub default_wire: Wire,
     pub supported: &'static [WireApi],
     pub defaults: Vec<ModelInfo>,
-    pub parse: Parse,
+    pub adapter: &'static Adapter,
     pub allow_tool_stream: bool,
-    pub upload: Option<pl_model_types::files::UploadFile>,
 }
 
 impl CommonCommand {
-    pub async fn execute<Parse>(
-        self,
-        endpoint: ProtocolEndpoint,
-        profile: Profile<Parse>,
-    ) -> ExampleResult
-    where
-        Parse: FnOnce(&[u8], DiscoveryDialect) -> Result<Vec<Record>, ModelCatalogQueryError>,
-    {
+    pub async fn execute(self, mut endpoint: ProtocolEndpoint, profile: Profile) -> ExampleResult {
         let Profile {
             default_wire,
             supported,
             defaults,
-            parse,
+            adapter,
             allow_tool_stream,
-            upload,
         } = profile;
         let wire = match &self {
             Self::Chat { wire, .. } | Self::Models { wire } => wire.unwrap_or(default_wire),
@@ -267,6 +259,10 @@ impl CommonCommand {
                     effort: Some(effort),
                     summary: None,
                 });
+                adapter.bind(&mut endpoint, &mut model);
+                let upload = adapter
+                    .file_upload
+                    .filter(|service| service.id == endpoint.service_capabilities.files);
                 let runtime =
                     ModelRuntime::bind("manual-protocol-example", endpoint.clone(), model, upload)?;
                 let cancellation = CancellationToken::new();
@@ -341,17 +337,16 @@ impl CommonCommand {
                 else {
                     return Err(ModelCatalogQueryError::UnexpectedNotModified.into());
                 };
-                let dialect = DiscoveryDialect::of(endpoint.protocol);
                 let entries = discovery::models(
-                    parse(&bytes, dialect)?,
+                    (adapter.parse_catalog)(&bytes)?,
                     &ModelCatalogDiscovery {
-                        transport: pl_model_types::model::ModelTransportProfile {
+                        transport: pl_model_openai_wire::model::ModelTransportProfile {
                             protocol: api,
                             default_connection_mode: wire.connection(),
                             supported_connection_modes: vec![wire.connection()],
                         },
                     },
-                    dialect,
+                    adapter.discovery,
                     None,
                     &defaults,
                 )?;

@@ -15,7 +15,6 @@ pl-model-openai-xai = { workspace = true }
 pl-model-openai-deepseek = { workspace = true }
 pl-model-openai-glm = { workspace = true }
 pl-model-openai = { workspace = true }
-pl-model-types = { workspace = true }
 pl-model-runtime = { workspace = true }
 pl-model-auth = { workspace = true }
 sha2 = { workspace = true }

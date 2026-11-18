@@ -1,10 +1,10 @@
 //! xAI `/models`: `data`/`id`、`context_length`、官方 token 价格单位与
 //! `capabilities.reasoning_effort` / `default_reasoning_effort`。
-use pl_model_types::discovery::reasoning::ReasoningDeclaration;
-use pl_model_types::discovery::{
-    DiscoveryDialect, ModelCatalogQueryError, Record, nullable, presentation_name, required_id,
+use pl_model_openai_wire::discovery::reasoning::ReasoningDeclaration;
+use pl_model_openai_wire::discovery::{
+    ModelCatalogQueryError, Record, nullable, presentation_name, required_id,
 };
-use pl_model_types::model::*;
+use pl_model_openai_wire::model::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -163,10 +163,7 @@ impl WireRecord {
     }
 }
 
-pub fn records(
-    bytes: &[u8],
-    _dialect: DiscoveryDialect,
-) -> Result<Vec<Record>, ModelCatalogQueryError> {
+pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
     let envelope: Envelope =
         serde_json::from_slice(bytes).map_err(|_| ModelCatalogQueryError::Protocol)?;
     if envelope.error.is_some() || envelope.models.is_some() {

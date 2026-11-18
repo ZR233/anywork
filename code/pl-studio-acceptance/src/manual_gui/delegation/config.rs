@@ -35,7 +35,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     no_tools.capabilities.tools.function_calling = false;
     a_models.extend([disabled, no_text, unknown, no_tools]);
     let mut a = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible(
+        pl_model::protocol::providers::openai::compatible_endpoint(
             "Delegation synthetic account A",
             format!("{}/delegation-a", ready.base_url),
         ),
@@ -43,7 +43,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     );
     a.billing_kind = Some(BillingKind::Subscription);
     let mut b = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible(
+        pl_model::protocol::providers::openai::compatible_endpoint(
             "Delegation synthetic account B — identical model ID, independent endpoint",
             format!("{}/delegation-b", ready.base_url),
         ),
@@ -53,7 +53,10 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     // Official-protocol account without a key is deliberately not admitted.
     // It is loopback-only and must never reach a completion endpoint.
     let mut no_credentials = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::openai(Some(format!("{}/delegation-b", ready.base_url))),
+        pl_model::protocol::providers::openai::endpoint(Some(format!(
+            "{}/delegation-b",
+            ready.base_url
+        ))),
         vec![model("delegation-no-credentials")],
     );
     no_credentials.name = "Delegation missing credentials (must stay unavailable)".into();

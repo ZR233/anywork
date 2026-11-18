@@ -6,14 +6,14 @@
 //! （`tool_stream`）与标签式可见输出（`tagged_output`）按各自职责维护。
 
 mod accumulator;
-use pl_model_types::completion::stream::chat_presentation;
-pub(crate) use pl_model_types::completion::stream::current;
+use pl_model_openai_wire::completion::stream::chat_presentation;
+pub(crate) use pl_model_openai_wire::completion::stream::current;
 
 pub(crate) mod decode;
-pub(crate) use pl_model_types::completion::stream::event;
+pub(crate) use pl_model_openai_wire::completion::stream::event;
 mod lifecycle;
-pub(crate) use pl_model_types::completion::stream::replay;
-use pl_model_types::completion::stream::tagged_output;
+pub(crate) use pl_model_openai_wire::completion::stream::replay;
+use pl_model_openai_wire::completion::stream::tagged_output;
 mod tool_identity;
 mod tool_stream;
 

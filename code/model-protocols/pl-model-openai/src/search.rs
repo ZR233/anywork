@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use pl_model_types::completion::{WebSearchContextSize, WebSearchFilters, WebSearchUserLocation};
+use pl_model_openai_wire::completion::{
+    WebSearchContextSize, WebSearchFilters, WebSearchUserLocation,
+};
 use pl_protocol::{PureError, Result};
 use pl_tool_search::tools::web_search::Response;
 use pl_tool_search::tools::web_search::SearchCommands;

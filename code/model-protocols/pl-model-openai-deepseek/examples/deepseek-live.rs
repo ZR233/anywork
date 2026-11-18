@@ -4,13 +4,13 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use pl_model_openai_deepseek::{UPLOAD, deepseek_catalog, tools, upload};
-use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
-use pl_model_types::{
+use pl_model_openai_deepseek::{tools, upload};
+use pl_model_openai_wire::{
     completion::{AttachmentInput, AttachmentModality, AttachmentSource},
     files::FileUploadRequest,
-    protocol::{ProtocolEndpoint, StandaloneWebSearchDialect, WireApi},
+    protocol::WireApi,
 };
+use pl_model_runtime::live_example::{self, CommonCommand, ExampleResult, Profile, Target, Wire};
 
 #[derive(Parser)]
 struct Args {
@@ -48,7 +48,7 @@ async fn main() -> ExampleResult {
     let args = Args::parse();
     let endpoint = args
         .target
-        .endpoint(|url| ProtocolEndpoint::deepseek(Some(url)))?;
+        .endpoint(|url| pl_model_openai_deepseek::endpoint::endpoint(Some(url)))?;
     live_example::run(endpoint, async move |mut endpoint| {
         match args.command {
             Command::Common(command) => {
@@ -59,9 +59,8 @@ async fn main() -> ExampleResult {
                             default_wire: Wire::Chat,
                             supported: &[WireApi::ChatCompletions, WireApi::Responses],
                             defaults: pl_model_openai_deepseek::bundled_definition()?.models,
-                            parse: deepseek_catalog::records,
+                            adapter: &pl_model_openai_deepseek::adapter::ADAPTER,
                             allow_tool_stream: false,
-                            upload: Some(UPLOAD),
                         },
                     )
                     .await?;
@@ -100,7 +99,7 @@ async fn main() -> ExampleResult {
             }
             command @ (Command::Search { .. } | Command::Fetch { .. }) => {
                 endpoint.service_capabilities.web_search.standalone =
-                    Some(StandaloneWebSearchDialect::DeepSeekToolsApi);
+                    Some(pl_model_openai_deepseek::endpoint::SEARCH_DIALECT);
                 let client = tools::ToolsClient::new(&endpoint, tools::ToolsOptions::default())?;
                 let output = match command {
                     Command::Search { query } => serde_json::to_string_pretty(

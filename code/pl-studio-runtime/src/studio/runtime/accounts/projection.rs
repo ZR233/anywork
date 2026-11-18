@@ -66,7 +66,7 @@ pub(super) fn read(
                             billing_kind_override: account.billing_kind,
                             credential_ready: Some(
                                 account.protocol
-                                    == pl_model::protocol::ProtocolKind::OpenAiCompatible
+                                    == pl_model::protocol::providers::openai::COMPATIBLE_ID
                                     || account.resolved_bearer_token().is_some()
                                     || account.chatgpt_session.is_some(),
                             ),
