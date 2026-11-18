@@ -69,7 +69,10 @@ impl AcpSessionObservation {
                     .unwrap_or_else(|| projection::failure(error));
                 AcpSessionEvent::Failed { error }
             }
-            Some(Event::Update(update)) => AcpSessionEvent::Update { update },
+            Some(Event::Update(update, performance)) => AcpSessionEvent::Update {
+                update,
+                text_performance: performance.map(projection::text_performance),
+            },
             Some(Event::Permission { id, request }) => AcpSessionEvent::Permission {
                 id: AcpPermissionId {
                     instance: id.instance,

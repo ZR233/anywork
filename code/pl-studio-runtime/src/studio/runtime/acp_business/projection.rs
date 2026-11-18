@@ -48,6 +48,13 @@ pub(super) fn run(run: sdk::RunId) -> AcpRunId {
         sequence: run.sequence,
     }
 }
+pub(super) fn text_performance(value: sdk::TextPerformance) -> AcpTextPerformance {
+    AcpTextPerformance {
+        estimated_output_tokens: pl_model::completion::estimate_text_tokens(value.characters),
+        response_millis: value.response_millis,
+    }
+}
+
 pub(super) fn completed(completed: sdk::Completed) -> AcpCompletedRun {
     AcpCompletedRun {
         run: run(completed.run),
@@ -57,6 +64,7 @@ pub(super) fn completed(completed: sdk::Completed) -> AcpCompletedRun {
             .map_err(|error| failure(sdk::Error::Rpc(error))),
         summary: completed.summary,
         truncated: completed.truncated,
+        text_performance: completed.text_performance.map(text_performance),
     }
 }
 pub(super) fn gap(gap: sdk::Gap) -> AcpObservationGap {

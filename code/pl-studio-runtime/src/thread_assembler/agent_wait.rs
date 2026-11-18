@@ -461,6 +461,7 @@ mod tests {
             )),
             summary: "original completed response".into(),
             truncated: false,
+            text_performance: None,
         }
     }
 

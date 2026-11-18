@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../../status/thread_status_bar.dart';
 import '../state/acp_view_state.dart';
 import '../view_models/acp_external_history_view_model.dart';
 import '../view_models/acp_status_bar_view_model.dart';
@@ -20,7 +21,20 @@ class AcpStatusBarConnector extends StatelessWidget {
     status: AcpConnectionStatusConnector(threadId: threadId),
     contextUsage: AcpContextUsageConnector(threadId: threadId),
     cost: AcpCostConnector(threadId: threadId),
+    throughput: _AcpThroughputConnector(threadId: threadId),
     externalHistory: AcpExternalHistoryButtonConnector(threadId: threadId),
+  );
+}
+
+class _AcpThroughputConnector extends ConsumerWidget {
+  const _AcpThroughputConnector({required this.threadId});
+
+  final String threadId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => TokenThroughputReadout(
+    estimated: true,
+    tokensPerSecond: ref.watch(acpThroughputViewModelProvider(threadId)),
   );
 }
 

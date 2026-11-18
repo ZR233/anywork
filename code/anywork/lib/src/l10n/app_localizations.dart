@@ -3119,6 +3119,18 @@ abstract class AppLocalizations {
   /// **'The SSH alias for this project is no longer in ~/.ssh/config'**
   String get sessionOpenServerMissing;
 
+  /// No description provided for @statisticsAcpTextEstimate.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP text estimate'**
+  String get statisticsAcpTextEstimate;
+
+  /// No description provided for @acpEstimatedOutputSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated ACP text speed (includes the first-chunk wait)'**
+  String get acpEstimatedOutputSpeed;
+
   /// No description provided for @statusLastConfirmedAgentTokenSpeed.
   ///
   /// In en, this message translates to:

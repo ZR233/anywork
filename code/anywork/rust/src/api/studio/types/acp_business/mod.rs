@@ -290,12 +290,18 @@ pub enum BridgeAcpPromptResult {
     Failed { failure: BridgeAcpBusinessFailure },
 }
 #[derive(Debug, Clone, PartialEq)]
+pub struct BridgeAcpTextPerformance {
+    pub estimated_output_tokens: u64,
+    pub response_millis: u64,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub struct BridgeAcpCompletedRun {
     pub run: BridgeAcpRunId,
     pub completion_sequence: u64,
     pub result: BridgeAcpPromptResult,
     pub summary: String,
     pub truncated: bool,
+    pub text_performance: Option<BridgeAcpTextPerformance>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeAcpObservationGap {
@@ -341,6 +347,7 @@ pub enum BridgeAcpSessionEvent {
     },
     Update {
         update: BridgeAcpSessionNotification,
+        text_performance: Option<BridgeAcpTextPerformance>,
     },
     Ready {
         response: BridgeAcpNewSessionResponse,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
-use super::{Completed, Error, PermissionId, schema::*};
+use super::{Completed, Error, PermissionId, TextPerformance, schema::*};
 
 const EVENTS: usize = 64;
 const BYTES: usize = 8 * 1024 * 1024;
@@ -18,7 +18,7 @@ pub enum Gap {
 #[derive(Debug, Clone)]
 pub enum Event {
     Initialized(Box<AgentCapabilities>),
-    Update(SessionNotification),
+    Update(SessionNotification, Option<TextPerformance>),
     Ready(NewSessionResponse),
     Failed(Error),
     Permission {

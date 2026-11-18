@@ -306,13 +306,13 @@ abstract final class ModelRouteQueries {
 
   static ({int outputTokens, int responseMillis, double tokensPerSecond})?
   _completeThroughputPair(int? tokens, int? millis) {
-    if (tokens == null || tokens <= 0 || millis == null || millis <= 0) {
-      return null;
-    }
+    if (tokens == null || millis == null) return null;
+    final speed = tokenThroughput(tokens, millis);
+    if (speed == null) return null;
     return (
       outputTokens: tokens,
       responseMillis: millis,
-      tokensPerSecond: tokens * 1000 / millis,
+      tokensPerSecond: speed,
     );
   }
 

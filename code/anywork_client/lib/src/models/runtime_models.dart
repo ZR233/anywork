@@ -95,6 +95,17 @@ String formatRuntimeCosts(Iterable<RuntimeCostView> costs) {
       .join(' + ');
 }
 
+/// Client-observed output throughput. A zero or absent observation has no speed.
+double? tokenThroughput(int? outputTokens, int? responseMillis) {
+  if (outputTokens == null ||
+      outputTokens <= 0 ||
+      responseMillis == null ||
+      responseMillis <= 0) {
+    return null;
+  }
+  return outputTokens * 1000 / responseMillis;
+}
+
 /// 只格式化吞吐数值；单位由展示层按 locale 追加，避免在领域模型内写死文案。
 String? formatTokenThroughputValue(double? tokensPerSecond) {
   if (tokensPerSecond == null || !tokensPerSecond.isFinite) return null;
@@ -361,9 +372,7 @@ class ThreadRuntimeView {
   bool get hasUsage =>
       inferenceCount > 0 || promptTokens > 0 || completionTokens > 0;
   double? get turnTokensPerSecond =>
-      turnCompletionTokens > 0 && turnResponseMillis > 0
-      ? turnCompletionTokens * 1000 / turnResponseMillis
-      : null;
+      tokenThroughput(turnCompletionTokens, turnResponseMillis);
 
   @override
   bool operator ==(Object other) {

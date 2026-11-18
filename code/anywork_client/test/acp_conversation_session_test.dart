@@ -63,7 +63,10 @@ AcpSessionFrameView _ready({
     ),
   ),
 );
-AcpCompletedRunView _completion(AcpRunIdView run) => AcpCompletedRunView(
+AcpCompletedRunView _completion(
+  AcpRunIdView run, {
+  AcpTextPerformanceView? textPerformance,
+}) => AcpCompletedRunView(
   run: run,
   completionSequence: run.sequence,
   result: const AcpSuccessView(
@@ -71,6 +74,7 @@ AcpCompletedRunView _completion(AcpRunIdView run) => AcpCompletedRunView(
   ),
   summary: 'done',
   truncated: false,
+  textPerformance: textPerformance,
 );
 AcpPermissionEventView _permission() => AcpPermissionEventView(
   id: _permissionId,
@@ -124,6 +128,60 @@ Future<AcpConversationSession> _open(AcpSessionClient client) async {
 }
 
 void main() {
+  test(
+    'text speed updates in flight, freezes on success and clears on gap',
+    () async {
+      final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
+      final port = _port(source);
+      final client = AcpSessionClient(port: port);
+      addTearDown(client.dispose);
+      final owner = await _open(client);
+      await owner.send(_input);
+      const live = (estimatedOutputTokens: 8, responseMillis: 500);
+      _push(
+        source,
+        _event(
+          AcpUpdateEventView(
+            const AcpSessionNotificationView(
+              sessionId: _remote,
+              update: AcpAgentMessageChunkView(
+                AcpContentChunkView(content: AcpTextContentView(text: 'hello')),
+              ),
+            ),
+            textPerformance: live,
+          ),
+        ),
+      );
+      final running = await owner.source.waitFor(
+        (state) => state.textPerformance == live,
+      );
+      expect(running.activeRun, _run);
+      const finalSample = (estimatedOutputTokens: 8, responseMillis: 800);
+      _push(
+        source,
+        _event(
+          AcpCompletedEventView(
+            _completion(_run, textPerformance: finalSample),
+          ),
+        ),
+      );
+      final finished = await owner.source.waitFor(
+        (state) => state.lastCompleted != null,
+      );
+      expect(finished.textPerformance, finalSample);
+
+      port.run = _nextRun;
+      await owner.send(_input);
+      expect(owner.state.textPerformance, isNull);
+      _push(
+        source,
+        _event(AcpGapEventView(AcpObservationGapView.windowExceeded)),
+      );
+      final gap = await owner.source.waitFor((state) => state.disconnected);
+      expect(gap.textPerformance, isNull);
+    },
+  );
+
   test(
     'load replay usage stays in history but does not become a current metric',
     () async {

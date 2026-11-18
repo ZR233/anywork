@@ -78,6 +78,7 @@ final class AcpConversationState {
     this.modes,
     this.plan,
     this.latestUsage,
+    this.textPerformance,
     this.pendingPermissions = const [],
   });
 
@@ -102,6 +103,7 @@ final class AcpConversationState {
   final AcpSessionModeStateView? modes;
   final AcpPlanView? plan;
   final AcpConversationUsage? latestUsage;
+  final AcpTextPerformanceView? textPerformance;
   final List<AcpPermissionEventView> pendingPermissions;
 
   bool get usesLegacyModes => configOptions == null && modes != null;
@@ -170,6 +172,7 @@ final class AcpConversationSession {
   AcpSessionModeStateView? _modes;
   AcpPlanView? _plan;
   AcpConversationUsage? _latestUsage;
+  AcpTextPerformanceView? _textPerformance;
   List<AcpPermissionEventView> _permissions = const [];
 
   AcpConversationState get state => _source.value;
@@ -197,6 +200,7 @@ final class AcpConversationSession {
     modes: _modes,
     plan: _plan,
     latestUsage: _latestUsage,
+    textPerformance: _textPerformance,
     pendingPermissions: _permissions,
   );
 
@@ -256,6 +260,7 @@ final class AcpConversationSession {
   }
 
   void _loseObservation() {
+    _textPerformance = null;
     _latestUsage = null;
     _pendingUserEcho = null;
     _disconnected = true;
@@ -275,6 +280,7 @@ final class AcpConversationSession {
         _configOptions = response.configOptions;
         _modes = response.modes;
       case AcpFailedEventView(:final error):
+        _textPerformance = null;
         _latestUsage = null;
         _pendingUserEcho = null;
         _ready = false;
@@ -288,10 +294,12 @@ final class AcpConversationSession {
         _configEventSeen = true;
         _settleConfig();
       case AcpPermissionEventView():
+        _textPerformance = null;
         _permissions = List.unmodifiable([..._permissions, event]);
       case AcpCompletedEventView(:final completed):
         _lastCompleted = completed;
         if (_activeRun == null || _activeRun == completed.run) {
+          _textPerformance = completed.textPerformance;
           _pendingUserEcho = null;
           _activeRun = null;
           _sendPending = false;
@@ -300,7 +308,10 @@ final class AcpConversationSession {
       case AcpGapEventView(:final gap):
         _observationGap = gap;
         _loseObservation();
-      case AcpUpdateEventView(:final update):
+      case AcpUpdateEventView(:final update, :final textPerformance):
+        if (textPerformance != null) {
+          _textPerformance = textPerformance;
+        }
         _update(update.update);
     }
   }
@@ -356,11 +367,13 @@ final class AcpConversationSession {
         );
       case AcpAgentMessageChunkView(:final chunk):
         _pendingUserEcho = null;
+        if (chunk.content is! AcpTextContentView) _textPerformance = null;
         _message(AcpConversationMessageKind.assistant, chunk);
       case AcpAgentThoughtChunkView(:final chunk):
         _pendingUserEcho = null;
         _message(AcpConversationMessageKind.thought, chunk);
       case AcpToolCallSessionUpdateView(:final toolCall):
+        _textPerformance = null;
         _pendingUserEcho = null;
         _tool(
           toolCall.toolCallId,
@@ -378,6 +391,7 @@ final class AcpConversationSession {
           replace: true,
         );
       case AcpToolCallChangedView(:final toolCall):
+        _textPerformance = null;
         _pendingUserEcho = null;
         _tool(toolCall.toolCallId, toolCall.fields, toolCall.meta);
       case AcpPlanView():
@@ -505,6 +519,7 @@ final class AcpConversationSession {
     }
     final generation = ++_sendGeneration;
     _sendPending = true;
+    _textPerformance = null;
     _canMergeMessage = false;
     _pendingUserEcho = null;
     // A new submitted message cannot merge with a previous run's user message.
@@ -679,6 +694,7 @@ final class AcpConversationSession {
     if (!_disposing &&
         generation == _sendGeneration &&
         (_activeRun == run || _lastCompleted?.run == run)) {
+      if (_activeRun == run) _textPerformance = null;
       _permissions = const [];
       _publish();
     }
@@ -690,6 +706,7 @@ final class AcpConversationSession {
     if (!_disposing && result.localComplete) {
       _ready = false;
       _latestUsage = null;
+      _textPerformance = null;
       _permissions = const [];
       _publish();
     }

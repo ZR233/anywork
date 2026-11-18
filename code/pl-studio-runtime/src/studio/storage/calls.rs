@@ -45,6 +45,7 @@ mod log;
 #[cfg(feature = "benchmarks")]
 pub(crate) mod observation;
 mod performance;
+pub(crate) use performance::ACP_TEXT_ESTIMATE;
 mod schema;
 mod summary;
 
@@ -208,12 +209,23 @@ pub(crate) struct CallsStatisticsRead {
     pub(crate) summary: Option<Vec<PerformanceSummaryRow>>,
 }
 
+pub(crate) struct AcpPerformanceObservation {
+    pub(crate) thread_id: String,
+    pub(crate) call_id: String,
+    pub(crate) account_id: String,
+    pub(crate) account_name: String,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) performance: crate::AcpTextPerformance,
+}
+
 /// 受理一次调用写入的轻量工作单元。
 enum CallMutation {
     /// 从 effect 提取的实际 attempt/delivery 记录，不携带全 effect 水位。
     Records(Vec<PreparedRecord>),
     Billing(Box<PreparedRecord>),
     Summary(PreparedSummary),
+    AcpPerformance(Box<performance::PerformanceSample>),
 }
 
 impl CallMutation {
@@ -228,6 +240,7 @@ impl CallMutation {
             }
             Self::Billing(record) => record.retained_bytes(),
             Self::Summary(projection) => projection.bytes,
+            Self::AcpPerformance(sample) => sample.retained_bytes(),
         }
     }
 }
@@ -832,7 +845,33 @@ impl CallsStore {
                 .observation
                 .increment(observation::Metric::LogRecordEncode);
         }
-        let mutation = CallMutation::Records(records);
+        self.enqueue_diagnostic(CallMutation::Records(records));
+    }
+
+    pub(crate) fn record_acp_performance(&self, sample: AcpPerformanceObservation) {
+        let sample = performance::PerformanceSample {
+            thread_id: sample.thread_id,
+            call_id: sample.call_id,
+            purpose: Some(performance::ACP_TEXT_ESTIMATE.into()),
+            usage_status: pl_core::usage::UsageStatus::Partial,
+            first_output_source: crate::FirstOutputSource::Unobserved,
+            throughput_valid: true,
+            completed_at: crate::studio::unix_seconds(),
+            account_id: Some(sample.account_id),
+            account_display_name: Some(sample.account_name),
+            model_id: sample.model,
+            sent_model: None,
+            reported_model: None,
+            effort: sample.effort,
+            output_tokens: opt_i64(sample.performance.estimated_output_tokens),
+            ttft_millis: None,
+            decode_millis: None,
+            response_millis: opt_i64(sample.performance.response_millis),
+        };
+        self.enqueue_diagnostic(CallMutation::AcpPerformance(Box::new(sample)));
+    }
+
+    fn enqueue_diagnostic(&self, mutation: CallMutation) {
         let bytes = mutation.estimated_bytes();
         let admitted = {
             let mut queue = self
@@ -840,7 +879,8 @@ impl CallsStore {
                 .queue
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if queue.len() >= MAX_QUEUE_MUTATIONS
+            if self.writer.stopping.load(Ordering::Acquire)
+                || queue.len() >= MAX_QUEUE_MUTATIONS
                 || queue_bytes(&queue).saturating_add(bytes) > MAX_QUEUE_BYTES
             {
                 false
@@ -1245,10 +1285,12 @@ async fn apply_batch(
     // Locator recovery is a prerequisite only for diagnostics, never for absolute costs.
     // Recovery commits independently before this batch; its pending segment responsibility
     // stays with the log on failure, while rejected diagnostics report the original error.
-    let locator_error = if pending
-        .iter()
-        .any(|entry| !matches!(&entry.mutation, CallMutation::Summary(_)))
-    {
+    let locator_error = if pending.iter().any(|entry| {
+        matches!(
+            &entry.mutation,
+            CallMutation::Records(_) | CallMutation::Billing(_)
+        )
+    }) {
         log.repair_pending_index(&shared.db)
             .await
             .err()
@@ -1304,7 +1346,10 @@ async fn apply_batch(
                     }
                 }
             }
-            _ => {
+            CallMutation::AcpPerformance(_) => {
+                apply_live_mutation(shared, &mut log, &tx, &entry.mutation).await
+            }
+            CallMutation::Records(_) | CallMutation::Billing(_) => {
                 if let Some(error) = &locator_error {
                     // Do not defer the batch suffix behind failed diagnostic recovery: it may
                     // contain reliable Summary projections. The next diagnostic batch retries
@@ -1503,6 +1548,7 @@ async fn apply_live_mutation(
         CallMutation::Records(records) => records.first().map(|record| record.thread_id.as_str()),
         CallMutation::Billing(record) => Some(record.thread_id.as_str()),
         CallMutation::Summary(summary) => Some(summary.thread_id.as_str()),
+        CallMutation::AcpPerformance(sample) => Some(sample.thread_id.as_str()),
     };
     if id.is_some_and(|id| {
         shared
@@ -1544,6 +1590,14 @@ async fn apply_mutation(
                 .await
                 .map(|performance| MaterialChanges {
                     performance,
+                    ..Default::default()
+                })
+        }
+        CallMutation::AcpPerformance(sample) => {
+            performance::record(&tx, sample)
+                .await
+                .map(|()| MaterialChanges {
+                    performance: true,
                     ..Default::default()
                 })
         }
@@ -3046,6 +3100,51 @@ mod storage_fault_tests {
         assert!(read.summary.is_none());
         drop(lease);
         store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn acp_text_performance_is_durable_and_stays_out_of_native_summary() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("calls.sqlite");
+        let store = CallsStore::open(&path).await?;
+        let mut progress = store.subscribe_materials();
+        for _ in 0..2 {
+            store.record_acp_performance(AcpPerformanceObservation {
+                thread_id: "text-thread".into(),
+                call_id: "acp:generation:1".into(),
+                account_id: "agy".into(),
+                account_name: "Agy".into(),
+                model: Some("gemini".into()),
+                effort: None,
+                performance: crate::AcpTextPerformance {
+                    estimated_output_tokens: 50,
+                    response_millis: 2_000,
+                },
+            });
+        }
+        wait_material_ticket(&mut progress, store.admitted_ticket()).await?;
+        store.close().await?;
+
+        let reopened = CallsStore::open(&path).await?;
+        let statistics = reopened
+            .read_statistics(StatisticsReadRequest {
+                costs: true,
+                performance: true,
+            })
+            .await?;
+        let history = statistics.history.unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].purpose.as_deref(),
+            Some(performance::ACP_TEXT_ESTIMATE)
+        );
+        assert_eq!(history[0].completion_tokens, Some(50));
+        assert_eq!(history[0].response_millis, Some(2_000));
+        assert!(history[0].has_throughput_sample);
+        assert!(statistics.summary.unwrap().is_empty());
+        assert!(statistics.costs.unwrap().is_empty());
+        reopened.close().await?;
         Ok(())
     }
 

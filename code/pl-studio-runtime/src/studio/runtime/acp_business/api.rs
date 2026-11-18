@@ -249,6 +249,11 @@ impl AcpBusinessOwner {
         let events = self.events.clone();
         let connections = self.connections.clone();
         let config = self.config.clone();
+        let calls = self.store.calls().clone();
+        let sample_thread_id = thread_id.clone();
+        let sample_generation = resources.generation.clone();
+        let sample_account_id = definition.id.clone();
+        let sample_account_name = definition.display_name.clone();
         let resources_for_result = resources.clone();
         let baseline = previous
             .as_ref()
@@ -345,6 +350,19 @@ impl AcpBusinessOwner {
                                 .map_err(|error| projection::preparation(&error.to_string()))?,
                             ),
                             expected_server_version: prepared.expected_version,
+                            on_text_performance: Some(Arc::new(move |run, evidence, model, effort| {
+                                calls.record_acp_performance(
+                                    crate::studio::storage::calls::AcpPerformanceObservation {
+                                        thread_id: sample_thread_id.clone(),
+                                        call_id: format!("acp:{sample_generation}:{}", run.sequence),
+                                        account_id: sample_account_id.clone(),
+                                        account_name: sample_account_name.clone(),
+                                        model,
+                                        effort,
+                                        performance: projection::text_performance(evidence),
+                                    },
+                                );
+                            })),
                             cleanup: pl_acp::auth::CleanupBudget::new(
                                 std::time::Duration::from_secs(5),
                             ),

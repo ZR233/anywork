@@ -480,11 +480,15 @@ void main() {
   testWidgets(
     'history preserves typed unknown versus zero without sample diagnostics',
     (tester) async {
-      Future<void> pump(int? output, MetricAvailability availability) async {
+      Future<void> pump(
+        int? output,
+        MetricAvailability availability, {
+        bool acp = false,
+      }) async {
         final sample = StatisticsSample(
           threadId: 'thread-observed',
           callId: 'call-observed',
-          purpose: 'compaction',
+          purpose: acp ? 'acpTextEstimate' : 'compaction',
           firstOutputSource: FirstOutputSource.completedToolInput,
           usageStatus: UsageReportStatus.partial,
           ttftAvailability: MetricAvailability.available,
@@ -501,7 +505,7 @@ void main() {
           ttftMillis: 100,
           decodeMillis: 0,
           totalResponseMillis: 100,
-          tokensPerSecond: null,
+          tokensPerSecond: acp ? 50 : null,
         );
         await tester.pumpWidget(
           MaterialApp(
@@ -556,6 +560,13 @@ void main() {
       );
       expect(find.textContaining('Reported output is 0'), findsNothing);
       expect(tester.takeException(), isNull);
+
+      await pump(5, MetricAvailability.available, acp: true);
+      expect(find.text('ACP text estimate'), findsOneWidget);
+      expect(find.text('≈ 5'), findsOneWidget);
+      final context = tester.element(find.byType(StatisticsCompactHistoryCard));
+      final speed = AppLocalizations.of(context).statusThroughputValue('50');
+      expect(find.text('≈ $speed'), findsOneWidget);
     },
   );
 

@@ -203,6 +203,11 @@ final class AcpFailureView<T> extends AcpResultView<T> {
 
 enum AcpObservationGapView { windowExceeded, disconnected, encoding }
 
+typedef AcpTextPerformanceView = ({
+  int estimatedOutputTokens,
+  int responseMillis,
+});
+
 final class AcpCompletedRunView {
   AcpCompletedRunView({
     required this.run,
@@ -210,6 +215,7 @@ final class AcpCompletedRunView {
     required this.result,
     required this.summary,
     required this.truncated,
+    this.textPerformance,
   }) {
     if (utf8.encode(summary).length > 16 * 1024) {
       throw ArgumentError('ACP completion summary exceeds the 16 KiB boundary');
@@ -220,6 +226,7 @@ final class AcpCompletedRunView {
   final AcpResultView<AcpPromptResponseView> result;
   final String summary;
   final bool truncated;
+  final AcpTextPerformanceView? textPerformance;
 }
 
 sealed class AcpSessionEventView {
@@ -250,7 +257,8 @@ final class AcpInitializedEventView extends AcpSessionEventView {
 }
 
 final class AcpUpdateEventView extends AcpSessionEventView {
-  const AcpUpdateEventView(this.update);
+  const AcpUpdateEventView(this.update, {this.textPerformance});
+  final AcpTextPerformanceView? textPerformance;
   final AcpSessionNotificationView update;
 }
 

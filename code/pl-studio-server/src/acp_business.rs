@@ -797,7 +797,7 @@ mod tests {
                 let Some(AcpSessionFrame::Event { event }) = stream.next().await? else {
                     anyhow::bail!("missing pre-release original update");
                 };
-                let AcpSessionEvent::Update { update } = *event else {
+                let AcpSessionEvent::Update { update, .. } = *event else {
                     anyhow::bail!("Ready/Settled overtook held Load result");
                 };
                 ensure!(update.session_id.to_string() == "remote-one");
