@@ -140,8 +140,12 @@ impl Default for HistoryLimits {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryStatus {
+    /// Accepted events not yet committed to SQLite. These are not durable receipts.
     pub pending_events: usize,
     pub pending_bytes: usize,
+    /// Charged RAM, including committed roots still borrowed by in-flight readers.
+    pub retained_events: usize,
+    pub retained_bytes: usize,
     pub write_error: Option<String>,
     pub accepting: bool,
 }

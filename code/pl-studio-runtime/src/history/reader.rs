@@ -278,7 +278,9 @@ impl HistoryReader {
             entries: Vec::new(),
             next: None,
         };
+        let mut examined = 0usize;
         for (index, (anchor_seq, row_key)) in candidates.into_iter().rev().take(limit).enumerate() {
+            examined += 1;
             let head = latest_head(&snapshot, &row_key, through)
                 .await?
                 .ok_or_else(|| HistoryError::Integrity("anchor has no head at its cut".into()))?;
@@ -330,6 +332,7 @@ impl HistoryReader {
                         "page cannot fit its first row and continuation".into(),
                     ));
                 }
+                observe_page(&query, &page, examined)?;
                 snapshot.tx.commit().await?;
                 return Ok(page);
             }
@@ -357,6 +360,7 @@ impl HistoryReader {
                 "page envelope exceeds budget".into(),
             ));
         }
+        observe_page(&query, &page, examined)?;
         snapshot.tx.commit().await?;
         Ok(page)
     }
@@ -812,6 +816,11 @@ impl HistoryReader {
             } else {
                 db::window(&snapshot.tx, &body, start, length).await?
             };
+            tracing::debug!(target: "conversation_work",
+                history_body_bytes_read = bytes.len(), offset,
+                history_body_from_pending = snapshot.pending.bodies.contains_key(&body.id),
+                "history body range read"
+            );
             snapshot.tx.commit().await?;
             Ok(HistoryBodyWindow {
                 offset,
@@ -996,6 +1005,45 @@ impl HistoryReader {
         self.request_close();
         self.inner.tasks.wait().await;
     }
+}
+
+/// The whole wire envelope counts against the demand, including cut and continuation.
+/// Borrow the actual page so diagnostics never clone bodies or member collections.
+fn observe_page(query: &Query, page: &HistoryTimelinePage, examined: usize) -> Result<()> {
+    if !tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+        return Ok(());
+    }
+    let (bytes, scope) = match query {
+        Query::Group(group_id) => {
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct GroupPage<'a> {
+                cut: &'a HistoryCut,
+                group_id: &'a str,
+                members: &'a [HistoryTimelineEntry],
+                next: &'a Option<String>,
+            }
+            (
+                serde_json::to_vec(&GroupPage {
+                    cut: &page.cut,
+                    group_id,
+                    members: &page.entries,
+                    next: &page.next,
+                })?
+                .len(),
+                "group",
+            )
+        }
+        Query::Main => (serde_json::to_vec(page)?.len(), "main"),
+        _ => (serde_json::to_vec(page)?.len(), "business"),
+    };
+    tracing::debug!(target: "conversation_work",
+        timeline_examined_anchors = examined,
+        timeline_returned_bytes = bytes,
+        timeline_returned_rows = page.entries.len(), scope,
+        "history page read"
+    );
+    Ok(())
 }
 
 fn fits_entries(

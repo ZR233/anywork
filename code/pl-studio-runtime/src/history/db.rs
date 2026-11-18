@@ -484,6 +484,10 @@ pub(super) async fn insert(
                 ],
             ))
             .await?;
+            tracing::debug!(target: "conversation_work",
+                history_sql_write = 1u64, table = "history_body_chunks",
+                "history SQL write completed"
+            );
         }
     }
     Ok(())
@@ -537,10 +541,18 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
         ],
     ))
     .await?;
+    tracing::debug!(target: "conversation_work",
+        history_sql_write = 1u64, table = "history_events",
+        "history SQL write completed"
+    );
     Ok(())
 }
 pub(super) async fn insert_body_header(db: &impl ConnectionTrait, body: &Body) -> Result<()> {
     db.execute_raw(statement("INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) VALUES(?,?,?,?,?,?,?,?)", vec![body.id.clone().into(), body.owner.clone().into(), number(body.ordinal)?.into(), body.key.clone().into(), body.role.as_str().into(), number(body.length)?.into(), body.media_type.clone().into(), body.digest.clone().into()])).await?;
+    tracing::debug!(target: "conversation_work",
+        history_sql_write = 1u64, table = "history_bodies",
+        "history SQL write completed"
+    );
     Ok(())
 }
 

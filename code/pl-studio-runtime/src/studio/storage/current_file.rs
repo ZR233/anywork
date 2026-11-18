@@ -5,6 +5,7 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     path::PathBuf,
+    time::Instant,
 };
 
 use std::sync::Arc;
@@ -96,6 +97,7 @@ impl CurrentFile {
     }
 
     async fn load_with_bytes(&self) -> Result<Option<(ThreadCurrent, Vec<u8>)>> {
+        let started = Instant::now();
         let path = self.directory.join(CURRENT_FILE_NAME);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -116,6 +118,11 @@ impl CurrentFile {
             CancellationToken::new(),
         )
         .await?;
+        tracing::debug!(target: "current_work",
+            current_load_ms = started.elapsed().as_secs_f64() * 1000.0,
+            current_json_bytes = bytes.len(),
+            "current loaded without history"
+        );
         Ok(Some((current, bytes)))
     }
 
@@ -148,10 +155,19 @@ impl CurrentFile {
     /// A failed or interrupted overwrite may leave an incomplete file.
     pub(super) async fn save(&self, current: impl Into<Arc<ThreadCurrent>>) -> Result<()> {
         let current = current.into();
-        let bytes = tokio::task::spawn_blocking(move || serde_json::to_vec(&current))
-            .await
-            .context("join current encoder")?
-            .context("encode complete Thread current")?;
+        let (bytes, encode_elapsed) = tokio::task::spawn_blocking(move || {
+            let started = Instant::now();
+            let bytes = serde_json::to_vec(&current)?;
+            Ok::<_, serde_json::Error>((bytes, started.elapsed()))
+        })
+        .await
+        .context("join current encoder")?
+        .context("encode complete Thread current")?;
+        tracing::debug!(target: "current_work",
+            current_encode_ms = encode_elapsed.as_secs_f64() * 1000.0,
+            current_json_bytes = bytes.len(),
+            "current encoded"
+        );
         tokio::fs::create_dir_all(&self.directory)
             .await
             .with_context(|| format!("create current directory {}", self.directory.display()))?;

@@ -13,6 +13,7 @@ pub(super) struct Reservation {
 }
 pub(super) struct Accepted {
     pub event: HistoryEvent,
+    pub retained_bytes: usize,
     pub body_headers: Vec<super::db::Body>,
     pub _reservation: Arc<Reservation>,
 }
@@ -21,6 +22,7 @@ pub(super) struct Accepted {
 /// never event bodies. Reservation lifetime includes old roots still held by in-flight queries.
 #[derive(Default, Clone)]
 pub(super) struct Pending {
+    pub bytes: usize,
     pub events: BTreeMap<u64, Arc<Accepted>>,
     pub identities: BTreeMap<String, u64>,
     pub bodies: BTreeMap<String, (u64, usize)>,
@@ -122,6 +124,7 @@ impl Pending {
             self.bodies.insert(body.body_id.clone(), (seq, ordinal));
         }
         self.identities.insert(event.header.event_id.clone(), seq);
+        self.bytes += accepted.retained_bytes;
         self.events.insert(seq, accepted);
         Ok(())
     }
@@ -132,6 +135,7 @@ impl Pending {
                 continue;
             };
             let event = &accepted.event;
+            self.bytes -= accepted.retained_bytes;
             for key in Self::keys(event)? {
                 if let Some(index) = self.indexes.get_mut(&key) {
                     index.remove(&seq);
