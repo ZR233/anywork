@@ -786,7 +786,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       completion.completeError(error);
       return tracked;
     }
-    final task = _sendContinuation(intent);
+    final task = _sendContinuation(intent, resend: false);
     unawaited(
       task.then(completion.complete, onError: completion.completeError),
     );
@@ -795,10 +795,12 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
 
   /// 首次发送与已查明 NotAccepted 的原身份再发共用同一发送 helper。
   ///
-  /// 发送本次意图冻结的 thread/continuation/route CAS 与 OperationId。
+  /// 发送冻结的控制请求与原 OperationId。仅已证实 NotAccepted 的明确重试可设 [resend]；
+  /// 此时发送前的本地拒绝保留未知意图和原观察责任，不创建第二个操作。
   Future<ContinueThreadCommandReply> _sendContinuation(
-    _ContinuationIntent intent,
-  ) {
+    _ContinuationIntent intent, {
+    required bool resend,
+  }) {
     final operation = intent.operation!;
     final key = 'continue:${intent.threadId}';
     final intentKey = '${intent.threadId}:${intent.continuationId}';
@@ -816,7 +818,16 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             when status.blocksNewExecution) {
           throw _closedReadOnlyFailure;
         }
-
+        if (resend) {
+          _ensureOpen();
+          _throwIfAccessBlockedForThread(intent.threadId);
+          // Admission can change after the read proved NotAccepted and before this lane runs.
+          if (operation.state.value.failurePhase == OperationPhase.rejected) {
+            throw StateError(
+              'The continuation identity reached a terminal disposition',
+            );
+          }
+        }
         _throwIfExecutionClosed(intent.threadId);
         final recoveryIssue = _executionBlockerForThread(intent.threadId);
         if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
@@ -851,7 +862,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       } catch (error) {
         if (transportInvoked) {
           _failOperation(operation, error);
-        } else {
+        } else if (!resend) {
           // The allocated ID was never sent and must not be reconciled as an
           // unknown operation after a local lane-time rejection.
           operation.reject(error);
@@ -859,7 +870,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             _continuationIntents.remove(intentKey);
           }
         }
-        if (_isLatest(operation)) {
+        if (!resend && _isLatest(operation)) {
           _fail(key, intent.threadId, error);
         }
         rethrow;
@@ -1421,8 +1432,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
 
   /// 已存在意图按原身份回查一次；仅回查本身的 NotAccepted 才允许原身份再发。
   ///
-  /// 已受理就沿用原回执；NotAccepted 证明该身份从未被受理，此时在串行 lane 内
-  /// 复核准入后以冻结输入与**同一 OperationId** 再发，不换编号、不递归公共
+  /// 已受理就沿用原回执；NotAccepted 证明当前 owner 的原 token 尚未消费，此时在串行 lane 内
+  /// 复核准入后以冻结控制请求与**同一 OperationId** 再发，不换编号、不递归公共
   /// continueThread；其它回查错误原样上抛，保留未知结果，不盲目重发。
   Future<ContinueThreadCommandReply> _reconcileExistingIntent(
     _ContinuationIntent intent,
@@ -1925,7 +1936,7 @@ final class _StopFlight {
 ///
 /// Thread、continuation 身份、route CAS 与 OperationId 在首次创建时冻结；
 /// 回执丢失或页面离开后，这个身份仍然可用：再次显式点击先按它回查原操作，
-/// 仅当回查证明 NotAccepted 时才以同一身份再发冻结输入，不换编号，也不会同时
+/// 仅当回查证明 NotAccepted 时才以同一身份再发冻结控制请求，不换编号，也不会同时
 /// 存在两个操作。
 final class _ContinuationIntent {
   _ContinuationIntent({

@@ -190,13 +190,11 @@ impl StudioRuntime {
         let core_request = pl_core::thread::ResumeRequest {
             operation_id: request.operation_id.clone(),
             expected_continuation_token: request.expected_continuation_token.clone(),
-            request_digest: Some(
-                crate::studio::thread_projection::continuation_request_digest(
-                    &thread_id,
-                    &request.expected_continuation_token,
-                    Some(request.expected_model_route_revision),
-                ),
-            ),
+            request_digest: Some(resume_request_digest(
+                &thread_id,
+                &request.expected_continuation_token,
+                request.expected_model_route_revision,
+            )),
         };
         if let Some(thread) = self
             .session_of(&thread_id)
@@ -335,6 +333,21 @@ impl StudioRuntime {
             }
         }
     }
+}
+
+/// Freeze the caller's route CAS in the bounded RAM receipt; no persisted identity is consulted.
+fn resume_request_digest(thread_id: &str, token: &str, route_revision: u64) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"pl.studio.continuation-request\0");
+    hasher.update(thread_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(b"continuation");
+    hasher.update([0]);
+    hasher.update(token.as_bytes());
+    hasher.update([0]);
+    hasher.update(route_revision.to_le_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
 }
 
 fn control_error(error: pl_core::thread::ThreadError) -> anyhow::Error {

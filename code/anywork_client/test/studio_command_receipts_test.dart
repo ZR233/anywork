@@ -4418,7 +4418,7 @@ void main() {
     );
   });
 
-  test('a lost continue receipt resends the frozen input under the original identity', () async {
+  test('a lost continue receipt retries only after the current token proves NotAccepted', () async {
     final transport = _Transport();
     final client = await _client(transport);
     final entered = transport.continues.stream.first;
@@ -4433,6 +4433,29 @@ void main() {
     await expectLater(first, throwsA(isA<StateError>()));
     expect(operation.state.value.phase, OperationPhase.unknownOutcome);
 
+    const missing = StudioFailure(
+      code: StudioFailureCode.notFound,
+      message: 'No current continuation receipt is available',
+      retryable: false,
+      correlationId: 'missing-current-receipt',
+    );
+    transport.continuationReadFailure = missing;
+    for (final route in [9, 10]) {
+      await expectLater(
+        client.threadCommands.continueThread(
+          'thread',
+          _continuation(),
+          expectedModelRouteRevision: route,
+        ),
+        throwsA(same(missing)),
+      );
+    }
+    expect(transport.continueCalls, 1);
+    expect(transport.continuationReadCalls, 2);
+    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+    expect(client.mutations.latest('continue:thread')!.id, operation.id);
+    transport.continuationReadFailure = null;
+
     // 后续点击传不同 route：仍按原身份回查；回查 NotAccepted 证明从未受理后，
     // 以冻结的原 route CAS 与同一 OperationId 再发。
     transport.continuationReadReply = null;
@@ -4445,7 +4468,7 @@ void main() {
     expect(resent.operationId, call.operationId);
     expect(resent.expectedModelRouteRevision, 1);
     expect(resent.continuationId, call.continuationId);
-    expect(transport.continuationReadCalls, 1);
+    expect(transport.continuationReadCalls, 3);
     resent.reply.complete(
       ContinueThreadCommandReply(
         threadId: 'thread',

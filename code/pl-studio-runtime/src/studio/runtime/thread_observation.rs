@@ -5,8 +5,8 @@
 //! content into the shared session and broadcasts the same typed changes on a bounded feed that
 //! subscriptions only read. Billing, directory and terminal facts come from the same in-memory
 //! projection, so an ordinary commit neither parks this observer behind the owner's command queue
-//! nor waits for the disk. Durable history is read back once when the projection is installed on a
-//! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
+//! nor waits for the disk. Installation seeds the projection from the current Core owner and the
+//! channel's RAM identity/index; it never reads History to rebuild execution or report material.
 mod billing;
 mod directory;
 pub(in crate::studio) mod publication;

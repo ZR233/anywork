@@ -639,8 +639,10 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::Extensions(mutations, reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::Extensions(mutations, reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
