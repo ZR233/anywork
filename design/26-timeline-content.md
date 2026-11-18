@@ -111,6 +111,8 @@ controller 调用异常时，无法证明列表未被部分修改，因此终止
 
 关闭显示 owner 先撤销新需求，再取消自己拥有的 History/Current reader 与 body watches 并等待 join。一个 scope 失效不关闭共享 HistoryStore、其他页面或业务会话；迟到 Future 只能结算原 generation。
 
+Current 正文的打开失败或读取过期通过正文流交付，不作为原生句柄关闭失败长期保留。关闭等待实际取消与句柄回收，不等待显示消费者读取流终态；消费者从未监听或已暂停也必须能够收束。只有真实取消／关闭失败保留在原 owner 的清理报告中。
+
 ## 26.9 实时状态与展示组件
 
 状态栏从唯一 Current State 和当前显示窗口派生，直接消费 usage、live usage、activity、tools、todo/progress 和错误。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、activity 和原 owner 状态。无 active turn 的有效后台活动仍可显示。

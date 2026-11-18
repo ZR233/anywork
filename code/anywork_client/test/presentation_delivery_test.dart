@@ -142,6 +142,52 @@ void main() {
     },
   );
 
+  for (final duringOpen in [true, false]) {
+    test(
+      'Current body ${duringOpen ? "opening" : "stream"} failure is delivered without blocking cleanup',
+      () async {
+        const failure = StudioFailure(
+          code: StudioFailureCode.staleRevision,
+          reason: StudioFailureReason.staleCurrentReference,
+          message: 'Current reference expired',
+          retryable: false,
+          correlationId: 'expired-body',
+        );
+        final reader = TestCurrentReader();
+        reader.onWatchBody = (_, _) {
+          if (duringOpen) throw failure;
+          return Stream.error(failure);
+        };
+        final scope = CurrentReadScope(
+          threadId: 'thread',
+          generation: 1,
+          reader: reader,
+          isEligible: () => true,
+        );
+        final watch = scope.watchBody(reference: _content, range: _range);
+        await expectLater(watch.windows, emitsError(same(failure)));
+        expect((await scope.close()).complete, isTrue);
+      },
+    );
+  }
+
+  test(
+    'Closing a Current body watch does not require an output listener',
+    () async {
+      final source = StreamController<ContentWindow>();
+      final reader = TestCurrentReader()..onWatchBody = (_, _) => source.stream;
+      final scope = CurrentReadScope(
+        threadId: 'thread',
+        generation: 1,
+        reader: reader,
+        isEligible: () => true,
+      );
+      scope.watchBody(reference: _content, range: _range);
+      expect((await scope.close()).complete, isTrue);
+      await source.close();
+    },
+  );
+
   test(
     'History scope returns pure pages and does not mutate a presenter',
     () async {
