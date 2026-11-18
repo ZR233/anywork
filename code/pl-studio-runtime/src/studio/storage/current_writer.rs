@@ -745,11 +745,13 @@ async fn save(
         // This denotes completed capture, not a prediction of successful writing.
         current.saved_at = utc_millis();
         let captured = std::time::Instant::now();
-        ensure!(!cancellation.is_cancelled(), "current capture cancelled");
-        file.validate(&current, Some(&owner.epoch))?;
-        file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
-        ensure!(!cancellation.is_cancelled(), "current capture cancelled");
-        let result = publish(file, shared, Arc::new(current)).await;
+        let result = async {
+            ensure!(!cancellation.is_cancelled(), "current capture cancelled");
+            file.validate(&current, Some(&owner.epoch))?;
+            file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
+            ensure!(!cancellation.is_cancelled(), "current capture cancelled");
+            publish(file, shared, Arc::new(current)).await
+        }.await;
         tracing::debug!(target: "current_work",
             current_save_ms = captured.elapsed().as_secs_f64() * 1000.0,
             success = result.is_ok(),

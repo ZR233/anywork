@@ -1112,11 +1112,11 @@ mod tests {
         let snapshot = reader.snapshot().await?;
         store.flush().await?;
         assert!(store.inner.state.lock().unwrap().pending.events.is_empty());
-        assert_eq!(
-            store.status().pending_events,
-            1,
-            "the old immutable root still owns its reservation"
-        );
+        let status = store.status();
+        assert_eq!(status.pending_events, 0, "COMMIT has cleared the save debt");
+        assert_eq!(status.pending_bytes, 0);
+        assert_eq!(status.retained_events, 1, "the old query still owns RAM");
+        assert!(status.retained_bytes > 0);
         assert!(matches!(
             store
                 .accept_batch(&[HistoryEvent::new("second", HistoryEventKind::RunStarted, 2)])
@@ -1128,6 +1128,8 @@ mod tests {
             1
         );
         drop(snapshot);
+        assert_eq!(store.status().retained_events, 0);
+        assert_eq!(store.status().retained_bytes, 0);
         store
             .accept_batch(&[HistoryEvent::new("second", HistoryEventKind::RunStarted, 2)])
             .await?;

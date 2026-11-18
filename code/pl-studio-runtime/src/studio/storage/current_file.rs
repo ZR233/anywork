@@ -411,3 +411,6 @@ mod tests {
 
 #[cfg(test)]
 mod attachment_tests;
+
+#[cfg(test)]
+mod size_observation;

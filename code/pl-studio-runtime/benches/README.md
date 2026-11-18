@@ -1,5 +1,19 @@
 # 统计管线显式基准
 
+Current／History 的定向操作日志使用已有 `tracing`：按需启用
+`RUST_LOG=warn,current_work=debug,conversation_work=debug`。
+各指标的边界见 [存储契约](../../../design/15-session-storage.md)，日志只记录耗时、字节和计数，
+不记录正文、参数或凭据。实际完整 JSON、保存和 load 的显式观察复用单元测试中的真实文件 owner：
+
+```sh
+PL_CURRENT_SAMPLE_MIB=16 cargo test --locked -p pl-studio-runtime --lib studio::storage::current_file::size_observation::current_size_observation -- --exact --ignored --nocapture
+```
+
+分别以 1、16、64 运行，尺寸是代表样本而非生产上限，输出实际完整 JSON 字节。
+峰值内存从每个独立测试进程采样，覆盖夹具、保存和同时保留原 Current 的 load，
+在往返比较之前读取；不能当作纯解码增量或真实冷恢复内存。
+报告实际构建配置、机器、文件系统与采样条件；这些观察不能替代原生 Profile 首次布局和切换结果。
+
 本入口只由非默认 `benchmarks` feature 编译，不进入普通测试或默认 Clippy/CI。
 它调用实际 CallsStore、JSONL、费用查询、可靠 Thread writer 和 live projection；
 没有替代保存器、复制的归约器或降低同步保证的设置。
