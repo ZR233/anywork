@@ -2,6 +2,7 @@ import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_status_bar_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_external_history_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_status_bar_view_model.dart';
+import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/shared/studio_context_usage_ring.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -126,7 +127,7 @@ void main() {
     final container = ProviderScope.containerOf(
       tester.element(find.byType(AcpStatusBarConnector)),
     );
-    final changes = [0, 0, 0, 0];
+    final changes = [0, 0, 0, 0, 0];
     final subscriptions = [
       container.listen(
         acpStatusBarViewModelProvider('thread'),
@@ -144,6 +145,10 @@ void main() {
         acpExternalHistoryButtonViewModelProvider('thread'),
         (_, _) => changes[3]++,
       ),
+      container.listen(
+        acpThroughputViewModelProvider('thread'),
+        (_, _) => changes[4]++,
+      ),
     ];
     addTearDown(() {
       for (final subscription in subscriptions) {
@@ -155,6 +160,7 @@ void main() {
       tester.widget(find.byType(AcpContextUsageView)),
       tester.widget(find.byType(AcpCostReadoutView)),
       tester.widget(find.byType(AcpExternalHistoryButtonView)),
+      tester.widget(find.byType(TokenThroughputReadout)),
     ];
     var before = readouts();
     final layout = tester.widget(find.byType(AcpStatusBarView));
@@ -179,28 +185,28 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 0, 0]);
+    expectChanges([0, 0, 0, 0, 0]);
     h.update(_usage(25, 100, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 1, 0]);
+    expectChanges([0, 0, 1, 0, 0]);
     h.update(_usage(50, 100, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 1, 0, 0]);
+    expectChanges([0, 1, 0, 0, 0]);
     h.update(_usage(50, 100));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 1, 0]);
+    expectChanges([0, 0, 1, 0, 0]);
     h.update(_usage(50, 100, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 1, 0]);
+    expectChanges([0, 0, 1, 0, 0]);
     h.update(_usage(50, 0, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 1, 0, 0]);
+    expectChanges([0, 1, 0, 0, 0]);
     h.update(_usage(50, 100, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 1, 0, 0]);
+    expectChanges([0, 1, 0, 0, 0]);
     h.emit(const AcpInitializedEventView(_capabilities));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 0, 1]);
+    expectChanges([0, 0, 0, 1, 0]);
 
     // Equal metric values and unrelated capability changes do not notify.
     h.update(_usage(50, 100, amount: 2));
@@ -217,13 +223,13 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 0, 0]);
+    expectChanges([0, 0, 0, 0, 0]);
 
     final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
     h.port.run = run;
     await h.owner.send(const [AcpTextContentView(text: 'question')]);
     await tester.pumpAndSettle();
-    expectChanges([1, 0, 0, 0]);
+    expectChanges([1, 0, 0, 0, 0]);
     h.emit(
       const AcpUpdateEventView(
         AcpSessionNotificationView(
@@ -237,7 +243,20 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('≈ 40 词元/秒'), findsOneWidget);
-    expectChanges([0, 0, 0, 0]);
+    expectChanges([0, 0, 0, 0, 1]);
+    h.emit(
+      const AcpUpdateEventView(
+        AcpSessionNotificationView(
+          sessionId: acpRemoteFixture,
+          update: AcpAgentMessageChunkView(
+            AcpContentChunkView(content: AcpTextContentView(text: ' more')),
+          ),
+        ),
+        textPerformance: (estimatedOutputTokens: 8, responseMillis: 200),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expectChanges([0, 0, 0, 0, 0]);
     h.emit(
       AcpCompletedEventView(
         AcpCompletedRunView(
@@ -252,7 +271,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expectChanges([1, 0, 0, 0]);
+    expectChanges([1, 0, 0, 0, 1]);
     expect(find.text('≈ 40 词元/秒'), findsNothing);
     expect(
       tester
@@ -263,7 +282,7 @@ void main() {
     );
     h.emit(const AcpGapEventView(AcpObservationGapView.windowExceeded));
     await tester.pumpAndSettle();
-    expectChanges([1, 1, 1, 1]);
+    expectChanges([1, 1, 1, 1, 0]);
     expect(find.byType(ContextUsageRing), findsNothing);
     expect(find.textContaining('USD'), findsNothing);
     expect(h.port.calls.where((call) => call.$1 == 'open'), hasLength(1));

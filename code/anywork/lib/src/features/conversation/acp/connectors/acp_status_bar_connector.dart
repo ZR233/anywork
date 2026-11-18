@@ -1,12 +1,10 @@
 import 'dart:async';
 
-import 'package:anywork_client/models.dart' show tokenThroughput;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../status/thread_status_bar.dart';
 import '../state/acp_view_state.dart';
-import '../view_models/acp_session_view_model.dart';
 import '../view_models/acp_external_history_view_model.dart';
 import '../view_models/acp_status_bar_view_model.dart';
 import '../views/acp_status_bar_view.dart';
@@ -34,19 +32,10 @@ class _AcpThroughputConnector extends ConsumerWidget {
   final String threadId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final sample = ref.watch(
-      acpConversationStateProvider(threadId)
-          .select((state) => state.value?.textPerformance),
-    );
-    return TokenThroughputReadout(
-      estimated: true,
-      tokensPerSecond: tokenThroughput(
-        sample?.estimatedOutputTokens,
-        sample?.responseMillis,
-      ),
-    );
-  }
+  Widget build(BuildContext context, WidgetRef ref) => TokenThroughputReadout(
+    estimated: true,
+    tokensPerSecond: ref.watch(acpThroughputViewModelProvider(threadId)),
+  );
 }
 
 class AcpConnectionStatusConnector extends ConsumerWidget {

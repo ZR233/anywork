@@ -1,5 +1,6 @@
 import 'package:anywork_client/acp_sessions.dart';
-import 'package:riverpod/riverpod.dart' show ProviderListenableSelect;
+import 'package:anywork_client/models.dart' show tokenThroughput;
+import 'package:riverpod/riverpod.dart' show Provider, ProviderListenableSelect;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../state/acp_view_state.dart';
@@ -83,3 +84,17 @@ AcpCostViewState? acpCostViewModel(Ref ref, String threadId) {
         .select((asyncState) => asyncState.value?.latestUsage?.cost),
   );
 }
+
+/// Readout-only projection. Equal rates do not invalidate the speed widget.
+final acpThroughputViewModelProvider = Provider.autoDispose
+    .family<double?, String>((ref, threadId) {
+      return ref.watch(
+        acpConversationStateProvider(threadId).select((asyncState) {
+          final sample = asyncState.value?.textPerformance;
+          return tokenThroughput(
+            sample?.estimatedOutputTokens,
+            sample?.responseMillis,
+          );
+        }),
+      );
+    });
