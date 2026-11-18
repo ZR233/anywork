@@ -564,11 +564,11 @@ pub(crate) async fn query_account_usage(
 }
 
 async fn query_chatgpt_usage(provider: &AccountConfig) -> AccountUsageState {
-    use pl_model_auth::chatgpt::CodexUsageError;
+    use pl_model_openai::codex_usage::CodexUsageError;
     let Some(session) = &provider.chatgpt_session else {
         return AccountUsageState::missing_credential("ChatGPT sign-in is required");
     };
-    let result = match session.query_usage().await {
+    let result = match pl_model_openai::codex_usage::query_usage(session).await {
         Ok(usage) => usage,
         Err(CodexUsageError::Unsupported) => return AccountUsageState::unsupported(),
         Err(error) => {

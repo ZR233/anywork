@@ -422,7 +422,7 @@ impl StudioChildResources for StudioThreadFactory {
             }
         }
         let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::ModelRuntime::from_route(&profile.route)?,
+            pl_model::runtime::from_route(&profile.route)?,
             profile.route.reasoning_config(),
         )
         .with_hosted_tools(prepared_tools.hosted);

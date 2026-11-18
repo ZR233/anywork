@@ -171,7 +171,7 @@ pub fn plan_openai_web_search(
     let current_has_credential = current.endpoint.bearer_token.is_some();
     let hosted_capabilities = &current.endpoint.service_capabilities.web_search;
     let hosted_declared = hosted_capabilities.hosted_responses
-        && hosted_capabilities.hosted_dialect == HostedWebSearchDialect::OpenAiResponses;
+        && hosted_capabilities.hosted_dialect == HostedWebSearchDialect::RESPONSES;
     let hosted_supported = hosted_declared
         && current.model.binding.transport.protocol == WireApi::Responses
         && current.model.capabilities.supports_web_search()
@@ -181,7 +181,7 @@ pub fn plan_openai_web_search(
             configured_mode,
             current.account_id.clone(),
             Some(current.model.model_id.clone()),
-            HostedWebSearchDialect::OpenAiResponses,
+            HostedWebSearchDialect::RESPONSES,
         ));
     }
 
@@ -237,7 +237,11 @@ fn plan_openai_service(
             WebSearchAvailability::Disabled,
         ));
     }
-    let selection = standalone_backend(models, StandaloneWebSearchDialect::OpenAiSearchApi, None)?;
+    let selection = standalone_backend(
+        models,
+        pl_model::protocol::providers::openai::SEARCH_DIALECT,
+        None,
+    )?;
     if let Some(backend) = selection.backend {
         return Ok(available_service(
             configured_mode,
@@ -273,7 +277,7 @@ fn plan_deepseek_service(
     }
     let selection = standalone_backend(
         models,
-        StandaloneWebSearchDialect::DeepSeekToolsApi,
+        pl_model::protocol::providers::deepseek::SEARCH_DIALECT,
         preferred,
     )?;
     if let Some(backend) = selection.backend {
@@ -312,7 +316,7 @@ fn standalone_backend(
     let mut selection = StandaloneSelection::default();
     for (account_id, account) in candidate_order(models, preferred) {
         let capabilities = account.service_capabilities()?;
-        if capabilities.web_search.standalone != Some(dialect) {
+        if capabilities.web_search.standalone.as_ref() != Some(&dialect) {
             continue;
         }
         selection.any_declared = true;
@@ -320,7 +324,7 @@ fn standalone_backend(
             selection.missing_credential = true;
             continue;
         }
-        let Some((model, max_output_tokens)) = search_service_model(account, dialect)? else {
+        let Some((model, max_output_tokens)) = search_service_model(account, &dialect)? else {
             continue;
         };
         selection.backend = Some(WebSearchBackend {
@@ -358,10 +362,10 @@ fn candidate_order<'a>(
 /// 从 account 自身目录选择确定性、与会话模型无关的搜索服务模型。
 fn search_service_model(
     account: &AccountConfig,
-    dialect: StandaloneWebSearchDialect,
+    dialect: &StandaloneWebSearchDialect,
 ) -> Result<Option<(Option<String>, Option<u64>)>> {
     match dialect {
-        StandaloneWebSearchDialect::OpenAiSearchApi => {
+        id if *id == pl_model_openai::endpoint::SEARCH_DIALECT => {
             let models = account
                 .selectable_catalog(Some(pl_model::model::ModelType::Text))?
                 .into_iter()
@@ -379,7 +383,8 @@ fn search_service_model(
                 model.max_output_tokens,
             )))
         }
-        StandaloneWebSearchDialect::DeepSeekToolsApi => Ok(Some((None, None))),
+        id if *id == pl_model_openai_deepseek::endpoint::SEARCH_DIALECT => Ok(Some((None, None))),
+        _ => Ok(None),
     }
 }
 

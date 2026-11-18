@@ -2,10 +2,9 @@ use pl_model::{
     completion::{CompletionRequest, CompletionTraceContext, Message, MessageContent, MessageRole},
     config::{AccountId, AgentRoleId, ResolvedModelRoute},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::{PromptCacheDialect, ProtocolEndpoint},
+    protocol::PromptCacheDialect,
     runtime::{
-        ModelInvocationContext, ModelRuntime, ModelSession, ModelTurnClient, ModelTurnOptions,
-        ModelTurnRequest, PromptCacheScope,
+        ModelInvocationContext, ModelSession, ModelTurnOptions, ModelTurnRequest, PromptCacheScope,
     },
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
@@ -29,7 +28,7 @@ fn persisted_route_identity_is_unchanged_by_the_wire_key_format() {
     let binding = pl_model::runtime::ModelCallBinding {
         account_id: "account-a".into(),
         model_id: "model-a".into(),
-        protocol: pl_model::protocol::ProtocolKind::OpenAiCompatible,
+        protocol: pl_model::protocol::providers::openai::COMPATIBLE_ID,
         wire_api: pl_model::protocol::WireApi::Responses,
         isolation: "binding-fixture".into(),
         purpose: "turn".into(),
@@ -53,7 +52,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -61,7 +60,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             None,
             true,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -69,7 +68,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "child-a",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -77,7 +76,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "child-b",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -85,7 +84,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-b",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-b",
@@ -93,7 +92,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -101,7 +100,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             None,
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -109,7 +108,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             Some("title"),
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -117,7 +116,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             Some("tool-review"),
             false,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -125,7 +124,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             "root-a",
             Some("title"),
             true,
-            PromptCacheDialect::OpenAiPromptCacheKey,
+            PromptCacheDialect::ExplicitKey,
         ),
         (
             "account-a",
@@ -175,8 +174,10 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
     for (index, (account, model, thread, purpose, websocket, dialect)) in
         cases.into_iter().enumerate()
     {
-        let mut endpoint =
-            ProtocolEndpoint::compatible(format!("display-{index}"), fixture.base_url());
+        let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+            format!("display-{index}"),
+            fixture.base_url(),
+        );
         endpoint.service_capabilities.prompt_cache.dialect = dialect;
         let mut info = ModelInfo::compatible(model);
         info.binding.set_transport(if websocket {
@@ -193,7 +194,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             pricing_mode: pl_model::model::PricingMode::NoCharge,
             effort: None,
         };
-        let runtime = ModelRuntime::from_route(&route).unwrap();
+        let runtime = pl_model::runtime::from_route(&route).unwrap();
         let scope = purpose.map_or_else(
             || PromptCacheScope::thread(thread),
             |purpose| PromptCacheScope::auxiliary(thread, purpose),
@@ -205,7 +206,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             inference_id: format!("attempt-{index}"),
         };
         let text = if purpose.is_some() {
-            ModelTurnClient::from_route(&route)
+            pl_model::runtime::turn_client_from_route(&route)
                 .unwrap()
                 .complete_text(
                     &request().input,

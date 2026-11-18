@@ -1,0 +1,40 @@
+[package]
+name = "pl-model-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+live-examples = ["dep:clap", "tokio/signal"]
+
+[dependencies]
+clap = { workspace = true, optional = true }
+pl-model-openai-wire = { workspace = true }
+pl-agent-tool = { workspace = true }
+base64 = { workspace = true }
+image = { workspace = true }
+pl-core = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+pl-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+pl-model-openai = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+pl-model-auth = { workspace = true }
+tempfile = { workspace = true }
+pl-provider-fixture = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[[test]]
+name = "live_example"
+required-features = ["live-examples"]

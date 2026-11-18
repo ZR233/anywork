@@ -878,7 +878,7 @@ effort = "high"
             .expect("account keeps its id");
         assert_eq!(
             deepseek.protocol,
-            pl_model::protocol::ProtocolKind::DeepSeek
+            pl_model::protocol::providers::deepseek::ID
         );
         assert_eq!(
             deepseek.template.as_ref().map(|value| value.as_str()),

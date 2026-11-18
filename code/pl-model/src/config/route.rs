@@ -4,31 +4,11 @@ use std::collections::BTreeMap;
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{AccountConfig, AccountId, AccountModelKey, AgentRoleId, ImageGenerationService};
-use crate::model::ModelInfo;
+use super::{
+    AccountConfig, AccountId, AccountModelKey, AgentRoleId, ImageGenerationService,
+    ReasoningEffort, ResolvedModelRoute,
+};
 use crate::protocol::{ConnectionMode, ImageGenerationDialect, ProtocolEndpoint};
-
-/// 模型推理强度的产品无关字符串值。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(transparent)]
-pub struct ReasoningEffort(String);
-
-impl ReasoningEffort {
-    /// 创建推理强度值；最终有效性由具体模型参数目录校验。
-    pub fn new(effort: impl Into<String>) -> Self {
-        Self(effort.into())
-    }
-
-    /// 返回配置文本。
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    /// 是否明确禁用推理。
-    pub fn is_none(&self) -> bool {
-        self.as_str() == "none"
-    }
-}
 
 /// 动态 agent 角色到 account/model 的唯一路由。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,42 +62,6 @@ pub enum ModelRouteAvailability {
     },
 }
 
-/// 完成引用校验后可直接创建模型 account 的角色路由。
-#[derive(Debug, Clone)]
-pub struct ResolvedModelRoute {
-    pub pricing_mode: crate::model::PricingMode,
-    pub role: AgentRoleId,
-    pub account_id: AccountId,
-    pub endpoint: ProtocolEndpoint,
-    pub model: ModelInfo,
-    pub context: crate::model::ModelContextResolution,
-    pub effort: Option<ReasoningEffort>,
-}
-
-impl ResolvedModelRoute {
-    /// 返回该已解析路由的稳定目录身份。
-    pub fn key(&self) -> AccountModelKey {
-        AccountModelKey {
-            account_id: self.account_id.as_str().to_owned(),
-            model_id: self.model.model_id.clone(),
-        }
-    }
-
-    /// Interprets this route's reasoning choice once for model request preparation.
-    pub fn reasoning_config(&self) -> Option<crate::completion::ReasoningConfig> {
-        self.effort
-            .as_ref()
-            .map(|effort| crate::completion::ReasoningConfig {
-                effort: Some(effort.as_str().to_owned()),
-                summary: Some(if effort.is_none() {
-                    crate::completion::ReasoningSummary::Disabled
-                } else {
-                    crate::completion::ReasoningSummary::Enabled
-                }),
-            })
-    }
-}
-
 /// 一次图像生成调用的 account 后端。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageGenerationBackend {
@@ -160,7 +104,9 @@ impl AgentModelConfig {
             };
             any_declared = true;
             if service.models.is_empty()
-                || (account.resolved_bearer_token().is_none() && account.chatgpt_session.is_none())
+                || (account.resolved_bearer_token().is_none()
+                    && account.chatgpt_session.is_none()
+                    && account.delegated_authorization.is_none())
             {
                 continue;
             }

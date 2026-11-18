@@ -5,6 +5,14 @@ members = [
     "code/pl-protocol",
     "code/pl-trace",
     "code/pl-model",
+    "code/model-protocols/pl-model-openai-mimo",
+    "code/model-protocols/pl-model-openai-xai",
+    "code/model-protocols/pl-model-openai-deepseek",
+    "code/model-protocols/pl-model-openai-glm",
+    "code/model-protocols/pl-model-openai",
+    "code/model-protocols/pl-model-types",
+    "code/model-protocols/pl-model-openai-wire",
+    "code/model-protocols/pl-model-runtime",
     "code/pl-model-auth",
     "code/pl-acp",
     "code/pl-provider-fixture",
@@ -185,6 +193,14 @@ pl-studio-update = { path = "code/pl-studio-update" }
 pl-studio-statistics = { path = "code/pl-studio-statistics" }
 pl-studio-mcp = { path = "code/pl-studio-mcp" }
 pl-model = { path = "code/pl-model" }
+pl-model-openai-mimo = { path = "code/model-protocols/pl-model-openai-mimo" }
+pl-model-openai-xai = { path = "code/model-protocols/pl-model-openai-xai" }
+pl-model-openai-deepseek = { path = "code/model-protocols/pl-model-openai-deepseek" }
+pl-model-openai-glm = { path = "code/model-protocols/pl-model-openai-glm" }
+pl-model-openai = { path = "code/model-protocols/pl-model-openai" }
+pl-model-types = { path = "code/model-protocols/pl-model-types" }
+pl-model-openai-wire = { path = "code/model-protocols/pl-model-openai-wire" }
+pl-model-runtime = { path = "code/model-protocols/pl-model-runtime" }
 pl-model-auth = { path = "code/pl-model-auth" }
 pl-acp = { path = "code/pl-acp" }
 pl-provider-fixture = { path = "code/pl-provider-fixture" }

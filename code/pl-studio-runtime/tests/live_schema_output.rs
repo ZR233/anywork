@@ -50,8 +50,9 @@ async fn live_schema_tool_output_continues() -> Result<()> {
         "selected model does not use the Responses protocol"
     );
     let connection_mode = model.binding.transport.default_connection_mode;
-    let runtime = ModelRuntime::new_with_account_id(&account_id, account.to_endpoint()?, model)?
-        .with_pricing_mode(account.billing_kind()?.into());
+    let runtime =
+        pl_model::runtime::new_with_account_id(&account_id, account.to_endpoint()?, model)?
+            .with_pricing_mode(account.billing_kind()?.into());
 
     let definition = pl_agent_tool::ToolDefinition::json(
         "schema_probe",

@@ -69,7 +69,7 @@ impl AccountTemplateKind {
         Ok(self
             .default_models()?
             .into_iter()
-            .map(|model| model.model_id)
+            .map(|model| model.0.model_id)
             .collect())
     }
 

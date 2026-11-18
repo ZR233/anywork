@@ -1070,8 +1070,7 @@ mod mode_migration_tests {
             completion::OpenAiCompactionMode,
             config::{AccountId, ResolvedModelRoute},
             model::ModelInfo,
-            protocol::ProtocolEndpoint,
-            runtime::{ModelRuntime, ThreadModel},
+            runtime::ThreadModel,
         };
         use std::sync::Arc;
 
@@ -1082,7 +1081,10 @@ mod mode_migration_tests {
             .context("built-in simple Mode")?;
         let mut model_info = ModelInfo::compatible("migration-model");
         model_info.base_instructions = "frozen migration base".into();
-        let endpoint = ProtocolEndpoint::compatible("migration fixture", "http://127.0.0.1:0");
+        let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+            "migration fixture",
+            "http://127.0.0.1:0",
+        );
         let route = ResolvedModelRoute {
             pricing_mode: Default::default(),
             role: crate::config::root_agent_route_id(),
@@ -1092,7 +1094,7 @@ mod mode_migration_tests {
             model: model_info,
             effort: None,
         };
-        let model = ThreadModel::new(ModelRuntime::from_route(&route)?, None);
+        let model = ThreadModel::new(pl_model::runtime::from_route(&route)?, None);
         let snapshot = InstructionSnapshot {
             agent: agent_identity(
                 "root:main",
@@ -1353,7 +1355,7 @@ mod mode_migration_tests {
         use pl_model::{
             config::{AccountConfig, AccountId, ModelRouteConfig},
             model::{ModelInfo, ModelTransportProfile},
-            protocol::{HistoryInstructionRole, ProtocolEndpoint},
+            protocol::HistoryInstructionRole,
         };
 
         let temp = tempfile::tempdir()?;
@@ -1373,7 +1375,10 @@ mod mode_migration_tests {
             .set_transport(ModelTransportProfile::responses_http());
         model.capabilities.instruction_snapshot_overrides = true;
         model.base_instructions = "frozen mode migration base".into();
-        let mut endpoint = ProtocolEndpoint::compatible("mode migration", "http://127.0.0.1:0");
+        let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+            "mode migration",
+            "http://127.0.0.1:0",
+        );
         endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
         let mut config = StudioConfig::default_config()?;
         config.models.accounts.clear();
@@ -3130,7 +3135,6 @@ mod mode_migration_tests {
         use pl_model::{
             config::{AccountConfig, AccountId, ModelRouteConfig},
             model::ModelInfo,
-            protocol::ProtocolEndpoint,
         };
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{DatabaseBackend, Statement};
@@ -3152,7 +3156,7 @@ mod mode_migration_tests {
         config.models.accounts.insert(
             account_id,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "Archive fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),

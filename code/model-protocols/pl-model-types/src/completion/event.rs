@@ -1,0 +1,328 @@
+use crate::completion::CompletionPresentationItem;
+use crate::completion::ModelTextChannel;
+use crate::completion::ToolCallCaller;
+use crate::model::UsageReport;
+use pl_core::context::OpaquePayload;
+use serde::{Deserialize, Serialize};
+
+/// Provider-neutral Web Search 活动。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WebSearchAction {
+    Search {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        queries: Vec<String>,
+    },
+    OpenPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+    FindInPage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+    },
+    #[default]
+    Other,
+}
+
+/// Provider 无关的模型流式事件。
+///
+/// provider runtime 把私有 wire event 转换为该事件流，再由唯一 accumulator
+/// 累计为 `CompletionResponse`；该状态机不属于宿主 API。
+#[derive(Debug, Clone)]
+pub enum ModelStreamEvent<Replay = OpaquePayload> {
+    ResponseStarted {
+        response_id: Option<String>,
+    },
+    ResponseModelObserved {
+        model: String,
+        terminal: bool,
+    },
+    BlockOpened {
+        id: String,
+        kind: ModelBlockKind,
+        provider_metadata: Option<serde_json::Value>,
+        /// Provider item/part identity carried by the event that created this block.
+        provider: Option<ProviderBlockIdentity>,
+    },
+    BlockDelta {
+        id: String,
+        kind: ModelBlockKind,
+        field: ModelBlockField,
+        delta: String,
+        section_index: Option<u32>,
+        provider: Option<ProviderBlockIdentity>,
+    },
+    BlockClosed {
+        id: String,
+        kind: ModelBlockKind,
+        authoritative_content: Option<ModelBlockContent>,
+        provider_metadata: Option<serde_json::Value>,
+        provider: Option<ProviderBlockIdentity>,
+    },
+    ReasoningRawDelta {
+        id: String,
+        content_index: u32,
+        delta: String,
+        /// Provider item/part identity carried by the source event when the adapter knows it.
+        ///
+        /// Raw reasoning is one provider part like any other, so a delta that reports the item it
+        /// belongs to keeps observing the same identity its terminal item finalizes. `None` means
+        /// the adapter reports no provider item boundaries at all (chat-style `reasoning_content`),
+        /// which is observed as the request-scoped raw reasoning channel instead of a fake item.
+        provider: Option<ProviderBlockIdentity>,
+    },
+    ToolInputStarted {
+        stream_id: Option<String>,
+        item_id: String,
+        call_id: Option<String>,
+        name: Option<String>,
+        payload_kind: ToolInputPayloadKind,
+    },
+    ToolInputDelta {
+        stream_id: Option<String>,
+        item_id: String,
+        call_id: Option<String>,
+        name: Option<String>,
+        payload_delta: ToolInputDeltaPayload,
+    },
+    ToolInputCompleted {
+        stream_id: Option<String>,
+        item_id: String,
+        call_id: Option<String>,
+        name: Option<String>,
+        payload: Option<ToolInputDeltaPayload>,
+    },
+    ToolCallReady {
+        stream_id: Option<String>,
+        item_id: String,
+        call_id: Option<String>,
+        name: Option<String>,
+        payload: Option<ToolInputDeltaPayload>,
+    },
+    ToolCallCaller {
+        item_id: String,
+        caller: ToolCallCaller,
+    },
+    NativeContext {
+        payload: OpaquePayload,
+    },
+    PresentationItem {
+        item: CompletionPresentationItem,
+        /// None is a contradictory provider terminal status, rejected by the accumulator.
+        state: Option<crate::ModelMemberState>,
+    },
+    Replay(Replay),
+    WebSearchStarted {
+        item_id: String,
+        action: WebSearchAction,
+    },
+    WebSearchCompleted {
+        item_id: String,
+        action: WebSearchAction,
+        results: Option<Vec<serde_json::Value>>,
+    },
+    Usage(UsageReport),
+    Completed {
+        response_id: Option<String>,
+    },
+    Failed {
+        request_id: Option<String>,
+        code: Option<String>,
+        http_status: Option<u16>,
+        retry_after_ms: Option<u64>,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelBlockKind {
+    Text { channel: ModelTextChannel },
+    ReasoningSummary,
+}
+
+/// Provider identity of the item part a block streams.
+///
+/// The adapter that opened the block reads these fields from the source event (the provider item id
+/// plus the content-part index). Consumers use them verbatim as the observation identity and never
+/// parse the block `id` to recover identity; the part kind is implied by [`ModelBlockKind`]
+/// (`Text` streams `OutputText`, `ReasoningSummary` streams `SummaryText`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderBlockIdentity {
+    pub item_id: String,
+    pub content_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ModelBlockField {
+    Text,
+    ReasoningSummary,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModelBlockContent {
+    Text(String),
+    ReasoningSummary(Vec<String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolInputPayloadKind {
+    FunctionArguments,
+    CustomInput,
+}
+
+#[derive(Debug, Clone)]
+pub enum ToolInputDeltaPayload {
+    FunctionArguments(String),
+    CustomInput(String),
+}
+
+impl ToolInputDeltaPayload {
+    pub fn kind(&self) -> ToolInputPayloadKind {
+        match self {
+            Self::FunctionArguments(_) => ToolInputPayloadKind::FunctionArguments,
+            Self::CustomInput(_) => ToolInputPayloadKind::CustomInput,
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        match self {
+            Self::FunctionArguments(delta) | Self::CustomInput(delta) => delta,
+        }
+    }
+}
+
+impl<Replay> ModelStreamEvent<Replay> {
+    pub fn first_output_source(&self) -> Option<pl_protocol::FirstOutputSource> {
+        use pl_protocol::FirstOutputSource::{CompletedToolInput, Incremental};
+        match self {
+            Self::BlockDelta { delta, .. } | Self::ReasoningRawDelta { delta, .. } => {
+                (!delta.is_empty()).then_some(Incremental)
+            }
+            Self::ToolInputDelta { payload_delta, .. } => {
+                (!payload_delta.text().is_empty()).then_some(Incremental)
+            }
+            Self::ToolInputCompleted { payload, .. } | Self::ToolCallReady { payload, .. } => {
+                payload
+                    .as_ref()
+                    .filter(|payload| !payload.text().is_empty())
+                    .map(|_| CompletedToolInput)
+            }
+            Self::ResponseStarted { .. }
+            | Self::ResponseModelObserved { .. }
+            | Self::BlockOpened { .. }
+            | Self::BlockClosed { .. }
+            | Self::ToolInputStarted { .. }
+            | Self::ToolCallCaller { .. }
+            | Self::NativeContext { .. }
+            | Self::PresentationItem { .. }
+            | Self::Replay(_)
+            | Self::WebSearchStarted { .. }
+            | Self::WebSearchCompleted { .. }
+            | Self::Usage(_)
+            | Self::Completed { .. }
+            | Self::Failed { .. } => None,
+        }
+    }
+
+    pub fn text_started(
+        id: String,
+        channel: ModelTextChannel,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockOpened {
+            id,
+            kind: ModelBlockKind::Text { channel },
+            provider_metadata: None,
+            provider,
+        }
+    }
+
+    pub fn text_delta(
+        id: String,
+        channel: ModelTextChannel,
+        delta: String,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockDelta {
+            id,
+            kind: ModelBlockKind::Text { channel },
+            field: ModelBlockField::Text,
+            delta,
+            section_index: None,
+            provider,
+        }
+    }
+
+    pub fn text_completed(
+        id: String,
+        channel: ModelTextChannel,
+        authoritative_text: Option<String>,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockClosed {
+            id,
+            kind: ModelBlockKind::Text { channel },
+            authoritative_content: authoritative_text.map(ModelBlockContent::Text),
+            provider_metadata: None,
+            provider,
+        }
+    }
+
+    pub fn reasoning_summary_started(
+        id: String,
+        provider_metadata: Option<serde_json::Value>,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockOpened {
+            id,
+            kind: ModelBlockKind::ReasoningSummary,
+            provider_metadata,
+            provider,
+        }
+    }
+
+    pub fn reasoning_summary_delta(
+        id: String,
+        section_index: u32,
+        delta: String,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockDelta {
+            id,
+            kind: ModelBlockKind::ReasoningSummary,
+            field: ModelBlockField::ReasoningSummary,
+            delta,
+            section_index: Some(section_index),
+            provider,
+        }
+    }
+
+    pub fn reasoning_summary_completed(
+        id: String,
+        provider_metadata: Option<serde_json::Value>,
+        authoritative_summary: Option<Vec<String>>,
+        provider: Option<ProviderBlockIdentity>,
+    ) -> Self {
+        Self::BlockClosed {
+            id,
+            kind: ModelBlockKind::ReasoningSummary,
+            authoritative_content: authoritative_summary.map(ModelBlockContent::ReasoningSummary),
+            provider_metadata,
+            provider,
+        }
+    }
+}
+
+impl ToolInputPayloadKind {
+    pub fn empty_payload(self) -> ToolInputDeltaPayload {
+        match self {
+            Self::FunctionArguments => ToolInputDeltaPayload::FunctionArguments(String::new()),
+            Self::CustomInput => ToolInputDeltaPayload::CustomInput(String::new()),
+        }
+    }
+}

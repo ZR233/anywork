@@ -105,6 +105,7 @@ _RUST_EXACT = frozenset(
 _RUST_PREFIXES = (
     "code/pl-",
     "code/tools/",
+    "code/model-protocols/",
     "code/anywork/rust/",
     "code/anywork/lib/src/rust/",
 )
@@ -113,6 +114,8 @@ _RUST_PREFIXES = (
 _DESKTOP_RUST_PREFIXES = (
     "code/pl-core/",
     "code/pl-model/",
+    "code/pl-model-auth/",
+    "code/model-protocols/",
     "code/pl-studio-runtime/",
 )
 
@@ -158,7 +161,7 @@ def _is_pure_test_path(path: str) -> bool:
     # Test-local helpers and fixture data have the same consumers as their
     # enclosing Cargo integration tests. A module named src/tests.rs (or a
     # src/tests/ directory) has no such meaning without inspecting its cfg.
-    if not _has_prefix(path, ("code/pl-", "code/tools/", "code/anywork/rust/")):
+    if not _has_prefix(path, ("code/pl-", "code/tools/", "code/model-protocols/", "code/anywork/rust/")):
         return False
     package, separator, _ = path.partition("/tests/")
     root = Path(__file__).resolve().parents[2]

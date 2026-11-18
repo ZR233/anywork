@@ -4042,11 +4042,17 @@ dependencies = [
  "base64 0.23.1",
  "futures",
  "hex",
- "hyper",
  "image",
  "pl-agent-tool",
  "pl-core",
  "pl-model-auth",
+ "pl-model-openai",
+ "pl-model-openai-deepseek",
+ "pl-model-openai-glm",
+ "pl-model-openai-mimo",
+ "pl-model-openai-wire",
+ "pl-model-openai-xai",
+ "pl-model-runtime",
  "pl-protocol",
  "pl-provider-fixture",
  "pretty_assertions",
@@ -4055,13 +4061,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "sse-stream 0.3.0",
  "tempfile",
- "thiserror 2.0.21",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
- "tracing",
  "utoipa",
 ]
 
@@ -4070,12 +4073,14 @@ name = "pl-model-auth"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "clap",
  "fs4",
  "futures",
  "hyper",
  "hyper-util",
  "oauth2",
  "openidconnect",
+ "pl-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -4084,6 +4089,147 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "pl-model-openai"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "futures",
+ "pl-model-auth",
+ "pl-model-openai-wire",
+ "pl-model-runtime",
+ "pl-protocol",
+ "pl-tool-search",
+ "pretty_assertions",
+ "reqwest",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "pl-model-openai-deepseek"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "clap",
+ "pl-model-openai-wire",
+ "pl-model-runtime",
+ "pl-protocol",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "pl-model-openai-glm"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pl-model-openai-wire",
+ "pl-model-runtime",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "pl-model-openai-mimo"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pl-model-openai-wire",
+ "pl-model-runtime",
+ "tokio",
+]
+
+[[package]]
+name = "pl-model-openai-wire"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures",
+ "hyper",
+ "pl-agent-tool",
+ "pl-core",
+ "pl-model-types",
+ "pl-protocol",
+ "pretty_assertions",
+ "reqwest",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sse-stream 0.3.0",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
+name = "pl-model-openai-xai"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "pl-model-openai-wire",
+ "pl-model-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "pl-model-runtime"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "clap",
+ "futures",
+ "hex",
+ "image",
+ "pl-agent-tool",
+ "pl-core",
+ "pl-model-auth",
+ "pl-model-openai",
+ "pl-model-openai-wire",
+ "pl-protocol",
+ "pl-provider-fixture",
+ "pretty_assertions",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "pl-model-types"
+version = "0.1.0"
+dependencies = [
+ "pl-core",
+ "pl-protocol",
+ "reqwest",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
  "utoipa",
 ]
 
@@ -4289,6 +4435,7 @@ dependencies = [
  "pl-lsp",
  "pl-model",
  "pl-model-auth",
+ "pl-model-openai",
  "pl-protocol",
  "pl-provider-fixture",
  "pl-remote-helper",
@@ -4417,6 +4564,8 @@ dependencies = [
  "pl-core",
  "pl-lsp",
  "pl-model",
+ "pl-model-openai",
+ "pl-model-openai-deepseek",
  "pl-output",
  "pl-patch",
  "pl-protocol",

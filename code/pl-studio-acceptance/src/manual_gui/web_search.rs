@@ -16,8 +16,7 @@
 
 use super::*;
 use pl_model::protocol::{
-    HostedWebSearchDialect, ProtocolEndpoint, ProtocolKind, ProtocolServiceCapabilities,
-    StandaloneWebSearchDialect, WebSearchServiceCapabilities,
+    HostedWebSearchDialect, ProtocolId, ProtocolServiceCapabilities, WebSearchServiceCapabilities,
 };
 use pl_studio_runtime::config::{
     McpServerTransport, StudioMcpServerEntry as McpServerConfig, WebSearchContextSize,
@@ -85,8 +84,8 @@ fn openai_capabilities() -> ProtocolServiceCapabilities {
     ProtocolServiceCapabilities {
         web_search: WebSearchServiceCapabilities {
             hosted_responses: false,
-            hosted_dialect: HostedWebSearchDialect::OpenAiResponses,
-            standalone: Some(StandaloneWebSearchDialect::OpenAiSearchApi),
+            hosted_dialect: HostedWebSearchDialect::RESPONSES,
+            standalone: Some(pl_model::protocol::providers::openai::SEARCH_DIALECT),
         },
         ..ProtocolServiceCapabilities::default()
     }
@@ -96,9 +95,9 @@ fn deepseek_capabilities() -> ProtocolServiceCapabilities {
     ProtocolServiceCapabilities {
         web_search: WebSearchServiceCapabilities {
             hosted_responses: false,
-            hosted_dialect: HostedWebSearchDialect::DeepSeekResponses,
+            hosted_dialect: pl_model::protocol::providers::deepseek::HOSTED_SEARCH_DIALECT,
             // DeepSeek standalone search uses the official Search & Fetch tools API.
-            standalone: Some(StandaloneWebSearchDialect::DeepSeekToolsApi),
+            standalone: Some(pl_model::protocol::providers::deepseek::SEARCH_DIALECT),
         },
         ..ProtocolServiceCapabilities::default()
     }
@@ -106,14 +105,14 @@ fn deepseek_capabilities() -> ProtocolServiceCapabilities {
 
 fn build_provider(
     name: &str,
-    adapter: ProtocolKind,
+    adapter: ProtocolId,
     base_url: &str,
     credential_env: Option<&str>,
     model_id: &str,
     capabilities: ProtocolServiceCapabilities,
     model_web_search: bool,
 ) -> AccountConfig {
-    let mut endpoint = ProtocolEndpoint::compatible(name, base_url);
+    let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(name, base_url);
     endpoint.protocol = adapter;
     endpoint.service_capabilities = capabilities;
     let mut model = ModelInfo::compatible(model_id);
@@ -141,7 +140,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             OPENAI_PROVIDER_ID,
             build_provider(
                 "Fixture OpenAI",
-                ProtocolKind::OpenAiCompatible,
+                pl_model::protocol::providers::openai::COMPATIBLE_ID,
                 &base_url,
                 search_env,
                 OPENAI_MODEL,
@@ -153,7 +152,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             DEEPSEEK_PROVIDER_ID,
             build_provider(
                 "Fixture DeepSeek",
-                ProtocolKind::DeepSeek,
+                pl_model::protocol::providers::deepseek::ID,
                 &base_url,
                 deepseek_env,
                 DEEPSEEK_MODEL,
@@ -165,7 +164,7 @@ pub(super) fn write_config(home: &Path, ready: &FixtureReady, fault: WebSearchFa
             ZHIPU_PROVIDER_ID,
             build_provider(
                 "Fixture GLM",
-                ProtocolKind::Zhipu,
+                pl_model::protocol::providers::glm::ID,
                 &base_url,
                 None,
                 ZHIPU_MODEL,

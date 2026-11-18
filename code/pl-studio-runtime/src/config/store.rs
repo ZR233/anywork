@@ -554,7 +554,6 @@ mod tests {
     use super::*;
     use crate::WebSearchMode;
     use pl_model::config::{AccountCapabilitySelection, AccountId};
-    use pl_model::protocol::StandaloneWebSearchDialect;
 
     #[test]
     fn cli_loader_requires_existing_main_and_preserves_pending_credentials() {
@@ -1092,7 +1091,7 @@ mod tests {
         let deepseek = &loaded.models.accounts[&AccountId::new("deepseek").unwrap()];
         assert_eq!(
             deepseek.protocol,
-            pl_model::protocol::ProtocolKind::DeepSeek
+            pl_model::protocol::providers::deepseek::ID
         );
         assert_eq!(
             deepseek.template.as_ref().map(|value| value.as_str()),
@@ -1388,7 +1387,7 @@ mod tests {
         );
         assert_eq!(
             capabilities.web_search.standalone,
-            Some(StandaloneWebSearchDialect::DeepSeekToolsApi)
+            Some(pl_model::protocol::providers::deepseek::SEARCH_DIALECT)
         );
         assert!(!capabilities.web_search.hosted_responses);
         assert_eq!(loaded.mode_model_routes, config.mode_model_routes);

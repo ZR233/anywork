@@ -3,7 +3,6 @@ use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, AgentRoleId, ModelRouteConfig},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
 };
 use pl_provider_fixture::agent_definitions::{
     CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
@@ -47,7 +46,10 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     config.models.accounts.insert(
         root.clone(),
         AccountConfig::from_explicit_models(
-            ProtocolEndpoint::compatible("Agent observation root", base_url),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "Agent observation root",
+                base_url,
+            ),
             vec![root_model, compact, future],
         ),
     );
@@ -186,12 +188,15 @@ pub(super) fn account_models_patch(
         AccountModelsPatch::Set {
             models: models
                 .into_iter()
-                .map(|model| AccountModelUpdate {
-                    model_id: model.model_id,
-                    display_name: model.display_name,
-                    wire_api: "responses".into(),
-                    context_window: model.context_window,
-                    max_output_tokens: model.max_output_tokens,
+                .map(|model| {
+                    let metadata = model.0;
+                    AccountModelUpdate {
+                        model_id: metadata.model_id,
+                        display_name: metadata.display_name,
+                        wire_api: "responses".into(),
+                        context_window: metadata.context_window,
+                        max_output_tokens: metadata.max_output_tokens,
+                    }
                 })
                 .collect(),
         },

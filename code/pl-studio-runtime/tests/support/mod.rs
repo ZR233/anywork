@@ -2,7 +2,6 @@ use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
@@ -267,7 +266,10 @@ impl Environment {
             config.models.accounts.insert(
                 AccountId::new(account)?,
                 AccountConfig::from_explicit_models(
-                    ProtocolEndpoint::compatible(account, provider.base_url()),
+                    pl_model::protocol::providers::openai::compatible_endpoint(
+                        account,
+                        provider.base_url(),
+                    ),
                     vec![model],
                 ),
             );

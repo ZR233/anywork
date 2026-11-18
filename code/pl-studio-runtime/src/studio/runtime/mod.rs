@@ -517,7 +517,6 @@ pub(crate) mod bot_archive_test_host {
     use anyhow::Result;
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
     use pl_model::model::ModelInfo;
-    use pl_model::protocol::ProtocolEndpoint;
 
     use super::StudioRuntime;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
@@ -571,7 +570,7 @@ pub(crate) mod bot_archive_test_host {
             config.models.accounts.insert(
                 account_id,
                 AccountConfig::from_explicit_models(
-                    ProtocolEndpoint::compatible(
+                    pl_model::protocol::providers::openai::compatible_endpoint(
                         "Bot archive fixture",
                         format!("http://{}", endpoint.local_addr()?),
                     ),

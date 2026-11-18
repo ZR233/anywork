@@ -195,7 +195,6 @@ mod startup_fault_tests {
         use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
         use pl_model::model::ModelInfo;
-        use pl_model::protocol::ProtocolEndpoint;
 
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
@@ -215,7 +214,7 @@ mod startup_fault_tests {
         config.models.accounts.insert(
             account_id,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "Storage fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
@@ -292,7 +291,6 @@ mod startup_fault_tests {
         use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
         use pl_model::model::ModelInfo;
-        use pl_model::protocol::ProtocolEndpoint;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let original = temp.path().join("original-project");
@@ -309,7 +307,7 @@ mod startup_fault_tests {
         config.models.accounts.insert(
             account,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "Recovery fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),

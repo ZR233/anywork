@@ -4,11 +4,9 @@ mod identity;
 pub use identity::{ChatGptAccountInfo, CodexAccountInfo};
 mod http;
 mod session;
-mod usage;
 
 pub use authorization::ChatGptAuthorization;
 pub use session::{ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession};
-pub use usage::{CodexQuotaWindow, CodexUsage, CodexUsageError};
 
 pub const CHATGPT_RESOURCE: &str = "https://api.openai.com/v1";
 pub const CHATGPT_ISSUER: &str = "https://auth.openai.com";

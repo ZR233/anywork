@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use pl_model::completion::ReasoningConfig;
 use pl_model::model::ResponsesMaxTokensField;
-use pl_model::runtime::{ModelTurnClient, ModelTurnOptions, ModelTurnRequest};
+use pl_model::runtime::{ModelTurnOptions, ModelTurnRequest};
 
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
@@ -313,7 +313,7 @@ async fn generate_title(
     let reasoning_effort = reasoning
         .as_ref()
         .and_then(|reasoning| reasoning.effort.clone());
-    let client = ModelTurnClient::from_route(&route)?;
+    let client = pl_model::runtime::turn_client_from_route(&route)?;
     let input = vec![pl_model::completion::ModelContextItem::from(
         pl_model::completion::Message {
             role: pl_model::completion::MessageRole::User,

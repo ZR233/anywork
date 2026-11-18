@@ -771,7 +771,6 @@ mod mixed_tests {
     -> Result<()> {
         use pl_model::config::{AccountConfig, AccountId};
         use pl_model::model::ModelInfo;
-        use pl_model::protocol::ProtocolEndpoint;
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
 
         let fixture = Fixture::new("replay").await?;
@@ -790,7 +789,7 @@ mod mixed_tests {
         fixture.runtime.config_runtime.update(current.revision, |config| {
             let mut config = config.clone();
             config.models.accounts.insert(account_id.clone(), AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible("Mixed Native fixture", provider.base_url()),
+                pl_model::protocol::providers::openai::compatible_endpoint("Mixed Native fixture", provider.base_url()),
                 vec![ModelInfo::compatible("mixed-native-model")],
             ));
             Ok(config)

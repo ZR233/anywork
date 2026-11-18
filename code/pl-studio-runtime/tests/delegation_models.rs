@@ -2,7 +2,6 @@ use anyhow::Result;
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
     model::ModelInfo,
-    protocol::ProtocolEndpoint,
 };
 use pl_studio_runtime::{
     DelegationModelResult, GetDelegationModelRequest, GetDelegationModelsRequest,
@@ -29,7 +28,10 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
         .collect();
     models.push(ModelInfo::compatible("disabled"));
     let mut account = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible("Inventory", "http://127.0.0.1:1"),
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "Inventory",
+            "http://127.0.0.1:1",
+        ),
         models,
     );
     account.set_model_enabled("disabled", false)?;
@@ -39,7 +41,10 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
     config.models.accounts.insert(
         AccountId::new("second")?,
         AccountConfig::from_explicit_models(
-            ProtocolEndpoint::compatible("Second", "http://127.0.0.1:1"),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "Second",
+                "http://127.0.0.1:1",
+            ),
             vec![second],
         ),
     );

@@ -745,7 +745,7 @@ mod tests {
                 editor_id: "wrong-editor".into(),
             },
             template_id: Some("openai".into()),
-            protocol: pl_model::protocol::ProtocolKind::OpenAi.as_str().into(),
+            protocol: pl_model::protocol::providers::openai::ID.as_str().into(),
             name: "ChatGPT Fixture".into(),
             base_url: pl_model_auth::chatgpt::CODEX_RESOURCE.into(),
             secret: AccountSecretUpdate::Preserve,

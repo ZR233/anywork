@@ -549,7 +549,7 @@ impl StudioThreadFactory {
             .reader();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
         let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            pl_model::runtime::from_route(&route)?,
             route.reasoning_config(),
         )
         .with_hosted_tools(prepared.hosted);

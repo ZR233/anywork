@@ -9,6 +9,8 @@ default = []
 docker-tools = []
 
 [dependencies]
+pl-model-openai-deepseek = { workspace = true }
+pl-model-openai = { workspace = true }
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
 pl-tool-filesystem = { workspace = true }
 pl-tool-command = { workspace = true }

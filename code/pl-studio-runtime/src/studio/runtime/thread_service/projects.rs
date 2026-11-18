@@ -498,7 +498,6 @@ mod standalone_tests {
     use crate::{StudioHostKind, StudioRuntimeOptions};
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
     use pl_model::model::ModelInfo;
-    use pl_model::protocol::ProtocolEndpoint;
 
     fn options(home: &Path) -> StudioRuntimeOptions {
         StudioRuntimeOptions {
@@ -921,7 +920,7 @@ mod standalone_tests {
         config.models.accounts.insert(
             account_id,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "Standalone fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
@@ -1585,7 +1584,10 @@ mod standalone_tests {
                     config.models.accounts.insert(
                         AccountId::new("standalone-fixture")?,
                         AccountConfig::from_explicit_models(
-                            ProtocolEndpoint::compatible("isolated", provider.base_url()),
+                            pl_model::protocol::providers::openai::compatible_endpoint(
+                                "isolated",
+                                provider.base_url(),
+                            ),
                             vec![model],
                         ),
                     );

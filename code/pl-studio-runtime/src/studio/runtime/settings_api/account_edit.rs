@@ -10,7 +10,7 @@ use pl_model::protocol::{ConnectionMode, WireApi};
 
 use crate::{AccountEdit, AccountModelEdit};
 use pl_model::config::AccountTemplateId;
-use pl_model::protocol::ProtocolKind;
+use pl_model::protocol::ProtocolId;
 
 pub(super) fn account_configuration(
     input: AccountSettingsUpdate,
@@ -113,7 +113,7 @@ pub(super) fn account_edit(
     let protocol = input
         .protocol
         .trim()
-        .parse::<ProtocolKind>()
+        .parse::<ProtocolId>()
         .map_err(|_| invalid_settings_argument("Invalid account protocol"))?;
     let account_id = input.account_id.trim();
     let current_token = current
