@@ -434,6 +434,7 @@ enum ResponsesTool {
         name: String,
         description: String,
         parameters: serde_json::Value,
+        strict: bool,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         allowed_callers: Vec<crate::completion::ToolCallerMode>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -479,6 +480,9 @@ impl From<&ToolSpec> for ResponsesTool {
                 name: name.clone(),
                 description: description.clone(),
                 parameters: input_schema.clone(),
+                // Preserve optional and role-specific arguments; Responses otherwise
+                // attempts strict normalization, which can make these schemas unsatisfiable.
+                strict: false,
                 allowed_callers: allowed_callers.clone(),
                 output_schema: model_view_output_schema(allowed_callers, output_schema),
             },

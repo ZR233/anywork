@@ -1299,6 +1299,7 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
             .find(|tool| tool["name"] == "exec")
             .unwrap();
         assert!(declaration.get("output_schema").is_none());
+        assert_eq!(declaration["strict"], false, "{protocol:?}");
         for request in if protocol == Protocol::ResponsesHttp {
             &records[1..3]
         } else {
@@ -1316,6 +1317,75 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
                 .unwrap();
             assert_eq!(output, "replay-tool-marker");
         }
+    }
+}
+
+#[tokio::test]
+async fn responses_functions_keep_optional_role_specific_arguments() {
+    for (protocol, transport) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::ResponsesWebSocket,
+            ModelTransportProfile::responses_websocket(),
+        ),
+    ] {
+        let fixture = FixtureServer::start(vec![Step::prompt(
+            protocol,
+            "optional feedback",
+            0,
+            correction_text_reply(protocol, "ready", "feedback-response"),
+        )])
+        .await
+        .unwrap();
+        let mut info = bundled("gpt-6.2-sol");
+        info.binding.set_transport(transport);
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::openai(Some(fixture.base_url())),
+            info,
+        )
+        .unwrap();
+        let schema = json!({
+            "type":"object",
+            "properties":{
+                "profileId":{"type":"string","enum":["executor","reviewer"]},
+                "reviewFeedback":{"type":"string","enum":["toExecutor"]}
+            },
+            "required":["profileId"],
+            "additionalProperties":false,
+            "oneOf":[
+                {"properties":{"profileId":{"const":"executor"},"reviewFeedback":false}},
+                {"properties":{"profileId":{"const":"reviewer"}}}
+            ]
+        });
+        let definition =
+            pl_agent_tool::ToolDefinition::json("spawn_agent", "Create child", schema.clone())
+                .unwrap();
+        let request = CompletionRequest::builder()
+            .messages(vec![user("optional feedback")])
+            .tools(vec![pl_model::completion::tool_definition_to_spec(
+                &definition,
+                pl_model::completion::ToolCallPolicy::DirectOnly,
+            )])
+            .build();
+        runtime
+            .complete(request, ModelInvocationContext::default())
+            .await
+            .unwrap();
+        let records = fixture.finish().await.unwrap();
+        let tool = &records[0].body["tools"][0];
+        assert_eq!(tool["strict"], false, "{protocol:?}");
+        assert_eq!(tool["parameters"]["required"], json!(["profileId"]));
+        let executor = &tool["parameters"]["oneOf"][0];
+        assert!(executor["properties"].get("reviewFeedback").is_none());
+        assert_eq!(executor["additionalProperties"], false);
+        let pl_agent_tool::InputFormat::JsonSchema(author_schema) = definition.input() else {
+            panic!("JSON input");
+        };
+        assert_eq!(author_schema, &schema);
     }
 }
 
@@ -1458,6 +1528,7 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
             .iter()
             .find(|tool| tool["name"] == *name)
             .unwrap();
+        assert_eq!(declaration["strict"], false);
         if *programmatic {
             assert_eq!(
                 declaration["output_schema"],
