@@ -729,3 +729,5 @@ Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/upd
 完整升级报告在数据库提交前，以同步过的 `migration-backups/history-24-to-25/pending-upgrade-report.json` 暂存，包含本次 operation、原库身份、备份路径及真实导入／仅备份分类。数据库提交成功后，将完全相同的字节发布到 operation 目录的 `upgrade-report.json`，再删除所属暂存文件。提交后报告发布失败时，下次在独占维护阶段验证 schema 25、身份与保留材料，补齐原报告，不能用空的“已升级”报告覆盖导入证据。正常 schema 25 且无待恢复报告的打开保持只读，不争用现役 writer lease。
 
 提交结果不明时重新连接观察实际格式，不能重复追加或猜测恢复，也不删除尚未确认归属与提交结果的报告。文件准备完成而数据库事务失败时保留有效 current；下次只有在独占维护阶段确认仍为 schema 24，才把所属暂存报告归档为 `uncommitted-report.json` 并重试历史升级。完整旧库、升级前已有 current 的副本、报告和仍被引用的资源保留用于显式维护与回滚；正常 current、history 与 Timeline 不访问这些备份。升级后的两个存储分别加载、分别失败，不把一次性准备顺序推广成日常共同水位或提交栅栏。
+
+冷 Current reader 首次建立已保存基线时，复用显式恢复入口准备缺失的 `current.json`；schema 24 升级在现有维护锁内完成。已有有效 Current 仍独立读取，不因 History 损坏而失败。Windows 上创建迁移备份时，SQLite 的目标路径与普通连接一样保留规范化原生路径前缀，以支持完整会话目录深度；同步迁移备份及已有 Current 时，文件句柄必须具备写权限并保持原字节，不得通过截断或跳过落盘同步完成升级。
