@@ -51,7 +51,8 @@ pub(crate) fn load_current_for_recovery<'a>(
         if tokio::fs::try_exists(history_path).await? || state.legacy_checkpoint().await?.is_some()
         {
             drop(store.history_for(&thread.workspace_id, &thread.id).await?);
+            return state.load_current().await;
         }
-        state.load_current().await
+        Ok(None)
     })
 }

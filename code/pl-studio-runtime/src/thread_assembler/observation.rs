@@ -1096,10 +1096,16 @@ mod storage_fault_tests {
             }
         }
         impl StudioActivationFactory for ReactivationFactory {
-            async fn root_delegation(
+            async fn prepare_root(
                 &self,
                 identity: &ThreadActivation,
-            ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
+            ) -> Result<
+                (
+                    crate::DelegationSettings,
+                    Option<pl_core::thread::current::ThreadCurrent>,
+                ),
+                ThreadAssemblyError,
+            > {
                 let paths = self
                     .0
                     .registered_session_paths(identity.id())
@@ -1112,9 +1118,11 @@ mod storage_fault_tests {
                     .await
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
-                crate::studio::delegation::saved(&current.state.to_paused_snapshot())
-                    .map_err(storage_error)?
-                    .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))
+                let delegation =
+                    crate::studio::delegation::saved(&current.state.to_paused_snapshot())
+                        .map_err(storage_error)?
+                        .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
+                Ok((delegation, Some(current)))
             }
 
             async fn prepare(
@@ -1127,13 +1135,7 @@ mod storage_fault_tests {
                     .0
                     .registered_session_paths(&id)
                     .map_err(storage_error)?;
-                let current = self
-                    .0
-                    .state_for(paths.workspace_id(), &id)
-                    .map_err(storage_error)?
-                    .load_current()
-                    .await
-                    .map_err(storage_error)?;
+                let current = request.root_current;
                 let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await
                     .map_err(storage_error)?;

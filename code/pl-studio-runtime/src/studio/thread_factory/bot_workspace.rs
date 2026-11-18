@@ -608,7 +608,8 @@ mod migration_tests {
                     ),
                     cancellation: Default::default(),
                     agent_controls: vec![],
-                    delegation: None
+                    delegation: None,
+                    root_current: None,
                 }
             )
             .await,

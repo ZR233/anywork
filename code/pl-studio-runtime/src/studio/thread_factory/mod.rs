@@ -304,11 +304,17 @@ impl std::fmt::Debug for StudioThreadFactory {
 }
 
 impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
-    async fn root_delegation(
+    async fn prepare_root(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
-    ) -> Result<crate::DelegationSettings, crate::thread_assembler::ThreadAssemblyError> {
-        self.resolve_root_delegation(identity).await
+    ) -> Result<
+        (
+            crate::DelegationSettings,
+            Option<pl_core::thread::current::ThreadCurrent>,
+        ),
+        crate::thread_assembler::ThreadAssemblyError,
+    > {
+        self.prepare_root_state(identity).await
     }
 
     async fn prepare(
@@ -399,11 +405,17 @@ mod review_archive_tests {
     }
 
     impl StudioActivationFactory for CapturedPreparation {
-        async fn root_delegation(
+        async fn prepare_root(
             &self,
             _: &ThreadActivation,
-        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
-            Ok(Default::default())
+        ) -> Result<
+            (
+                crate::DelegationSettings,
+                Option<pl_core::thread::current::ThreadCurrent>,
+            ),
+            ThreadAssemblyError,
+        > {
+            Ok((Default::default(), None))
         }
 
         async fn prepare(

@@ -2361,10 +2361,11 @@ mod s2_close_regression_tests {
         panic: bool,
     }
     impl StudioActivationFactory for RefusedFactory {
-        async fn root_delegation(
+        async fn prepare_root(
             &self,
             _: &ThreadActivation,
-        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError>
+        {
             assert!(!self.panic, "factory unwind before resource publication");
             Err(ThreadAssemblyError::Identity(
                 "factory refused preparation".into(),

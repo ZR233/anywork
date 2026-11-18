@@ -63,16 +63,20 @@ pub struct ThreadPreparation {
     pub agent_controls: Vec<Registration>,
     /// Root-only strategy read from canonical saved/newly admitted facts before tool preflight.
     pub delegation: Option<crate::DelegationSettings>,
+    /// The same cold document used for root tool preflight. Move it into Core on activation.
+    pub root_current: Option<ThreadCurrent>,
 }
 
 /// Resolves an existing product task into fresh model/tool resources and saved facts.
 pub trait StudioActivationFactory: std::fmt::Debug + Send + Sync + 'static {
-    /// Resolves a root's frozen strategy before allocating physical tools or workspace resources.
+    /// Reads a root's saved Current and frozen strategy before allocating physical resources.
     /// Must not inherit current global defaults for an existing Thread.
-    fn root_delegation(
+    fn prepare_root(
         &self,
         identity: &ThreadActivation,
-    ) -> impl Future<Output = Result<crate::DelegationSettings, ThreadAssemblyError>> + Send;
+    ) -> impl Future<
+        Output = Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError>,
+    > + Send;
 
     /// Owns cleanup of allocations when preparation fails before returning a spec.
     /// Must honor cancellation and must not execute restored model calls or tool effects.
@@ -191,10 +195,11 @@ impl SessionRuntime {
                     if owner.0.state().sealed_agents.contains_key(identity.id()) {
                         return Err(ThreadAssemblyError::Closed);
                     }
-                    let delegation = if identity.agent.parent_agent_id.is_none() {
-                        Some(factory.root_delegation(&identity).await?)
+                    let (delegation, root_current) = if identity.agent.parent_agent_id.is_none() {
+                        let (delegation, current) = factory.prepare_root(&identity).await?;
+                        (Some(delegation), current)
                     } else {
-                        None
+                        (None, None)
                     };
                     let agent_controls = match delegation {
                         Some(selection) => {
@@ -235,6 +240,7 @@ impl SessionRuntime {
                             cancellation: cancellation.clone(),
                             agent_controls,
                             delegation,
+                            root_current,
                         })
                         .await?;
                     if spec.id.as_str() != identity.id()
@@ -338,10 +344,11 @@ mod backend_tests {
     }
 
     impl StudioActivationFactory for CountingFactory {
-        async fn root_delegation(
+        async fn prepare_root(
             &self,
             identity: &ThreadActivation,
-        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<(crate::DelegationSettings, Option<ThreadCurrent>), ThreadAssemblyError>
+        {
             self.delegation_reads.fetch_add(1, Ordering::SeqCst);
             Err(ThreadAssemblyError::Identity(identity.id().to_owned()))
         }

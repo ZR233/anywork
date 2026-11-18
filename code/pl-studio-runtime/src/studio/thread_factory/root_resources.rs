@@ -22,10 +22,16 @@ pub(super) enum BotWorkspacePreparation {
 }
 
 impl StudioThreadFactory {
-    pub(super) async fn resolve_root_delegation(
+    pub(super) async fn prepare_root_state(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
-    ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
+    ) -> Result<
+        (
+            crate::DelegationSettings,
+            Option<pl_core::thread::current::ThreadCurrent>,
+        ),
+        ThreadAssemblyError,
+    > {
         let thread = self.thread_record(identity.id()).await?;
         if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
@@ -41,7 +47,8 @@ impl StudioThreadFactory {
         let saved = current
             .as_ref()
             .map(|current| current.state.to_paused_snapshot());
-        root_delegation(&thread, saved.as_ref())
+        let delegation = root_delegation(&thread, saved.as_ref())?;
+        Ok((delegation, current))
     }
 
     pub(super) async fn bind_bot_project(
@@ -212,6 +219,7 @@ impl StudioThreadFactory {
             cancellation,
             agent_controls,
             delegation: preflight_delegation,
+            root_current: mut current,
         } = request;
         let id = identity.id();
         self.bind_resource_scope(id, &workspace_owner.native_resources())?;
@@ -247,10 +255,6 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
         let protocol_thread: crate::Thread = thread.clone().into();
-        let mut current =
-            super::recovery::load_current_for_recovery(&self.services.store, &protocol_thread)
-                .await
-                .map_err(|error| resource_error("load Thread current", error))?;
         // Only decoded, validated ownership selects the bot definition: the live binding and the
         // fact frozen in this session must agree when both exist. Titles, user text, paths and
         // arbitrary metadata never decide the Agent role.
@@ -300,12 +304,11 @@ impl StudioThreadFactory {
                 current.state.to_paused_snapshot()
             });
         let is_new = current.is_none();
-        let delegation = root_delegation(&thread, (!is_new).then_some(&saved))?;
-        if preflight_delegation != Some(delegation) {
-            return Err(ThreadAssemblyError::Identity(
-                "root delegation differs from its preflight".into(),
-            ));
-        }
+        let delegation = preflight_delegation.ok_or_else(|| {
+            ThreadAssemblyError::Identity(
+                "root preparation is missing its frozen delegation".into(),
+            )
+        })?;
         if bot.is_some() {
             self.bind_bot_project(
                 id,

@@ -2079,11 +2079,16 @@ mod tests {
     }
 
     impl crate::thread_assembler::StudioActivationFactory for ColdNativeLeaf {
-        async fn root_delegation(
+        async fn prepare_root(
             &self,
             _: &crate::thread_assembler::ThreadActivation,
-        ) -> Result<crate::DelegationSettings, crate::thread_assembler::ThreadAssemblyError>
-        {
+        ) -> Result<
+            (
+                crate::DelegationSettings,
+                Option<pl_core::thread::current::ThreadCurrent>,
+            ),
+            crate::thread_assembler::ThreadAssemblyError,
+        > {
             panic!("cold ACP parent must not become a Native root");
         }
 
