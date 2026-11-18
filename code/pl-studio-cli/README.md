@@ -35,7 +35,7 @@ anywk exec --studio-home /runs/profile --cwd /workspace/task \
   --no-default-user-skills --skill-dir /opt/evaluation/skills
 ```
 
-评测配置使用显式模型目录，并通过已有配置关闭不参与评测的 MCP、自学习及动态目录探测；隔离 home 不包含启用的机器人配置。`--output-dir` 导出版本 2 的结果、追踪及用量归档，目录必须尚不存在；格式与完整性边界见下方命令行设计文档。
+评测配置使用显式模型目录，并通过已有配置关闭不参与评测的 MCP、自学习及动态目录探测；隔离 home 不包含启用的机器人配置。`--output-dir` 导出版本 3 的结果、追踪及用量归档，目录必须尚不存在或为空且不是符号链接；格式与完整性边界见下方命令行设计文档。
 
 标准输出仅为最终助手文本，诊断写标准错误。退出码：正常 0，输入/配置/路由 2，等待输入或审批 3，预算耗尽 4，任务失败 10，启动环境/内部错误 11，关闭失败 13，其他取消 14，SIGINT 130，SIGTERM 143。关闭失败优先；清理预算为 30 秒。Windows 原生监听 Ctrl+C，Unix 原生监听 SIGINT/SIGTERM。
 

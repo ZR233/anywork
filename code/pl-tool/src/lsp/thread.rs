@@ -3,10 +3,7 @@ use crate::workspace::ToolWorkspace;
 use pl_agent_tool::Tool as _;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, Registration, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 use pl_lsp::{query::LspQuery, runtime::LspRuntimeRegistry};
 use pl_tool_lsp::support::{
@@ -34,7 +31,7 @@ impl LspPathBinding {
     pub fn workspace_root(&self) -> &std::path::Path {
         self.workspace.root()
     }
-    fn workspace(&self) -> &ToolWorkspace {
+    pub fn workspace(&self) -> &ToolWorkspace {
         &self.workspace
     }
     fn configuration_directory(&self) -> Result<String, ToolError> {
@@ -111,31 +108,11 @@ impl ThreadLspTool {
             kind,
         }
     }
-
-    /// Transfers an instance as a deferred tool with no framework control permissions.
-    ///
-    /// The supplied preparation has already validated the registration identity.
-    pub fn registration(
-        self,
-        prepared: pl_core::tool::opaque::PreparedRegistration,
-    ) -> Registration {
-        let contract = match self.kind {
-            LspToolKind::Status => "builtin.lsp_status@1",
-            LspToolKind::Capabilities => "builtin.lsp_capabilities@1",
-            LspToolKind::Query => "builtin.lsp_query@1",
-        };
-        let authorization = self.paths.workspace().authorization();
-        prepared
-            .attach(pl_agent_tool::ToolHandle::new(self))
-            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(contract))
-            .deferred()
-            .with_authorization(authorization)
-    }
 }
 
 impl pl_agent_tool::Tool for ThreadLspTool {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
@@ -146,7 +123,7 @@ impl pl_agent_tool::Tool for ThreadLspTool {
     async fn execute(
         &self,
         input: OpaquePayload,
-        context: CallContext,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         self.execute_bound(input, context.cancellation, context.grant)
             .await
@@ -154,16 +131,6 @@ impl pl_agent_tool::Tool for ThreadLspTool {
 }
 
 impl ThreadLspTool {
-    /// Executes against the same path binding without inventing a Native turn.
-    pub async fn execute_workspace(
-        &self,
-        input: OpaquePayload,
-        context: crate::invocation::WorkspaceInvocation,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_bound(input, context.cancellation, context.grant)
-            .await
-    }
-
     async fn execute_bound(
         &self,
         input: OpaquePayload,

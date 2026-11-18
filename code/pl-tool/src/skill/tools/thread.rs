@@ -6,10 +6,7 @@ use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::extensions::ExtensionMutation,
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, Registration, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 use pl_tool_skill::support::{Document, SkillReader};
 use sha2::{Digest, Sha256};
@@ -57,20 +54,6 @@ impl ThreadSkillTool {
             kind,
         }
     }
-    pub fn registration(
-        self,
-        prepared: pl_core::tool::opaque::PreparedRegistration,
-    ) -> Registration {
-        let kind = self.kind;
-        let authorization = self.sources.authorization();
-        let registration = prepared
-            .attach(pl_agent_tool::ToolHandle::new(self))
-            .with_authorization(authorization);
-        match kind {
-            ThreadSkillKind::List => registration,
-            ThreadSkillKind::View => registration.with_extension_updates(),
-        }
-    }
 }
 #[derive(Debug)]
 struct CatalogReader(FrozenSkillCatalog);
@@ -114,12 +97,11 @@ impl SkillReader for CatalogReader {
 }
 impl ThreadSkillTool {
     /// Executes the shared author without committing Native extension state.
-    /// The optional name identifies a successfully read skill, not an activation.
-    pub async fn execute_discovery(
+    async fn execute_discovery(
         &self,
         input: OpaquePayload,
         cancellation: CancellationToken,
-    ) -> Result<(ToolOutput, Option<String>), ToolError> {
+    ) -> Result<ToolOutput, ToolError> {
         if !self.sources.authorization().is_active() {
             return Err(ToolError::new(
                 pl_core::thread::ThreadError::ToolPermissionRevoked,
@@ -155,7 +137,7 @@ impl ThreadSkillTool {
                     .await
                     .map_err(ToolError::new)?;
                 let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
-                Ok((text_output("pl.tool.skill-list", &result, encoded)?, None))
+                text_output("pl.tool.skill-list", &result, encoded)
             }
             ThreadSkillKind::View => {
                 let input = decode_json(input.content()).map_err(ToolError::new)?;
@@ -182,8 +164,7 @@ impl ThreadSkillTool {
                         }
                         Err(error) => return Err(ToolError::new(error)),
                     };
-                let output = text_output("pl.tool.skill-view", &result.viewed, result.preview)?;
-                Ok((output, Some(result.viewed.skill.name)))
+                text_output("pl.tool.skill-view", &result.viewed, result.preview)
             }
         }
     }
@@ -191,7 +172,7 @@ impl ThreadSkillTool {
 
 impl pl_agent_tool::Tool for ThreadSkillTool {
     type Input = OpaquePayload;
-    type Context = CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = ToolOutput;
     type Error = ToolError;
     fn definition(&self) -> &pl_agent_tool::ToolDefinition {
@@ -200,28 +181,9 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
     async fn execute(
         &self,
         input: OpaquePayload,
-        context: CallContext,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
-        let (output, viewed_skill) = self.execute_discovery(input, context.cancellation).await?;
-        let Some(name) = viewed_skill else {
-            return Ok(output);
-        };
-        let payload = output.payload().clone();
-        let id = format!(
-            "pl.tool.skill-view:{}",
-            hex::encode(Sha256::digest(name.to_ascii_lowercase().as_bytes()))
-        );
-        let previous = context.extensions.get(&id);
-        if previous.is_some_and(|record| record.payload == payload) {
-            return Ok(output);
-        }
-        Ok(
-            output.with_extension_mutations(vec![ExtensionMutation::Put {
-                id,
-                expected_revision: previous.map(|record| record.revision),
-                payload,
-            }]),
-        )
+        self.execute_discovery(input, context.cancellation).await
     }
 }
 
@@ -247,15 +209,6 @@ impl ThreadSkillManageTool {
     }
 }
 impl ThreadSkillManageTool {
-    /// Uses the same local author and write lease under a real non-Native invocation.
-    pub async fn execute_workspace(
-        &self,
-        input: <Self as TypedTool>::Args,
-        context: crate::invocation::WorkspaceInvocation,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_mutation(input, context.cancellation).await
-    }
-
     async fn execute_mutation(
         &self,
         input: pl_tool_skill::tools::skill_manage::SkillManageInput,
@@ -336,13 +289,13 @@ impl TypedTool for ThreadSkillManageTool {
         super::actions::LocalSkillFiles,
     > as TypedTool>::DESCRIPTION;
     type Args = pl_tool_skill::tools::skill_manage::SkillManageInput;
-    type Context = CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = ToolOutput;
     type Error = ToolError;
     async fn execute(
         &self,
         input: Self::Args,
-        context: CallContext,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         self.execute_mutation(input, context.cancellation).await
     }
@@ -364,4 +317,30 @@ fn text_output(
 }
 fn error(message: &str) -> ToolError {
     ToolError::new(crate::tool_error("skills", message))
+}
+
+pub fn native_skill_view_effect(
+    output: ToolOutput,
+    extensions: &std::collections::BTreeMap<String, pl_core::thread::extensions::ExtensionRecord>,
+) -> Result<ToolOutput, ToolError> {
+    let name = match crate::skill::saved_skill_name(output.payload()) {
+        Ok(name) => name,
+        Err(error) => return Err(ToolError::new(error).with_output(output)),
+    };
+    let payload = output.payload().clone();
+    let id = format!(
+        "pl.tool.skill-view:{}",
+        hex::encode(Sha256::digest(name.to_ascii_lowercase().as_bytes()))
+    );
+    let previous = extensions.get(&id);
+    if previous.is_some_and(|record| record.payload == payload) {
+        return Ok(output);
+    }
+    Ok(
+        output.with_extension_mutations(vec![ExtensionMutation::Put {
+            id,
+            expected_revision: previous.map(|record| record.revision),
+            payload,
+        }]),
+    )
 }

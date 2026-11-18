@@ -28,7 +28,7 @@ use pl_tool::{
 use serde_json::{Value, json};
 use support::{Repository, git};
 
-fn context() -> CallContext {
+fn context() -> pl_tool::invocation::WorkspaceInvocation {
     CallContext {
         thread_id: "git-binding".into(),
         turn_id: "turn".into(),
@@ -43,6 +43,7 @@ fn context() -> CallContext {
         model_projection: None,
         tasks: None,
     }
+    .into()
 }
 
 fn input(raw: &str) -> OpaquePayload {

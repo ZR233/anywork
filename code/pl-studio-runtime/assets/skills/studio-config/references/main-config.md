@@ -62,7 +62,7 @@ Use explicit model catalogs and existing capability settings for an isolated
 evaluation profile. Keep unrelated MCP/model-discovery activity disabled and do
 not put enabled bots in the evaluation home. CLI diagnostics use stderr; stdout
 contains only the final assistant text after shutdown. Optional `--output-dir`
-writes a version-2 native run archive (`run.json`, `events.jsonl`, `result.json`
+writes a version-3 native run archive (`run.json`, `events.jsonl`, `result.json`
 and content-addressed originals). Use a fresh or empty non-symlink directory;
 failed export is an explicit failure. Unknown usage/cost stay null.
 
@@ -107,7 +107,12 @@ LSP uses the actual execution workspace and shared language-service lease. The
 external agent's own local tools are not a sandboxed replacement for host tools.
 ACP `anywork_skill_manage` takes the complete original operation under `input`,
 for example `{"input":{"action":"delete","name":"example"}}`. Its schema is
-generated from the original argument type; Native `skill_manage` remains unchanged.
+projected from the complete author schema by the common JSON-value adapter;
+Native `skill_manage` remains unchanged. Text/Grammar tools use the same strict
+`input` carrier with a string, including `anywork_apply_patch`; inspect the current
+catalog rather than sending the old `patch` field. Object-shaped JSON tools keep
+their declared arguments. The common adapter preserves schema reference scope;
+generated `anywork.invalid` schema IDs are local identifiers, not network services.
 
 ## Accounts and model routes
 
@@ -211,9 +216,12 @@ not settings to copy from another account. An explicit empty catalog can exist,
 but cannot satisfy an executable model route.
 
 `[models.accounts.<id>.model_enabled_overrides]` maps exact model IDs to booleans.
-An absent key means automatic; explicit `true` cannot create an unknown model or
-bypass capability/credential validation. Removing an override restores automatic
-selection. Model IDs and metadata are account-local.
+An absent key means enabled for bundled, online and manual models. An incomplete
+or empty online inventory does not automatically disable declared bundled models.
+Explicit `false` remains disabled across refreshes and restarts; removing an
+override restores enabled. There is no need to write `true` for every model.
+Enablement cannot create an unknown model or bypass capability/credential
+validation. Model IDs and metadata are account-local.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
 integer thresholds. Omission uses the model layer's effective automatic threshold;

@@ -86,7 +86,9 @@ impl SkillDiscoverySources {
         })
     }
 
-    pub(crate) fn authorization(&self) -> ToolAuthorization {
+    /// Returns the existing source authorization identity for host registration.
+    /// Cloning this identity does not grant access or reactivate revoked sources.
+    pub fn authorization(&self) -> ToolAuthorization {
         self.scope.authorization.clone()
     }
 

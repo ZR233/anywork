@@ -21,6 +21,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 2. 使用 `binding::prepare_registration` 先完成模型投影、原 opaque 声明编码和内部 ID 校验，再创建/移动服务实例。prepared adapter 的 attach 不失败，全部静态包装完成后只调用一次 `ToolHandle::new`；由 `PreparedRegistration::attach` 接管固定 `RuntimeTool`。core-only 消费方直接准备其不透明声明。
 3. 所有控制、曝光、授权和调度 builder 仍在 Registration。内部 tool_id 与模型名不要求相同。消费实例的 registration 便利方法只能接收已准备材料，不能在错误路径 drop 活资源。
 4. 在 StudioThreadFactory/Assembler 中显式装配 root、child 与恢复工具；每 Thread 独占实例和命令管理器，共用物理服务使用隔离租约。动态刷新保留稳定授权身份；声明、执行代次与权限身份分别处理，冻结旧调用继续持有旧租约并接受撤销检查。
+5. 可共享宿主工具进入所属能力家族的公共注册入口，由 Native/MCP 消费器准备各自投影并附着实例。新增工具不要再写一份 ACP 名称分支、参数 schema 或 execute 闭包；业务上下文只包含真实所需能力，Native 状态效果仍交原 owner。不要用假 CallContext 借执行入口，也不要在通用接口库增加产品注册表。
 
 ## 输出、失败与控制
 
@@ -38,6 +39,11 @@ Host MCP 暴露工作区工具时，复用普通会话的独立作者、冻结�
 目录及执行绑定同源，非 JSON 输入只在传输边界做原文适配。受理后的任务、进程、捕获与归档
 必须由真实成员 owner 持有并参与关闭；MCP 断开只结束观察，不等于业务取消或退出。
 本机 ACP cwd 与 SSH 业务路径分开，具体契约见 `design/28`，不把提示词或工具前缀当作沙箱。
+
+MCP 输入投影使用统一策略而非工具名特例：JSON 保留完整 schema，必要封装以及 Text/Grammar
+使用声明的 `input` 载体；保留 `$defs`、`$ref` 的原根作用域和严格未知字段检查。先完成静态
+适配，再做唯一句柄擦除；声明准备失败不能消耗活实例。结果保留原业务失败及已观测输出，
+不公开私有错误链，不因传输、编码或归档失败重执行工具。
 
 工作区、命令、路径、文件权限、LSP、MCP、SSH 与归档由工具后端负责；文件许可不隐含 exec/Git/MCP 权限。CallContext 由宿主分配，参数不扩大能力。
 

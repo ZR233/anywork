@@ -1,9 +1,11 @@
 //! Host MCP protocol adapters. The product runtime remains the sole business owner.
+pub mod projection;
 mod service;
 mod types;
 
 pub mod ipc;
 
+pub use projection::{JsonInput, ProjectedInput, ProjectionError, ToolProjection};
 pub use service::HostMcpService;
 pub use types::{HostCatalog, HostError, HostInvocation, HostResult, HostTool, HostTools};
 

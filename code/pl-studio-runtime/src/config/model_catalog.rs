@@ -532,6 +532,98 @@ mod migration_tests {
         )
     }
 
+    #[test]
+    fn same_endpoint_accounts_keep_cached_models_and_enablement_separate() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::from_config_dir(home.path());
+        let first_id = AccountId::new("first").unwrap();
+        let second_id = AccountId::new("second").unwrap();
+        let third_id = AccountId::new("uncached-same-credential").unwrap();
+        let mut first = bundled_account();
+        first.bearer_token = Some("first-synthetic-token".into());
+        let mut second = first.clone();
+        second.bearer_token = Some("second-synthetic-token".into());
+        second.set_model_enabled("gpt-6-luna", false).unwrap();
+        let mut config = StudioConfig::default_config().unwrap();
+        config.models.accounts.extend([
+            (first_id.clone(), first.clone()),
+            (second_id.clone(), second.clone()),
+            (third_id.clone(), first.clone()),
+        ]);
+        for (id, account, title, context, exclusive) in [
+            (&first_id, &first, "First account", 4096, "first-only"),
+            (&second_id, &second, "Second account", 8192, "second-only"),
+        ] {
+            let query = ModelCatalogQuery::for_account(account).unwrap();
+            let mut shared = observed_model();
+            shared.model_id = "gpt-6-luna".into();
+            shared.display_name = title.into();
+            shared.context_window = Some(context);
+            shared
+                .observation
+                .as_mut()
+                .unwrap()
+                .declare(ModelMetadataField::DisplayName);
+            let mut own = observed_model();
+            own.model_id = exclusive.into();
+            SuccessCache::new(id, query.identity(), None, vec![shared, own], 123)
+                .persist(&paths, id, query.identity())
+                .unwrap();
+        }
+        let observations = reconcile(&paths, &config, &BTreeMap::new(), 1).unwrap();
+        assert!(
+            observations[&third_id].cache.is_none(),
+            "another account with identical credentials must not inherit the cache"
+        );
+        let effective = effective(&config, &observations).unwrap();
+        for (id, title, context, enabled, own, foreign) in [
+            (
+                &first_id,
+                "First account",
+                4096,
+                true,
+                "first-only",
+                "second-only",
+            ),
+            (
+                &second_id,
+                "Second account",
+                8192,
+                false,
+                "second-only",
+                "first-only",
+            ),
+        ] {
+            let catalog = effective.models.accounts[id]
+                .effective_catalog(None)
+                .unwrap();
+            let shared = catalog
+                .iter()
+                .find(|entry| entry.model.model_id == "gpt-6-luna")
+                .unwrap();
+            assert_eq!(shared.model.display_name, title);
+            assert_eq!(shared.model.context_window, Some(context));
+            assert_eq!(shared.enabled, enabled);
+            assert!(catalog.iter().any(|entry| entry.model.model_id == own));
+            assert!(!catalog.iter().any(|entry| entry.model.model_id == foreign));
+        }
+        config
+            .models
+            .accounts
+            .get_mut(&first_id)
+            .unwrap()
+            .bearer_token = Some("replaced-synthetic-token".into());
+        let changed = reconcile(&paths, &config, &observations, 2).unwrap();
+        assert!(
+            changed[&first_id].cache.is_none(),
+            "credential changes must retire that account's old observation"
+        );
+        assert_eq!(
+            changed[&second_id].cache.as_ref().unwrap().models[0].display_name,
+            "Second account"
+        );
+    }
+
     fn observed_model() -> ModelInfo {
         let mut model = ModelInfo::compatible("exact-observed-id");
         model.display_name = "Observed display name".into();

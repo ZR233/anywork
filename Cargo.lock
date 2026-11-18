@@ -4245,6 +4245,7 @@ dependencies = [
  "futures",
  "h2",
  "http",
+ "pl-agent-tool",
  "prost",
  "rmcp",
  "serde",

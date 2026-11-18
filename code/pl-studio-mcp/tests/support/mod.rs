@@ -42,6 +42,7 @@ impl HostTools for Backend {
             tool_id: "anywork_fixture_echo".into(),
             description: "fixture host port".into(),
             input_schema: json!({"type":"object"}).as_object().unwrap().clone(),
+            output_schema: None,
         }])
     }
 

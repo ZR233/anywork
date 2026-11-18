@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pl-agent-tool = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-io"] }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }

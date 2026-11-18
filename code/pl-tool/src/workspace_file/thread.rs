@@ -3,10 +3,7 @@ use super::ops::execute_workspace_patch_tool;
 use super::*;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, Registration, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 
 /// One workspace operation; backend policy and resource leases are supplied by the host.
@@ -33,28 +30,11 @@ impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
             workspace,
         }
     }
-
-    /// Transfers this tool with deterministic host-encoded declaration material.
-    ///
-    /// The supplied preparation has already validated the registration identity.
-    pub fn registration(
-        self,
-        prepared: pl_core::tool::opaque::PreparedRegistration,
-    ) -> Registration {
-        let authorization = self.workspace.authorization();
-        let registration = prepared
-            .attach(pl_agent_tool::ToolHandle::new(self))
-            .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                "builtin.apply_patch@1",
-            ))
-            .with_authorization(authorization);
-        registration.foreground_coexisting()
-    }
 }
 
 impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceFileTool<B> {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
@@ -63,16 +43,6 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::Tool for ThreadWorkspaceF
     }
 
     async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> std::result::Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl<B: WorkspaceFileBackend + 'static> ThreadWorkspaceFileTool<B> {
-    pub async fn execute_workspace(
         &self,
         input: OpaquePayload,
         context: crate::invocation::WorkspaceInvocation,

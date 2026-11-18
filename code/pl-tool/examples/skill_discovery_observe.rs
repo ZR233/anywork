@@ -2,7 +2,8 @@
 //! Run with an owned scratch directory: cargo run -p pl-tool --example skill_discovery_observe -- SCRATCH
 use anyhow::{Context, ensure};
 use pl_agent_tool::Tool;
-use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
+use pl_core::context::OpaquePayload;
+use pl_tool::invocation::WorkspaceInvocation;
 use pl_tool::skill::{
     FileSystemSkillProvider, SkillDirectorySource, SkillProviderRegistration, SkillProviderRequest,
     SkillRegistry, SkillSourceKind, SkillsConfig, ThreadSkillKind, ThreadSkillManageTool,
@@ -595,7 +596,7 @@ fn skill_names(value: &Value) -> anyhow::Result<Vec<&str>> {
 async fn reject(
     tool: &impl Tool<
         Input = OpaquePayload,
-        Context = CallContext,
+        Context = WorkspaceInvocation,
         Output = pl_core::tool::ToolOutput,
         Error = pl_core::tool::opaque::ToolError,
     >,
@@ -617,7 +618,7 @@ async fn reject(
 async fn invoke(
     tool: &impl Tool<
         Input = OpaquePayload,
-        Context = CallContext,
+        Context = WorkspaceInvocation,
         Output = pl_core::tool::ToolOutput,
         Error = pl_core::tool::opaque::ToolError,
     >,
@@ -630,7 +631,7 @@ async fn invoke(
 async fn invoke_with_cancellation(
     tool: &impl Tool<
         Input = OpaquePayload,
-        Context = CallContext,
+        Context = WorkspaceInvocation,
         Output = pl_core::tool::ToolOutput,
         Error = pl_core::tool::opaque::ToolError,
     >,
@@ -638,19 +639,12 @@ async fn invoke_with_cancellation(
     input: Value,
     cancellation: CancellationToken,
 ) -> anyhow::Result<Value> {
-    let context = CallContext {
+    let context = WorkspaceInvocation {
         grant: Default::default(),
-        context: Default::default(),
-        history_fence: 0,
-        model_projection: None,
         tasks: None,
-        thread_id: "skill-observation".into(),
-        turn_id: "same-turn".into(),
+        owner_id: "skill-observation".into(),
         call_id: label.into(),
         cancellation,
-        extensions: Default::default(),
-        catalog: Arc::from(Vec::new()),
-        extension_sequence: 0,
     };
     let result = tool
         .execute(

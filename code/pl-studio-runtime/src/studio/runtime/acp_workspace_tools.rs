@@ -1,9 +1,9 @@
 //! Workspace and skill tools over ordinary authors and the original ACP execution owner.
-use super::acp_host_mcp::{HostBinding, bind};
+use super::acp_host_mcp::{HostBinding, HostHandle, attach_binding, prepare_binding};
 use crate::{studio::thread_factory::PreparedAcpWorkspace, thread_assembler::AgentHost};
 use anyhow::Result;
 use futures::future::BoxFuture;
-use pl_agent_tool::{InputFormat, ToolDefinition, typed::decode_json};
+use pl_agent_tool::{Tool, ToolDefinition, typed::decode_json};
 use pl_core::{
     context::{OpaquePayload, ResourceReader, ResourceReference},
     thread::{
@@ -28,14 +28,14 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-type Operation = dyn Fn(OpaquePayload, WorkspaceInvocation) -> BoxFuture<'static, Result<ToolOutput, ToolError>>
-    + Send
-    + Sync;
+use crate::thread_assembler::host_workspace_tools::{
+    HostJsonInput, HostToolDomain as OperationDomain, HostToolMetadata, HostWorkspaceSink,
+};
 
-#[derive(Clone, Copy)]
-enum OperationDomain {
-    Workspace,
-    Skill,
+#[derive(Clone)]
+struct InvocationPolicy {
+    domain: OperationDomain,
+    authorization: Option<pl_core::tool::opaque::ToolAuthorization>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -68,19 +68,6 @@ impl std::fmt::Debug for WorkspaceTools {
             .field("tasks", &self.tasks)
             .finish_non_exhaustive()
     }
-}
-
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PatchInput {
-    pub patch: String,
-}
-
-/// A transport object around the original author's compound argument type, not a new schema.
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct SkillManageInput {
-    input: <pl_tool::skill::ThreadSkillManageTool as pl_agent_tool::typed::TypedTool>::Args,
 }
 
 impl WorkspaceTools {
@@ -165,272 +152,82 @@ impl WorkspaceTools {
         Ok(())
     }
 
-    pub(super) fn bind(self: &Arc<Self>, tools: &mut BTreeMap<String, HostBinding>) -> Result<()> {
-        use pl_tool::{
-            exec::{CommandAccess, ThreadExecTool, ThreadWriteStdinTool},
-            thread_catalog::ThreadBuiltin,
-            workspace_file::*,
+    pub(super) async fn bind(
+        self: &Arc<Self>,
+        tools: &mut BTreeMap<String, HostBinding>,
+    ) -> Result<()> {
+        use crate::thread_assembler::{
+            StudioCommandBinding, StudioGitBinding, host_workspace_tools as family,
         };
-        let execution = &self.binding.execution;
+        use pl_tool::exec::CommandAccess;
         let workspace = &self.binding.workspace;
-        let files = Arc::new(execution.files().with_workspace(workspace.clone()));
-        if self.capabilities.exec {
-            let processes = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                execution.commands(self.binding.environment.clone()),
-            )));
-            let definition = ThreadBuiltin::Exec.declaration();
-            let tool = Arc::new(ThreadExecTool::from_process_manager(
-                processes.clone(),
-                Arc::new(
-                    self.binding
-                        .store
-                        .command_archive(files.clone(), self.binding.host_scratch.clone()),
-                ),
-                if self.binding.remote.is_none()
-                    && workspace.workspace().boundary().allows_host_paths()
-                {
-                    CommandAccess::HostApproval
-                } else {
-                    CommandAccess::WorkspaceOnly
-                },
-                definition.clone(),
-            ));
-            self.bind_operation(tools, mcp_description(&definition, "Execute a command on this member's frozen business workspace. After one second a running receipt may be returned; use anywork_wait and anywork_get_tool_task to observe its actual result. MCP cancellation ends observation, not accepted execution.")?, move |input, context| {
-                let tool = tool.clone(); Box::pin(async move { tool.execute_workspace(input, context).await })
-            })?;
-            let definition = ThreadBuiltin::WriteStdin.declaration();
-            let tool = Arc::new(ThreadWriteStdinTool::new(processes, definition.clone()));
-            self.bind_operation(tools, mcp_description(&definition, "Write standard input to an exact taskId returned by this instance's exec_command. Accepted input is not proof of consumption; inspect the original receipt and never resend accepted bytes after cancellation.")?, move |input, context| {
-                let tool = tool.clone(); Box::pin(async move { tool.execute_workspace(input, context).await })
-            })?;
-        }
-        if self.capabilities.workspace_files {
-            let definition = ThreadBuiltin::StatPath.declaration();
-            let tool = Arc::new(ThreadStatPathTool::new(files.clone()));
-            self.bind_operation(tools, definition, move |input, context| {
-                let tool = tool.clone();
-                Box::pin(async move {
-                    tool.execute_workspace(
-                        decode_json(input.content()).map_err(ToolError::new)?,
-                        context,
-                    )
-                    .await
-                })
-            })?;
-            let definition = ThreadBuiltin::WriteFile.declaration();
-            let tool = Arc::new(ThreadWriteFileTool::new(files.clone(), workspace.clone()));
-            self.bind_operation(tools, definition, move |input, context| {
-                let tool = tool.clone();
-                Box::pin(async move {
-                    tool.execute_workspace(
-                        decode_json(input.content()).map_err(ToolError::new)?,
-                        context,
-                    )
-                    .await
-                })
-            })?;
-            for &kind in WorkspaceFileToolKind::all() {
-                let definition = kind.definition();
-                let tool = Arc::new(ThreadWorkspaceFileTool::new(
-                    kind,
-                    files.clone(),
-                    workspace.clone(),
-                    definition.clone(),
-                ));
-                self.bind_operation(tools, definition, move |input, context| {
-                    let tool = tool.clone();
-                    Box::pin(async move { tool.execute_workspace(input, context).await })
-                })?;
-            }
-            for &kind in WorkspaceMutationKind::all() {
-                let definition = kind.definition();
-                let tool = Arc::new(WorkspaceMutationTool::new(
-                    kind,
-                    definition.clone(),
-                    files.clone(),
-                    workspace.clone(),
-                ));
-                self.bind_operation(tools, definition, move |input, context| {
-                    let tool = tool.clone();
-                    Box::pin(async move { tool.execute_workspace(input, context).await })
-                })?;
-            }
-        }
-        if self.capabilities.git {
-            let authorization = workspace.authorization();
-            for &kind in pl_tool::git::GitToolKind::all() {
-                let definition = kind.definition();
-                let tool = Arc::new(pl_tool::git::GitTool::new(
-                    kind,
-                    pl_tool::git::GitWorkspaceConfig::local(workspace.root().to_owned())
-                        .with_native_credentials(),
-                    Arc::new(execution.git()),
-                    Arc::new(pl_tool::git::NoGitCredentialProvider),
-                    definition.clone(),
-                ));
-                let authorization = authorization.clone();
-                self.bind_operation(tools, definition, move |input, context| {
-                    let tool = tool.clone();
-                    let authorization = authorization.clone();
-                    Box::pin(async move {
-                        if !authorization.is_active() {
-                            return Err(ToolError::new(
-                                pl_core::thread::ThreadError::ToolPermissionRevoked,
-                            ));
-                        }
-                        tool.execute_workspace(input, context).await
-                    })
-                })?;
-            }
-        }
+        let mut sink = McpWorkspaceSink {
+            owner: self.clone(),
+            tools,
+        };
+        let access = if self.binding.remote.is_none()
+            && workspace.workspace().boundary().allows_host_paths()
+        {
+            CommandAccess::HostApproval
+        } else {
+            CommandAccess::WorkspaceOnly
+        };
+        family::workspace(
+            &mut sink,
+            StudioCommandBinding {
+                commands: self
+                    .binding
+                    .execution
+                    .commands(self.binding.environment.clone()),
+                workspace: workspace.clone(),
+                access,
+            },
+            &self.binding.store,
+            self.binding.host_scratch.clone(),
+            &self.capabilities,
+            None,
+        )?;
+        family::git(
+            &mut sink,
+            self.capabilities.git,
+            StudioGitBinding {
+                config: pl_tool::git::GitWorkspaceConfig::local(workspace.root().to_owned())
+                    .with_native_credentials(),
+                backend: Arc::new(self.binding.execution.git()),
+                credentials: Arc::new(pl_tool::git::NoGitCredentialProvider),
+                kinds: pl_tool::git::GitToolKind::all().to_vec(),
+                authorization: workspace.authorization(),
+            },
+        )?;
         if let Some((catalog, sources)) = &self.binding.skills {
-            for kind in [
-                pl_tool::skill::ThreadSkillKind::List,
-                pl_tool::skill::ThreadSkillKind::View,
-            ] {
-                let definition = kind.declaration();
-                let tool = Arc::new(pl_tool::skill::ThreadSkillTool::new(
-                    sources.clone(),
-                    kind,
-                    definition.clone(),
-                ));
-                self.bind_domain_operation(
-                    tools,
-                    definition,
-                    OperationDomain::Skill,
-                    move |input, context| {
-                        let tool = tool.clone();
-                        Box::pin(async move {
-                            tool.execute_discovery(input, context.cancellation)
-                                .await
-                                .map(|(output, _)| output)
-                        })
-                    },
-                )?;
-            }
-            // LocalSkillFiles is intentionally local, just as in ordinary conversations.
-            if self.binding.remote.is_none() {
-                let author = pl_tool::skill::ThreadSkillManageTool::declaration();
-                let definition = ToolDefinition::json(
-                    author.name(),
-                    author.description(),
-                    pl_agent_tool::typed::input_schema_for::<SkillManageInput>(),
-                )?;
-                let tool = Arc::new(pl_tool::skill::ThreadSkillManageTool::new(
-                    catalog.clone(),
-                    workspace.clone(),
-                ));
-                self.bind_domain_operation(
-                    tools,
-                    definition,
-                    OperationDomain::Skill,
-                    move |input, context| {
-                        let tool = tool.clone();
-                        Box::pin(async move {
-                            let input: SkillManageInput =
-                                decode_json(input.content()).map_err(ToolError::new)?;
-                            tool.execute_workspace(input.input, context).await
-                        })
-                    },
-                )?;
-            }
+            family::skills(&mut sink, self.capabilities.skills, sources.clone())?;
+            family::local_skill_management(
+                &mut sink,
+                self.capabilities.skills,
+                self.binding.remote.is_none(),
+                catalog.clone(),
+                workspace.clone(),
+            )?;
         }
         if let Some(lsp) = &self.binding.lsp {
-            for kind in [
-                pl_tool::lsp::LspToolKind::Status,
-                pl_tool::lsp::LspToolKind::Capabilities,
-                pl_tool::lsp::LspToolKind::Query,
-            ] {
-                let definition = kind.declaration();
-                let tool = Arc::new(pl_tool::lsp::ThreadLspTool::new(
-                    lsp.registry.clone(),
-                    lsp.paths.clone(),
-                    kind,
-                    definition.clone(),
-                ));
-                self.bind_operation(tools, definition, move |input, context| {
-                    let tool = tool.clone();
-                    Box::pin(async move { tool.execute_workspace(input, context).await })
-                })?;
-            }
+            family::lsp(
+                &mut sink,
+                self.capabilities.lsp,
+                lsp.registry.clone(),
+                lsp.paths.clone(),
+                family::LspReadiness::IncludePending,
+            )
+            .await?;
         }
-        for (definition, operation) in [
-            (ThreadBuiltin::ListTasks.declaration(), "list"),
-            (pl_tool::task_control::wait_definition(), "wait"),
-            (pl_tool::task_control::query_definition(), "get"),
-            (pl_tool::task_control::cancel_definition(), "cancel"),
-        ] {
-            let owner = self.clone();
-            let definition = mcp_description(
-                &definition,
-                "Observe or control tasks accepted by this ACP instance. Results are not injected into another prompt: retain exact taskId receipts and read them with anywork_wait / anywork_get_tool_task. Cancellation acknowledgement does not prove process exit. No cross-instance recovery is provided.",
-            )?;
-            bind(tools, definition, move |host, value, context| {
-                let owner = owner.clone();
-                Box::pin(async move {
-                    host.authorize_workspace_call(&context).await?;
-                    let result = owner
-                        .control(operation, value, context.cancellation)
-                        .await
-                        .map_err(|error| ControlError::Service(error.into_boxed_dyn_error()))?;
-                    Ok((result, false))
-                })
-            })?;
-        }
+        self.bind_task_tools(sink.tools)?;
         Ok(())
     }
 
-    fn bind_operation(
-        self: &Arc<Self>,
-        tools: &mut BTreeMap<String, HostBinding>,
-        definition: ToolDefinition,
-        operation: impl Fn(
-            OpaquePayload,
-            WorkspaceInvocation,
-        ) -> BoxFuture<'static, Result<ToolOutput, ToolError>>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Result<()> {
-        self.bind_domain_operation(tools, definition, OperationDomain::Workspace, operation)
-    }
-
-    fn bind_domain_operation(
-        self: &Arc<Self>,
-        tools: &mut BTreeMap<String, HostBinding>,
-        definition: ToolDefinition,
-        domain: OperationDomain,
-        operation: impl Fn(
-            OpaquePayload,
-            WorkspaceInvocation,
-        ) -> BoxFuture<'static, Result<ToolOutput, ToolError>>
-        + Send
-        + Sync
-        + 'static,
-    ) -> Result<()> {
-        let owner = self.clone();
-        let name = definition.name().to_owned();
-        let raw = !matches!(definition.input(), InputFormat::JsonSchema(_));
-        let operation: Arc<Operation> = Arc::new(operation);
-        bind(tools, definition, move |host, value, context| {
-            let owner = owner.clone();
-            let name = name.clone();
-            let operation = operation.clone();
-            Box::pin(async move {
-                host.authorize_workspace_call(&context).await?;
-                let input = if raw {
-                    let input: PatchInput =
-                        serde_json::from_value(value).map_err(ControlError::service)?;
-                    OpaquePayload::text(input.patch)
-                } else {
-                    OpaquePayload::new("application/json", 1, value.to_string())
-                        .map_err(ControlError::service)?
-                };
-                owner
-                    .invoke(host, context, name, input, domain, operation)
-                    .await
-            })
-        })
+    fn bind_task_tools(self: &Arc<Self>, tools: &mut BTreeMap<String, HostBinding>) -> Result<()> {
+        let mut sink = McpTaskTools { owner: self, tools };
+        crate::thread_assembler::host_task_tools::list(&mut sink)?;
+        crate::thread_assembler::host_task_tools::controls(&mut sink)?;
+        Ok(())
     }
 
     async fn authorize(
@@ -508,8 +305,8 @@ impl WorkspaceTools {
         context: AgentCallContext,
         name: String,
         input: OpaquePayload,
-        domain: OperationDomain,
-        operation: Arc<Operation>,
+        policy: InvocationPolicy,
+        operation: Arc<HostHandle<WorkspaceInvocation>>,
     ) -> Result<(serde_json::Value, bool), ControlError> {
         let identity = ExecutionIdentity::new(context.call_id.clone(), name.clone());
         let task_id = identity.task_id.clone();
@@ -542,8 +339,20 @@ impl WorkspaceTools {
                         .await
                         .map_err(ToolError::new)?;
                     let mut invocation = invocation;
-                    invocation.grant = owner.authorize(&name, &input, domain).await?;
-                    operation(input, invocation).await
+                    if policy
+                        .authorization
+                        .as_ref()
+                        .is_some_and(|authorization| !authorization.is_active())
+                    {
+                        return Err(ToolError::new(
+                            pl_core::thread::ThreadError::ToolPermissionRevoked,
+                        ));
+                    }
+                    invocation.grant = owner.authorize(&name, &input, policy.domain).await?;
+                    operation
+                        .execute(input, invocation)
+                        .await
+                        .and_then(super::acp_host_mcp::data_output)
                 }
                 .await;
                 if let Err(error) = &output
@@ -563,23 +372,7 @@ impl WorkspaceTools {
                     }
                     Err(_) => TaskStatus::Failed,
                 };
-                let observed = match &output {
-                    Ok(output) => Some(output),
-                    Err(error) => error.observed_output(),
-                };
-                let value = observed.map(|output| {
-                    serde_json::from_str(output.payload().content()).unwrap_or_else(|_| {
-                        serde_json::Value::String(output.payload().content().into())
-                    })
-                });
-                let mut reply = HostResult {
-                    value: value.unwrap_or(serde_json::Value::Null),
-                    is_error: output.is_err(),
-                };
-                if let Err(error) = output {
-                    reply.value =
-                        serde_json::json!({"error":error.to_string(),"output":reply.value});
-                }
+                let reply = super::acp_host_mcp::host_result(output);
                 // Encoding these fixed JSON values is infallible; no operation can be replayed here.
                 let bytes: Arc<[u8]> = serde_json::to_vec(&reply).expect("JSON host result").into();
                 let (stored, archive_error) = match owner
@@ -761,15 +554,150 @@ impl WorkspaceTools {
     }
 }
 
-fn mcp_description(definition: &ToolDefinition, description: &str) -> Result<ToolDefinition> {
-    let InputFormat::JsonSchema(input) = definition.input() else {
-        anyhow::bail!("JSON input required")
-    };
-    Ok(ToolDefinition::json(
-        definition.name(),
-        description,
-        input.clone(),
-    )?)
+struct McpWorkspaceSink<'a> {
+    owner: Arc<WorkspaceTools>,
+    tools: &'a mut BTreeMap<String, HostBinding>,
+}
+
+impl HostWorkspaceSink for McpWorkspaceSink<'_> {
+    type Prepared = (pl_studio_mcp::ToolProjection, String, InvocationPolicy);
+    type Error = anyhow::Error;
+
+    fn prepare(
+        &mut self,
+        definition: &ToolDefinition,
+        metadata: HostToolMetadata,
+    ) -> Result<Self::Prepared> {
+        let input = match metadata.json_input {
+            HostJsonInput::Object => pl_studio_mcp::JsonInput::Object,
+            HostJsonInput::Value => pl_studio_mcp::JsonInput::Value,
+        };
+        Ok((
+            prepare_binding(self.tools, definition, input)?,
+            definition.name().to_owned(),
+            InvocationPolicy {
+                domain: metadata.domain,
+                authorization: metadata.authorization,
+            },
+        ))
+    }
+
+    fn attach<T>(&mut self, (projection, name, policy): Self::Prepared, author: T)
+    where
+        T: Tool<
+                Input = OpaquePayload,
+                Context = WorkspaceInvocation,
+                Output = ToolOutput,
+                Error = ToolError,
+            >,
+    {
+        let owner = self.owner.clone();
+        attach_binding(
+            self.tools,
+            projection,
+            author,
+            move |handle, host, input, context| {
+                let owner = owner.clone();
+                let name = name.clone();
+                let policy = policy.clone();
+                Box::pin(async move {
+                    host.authorize_workspace_call(&context).await?;
+                    owner
+                        .invoke(host, context, name, input, policy, handle)
+                        .await
+                })
+            },
+        );
+    }
+}
+
+struct McpTaskTools<'a> {
+    owner: &'a Arc<WorkspaceTools>,
+    tools: &'a mut BTreeMap<String, HostBinding>,
+}
+
+impl McpTaskTools<'_> {
+    fn add(&mut self, definition: ToolDefinition, operation: &'static str) -> Result<()> {
+        let projection =
+            prepare_binding(self.tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+        let author = WorkspaceTaskTool {
+            definition,
+            owner: Arc::downgrade(self.owner),
+            operation,
+        };
+        super::acp_host_mcp::attach_direct(self.tools, projection, author);
+        Ok(())
+    }
+}
+
+impl crate::thread_assembler::host_task_tools::HostTaskSink for McpTaskTools<'_> {
+    type Error = anyhow::Error;
+    fn list(
+        &mut self,
+        prepared: pl_tool::binding::PreparedNativeTool<pl_tool::task_control::ListTasksTool>,
+    ) -> Result<()> {
+        self.add(prepared.definition().clone(), "list")
+    }
+    fn control(
+        &mut self,
+        definition: ToolDefinition,
+        kind: pl_tool::task_control::TaskControlKind,
+    ) -> Result<()> {
+        let operation = match kind {
+            pl_tool::task_control::TaskControlKind::Wait => "wait",
+            pl_tool::task_control::TaskControlKind::Query => "get",
+            pl_tool::task_control::TaskControlKind::Cancel => "cancel",
+        };
+        self.add(definition, operation)
+    }
+}
+
+struct WorkspaceTaskTool {
+    definition: ToolDefinition,
+    owner: Weak<WorkspaceTools>,
+    operation: &'static str,
+}
+
+impl Tool for WorkspaceTaskTool {
+    type Input = OpaquePayload;
+    type Context = AgentCallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        context: AgentCallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        if input.format() != "application/json" || input.version() != 1 {
+            return Err(ToolError::new(std::io::Error::other(
+                "unsupported task argument encoding",
+            )));
+        }
+        let owner = self
+            .owner
+            .upgrade()
+            .ok_or_else(|| ToolError::new(pl_core::thread::ThreadError::Closed))?;
+        let value = owner
+            .control(
+                self.operation,
+                decode_json(input.content()).map_err(ToolError::new)?,
+                context.cancellation,
+            )
+            .await
+            .map_err(|error| ToolError::new(ControlError::Service(error.into_boxed_dyn_error())))?;
+        let encoded = value.to_string();
+        Ok(ToolOutput::new(
+            OpaquePayload::new("pl.host.tool-task", 1, encoded.clone()).map_err(ToolError::new)?,
+            vec![pl_core::context::ContextContent::Text {
+                text: encoded.into(),
+            }],
+        ))
+    }
 }
 
 #[derive(Debug)]

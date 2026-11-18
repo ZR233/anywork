@@ -2,7 +2,9 @@ use super::{SkillResourceBase, SkillSummary, is_main_skill_path};
 use pl_protocol::PureError;
 mod actions;
 mod thread;
-pub use thread::{ThreadSkillKind, ThreadSkillManageTool, ThreadSkillTool};
+pub use thread::{
+    ThreadSkillKind, ThreadSkillManageTool, ThreadSkillTool, native_skill_view_effect,
+};
 type SkillViewOutput = pl_tool_skill::support::ViewedSkill<SkillSummary, SkillResourceBase>;
 
 /// Reads the identity of a previously loaded Skill from its frozen result.

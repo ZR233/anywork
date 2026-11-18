@@ -366,14 +366,16 @@ fn image_output_models_stay_out_of_the_text_catalog() {
         vec!["gpt-image-2".to_string()]
     );
     // 图像输出模型不属于对话目录，因此不参与路由、压缩与附件能力校验。
-    assert_eq!(
-        account
-            .selectable_catalog(Some(ModelType::Text))
-            .unwrap()
+    let text_models = account.selectable_catalog(Some(ModelType::Text)).unwrap();
+    assert!(
+        text_models
             .iter()
-            .map(|entry| entry.model.model_id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["gpt-6-astra"]
+            .any(|entry| entry.model.model_id == "gpt-6-astra")
+    );
+    assert!(
+        text_models
+            .iter()
+            .all(|entry| entry.model.model_id != "gpt-image-2")
     );
 }
 

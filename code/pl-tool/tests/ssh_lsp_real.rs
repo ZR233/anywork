@@ -32,7 +32,7 @@ fn required(name: &str) -> anyhow::Result<String> {
     std::env::var(name).with_context(|| format!("{name} must be set"))
 }
 
-fn context(thread: &str) -> CallContext {
+fn context(thread: &str) -> pl_tool::invocation::WorkspaceInvocation {
     CallContext {
         thread_id: thread.into(),
         turn_id: "real-ssh-lsp".into(),
@@ -47,6 +47,7 @@ fn context(thread: &str) -> CallContext {
         model_projection: None,
         tasks: None,
     }
+    .into()
 }
 
 async fn write(

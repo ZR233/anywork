@@ -15,7 +15,8 @@ category: guides
 
 - 身份始终是 `(accountId, modelId)`；账号有效目录是唯一成员来源。
 - 先复用 `AccountModelEntry::type_support(ModelType::Text)`，再应用统一 enabled、
-  当前路由准入和子任务能力要求。不另建自动模式白名单，不从内置目录补回撤下成员。
+  当前路由准入和子任务能力要求。不另建自动模式白名单；缺少显式开关覆盖即启用，
+  在线名单遗漏不关闭内置成员。已撤下的在线独有成员不从历史或其他账号补回。
   最低窗口过滤与候选窗口投影使用同一 `entry.context.context_window`，不要回读原始
   `model.context_window` 而误排只有最大窗口声明的模型；压缩阈值不等于窗口容量。
 - 管理页保留完整目录和不可用原因；选择器排除禁用项。禁用不删除 desired route 或

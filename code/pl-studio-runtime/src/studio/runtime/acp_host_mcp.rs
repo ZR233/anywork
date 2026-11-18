@@ -7,20 +7,16 @@ use anyhow::{Context, Result};
 use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
 use pl_acp::session::{OpenSetup, PrepareOpen, schema};
-use pl_agent_tool::{InputFormat, ToolDefinition};
+use pl_agent_tool::ToolDefinition;
 use pl_studio_mcp::{
     HostCatalog, HostError, HostInvocation, HostMcpService, HostResult, HostTool, HostTools,
     ipc::IpcServer,
 };
-use pl_tool::collaboration::{
-    control::{AgentCallContext, ControlError},
-    thread::{AgentCloseOptions, AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn},
-};
+use pl_tool::collaboration::control::{AgentCallContext, ControlError};
 use rmcp::transport::streamable_http_server::{
     SessionManager, StreamableHttpServerConfig, StreamableHttpService,
     session::local::LocalSessionManager,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use tokio::task::JoinHandle;
 use tokio_util::{
@@ -31,10 +27,7 @@ use tokio_util::{
 use super::acp_business::AcpResources;
 use crate::{
     config::ConfigRuntime,
-    thread_assembler::{
-        AgentHost, SessionRuntime,
-        agent_wait::{WaitAgentRequest, WaitAgentResult},
-    },
+    thread_assembler::{AgentHost, SessionRuntime},
 };
 
 /// All references held by the protocol callback are weak with respect to its owner.
@@ -212,6 +205,11 @@ pub(crate) struct HostMcp {
     ipc: Option<IpcServer>,
     handlers: TaskTracker,
     observed_calls: Arc<AtomicU64>,
+    host: Arc<AgentHost>,
+    caller: crate::AgentId,
+    domain_closed: CancellationToken,
+    tools: Arc<BTreeMap<String, HostBinding>>,
+    protocol_closed: bool,
 }
 
 impl HostMcp {
@@ -226,7 +224,29 @@ impl HostMcp {
         Self::start_bound(host, caller, domain_closed, is_root, frontend, None).await
     }
 
-    pub(super) async fn start_bound(
+    /// Attach this owner to AcpResources before any fallible setup or await.
+    pub(super) fn pending(
+        host: AgentHost,
+        caller: crate::AgentId,
+        domain_closed: CancellationToken,
+    ) -> Self {
+        Self {
+            shutdown: CancellationToken::new(),
+            join: None,
+            sessions: None,
+            ipc: None,
+            handlers: TaskTracker::new(),
+            observed_calls: Arc::new(AtomicU64::new(0)),
+            host: Arc::new(host),
+            caller,
+            domain_closed,
+            tools: Arc::new(BTreeMap::new()),
+            protocol_closed: false,
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    async fn start_bound(
         host: AgentHost,
         caller: crate::AgentId,
         domain_closed: CancellationToken,
@@ -234,42 +254,58 @@ impl HostMcp {
         frontend: Option<&std::path::Path>,
         workspace: Option<Arc<super::acp_workspace_tools::WorkspaceTools>>,
     ) -> Result<(Self, schema::McpServer)> {
-        let mut tools = bindings(&host, is_root)?;
-        if let Some(workspace) = workspace {
-            workspace.bind(&mut tools)?;
+        let mut service = Self::pending(host, caller, domain_closed);
+        match service.launch(is_root, frontend, workspace).await {
+            Ok(definition) => Ok((service, definition)),
+            Err(error) => {
+                service
+                    .close()
+                    .await
+                    .context("failed to reclaim rejected MCP transport")?;
+                service
+                    .close_tools()
+                    .await
+                    .context("failed to reclaim rejected MCP tools")?;
+                Err(error)
+            }
         }
-        let shutdown = CancellationToken::new();
-        let handlers = TaskTracker::new();
-        let observed_calls = Arc::new(AtomicU64::new(0));
+    }
+
+    pub(super) async fn launch(
+        &mut self,
+        is_root: bool,
+        frontend: Option<&std::path::Path>,
+        workspace: Option<Arc<super::acp_workspace_tools::WorkspaceTools>>,
+    ) -> Result<schema::McpServer> {
+        let tools = Arc::get_mut(&mut self.tools).context("Host MCP tools already published")?;
+        crate::thread_assembler::host_agent_tools::register(
+            self.host.clone(),
+            is_root,
+            true,
+            &mut AgentMcpTools(tools),
+        )?;
+        if let Some(workspace) = workspace {
+            workspace.bind(tools).await?;
+        }
         let handler = Handler {
-            host: Arc::new(host),
-            caller,
-            tools: Arc::new(tools),
-            domain_closed,
-            observed_calls: observed_calls.clone(),
-            _lifetime: handlers.token(),
+            host: self.host.clone(),
+            caller: self.caller.clone(),
+            tools: self.tools.clone(),
+            domain_closed: self.domain_closed.clone(),
+            observed_calls: self.observed_calls.clone(),
+            _lifetime: self.handlers.token(),
         };
         if let Some(command) = frontend {
             use pl_studio_mcp::{IPC_CAPABILITY_ENV, IPC_ENDPOINT_ENV, STDIO_ARG};
-            let ipc = IpcServer::bind(handler, shutdown.clone()).await?;
-            let definition = schema::McpServer::Stdio(
+            self.ipc = Some(IpcServer::bind(handler, self.shutdown.clone()).await?);
+            let ipc = self.ipc.as_ref().expect("attached IPC owner");
+            return Ok(schema::McpServer::Stdio(
                 schema::McpServerStdio::new("anywork", command)
                     .args(vec![STDIO_ARG.into()])
                     .env(vec![
                         schema::EnvVariable::new(IPC_ENDPOINT_ENV, ipc.endpoint()),
                         schema::EnvVariable::new(IPC_CAPABILITY_ENV, ipc.capability()),
                     ]),
-            );
-            return Ok((
-                Self {
-                    shutdown,
-                    join: None,
-                    sessions: None,
-                    ipc: Some(ipc),
-                    handlers,
-                    observed_calls,
-                },
-                definition,
             ));
         }
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
@@ -283,7 +319,7 @@ impl HostMcp {
         let sessions = Arc::new(LocalSessionManager::default());
         let handler = HostMcpService::new(handler);
         let mut server_config = StreamableHttpServerConfig::default();
-        server_config.cancellation_token = shutdown.clone();
+        server_config.cancellation_token = self.shutdown.clone();
         server_config.json_response = true;
         let service = StreamableHttpService::new(
             move || Ok(handler.clone()),
@@ -306,30 +342,33 @@ impl HostMcp {
                     }
                 },
             ));
-        let stopped = shutdown.clone();
-        let join = tokio::spawn(async move {
+        let stopped = self.shutdown.clone();
+        self.join = Some(tokio::spawn(async move {
             axum::serve(listener, app)
                 .with_graceful_shutdown(stopped.cancelled_owned())
                 .await
-        });
-        let endpoint = format!("http://{address}/mcp");
-        let definition = schema::McpServer::Http(
-            schema::McpServerHttp::new("anywork", endpoint).headers(vec![schema::HttpHeader::new(
-                "Authorization",
-                format!("Bearer {bearer}"),
-            )]),
-        );
-        Ok((
-            Self {
-                shutdown,
-                join: Some(join),
-                sessions: Some(sessions),
-                ipc: None,
-                handlers,
-                observed_calls,
-            },
-            definition,
+        }));
+        self.sessions = Some(sessions);
+        Ok(schema::McpServer::Http(
+            schema::McpServerHttp::new("anywork", format!("http://{address}/mcp")).headers(vec![
+                schema::HttpHeader::new("Authorization", format!("Bearer {bearer}")),
+            ]),
         ))
+    }
+
+    pub(super) fn protocol_closed(&self) -> bool {
+        self.protocol_closed
+    }
+
+    /// The owning resources call this only after accepted business tasks have joined.
+    pub(super) async fn close_tools(&self) -> Result<()> {
+        let mut failure = None;
+        for binding in self.tools.values() {
+            if let Err(error) = binding.close().await {
+                failure.get_or_insert(error);
+            }
+        }
+        failure.map_or(Ok(()), |error| Err(error.into()))
     }
 
     pub(crate) fn observed_counter(&self) -> Arc<AtomicU64> {
@@ -374,6 +413,7 @@ impl HostMcp {
         }
         self.handlers.close();
         self.handlers.wait().await;
+        self.protocol_closed = failure.is_none();
         failure.map_or(Ok(()), Err)
     }
 }
@@ -395,214 +435,200 @@ struct Handler {
     _lifetime: TaskTrackerToken,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct Empty {}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Target {
-    target: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Send {
-    target: String,
-    message: String,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Close {
-    target: String,
-    #[serde(default)]
-    force: bool,
-}
-
 type DomainResult = Result<(Value, bool), ControlError>;
-type DomainInvocation = dyn Fn(Arc<AgentHost>, Value, AgentCallContext) -> futures::future::BoxFuture<'static, DomainResult>
-    + std::marker::Send
-    + Sync;
-
-/// The projected declaration and its callable binding are admitted together.
-/// Transport requests can select only an identity in this instance's catalog.
-pub(super) struct HostBinding {
-    declaration: HostTool,
-    invoke: Box<DomainInvocation>,
-}
-
-pub(super) fn bind(
-    tools: &mut BTreeMap<String, HostBinding>,
-    definition: ToolDefinition,
-    invoke: impl Fn(
+type DomainInvocation = dyn Fn(
         Arc<AgentHost>,
-        Value,
+        pl_core::context::OpaquePayload,
         AgentCallContext,
     ) -> futures::future::BoxFuture<'static, DomainResult>
-    + std::marker::Send
-    + Sync
-    + 'static,
-) -> Result<()> {
-    let input = match definition.input() {
-        InputFormat::JsonSchema(input) => input.clone(),
-        InputFormat::Grammar { .. } | InputFormat::Text if definition.name() == "apply_patch" => {
-            pl_agent_tool::typed::input_schema_for::<super::acp_workspace_tools::PatchInput>()
+    + Send
+    + Sync;
+type CloseInvocation = dyn Fn() -> futures::future::BoxFuture<'static, Result<(), pl_core::tool::opaque::ToolError>>
+    + Send
+    + Sync;
+pub(super) type HostHandle<C> = pl_agent_tool::ToolHandle<
+    pl_core::context::OpaquePayload,
+    C,
+    pl_core::tool::ToolOutput,
+    pl_core::tool::opaque::ToolError,
+>;
+
+/// Declaration, input codec and the original instance are admitted together.
+pub(super) struct HostBinding {
+    declaration: HostTool,
+    projection: pl_studio_mcp::ToolProjection,
+    invoke: Box<DomainInvocation>,
+    close: Box<CloseInvocation>,
+    closed: tokio::sync::Mutex<bool>,
+}
+
+impl HostBinding {
+    async fn close(&self) -> Result<(), pl_core::tool::opaque::ToolError> {
+        let mut closed = self.closed.lock().await;
+        if !*closed {
+            (self.close)().await?;
+            *closed = true;
         }
-        _ => anyhow::bail!("Host MCP cannot project this tool input"),
-    };
-    let tool_id = format!("anywork_{}", definition.name());
-    let declaration = HostTool {
-        tool_id: tool_id.clone(),
-        description: definition.description().to_owned(),
-        input_schema: input
-            .as_object()
-            .context("tool schema must be an object")?
-            .clone(),
-    };
-    match tools.entry(tool_id) {
-        std::collections::btree_map::Entry::Vacant(entry) => {
-            entry.insert(HostBinding {
-                declaration,
-                invoke: Box::new(invoke),
-            });
-            Ok(())
-        }
-        std::collections::btree_map::Entry::Occupied(_) => {
-            anyhow::bail!("duplicate Host MCP tool identity")
-        }
+        Ok(())
     }
 }
 
-fn bindings(host: &AgentHost, is_root: bool) -> Result<BTreeMap<String, HostBinding>> {
-    let profiles = host.spawn_profiles();
-    let selection = host.delegation();
-    let mut tools = BTreeMap::new();
-    for kind in [
-        AgentControlKind::Spawn,
-        AgentControlKind::Send,
-        AgentControlKind::List,
-        AgentControlKind::Interrupt,
-        AgentControlKind::Close,
-    ] {
-        if let Some(definition) = kind.declaration(&profiles, selection.mode)? {
-            bind(&mut tools, definition, move |host, arguments, context| {
-                Box::pin(async move {
-                    match kind {
-                        AgentControlKind::Spawn => {
-                            let result = host
-                                .spawn(context, decode::<AgentSpawn>(arguments)?)
-                                .await?;
-                            let error = result.message_error.as_ref().map(ToString::to_string);
-                            Ok((
-                                serde_json::json!({ "receipt": result.receipt, "messageError": error }),
-                                error.is_some(),
-                            ))
-                        }
-                        AgentControlKind::Send => {
-                            let request: Send = decode(arguments)?;
-                            let id = context.call_id.clone();
-                            encoded(
-                                host.send(
-                                    context,
-                                    AgentMessage {
-                                        id,
-                                        target: request.target,
-                                        message: request.message,
-                                    },
-                                )
-                                .await?,
-                            )
-                        }
-                        AgentControlKind::List => {
-                            let _: Empty = decode(arguments)?;
-                            encoded(host.list(context).await?)
-                        }
-                        AgentControlKind::Interrupt => {
-                            let request: Target = decode(arguments)?;
-                            encoded(host.interrupt(context, &request.target).await?)
-                        }
-                        AgentControlKind::Close => {
-                            let request: Close = decode(arguments)?;
-                            encoded(
-                                host.close(
-                                    context,
-                                    &request.target,
-                                    AgentCloseOptions {
-                                        force: request.force,
-                                    },
-                                )
-                                .await?,
-                            )
-                        }
-                    }
-                })
-            })?;
+pub(super) fn prepare_binding(
+    tools: &BTreeMap<String, HostBinding>,
+    definition: &ToolDefinition,
+    input: pl_studio_mcp::JsonInput,
+) -> Result<pl_studio_mcp::ToolProjection> {
+    let projection = pl_studio_mcp::ToolProjection::prepare(definition, input, false)?;
+    anyhow::ensure!(
+        !tools.contains_key(&projection.declaration().tool_id),
+        "duplicate Host MCP tool identity"
+    );
+    Ok(projection)
+}
+
+pub(super) fn attach_binding<C, T, F>(
+    tools: &mut BTreeMap<String, HostBinding>,
+    projection: pl_studio_mcp::ToolProjection,
+    tool: T,
+    invoke: F,
+) where
+    C: Send + 'static,
+    T: pl_agent_tool::Tool<
+            Input = pl_core::context::OpaquePayload,
+            Context = C,
+            Output = pl_core::tool::ToolOutput,
+            Error = pl_core::tool::opaque::ToolError,
+        >,
+    F: Fn(
+            Arc<HostHandle<C>>,
+            Arc<AgentHost>,
+            pl_core::context::OpaquePayload,
+            AgentCallContext,
+        ) -> futures::future::BoxFuture<'static, DomainResult>
+        + Send
+        + Sync
+        + 'static,
+{
+    let handle = Arc::new(pl_agent_tool::ToolHandle::new(tool));
+    let closing = handle.clone();
+    let declaration = projection.declaration().clone();
+    let id = declaration.tool_id.clone();
+    let binding = HostBinding {
+        declaration,
+        projection,
+        invoke: Box::new(move |host, input, context| invoke(handle.clone(), host, input, context)),
+        close: Box::new(move || {
+            let handle = closing.clone();
+            Box::pin(async move { handle.close().await })
+        }),
+        closed: tokio::sync::Mutex::new(false),
+    };
+    assert!(
+        tools.insert(id, binding).is_none(),
+        "prepared Host MCP identity changed"
+    );
+}
+
+pub(super) fn projected_input(
+    input: pl_studio_mcp::ProjectedInput,
+) -> pl_core::context::OpaquePayload {
+    match input {
+        pl_studio_mcp::ProjectedInput::Json(text) => {
+            pl_core::context::OpaquePayload::new("application/json", 1, text)
+                .expect("fixed JSON encoding")
         }
+        pl_studio_mcp::ProjectedInput::Text(text) => pl_core::context::OpaquePayload::text(text),
     }
-    if is_root {
-        bind(
-            &mut tools,
-            ToolDefinition::json(
-                "list_agent_profiles",
-                "Read the same executable Profile catalog as spawn_agent.",
-                pl_agent_tool::typed::input_schema_for::<Empty>(),
-            )?,
-            |host, arguments, context| {
-                Box::pin(async move {
-                    let _: Empty = decode(arguments)?;
-                    encoded(host.list_agent_profiles(context).await?)
-                })
-            },
-        )?;
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the registered Host tool returned Native control without an ACP state owner")]
+struct UnsupportedHostControl;
+
+pub(super) fn data_output(
+    output: pl_core::tool::ToolOutput,
+) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
+    if output.control() != pl_core::tool::ToolControl::Continue
+        || !output.extension_mutations().is_empty()
+        || !output.revealed_tools().is_empty()
+        || output.interaction().is_some()
+    {
+        return Err(
+            pl_core::tool::opaque::ToolError::new(UnsupportedHostControl).with_output(output),
+        );
     }
-    bind(
-        &mut tools,
-        ToolDefinition::json(
-            "wait_agent",
-            "Read original terminal reports. Without after, latest may predate a recent send. \
-         Reuse the returned cursor for subsequent reports. Cancelling only ends observation.",
-            pl_agent_tool::typed::input_schema_for::<WaitAgentRequest>(),
-        )?,
-        |host, arguments, context| {
-            Box::pin(async move {
-                let result: WaitAgentResult = host.wait_agent(context, decode(arguments)?).await?;
-                encoded(result)
-            })
+    Ok(output)
+}
+
+pub(super) fn host_result(
+    result: Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError>,
+) -> HostResult {
+    let observed = match &result {
+        Ok(output) => Some(output),
+        Err(error) => error.observed_output(),
+    };
+    let value = observed
+        .map(|output| {
+            serde_json::from_str(output.payload().content())
+                .unwrap_or_else(|_| Value::String(output.payload().content().into()))
+        })
+        .unwrap_or(Value::Null);
+    match result {
+        Ok(_) => HostResult {
+            value,
+            is_error: false,
         },
-    )?;
-    if is_root && selection.mode == crate::DelegationMode::Automatic {
-        bind(
-            &mut tools,
-            ToolDefinition::json(
-                "list_delegation_models",
-                "Read all qualified Native child model candidates and short descriptions in one call, without pagination. Shortlist then compare recent task feedback with get_delegation_models before choosing; ACP does not use modelSelection.",
-                pl_agent_tool::typed::input_schema_for::<crate::ListDelegationModelsRequest>(),
-            )?,
-            |host, arguments, context| {
-                Box::pin(async move {
-                    encoded(
-                        host.list_delegation_models(context, decode(arguments)?)
-                            .await?,
-                    )
-                })
-            },
-        )?;
-        bind(
-            &mut tools,
-            ToolDefinition::json(
-                "get_delegation_models",
-                "Read 1-10 exact Native account/model details with recent evaluations, prices, supported effort and measured speed. Proactively compare suitable candidates using same-task comments and instruction following before automatic dispatch; preserve uncertainty for empty or small samples.",
-                pl_agent_tool::typed::input_schema_for::<crate::GetDelegationModelsRequest>(),
-            )?,
-            |host, arguments, context| {
-                Box::pin(async move {
-                    encoded(
-                        host.get_delegation_models(context, decode(arguments)?)
-                            .await?,
-                    )
-                })
-            },
-        )?;
+        Err(error) => HostResult {
+            value: serde_json::json!({"error": error.to_string(), "output": value}),
+            is_error: true,
+        },
     }
-    Ok(tools)
+}
+
+struct AgentMcpTools<'a>(&'a mut BTreeMap<String, HostBinding>);
+
+pub(super) fn attach_direct<T>(
+    tools: &mut BTreeMap<String, HostBinding>,
+    projection: pl_studio_mcp::ToolProjection,
+    tool: T,
+) where
+    T: pl_agent_tool::Tool<
+            Input = pl_core::context::OpaquePayload,
+            Context = AgentCallContext,
+            Output = pl_core::tool::ToolOutput,
+            Error = pl_core::tool::opaque::ToolError,
+        >,
+{
+    attach_binding(tools, projection, tool, |handle, host, input, context| {
+        Box::pin(async move {
+            host.authorize_workspace_call(&context).await?;
+            let result = host_result(handle.execute(input, context).await.and_then(data_output));
+            Ok((result.value, result.is_error))
+        })
+    });
+}
+
+impl crate::thread_assembler::host_agent_tools::AgentToolSink for AgentMcpTools<'_> {
+    type Context = AgentCallContext;
+    type Prepared = pl_studio_mcp::ToolProjection;
+    fn prepare(
+        &mut self,
+        definition: &ToolDefinition,
+        _: crate::thread_assembler::host_agent_tools::AgentToolOptions,
+    ) -> Result<Self::Prepared> {
+        prepare_binding(self.0, definition, pl_studio_mcp::JsonInput::Object)
+    }
+    fn attach<T>(&mut self, projection: Self::Prepared, tool: T)
+    where
+        T: pl_agent_tool::Tool<
+                Input = pl_core::context::OpaquePayload,
+                Context = AgentCallContext,
+                Output = pl_core::tool::ToolOutput,
+                Error = pl_core::tool::opaque::ToolError,
+            >,
+    {
+        attach_direct(self.0, projection, tool);
+    }
 }
 
 impl HostTools for Handler {
@@ -675,15 +701,6 @@ impl HostTools for Handler {
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ControlError> {
-    serde_json::from_value(value).map_err(ControlError::service)
-}
-fn encoded(value: impl serde::Serialize) -> Result<(Value, bool), ControlError> {
-    serde_json::to_value(value)
-        .map(|value| (value, false))
-        .map_err(ControlError::service)
-}
-
 impl Handler {
     async fn invoke_domain(
         &self,
@@ -692,7 +709,14 @@ impl Handler {
         context: AgentCallContext,
     ) -> Result<(Value, bool), ControlError> {
         let binding = self.tools.get(tool_id).ok_or(ControlError::Closed)?;
-        (binding.invoke)(self.host.clone(), arguments, context).await
+        let Value::Object(arguments) = arguments else {
+            return Err(ControlError::service(HostError::InvalidRequest));
+        };
+        let input = binding
+            .projection
+            .decode(arguments)
+            .map_err(ControlError::service)?;
+        (binding.invoke)(self.host.clone(), projected_input(input), context).await
     }
 }
 
@@ -702,6 +726,7 @@ mod tests {
 
     use anyhow::{Context, Result, ensure};
     use pl_acp::session::schema;
+    use pl_tool::collaboration::{control::AgentCallContext, thread::AgentControlHost};
     use reqwest::{Client, StatusCode, header};
     use serde_json::{Value, json};
     use tokio_util::sync::CancellationToken;
@@ -926,6 +951,36 @@ mod tests {
         }
 
         async fn task_result(&mut self, task: &str) -> Result<Value> {
+            Ok(self.task_reply(task).await?["value"].clone())
+        }
+
+        async fn completed_tool(
+            &mut self,
+            name: &str,
+            arguments: Value,
+        ) -> Result<pl_studio_mcp::HostResult> {
+            let response = self
+                .request("tools/call", json!({"name":name,"arguments":arguments}))
+                .await?;
+            ensure!(
+                response["error"].is_null(),
+                "MCP protocol failure: {response}"
+            );
+            let result = &response["result"];
+            if result["structuredContent"]["status"] == "running" {
+                let task = result["structuredContent"]["taskId"]
+                    .as_str()
+                    .context("pending tool receipt")?;
+                Ok(serde_json::from_value(self.task_reply(task).await?)?)
+            } else {
+                Ok(pl_studio_mcp::HostResult {
+                    value: result["structuredContent"].clone(),
+                    is_error: result["isError"] == true,
+                })
+            }
+        }
+
+        async fn task_reply(&mut self, task: &str) -> Result<Value> {
             self.tool("anywork_wait", json!({"taskIds":[task],"timeoutMs":30000}))
                 .await?;
             let mut content = String::new();
@@ -947,7 +1002,7 @@ mod tests {
                     None => break,
                 }
             }
-            Ok(serde_json::from_str::<Value>(&content)?["value"].clone())
+            Ok(serde_json::from_str(&content)?)
         }
 
         async fn cancel_request(&self, request_id: u64) -> Result<()> {
@@ -1064,11 +1119,11 @@ mod tests {
             ensure!(catalog.iter().any(|tool| tool["name"] == "anywork_exec_command"));
             ensure!(!catalog.iter().any(|tool| tool["name"] == "anywork_exec" || tool["name"] == "anywork_sleep"));
             let patch = catalog.iter().find(|tool| tool["name"] == "anywork_apply_patch").context("patch declaration")?;
-            ensure!(patch["inputSchema"]["properties"]["patch"]["type"] == "string");
+            ensure!(patch["inputSchema"]["properties"]["input"]["type"] == "string");
 
             peer.tool("anywork_create_directory", json!({"path":"src"})).await?;
             peer.tool("anywork_write_file", json!({"path":"src/file.txt","mode":"create","content":"before\n"})).await?;
-            peer.tool("anywork_apply_patch", json!({"patch":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
+            peer.tool("anywork_apply_patch", json!({"input":"*** Begin Patch\n*** Update File: src/file.txt\n@@\n-before\n+after\n*** End Patch"})).await?;
             let stat = peer.tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
             ensure!(stat["exists"] == true && stat["type"] == "file" && stat["len"] == 6);
             peer.tool("anywork_copy_path", json!({"from":"src/file.txt","to":"copy.txt","collision":"failIfExists"})).await?;
@@ -1078,8 +1133,8 @@ mod tests {
             ensure!(!std::path::Path::new(&fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
             tokio::fs::create_dir(fixture.home.path().join("outside")).await?;
             std::os::unix::fs::symlink(fixture.home.path().join("outside"), root.join("escape"))?;
-            let denied = peer.request("tools/call", json!({"name":"anywork_write_file","arguments":{"path":"escape/forbidden","content":"bad","mode":"create"}})).await?;
-            ensure!(denied["result"]["isError"] == true && !fixture.home.path().join("outside/forbidden").exists());
+            let denied = peer.completed_tool("anywork_write_file", json!({"path":"escape/forbidden","content":"bad","mode":"create"})).await?;
+            ensure!(denied.is_error && !fixture.home.path().join("outside/forbidden").exists());
             let git = peer.tool("anywork_git_workspace_info", json!({})).await?;
             ensure!(git["worktree"] == root.to_str().context("Git root")?);
 
@@ -1096,18 +1151,22 @@ mod tests {
             files_peer.initialize().await?;
             let denied = files_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"false"}})).await?;
             ensure!(denied["error"]["code"] == -32602);
-            let denied = files_peer.request("tools/call", json!({"name":"anywork_write_file","arguments":{"path":fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"}})).await?;
-            ensure!(denied["result"]["isError"] == true && !fixture.home.path().join("outside/full-access-forbidden").exists());
+            let denied = files_peer.completed_tool("anywork_write_file", json!({"path":fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"})).await?;
+            ensure!(denied.is_error && !fixture.home.path().join("outside/full-access-forbidden").exists());
             let command = peer.tool("anywork_exec_command", json!({"command":"printf ready; cat; printf done","interactive":true})).await?;
             let task = command["taskId"].as_str().context("running exec receipt")?.to_owned();
             let foreign = files_peer.request("tools/call", json!({"name":"anywork_get_tool_task","arguments":{"taskId":task,"resultCursor":0}})).await?;
             ensure!(foreign["result"]["isError"] == true, "another task owner accepted an original receipt from this instance");
-            let input = peer.tool("anywork_write_stdin", json!({"taskId":task,"chars":"input\n","closeStdin":true})).await?;
+            let mut input = peer.tool("anywork_write_stdin", json!({"taskId":task,"chars":"input\n","closeStdin":true})).await?;
+            if input["status"] == "running" {
+                let input_task = input["taskId"].as_str().context("stdin operation receipt")?.to_owned();
+                input = peer.task_result(&input_task).await?;
+            }
             ensure!(input["targetTaskId"] == task && input["inputReceipt"]["acceptedBytes"] == 6, "stdin did not use the real exec receipt: {input}");
             let result = peer.task_result(&task).await?;
             ensure!(result["stdout"]["content"].as_str().context("stdout")?.contains("readyinput\ndone"));
-            let wrong = peer.request("tools/call", json!({"name":"anywork_write_stdin","arguments":{"taskId":"task:foreign-instance","chars":"do-not-send"}})).await?;
-            ensure!(wrong["result"]["isError"] == true);
+            let wrong = peer.completed_tool("anywork_write_stdin", json!({"taskId":"task:foreign-instance","chars":"do-not-send"})).await?;
+            ensure!(wrong.is_error, "foreign task stdin succeeded");
 
             let mut output = peer.tool("anywork_exec_command", json!({"command":"head -c 70000 /dev/zero | tr '\\0' x","maxOutputChars":64})).await?;
             if output["status"] == "running" {
@@ -1168,8 +1227,8 @@ mod tests {
             ensure!(tokio::fs::read_to_string(root.join("mutation-count")).await? == "once", "archive repair reexecuted a mutation");
 
             executor.close().await?;
-            let stale = peer.request("tools/call", json!({"name":"anywork_stat_path","arguments":{"path":"src/file.txt"}})).await?;
-            ensure!(stale["result"]["isError"] == true, "stale execution binding silently rebound");
+            let stale = peer.completed_tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
+            ensure!(stale.is_error, "stale execution binding silently rebound");
             tools.close().await?;
             Ok::<_, anyhow::Error>(())
         }.await;
@@ -1529,6 +1588,7 @@ mod tests {
         let mut target = None;
         let mut services = Vec::new();
         let result = async {
+            save_acp_child_profile(&fixture)?;
             let mut open = fixture.open().await?;
             Fixture::ready(&mut open).await?;
             target = Some(open.target.clone());
@@ -1562,9 +1622,45 @@ mod tests {
             )
             .await?;
             services.push(first_service);
+            let spawned = host
+                .spawn(
+                    AgentCallContext {
+                        caller: identity.agent_id.clone(),
+                        call_id: "catalog-child".into(),
+                        cancellation: CancellationToken::new(),
+                    },
+                    serde_json::from_value(json!({
+                        "profileId": "acp-child",
+                        "taskSummary": "Inspect the child tool catalog",
+                        "message": "Complete this isolated catalog check"
+                    }))?,
+                )
+                .await?;
+            ensure!(
+                spawned.message_error.is_none(),
+                "child message was not accepted"
+            );
+            let child_identity = fixture
+                .runtime
+                .agent_facility
+                .product_events
+                .member_identity(
+                    &identity.session_id,
+                    &crate::AgentId::new(spawned.receipt.agent_id)?,
+                )
+                .context("published child identity")?;
+            let child_resources = owner
+                .resident_acp(child_identity.thread_id.as_str())?
+                .context("published child resources")?;
+            let child_host = owner.acp_agent_host(
+                &child_identity,
+                &child_resources,
+                &profile_snapshot,
+                selection,
+            )?;
             let (second_service, second_definition) = HostMcp::start(
-                host,
-                identity.agent_id.clone(),
+                child_host,
+                child_identity.agent_id,
                 CancellationToken::new(),
                 false,
                 None,
@@ -1877,7 +1973,7 @@ mod tests {
                 spawned["result"]["isError"] != true,
                 "the real ACP child spawn failed"
             );
-            let child_id = spawned["result"]["structuredContent"]["receipt"]["agentId"]
+            let child_id = spawned["result"]["structuredContent"]["agentId"]
                 .as_str()
                 .context("spawn result agent id")?
                 .to_owned();
@@ -2134,6 +2230,8 @@ mod tests {
 #[cfg(test)]
 mod future_sizes {
     use super::*;
+    use crate::thread_assembler::agent_wait::WaitAgentRequest;
+    use pl_tool::collaboration::thread::{AgentCloseOptions, AgentControlHost, AgentSpawn};
     use rmcp::{RoleServer, ServerHandler, model::CallToolRequestParams, service::RequestContext};
 
     fn bounded<Input, F: std::future::Future + std::marker::Send>(

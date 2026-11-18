@@ -11,9 +11,10 @@ use pl_tool::collaboration::control::{
     ControlError, SpawnReceipt,
 };
 use pl_tool::collaboration::thread::{
-    AgentControlHost, AgentControlKind, AgentMessage, AgentSpawn, AgentSpawnProfile,
-    ThreadAgentControl,
+    AgentControlHost, AgentMessage, AgentSpawn, AgentSpawnProfile,
 };
+#[cfg(test)]
+use pl_tool::collaboration::thread::{AgentControlKind, ThreadAgentControl};
 use std::sync::{Arc, Weak};
 
 #[derive(Debug, Clone)]
@@ -1512,40 +1513,16 @@ impl SessionRuntime {
         selection: crate::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         let host = Arc::new(self.native_agent_host(caller, resources, profiles, selection)?);
-        let profiles = host.spawn_profiles();
-        let mut kinds = vec![
-            AgentControlKind::Send,
-            AgentControlKind::List,
-            AgentControlKind::Interrupt,
-            AgentControlKind::Close,
-        ];
-        if self.0.state().child_factory.is_some() {
-            kinds.push(AgentControlKind::Spawn);
-        }
-        let mut tools = Vec::new();
-        for kind in kinds {
-            let spec = kind
-                .declaration(&profiles, selection.mode)
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "build Agent control schema",
-                    source: Box::new(source),
-                })?;
-            if let Some(spec) = spec {
-                let prepared = pl_tool::binding::prepare_registration(
-                    spec.name(),
-                    &spec,
-                    pl_model::completion::ToolCallPolicy::DirectOnly,
-                )?;
-                tools.push(
-                    ThreadAgentControl::new(host.clone(), kind, spec, caller.clone(), {
-                        let host = host.clone();
-                        move || host.validate_instance()
-                    })
-                    .registration(prepared),
-                );
-            }
-        }
-        tools.extend(self.agent_query_tools(host, selection)?);
+        let allow_spawn = self.0.state().child_factory.is_some();
+        let mut sink = super::host_agent_tools::NativeAgentTools(Vec::new());
+        super::host_agent_tools::register(host.clone(), allow_spawn, false, &mut sink).map_err(
+            |source| ThreadAssemblyError::Resource {
+                operation: "prepare shared Agent tools",
+                source: source.into_boxed_dyn_error(),
+            },
+        )?;
+        let mut tools = sink.0;
+        tools.extend(self.agent_query_tools(host)?);
         Ok(tools)
     }
 }

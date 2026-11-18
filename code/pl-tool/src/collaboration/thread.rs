@@ -16,6 +16,58 @@ pub use pl_protocol::{AgentWorkspaceMode, DelegationMode};
 pub use serde_json::Error as SchemaEncodingError;
 use std::sync::Arc;
 
+/// A real caller context projected at the owning host, never decoded from tool arguments.
+pub struct AgentInvocation {
+    pub call: AgentCallContext,
+    pub message_id: String,
+}
+
+pub trait AgentToolContext: Send + 'static {
+    fn bind(
+        self,
+        identity: &pl_protocol::AgentThreadIdentity,
+    ) -> Result<AgentInvocation, ControlError>;
+}
+
+impl AgentToolContext for CallContext {
+    fn bind(
+        self,
+        identity: &pl_protocol::AgentThreadIdentity,
+    ) -> Result<AgentInvocation, ControlError> {
+        if self.thread_id != identity.thread_id.as_str() {
+            return Err(ControlError::Missing(self.thread_id));
+        }
+        Ok(AgentInvocation {
+            message_id: format!(
+                "agent-message:{}:{}:{}",
+                self.thread_id.len(),
+                self.thread_id,
+                self.call_id
+            ),
+            call: AgentCallContext {
+                caller: identity.agent_id.clone(),
+                call_id: self.call_id,
+                cancellation: self.cancellation,
+            },
+        })
+    }
+}
+
+impl AgentToolContext for AgentCallContext {
+    fn bind(
+        self,
+        identity: &pl_protocol::AgentThreadIdentity,
+    ) -> Result<AgentInvocation, ControlError> {
+        if self.caller != identity.agent_id {
+            return Err(ControlError::Missing(self.caller.to_string()));
+        }
+        Ok(AgentInvocation {
+            message_id: self.call_id.clone(),
+            call: self,
+        })
+    }
+}
+
 /// One executable Profile selected by the product from a single published catalog generation.
 #[derive(Debug, Clone)]
 pub struct AgentSpawnProfile {
@@ -264,15 +316,16 @@ impl AgentControlKind {
 }
 
 /// One Thread's frontend over a shared product coordination service.
-pub struct ThreadAgentControl<H> {
+pub struct ThreadAgentControl<H, C = CallContext> {
     definition: ToolDefinition,
     host: Arc<H>,
     kind: AgentControlKind,
     caller: pl_protocol::AgentThreadIdentity,
     validate: Box<dyn Fn() -> Result<(), ControlError> + Send + Sync>,
+    context: std::marker::PhantomData<fn(C)>,
 }
 
-impl<H: std::fmt::Debug> std::fmt::Debug for ThreadAgentControl<H> {
+impl<H: std::fmt::Debug, C> std::fmt::Debug for ThreadAgentControl<H, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ThreadAgentControl")
             .field("host", &self.host)
@@ -282,7 +335,7 @@ impl<H: std::fmt::Debug> std::fmt::Debug for ThreadAgentControl<H> {
     }
 }
 
-impl<H: AgentControlHost> ThreadAgentControl<H> {
+impl<H: AgentControlHost, C> ThreadAgentControl<H, C> {
     /// Associates an operation with its product-owned coordinator.
     pub fn new(
         host: Arc<H>,
@@ -297,9 +350,12 @@ impl<H: AgentControlHost> ThreadAgentControl<H> {
             definition,
             caller,
             validate: Box::new(validate),
+            context: std::marker::PhantomData,
         }
     }
+}
 
+impl<H: AgentControlHost> ThreadAgentControl<H> {
     /// Transfers an executor; product coordination remains behind the host port.
     ///
     /// The supplied preparation has already validated the registration identity.
@@ -329,9 +385,9 @@ impl<H: AgentControlHost> ThreadAgentControl<H> {
     }
 }
 
-impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
+impl<H: AgentControlHost, C: AgentToolContext> pl_agent_tool::Tool for ThreadAgentControl<H, C> {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = C;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
@@ -339,28 +395,18 @@ impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
         &self.definition
     }
 
-    async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute(&self, input: OpaquePayload, context: C) -> Result<ToolOutput, ToolError> {
         if input.format() != "application/json" || input.version() != 1 {
             return Err(ToolError::new(std::io::Error::other(
                 "unsupported agent control encoding",
             )));
         }
-        if context.cancellation.is_cancelled() {
+        let invocation = context.bind(&self.caller).map_err(ToolError::new)?;
+        let call = invocation.call;
+        if call.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if context.thread_id != self.caller.thread_id.as_str() {
-            return Err(ToolError::new(ControlError::Missing(context.thread_id)));
-        }
         (self.validate)().map_err(ToolError::new)?;
-        let call = AgentCallContext {
-            caller: self.caller.agent_id.clone(),
-            call_id: context.call_id.clone(),
-            cancellation: context.cancellation,
-        };
         match self.kind {
             AgentControlKind::Spawn => {
                 let request: AgentSpawn =
@@ -384,12 +430,7 @@ impl<H: AgentControlHost> pl_agent_tool::Tool for ThreadAgentControl<H> {
                     .send(
                         call,
                         AgentMessage {
-                            id: format!(
-                                "agent-message:{}:{}:{}",
-                                context.thread_id.len(),
-                                context.thread_id,
-                                context.call_id
-                            ),
+                            id: invocation.message_id,
                             target: input.target,
                             message: input.message,
                         },

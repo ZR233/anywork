@@ -1,5 +1,4 @@
 //! Command execution through the opaque Thread contract.
-use pl_agent_tool::Tool;
 use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 use pl_core::context::{OpaquePayload, ResourceReference};
@@ -9,7 +8,7 @@ use pl_core::thread::cold::{
 };
 use pl_core::tool::{
     ToolOutput,
-    opaque::{CallContext, Registration, ToolError},
+    opaque::{Registration, ToolError},
 };
 use sha2::{Digest, Sha256};
 
@@ -89,29 +88,6 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
         }
     }
 
-    /// Transfers paired instances over this Thread's one process manager.
-    ///
-    /// Both definitions have already been frozen and their registration identities validated.
-    pub fn registrations(
-        self,
-        exec: pl_core::tool::opaque::PreparedRegistration,
-        stdin: pl_core::tool::opaque::PreparedRegistration,
-        stdin_definition: pl_agent_tool::ToolDefinition,
-    ) -> Vec<Registration> {
-        let input = ThreadWriteStdinTool {
-            definition: stdin_definition,
-            processes: self.processes.clone(),
-        };
-        vec![
-            self.registration(exec),
-            stdin
-                .attach(pl_agent_tool::ToolHandle::new(input))
-                .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
-                    "builtin.write_stdin@1",
-                )),
-        ]
-    }
-
     /// Transfers this instance with the host's frozen model declaration.
     ///
     /// The supplied preparation has already validated the registration identity.
@@ -120,7 +96,9 @@ impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
         prepared: pl_core::tool::opaque::PreparedRegistration,
     ) -> Registration {
         prepared
-            .attach(pl_agent_tool::ToolHandle::new(self))
+            .attach(pl_agent_tool::ToolHandle::new(
+                crate::binding::NativeWorkspaceTool::new(self),
+            ))
             .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
                 "builtin.exec@2",
             ))
@@ -222,7 +200,7 @@ pub struct ThreadWriteStdinTool<B: CommandBackend> {
 
 impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
@@ -231,25 +209,6 @@ impl<B: CommandBackend> pl_agent_tool::Tool for ThreadWriteStdinTool<B> {
     }
 
     async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl<B: CommandBackend> ThreadWriteStdinTool<B> {
-    pub fn new(
-        processes: Arc<CommandProcessManager<B>>,
-        definition: pl_agent_tool::ToolDefinition,
-    ) -> Self {
-        Self {
-            processes,
-            definition,
-        }
-    }
-    pub async fn execute_workspace(
         &self,
         input: OpaquePayload,
         context: crate::invocation::WorkspaceInvocation,
@@ -295,6 +254,18 @@ impl<B: CommandBackend> ThreadWriteStdinTool<B> {
     }
 }
 
+impl<B: CommandBackend> ThreadWriteStdinTool<B> {
+    pub fn new(
+        processes: Arc<CommandProcessManager<B>>,
+        definition: pl_agent_tool::ToolDefinition,
+    ) -> Self {
+        Self {
+            processes,
+            definition,
+        }
+    }
+}
+
 /// `exec_command`/`write_stdin` 在进程语义之外的结构化失败原因。
 ///
 /// 生产者把结构化事实报成 typed 错误而不是只拼一段文本，调用方因此能把"命令按自己声明的输出
@@ -335,7 +306,7 @@ pub enum ExecFailure {
 
 impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadExecTool<B, A> {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
@@ -344,16 +315,6 @@ impl<B: CommandBackend, A: CommandOutputArchive> pl_agent_tool::Tool for ThreadE
     }
 
     async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl<B: CommandBackend, A: CommandOutputArchive> ThreadExecTool<B, A> {
-    pub async fn execute_workspace(
         &self,
         input: OpaquePayload,
         context: crate::invocation::WorkspaceInvocation,

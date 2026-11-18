@@ -41,9 +41,9 @@ fn selectable_ids(account: &AccountConfig) -> Vec<String> {
         .collect()
 }
 
-/// 成功的空名单只改变内置默认资格；显式开启可以恢复选择和路由解析。
+/// 不完整或空的在线名单不改变默认启用意图；用户显式关闭仍然阻止路由。
 #[test]
-fn missing_bundled_member_can_be_explicitly_enabled_after_successful_empty_inventory() {
+fn bundled_models_stay_enabled_after_successful_empty_inventory() {
     let mut account = openai_account();
     assert!(member(&account, "gpt-6-luna").enabled);
     account.set_model_catalog_overlay(Vec::new()).unwrap();
@@ -52,16 +52,22 @@ fn missing_bundled_member_can_be_explicitly_enabled_after_successful_empty_inven
         missing.origin,
         pl_model::config::AccountModelOrigin::Bundled
     );
-    assert!(!missing.enabled);
-    assert!(selectable_ids(&account).is_empty());
+    assert!(missing.enabled);
+    assert!(
+        account
+            .effective_catalog(None)
+            .unwrap()
+            .iter()
+            .all(|entry| entry.enabled)
+    );
+    assert!(selectable_ids(&account).contains(&"gpt-6-luna".into()));
     assert!(
         account
             .model_selection_guide("gpt-6-luna")
             .unwrap()
             .is_some()
     );
-    account.set_model_enabled("gpt-6-luna", true).unwrap();
-    assert!(selectable_ids(&account).contains(&"gpt-6-luna".into()));
+    assert!(account.model_enabled_overrides().is_empty());
     let account_id = AccountId::new("missing").unwrap();
     let role = AgentRoleId::new("executor").unwrap();
     let route = ModelRouteConfig {
@@ -300,9 +306,12 @@ fn resolved_catalog_cache_keeps_disabled_members_unselectable() {
     let account = config.accounts.values_mut().next().unwrap();
     assert!(member(account, "gpt-6-astra").enabled);
     assert!(!member(account, "gpt-6-luna").enabled);
-    assert!(!member(account, "gpt-6-sol").enabled);
+    assert!(member(account, "gpt-6-sol").enabled);
     account.set_model_enabled("gpt-6-astra", false).unwrap();
-    assert!(selectable_ids(account).is_empty());
+    let selectable = selectable_ids(account);
+    assert!(!selectable.contains(&"gpt-6-luna".into()));
+    assert!(!selectable.contains(&"gpt-6-astra".into()));
+    assert!(selectable.contains(&"gpt-6-sol".into()));
 }
 
 /// 显式开启不修复未知上下文，撤下的线上独有成员也不能靠覆盖变成库存。
@@ -563,7 +572,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
     // 其他目录的 model_id 不在本账号目录里，不回落到系统目录。
     assert!(account.model_selection_guide("glm-5.3").unwrap().is_none());
 
-    // 在线目录撤下内置成员：仍在管理目录，默认关闭但保留资料。
+    // 在线目录遗漏内置成员：默认启用及内置资料都保留。
     let mut withdrawn = openai_account();
     let inventory = withdrawn.effective_models(None).unwrap();
     withdrawn

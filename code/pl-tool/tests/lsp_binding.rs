@@ -15,7 +15,7 @@ use std::{
 use pl_lsp::host::ExecutorLspHost;
 use pl_remote_helper::Executor;
 
-fn context() -> CallContext {
+fn context() -> pl_tool::invocation::WorkspaceInvocation {
     CallContext {
         thread_id: "lsp-binding".into(),
         turn_id: "turn".into(),
@@ -30,6 +30,7 @@ fn context() -> CallContext {
         model_projection: None,
         tasks: None,
     }
+    .into()
 }
 
 fn query(path: &Path) -> OpaquePayload {

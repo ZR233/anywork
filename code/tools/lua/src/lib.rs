@@ -53,6 +53,7 @@ pub struct ExecInput {
     #[serde(default)]
     pub timeout_ms: Option<u64>,
     /// Positive UTF-8 model output budget. Default 8192. Full output is retained separately.
+    /// A truncation recovery receipt is never cut to fit this budget.
     #[serde(default)]
     pub max_output_bytes: Option<usize>,
 }
@@ -120,7 +121,7 @@ Patch (put the string in args.patch):
 Only code is parsed as Lua. args is data, not executable text: escape its strings once for JSON, without another layer of Lua quoting. Do not paste shell commands or JSON objects into code. For multiple calls, put their inputs in args fields and reference them, e.g. tools.exec_command(args.build). If constructing a Lua table is necessary, fields use key=value, never JSON key:value. Lua long strings must have matching delimiters, e.g. [=[text]=]; choose a higher level if the content includes the closing delimiter.
 
 tools.exec_command returns a terminal record with taskId, exitCode, stdout.content and stderr.content. Returning this record preserves errors and both streams. For larger results, print selected fields; include exitCode and stderr. Check exitCode == 0 before dependent actions. Nonzero command exits are data; permission, transport, timeout and other tool failures raise errors. pcall catches a failure with message and optional output. Completed effects are retained and never replayed automatically; Lua syntax errors start no tools.
-Only print(...) and return enter context; tables print as JSON. maxOutputBytes defaults to 8192 UTF-8 bytes; filter before printing or raise it for a relevant excerpt. Truncation identifies the original task for get_tool_task paging; do not rerun commands to recover output.
+Only print(...) and return enter context; tables print as JSON. maxOutputBytes defaults to 8192 UTF-8 bytes; filter before printing or raise it for a relevant excerpt. Truncation identifies the original task for get_tool_task paging; its complete recovery receipt is retained even when the budget leaves no room for a content preview. Do not rerun commands to recover output.
 timeoutMs defaults to 120000 and covers the whole program including child waits; expiry cancels children. It is not a yield delay. Background delivery is automatic. If exec returns a running taskId, use top-level wait until that program is terminal; a message can wake wait early. Child calls suspend until terminal. For stdin, start with interactive=true, use another exec to list_tool_tasks and tools.write_stdin on the running exec_command taskId, then wait for the original program. Leave enough deadline for both calls.
 Each invocation has fresh state, including args (default empty object). Keep dependent reads, calculations and writes in one program or wait for the previous program.
 parallel takes ONE array of zero-argument functions, not separate function arguments or already-executed calls. For two independent commands with JSON args {{"first":{{"command":"first"}},"second":{{"command":"second"}}}}, use:

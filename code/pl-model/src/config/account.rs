@@ -182,7 +182,7 @@ pub struct AccountConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelInfo>>,
-    /// 精确 model_id 的显式启用覆盖；缺项按当前目录自动决定，撤下成员仍保留意图。
+    /// 精确 model_id 的显式启用覆盖；缺项默认启用，撤下成员仍保留意图。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_enabled_overrides: BTreeMap<String, bool>,
     #[serde(skip)]
@@ -402,13 +402,11 @@ impl AccountConfig {
         Ok(catalog
             .into_iter()
             .map(|mut entry| {
-                let automatic = entry.origin != AccountModelOrigin::Bundled
-                    || self.model_catalog_overlay.is_none();
                 entry.enabled = self
                     .model_enabled_overrides
                     .get(&entry.model.model_id)
                     .copied()
-                    .unwrap_or(automatic);
+                    .unwrap_or(true);
                 entry
             })
             .filter(|entry| {
@@ -454,7 +452,7 @@ impl AccountConfig {
         Ok(())
     }
 
-    /// 返回当前保存的显式启用覆盖；缺项表示自动。
+    /// 返回当前保存的显式启用覆盖；缺项表示默认启用。
     ///
     /// 调用方据此投影管理页开关与配置保存，不需要第二份自动分发白名单。
     pub fn model_enabled_overrides(&self) -> &BTreeMap<String, bool> {
@@ -630,7 +628,7 @@ impl AccountConfig {
         entries
     }
 
-    /// Publish a complete successful online inventory; absent bundled members default to disabled.
+    /// Publish a successful online inventory without changing user enablement intent.
     /// The host owns query identity/generation checks and durable publication ordering.
     /// # Errors
     /// Explicit/unsupported catalogs or any invalid declaration reject the whole observation.
