@@ -68,7 +68,7 @@ PR 中可复用的工程工具和 remote helper 资源使用同次运行的明�
 
 构建环境中的 Git 与 OpenSSH 必须满足现有工作树和 SSH 消费者的真实能力要求，不能仅以命令存在或基础发行版的默认版本作为验收依据。运行容器保留宿主 UID/GID；该身份不必预置在镜像账户中。需要身份解析的系统工具通过容器内、无特权、临时的用户与组映射运行，不修改或挂载宿主账户文件，不以 root、扩大挂载或放宽权限规避身份问题。相关能力应在镜像冒烟中直接验证，而不是由 CI 消费者临时安装修补。
 
-正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。Linux CLI 使用对应架构的 musl 目标，由现有 Zig/cargo-zigbuild 工具链静态构建；Windows 与 macOS 沿用各自原生目标。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明，Linux 另检查不存在动态加载器或共享库依赖。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
+正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。CLI 与 Rust bridge 使用相同的 Cargo 宿主目标和 release 编译目录，可复用编译产物。Linux 使用 GNU/glibc。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明，Linux 将 CLI 纳入 Debian 包的 ELF ABI 与共享库依赖检查。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
 
 ## 23.2 Windows 安装包与签名信任根
 
@@ -96,7 +96,7 @@ Linux `stage` 同样显式消费版本匹配的预构建 bundle，不隐式执�
 
 桌面入口使用稳定图标名 `io.github.zr233.anywork`，对应的 512×512 PNG 安装到系统 `hicolor/512x512/apps` 标准目录；bundle 的相对资源布局保持一致。图标尺寸目录必须由系统主题登记，不能仅因文件存在就视为桌面环境可发现。执行安装冒烟时，须从已安装桌面入口读取图标名，通过 GTK 的主题查找与图片解码确认其可用。
 
-Debian 包使用 GNU/glibc 桌面链路；独立辅助进程与 `anywk` CLI 采用 musl，不能据此宣称整包摆脱 glibc。首版构建基线为 Ubuntu 22.04，目标运行环境为 Ubuntu 22.04、24.04 与 Debian 12、13 的 `amd64`。对所有 ELF 有效载荷检查 ABI 需求：GLIBC 不高于 2.35，GLIBCXX/CXXABI 等不超出最低支持环境实际提供的能力。系统库依赖仅从具有共享库导入的 ELF 推导，静态 PIE 的动态节不代表共享库依赖；发行版包名迁移以实际包关系与原生包管理器解算为依据，不私带或替换 glibc、不忽略缺库、不降低依赖声明伪造兼容。
+Debian 包的桌面程序和 `anywk` CLI 使用 GNU/glibc，SSH 远端 helper 使用 musl。首版构建基线为 Ubuntu 22.04，目标运行环境为 Ubuntu 22.04、24.04 与 Debian 12、13 的 `amd64`。对所有 ELF 有效载荷检查 ABI 需求：GLIBC 不高于 2.35，GLIBCXX/CXXABI 等不超出最低支持环境实际提供的能力。系统库依赖仅从具有共享库导入的 ELF 推导，静态 PIE 的动态节不代表共享库依赖；发行版包名迁移以实际包关系与原生包管理器解算为依据，不私带或替换 glibc、不忽略缺库、不降低依赖声明伪造兼容。
 
 ELF 依赖分析不能发现运行时动态加载的库。Flutter/GTK 图形栈通过 libepoxy 加载的 GL、EGL 与 GLES 调度库必须显式列入产品依赖，不能依赖开发包、测试工具或宿主桌面的偶然安装。具体驱动由操作系统及用户的图形环境提供，包不绑定某一家 GPU 驱动。PackageKit 识别本地安装包还需要标准 MIME 数据，因此显式依赖 `shared-mime-info`；该数据依赖不能从 ELF 推导。独立库的链接分析可显式使用随包私有库目录模拟主进程已加载的依赖；主程序分析与真实启动不注入额外加载路径，不放宽缺库、符号或版本错误。
 

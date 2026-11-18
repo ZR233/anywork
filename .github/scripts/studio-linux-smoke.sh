@@ -76,12 +76,6 @@ for file in "${elfs[@]}"; do
   echo "ELF ABI evidence: $file"
   readelf --file-header --version-info "$file"
 done > /evidence/elf-versions.log
-cli_linkage=$(readelf --wide --program-headers --dynamic /opt/anywork/bin/anywk)
-if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<< "$cli_linkage"; then
-  printf 'anywk must be statically linked:\n%s\n' "$cli_linkage" >&2
-  exit 1
-fi
-
 export HOME=/tmp/anywork-smoke/home
 export ANYWORK_HOME=/tmp/anywork-smoke/data
 export XDG_CONFIG_HOME=/tmp/anywork-smoke/config
