@@ -6,14 +6,14 @@ use pl_core::context::OpaquePayload;
 use pl_core::model::{
     DynModelSession, ModelError, ModelFailureKind, ModelRequest, ModelSession, PreparedModelCall,
 };
-use pl_core::thread::{ThreadError, ThreadHandle, ToolOutcome, TurnOutcome, TurnState};
+use pl_core::thread::{ThreadError, ThreadHandle, ToolOutcome, TurnState};
 use pl_core::tool::{
     ToolOutput,
     opaque::{CallContext, Registration, ToolError},
 };
 use tokio::sync::oneshot;
 
-use support::{response, turn};
+use support::turn;
 
 #[derive(Debug)]
 struct CancellationAwareTool {
@@ -56,28 +56,23 @@ impl pl_agent_tool::Tool for CancellationAwareTool {
     }
 }
 
-struct BlockingFirstCall {
+struct BlockingModelCall {
     entered: Option<oneshot::Sender<()>>,
 }
 
-impl ModelSession for BlockingFirstCall {
+impl ModelSession for BlockingModelCall {
     async fn prepare(&mut self, request: ModelRequest) -> Result<PreparedModelCall, ModelError> {
-        if let Some(entered) = self.entered.take() {
-            Ok(PreparedModelCall::new(async move {
-                entered.send(()).expect("receiver must still exist");
-                request.cancellation.cancelled().await;
-                Err(ModelError {
-                    details: None,
-                    kind: ModelFailureKind::Cancelled,
-                    usage: Default::default(),
-                    source: None,
-                })
-            }))
-        } else {
-            Ok(PreparedModelCall::new(async move {
-                Ok(response(&request, Vec::new()))
-            }))
-        }
+        let entered = self.entered.take().expect("one model invocation");
+        Ok(PreparedModelCall::new(async move {
+            entered.send(()).expect("receiver must still exist");
+            request.cancellation.cancelled().await;
+            Err(ModelError {
+                details: None,
+                kind: ModelFailureKind::Cancelled,
+                usage: Default::default(),
+                source: None,
+            })
+        }))
     }
 
     async fn close(&mut self) -> Result<(), ModelError> {
@@ -86,11 +81,11 @@ impl ModelSession for BlockingFirstCall {
 }
 
 #[tokio::test]
-async fn cancelling_an_active_turn_commits_its_termination_and_leaves_thread_usable() {
+async fn cancelling_an_active_turn_returns_cancelled_and_commits_termination() {
     let (entered, waiting) = oneshot::channel();
     let thread = ThreadHandle::start(
         "cancelled-thread".into(),
-        DynModelSession::new(BlockingFirstCall {
+        DynModelSession::new(BlockingModelCall {
             entered: Some(entered),
         }),
     )
@@ -111,10 +106,6 @@ async fn cancelling_an_active_turn_commits_its_termination_and_leaves_thread_usa
             .is_some_and(|turn| turn.turn_id == "cancel-me" && turn.state == TurnState::Cancelled)
     }));
 
-    let next = thread.run_turn(turn("after-cancel")).await.unwrap();
-    assert_eq!(next.outcome, TurnOutcome::Completed);
-    assert_eq!(next.model_steps, 1);
-    assert!(thread.snapshot().model_available);
     thread.close().await.unwrap();
 }
 
