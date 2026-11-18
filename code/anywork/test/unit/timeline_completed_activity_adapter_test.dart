@@ -1,4 +1,7 @@
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_models.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
+import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart';
@@ -6,6 +9,40 @@ import '../support/chat_fixtures.dart';
 // Completed activities are producer messages, no longer locally grouped typed
 // atoms. Preserve the timestamp and standalone-receipt risks at the new decoder.
 void main() {
+  test('a frozen History member retains its millisecond boundary', () {
+    const capturedAt = 1_785_000_006_250;
+    final block = TimelineHistoryProjection.block(
+      const HistoryTimelineEntry(
+        rowKey: 'member:reasoning',
+        anchorSeq: 1,
+        headSeq: 2,
+        head: MemberHistoryRow(
+          HistoryEntityHead(
+            entityId: 'reasoning',
+            source: ForegroundTurnChatSource(turnId: 'turn'),
+            kind: ChatAtomKind.reasoning,
+            delivery: ChatDeliveryKind.foreground,
+            state: HistoryEntityState(
+              kind: HistoryEntityStateKind.knownActive,
+              activeStatus: ChatActiveStatus.running,
+            ),
+            startedAt: 1_785_000_000_000,
+            observation: HistoryObservation(
+              kind: HistoryObservationKind.boundary,
+              capturedAt: capturedAt,
+            ),
+          ),
+        ),
+      ),
+      cut: const HistoryCut('history-cut'),
+    )!;
+    final record = (block.body as SingleDisplayBlock).record;
+    expect((record.contentSource as FrozenObservation).capturedAt, capturedAt);
+    expect(record.displayStartedAt, 1_785_000_000);
+    expect(record.displayObservedThrough, 1_785_000_006);
+    expect(record.atom.finishedAt, isNull);
+  });
+
   test(
     'unknown seal does not fabricate a message date from completion time',
     () {

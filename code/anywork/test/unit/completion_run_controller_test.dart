@@ -40,7 +40,7 @@ void main() {
     );
     await accepted;
     expect(stock.messages.single.id, 'large');
-    expect(unit(0).timing!.startedAt, 0);
+    expect(unit(0).timing!.startedAtMillis, 0);
     expect(unit(0).expansion.members, isNull);
     await Future<void>.delayed(Duration.zero);
     expect(operations.single.type, ChatOperationType.set);

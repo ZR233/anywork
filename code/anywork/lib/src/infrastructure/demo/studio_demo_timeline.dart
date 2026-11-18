@@ -4,15 +4,15 @@ part of 'studio_demo_api.dart';
 // heads live here; bodies and completion originals remain in _DemoHistory.
 final class _DemoDisplayScript {
   _DemoDisplayScript(this.id, this.memberIds, {required this.work, this.turnId})
-    : startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    : startedAtMillis = DateTime.now().millisecondsSinceEpoch;
   final String id;
   final List<String> memberIds;
   final bool work;
   final String? turnId;
   bool sealed = false;
   int? blockOrder;
-  final int startedAt;
-  int? finishedAt;
+  final int startedAtMillis;
+  int? finishedAtMillis;
 }
 
 extension _DemoDisplayHistory on _DemoHistory {
@@ -105,8 +105,8 @@ extension _DemoDisplayHistory on _DemoHistory {
     return WorkDisplayBlock(
       members: displayRef(script.id),
       timing: WorkTiming(
-        startedAt: script.startedAt,
-        finishedAt: script.sealed ? script.finishedAt : null,
+        startedAtMillis: script.startedAtMillis,
+        finishedAtMillis: script.sealed ? script.finishedAtMillis : null,
       ),
       executionPresent: false,
       memberCount: script.memberIds.length,
@@ -210,7 +210,7 @@ extension _DemoDisplayHistory on _DemoHistory {
         record: freezeDisplayRecord(id, head),
       );
     }
-    script.finishedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    script.finishedAtMillis = DateTime.now().millisecondsSinceEpoch;
     script.sealed = true;
     displayBlocks.add(
       DisplayBlock(
@@ -314,8 +314,8 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
         'headSeq': members.headSeq,
       },
       'timing': {
-        'startedAt': timing.startedAt,
-        'finishedAt': timing.finishedAt,
+        'startedAtMillis': timing.startedAtMillis,
+        'finishedAtMillis': timing.finishedAtMillis,
       },
       'executionPresent': executionPresent,
       'memberCount': memberCount,

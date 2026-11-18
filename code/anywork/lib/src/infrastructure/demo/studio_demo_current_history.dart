@@ -403,8 +403,8 @@ final class _DemoHistoryReader implements HistoryReader {
               HistoryWorkHead(
                 groupId: members.blockId,
                 runId: null,
-                startedAt: timing.startedAt,
-                boundaryAt: timing.finishedAt,
+                startedAt: timing.startedAtMillis,
+                boundaryAt: timing.finishedAtMillis,
                 closed: groupClosed,
                 memberCount: memberCount,
                 unfinishedCount: unfinishedCount,
@@ -425,6 +425,8 @@ final class _DemoHistoryReader implements HistoryReader {
     HistorySingleVisibility? visibility,
   }) {
     final atom = record.atom;
+    final startedAt = atom.startedAt;
+    final finishedAt = atom.finishedAt;
     return HistoryEntityHead(
       entityId: atom.id,
       runId: null,
@@ -442,8 +444,12 @@ final class _DemoHistoryReader implements HistoryReader {
           outcome: outcome,
         ),
       },
-      startedAt: atom.startedAt,
-      finishedAt: atom.finishedAt,
+      startedAt: startedAt == null
+          ? null
+          : startedAt * Duration.millisecondsPerSecond,
+      finishedAt: finishedAt == null
+          ? null
+          : finishedAt * Duration.millisecondsPerSecond,
       textChannel: atom.textChannel,
       tool: atom.tool,
       wait: null,

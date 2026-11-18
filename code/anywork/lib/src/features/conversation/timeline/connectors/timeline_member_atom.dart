@@ -385,7 +385,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     if (atom.kind == ChatAtomKind.compaction &&
         widget.record.contentSource is CurrentAtomSource &&
         atom.lifecycle is ActiveChatAtom) {
-      return TimelineActivityClock(
+      return TimelineActivityClock.fromUnixSeconds(
         startedAt: widget.executionPresent ? atom.startedAt : null,
         running: widget.executionPresent && atom.startedAt != null,
         builder: (context, seconds) => TimelineActivityRow(

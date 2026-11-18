@@ -49,7 +49,7 @@ void main() {
         id: 'work-row',
         blockOrder: 1,
         body: WorkDisplayBlock(
-          timing: WorkTiming(startedAt: null),
+          timing: WorkTiming(startedAtMillis: null),
           members: DisplayBlockRef(
             blockId: 'work',
             cut: HistoryCut('fixed-cut'),

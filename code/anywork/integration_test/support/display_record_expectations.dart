@@ -37,6 +37,6 @@ Map<String, Object?> displayRecordEvidence(DisplayRecord record) {
 }
 
 Map<String, Object?> workTimingEvidence(WorkTiming timing) => {
-  'startedAt': timing.startedAt,
-  'finishedAt': timing.finishedAt,
+  'startedAtMillis': timing.startedAtMillis,
+  'finishedAtMillis': timing.finishedAtMillis,
 };

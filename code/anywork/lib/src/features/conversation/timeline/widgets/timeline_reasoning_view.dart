@@ -37,7 +37,7 @@ class TimelineReasoningView extends StatelessWidget {
   final ValueChanged<bool>? onExpansionChanged;
 
   @override
-  Widget build(BuildContext context) => TimelineActivityClock(
+  Widget build(BuildContext context) => TimelineActivityClock.fromUnixSeconds(
     startedAt: startedAt,
     finishedAt: finishedAt,
     running: running,

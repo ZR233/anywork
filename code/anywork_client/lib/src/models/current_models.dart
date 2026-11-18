@@ -50,6 +50,7 @@ final class CurrentContentPreview {
   final CurrentContentRef reference;
 }
 
+/// Atom timestamps follow the producer's Unix seconds.
 final class CurrentAtom {
   CurrentAtom({
     required this.id,

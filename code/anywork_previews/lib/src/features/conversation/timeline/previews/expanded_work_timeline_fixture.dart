@@ -58,8 +58,8 @@ class ExpandedWorkTimelineFixtureState
         blockOrder: 2,
         body: WorkDisplayBlock(
           timing: WorkTiming(
-            startedAt: isHistory ? 100 : null,
-            finishedAt: isHistory ? 225 : null,
+            startedAtMillis: isHistory ? 100_000 : null,
+            finishedAtMillis: isHistory ? 225_000 : null,
           ),
           executionPresent: !isHistory,
           memberCount: 120,

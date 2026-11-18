@@ -110,6 +110,7 @@ final class TextOriginalHistoryEvents extends HistoryEventsQuery {
   const TextOriginalHistoryEvents();
 }
 
+/// History records the start and boundary in Unix milliseconds.
 final class HistoryWorkHead {
   const HistoryWorkHead({
     required this.groupId,
@@ -133,6 +134,7 @@ final class HistoryWorkHead {
   final String? summary;
 }
 
+/// History records the start and finish in Unix milliseconds.
 final class HistoryEntityHead {
   const HistoryEntityHead({
     required this.entityId,
@@ -195,6 +197,8 @@ final class HistoryEntityState {
 final class HistoryObservation {
   const HistoryObservation({required this.kind, this.capturedAt});
   final HistoryObservationKind kind;
+
+  /// The observed boundary in Unix milliseconds.
   final int? capturedAt;
 }
 

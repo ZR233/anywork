@@ -77,8 +77,8 @@ HistoryWorkHead _historyWorkHeadFromFrb(
 ) => HistoryWorkHead(
   groupId: value.groupId,
   runId: value.runId,
-  startedAt: _historySeconds(value.startedAt),
-  boundaryAt: _historySeconds(value.boundaryAt),
+  startedAt: _timelineTimestampFromFrb(value.startedAt),
+  boundaryAt: _timelineTimestampFromFrb(value.boundaryAt),
   closed: value.closed,
   memberCount: _exactTimelineInt(value.memberCount, 'history member count'),
   unfinishedCount: _exactTimelineInt(
@@ -112,8 +112,8 @@ HistoryEntityHead _historyEntityHeadFromFrb(
         outcome: ChatTerminalOutcome.values.byName(outcome.name),
       ),
   },
-  startedAt: _historySeconds(value.startedAt),
-  finishedAt: _historySeconds(value.finishedAt),
+  startedAt: _timelineTimestampFromFrb(value.startedAt),
+  finishedAt: _timelineTimestampFromFrb(value.finishedAt),
   textChannel: value.textChannel == null
       ? null
       : ThreadTextChannel.values.byName(value.textChannel!.name),
@@ -136,14 +136,14 @@ HistoryEntityHead _historyEntityHeadFromFrb(
     frb_presentation.BridgeHistoryObservation_Boundary(:final capturedAt) =>
       HistoryObservation(
         kind: HistoryObservationKind.boundary,
-        capturedAt: _historySeconds(capturedAt),
+        capturedAt: _timelineTimestampFromFrb(capturedAt),
       ),
     frb_presentation.BridgeHistoryObservation_UnavailableLegacy(
       :final capturedAt,
     ) =>
       HistoryObservation(
         kind: HistoryObservationKind.unavailableLegacy,
-        capturedAt: _historySeconds(capturedAt),
+        capturedAt: _timelineTimestampFromFrb(capturedAt),
       ),
   },
   presentationContract: value.presentationContract,
@@ -203,10 +203,10 @@ HistoryTurnHead _historyTurnHeadFromFrb(
     frb_presentation.BridgeHistoryContextDisposition.rolledBack =>
       HistoryContextDisposition.rolledBack,
   },
-  queuedAt: _historySeconds(value.queuedAt),
-  startedAt: _historySeconds(value.startedAt),
-  finishedAt: _historySeconds(value.finishedAt),
-  updatedAt: _historySeconds(value.updatedAt)!,
+  queuedAt: _timelineTimestampFromFrb(value.queuedAt),
+  startedAt: _timelineTimestampFromFrb(value.startedAt),
+  finishedAt: _timelineTimestampFromFrb(value.finishedAt),
+  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
   detailEventId: value.detailEventId,
 );
 
@@ -225,9 +225,9 @@ HistorySourceHead _historySourceHeadFromFrb(
         outcome: ChatTerminalOutcome.values.byName(outcome.name),
       ),
   },
-  startedAt: _historySeconds(value.startedAt),
-  endedAt: _historySeconds(value.endedAt),
-  observedAt: _historySeconds(value.observedAt),
+  startedAt: _timelineTimestampFromFrb(value.startedAt),
+  endedAt: _timelineTimestampFromFrb(value.endedAt),
+  observedAt: _timelineTimestampFromFrb(value.observedAt),
   detailEventId: value.detailEventId,
 );
 
@@ -240,7 +240,7 @@ HistoryCostHead _historyCostHeadFromFrb(
   costTotal: value.costTotal,
   cacheSavingsDelta: value.cacheSavingsDelta,
   cacheSavingsTotal: value.cacheSavingsTotal,
-  updatedAt: _historySeconds(value.updatedAt)!,
+  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
   detailEventId: value.detailEventId,
 );
 
@@ -266,7 +266,7 @@ HistoryAccountingHead _historyAccountingHeadFromFrb(
   cacheUsage: _cacheUsageFromFrb(value.cacheUsage),
   hasIncompleteUsage: value.hasIncompleteUsage,
   hasUnpricedUsage: value.hasUnpricedUsage,
-  updatedAt: _historySeconds(value.updatedAt)!,
+  updatedAt: _timelineTimestampFromFrb(value.updatedAt)!,
   detailEventId: value.detailEventId,
 );
 
@@ -321,8 +321,8 @@ HistoryEventHeader _historyEventHeaderFromFrb(
           ),
           toolName: value.original!.toolName,
         ),
-  occurredAt: _historySeconds(value.occurredAt),
-  recordedAt: _historySeconds(value.recordedAt)!,
+  occurredAt: _timelineTimestampFromFrb(value.occurredAt),
+  recordedAt: _timelineTimestampFromFrb(value.recordedAt)!,
 );
 
 HistoryEventDetail _historyEventDetailFromFrb(
@@ -640,8 +640,8 @@ CurrentAtom _currentAtomFromFrb(frb_presentation.BridgeCurrentAtom value) =>
       textChannel: value.textChannel == null
           ? null
           : ThreadTextChannel.values.byName(value.textChannel!.name),
-      startedAt: _historySeconds(value.startedAt),
-      finishedAt: _historySeconds(value.finishedAt),
+      startedAt: _timelineTimestampFromFrb(value.startedAt),
+      finishedAt: _timelineTimestampFromFrb(value.finishedAt),
       contentPresent: value.contentPresent,
       contents: [
         for (final content in value.contents)
@@ -721,7 +721,8 @@ frb_chat_types.BridgeContentRange _contentRangeToFrb(ContentRange value) =>
       maxBytes: value.maxBytes,
     );
 
-int? _historySeconds(Object? value) {
+// History timestamps are in milliseconds; Current atoms use Unix seconds.
+int? _timelineTimestampFromFrb(Object? value) {
   if (value == null) return null;
   return _exactSignedTimelineInt(value);
 }

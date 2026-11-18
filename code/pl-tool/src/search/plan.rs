@@ -1,14 +1,12 @@
 //! Account/model capability 驱动的 Web Search 规划。
 //!
-//! 规划分两层。`plan_web_search_services` 只按 account 服务能力与凭据解析两条互相
-//! 独立的搜索服务（account、服务模型、可用性），完全与会话模型无关，Studio 的
-//! settings 投影直接消费它。`plan_web_searches` 在服务结果上叠加当前模型能力检查
-//! （function calling 与 Responses hosted），并把当前 account 作为 DeepSeek 候选
-//! 优先项，供 Thread 消费。任一路可用都只增加自己的工具，既不排斥其他普通工具，
-//! 也不排斥 MCP 目录或另一路搜索。HTTP 客户端与工具执行见 [`super::client`] 与
-//! [`super::thread`]，装配见 [`super::binding`]。
+//! 设置页通过 `plan_web_search_services` 读取默认服务；Thread 使用
+//! `plan_web_searches`，按当前模型确定 OpenAI 独立搜索的请求模型，并优先使用当前
+//! 具备搜索能力的账号。独立搜索要求当前模型支持函数调用，托管搜索走 Responses。
+//! 工具执行见 [`super::thread`]，装配见 [`super::binding`]。
 
 use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, ResolvedModelRoute};
+use pl_model::model::ModelInfo;
 use pl_model::protocol::{
     HostedWebSearchDialect, ProtocolEndpoint, StandaloneWebSearchDialect, WireApi,
 };
@@ -16,8 +14,7 @@ use pl_protocol::Result;
 
 use super::{WebSearchConfig, WebSearchMode};
 
-/// 本仓库 OpenAI 独立搜索默认使用的服务模型。
-const OPENAI_SEARCH_MODEL: &str = "gpt-6-sol";
+const DEFAULT_OPENAI_SEARCH_MODEL: &str = "gpt-6-luna";
 
 /// 当前 turn 实际使用的 Web Search 路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,15 +114,14 @@ impl WebSearchDeepSeekOptions {
 
 /// 独立解析两条搜索服务路径，与会话模型无关。
 ///
-/// 候选 account 按 account id 稳定排序，搜索服务模型来自该 account 自己的目录；
-/// 因此跨会话更换同一 account 的对话模型不会改变搜索服务模型。
+/// 候选账号按 ID 稳定排序，OpenAI 显示无当前会话时使用的默认搜索模型。
 pub fn plan_web_search_services(
     models: &AgentModelConfig,
     openai_config: &WebSearchConfig,
     deepseek: &WebSearchDeepSeekOptions,
 ) -> Result<WebSearchServices> {
     Ok(WebSearchServices {
-        openai: plan_openai_service(models, openai_config)?,
+        openai: plan_openai_service(models, openai_config, None)?,
         deepseek: plan_deepseek_service(models, deepseek, None)?,
     })
 }
@@ -145,15 +141,12 @@ pub fn plan_web_searches(
 }
 
 /// 根据 account 服务能力和当前模型能力确定性规划 OpenAI Web Search。
-///
-/// standalone `/alpha/search` 与 Responses hosted search 语义保持不变，只是不再让
-/// hosted 路径独占本轮工具。
 pub fn plan_openai_web_search(
     models: &AgentModelConfig,
     current: &ResolvedModelRoute,
     config: &WebSearchConfig,
 ) -> Result<WebSearchPlan> {
-    let service = plan_openai_service(models, config)?;
+    let service = plan_openai_service(models, config, Some(current))?;
     let configured_mode = service.resolution.configured_mode;
     if service.resolution.availability == WebSearchAvailability::Disabled {
         return Ok(unavailable_plan(
@@ -229,6 +222,7 @@ pub fn plan_deepseek_web_search(
 fn plan_openai_service(
     models: &AgentModelConfig,
     config: &WebSearchConfig,
+    current: Option<&ResolvedModelRoute>,
 ) -> Result<WebSearchService> {
     let configured_mode = config.mode;
     if configured_mode.is_disabled() {
@@ -237,10 +231,15 @@ fn plan_openai_service(
             WebSearchAvailability::Disabled,
         ));
     }
+    let model = current
+        .map(|route| request_model_id(&route.model))
+        .filter(|model| model.starts_with("gpt-"))
+        .unwrap_or(DEFAULT_OPENAI_SEARCH_MODEL);
     let selection = standalone_backend(
         models,
         pl_model::protocol::providers::openai::SEARCH_DIALECT,
-        None,
+        current.map(|route| &route.account_id),
+        Some(model),
     )?;
     if let Some(backend) = selection.backend {
         return Ok(available_service(
@@ -279,6 +278,7 @@ fn plan_deepseek_service(
         models,
         pl_model::protocol::providers::deepseek::SEARCH_DIALECT,
         preferred,
+        None,
     )?;
     if let Some(backend) = selection.backend {
         return Ok(available_service(
@@ -304,14 +304,12 @@ struct StandaloneSelection {
     missing_credential: bool,
 }
 
-/// 选择首个声明该方言且有非空 key 的 account。
-///
-/// `preferred` 仅在它自己声明该方言且有 key 时优先；否则回退到按 account id 的稳定顺序。
-/// OpenAI 路径传 `None`，DeepSeek 线程规划传当前 account，settings 服务投影同样传 `None`。
+/// 优先使用当前具备搜索能力和凭据的账号，其余候选按账号 ID 排序。
 fn standalone_backend(
     models: &AgentModelConfig,
     dialect: StandaloneWebSearchDialect,
     preferred: Option<&AccountId>,
+    model: Option<&str>,
 ) -> Result<StandaloneSelection> {
     let mut selection = StandaloneSelection::default();
     for (account_id, account) in candidate_order(models, preferred) {
@@ -324,13 +322,25 @@ fn standalone_backend(
             selection.missing_credential = true;
             continue;
         }
-        let Some((model, max_output_tokens)) = search_service_model(account, &dialect)? else {
-            continue;
+        let max_output_tokens = if let Some(model) = model {
+            // A standalone search endpoint may accept models outside its conversation catalog.
+            let entry = account
+                .effective_catalog(None)?
+                .into_iter()
+                .find(|entry| request_model_id(&entry.model) == model);
+            if account.model_enabled_overrides().get(model) == Some(&false)
+                || entry.as_ref().is_some_and(|entry| !entry.enabled)
+            {
+                continue;
+            }
+            entry.and_then(|entry| entry.model.max_output_tokens)
+        } else {
+            None
         };
         selection.backend = Some(WebSearchBackend {
             account_id: account_id.clone(),
             endpoint: account.to_endpoint()?,
-            model,
+            model: model.map(str::to_owned),
             max_output_tokens,
             dialect,
         });
@@ -359,33 +369,13 @@ fn candidate_order<'a>(
     ordered
 }
 
-/// 从 account 自身目录选择确定性、与会话模型无关的搜索服务模型。
-fn search_service_model(
-    account: &AccountConfig,
-    dialect: &StandaloneWebSearchDialect,
-) -> Result<Option<(Option<String>, Option<u64>)>> {
-    match dialect {
-        id if *id == pl_model_openai::endpoint::SEARCH_DIALECT => {
-            let models = account
-                .selectable_catalog(Some(pl_model::model::ModelType::Text))?
-                .into_iter()
-                .map(|entry| entry.model)
-                .collect::<Vec<_>>();
-            let Some(model) = models
-                .iter()
-                .find(|model| model.model_id == OPENAI_SEARCH_MODEL)
-                .or_else(|| models.first())
-            else {
-                return Ok(None);
-            };
-            Ok(Some((
-                Some(model.model_id.clone()),
-                model.max_output_tokens,
-            )))
-        }
-        id if *id == pl_model_openai_deepseek::endpoint::SEARCH_DIALECT => Ok(Some((None, None))),
-        _ => Ok(None),
-    }
+fn request_model_id(model: &ModelInfo) -> &str {
+    model
+        .binding
+        .request
+        .api_model
+        .as_deref()
+        .unwrap_or(&model.model_id)
 }
 
 fn available_service(

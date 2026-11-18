@@ -86,7 +86,7 @@ Widget liveStatusGroupPreview({
         identity: 'preview-group-idle',
         kind: ConversationActivityKind.thinking,
       ),
-      timing: const WorkTiming(startedAt: 100, finishedAt: null),
+      timing: const WorkTiming(startedAtMillis: 100_000),
       childBuilder: (_) => const Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -135,7 +135,7 @@ Widget liveStatusGroupPreview({
               ),
             ],
           ),
-    timing: WorkTiming(startedAt: 100, finishedAt: null),
+    timing: WorkTiming(startedAtMillis: 100_000),
     childBuilder: (_) => Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -347,7 +347,7 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
         identity: 'preview-failed-call-thinking',
         kind: ConversationActivityKind.thinking,
       ),
-      timing: const WorkTiming(startedAt: 154, finishedAt: null),
+      timing: const WorkTiming(startedAtMillis: 154_000),
       childBuilder: (_) => const TimelineToolDetails(
         item: TimelineToolPresentation(
           id: 'preview-failed-call',
@@ -417,7 +417,7 @@ Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
 Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
   _TimelineWorkPreviewHost(
     work: _ActivityPreview(
-      timing: const WorkTiming(startedAt: 100, finishedAt: null),
+      timing: const WorkTiming(startedAtMillis: 100_000),
       childBuilder: (_) => TimelineWaitDetails(
         identity: 'preview-wait-member',
         presentation: ThreadWaitPresentationView(
@@ -514,7 +514,7 @@ Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
         kind: ConversationActivityKind.thinking,
         thinkingSummary: '核对运行期选择器锁定规则',
       ),
-      timing: const WorkTiming(startedAt: 100, finishedAt: null),
+      timing: const WorkTiming(startedAtMillis: 100_000),
       childBuilder: (_) => const Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -618,7 +618,7 @@ Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
               ),
             ],
           ),
-          timing: const WorkTiming(startedAt: 213, finishedAt: null),
+          timing: const WorkTiming(startedAtMillis: 213_000),
           childBuilder: (_) => const TimelineToolDetails(
             item: TimelineToolPresentation(
               id: 'preview-next-group-cmd',
@@ -711,7 +711,7 @@ class _ActivityPreview extends StatelessWidget {
     required this.childBuilder,
     this.initiallyExpanded = false,
     this.activity,
-    this.timing = const WorkTiming(startedAt: 100),
+    this.timing = const WorkTiming(startedAtMillis: 100_000),
     this.thinkingSummary,
   });
   final WidgetBuilder childBuilder;
@@ -761,7 +761,10 @@ class _SealedToolWorkGroupPreviewState
       id: 'sealed-tool-preview-group',
       blockOrder: 2,
       body: WorkDisplayBlock(
-        timing: const WorkTiming(startedAt: 1735689600, finishedAt: 1735689725),
+        timing: const WorkTiming(
+          startedAtMillis: 1_735_689_600_000,
+          finishedAtMillis: 1_735_689_725_000,
+        ),
         members: const DisplayBlockRef(
           blockId: 'sealed-tool-preview-group',
           cut: HistoryCut('preview-cut'),
