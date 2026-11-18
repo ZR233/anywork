@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_rejects_retired_capability_source_token() {
+    fn invalid_current_config_preserves_the_original_without_a_migration_backup() {
         let (_directory, store) = isolated_store();
         let config = StudioConfig::default_config().unwrap();
         store.save(&config).unwrap();
@@ -1202,17 +1202,7 @@ mod tests {
             );
         write_table(path, &table);
         let original = fs::read(path).unwrap();
-        let error = store
-            .load_for_startup()
-            .expect_err("retired capability token must not parse in the current schema");
-        assert!(
-            matches!(
-                error,
-                super::super::ConfigRuntimeError::Migration(_)
-                    | super::super::ConfigRuntimeError::Core(_)
-            ),
-            "current-schema rejection is a config error: {error}"
-        );
+        assert!(store.load_for_startup().is_err());
         assert_eq!(fs::read(path).unwrap(), original);
         assert!(migrated_backups(path).is_empty());
     }

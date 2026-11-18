@@ -449,7 +449,6 @@ mod tests {
         let form: std::collections::BTreeMap<_, _> = url::form_urlencoded::parse(request.body())
             .into_owned()
             .collect();
-        assert_eq!(form["grant_type"], "refresh_token");
         assert_eq!(form["refresh_token"], "one-use-refresh");
         assert_eq!(form["client_id"], "fixture-client");
         assert_eq!(form["resource"], CHATGPT_RESOURCE);

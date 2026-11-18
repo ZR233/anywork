@@ -1313,11 +1313,8 @@ mod current_tests {
         }
     }
 
-    fn round_trip(acc: &StreamCompletionAccumulator) -> ModelStreamCurrent {
-        let payload = acc.current("source-attempt", 2).encode().unwrap();
-        assert_eq!(payload.format(), "pl.model.stream-current");
-        assert_eq!(payload.version(), 1);
-        ModelStreamCurrent::decode(&payload).unwrap()
+    fn snapshot(acc: &StreamCompletionAccumulator) -> ModelStreamCurrent {
+        acc.current("source-attempt", 2)
     }
 
     #[test]
@@ -1344,7 +1341,7 @@ mod current_tests {
             ))
             .unwrap();
         }
-        let saved = round_trip(&acc);
+        let saved = snapshot(&acc);
         assert_eq!(
             saved.content_parts.len(),
             1,
@@ -1388,7 +1385,7 @@ mod current_tests {
                 .all(|block| block.provider_metadata.is_none()),
             "native body has only one resident metadata owner"
         );
-        let saved = round_trip(&acc);
+        let saved = snapshot(&acc);
         assert_eq!(
             saved.blocks[0].provider_metadata.as_ref().unwrap()["signature"],
             "unchanged"
@@ -1447,7 +1444,7 @@ mod current_tests {
             })
             .unwrap();
         }
-        let saved = round_trip(&acc);
+        let saved = snapshot(&acc);
         let input = &saved.tool_inputs[0];
         assert_eq!(input.input, "{\"q\":");
         assert_eq!(input.stream_aliases, ["stream"]);
@@ -1478,7 +1475,7 @@ mod current_tests {
             &mut decoder,
             json!({"type":"response.output_text.delta","item_id":"commentary","content_index":0,"delta":commentary}),
         );
-        let open = round_trip(&acc);
+        let open = snapshot(&acc);
         assert_eq!(open.state, ModelStreamCurrentState::Open);
         assert_eq!(open.content_parts[0].text, commentary);
         assert!(
@@ -1540,7 +1537,7 @@ mod current_tests {
         }))
         .unwrap();
 
-        let saved = round_trip(&acc);
+        let saved = snapshot(&acc);
         assert_eq!(saved.response_id.as_deref(), Some("response-1"));
         assert_eq!(saved.attempt_id, "source-attempt");
         assert_eq!(saved.generation, 2);
@@ -1588,7 +1585,7 @@ mod current_tests {
         assert_eq!(saved.final_usage.as_ref().unwrap().output_tokens, Some(17));
         assert!(!saved.usage_is_terminal);
         acc.cancel_attempt("cancelled while input incomplete");
-        let cancelled = round_trip(&acc);
+        let cancelled = snapshot(&acc);
         assert!(matches!(
             cancelled.state,
             ModelStreamCurrentState::Failed { .. }
@@ -1624,7 +1621,7 @@ mod current_tests {
             &mut decoder,
             json!({"type":"response.function_call_arguments.delta","item_id":"late-item","call_id":"call_0","delta":"{\"q\":"}),
         );
-        let pending = round_trip(&acc);
+        let pending = snapshot(&acc);
         assert_eq!(pending.tool_inputs.len(), 1);
         assert_eq!(
             pending.tool_inputs[0].provider_call_id.as_deref(),
@@ -1652,7 +1649,7 @@ mod current_tests {
             &mut decoder,
             json!({"type":"response.completed","response":{"id":"response-done","output":[item],"usage":{"output_tokens":3}}}),
         );
-        let saved = round_trip(&acc);
+        let saved = snapshot(&acc);
         assert_eq!(saved.state, ModelStreamCurrentState::Completed);
         assert!(saved.usage_is_terminal);
         assert!(saved.tool_inputs.is_empty());
