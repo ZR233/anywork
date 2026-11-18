@@ -30,10 +30,14 @@ impl Owner {
                 .map(|record| record.id.as_str()),
         )?;
         let content = vec![ContextContent::Text {
-            text: Arc::from(format!(
-                "Task {} is running. Its result will be delivered when execution finishes.",
-                task.id
-            )),
+            text: Arc::from(
+                serde_json::json!({
+                    "taskId": task.id,
+                    "toolName": task.tool_id,
+                    "status": task.status,
+                })
+                .to_string(),
+            ),
         }];
         let mut context = self.state.context.clone();
         current::pair_known_call_result(

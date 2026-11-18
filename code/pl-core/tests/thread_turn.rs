@@ -366,6 +366,74 @@ async fn ordinary_tool_segment_starts_together_before_its_shared_deadline() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn mixed_batch_receipts_distinguish_running_calls_from_an_instant_result() {
+    let (model, requests) = ScriptedModel::new(&["slow-first", "quick", "slow-last"]);
+    let thread = ThreadHandle::start("mixed-receipts".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut registrations = ["slow-first", "slow-last"]
+        .map(|id| {
+            Registration::prepare(id.into(), OpaquePayload::text(id))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
+                    events: events.clone(),
+                    release: release.clone(),
+                }))
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    registrations.push(
+        Registration::prepare("quick".into(), OpaquePayload::text("quick"))
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                events,
+            ))),
+    );
+    thread.register_tools(registrations).await.unwrap();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("receipt-order")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    assert_eq!(received.recv().await, Some("executing"));
+    let result = running.await.unwrap();
+    let snapshot = thread.snapshot();
+    thread.interrupt();
+    release.notify_waiters();
+    thread.close().await.unwrap();
+    result.unwrap();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let records = requests[1]
+        .records
+        .iter()
+        .filter(|record| matches!(record.source, ContextSource::ToolResult { .. }))
+        .collect::<Vec<_>>();
+    let order = records
+        .iter()
+        .map(|record| match &record.source {
+            ContextSource::ToolResult { tool_id, .. } => tool_id.as_str(),
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order, ["slow-first", "quick", "slow-last"]);
+    for record in [records[0], records[2]] {
+        let ContextSource::ToolResult { call_id, tool_id } = &record.source else {
+            unreachable!();
+        };
+        let [ContextContent::Text { text }] = record.content.as_slice() else {
+            panic!("running receipt must be readable model context");
+        };
+        let receipt: serde_json::Value = serde_json::from_str(text)
+            .expect("a running receipt must state its identity and status structurally");
+        let task = &snapshot.tasks[&format!("task:{call_id}")];
+        assert_eq!(receipt["status"], "running");
+        assert_eq!(receipt["taskId"], task.id);
+        assert_eq!(receipt["toolName"], *tool_id);
+    }
+}
+
 #[tokio::test]
 async fn stopping_at_a_foreground_barrier_keeps_unstarted_results_in_call_order() {
     let (model, _) = ScriptedModel::new(&["gate", "z-later", "a-later"]);
