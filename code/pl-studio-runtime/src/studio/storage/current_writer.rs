@@ -753,6 +753,7 @@ async fn save(
             publish(file, shared, Arc::new(current)).await
         }.await;
         tracing::debug!(target: "current_work",
+            thread_id = file.thread_id(),
             current_save_ms = captured.elapsed().as_secs_f64() * 1000.0,
             success = result.is_ok(),
             "current save finished"
@@ -787,6 +788,7 @@ async fn finish(
     shared.update(|state| state.final_current = Some(current.clone()));
     let result = save_final(file, shared, current, &mut owner.verified_resources).await;
     tracing::debug!(target: "current_work",
+        thread_id = file.thread_id(),
         current_save_ms = captured.elapsed().as_secs_f64() * 1000.0,
         success = result.is_ok(),
         final_save = true,
@@ -840,6 +842,7 @@ async fn publish(
     let thread_id = current.thread_id.clone();
     file.save(current).await?;
     tracing::debug!(target: "current_work",
+        thread_id = file.thread_id(),
         current_snapshot_age_ms = utc_millis().saturating_sub(captured_at).max(0),
         "current capture saved"
     );

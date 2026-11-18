@@ -51,6 +51,7 @@ impl ThreadHandle {
         .and_then(std::convert::identity);
         tracing::debug!(
             target: "current_work",
+            runtime_epoch = %self.runtime_epoch,
             current_capture_ms = started.elapsed().as_secs_f64() * 1000.0,
             current_capture_producer_requests = producer_captures,
             current_capture_stale_retries = producer_captures.saturating_sub(1),

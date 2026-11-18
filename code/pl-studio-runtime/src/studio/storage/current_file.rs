@@ -92,6 +92,10 @@ impl CurrentFile {
         &self.directory
     }
 
+    pub(super) fn thread_id(&self) -> &str {
+        &self.thread_id
+    }
+
     pub(super) async fn load(&self) -> Result<Option<ThreadCurrent>> {
         Ok(self.load_with_bytes().await?.map(|(current, _)| current))
     }
@@ -119,6 +123,7 @@ impl CurrentFile {
         )
         .await?;
         tracing::debug!(target: "current_work",
+            thread_id = self.thread_id,
             current_load_ms = started.elapsed().as_secs_f64() * 1000.0,
             current_json_bytes = bytes.len(),
             "current loaded without history"
@@ -164,6 +169,7 @@ impl CurrentFile {
         .context("join current encoder")?
         .context("encode complete Thread current")?;
         tracing::debug!(target: "current_work",
+            thread_id = self.thread_id,
             current_encode_ms = encode_elapsed.as_secs_f64() * 1000.0,
             current_json_bytes = bytes.len(),
             "current encoded"

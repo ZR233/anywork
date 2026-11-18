@@ -267,6 +267,7 @@ impl HistoryStore {
         self.inner.admission.lock().await
     }
 
+    #[tracing::instrument(name = "history_accept", target = "conversation_work", level = "debug", skip_all, fields(thread_id = self.inner.thread_id))]
     pub(crate) async fn accept_locked(
         &self,
         _admission: &tokio::sync::MutexGuard<'_, ()>,
@@ -463,6 +464,7 @@ impl HistoryStore {
     }
     /// A failed or cancelled transaction leaves the same pending events available for retry.
     /// New accepted batches may arrive during IO and are not acknowledged by this flush.
+    #[tracing::instrument(name = "history_flush", target = "conversation_work", level = "debug", skip_all, fields(thread_id = self.inner.thread_id))]
     pub async fn flush(&self) -> Result<()> {
         let _flush = self.inner.flush.lock().await;
         let snapshot = self

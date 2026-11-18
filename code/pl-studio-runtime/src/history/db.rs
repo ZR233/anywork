@@ -468,9 +468,11 @@ pub(super) async fn window(
         return Err(HistoryError::Integrity("body chunk is missing".into()));
     }
     let mut bytes = Vec::with_capacity(length);
+    let mut loaded_bytes = 0usize;
     for (index, row) in rows.into_iter().enumerate() {
         let chunk = first + index as u64;
         let data: Vec<u8> = row.try_get("", "data")?;
+        loaded_bytes += data.len();
         let offset = chunk * BODY_CHUNK_BYTES as u64;
         let expected = (body.length - offset).min(BODY_CHUNK_BYTES as u64) as usize;
         if number(chunk)? != row.try_get::<i64>("", "chunk_no")? || data.len() != expected {
@@ -482,6 +484,12 @@ pub(super) async fn window(
         let upper = (end - offset).min(data.len() as u64) as usize;
         bytes.extend_from_slice(&data[lower..upper]);
     }
+    tracing::debug!(target: "conversation_work",
+        history_body_bytes_read = loaded_bytes,
+        history_body_chunks_read = last - first + 1,
+        source = "sqlite",
+        "history body chunks loaded"
+    );
     if start == 0 && end == body.length && Sha256::digest(&bytes).as_slice() != body.digest {
         return Err(HistoryError::Integrity("body digest differs".into()));
     }

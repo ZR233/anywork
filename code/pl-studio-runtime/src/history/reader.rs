@@ -7,6 +7,7 @@ use std::{
 use sea_orm::{DatabaseTransaction, TransactionTrait};
 use sha2::{Digest, Sha256};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tracing::Instrument;
 
 use super::{
     db::{self, Body, Record},
@@ -84,7 +85,10 @@ impl HistoryReader {
                     _ = request_cancel.cancelled() => Err(HistoryError::Closed),
                     _ = owner.inner.cancel.cancelled() => Err(HistoryError::Closed),
                     _ = owner.inner.store.cancel.cancelled() => Err(HistoryError::Closed),
-                    result = make(owner.clone()) => result,
+                    result = make(owner.clone()).instrument(tracing::debug_span!(
+                        target: "conversation_work", "history_read",
+                        thread_id = owner.inner.store.thread_id,
+                    )) => result,
                 };
                 drop(store_task);
                 result
@@ -810,6 +814,10 @@ impl HistoryReader {
             let length = (reference.byte_length - offset).min(max_bytes as u64) as usize;
             let start = reference.byte_start + offset;
             let bytes = if let Some((seq, ordinal)) = snapshot.pending.bodies.get(&body.id) {
+                tracing::debug!(target: "conversation_work",
+                    history_body_bytes_read = length, source = "pending",
+                    "history pending body slice copied"
+                );
                 snapshot.pending.events[seq].event.bodies[*ordinal].bytes
                     [start as usize..start as usize + length]
                     .to_vec()
@@ -817,7 +825,7 @@ impl HistoryReader {
                 db::window(&snapshot.tx, &body, start, length).await?
             };
             tracing::debug!(target: "conversation_work",
-                history_body_bytes_read = bytes.len(), offset,
+                history_body_returned_bytes = bytes.len(), offset,
                 history_body_from_pending = snapshot.pending.bodies.contains_key(&body.id),
                 "history body range read"
             );
