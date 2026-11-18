@@ -773,7 +773,7 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
 
     let mut input = turn("two-in-flight");
     input.max_model_steps = ModelStepLimit::Limited(1.try_into().unwrap());
-    let runner = tokio::spawn({
+    let mut runner = tokio::spawn({
         let thread = thread.clone();
         async move { thread.run_turn(input).await }
     });
@@ -783,17 +783,37 @@ async fn concurrent_tool_results_remain_owned_until_storage_recovers() {
     })
     .await
     .expect("both tools started before either completed");
+    // The original one-second window still ends while History refuses admission. Its already
+    // funded Running receipts are local facts, not new work that must wait for storage recovery.
+    store.fail_now();
+    let dispatched = tokio::time::timeout(Duration::from_secs(5), &mut runner).await;
+    if dispatched.is_err() {
+        for release in &releases {
+            release.notify_one();
+        }
+        store.repair();
+        within(thread.close()).await.unwrap();
+        let _ = within(runner).await.unwrap();
+        panic!("the shared tool deadline was blocked by History admission");
+    }
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(5), runner)
-            .await
-            .expect("turn dispatch did not complete")
+        dispatched
+            .expect("turn dispatch completed")
             .unwrap()
             .unwrap()
             .outcome,
         TurnOutcome::StepLimit
     );
+    let acknowledged = thread.snapshot();
+    assert_eq!(acknowledged.tasks.len(), 2);
+    assert!(
+        acknowledged
+            .tasks
+            .values()
+            .all(|task| { task.status == TaskStatus::Running && task.acknowledgement.is_some() })
+    );
+    assert!(acknowledged.persistence.error.is_some());
 
-    store.fail_now();
     for release in &releases {
         release.notify_one();
     }

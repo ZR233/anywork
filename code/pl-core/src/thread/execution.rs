@@ -420,6 +420,18 @@ impl Owner {
         batch: &mut ToolBatch,
         cancellation: &CancellationToken,
     ) -> Result<bool, ThreadError> {
+        let expired = batch
+            .deadline
+            .is_some_and(|d| d <= tokio::time::Instant::now());
+        if expired {
+            // Already-admitted tasks keep their original window even when History is blocked.
+            // Only new dispatch waits for storage; these funded local receipts retire the timer.
+            for call in &batch.output.tool_calls[..batch.next] {
+                if batch.waiting.remove(&call.call_id) {
+                    self.acknowledge_task(&call.call_id)?;
+                }
+            }
+        }
         if !self.storage_admission_ready() {
             return Ok(false);
         }
@@ -487,17 +499,6 @@ impl Owner {
         if batch.foreground {
             batch.foreground = false;
             batch.deadline = None;
-        }
-        let expired = batch
-            .deadline
-            .is_some_and(|d| d <= tokio::time::Instant::now());
-        if expired {
-            // Receipts pair in the original model order, independent of completion order.
-            for call in &batch.output.tool_calls[..batch.next] {
-                if batch.waiting.remove(&call.call_id) {
-                    self.acknowledge_task(&call.call_id)?;
-                }
-            }
         }
         for _ in 0..8 {
             let Some(call) = batch.output.tool_calls.get(batch.next) else {

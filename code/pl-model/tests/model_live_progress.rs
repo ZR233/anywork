@@ -2650,7 +2650,6 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
                 // this regression limits only the one model attempt that exposes the call twice.
                 limited_operation: Some("live-attempt:0"),
                 charges: charges.clone(),
-                ..Default::default()
             },
         ))
         .await
