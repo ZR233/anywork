@@ -370,11 +370,19 @@ async fn read_history_body(
     Ok(bytes)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_history()
 -> Result<()> {
     use pl_provider_fixture::ReplyStage;
 
+    let _tracing = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .with_ansi(false)
+            .without_time()
+            .finish(),
+    );
     let stage = ReplyStage::new();
     let terminal_stage = ReplyStage::new();
     let head = "流".repeat(33_000);
@@ -545,6 +553,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
             .await?;
         let before_deltas = archive.head().await?;
+        tracing::debug!(target: "conversation_work", probe = "pure_deltas_begin", deltas = deltas.len());
         stage.release();
         reached(&terminal_stage).await?;
         loop {
@@ -557,6 +566,13 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
                 break;
             }
         }
+        tokio::time::timeout(
+            support::integration_test_deadline()?,
+            env.runtime.synchronize_thread_observation(&id),
+        )
+        .await
+        .context("history observation did not settle during the pure deltas")??;
+        tracing::debug!(target: "conversation_work", probe = "pure_deltas_end");
         ensure!(
             archive.head().await? == before_deltas,
             "pure stream deltas entered immutable History"
@@ -665,6 +681,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
         std::fs::write(saved.root.join("current.json"), &saved_stream_bytes)?;
         env.restart().await?;
         std::fs::write(saved.path, b"broken history; Current must not open it")?;
+        tracing::debug!(target: "conversation_work", probe = "current_restore_begin");
         let current = env
             .runtime
             .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
@@ -696,6 +713,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
                 == Some("staleCurrentReference")
         );
         current.close().await?;
+        tracing::debug!(target: "conversation_work", probe = "current_restore_end");
         ensure!(env.root_provider.recorded().len() == provider_requests);
         Ok(())
     }

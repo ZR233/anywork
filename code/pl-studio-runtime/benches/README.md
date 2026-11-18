@@ -3,18 +3,32 @@
 Current／History 的定向操作日志使用已有 `tracing`：按需启用
 `RUST_LOG=warn,current_work=debug,conversation_work=debug`。
 各指标的边界见 [存储契约](../../../design/15-session-storage.md)，日志只记录耗时、字节和计数，
-不记录正文、参数或凭据。实际完整 JSON、保存和 load 的显式观察复用单元测试中的真实文件 owner：
+不记录正文、参数或凭据。尺寸观测通过暂停的 Core 所有者捕获完整 Current，使用真实保存器写入，
+然后重读并逐字段核对已确认上下文、保留的合并流和部分工具参数。
 
 ```sh
 PL_CURRENT_SAMPLE_MIB=16 cargo test --locked -p pl-studio-runtime --lib studio::storage::current_file::size_observation::current_size_observation -- --exact --ignored --nocapture
 ```
 
-分别以 1、16、64 运行，尺寸是代表样本而非生产上限，输出实际完整 JSON 字节。
-峰值内存从每个独立测试进程采样，覆盖夹具、保存和同时保留原 Current 的 load，
-在往返比较之前读取；不能当作纯解码增量或真实冷恢复内存。
-报告实际构建配置、机器、文件系统与采样条件；这些观察不能替代原生 Profile 首次布局和切换结果。
+分别以 1、16、64 运行，按日志记录 `current_capture_ms`、`current_encode_ms`、
+`current_save_ms`、`current_load_ms` 和实际 JSON 字节数。`current_size_sample`
+给出保存回执之后的快照年龄，以及 Linux 进程峰值内存。该峰值覆盖夹具、捕获、保存和加载，
+加载时保留原 Current，在往返比较之前读取。尺寸是代表样本。报告构建配置、机器和文件系统，
+原生首次布局和切换使用独立的桌面性能入口。
 
-本入口只由非默认 `benchmarks` feature 编译，不进入普通测试或默认 Clippy/CI。
+活动流捕获和正常恢复复用现有存储独立性回归，通过本地模拟供应商走真实 Responses HTTP 协议。
+
+```sh
+RUST_LOG=warn,current_work=debug,conversation_work=debug cargo test --locked -p pl-studio-runtime --test event_history real_prompt_and_saved_stream_are_independent_from_the_later_immutable_history -- --exact --nocapture
+```
+
+在 `pure_deltas_begin` 到 `pure_deltas_end` 之间统计 `history_sql_write`，预期为 0。
+窗口开始前等待已有历史提交，窗口结束时再次等待观察和持久化，期间供应商终态保持阻塞。
+在 `current_restore_begin` 到 `current_restore_end` 之间统计 `history_sql_read`，预期为 0。
+窗口外的真实 History 写入和正文读取可以验证计数日志已启用。该场景同时记录活动流请求的
+`current_capture_ms` 和 `current_capture_producer_requests`。
+
+下文的统计管线基准由非默认 `benchmarks` feature 编译，不进入普通测试或默认 Clippy/CI。
 它调用实际 CallsStore、JSONL、费用查询、可靠 Thread writer 和 live projection；
 没有替代保存器、复制的归约器或降低同步保证的设置。
 
