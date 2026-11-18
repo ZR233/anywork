@@ -30,7 +30,7 @@ impl StudioThreadFactory {
         if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
         }
-        self.ensure_bot_execution_workspace(&thread.clone().into(), None)
+        self.verify_saved_bot_execution_workspace(&thread.clone().into(), None)
             .await?;
         let current = super::recovery::load_current_for_recovery(
             &self.services.store,
@@ -55,7 +55,7 @@ impl StudioThreadFactory {
         if let Some(bot) = self
             .services
             .bots
-            .config_for_thread(root_id)
+            .saved_config_for_thread(root_id)
             .await
             .map_err(|error| resource_error("resolve bot workspace", error))?
         {
@@ -231,7 +231,7 @@ impl StudioThreadFactory {
         if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(id.into()));
         }
-        self.ensure_bot_execution_workspace(&thread.clone().into(), None)
+        self.verify_saved_bot_execution_workspace(&thread.clone().into(), None)
             .await?;
         let mut project = self.project_record(&thread.workspace_id).await?;
         let workspace_usage = self
@@ -242,7 +242,7 @@ impl StudioThreadFactory {
         let bot = self
             .services
             .bots
-            .config_for_thread(id)
+            .saved_config_for_thread(id)
             .await
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
@@ -426,7 +426,6 @@ impl StudioThreadFactory {
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", "starting");
         let mut prepared = self
             .prepare_thread_tools(ThreadToolAssembly {
-                verified_local: None,
                 assignment: None,
                 workspace_usage: workspace_usage.clone(),
                 thread_id: id,

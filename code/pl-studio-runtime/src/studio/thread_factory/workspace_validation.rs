@@ -7,10 +7,7 @@ use crate::{
     },
     studio::{
         ThreadRecord, WorkspaceRecord,
-        agent_host::worktree_lease::{
-            WorkspaceEndpoint, WorkspaceIdentity, WorkspaceUsageLease, WorktreeLease,
-            WorktreeLeaseState,
-        },
+        agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseState},
     },
     thread_assembler::ThreadAssemblyError,
 };
@@ -70,117 +67,11 @@ impl From<WorktreeError> for ReviewWorkspaceError {
 pub(crate) struct ReviewWorkspaceCheck {
     factory: StudioThreadFactory,
     target: String,
-    binding: Option<ToolBinding>,
+    binding: ToolBinding,
     root_binding: Option<(String, ToolBinding)>,
     lease: Option<WorktreeLease>,
     root: String,
-    project: Option<WorkspaceRecord>,
-    _usage: Option<WorkspaceUsageLease>,
-    _permit: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-
-/// A local-only execution restoration permit. Construction is confined to the same verifier
-/// that proved the original binding; it cannot manufacture an SSH execution capability.
-pub(crate) struct VerifiedLocalResume {
-    check: ReviewWorkspaceCheck,
-    pub(super) project: WorkspaceRecord,
-    pub(super) assignment: AgentWorkspaceAssignmentSnapshot,
-    identity: WorkspaceIdentity,
-}
-
-impl std::fmt::Debug for VerifiedLocalResume {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VerifiedLocalResume")
-            .field("target", &self.check.target)
-            .finish_non_exhaustive()
-    }
-}
-
-impl VerifiedLocalResume {
-    pub(super) async fn confirm_admission(&self) -> Result<(), ReviewWorkspaceError> {
-        self.check.confirm().await
-    }
-    pub(super) fn verified_lease(&self) -> Option<WorktreeLease> {
-        // A Directory/Review child may borrow a root or sibling lease. Its preparation
-        // protects that site but cannot confirm a different owner's durable binding.
-        self.check
-            .lease
-            .as_ref()
-            .filter(|lease| lease.owner_thread_id == self.check.target)
-            .cloned()
-    }
-    pub(super) fn identity(&self) -> WorkspaceIdentity {
-        self.identity.clone()
-    }
-    pub(crate) fn usage(&self) -> WorkspaceUsageLease {
-        self.check
-            ._usage
-            .as_ref()
-            .expect("verified cold local use")
-            .clone()
-    }
-    pub(super) fn recheck(&self) -> Result<(), ReviewWorkspaceError> {
-        self.check.recheck()
-    }
-    pub(super) fn check_inputs(
-        &self,
-        project: &WorkspaceRecord,
-        assignment: &AgentWorkspaceAssignmentSnapshot,
-    ) -> Result<(), ReviewWorkspaceError> {
-        if project.id != self.project.id
-            || project.path != self.project.path
-            || project.ssh_alias.is_some()
-            || assignment != &self.assignment
-        {
-            return Err(ReviewWorkspaceError::Invalid(
-                "restricted restoration inputs differ from the original proof",
-            ));
-        }
-        self.recheck()
-    }
-    pub(super) fn confirm_published(&self) -> Result<(), ReviewWorkspaceError> {
-        let bindings = self.check.factory.binding_snapshots();
-        let binding = bindings
-            .get(&self.check.target)
-            .ok_or(ReviewWorkspaceError::Unconfirmed(
-                "restricted local binding was not published",
-            ))?;
-        if binding.project.ssh_alias.is_some()
-            || binding.remote.is_some()
-            || binding.assignment.as_ref() != Some(&self.assignment)
-            || binding.workspace.root() != Path::new(&self.identity.root)
-            || binding.lifetime.cancellation.is_cancelled()
-            || binding.target_invalidated
-        {
-            return Err(ReviewWorkspaceError::Invalid(
-                "new local binding differs from its original proof",
-            ));
-        }
-        if let Some((id, expected)) = &self.check.root_binding {
-            check_generation(
-                bindings.get(id).ok_or(ReviewWorkspaceError::Unconfirmed(
-                    "root binding disappeared",
-                ))?,
-                expected,
-            )?;
-        }
-        drop(bindings);
-        if let Some(lease) = &self.check.lease
-            && self
-                .check
-                .factory
-                .services
-                .worktrees
-                .get(&lease.owner_thread_id)
-                .as_ref()
-                != Some(lease)
-        {
-            return Err(ReviewWorkspaceError::Invalid(
-                "original local lease changed",
-            ));
-        }
-        Ok(())
-    }
+    _permit: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl ReviewWorkspaceCheck {
@@ -188,24 +79,14 @@ impl ReviewWorkspaceCheck {
         &self.target
     }
     pub(crate) async fn confirm(&self) -> Result<(), ReviewWorkspaceError> {
-        let target = self.factory.thread_record(&self.target).await?;
-        self.factory
-            .services
-            .store
-            .ensure_archive_execution_allowed(&target.workspace_id, Some(&self.target))
-            .await
-            .map_err(|error| super::errors::resource_error("review archive admission", error))?;
         self.recheck()?;
-        if let Some(binding) = &self.binding {
-            super::tool_bindings::ensure_frozen_ssh_profile(
-                &self.factory.services.ssh_manager,
-                binding.ssh_profile.as_ref(),
-            )
-            .await?;
-        }
-        if let Some(binding) = &self.binding
-            && let Some(alias) = &binding.project.ssh_alias
-        {
+        let binding = &self.binding;
+        super::tool_bindings::ensure_frozen_ssh_profile(
+            &self.factory.services.ssh_manager,
+            binding.ssh_profile.as_ref(),
+        )
+        .await?;
+        if let Some(alias) = &binding.project.ssh_alias {
             let frozen = &binding
                 .remote
                 .as_ref()
@@ -222,28 +103,24 @@ impl ReviewWorkspaceCheck {
         self.recheck()
     }
     pub(crate) fn recheck(&self) -> Result<(), ReviewWorkspaceError> {
-        if self.binding.is_some()
-            && self
-                .factory
-                .tool_authority_invalidated(&self.target)
-                .map_err(|error| {
-                    super::errors::resource_error("read review workspace authority", error)
-                })?
+        if self
+            .factory
+            .tool_authority_invalidated(&self.target)
+            .map_err(|error| {
+                super::errors::resource_error("read review workspace authority", error)
+            })?
         {
             return Err(ReviewWorkspaceError::Unconfirmed(
                 "execution workspace authority requires refresh",
             ));
         }
         let bindings = self.factory.binding_snapshots();
-        match (&self.binding, bindings.get(&self.target)) {
-            (Some(expected), Some(current)) => check_generation(current, expected)?,
-            (None, None) => {}
-            _ => {
-                return Err(ReviewWorkspaceError::Unconfirmed(
-                    "execution binding changed during verification",
-                ));
-            }
-        }
+        let current = bindings
+            .get(&self.target)
+            .ok_or(ReviewWorkspaceError::Unconfirmed(
+                "execution binding disappeared",
+            ))?;
+        check_generation(current, &self.binding)?;
         if let Some((id, expected)) = &self.root_binding {
             check_generation(
                 bindings.get(id).ok_or(ReviewWorkspaceError::Unconfirmed(
@@ -287,57 +164,20 @@ fn check_generation(
 }
 
 impl StudioThreadFactory {
-    pub(crate) async fn verify_local_review_resume(
-        &self,
-        id: &str,
-        assignment: &AgentWorkspaceAssignmentSnapshot,
-    ) -> Result<VerifiedLocalResume, ReviewWorkspaceError> {
-        let check = self.verify_review_workspace(id, assignment).await?;
-        if check.binding.is_some() {
-            return Err(ReviewWorkspaceError::Unconfirmed(
-                "cold execution has no transferable original tool owner",
-            ));
-        }
-        let record = self.thread_record(id).await?;
-        let project = check
-            .project
-            .clone()
-            .ok_or(ReviewWorkspaceError::Unconfirmed(
-                "verified local project is unavailable",
-            ))?;
-        if project.ssh_alias.is_some() {
-            return Err(ReviewWorkspaceError::Unconfirmed(
-                "cold SSH execution has no original logical capability",
-            ));
-        }
-        self.ensure_bot_execution_workspace(&record.clone().into(), None)
-            .await?;
-        super::session_files::verify_existing_session_files(Path::new(&assignment.root), id)
-            .await?;
-        check.confirm().await?;
-        let identity =
-            WorkspaceIdentity::canonical(WorkspaceEndpoint::Local, assignment.root.clone())
-                .map_err(|error| {
-                    super::errors::resource_error("retain verified local identity", error)
-                })?;
-        Ok(VerifiedLocalResume {
-            check,
-            project,
-            assignment: assignment.clone(),
-            identity,
-        })
-    }
     /// All three review admission boundaries use this same read-only owner/physical verification.
     pub(crate) async fn verify_review_workspace(
         &self,
         id: &str,
         assignment: &AgentWorkspaceAssignmentSnapshot,
     ) -> Result<ReviewWorkspaceCheck, ReviewWorkspaceError> {
-        let binding = self.binding_snapshots().get(id).cloned();
-        let permit = match &binding {
-            Some(binding) => Some(binding.lifetime.gate.clone().lock_owned().await),
-            None => None,
-        };
+        let binding =
+            self.binding_snapshots()
+                .get(id)
+                .cloned()
+                .ok_or(ReviewWorkspaceError::Unconfirmed(
+                    "review target has no current tool owner",
+                ))?;
+        let permit = binding.lifetime.gate.clone().lock_owned().await;
         let mut check = ReviewWorkspaceCheck {
             factory: self.clone(),
             target: id.into(),
@@ -345,148 +185,46 @@ impl StudioThreadFactory {
             root_binding: None,
             lease: None,
             root: assignment.root.clone(),
-            project: None,
-            _usage: None,
             _permit: permit,
         };
         check.recheck()?;
         let target = self.thread_record(id).await?;
-        self.services
-            .store
-            .ensure_archive_execution_allowed(&target.workspace_id, Some(id))
-            .await
-            .map_err(|error| {
-                super::errors::resource_error("review target archive admission", error)
-            })?;
-        self.services
-            .store
-            .ensure_agent_execution_allowed(id)
-            .await
-            .map_err(|error| {
-                super::errors::resource_error("review target execution seal", error)
-            })?;
         let root = self.directory_member(&target.root_thread_id)?;
-        let project = match &check.binding {
-            Some(binding) => {
-                let remote = binding.project.ssh_alias.is_some();
-                if binding.project.id != target.workspace_id
-                    || !same_workspace_path(
-                        &assignment.root,
-                        &binding.workspace.root().to_string_lossy(),
-                        remote,
-                    )
-                    || !same_workspace_path(
-                        &assignment.project_root,
-                        &binding
-                            .workspace
-                            .workspace()
-                            .project_root()
-                            .to_string_lossy(),
-                        remote,
-                    )
-                {
-                    return Err(ReviewWorkspaceError::Invalid(
-                        "frozen assignment differs from the live execution binding",
-                    ));
-                }
-                if remote
-                    && (binding.remote.is_none()
-                        || binding
-                            .ssh_profile
-                            .as_ref()
-                            .map(|profile| profile.alias.as_str())
-                            != binding.project.ssh_alias.as_deref())
-                {
-                    return Err(ReviewWorkspaceError::Unconfirmed(
-                        "SSH execution binding has no matching frozen connection/profile",
-                    ));
-                }
-                binding.project.clone()
-            }
-            None => {
-                let mut project = self.project_record(&target.workspace_id).await?;
-                if let Some(bot) = self
-                    .services
-                    .bots
-                    .config_for_thread(&target.root_thread_id)
-                    .await
-                    .map_err(|error| {
-                        super::errors::resource_error("read existing bot physical binding", error)
-                    })?
-                {
-                    self.ensure_bot_execution_workspace(&target.clone().into(), None)
-                        .await?;
-                    project.path = self
-                        .services
-                        .bots
-                        .workspace_root(&bot)
-                        .to_string_lossy()
-                        .into_owned();
-                    project.ssh_alias = None;
-                }
-                project
-            }
-        };
-        check.project = Some(project.clone());
-        if project.ssh_alias.is_some() && check.binding.is_none() {
-            return Err(ReviewWorkspaceError::Unconfirmed(
-                "cold SSH ownership verification cannot establish a connection",
-            ));
-        }
-        let frozen = self
-            .services
-            .store
-            .workspace_identity(id)
-            .await
-            .map_err(|error| super::errors::resource_error("read review physical binding", error))?
-            .ok_or(ReviewWorkspaceError::Unconfirmed(
-                "review target has no frozen physical identity",
-            ))?;
-        let endpoint = WorkspaceEndpoint::from_profile(
-            check
-                .binding
-                .as_ref()
-                .and_then(|binding| binding.remote.as_ref())
-                .map(|remote| remote.profile.as_ref()),
-        );
-        let identity = WorkspaceIdentity::canonical(endpoint, assignment.root.clone())
-            .map_err(|error| super::errors::resource_error("review physical identity", error))?;
-        if frozen != identity {
-            return Err(ReviewWorkspaceError::Invalid(
-                "review target physical binding changed",
-            ));
-        }
-        // A real use of the existing owner protects this verification, including cold local checks.
-        // The live binding already carries a registered use; its clone remains in the guard.
-        if check.binding.is_none() {
-            let usage = self
-                .services
-                .worktrees
-                .reserve_workspace(id, identity.endpoint.clone())
-                .map_err(|error| {
-                    super::errors::resource_error("reserve review physical check", error)
-                })?;
-            self.services
-                .worktrees
-                .assign_workspace(&usage, identity)
-                .map_err(|error| {
-                    super::errors::resource_error("bind review physical check", error)
-                })?;
-            check._usage = Some(usage);
-        }
-        if check.binding.is_none()
-            && !same_workspace_path(
-                &tokio::fs::canonicalize(&project.path)
-                    .await?
-                    .to_string_lossy(),
+        let binding = &check.binding;
+        let remote = binding.project.ssh_alias.is_some();
+        if binding.project.id != target.workspace_id
+            || !same_workspace_path(
+                &assignment.root,
+                &binding.workspace.root().to_string_lossy(),
+                remote,
+            )
+            || !same_workspace_path(
                 &assignment.project_root,
-                false,
+                &binding
+                    .workspace
+                    .workspace()
+                    .project_root()
+                    .to_string_lossy(),
+                remote,
             )
         {
-            return Err(ReviewWorkspaceError::Unconfirmed(
-                "cold Project root does not prove the frozen project binding",
+            return Err(ReviewWorkspaceError::Invalid(
+                "frozen assignment differs from the live execution binding",
             ));
         }
+        if remote
+            && (binding.remote.is_none()
+                || binding
+                    .ssh_profile
+                    .as_ref()
+                    .map(|profile| profile.alias.as_str())
+                    != binding.project.ssh_alias.as_deref())
+        {
+            return Err(ReviewWorkspaceError::Unconfirmed(
+                "SSH execution binding has no matching frozen connection/profile",
+            ));
+        }
+        let project = binding.project.clone();
         let mut owner = target.clone();
         let mut declared = assignment.clone();
         let mut visited = std::collections::BTreeSet::new();
@@ -516,31 +254,13 @@ impl StudioThreadFactory {
                             "review target ownership chain leaves its parent/root/project",
                         ));
                     }
-                    let next_owner_thread = self.thread_record(&next.agent_id).await?;
-                    let next_protocol: crate::Thread = next_owner_thread.into();
-                    let current = super::recovery::load_current_read_only(
-                        &self.services.store,
-                        &next_protocol,
-                    )
-                    .await
-                    .map_err(|error| {
-                        super::errors::resource_error("read canonical review owner", error)
-                    })?
-                    .ok_or(ReviewWorkspaceError::Unconfirmed(
-                        "review target ownership chain has no current",
-                    ))?;
-                    let snapshot = current.state.to_paused_snapshot();
-                    let next_assignment =
-                        crate::studio::workspace_receipt::from_snapshot(&snapshot)
-                            .map_err(|error| {
-                                super::errors::resource_error(
-                                    "decode review owner assignment",
-                                    error,
-                                )
-                            })?
-                            .ok_or(ReviewWorkspaceError::Invalid(
-                                "review target has no frozen assignment",
-                            ))?;
+                    let next_assignment = self
+                        .binding_snapshots()
+                        .get(&next.agent_id)
+                        .and_then(|binding| binding.assignment.clone())
+                        .ok_or(ReviewWorkspaceError::Unconfirmed(
+                            "review owner has no current workspace binding",
+                        ))?;
                     if !same_workspace_path(
                         &declared.root,
                         &next_assignment.root,
@@ -570,7 +290,7 @@ impl StudioThreadFactory {
                             .review_repository_manager(
                                 &project,
                                 Path::new(&declared.project_root),
-                                check.binding.as_ref(),
+                                Some(&check.binding),
                             )
                             .await?;
                         if !same_workspace_path(
@@ -634,7 +354,7 @@ impl StudioThreadFactory {
                         .review_repository_manager(
                             &project,
                             Path::new(&declared.project_root),
-                            check.binding.as_ref(),
+                            Some(&check.binding),
                         )
                         .await?;
                     verify_worktree_declarations(
@@ -668,11 +388,7 @@ impl StudioThreadFactory {
                     base_commit: lease.base_commit.clone(),
                 })
                 .await?;
-        } else if let Some(remote) = check
-            .binding
-            .as_ref()
-            .and_then(|binding| binding.remote.as_ref())
-        {
+        } else if let Some(remote) = check.binding.remote.as_ref() {
             let stat = remote
                 .files()
                 .inspect_path(".".into(), None)

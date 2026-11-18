@@ -17,17 +17,6 @@ impl StudioThreadFactory {
         usage: &WorkspaceUsageLease,
         preparation: &impl crate::thread_assembler::WorkspaceBindingAdmission,
     ) -> Result<()> {
-        self.services
-            .store
-            .ensure_archive_execution_allowed(
-                &verified.workspace_id,
-                Some(&verified.owner_thread_id),
-            )
-            .await?;
-        self.services
-            .store
-            .ensure_agent_execution_allowed(&verified.owner_thread_id)
-            .await?;
         let write = preparation.with_binding_admission(&verified.owner_thread_id, || {
             self.services
                 .worktrees
@@ -37,20 +26,6 @@ impl StudioThreadFactory {
             .services
             .worktrees
             .confirm_prepared_binding(write)
-            .await?;
-        // The lease ACK is independent from archive/close admission. A durable seal may
-        // have arrived while the writer was saving this binding; it must win before
-        // Recovery retirement or handing the prepared owner back for publication.
-        self.services
-            .store
-            .ensure_archive_execution_allowed(
-                &verified.workspace_id,
-                Some(&verified.owner_thread_id),
-            )
-            .await?;
-        self.services
-            .store
-            .ensure_agent_execution_allowed(&verified.owner_thread_id)
             .await?;
         preparation.with_binding_admission(&verified.owner_thread_id, || {
             self.services.recovery.confirm_worktree(

@@ -167,7 +167,6 @@ struct ExecutionIdentity {
     terminal: bool,
     sealed: bool,
     /// When unsealed, absence was proved by admission or a history read; not publication.
-    completion_checked: bool,
     stamp: Option<ExecutionStamp>,
 }
 
@@ -379,7 +378,7 @@ impl RuntimeOrderIndex {
             retained: true,
             terminal: false,
             sealed: false,
-            completion_checked: false,
+
             stamp: None,
         };
         self.commit_execution_batch(
@@ -495,7 +494,7 @@ impl RuntimeOrderIndex {
                 retained: false,
                 terminal: false,
                 sealed: false,
-                completion_checked: fresh_background.contains(id),
+
                 stamp: None,
             };
             staged.insert(id.clone(), entry);
@@ -617,7 +616,7 @@ impl RuntimeOrderIndex {
                 retained: false,
                 terminal: false,
                 sealed: false,
-                completion_checked: false,
+
                 stamp: None,
             }
         };
@@ -722,15 +721,6 @@ impl RuntimeOrderIndex {
             .is_some_and(|entry| entry.sealed)
     }
 
-    pub(in crate::studio) fn completion_checked(&self, id: &str) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .assigned
-            .get(id)
-            .is_some_and(|entry| entry.completion_checked)
-    }
-
     pub(in crate::studio) fn mark_completion(&self, id: &str, sealed: bool) {
         if let Some(entry) = self
             .inner
@@ -739,7 +729,6 @@ impl RuntimeOrderIndex {
             .assigned
             .get_mut(id)
         {
-            entry.completion_checked = true;
             entry.sealed |= sealed;
         }
     }
@@ -751,19 +740,6 @@ impl RuntimeOrderIndex {
             .assigned
             .get(id)
             .is_some_and(|entry| entry.effect.is_some_and(|seq| seq > state.durable))
-    }
-
-    /// 只有当前已接纳 effect 新认领且尚未物化的身份能跳过历史查找。
-    /// 旧正文及已物化身份继续走原恢复边界。
-    pub(in crate::studio) fn is_new_reservation(&self, id: &str, effect: u64) -> bool {
-        let state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state
-            .assigned
-            .get(id)
-            .is_some_and(|entry| entry.effect == Some(effect) && entry.stamp.is_none())
     }
 
     pub(in crate::studio) fn pending_placement(
@@ -1426,6 +1402,7 @@ impl HistoryChannel {
         &self,
         authority: &crate::thread_assembler::review_dispatch::TerminalAuthority,
         original: &pl_core::thread::inbox::ThreadMessage,
+        finish: Option<&pl_tool::finish_turn::SavedFinishTurn>,
     ) -> u64 {
         // The producer retains these materials only, not an effect, prepared items or checkpoint.
         // The queue's normal prepared/effect accounting owns those until its durable ACK.
@@ -1434,6 +1411,10 @@ impl HistoryChannel {
             .saturating_add(original.id.len() as u64)
             .saturating_add(original.source_id.len() as u64)
             .saturating_add(authority.retained_bytes())
+            .saturating_add(finish.map_or(
+                0,
+                crate::thread_assembler::review_dispatch::finish_material_bytes,
+            ))
             .saturating_add(4096)
     }
     /// The caller holds a logical-source admission pin, without the registry lock.
@@ -3747,10 +3728,15 @@ pub(crate) mod storage_fault_tests {
         tokio::spawn(async move {
             let mut projection = crate::studio::thread_projection::LiveProjection::new();
             projection
-                .bind_execution_history(
+                .bind_execution(
                     channel.order_index(),
                     RuntimeEpoch::new(),
-                    store.history(&thread.id).await.expect("history owner"),
+                    store
+                        .history(&thread.id)
+                        .await
+                        .expect("history owner")
+                        .database_id()
+                        .to_owned(),
                 )
                 .expect("one projection binding");
             let mut failed = std::collections::BTreeSet::new();
@@ -3763,19 +3749,6 @@ pub(crate) mod storage_fault_tests {
                     let sequence = write.effect.sequence;
                     if failed.contains(&sequence) {
                         tokio::time::sleep(Duration::from_millis(5)).await;
-                        continue;
-                    }
-                    if !write.effect.delivery_repairs.is_empty()
-                        && crate::studio::thread_projection::seed_repaired_targets(
-                            &mut projection,
-                            &store.history(&thread.id).await.expect("history owner"),
-                            &write.effect,
-                        )
-                        .await
-                        .is_err()
-                    {
-                        failed.insert(sequence);
-                        channel.fail_projection(sequence, "repair seeding failed".into());
                         continue;
                     }
                     match projection
@@ -3826,10 +3799,15 @@ pub(crate) mod storage_fault_tests {
             None => RuntimeEpoch::new(),
         };
         let mut projection = crate::studio::thread_projection::LiveProjection::new();
-        projection.bind_execution_history(
+        projection.bind_execution(
             sink.0.channel.order_index(),
             epoch,
-            sink.0.store.history(&sink.0.thread.id).await?,
+            sink.0
+                .store
+                .history(&sink.0.thread.id)
+                .await?
+                .database_id()
+                .to_owned(),
         )?;
         Ok(projection)
     }
@@ -3871,10 +3849,10 @@ pub(crate) mod storage_fault_tests {
         });
         let sink = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
         let mut projection = crate::studio::thread_projection::LiveProjection::new();
-        projection.bind_execution_history(
+        projection.bind_execution(
             sink.0.channel.order_index(),
             RuntimeEpoch::new(),
-            store.history(&thread.id).await?,
+            store.history(&thread.id).await?.database_id().to_owned(),
         )?;
         let prepared = projection
             .prepare_committed(thread, &terminal.effect, &terminal.state)
@@ -4862,7 +4840,7 @@ mod execution_index_tests {
     };
 
     #[test]
-    fn fresh_background_ack_is_completion_checked_without_resolving_history() -> Result<()> {
+    fn fresh_background_ack_reserves_identity_without_claiming_completion() -> Result<()> {
         let process = Arc::new(AtomicU64::new(0));
         let index = RuntimeOrderIndex::new(process, 0);
         let call_id = "background-call";
@@ -4909,7 +4887,6 @@ mod execution_index_tests {
         let background =
             crate::studio::thread_projection::order::tool_background_started_id(call_id);
         assert!(index.assigned(&background).is_some());
-        assert!(index.completion_checked(&background));
         assert!(
             !index.is_sealed(&background),
             "an ACK receipt does not claim a terminal completion"
@@ -5031,7 +5008,6 @@ mod execution_index_tests {
         );
         assert_eq!(index.retained_bytes(), retained);
         assert_eq!(index.assigned("observed"), Some(first));
-        assert!(!index.completion_checked("observed"));
         process.store(retained, Ordering::Release);
         Ok(())
     }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// Positive creation position, independent of completion and effect sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "u64", into = "u64")]
-pub(in crate::studio) struct BlockOrder(u64);
+pub(crate) struct BlockOrder(u64);
 
 impl BlockOrder {
     fn new(value: u64) -> Result<Self> {
@@ -24,7 +24,7 @@ impl BlockOrder {
         Ok(Self(value))
     }
 
-    pub(in crate::studio) fn get(self) -> u64 {
+    pub(crate) fn get(self) -> u64 {
         self.0
     }
 }
@@ -46,7 +46,7 @@ impl From<BlockOrder> for u64 {
 /// Persisted schema-24 display header, never a member list or body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(in crate::studio) struct DisplayHeader {
+pub(crate) struct DisplayHeader {
     pub version: u32,
     pub id: String,
     pub source: ChatSourceId,
@@ -63,7 +63,7 @@ pub(in crate::studio) struct DisplayHeader {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(in crate::studio) struct DisplayMemberWrite {
+pub(crate) struct DisplayMemberWrite {
     pub block_id: String,
     pub association_key: String,
     pub terminal: bool,

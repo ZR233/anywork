@@ -1700,7 +1700,6 @@ class FrbStudioTransport
       continuationId: response.continuationId,
       acceptedSequence: response.acceptedSequence.toInt(),
       state: _continuationStateFromFrb(response.state),
-      durable: response.durable,
       receipt: _commandReceiptFromFrb(response.receipt),
     );
   }

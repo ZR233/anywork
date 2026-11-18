@@ -11,14 +11,9 @@ impl StudioThreadFactory {
         request: &ChildThreadRequest,
         mode: AgentWorkspaceMode,
         root: &crate::studio::records::DirectoryMember,
+        managed_root: Option<&Path>,
     ) -> Result<(), ThreadAssemblyError> {
-        let Some(bot) = self
-            .services
-            .bots
-            .config_for_thread(&root.agent.thread_id)
-            .await
-            .map_err(|error| resource_error("read bot workspace admission", error))?
-        else {
+        let Some(managed) = managed_root else {
             return Ok(());
         };
         if root.session.workspace_mode != ThreadWorkspaceMode::Local
@@ -29,25 +24,34 @@ impl StudioThreadFactory {
                 "bot children must use the bot-managed execution root; worktree Profiles are not permitted",
             ));
         }
-        self.ensure_bot_execution_workspace(
-            &self.thread_record(&root.agent.thread_id).await?.into(),
-            None,
-        )
-        .await?;
         if mode == AgentWorkspaceMode::Review {
             let target = request.review_target_agent_id.as_deref().ok_or_else(|| {
                 bot_workspace_refusal(&request.id, "bot review requires a frozen review target")
             })?;
-            let expected = local_identity(&self.services.bots.workspace_root(&bot)).await?;
-            self.check_bot_review_target(&request.id, &root.agent.thread_id, target, &expected)
-                .await?;
+            let target = self.directory_member(target)?;
+            let assignment = request.review_workspace.as_ref().ok_or_else(|| {
+                bot_workspace_refusal(&request.id, "bot review has no current target workspace")
+            })?;
+            if target.root_thread_id != root.root_thread_id
+                || assignment.worktree.is_some()
+                || !super::workspace_validation::same_workspace_path(
+                    &assignment.root,
+                    &managed.to_string_lossy(),
+                    false,
+                )
+            {
+                return Err(bot_workspace_refusal(
+                    &request.id,
+                    "bot review target is outside its managed execution root",
+                ));
+            }
         }
         Ok(())
     }
 
     /// Existing incompatible records remain readable. This gate neither migrates their history nor
     /// rewrites a binding; it only denies activation/continuation and emits a typed workspace error.
-    pub(crate) async fn ensure_bot_execution_workspace(
+    pub(crate) async fn verify_saved_bot_execution_workspace(
         &self,
         thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
@@ -55,7 +59,7 @@ impl StudioThreadFactory {
         let Some(bot) = self
             .services
             .bots
-            .config_for_thread(&thread.root_thread_id)
+            .saved_config_for_thread(&thread.root_thread_id)
             .await
             .map_err(|error| resource_error("read saved bot workspace admission", error))?
         else {
@@ -224,9 +228,8 @@ fn bot_workspace_refusal(id: &str, reason: &str) -> ThreadAssemblyError {
 mod migration_tests {
     use super::*;
     use crate::studio::storage_fault_test_support::close_factory;
-    use crate::thread_assembler::{
-        StudioActivationFactory, StudioChildResources, ThreadActivation, ThreadPreparation,
-    };
+    use crate::thread_assembler::StudioChildResources;
+    use crate::thread_assembler::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
     use anyhow::{Context, Result};
     use pl_core::thread::{ThreadHandle, extensions::ExtensionMutation};
     use pl_tool::workspace::SessionFiles;
@@ -300,7 +303,7 @@ mod migration_tests {
         let bot = factory
             .services
             .bots
-            .config_for_thread(&root.id)
+            .saved_config_for_thread(&root.id)
             .await?
             .context("saved bot binding")?;
         let managed = factory.services.bots.workspace_root(&bot);
@@ -356,7 +359,14 @@ mod migration_tests {
             review_workspace: None,
             metadata: pl_core::context::OpaquePayload::text("migration fixture"),
         };
-        let rejected = StudioChildResources::prepare(factory, &request, &profile).await;
+        let rejected = factory
+            .check_bot_spawn_workspace(
+                &request,
+                profile.profile.workspace_mode,
+                &factory.directory_member(&root.id)?,
+                Some(&managed),
+            )
+            .await;
         assert!(
             matches!(&rejected, Err(ThreadAssemblyError::Workspace { .. })),
             "worktree rejection must precede Git discovery or migration: {:?}",
@@ -444,11 +454,20 @@ mod migration_tests {
         profile.profile.workspace_mode = AgentWorkspaceMode::Review;
         request.id = "allowed-review".into();
         request.review_target_agent_id = Some(target.id.clone());
+        request.review_workspace = Some(crate::AgentWorkspaceAssignmentSnapshot {
+            mode: AgentWorkspaceMode::Directory,
+            project_root: target.workspace_path.clone(),
+            root: target.workspace_path.clone(),
+            writable_paths: None,
+            worktree: None,
+            review_target: None,
+        });
         factory
             .check_bot_spawn_workspace(
                 &request,
                 profile.profile.workspace_mode,
                 &factory.directory_member(&root.id)?,
+                Some(&managed),
             )
             .await?;
         assert!(
@@ -486,7 +505,14 @@ mod migration_tests {
         });
         let original_binding = store.workspace_identity(&other.id).await?;
         let original_project = store.read_project(&root.workspace_id).await?;
-        let rejected = StudioChildResources::prepare(factory, &request, &profile).await;
+        let rejected = factory
+            .check_bot_spawn_workspace(
+                &request,
+                profile.profile.workspace_mode,
+                &factory.directory_member(&root.id)?,
+                Some(&managed),
+            )
+            .await;
         assert!(
             matches!(&rejected, Err(ThreadAssemblyError::Workspace { .. })),
             "cross-root review rejection must precede migration: {:?}",
@@ -754,8 +780,8 @@ mod migration_tests {
                     .is_some()
             );
             assert!(
-                store
-                    .ensure_agent_execution_allowed(&registered.id)
+                factory
+                    .ensure_member_execution_allowed(&registered.id)
                     .await
                     .is_err()
             );

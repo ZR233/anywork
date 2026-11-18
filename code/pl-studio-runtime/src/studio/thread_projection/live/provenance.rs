@@ -100,10 +100,9 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
-        self.ensure_current_owner().await?;
         // A new runtime epoch owns a fresh live provenance owner. Replaying append-only history
         // would recreate durable-display restore and could give R1 callbacks R2 rights. Late
-        // reliable facts resolve their original identity through the bounded HistoryReader.
+        // reliable facts retain their producer cut and resolve from the original RAM material.
         let sequence = state.commit_sequence;
         self.provenance_restored = true;
         self.observe_current(thread, state, sequence)
@@ -366,11 +365,11 @@ impl LiveProjection {
                     let known_unacknowledged =
                         task.is_some_and(|task| task.acknowledgement.is_none());
                     if !known_unacknowledged
-                        && self
-                            .completion_exists(&super::super::order::tool_background_started_id(
+                        && self.completion_exists(
+                            &super::super::order::tool_background_started_id(
                                 tool.invocation().tool_call_id(),
-                            ))
-                            .await?
+                            ),
+                        )?
                     {
                         continue;
                     }

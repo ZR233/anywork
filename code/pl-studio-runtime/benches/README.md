@@ -1,5 +1,19 @@
 # 统计管线显式基准
 
+Current／History 的定向操作日志使用已有 `tracing`：按需启用
+`RUST_LOG=warn,current_work=debug,conversation_work=debug`。
+各指标的边界见 [存储契约](../../../design/15-session-storage.md)，日志只记录耗时、字节和计数，
+不记录正文、参数或凭据。实际完整 JSON、保存和 load 的显式观察复用单元测试中的真实文件 owner：
+
+```sh
+PL_CURRENT_SAMPLE_MIB=16 cargo test --locked -p pl-studio-runtime --lib studio::storage::current_file::size_observation::current_size_observation -- --exact --ignored --nocapture
+```
+
+分别以 1、16、64 运行，尺寸是代表样本而非生产上限，输出实际完整 JSON 字节。
+峰值内存从每个独立测试进程采样，覆盖夹具、保存和同时保留原 Current 的 load，
+在往返比较之前读取；不能当作纯解码增量或真实冷恢复内存。
+报告实际构建配置、机器、文件系统与采样条件；这些观察不能替代原生 Profile 首次布局和切换结果。
+
 本入口只由非默认 `benchmarks` feature 编译，不进入普通测试或默认 Clippy/CI。
 它调用实际 CallsStore、JSONL、费用查询、可靠 Thread writer 和 live projection；
 没有替代保存器、复制的归约器或降低同步保证的设置。
@@ -117,14 +131,14 @@ Linux 的每条 `operationDistribution.measurement.storageIo` 保存本进程
 | `history/recent_{0,100,3000}/old_{0,6000}` | 相同最近 3000 个成功样本；多出的 6000 条旧成功日志索引不改变最近结果。真实 `recent_performance_samples` 调用计时，之后校验返回条数和全部字段的 SHA-256。 |
 | `billing/single`、`billing/batch_64` | 每次使用空的新 calls store，计时从受理前到真实 JSONL 与 SQL commit 后的 processed ticket，并校验没有拒绝/gap/error；不能单凭处理票据宣称物化成功。每条记录另存其受理至该屏障返回的真实耗时。64 条是一组业务输入，不强制改变 writer 原有按条数/字节聚批的调度。 |
 | `billing/segment_rotation_64` | setup 先写 52 条各含 300 KiB 合法字段的记录，测量再写 64 条并验证实际 segment open。每条低于记录上限；基准不覆盖生产的批次、16 MiB segment 或同步设置，实际 flush/sync 次数由钩子记录。 |
-| `effects/reliable_history_no_call_material/active_{1,32}/working_1` | 每次连续提交 32 个无调用材料 effect；各操作计时包含真实 admit、live projection、history/checkpoint commit 及可靠 flush ACK。确认 calls 接纳/处理 ticket 均为零，空闲 Thread 的可靠水位不变；操作组后回读 history/checkpoint/可靠累计。旧 `effects/no_billing_change` 额外等待空 calls 水位和观察者，新名称不与其冒充完全等价。架构对照必须明确旧侧冗余义务、相同可靠事实校验及实际计数。 |
+| `effects/reliable_history_no_call_material/active_{1,32}/working_1` | 每次连续提交 32 个无调用材料 effect；各操作计时包含真实 admit、live projection、追加 History commit 及可靠 flush ACK。确认 calls 接纳/处理 ticket 均为零，空闲 Thread 的可靠水位不变；操作组后回读 History 与可靠累计。本场景不捕获或保存 Current，不报告 checkpoint fence。旧 `effects/no_billing_change` 额外等待空 calls 水位和观察者，新名称不与其冒充完全等价。架构对照必须明确旧侧冗余义务、相同可靠事实校验及实际计数。 |
 | `costs/roots_{1,32,256}/purposes_4/currencies_3` | 每个 root 4 个 Thread、4 purpose、3 currency；真实 summary 写入用于 setup，测量真实费用聚合查询，按精确二进制小数验证全部币种与 purpose 的累计值和身份摘要。 |
 | `parallel/recent_3000/batch_64` | 4 次真实 3000 样本读取与连续 8 组 64 条真实写入并行。先观察首个真实查询已进入，再启动写任务；不注入人工锁或 sleep，也不要求重构后的查询仍持有旧日志锁。写入的是更旧样本，因此每次读取仍验证同一最近集合。保存写吞吐、逐读/逐记录/逐批耗时、队列高水位和真实读写锁等待。 |
 | `publication/materialize_3000/roots_32` | 实际统计 owner 对 3000 个样本、32 个 root 费用执行显式物化，计时包含读取、采用及事件发送；计时外核验已发布历史、样本和费用条数。此只读负载不推进 owner revision，缓存持久化分支可能跳过，不宣称覆盖持久化成功；它也不测 GUI 消费延迟或“后到 Summary”的故障场景。 |
 
 所有数据库首开、迁移、目录创建、seed、fixture 数据构造、返回结果摘要计算和 teardown
 均不进入普通操作计时。Billing/并行场景每次重建以固定历史规模；只读场景复用不变数据；
-无计费 effect 场景复用可靠 writer 的最新 checkpoint/watermark，sequence 继续单调前进。
+无计费 effect 场景复用可靠 writer 与追加 History，sequence 继续单调前进。
 并行窗口总计时包含实际任务编排与结果处理；其中逐读和逐写样本另有独立操作边界。
 全局“物化刷新”计数钩子也只在 feature 下存在；存储 cases 不装配产品 owner，
 该计数可为零。独立的 publication case 覆盖实际 owner 物化发布，不把它外推为 GUI 消费或后到 Summary 的正确性证明。

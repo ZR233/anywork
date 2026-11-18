@@ -19,3 +19,15 @@ Object historyBodyIdentity(HistoryEventBodyRef reference) => (
   reference.byteStart,
   reference.byteLength,
 );
+
+ContentWindow historyBodyWindow(
+  HistoryEventBodyRef reference,
+  HistoryBodyWindow window,
+) => ContentWindow(
+  offset: window.offset,
+  bytes: window.bytes,
+  generation:
+      '${reference.bodyId}:${reference.byteStart}:${reference.byteLength}',
+  availableThrough: window.totalLength,
+  sealed: true,
+);

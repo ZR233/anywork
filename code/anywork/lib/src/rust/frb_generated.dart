@@ -16240,8 +16240,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 7)
+      throw Exception('unexpected arr length: expect 7 but see ${arr.length}');
     return BridgeContinuationOperationView(
       threadId: dco_decode_String(arr[0]),
       operationId: dco_decode_String(arr[1]),
@@ -16249,8 +16249,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       continuationId: dco_decode_String(arr[3]),
       acceptedSequence: dco_decode_u_64(arr[4]),
       state: dco_decode_bridge_continuation_operation_state(arr[5]),
-      durable: dco_decode_bool(arr[6]),
-      receipt: dco_decode_bridge_studio_command_receipt(arr[7]),
+      receipt: dco_decode_bridge_studio_command_receipt(arr[6]),
     );
   }
 
@@ -33333,7 +33332,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_state = sse_decode_bridge_continuation_operation_state(
       deserializer,
     );
-    var var_durable = sse_decode_bool(deserializer);
     var var_receipt = sse_decode_bridge_studio_command_receipt(deserializer);
     return BridgeContinuationOperationView(
       threadId: var_threadId,
@@ -33342,7 +33340,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       continuationId: var_continuationId,
       acceptedSequence: var_acceptedSequence,
       state: var_state,
-      durable: var_durable,
       receipt: var_receipt,
     );
   }
@@ -52546,7 +52543,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.continuationId, serializer);
     sse_encode_u_64(self.acceptedSequence, serializer);
     sse_encode_bridge_continuation_operation_state(self.state, serializer);
-    sse_encode_bool(self.durable, serializer);
     sse_encode_bridge_studio_command_receipt(self.receipt, serializer);
   }
 

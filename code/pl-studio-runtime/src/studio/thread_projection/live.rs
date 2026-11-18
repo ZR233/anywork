@@ -6,8 +6,8 @@
 //! prepared immutable batch. Current publication and JSON saving do not wait for its commit.
 //!
 //! Bounded Runtime tables retain active identities, report facts and original bodies still needed
-//! for reliable handoff. A late fact naming a retired identity resolves that exact History original;
-//! neither Current streaming nor restart replays the archive into a new runtime epoch.
+//! for reliable handoff. Every effect resolves from those RAM facts and its own producer cut;
+//! neither Current streaming nor restart reads or replays History into a new runtime epoch.
 
 use crate::{ExecutionItem, ExecutionShape};
 use std::{
@@ -37,18 +37,12 @@ use pl_core::{
 use super::ProjectionError;
 use crate::history::{
     HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead, HistoryTurnHead,
-    HistoryTurnState, InputFact, PreparedInputFact,
+    HistoryTurnState,
 };
 use crate::studio::runtime::chat_item::{
     BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
 };
 use crate::studio::storage::thread_writer::{ExecutionMaterialization, RuntimeOrderIndex};
-
-/// What one effect's identities resolve to.
-///
-/// Canonical payloads plus the identities read from durable history in this pass.
-/// Resolution performs no index allocation; the final metadata batch commits once.
-type ResolvedIdentities = (BTreeMap<String, ExecutionItem>, BTreeSet<String>);
 
 fn completion_ready(item: &ExecutionItem) -> bool {
     item.is_terminal()
@@ -317,10 +311,10 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
     /// Input admissions and transitions frozen from this effect's original observation cut.
-    pub(in crate::studio) history_inputs: Arc<[PreparedInputFact]>,
     pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
+    pub(in crate::studio) parent_finish: Option<Arc<pl_tool::finish_turn::SavedFinishTurn>>,
     pub(in crate::studio) terminal_retention:
         Option<std::sync::Arc<crate::thread_assembler::review_dispatch::TerminalMaterialRetention>>,
     /// Immutable diagnostics produced by application CAS changes in this very effect.
@@ -382,29 +376,6 @@ fn prepared_turns(
         );
     }
     Ok((heads, details))
-}
-
-fn history_input_facts(
-    thread: &crate::Thread,
-    effect: &ThreadEffectBatch,
-    state: &ThreadSnapshot,
-) -> Arc<[PreparedInputFact]> {
-    // The route is optional evidence: a missing or undecodable saved Profile cannot be replaced by
-    // the current extension later in the writer, so the admission fact keeps `None`.
-    let expected_model_route_revision =
-        crate::studio::model_route::route_record(state, thread.parent_thread_id.is_some())
-            .ok()
-            .flatten()
-            .map(|(record, _)| record.revision);
-    effect
-        .inputs
-        .iter()
-        .map(|change| PreparedInputFact {
-            fact: InputFact::from_change(change, expected_model_route_revision),
-            body_id: uuid::Uuid::new_v4().to_string(),
-        })
-        .collect::<Vec<_>>()
-        .into()
 }
 
 fn history_entity_change(
@@ -596,6 +567,10 @@ impl PreparedEffect {
                 (message.payload.content().len() as u64)
                     .saturating_mul(2)
                     .saturating_add(message.id.len() as u64)
+                    .saturating_add(self.parent_finish.as_deref().map_or(
+                        0,
+                        crate::thread_assembler::review_dispatch::finish_material_bytes,
+                    ))
                     .saturating_add(256)
             }
         })
@@ -645,10 +620,6 @@ impl PreparedEffect {
             .saturating_add(
                 (self.history_sources.len() as u64)
                     .saturating_mul(std::mem::size_of::<HistorySourceHead>() as u64),
-            )
-            .saturating_add(
-                serde_json::to_vec(self.history_inputs.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
                 serde_json::to_vec(self.retained_resources.as_ref())
@@ -1286,15 +1257,6 @@ impl TurnResult {
             }
         }
     }
-
-    pub(in crate::studio) fn observe_identity(&mut self, id: &str) {
-        if self.identities.insert(id.to_owned()) {
-            self.identity_bytes = self
-                .identity_bytes
-                .saturating_add(id.len() as u64)
-                .saturating_add(RETAINED_ENTRY_OVERHEAD);
-        }
-    }
 }
 
 /// Ordinal, revision and creation stamp of one identity the projection has already published.
@@ -1426,7 +1388,7 @@ pub(in crate::studio) struct LiveProjection {
     /// identity's preview frame and its terminal commit resolve one ordinal from one allocator.
     order_index: Option<Arc<RuntimeOrderIndex>>,
     run: Option<RuntimeEpoch>,
-    execution_history: Option<crate::history::HistoryStore>,
+    database_id: Option<String>,
     current: super::current::CurrentOwner,
 }
 
@@ -1441,11 +1403,17 @@ impl Drop for LiveProjection {
     }
 }
 
+struct ProjectedContent {
+    items: Vec<ExecutionItem>,
+    review_delivery: Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+    completion_drafts: Vec<ChatDraft>,
+}
+
 impl LiveProjection {
     /// Creates an empty projection owner.
     ///
-    /// The caller seeds it with the durable facts of unfinished work while installing the Thread's
-    /// observation, once, before any commit is projected.
+    /// Installation binds the channel index and seeds provenance from the current Core owner.
+    /// No historical payload is loaded into this projection.
     pub(in crate::studio) fn new() -> Self {
         Self {
             #[cfg(test)]
@@ -1467,7 +1435,7 @@ impl LiveProjection {
             revisions: BTreeMap::new(),
             order_index: None,
             run: None,
-            execution_history: None,
+            database_id: None,
             current: Default::default(),
             items_bytes: 0,
             facts_bytes: 0,
@@ -1476,39 +1444,26 @@ impl LiveProjection {
         }
     }
 
-    /// Bind the channel-owned allocation authority and exact durable lookup boundary once.
-    pub(in crate::studio) fn bind_execution_history(
+    /// Bind the channel's RAM allocation authority, runtime epoch and database identity once.
+    pub(in crate::studio) fn bind_execution(
         &mut self,
         index: Arc<RuntimeOrderIndex>,
         run: RuntimeEpoch,
-        history: crate::history::HistoryStore,
+        database_id: String,
     ) -> Result<(), ProjectionError> {
-        if self.order_index.is_some() || self.execution_history.is_some() {
+        if self.order_index.is_some() || self.database_id.is_some() {
             return Err(ProjectionError::History(
                 "execution history is already bound".into(),
             ));
         }
         self.order_index = Some(index);
         self.run = Some(run);
-        self.execution_history = Some(history);
+        self.database_id = Some(database_id);
         self.current
             .bind(run.to_string())
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         Ok(())
     }
-    async fn ensure_current_owner(&mut self) -> Result<(), ProjectionError> {
-        if self.current.owner_id().is_none() {
-            let database_id = self
-                .run
-                .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?
-                .to_string();
-            self.current
-                .bind(database_id)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-        }
-        Ok(())
-    }
-
     pub(in crate::studio) fn current_state(&self) -> Option<Arc<super::CurrentState>> {
         self.current.snapshot()
     }
@@ -1543,74 +1498,11 @@ impl LiveProjection {
         Ok(())
     }
 
-    /// Installs the durable facts of work that started before this projection existed.
-    ///
-    /// The caller reads the bounded slice once, while installing the observation: the newest Turn's
-    /// committed items plus the hidden dispositions of the Thread's inputs. Everything the hot path
-    /// resolves afterwards comes from these tables, so a commit or a preview never waits on a
-    /// history reader — including for a Thread re-activated in the middle of a Turn.
-    pub(in crate::studio) fn seed(&mut self, items: Vec<ExecutionItem>, hidden: BTreeSet<String>) {
-        // The seeded bodies already carry the content version durable history stored, so they are
-        // the baseline of this projection's counter: re-encountering the same identity must never
-        // restart at 1, because a lower version would be rejected by the durable row's revision
-        // fence and the preview would stay stuck on the old body.
-        for item in &items {
-            self.raise_revision(&item.id, item.revision);
-        }
-        for item in items {
-            self.fact(&item);
-            self.observe_result(&item);
-            self.committed_body(item);
-        }
-        self.hidden_inputs.extend(hidden);
-    }
-
     /// Report facts of one Turn, if the projection still holds them.
     pub(in crate::studio) fn turn_result(&self, turn_id: &str) -> Option<&TurnResult> {
         self.results.get(turn_id)
     }
 
-    /// Whether this projection still holds the committed terminal tool result for `id`.
-    ///
-    /// A reliable-output repair must know whether it can supplement the result in memory or has to
-    /// read the already-committed body back first; only a resident terminal tool item is a body this
-    /// owner can project without a durable read.
-    pub(in crate::studio) fn holds_terminal_tool(&self, id: &str) -> bool {
-        self.items.get(id).is_some_and(|item| {
-            matches!(item.state(), ExecutionShape::Tool(tool) if tool.terminal_output().is_some())
-        })
-    }
-
-    /// Whether this projection still holds the canonical tool body of `id`, in any state.
-    ///
-    /// A user-input interaction — an ordinary question or a Plan confirmation — lands on the call
-    /// that raised it, and the answering effect carries neither the call nor its task: after a
-    /// restart, or once a finished Turn leaves the retained window, this projection holds no body for
-    /// that identity. Placement metadata alone is not a body — only a real tool item can carry the
-    /// answer.
-    pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
-        self.items.get(id).is_some_and(|item| item.tool().is_some())
-    }
-
-    /// Bytes this projection currently retains in its own tables.
-    ///
-    /// The retained bodies, their placement metadata and the report accumulator are the projection's
-    /// own resident memory: they outlive the prepared batch the writer has already written, so the
-    /// Thread's reliable budget has to cover them too. The value is absolute, not cumulative, so
-    /// releasing a body lowers the budget in the same step that released it.
-    ///
-    /// The value is read on **every** published frame, while a long response streams one part per
-    /// identity; the four part-keyed tables that grow with the response therefore carry running
-    /// totals that each real change moves by one entry ([`LiveProjection::store_item`],
-    /// [`LiveProjection::store_fact`], [`LiveProjection::store_preview`],
-    /// [`LiveProjection::raise_revision`]), so reading these four totals does not walk their tables.
-    ///
-    /// The remaining terms are not all equally cheap, and this is deliberately not claimed to be
-    /// O(turns): `hidden_inputs`, `turns_seen` and `turn_phases` are bounded by the Thread's inputs
-    /// and Turns, and a Turn's identity charge is accumulated at insertion, but
-    /// [`TurnResult::retained_bytes`] still walks that Turn's kept final/commentary parts.
-    /// A frame while many final parts remain resident therefore still visits those report entries;
-    /// the identity accumulator does not make the whole retention query constant-time.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
         let mut bytes = self
             .items_bytes
@@ -1677,21 +1569,22 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
-        self.ensure_current_owner().await?;
         let run = self
             .run
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let before = self
             .observation_inputs(&thread.id, state)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.stage_history_model_previews(thread, state, effect.committed_at)
-            .await?;
+        self.stage_history_model_previews(thread, state, effect.committed_at)?;
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
-        let (items, review_delivery, mut completion_drafts) =
-            self.project(thread, effect, state).await?;
+        let ProjectedContent {
+            items,
+            review_delivery,
+            mut completion_drafts,
+        } = self.project(thread, effect, state)?;
         #[cfg(test)]
         if std::mem::take(&mut self.fail_after_project) {
             return Err(ProjectionError::History(
@@ -1728,10 +1621,9 @@ impl LiveProjection {
                         &completion_drafts,
                         run,
                         effect,
-                        self.execution_history
-                            .as_ref()
-                            .expect("bound history")
-                            .database_id(),
+                        self.database_id
+                            .as_deref()
+                            .expect("bound database identity"),
                     )
                 })
                 .collect::<Result<Vec<_>, ProjectionError>>()?
@@ -1741,9 +1633,9 @@ impl LiveProjection {
             history_sources: history_sources(&provenance.1).into(),
             retained_resources: retained_resources(effect)?.into(),
             parent_report: None,
+            parent_finish: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
-            history_inputs: history_input_facts(thread, effect, state),
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1775,20 +1667,21 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
-        self.ensure_current_owner().await?;
         let run = self
             .run
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let before = self
             .observation_inputs(&thread.id, state)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        self.stage_history_model_previews(thread, state, effect.committed_at)
-            .await?;
+        self.stage_history_model_previews(thread, state, effect.committed_at)?;
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let (items, review_delivery, mut completion_drafts) =
-            self.project(thread, effect, state).await?;
+        let ProjectedContent {
+            items,
+            review_delivery,
+            mut completion_drafts,
+        } = self.project(thread, effect, state)?;
         self.complete_provenance(
             effect,
             state,
@@ -1817,10 +1710,9 @@ impl LiveProjection {
                         &completion_drafts,
                         run,
                         effect,
-                        self.execution_history
-                            .as_ref()
-                            .expect("bound history")
-                            .database_id(),
+                        self.database_id
+                            .as_deref()
+                            .expect("bound database identity"),
                     )
                 })
                 .collect::<Result<Vec<_>, ProjectionError>>()?
@@ -1830,9 +1722,9 @@ impl LiveProjection {
             history_sources: history_sources(&provenance.1).into(),
             retained_resources: retained_resources(effect)?.into(),
             parent_report: None,
+            parent_finish: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
-            history_inputs: history_input_facts(thread, effect, state),
         });
         self.retain(state);
         Ok(prepared)
@@ -1850,22 +1742,15 @@ impl LiveProjection {
     /// Projects one effect's canonical content exactly once.
     ///
     /// Resident identities resolve against this projection's own tables and its channel index;
-    /// a reliable identity miss is checked against durable history before allocating a new ordinal.
+    /// missing content must be supplied by this effect's producer cut, never a storage lookup.
     /// The projected bodies are folded into this projection in the same step, so a later effect of
     /// the same Turn resolves them without a second projection or a storage lookup.
-    async fn project(
+    fn project(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-    ) -> Result<
-        (
-            Vec<ExecutionItem>,
-            Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
-            Vec<ChatDraft>,
-        ),
-        ProjectionError,
-    > {
+    ) -> Result<ProjectedContent, ProjectionError> {
         let review_delivery =
             review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
         let mut turn_failures = self.turn_failures.clone();
@@ -1941,22 +1826,14 @@ impl LiveProjection {
                     .is_some_and(|ack| ack.context_revision == revision)
                 {
                     let id = super::order::tool_background_started_id(&task.call_id);
-                    if !self.completion_exists(&id).await? {
+                    if !self.completion_exists(&id)? {
                         ids.push(id.clone());
                         background_ids.push((task.call_id.clone(), id));
                     }
                 }
             }
         }
-        let terminal_turns = provisional
-            .items
-            .iter()
-            .filter(|item| matches!(item.state(), ExecutionShape::Turn(_)) && item.is_terminal())
-            .map(|item| item.id.clone())
-            .collect();
-        let (mut existing, restored) = self
-            .resolve(thread, ids, &terminal_turns, effect.sequence)
-            .await?;
+        let mut existing = self.resolve(thread, ids);
         // Only a bounded reception may take its committed body from the preview the window already
         // showed: the stream stopped before the provider's authoritative item, so the prefix that did
         // arrive stays on the identity it was shown on instead of being lost. A normally received
@@ -2100,22 +1977,15 @@ impl LiveProjection {
                 ..ExecutionMaterialization::from_item(item)
             });
         }
-        let completion_drafts = self
-            .prepare_completion_drafts(thread, state, effect, &items, &background_ids)
-            .await?;
-        let current_ids = items
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<BTreeSet<_>>();
+        let completion_drafts =
+            self.prepare_completion_drafts(thread, state, effect, &items, &background_ids)?;
         // No projection body, revision or report accumulator changes until every
         // identity and stamp in this effect has passed the same atomic budget check.
         let orders = index
             .materialize_execution_batch(
-                restored
+                items
                     .iter()
-                    .filter(|id| !current_ids.contains(id.as_str()))
-                    .map(|id| ExecutionMaterialization::from_item(&existing[id]))
-                    .chain(items.iter().map(ExecutionMaterialization::from_item))
+                    .map(ExecutionMaterialization::from_item)
                     .chain(backgrounds),
                 effect.sequence,
             )
@@ -2135,12 +2005,19 @@ impl LiveProjection {
         }
         for delivery in effect.deliveries.iter() {
             if let Some(finish) = super::completions::committed_finish(delivery)
-                && let Some(turn) = state.live_calls.get(&delivery.call_id)
+                && let Some(turn) = items
+                    .iter()
+                    .find(|item| item.id == super::order::tool_id(&delivery.call_id))
+                    .map(|item| item.turn_id.clone())
             {
-                self.results.entry(turn.clone()).or_default().finish = Some(finish);
+                self.results.entry(turn).or_default().finish = Some(finish);
             }
         }
-        Ok((items, review_delivery, completion_drafts))
+        Ok(ProjectedContent {
+            items,
+            review_delivery,
+            completion_drafts,
+        })
     }
 
     /// Freezes and publishes this effect's completion batch, exactly once per identity.
@@ -2151,14 +2028,14 @@ impl LiveProjection {
     /// or thinking part seals at the attempt's finalization or its explicit bounded-interrupted
     /// boundary, and a Turn seals at its terminal transition. Non-terminal bodies stay live facts
     /// of the runtime and never occupy the completion timeline. An identity that already sealed —
-    /// including a seeded durable terminal identity or a later higher-revision execution repair —
+    /// including an earlier terminal identity or a later higher-revision execution repair —
     /// is skipped: the completion atom is immutable and one identity publishes once.
     ///
     /// # Errors
     /// Propagates the completion session's typed failures (payload conflict, sequence exhaustion,
-    /// storage reads) as projection failures; nothing is marked sealed until the whole batch
+    /// retained-capacity refusal) as projection failures; nothing is marked sealed until the whole batch
     /// published.
-    async fn prepare_completion_drafts(
+    fn prepare_completion_drafts(
         &self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -2282,7 +2159,7 @@ impl LiveProjection {
                 .delivery_repairs
                 .iter()
                 .any(|repair| super::order::tool_id(&repair.call_id) == item.id)
-                && self.completion_exists(&item.id).await?
+                && self.completion_exists(&item.id)?
             {
                 continue;
             }
@@ -2301,35 +2178,8 @@ impl LiveProjection {
         Ok(drafts)
     }
 
-    async fn completion_exists(&self, id: &str) -> Result<bool, ProjectionError> {
-        let index = self.order_index_of()?;
-        if index.is_sealed(id) {
-            return Ok(true);
-        }
-        if index.completion_checked(id) {
-            return Ok(false);
-        }
-        let history = self
-            .execution_history
-            .as_ref()
-            .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-        let sealed = match history
-            .reader()
-            .read_event(
-                id.to_owned(),
-                crate::history::HistoryDemand {
-                    max_rows: 1,
-                    max_bytes: 64 * 1024,
-                },
-            )
-            .await
-        {
-            Ok(event) => event.header.original.is_some(),
-            Err(crate::history::HistoryError::NotFound(_)) => false,
-            Err(error) => return Err(ProjectionError::History(error.to_string())),
-        };
-        index.mark_completion(id, sealed);
-        Ok(sealed)
+    fn completion_exists(&self, id: &str) -> Result<bool, ProjectionError> {
+        Ok(self.order_index_of()?.is_sealed(id))
     }
 
     /// Publishes Current exclusively from the newest Core owner snapshot.
@@ -2342,11 +2192,10 @@ impl LiveProjection {
         thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
-        self.ensure_current_owner().await?;
         self.observe_current(thread, state, state.commit_sequence)
     }
 
-    async fn stage_history_model_previews(
+    fn stage_history_model_previews(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -2778,63 +2627,31 @@ impl LiveProjection {
         })
     }
 
-    /// Reads canonical identities without assigning placement or changing the index.
-    async fn resolve(
+    /// Resolve only facts still owned by this projection or its in-flight channel.
+    fn resolve(
         &self,
         thread: &crate::Thread,
         ids: impl IntoIterator<Item = String>,
-        terminal_turns: &BTreeSet<String>,
-        effect: u64,
-    ) -> Result<ResolvedIdentities, ProjectionError> {
-        let mut existing = BTreeMap::new();
-        let mut restored = BTreeSet::new();
-        let mut seen = BTreeSet::new();
-        for id in ids {
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            if let Some(item) = self.items.get(&id) {
-                existing.insert(id, item.clone());
-                continue;
-            }
-            let placement = self
-                .facts
-                .get(&id)
-                .map(|fact| fact.placeholder(&id, &thread.id))
-                .or_else(|| {
-                    self.order_index
-                        .as_ref()
-                        .and_then(|index| index.pending_placement(&id, &thread.id))
-                });
-            // A placement-only Raw shell cannot compare a sealed Turn's state
-            // or normalize its real terminal clock. Recover that exact canonical
-            // item on the reliable path; never reinterpret a shell as its body.
-            if !terminal_turns.contains(&id)
-                && let Some(item) = placement.clone()
-            {
-                existing.insert(id, item);
-                continue;
-            }
-            if self
-                .order_index
-                .as_ref()
-                .is_some_and(|index| index.is_new_reservation(&id, effect))
-            {
-                continue;
-            }
-            // Unknown and restored identities retain their explicit history validation.
-            let history = self
-                .execution_history
-                .as_ref()
-                .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-            if let Some(item) = historical_execution_item(history, &thread.id, &id).await? {
-                restored.insert(id.clone());
-                existing.insert(id, item);
-            } else if let Some(item) = placement {
-                existing.insert(id, item);
-            }
-        }
-        Ok((existing, restored))
+    ) -> BTreeMap<String, ExecutionItem> {
+        ids.into_iter()
+            .filter_map(|id| {
+                let item = self
+                    .items
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| {
+                        self.facts
+                            .get(&id)
+                            .map(|fact| fact.placeholder(&id, &thread.id))
+                    })
+                    .or_else(|| {
+                        self.order_index
+                            .as_ref()
+                            .and_then(|index| index.pending_placement(&id, &thread.id))
+                    });
+                item.map(|item| (id, item))
+            })
+            .collect()
     }
 
     /// The channel-owned execution-order index explicitly bound to this projection.
@@ -3180,11 +2997,6 @@ impl LiveProjection {
         );
     }
 
-    /// Retains one committed body while it can still change or be re-projected.
-    fn committed_body(&mut self, item: ExecutionItem) {
-        self.store_item(item);
-    }
-
     /// Stores one canonical body, keeping the retained-byte estimate in step.
     ///
     /// Replacing a body charges the difference instead of double counting it, so the running total
@@ -3523,120 +3335,6 @@ impl LiveProjection {
     }
 }
 
-/// Reads the already-committed body of a repaired identity the live window no longer holds.
-///
-/// A reliable-output repair names an already-committed call, but the bounded live window may already
-/// have released that identity — no GUI open, a slow reader, or a rolled-over window. The Thread's
-/// single projection owner stays the only fact source for the canonical item and its content version,
-/// so it reads the committed body from history here and folds it back into its own tables. The
-/// following projection then supplements that identity in memory and the writer only confirms the
-/// projected item; no content version is invented outside this owner, nothing re-reads the effect being
-/// written, and a repeated repair of the same effect finds the identity already resident.
-///
-/// # Errors
-/// Returns a projection failure when the already-committed body cannot be read or decoded.
-pub(in crate::studio) async fn seed_repaired_targets(
-    projection: &mut LiveProjection,
-    history: &crate::history::HistoryStore,
-    effect: &ThreadEffectBatch,
-) -> Result<(), ProjectionError> {
-    if effect.delivery_repairs.is_empty() {
-        return Ok(());
-    }
-    let mut seeded = Vec::new();
-    for repair in effect.delivery_repairs.iter() {
-        let tool_id = super::order::tool_id(&repair.call_id);
-        if projection.holds_terminal_tool(&tool_id) {
-            continue;
-        }
-        if let Some(item) = historical_execution_item(history, &effect.thread_id, &tool_id).await? {
-            seeded.push(item);
-        }
-    }
-    if !seeded.is_empty() {
-        projection.seed(seeded, std::collections::BTreeSet::new());
-    }
-    Ok(())
-}
-
-/// Reads the tool items an effect's user-input interactions name, when this projection holds no
-/// canonical body for them.
-///
-/// A pending question outlives the Turn that asked it: the asking call is already terminal, its body
-/// leaves the retained window, and a projection seeded after a restart never saw the call at all.
-/// The answering effect carries only the interaction and the hidden continuation, so the answer can
-/// only land on the call's own item if the owner reads that one identity back from reliable history
-/// and hands it to the projection as a fact — the same shape as a reliable-output repair target. A
-/// Plan confirmation is answered after the same `plan_submit` call is already terminal, so it needs
-/// the same identity read-back. Nothing else is read: no Turn is scanned, no tool is activated, no
-/// model step starts. A missing or non-tool durable
-/// item fails explicitly, because an accepted answer must never be dropped or published as a
-/// fabricated row.
-pub(in crate::studio) async fn seed_interaction_targets(
-    projection: &mut LiveProjection,
-    thread_id: &str,
-    history: &crate::history::HistoryStore,
-    effect: &ThreadEffectBatch,
-) -> Result<(), ProjectionError> {
-    let mut seeded = Vec::new();
-    for record in effect.interactions.iter() {
-        let Some(user_input) = super::user_input::project_user_input(thread_id, record)? else {
-            continue;
-        };
-        let tool_id =
-            match pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id()) {
-                Some(call_id) => super::order::tool_id(call_id),
-                None => {
-                    return Err(ProjectionError::UserInput(format!(
-                        "user-input interaction `{}` names no tool call",
-                        user_input.interaction_id()
-                    )));
-                }
-            };
-        if projection.holds_tool_body(&tool_id) {
-            continue;
-        }
-        let item = historical_execution_item(history, thread_id, &tool_id)
-            .await?
-            .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
-        if item.tool().is_none() {
-            return Err(ProjectionError::UserInput(format!(
-                "durable item `{tool_id}` is not a tool call and cannot own a user-input history"
-            )));
-        }
-        seeded.push(item);
-    }
-    if !seeded.is_empty() {
-        projection.seed(seeded, std::collections::BTreeSet::new());
-    }
-    Ok(())
-}
-
-async fn historical_execution_item(
-    history: &crate::history::HistoryStore,
-    thread_id: &str,
-    item_id: &str,
-) -> Result<Option<ExecutionItem>, ProjectionError> {
-    let reader = history.reader();
-    let Some(record) = reader
-        .original_for_entity(
-            item_id.to_owned(),
-            crate::history::HistoryDemand {
-                max_rows: 1,
-                max_bytes: 64 * 1024,
-            },
-        )
-        .await
-        .map_err(|error| ProjectionError::History(error.to_string()))?
-    else {
-        return Ok(None);
-    };
-    crate::studio::runtime::chat_item::read_execution_item(&reader, record, thread_id)
-        .await
-        .map(Some)
-        .map_err(|error| ProjectionError::History(error.to_string()))
-}
-
 /// The canonical identity of one aggregate streaming channel of an attempt.
 /// It is the same in-memory identity the committed effect later finalizes for the whole channel, so a
 /// preview and the terminal item it precedes never disagree on the id.
@@ -3822,7 +3520,7 @@ mod append_only_history_tests {
         let run = RuntimeEpoch::new();
         let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), run, history.clone())?;
+        projection.bind_execution(channel.order_index(), run, history.database_id().to_owned())?;
 
         let turn = TurnRecord {
             turn_id: "boundary-turn".into(),
@@ -4110,7 +3808,11 @@ mod append_only_history_tests {
         .await?;
         let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), RuntimeEpoch::new(), history)?;
+        projection.bind_execution(
+            channel.order_index(),
+            RuntimeEpoch::new(),
+            history.database_id().to_owned(),
+        )?;
 
         let turn = TurnRecord {
             turn_id: "nested-turn".into(),
@@ -4237,10 +3939,10 @@ mod append_only_history_tests {
             .await?;
             let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
             let mut projection = LiveProjection::new();
-            projection.bind_execution_history(
+            projection.bind_execution(
                 channel.order_index(),
                 RuntimeEpoch::new(),
-                history,
+                history.database_id().to_owned(),
             )?;
             let turn_id = associated.then(|| format!("{case}-turn"));
             let attempt_id = associated.then(|| format!("{case}-attempt"));

@@ -11,7 +11,6 @@ use std::sync::{
 struct PreparationResources {
     native: Arc<crate::session::NativeResources>,
     usage: Option<super::WorkspaceUsageLease>,
-    review: Option<crate::studio::thread_factory::VerifiedLocalResume>,
     admission: Option<PreparationAdmission>,
 }
 #[derive(Debug, Clone)]
@@ -42,16 +41,6 @@ impl WorkspaceBindingAdmission for WorkspacePreparationOwner {
     }
 }
 impl WorkspacePreparationOwner {
-    pub(crate) fn verified_review(
-        proof: crate::studio::thread_factory::VerifiedLocalResume,
-    ) -> Self {
-        Self(Arc::new(std::sync::Mutex::new(PreparationResources {
-            usage: Some(proof.usage()),
-            review: Some(proof),
-            admission: None,
-            native: Default::default(),
-        })))
-    }
     pub(crate) fn bind_admission(
         &self,
         assembler: &super::SessionRuntime,
@@ -104,13 +93,7 @@ impl WorkspacePreparationOwner {
         }
         handoff()
     }
-    pub(crate) fn take_review(&self) -> Option<crate::studio::thread_factory::VerifiedLocalResume> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .review
-            .take()
-    }
+
     pub(crate) fn native_resources(&self) -> Arc<crate::session::NativeResources> {
         self.0
             .lock()

@@ -74,6 +74,10 @@ pub(crate) struct ManualGuiOptions {
     /// Measure native Profile first-content layout with the conversation-read-work preset.
     #[arg(long)]
     pub(crate) profile_read_samples: bool,
+    /// Reuse the closed synthetic home and inventory from a prior Profile output directory.
+    /// Copies the home and audits the required history through the current Runtime.
+    #[arg(long, value_name = "DIR", requires = "profile_read_samples")]
+    pub(crate) profile_read_seed: Option<PathBuf>,
     /// Directory for sanitized evidence (defaults to target/manual-gui/<timestamp>-<pid>).
     #[arg(long, value_name = "DIR")]
     pub(crate) output: Option<std::path::PathBuf>,
@@ -930,7 +934,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             .tempdir_in(&output)
             .context("failed to create isolated conversation-read home")?;
         let home = working.path().join("home");
-        fs::create_dir(&home)?;
+        if options.profile_read_seed.is_none() {
+            fs::create_dir(&home)?;
+        }
         let result =
             conversation_read_work::run(&conversation_read_work::ConversationReadWorkScenario {
                 workspace: &workspace,
@@ -939,6 +945,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 output: &output,
                 interrupt: &interrupt_rx,
                 profile_read_samples: options.profile_read_samples,
+                profile_read_seed: options.profile_read_seed.as_deref(),
             });
         if options.retain_environment || result.is_err() {
             let retained = keep_isolated_environment(working, &home, &output, None);

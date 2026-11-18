@@ -16,160 +16,10 @@ type Drain = dyn Fn(String, ClosePurpose) -> futures::future::BoxFuture<'static,
 type Synchronize = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
-/// Settled record of one message identity in the recipient's saved Current.
-///
-/// The Current inbox or its bounded consumed-identity ledger is the authority a delivery uses once
-/// it left the resident queue. An identity without a verifiable body is never re-delivered as work.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DurableMessageIdentity {
-    /// The accepted body digest and its original admission sequence.
-    Proven { sequence: u64, digest: String },
-}
-
-#[cfg(test)]
-use crate::studio::StudioStore;
-
-#[cfg(test)]
-async fn current_message_identity(
-    store: &StudioStore,
-    thread_id: &str,
-    message_id: &str,
-) -> anyhow::Result<Option<DurableMessageIdentity>> {
-    let paths = store.registered_session_paths(thread_id)?;
-    let current = store
-        .state_for(paths.workspace_id(), thread_id)?
-        .load_current()
-        .await?;
-    let Some(current) = current else {
-        return Ok(None);
-    };
-    let snapshot = current.state.to_paused_snapshot();
-    if let Some(record) = snapshot
-        .inbox
-        .iter()
-        .find(|record| record.message.id == message_id)
-    {
-        return Ok(Some(DurableMessageIdentity::Proven {
-            sequence: record.sequence,
-            digest: record.message.digest(),
-        }));
-    }
-    Ok(snapshot
-        .consumed_message_identities
-        .iter()
-        .find(|identity| identity.id == message_id)
-        .map(|identity| DurableMessageIdentity::Proven {
-            sequence: identity.sequence,
-            digest: identity.digest.clone(),
-        }))
-}
-
-#[cfg(test)]
-async fn history_parent_report(
-    history: &crate::history::HistoryStore,
-    thread: &str,
-    terminal: u64,
-) -> anyhow::Result<Option<pl_core::thread::inbox::ThreadMessage>> {
-    crate::studio::history_delivery::parent_report(&history.reader(), thread, terminal).await
-}
-pub(super) async fn latest_terminal_turn(
-    reader: &crate::history::HistoryReader,
-) -> anyhow::Result<Option<crate::Turn>> {
-    let mut cursor = None;
-    loop {
-        let page = reader
-            .turns_page(
-                None,
-                cursor,
-                crate::history::HistoryDemand {
-                    max_rows: 128,
-                    max_bytes: 1024 * 1024,
-                },
-            )
-            .await?;
-        for entry in page.entries {
-            let crate::history::HistoryRowHead::Turn(head) = entry.head else {
-                continue;
-            };
-            if !matches!(
-                head.state,
-                crate::history::HistoryTurnState::Completed
-                    | crate::history::HistoryTurnState::Cancelled
-                    | crate::history::HistoryTurnState::Failed
-                    | crate::history::HistoryTurnState::BudgetLimited
-            ) {
-                continue;
-            }
-            let detail_event_id = head
-                .detail_event_id
-                .context("terminal Turn has no immutable detail")?;
-            let detail = reader
-                .read_event(
-                    detail_event_id.clone(),
-                    crate::history::HistoryDemand {
-                        max_rows: 1,
-                        max_bytes: 1024 * 1024,
-                    },
-                )
-                .await?;
-            let mut body_cursor = None;
-            loop {
-                let bodies = reader
-                    .list_bodies(
-                        detail.header.event_id.clone(),
-                        body_cursor,
-                        crate::history::HistoryDemand {
-                            max_rows: 128,
-                            max_bytes: 64 * 1024,
-                        },
-                    )
-                    .await?;
-                for body in bodies.entries {
-                    if body.body_key != "turn_detail" {
-                        continue;
-                    }
-                    let mut bytes = Vec::with_capacity(body.reference.byte_length as usize);
-                    let mut offset = 0_u64;
-                    while offset < body.reference.byte_length {
-                        let window = reader
-                            .read_body(
-                                body.reference.clone(),
-                                offset,
-                                (body.reference.byte_length - offset).min(64 * 1024) as u32,
-                            )
-                            .await?;
-                        anyhow::ensure!(
-                            !window.bytes.is_empty(),
-                            "Turn detail body did not advance"
-                        );
-                        offset = offset
-                            .checked_add(window.bytes.len() as u64)
-                            .context("Turn detail body length overflow")?;
-                        bytes.extend(window.bytes);
-                    }
-                    return serde_json::from_slice(&bytes)
-                        .map(Some)
-                        .context("decode immutable Turn detail");
-                }
-                let Some(next) = bodies.next else {
-                    break;
-                };
-                body_cursor = Some(next);
-            }
-            return Err(anyhow::anyhow!("terminal Turn detail body is missing"));
-        }
-        let Some(next) = page.next else {
-            return Ok(None);
-        };
-        cursor = Some(next);
-    }
-}
-
-/// Admission is not durability. Only the parent's saved Current identity proves final delivery.
+/// The current parent owner returns the actual admission result; saving is a separate obligation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParentMessageDelivery {
     Accepted { message_id: String, sequence: u64 },
-    ProvenExisting { message_id: String, sequence: u64 },
     Skipped(ParentMessageSkip),
 }
 
@@ -186,19 +36,10 @@ pub(crate) enum ParentReportAcknowledgement {
     Proven,
 }
 
-/// Durable lookup of one `(target thread, message id)` identity.
-///
-/// A named alias keeps the install signature readable; the callback runs outside the registry lock
-/// and its future must stay `Send` because the observation worker is a spawned task. `None` answers
-/// "this Thread never accepted that identity"; a failure must be propagated so the caller fails
-/// closed instead of admitting a possible duplicate.
-pub(crate) type MessageQuery = futures::future::BoxFuture<
-    'static,
-    Result<Option<DurableMessageIdentity>, ThreadAssemblyError>,
->;
-pub(crate) type MessageIdentityLookup = dyn Fn(String, String) -> MessageQuery + Send + Sync;
+/// Current terminal fact published by the existing observation owner. No storage callback.
+pub(crate) type CurrentTurnLookup = dyn Fn(&str) -> Option<Arc<crate::Turn>> + Send + Sync;
 
-/// Outcome of adjudicating one delivery against the durable message identity index.
+/// Outcome of matching a delivery against the current owner's accepted identities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DeliveryDisposition {
     /// The identity is already accepted with an identical body: answer with this original receipt.
@@ -212,7 +53,7 @@ pub(super) enum DeliveryDisposition {
 pub(super) struct AssemblyObservation(
     Arc<Observe>,
     Arc<Drain>,
-    Option<Arc<MessageIdentityLookup>>,
+    Option<Arc<CurrentTurnLookup>>,
     Arc<BeforeClose>,
     Arc<Synchronize>,
 );
@@ -235,7 +76,7 @@ impl SessionRuntime {
         + Send
         + Sync
         + 'static,
-        messages: Option<Arc<MessageIdentityLookup>>,
+        current_turn: Option<Arc<CurrentTurnLookup>>,
         before_close: impl Fn(
             String,
             ThreadHandle,
@@ -264,7 +105,7 @@ impl SessionRuntime {
         state.observation = Some(AssemblyObservation(
             Arc::new(observe),
             Arc::new(drain),
-            messages,
+            current_turn,
             Arc::new(before_close),
             Arc::new(synchronize),
         ));
@@ -488,55 +329,42 @@ impl SessionRuntime {
         })
     }
 
-    /// Adjudicates one message delivery against the target Thread's saved Current identity.
-    ///
-    /// Every admission site must run this before it accepts a message as new work, because a delivery
-    /// whose resident copy is gone would otherwise be admitted a second time. The result is the
-    /// original admission receipt for an identical repeat, `New` for an identity this Thread never
-    /// accepted, and an explicit conflict/unverifiable disposition for the same identity carrying a
-    /// body the durable index cannot match. A storage failure is propagated so the caller fails
-    /// closed instead of admitting a possible duplicate.
-    ///
-    /// An assembler without an installed Studio host has no durable index; that host always installs
-    /// one, and the bounded resident dedup in core still covers the live window in the meantime.
-    pub(super) async fn adjudicate_message(
+    /// Match only identities the current owner still retains. Absence is not a historical claim.
+    pub(super) fn adjudicate_message(
         &self,
         thread_id: &str,
         message: &pl_core::thread::inbox::ThreadMessage,
-    ) -> Result<DeliveryDisposition, ThreadAssemblyError> {
-        match self
-            .durable_message_identity(thread_id, &message.id)
-            .await?
-        {
-            None => Ok(DeliveryDisposition::New),
-            Some(DurableMessageIdentity::Proven { sequence, digest })
-                if digest == message.digest() =>
-            {
-                Ok(DeliveryDisposition::Receipt(sequence))
+    ) -> DeliveryDisposition {
+        let Some(thread) = self.observed_thread(thread_id) else {
+            return DeliveryDisposition::New;
+        };
+        let snapshot = thread.snapshot();
+        let known = snapshot
+            .inbox
+            .iter()
+            .find(|record| record.message.id == message.id)
+            .map(|record| (record.sequence, record.message.digest()))
+            .or_else(|| {
+                snapshot
+                    .consumed_message_identities
+                    .iter()
+                    .find(|record| record.id == message.id)
+                    .map(|record| (record.sequence, record.digest.clone()))
+            });
+        match known {
+            Some((sequence, digest)) if digest == message.digest() => {
+                DeliveryDisposition::Receipt(sequence)
             }
-            Some(DurableMessageIdentity::Proven { .. }) => Ok(DeliveryDisposition::Conflict),
+            Some(_) => DeliveryDisposition::Conflict,
+            None => DeliveryDisposition::New,
         }
     }
 
-    pub(super) async fn durable_message_identity(
-        &self,
-        thread_id: &str,
-        message_id: &str,
-    ) -> Result<Option<DurableMessageIdentity>, ThreadAssemblyError> {
-        // Resolve the callback before awaiting: the registry lock only guards the synchronous state
-        // read, so no `MutexGuard` is ever held across the durable query (this may run on a spawned
-        // `Send` future).
-        let lookup = self
-            .0
-            .state()
-            .observation
-            .as_ref()
-            .and_then(|observation| observation.2.clone());
-        let Some(lookup) = lookup else {
-            return Ok(None);
-        };
-        lookup(thread_id.to_owned(), message_id.to_owned()).await
+    pub(super) fn current_terminal_turn(&self, id: &str) -> Option<Arc<crate::Turn>> {
+        let lookup = self.0.state().observation.as_ref()?.2.clone()?;
+        lookup(id)
     }
+
     pub(crate) async fn notify_parent(
         &self,
         id: &str,
@@ -574,24 +402,6 @@ impl SessionRuntime {
                 ParentMessageSkip::TargetUnavailable,
             ));
         };
-        // A terminal event's child write sequence is its identity. Its report includes observation-
-        // time fields, so regenerating it after a restart need not reproduce the first accepted
-        // body. The parent's durable receipt owns that body; a repeated event only wakes its still
-        // pending message. Ordinary authored messages retain strict body-digest adjudication.
-        match self.durable_message_identity(id, &message.id).await? {
-            Some(DurableMessageIdentity::Proven { sequence, .. }) => {
-                if wake {
-                    thread
-                        .wake_accepted_message(&message.id, sequence, execution)
-                        .await?;
-                }
-                return Ok(ParentMessageDelivery::ProvenExisting {
-                    message_id: message.id,
-                    sequence,
-                });
-            }
-            None => {}
-        }
         // The committed inbox already owns this immutable terminal watermark. In particular,
         // replay must not resend a migrated, previously consumed notification with a new body.
         let snapshot = thread.snapshot();
@@ -664,6 +474,88 @@ mod storage_fault_tests {
             atomic::{AtomicBool, Ordering},
         },
     };
+
+    struct SavedMessageIdentity {
+        sequence: u64,
+        digest: String,
+    }
+    async fn current_message_identity(
+        store: &StudioStore,
+        thread: &str,
+        message: &str,
+    ) -> Result<Option<SavedMessageIdentity>> {
+        let paths = store.registered_session_paths(thread)?;
+        let Some(current) = store
+            .state_for(paths.workspace_id(), thread)?
+            .load_current()
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(current
+            .state
+            .inbox
+            .iter()
+            .find(|record| record.message.id == message)
+            .map(|record| SavedMessageIdentity {
+                sequence: record.sequence,
+                digest: record.message.digest(),
+            })
+            .or_else(|| {
+                current
+                    .state
+                    .consumed_message_identities
+                    .iter()
+                    .find(|identity| identity.id == message)
+                    .map(|identity| SavedMessageIdentity {
+                        sequence: identity.sequence,
+                        digest: identity.digest.clone(),
+                    })
+            }))
+    }
+    async fn history_parent_report(
+        history: &crate::history::HistoryStore,
+        thread: &str,
+        terminal: u64,
+    ) -> Result<Option<pl_core::thread::inbox::ThreadMessage>> {
+        let reader = history.reader();
+        let id = crate::studio::agent_close::terminal_report_id(thread, terminal);
+        let event = match reader
+            .read_event(
+                format!("parent_report:{id}"),
+                crate::history::HistoryDemand {
+                    max_rows: 1,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await
+        {
+            Ok(event) => event,
+            Err(crate::history::HistoryError::NotFound(_)) => {
+                reader.close().await;
+                return Ok(None);
+            }
+            Err(error) => {
+                reader.close().await;
+                return Err(error.into());
+            }
+        };
+        let reference = event.payload_ref.context("original report payload")?;
+        let mut bytes = Vec::new();
+        while bytes.len() < reference.byte_length as usize {
+            let window = reader
+                .read_body(reference.clone(), bytes.len() as u64, 64 * 1024)
+                .await?;
+            anyhow::ensure!(
+                !window.bytes.is_empty(),
+                "original report body did not advance"
+            );
+            bytes.extend(window.bytes);
+        }
+        reader.close().await;
+        let payload: OpaquePayload = serde_json::from_slice(&bytes)?;
+        Ok(Some(serde_json::from_str(payload.content())?))
+    }
 
     #[derive(Clone)]
     struct ObservedOwner {
@@ -808,7 +700,6 @@ mod storage_fault_tests {
             let syncing = live.clone();
             let observed = live.clone();
             let observing = store.clone();
-            let messages = store.clone();
             let closes = Arc::new(Mutex::new(Vec::new()));
             let fail_drain = Arc::new(AtomicBool::new(false));
             let drain_fault = fail_drain.clone();
@@ -845,42 +736,7 @@ mod storage_fault_tests {
                         drain(owners, id, fail_after_writer).await
                     })
                 },
-                Some(Arc::new(move |id, message| {
-                    let store = messages.clone();
-                    Box::pin(async move {
-                        let paths = store.registered_session_paths(&id).map_err(storage_error)?;
-                        let state = store
-                            .state_for(paths.workspace_id(), &id)
-                            .map_err(storage_error)?;
-                        let current = state
-                            .load_current()
-                            .await
-                            .map_err(storage_error)?
-                            .ok_or_else(|| {
-                                storage_error(anyhow::anyhow!("message owner has no current"))
-                            })?;
-                        let snapshot = current.state.to_paused_snapshot();
-                        if let Some(record) = snapshot
-                            .inbox
-                            .iter()
-                            .find(|record| record.message.id == message)
-                        {
-                            Ok(Some(DurableMessageIdentity::Proven {
-                                sequence: record.sequence,
-                                digest: record.message.digest(),
-                            }))
-                        } else {
-                            Ok(snapshot
-                                .consumed_message_identities
-                                .iter()
-                                .find(|identity| identity.id == message)
-                                .map(|identity| DurableMessageIdentity::Proven {
-                                    sequence: identity.sequence,
-                                    digest: identity.digest.clone(),
-                                }))
-                        }
-                    })
-                })),
+                None,
                 |_, _, _| Box::pin(async { Ok(()) }),
                 move |id| {
                     let owners = syncing.clone();
@@ -1492,7 +1348,7 @@ mod storage_fault_tests {
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let DurableMessageIdentity::Proven {
+                let SavedMessageIdentity {
                     sequence: receipt_sequence,
                     digest: receipt_digest,
                 } = current_message_identity(&store, "parent", &saved.message.id)
@@ -1502,7 +1358,7 @@ mod storage_fault_tests {
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let DurableMessageIdentity::Proven {
+                let SavedMessageIdentity {
                     sequence: repeated_sequence,
                     digest: repeated_digest,
                 } = current_message_identity(&store, "parent", &saved.message.id)
@@ -1600,7 +1456,7 @@ mod storage_fault_tests {
                     fixture.owner.resume_agent_closes(),
                 )
                 .await?;
-                let DurableMessageIdentity::Proven {
+                let SavedMessageIdentity {
                     sequence: first_sequence,
                     digest: first_digest,
                 } = current_message_identity(&store, "parent", &message.id)
@@ -1676,7 +1532,7 @@ mod storage_fault_tests {
                         .await?,
                     ParentReportAcknowledgement::Absent
                 );
-                let DurableMessageIdentity::Proven {
+                let SavedMessageIdentity {
                     sequence: receipt_sequence,
                     digest: receipt_digest,
                 } = current_message_identity(&store, "parent", &message.id)
@@ -1777,7 +1633,7 @@ mod storage_fault_tests {
                     .digest(),
                 saved.message.digest()
             );
-            let DurableMessageIdentity::Proven { digest, .. } =
+            let SavedMessageIdentity { digest, .. } =
                 current_message_identity(store, "parent", &saved.message.id)
                     .await?
                     .context("durable original ID")?;
@@ -1815,7 +1671,7 @@ mod storage_fault_tests {
                 .await?
                 .flush_current(active.runtime_epoch())
                 .await?;
-            let DurableMessageIdentity::Proven { digest, .. } =
+            let SavedMessageIdentity { digest, .. } =
                 current_message_identity(store, "parent", &followup.id)
                     .await?
                     .context("real followup history write")?;
@@ -1879,7 +1735,7 @@ mod storage_fault_tests {
                         .native()
                         .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
             );
-            let DurableMessageIdentity::Proven {
+            let SavedMessageIdentity {
                 sequence: first_sequence,
                 digest: first_digest,
             } = current_message_identity(&store, "parent", &saved.message.id)
@@ -1893,7 +1749,7 @@ mod storage_fault_tests {
                 fixture.owner.resume_agent_closes(),
             )
             .await??;
-            let DurableMessageIdentity::Proven {
+            let SavedMessageIdentity {
                 sequence: receipt_sequence,
                 digest: receipt_digest,
             } = current_message_identity(&store, "parent", &saved.message.id)

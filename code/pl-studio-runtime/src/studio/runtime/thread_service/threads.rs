@@ -33,9 +33,9 @@ impl StudioRuntime {
     ) -> Result<ThreadRecord> {
         let _lifecycle_guard = self.thread_lifecycle_admission().await?;
         let thread_id = thread_id.into();
-        self.store
-            .ensure_delete_execution_allowed(Some(&thread_id))
-            .await?;
+        let mut admission = crate::Thread::placeholder(&thread_id);
+        admission.workspace_id = workspace_id.into();
+        self.check_thread_execution_access(&admission)?;
         if let Some(existing) = self.find_owned_thread(&thread_id).await? {
             anyhow::ensure!(
                 existing.workspace_id == workspace_id,
@@ -615,11 +615,6 @@ impl StudioRuntime {
     /// Restores an archived root and its descendants without executing historical work.
     pub async fn restore_thread(&self, thread_id: String) -> Result<crate::SessionDirectoryRow> {
         let _guard = self.lifecycle_lock.lock().await;
-        if let Some(root) = self.store.directory_member(&thread_id)? {
-            self.store
-                .ensure_archive_execution_allowed(&root.session.workspace_id, Some(&thread_id))
-                .await?;
-        }
         let root = self
             .agent_facility
             .product_events

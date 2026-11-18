@@ -110,7 +110,6 @@ pub async fn read_continuation_operation(
                 BridgeContinuationOperationState::Discarded
             }
         },
-        durable: view.durable,
         thread_id: view.thread_id,
         operation_id: view.operation_id,
         input_id: view.input_id,

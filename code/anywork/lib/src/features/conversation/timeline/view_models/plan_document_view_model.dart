@@ -67,16 +67,18 @@ class PlanDocumentViewModel extends Notifier<PlanDocumentState> {
     final session = _conversations.existingSession(threadId);
     final content = _timeline.lease(threadId);
     final document = session?.state.businessRefs?.plan?.document;
+    final reader = content?.current;
     if (_conversations.visibleThreadId.value != threadId ||
         session == null ||
         content == null ||
+        reader == null ||
         document == null ||
         session.isClosed ||
         content.isRetired ||
         _timeline.source.value?.connection != TimelineConnectionPhase.ready) {
       return null;
     }
-    return (session, content, content.current.metadata.readerId, document);
+    return (session, content, reader.metadata.readerId, document);
   }
 
   void _sync() {

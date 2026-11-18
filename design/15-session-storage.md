@@ -16,6 +16,10 @@ Native 会话有三个用途不同的事实载体：
 
 普通 current 捕获、保存、读取和恢复不等待、查询或校验历史；历史接纳也不读取或确认 `current.json`。两者没有共同事务、提交水位、恢复栅栏或历史回放修补关系，可以分别加载、分别失败。一次性的 schema 24 升级顺序只归 [17.21](./17-studio-storage.md#1721-独立当前状态与追加历史的升级边界)，不能推广成日常写路径。
 
+模型／工具结果、终态报告和结构化评审由产生它们的 owner 直接交接现有 RAM 材料，不等待 History COMMIT 后重读正文或验证摘要。投影本身不持有 HistoryReader／HistoryStore，也不因当前内容缺失发起历史查询。历史 writer 仍在自己的存储边界维护事务完整性、预算及写入回执；显式历史查询仍按 HistoryReader 的有界接口执行。冷激活、明确恢复和迁移先加载一次完整 Current，建立新的内存 owner；后续命令、权限与关闭准入由该 owner、目录和生命周期许可裁决，不反复读取归档、退休或关闭表。
+
+重开后的交互决议仍从同一 Current 中的请求、调用与结果归并。交互本身足以触发原调用的局部投影，不要求同时出现新的 task 或 delivery，也不要求尚在等待用户的计划已有历史终稿。回答已消费、交互集合已裁剪时，Core 保留的同身份终态 context 与配对工具结果继续证明原调用已完成；不能因集合为空把它重建为排队。已从 Current 和驻留投影裁剪的调用不再参与实时重建；不可变历史保持原样，不通过回查补齐当前命令。
+
 `ThreadSnapshot` 使用 schema 18；Current 与 History 的公开协议版本各为 1，磁盘 Current schema 与 History schema 分别按自身版本校验。客户端收到不支持的 schema 或协议版本时必须明确拒绝，不保留旧客户端的双读、兼容分支或隐藏降级。
 
 #### 可恢复对象与身份
@@ -32,7 +36,11 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 持久化诊断中的 `current` 只读取该 Current writer 的 runtime epoch、dirty／in-flight、实际保存回执、最近成功写入／捕获时间与快照年龄；未登记 owner 或尚未成功保存的字段保持未知。History 的 admitted／durable 水位独立提供，不能证明 Current 已保存，也不能与 Current 修订相比较。
 
+定向诊断的 `current_capture_ms` 覆盖完整的一致性捕获，另计 producer 捕获请求与换 attempt 后的重抓，失败也记录结果。`current_encode_ms` 只计完整 JSON 编码，`current_json_bytes` 是实际编码长度；`current_save_ms` 从捕获完成至真实文件写入返回，包含校验、编码与 flush，不包含等待下一次周期保存。Current 使用直接覆盖，flush 只确认 Tokio 文件操作完成，不承诺原子替换或断电持久性。`current_snapshot_age_ms` 表示最近成功保存所含状态的年龄，不以写入完成时刻重新起算；页面诊断继续随观察时间计算年龄。首次 load 单独记录 `current_load_ms`，迁移与资源校验须按实际覆盖说明，不与纯 JSON 解码混算。
+
 自动保存失败保留 dirty 和类型化错误，固定间隔后重试；显式 flush 只尝试一次。捕获完成后在锁外编码完整 JSON，并直接覆盖 `current.json`。新建文件在 Unix 使用仅所有者可读写的权限；覆盖写入中断可能留下空文件或不完整 JSON，因此保存成功只表示写入接口返回，不承诺父目录同步或断电后仍保留。资源校验失败不得开始替换文件。
+
+运行中检查 Native 报告／评审的待交付标记、反馈结算与授权时，直接读取原 owner 已接受的状态，关闭中的驻留 owner 也继续提供这一事实。仅无驻留 owner 的冷恢复读取完整 JSON；检查待交付工作不以重新解码正在覆写的文件为前提。交付流程原有的持久化回执仍须单独确认，内存观察不等于已保存。重放标记为空时仍须收束此前失败的临时接收器，标记删除不能替代 writer 与观察任务的清理回执。
 
 附件缓存以资源根、身份、摘要、长度和媒体类型限定；首次加载验证全部必需资源，周期保存只验证当前 owner 尚未验证的新引用。外部删除或损坏在后续加载、读取或保存验证时明确失败，不承诺每轮保存主动重读全部附件。
 
@@ -52,7 +60,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 只使用 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`。旧 v24 wire 只允许出现在冻结迁移 schema。
 
-普通输入与 Continue 的原受理身份、请求摘要、路由版本及后续状态写入独立的 `InputAccepted`／`InputConsumed`／`InputDiscarded` 事件；它们不建立 UI 行，不复制用户正文。受理元数据由原 effect 冻结，正文 ID 在运行期冻结时生成，writer 重试沿用原候选。重复请求按输入身份索引读取一个固定的已提交历史切面，只有原事实可证明的回执才可重放；不会为了重放激活会话、访问工作区、认领继续点或清除后来发出的 Stop。RAM 接纳尚未落盘时只报告可重试的等待，不能冒充保存成功。
+普通输入、Continue、交互决定和 Native 消息准入只使用当前 owner 已接受的输入、交互与有界身份集合，不查询 History 或 `current.json`。操作身份用于关联本次命令；不承诺永久幂等、历史回执重放或识别已裁剪的旧命令。不再额外写入仅服务回查的 `input_fact` 接纳／状态事件、请求摘要和路由回执；schema 24 迁移在明确的升级边界保留这些旧原件供历史读取。Continue 查询仅返回当前 owner 仍保留的输入，`NotFound` 不证明从未受理，客户端不得据此自动重发。
 
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 
@@ -63,6 +71,8 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 正文按 64 KiB 固定块保存，读取一次最多 64 KiB 且最多访问两个相邻块。主列表和正文目录默认每页 64 行、64 KiB，允许 1–512 行、1 字节–1 MiB，预算包含完整响应与游标；候选放不进预算时留给下一页，单项超限明确失败，不截断。时间头统一为 UTC 毫秒；canonical payload 保持原协议单位和字节。
 
 History writer 先在数据库事务外固定 RAM pending 根，再开始 SQLite 事务；接纳事实和数据库提交是不同阶段。查询先捕获 accepted head 与 pending 根，再开新的只读快照，合并数据库与尚未 flush 的不可变事实。flush 成功后才 reclaim 对应 pending；在途查询持有旧根，回收不破坏其读取。失败保留原事件与写入错误，重试复用同一身份和字节；内容冲突明确失败。History 在同 effect 的原始 producer cut 上冻结边界，不能读取更新的 Current 正文。模型终态先把最后真实 progress 交给 History 再释放 receiver；工具中断或取消的 partial 作为原 canonical 正文保留，不冒充成功终稿。历史不保存全会话缓存。
+
+`history_pending_events/bytes` 只统计已接纳、尚未 SQLite COMMIT 的事实；`history_retained_events/bytes` 统计仍占 RAM 配额的材料，包含已提交但在途查询仍借用的旧根。提交后前者可为零而后者仍非零，不能将两者混作未落盘欠账。`history_sql_read`／`history_sql_write` 在实际成功执行的事件／正文 SELECT／INSERT 后计数，事务回滚仍须单列，不能把语句成功当成 COMMIT。`timeline_examined_anchors` 计一次查询实际解析的候选锚点，`timeline_returned_bytes` 计完整响应（含 cut／游标，group 使用成员响应形状）；两者受该请求预算约束。`history_body_bytes_read` 计 SQLite 实际装入的完整 chunk 字节或 pending 实际复制的范围，`history_body_returned_bytes` 单列返回范围，不能用较小的返回值冒充底层读取量；列表小头不计入正文。日志按原 Thread 身份关联，默认关闭，不参与业务裁决或引入前端 ACK。
 
 提交、失败、压力和关闭沿用原 HistoryChannel 责任：容量不足返回类型化背压，调用方保留原事实；写入失败保留 pending；关闭先封闭接纳、取消并等待读取，再 flush 剩余事实并释放 writer lease。关闭一个 `HistoryReader` 只关闭该读取资格，不关闭共享 HistoryStore 或其他读者。 CLI/bot 等等待终态的消费者在同一 History cut 上查询 Turn，读取其不可变 `turn_detail`，未命中时等待该 History reader 的 change；不依靠 Current 的最后一次通知，不比较两域 revision。 非交互 CLI 还独立观察 Current 的真实待回答状态，以 `WaitingForInteraction` 结束本次观察并报告 `blockedOnInput`，保留真实待回答观察，已退休的 active Turn 不补造；不能将这项控制结果伪造成历史完成。Turn 分页只由持有资格的 HistoryReader 提供，不保留另开 reader 的独立 `/turns` 快捷接口。
 

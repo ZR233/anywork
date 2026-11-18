@@ -7,6 +7,7 @@ use std::{
 use sea_orm::{DatabaseTransaction, TransactionTrait};
 use sha2::{Digest, Sha256};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tracing::Instrument;
 
 use super::{
     db::{self, Body, Record},
@@ -84,7 +85,10 @@ impl HistoryReader {
                     _ = request_cancel.cancelled() => Err(HistoryError::Closed),
                     _ = owner.inner.cancel.cancelled() => Err(HistoryError::Closed),
                     _ = owner.inner.store.cancel.cancelled() => Err(HistoryError::Closed),
-                    result = make(owner.clone()) => result,
+                    result = make(owner.clone()).instrument(tracing::debug_span!(
+                        target: "conversation_work", "history_read",
+                        thread_id = owner.inner.store.thread_id,
+                    )) => result,
                 };
                 drop(store_task);
                 result
@@ -115,19 +119,26 @@ impl HistoryReader {
     pub async fn capture(&self) -> Result<HistoryCut> {
         self.capture_position().await.map(|(cut, _)| cut)
     }
-    /// Persistence receipts require a committed prefix; accepted RAM events are not a save ACK.
-    pub(crate) async fn capture_committed_position(&self) -> Result<(HistoryCut, u64)> {
-        self.run(move |reader| async move {
-            let tx = reader.inner.store.reader.begin().await?;
-            let head = db::event_head(&tx).await?;
-            let cut = reader.inner.codec.cut(head)?;
-            tx.commit().await?;
-            Ok((cut, head))
-        })
-        .await
-    }
-    /// The opaque read cut and its actual event position from one captured RAM/database snapshot.
+    /// The opaque accepted cut and its event position; this is not a persistence ACK.
+    /// Writable owners capture their RAM head without opening a database transaction.
     pub async fn capture_position(&self) -> Result<(HistoryCut, u64)> {
+        if !self.inner.store.read_only {
+            let state = self
+                .inner
+                .store
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let reader = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if reader.closed || state.closing {
+                return Err(HistoryError::Closed);
+            }
+            return Ok((self.inner.codec.cut(state.head)?, state.head));
+        }
         self.run(move |reader| async move {
             let snapshot = reader.snapshot().await?;
             let cut = reader.inner.codec.cut(snapshot.head)?;
@@ -139,13 +150,7 @@ impl HistoryReader {
     }
     /// The accepted event head, or the current committed head for a cold read-only capability.
     pub async fn head(&self) -> Result<u64> {
-        self.run(move |reader| async move {
-            let snapshot = reader.snapshot().await?;
-            let head = snapshot.head;
-            snapshot.tx.commit().await?;
-            Ok(head)
-        })
-        .await
+        self.capture_position().await.map(|(_, head)| head)
     }
     fn page_cut(
         &self,
@@ -278,7 +283,9 @@ impl HistoryReader {
             entries: Vec::new(),
             next: None,
         };
+        let mut examined = 0usize;
         for (index, (anchor_seq, row_key)) in candidates.into_iter().rev().take(limit).enumerate() {
+            examined += 1;
             let head = latest_head(&snapshot, &row_key, through)
                 .await?
                 .ok_or_else(|| HistoryError::Integrity("anchor has no head at its cut".into()))?;
@@ -330,6 +337,7 @@ impl HistoryReader {
                         "page cannot fit its first row and continuation".into(),
                     ));
                 }
+                observe_page(&query, &page, examined)?;
                 snapshot.tx.commit().await?;
                 return Ok(page);
             }
@@ -357,6 +365,7 @@ impl HistoryReader {
                 "page envelope exceeds budget".into(),
             ));
         }
+        observe_page(&query, &page, examined)?;
         snapshot.tx.commit().await?;
         Ok(page)
     }
@@ -806,12 +815,21 @@ impl HistoryReader {
             let length = (reference.byte_length - offset).min(max_bytes as u64) as usize;
             let start = reference.byte_start + offset;
             let bytes = if let Some((seq, ordinal)) = snapshot.pending.bodies.get(&body.id) {
+                tracing::debug!(target: "conversation_work",
+                    history_body_bytes_read = length, source = "pending",
+                    "history pending body slice copied"
+                );
                 snapshot.pending.events[seq].event.bodies[*ordinal].bytes
                     [start as usize..start as usize + length]
                     .to_vec()
             } else {
                 db::window(&snapshot.tx, &body, start, length).await?
             };
+            tracing::debug!(target: "conversation_work",
+                history_body_returned_bytes = bytes.len(), offset,
+                history_body_from_pending = snapshot.pending.bodies.contains_key(&body.id),
+                "history body range read"
+            );
             snapshot.tx.commit().await?;
             Ok(HistoryBodyWindow {
                 offset,
@@ -998,6 +1016,45 @@ impl HistoryReader {
     }
 }
 
+/// The whole wire envelope counts against the demand, including cut and continuation.
+/// Borrow the actual page so diagnostics never clone bodies or member collections.
+fn observe_page(query: &Query, page: &HistoryTimelinePage, examined: usize) -> Result<()> {
+    if !tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+        return Ok(());
+    }
+    let (bytes, scope) = match query {
+        Query::Group(group_id) => {
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct GroupPage<'a> {
+                cut: &'a HistoryCut,
+                group_id: &'a str,
+                members: &'a [HistoryTimelineEntry],
+                next: &'a Option<String>,
+            }
+            (
+                serde_json::to_vec(&GroupPage {
+                    cut: &page.cut,
+                    group_id,
+                    members: &page.entries,
+                    next: &page.next,
+                })?
+                .len(),
+                "group",
+            )
+        }
+        Query::Main => (serde_json::to_vec(page)?.len(), "main"),
+        _ => (serde_json::to_vec(page)?.len(), "business"),
+    };
+    tracing::debug!(target: "conversation_work",
+        timeline_examined_anchors = examined,
+        timeline_returned_bytes = bytes,
+        timeline_returned_rows = page.entries.len(), scope,
+        "history page read"
+    );
+    Ok(())
+}
+
 fn fits_entries(
     demand: HistoryDemand,
     empty_page: &impl serde::Serialize,
@@ -1046,6 +1103,33 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn live_cut_uses_the_admitted_head_without_database_access() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            "ram-cut",
+            HistoryLimits::default(),
+        )
+        .await?;
+        store
+            .accept_batch(&[HistoryEvent::new("first", HistoryEventKind::RunStarted, 1)])
+            .await?;
+        let reader = store.reader();
+        store.inner.reader.clone().close().await?;
+        let (cut, head) = reader.capture_position().await?;
+        assert_eq!(head, 1);
+        assert_eq!(reader.capture().await?, cut);
+        assert_eq!(reader.head().await?, 1);
+        reader.close().await;
+        assert!(matches!(
+            reader.capture_position().await,
+            Err(HistoryError::Closed)
+        ));
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn committed_pending_root_stays_readable_and_retains_its_capacity_until_query_finishes()
     -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -1064,11 +1148,11 @@ mod tests {
         let snapshot = reader.snapshot().await?;
         store.flush().await?;
         assert!(store.inner.state.lock().unwrap().pending.events.is_empty());
-        assert_eq!(
-            store.status().pending_events,
-            1,
-            "the old immutable root still owns its reservation"
-        );
+        let status = store.status();
+        assert_eq!(status.pending_events, 0, "COMMIT has cleared the save debt");
+        assert_eq!(status.pending_bytes, 0);
+        assert_eq!(status.retained_events, 1, "the old query still owns RAM");
+        assert!(status.retained_bytes > 0);
         assert!(matches!(
             store
                 .accept_batch(&[HistoryEvent::new("second", HistoryEventKind::RunStarted, 2)])
@@ -1080,6 +1164,8 @@ mod tests {
             1
         );
         drop(snapshot);
+        assert_eq!(store.status().retained_events, 0);
+        assert_eq!(store.status().retained_bytes, 0);
         store
             .accept_batch(&[HistoryEvent::new("second", HistoryEventKind::RunStarted, 2)])
             .await?;

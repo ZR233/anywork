@@ -25,7 +25,7 @@ mod sqlite_metadata;
 mod timeline_background_tail;
 mod timeline_items;
 mod timeline_thinking_summary;
-pub(super) mod v24_presentation;
+pub(crate) mod v24_presentation;
 pub(crate) mod v24_presentation_types;
 pub(in crate::studio::storage::history) mod work_snapshots;
 use conversion::{
@@ -391,7 +391,7 @@ pub(super) async fn prepare_with_bot_root(
     Ok(())
 }
 
-pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<(String, i64)> {
+pub(crate) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Result<(String, i64)> {
     prepare(db, thread_id, Preparation::Schema, None).await?;
     // Publish only the actual identity/format verified after the content migrations, never an
     // assumed current version derived from a successful (possibly zero-step) preparation.

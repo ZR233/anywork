@@ -11,9 +11,9 @@ use super::StudioCommandReceipt;
 
 /// 用户无新内容继续主会话。
 ///
-/// `operation_id` 同时就是控制输入的输入身份，在目标会话内唯一；重复发送同一身份按原回执
-/// 回答，不会再次认领继续点。`expected_continuation_id` 与 `expected_model_route_revision`
-/// 是调用方冻结的观察结果，用于拒绝过时点击。
+/// `operation_id` 同时就是控制输入身份。仅当前 owner 保留的输入可识别重复请求；
+/// 不查询历史，不承诺永久幂等或原始回执重放。`expected_continuation_id` 与
+/// `expected_model_route_revision` 是调用方冻结的观察结果，用于拒绝过时点击。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinueThreadRequest {
@@ -71,8 +71,7 @@ pub enum ContinuationOperationState {
 
 /// 一次继续操作的只读回查结果。
 ///
-/// `durable` 说明这条事实是读自已保存的身份索引，而不是驻留内存；`receipt` 按首次受理的事实
-/// 重建，不会因为一次查询而重新授权执行。
+/// 仅观察当前 owner 保留的输入事实；不回读持久化，也不承诺重现已裁剪的旧回执。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContinuationOperationView {
@@ -82,6 +81,5 @@ pub struct ContinuationOperationView {
     pub continuation_id: String,
     pub accepted_sequence: u64,
     pub state: ContinuationOperationState,
-    pub durable: bool,
     pub receipt: StudioCommandReceipt,
 }

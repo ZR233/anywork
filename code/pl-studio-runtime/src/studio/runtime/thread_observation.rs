@@ -459,8 +459,8 @@ struct WorkerState {
     retry: Notify,
     /// The Thread's reliable admission channel, shared with its history writer.
     ///
-    /// A settled observation reads a finished Turn back from history, and its own barrier has to ask
-    /// the writer that took the projection's handoff how far it is durable. The handle is captured
+    /// An explicit synchronization asks the writer that took the projection's handoff how far
+    /// it is durable. Live processing never waits for that barrier. The handle is captured
     /// here, at observation time, so the barrier observes the very incarnation the writer admits
     /// into instead of a channel that a cleanly detached predecessor already released.
     channel: Arc<HistoryChannel>,
@@ -665,7 +665,7 @@ impl ThreadObservations {
         let draining = owner.clone();
         let synchronizing = owner.clone();
         let closing = owner.clone();
-        let messages = owner.clone();
+        let terminal = owner.clone();
         session.observe_assembly(
             move |id, thread, resources| {
                 if let Some(owner) = owner.upgrade() {
@@ -702,52 +702,13 @@ impl ThreadObservations {
                     Ok(())
                 })
             },
-            Some(Arc::new(move |id, message_id| {
-                let owner = messages.clone();
-                Box::pin(async move {
-                    let owner = owner
-                        .upgrade()
-                        .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
-                    let read = async {
-                        let paths = owner.projector.store.registered_session_paths(&id)?;
-                        let current = owner
-                            .projector
-                            .store
-                            .state_for(paths.workspace_id(), &id)?
-                            .load_current()
-                            .await?;
-                        let Some(current) = current else {
-                            return Ok(None);
-                        };
-                        let original = current
-                            .state
-                            .inbox
-                            .iter()
-                            .find(|record| record.message.id == message_id)
-                            .map(|record| (record.sequence, record.message.digest()));
-                        let accepted = original.or_else(|| {
-                            current
-                                .state
-                                .consumed_message_identities
-                                .iter()
-                                .find(|identity| identity.id == message_id)
-                                .map(|identity| (identity.sequence, identity.digest.clone()))
-                        });
-                        Ok::<_, anyhow::Error>(accepted.map(|(sequence, digest)| {
-                            crate::thread_assembler::observation::DurableMessageIdentity::Proven {
-                                sequence,
-                                digest,
-                            }
-                        }))
-                    }
-                    .await;
-                    read.map_err(
-                        |source| crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "read saved Current message identity",
-                            source: source.into_boxed_dyn_error(),
-                        },
-                    )
-                })
+            Some(Arc::new(move |id: &str| {
+                let owner = terminal.upgrade()?;
+                let (position, _) = ThreadObservations(owner).observation_slot(id).capture();
+                let feed = position
+                    .source
+                    .filter(|source| !source.is_delivery_closed())?;
+                feed.last_turn.borrow().clone()
             })),
             move |id, thread, purpose| {
                 if let Some(owner) = closing.upgrade() {
@@ -976,8 +937,8 @@ impl ThreadObservations {
                 await_settled_target(&id, observation.as_ref(), &target_snapshot).await?;
             // A settled observation is also durable. Observation no longer flushes history per batch,
             // so this barrier is what keeps "the observer applied commit N" meaning "history holds
-            // commit N": cold reads (an unloaded child's terminal repair, a restored Turn) read a
-            // Turn's items straight from history after this. The wait is for the handoff ticket the
+            // commit N" for explicit history queries and shutdown verification. The wait is for
+            // the handoff ticket the
             // projection had reached when it applied `target` — every commit up to `target` it owns —
             // so it neither waits on the owner's command queue nor on a later, unprojected commit, and
             // it never asks for a watermark a channel created by a re-activation cannot move.
@@ -1335,10 +1296,10 @@ impl LiveOwner {
                     );
                     Box::pin(async move {
                         let mut projection = LiveProjection::new();
-                        projection.bind_execution_history(
+                        projection.bind_execution(
                             channel.order_index(),
                             runtime_epoch,
-                            history,
+                            history.database_id().to_owned(),
                         )?;
                         // Current starts a new runtime epoch; it must not replay R1 history into
                         // R2's live publication rights. Late facts query HistoryReader by owner.
@@ -1476,56 +1437,15 @@ impl LiveOwner {
     /// The batch is published before it is handed over, so the writer can only ever confirm a body
     /// the shared window already holds: there is no save-before-publish interleaving to lose.
     ///
-    /// A reliable-output repair can name an identity the bounded window already released. This owner is
-    /// still the single fact source for the canonical item and its content version, so it reads that
-    /// already-committed body back once here and folds it in before projecting; the ordinary path reads
-    /// nothing, and the writer never invents a version or re-projects a written effect.
+    /// The producer cut and retained RAM material supply every projection fact. No History lookup
+    /// supplements a released body, and the writer never re-projects an execution effect.
     async fn advance(
         &mut self,
         services: &ObservationServices,
-        thread_id: &str,
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
-        self.seed_durable_targets(services, thread_id, write)
-            .await?;
         self.project_write(services, write, snapshot).await
-    }
-
-    /// Reads the identities one effect needs but this projection holds no canonical body for.
-    ///
-    /// Two effects reference an already-committed body the bounded window may have released: a
-    /// reliable-output repair names a committed result, and a user-input interaction names the call
-    /// that raised it — a call whose Turn is already finished, so after a restart the projection never
-    /// saw it at all. Both are read back **by identity only** and handed to the projection as facts,
-    /// so the projection still consumes facts and never performs IO. The ordinary path reads nothing,
-    /// and a missing or invalid durable body fails here instead of being skipped.
-    async fn seed_durable_targets(
-        &mut self,
-        services: &ObservationServices,
-        thread_id: &str,
-        write: &HistoryExport,
-    ) -> Result<()> {
-        if write.effect.delivery_repairs.is_empty() && write.effect.interactions.is_empty() {
-            return Ok(());
-        }
-        let history = services.store.history(thread_id).await?;
-        crate::studio::thread_projection::seed_repaired_targets(
-            &mut self.retained.projection,
-            &history,
-            &write.effect,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("live Thread repair seed failed: {error}"))?;
-        crate::studio::thread_projection::seed_interaction_targets(
-            &mut self.retained.projection,
-            thread_id,
-            &history,
-            &write.effect,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("live Thread user-input seed failed: {error}"))?;
-        Ok(())
     }
 
     /// Folds one admitted write into the shared session and the reliable save channel.
@@ -1610,7 +1530,7 @@ impl LiveOwner {
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         // 原批次先保留，全部可失败准备先完成；发布与可靠交接只推进同一冻结批次。
         self.publish_retained()?;
-        self.prepare_parent_report(services).await?;
+        self.prepare_parent_report()?;
         self.prepare_terminal_delivery(services)?;
         self.prepare_handoff(services, snapshot)?;
         if let Some(binding) = &self.binding {
@@ -1683,7 +1603,10 @@ impl LiveOwner {
                 &pending.write.state,
             )?,
         );
-        let bytes = self.channel.terminal_material_bytes(&authority, &original);
+        let finish = pending.prepared.parent_finish.clone();
+        let bytes = self
+            .channel
+            .terminal_material_bytes(&authority, &original, finish.as_deref());
         let source = before
             .pending
             .context("terminal batch has no charged identity")?;
@@ -1717,7 +1640,8 @@ impl LiveOwner {
                 thread: self.thread.clone(),
                 sequence,
                 authority,
-                original: Some(original),
+                original,
+                finish,
                 source: if self.first_send && sequence > self.terminal_floor {
                     ReviewDeliverySource::LiveTerminal
                 } else {
@@ -1835,7 +1759,6 @@ impl LiveOwner {
                         .revocation
                         .fetch_max(sequence, std::sync::atomic::Ordering::AcqRel);
                     terminal.source = ReviewDeliverySource::Reconciliation;
-                    terminal.original = None;
                     terminal.wake = false;
                 }
                 None
@@ -1868,7 +1791,7 @@ impl LiveOwner {
     /// and prepared content, a local clone carries the waits, and only a fully successful build is
     /// written back. A failure or a cancelled wait leaves the slot exactly as it was, so the next
     /// pass reuses the same batch instead of rebuilding the report from a later checkpoint.
-    async fn prepare_parent_report(&mut self, services: &ObservationServices) -> Result<()> {
+    fn prepare_parent_report(&mut self) -> Result<()> {
         let (write, prepared) = match self.retained.pending.as_ref() {
             Some(pending) => (Arc::clone(&pending.write), Arc::clone(&pending.prepared)),
             None => return Ok(()),
@@ -1885,51 +1808,12 @@ impl LiveOwner {
             return Ok(());
         }
         let turn = turn.clone();
-        let mut result = if let Some(result) = self.retained.projection.turn_result(&turn.turn_id) {
-            result.clone()
-        } else {
-            // The durable fence is the ticket of batches this owner already handed over — never
-            // the commit this slot still holds, which would wait for itself.
-            await_history_durable(
-                &self.channel,
-                &self.thread.id,
-                self.channel.handoff_ticket(),
-            )
-            .await?;
-            let mut result = turn_result(services, self, &turn.turn_id).await?;
-            for change in prepared.history_changes.iter().filter(|change| {
-                change.event.header.original.is_some()
-                    && change.event.header.turn_id.as_deref() == Some(turn.turn_id.as_str())
-            }) {
-                if matches!(
-                    change.entity.kind,
-                    crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
-                ) {
-                    let item = crate::studio::runtime::chat_item::frozen_execution_item(
-                        &change.event,
-                        &self.thread.id,
-                    )?;
-                    result.observe(&item);
-                    if let Some(finish) =
-                        crate::studio::thread_projection::committed_finish_execution(&item)?
-                    {
-                        result.finish = Some(finish);
-                    }
-                } else {
-                    result.observe_identity(&change.entity.entity_id);
-                }
-            }
-            result
-        };
-        if result.finish.is_none() {
-            await_history_durable(
-                &self.channel,
-                &self.thread.id,
-                self.channel.handoff_ticket(),
-            )
-            .await?;
-            restore_finish(services, &self.thread.id, &turn.turn_id, &mut result).await?;
-        }
+        let result = self
+            .retained
+            .projection
+            .turn_result(&turn.turn_id)
+            .cloned()
+            .unwrap_or_default();
         // The report is built from read-only local clones while the slot keeps the only prepared
         // batch; only once the complete message exists are the clones dropped, so the write-back
         // below takes the slot's single strong reference and never copies the whole batch.
@@ -1950,6 +1834,7 @@ impl LiveOwner {
             match Arc::get_mut(&mut pending.prepared) {
                 Some(batch) => {
                     batch.parent_report = Some(Arc::new(report));
+                    batch.parent_finish = result.finish.map(Arc::new);
                     None
                 }
                 // Before the handoff only this owner holds the batch; a second strong reference
@@ -1978,12 +1863,9 @@ impl LiveOwner {
     async fn prepare_behind(
         &mut self,
         services: &ObservationServices,
-        thread_id: &str,
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
-        self.seed_durable_targets(services, thread_id, write)
-            .await?;
         let projected = self
             .retained
             .projection
@@ -2517,40 +2399,6 @@ struct ProjectionWorker {
     continuous: bool,
 }
 
-async fn restore_finish(
-    services: &ObservationServices,
-    id: &str,
-    turn: &str,
-    result: &mut crate::studio::thread_projection::TurnResult,
-) -> Result<()> {
-    if result.finish.is_some() {
-        return Ok(());
-    }
-    let Some(_) = result
-        .last_tool()
-        .filter(|tool| tool.invocation().name() == pl_tool::finish_turn::TOOL_FINISH_TURN)
-    else {
-        return Ok(());
-    };
-    let reader = services.store.open_history_reader(id).await?;
-    let Some(event) = reader
-        .review_finish_call(
-            turn.to_owned(),
-            None,
-            crate::history::HistoryDemand {
-                max_rows: 1,
-                max_bytes: 64 * 1024,
-            },
-        )
-        .await?
-    else {
-        return Ok(());
-    };
-    let item = crate::studio::runtime::chat_item::read_execution_item(&reader, event, id).await?;
-    result.finish = crate::studio::thread_projection::committed_finish_execution(&item)?;
-    Ok(())
-}
-
 async fn transfer_terminal(services: &ObservationServices, state: &WorkerState) -> Result<()> {
     let pending = state
         .terminal_transfer
@@ -2584,81 +2432,6 @@ async fn transfer_terminal(services: &ObservationServices, state: &WorkerState) 
         *slot = None;
     }
     Ok(())
-}
-
-/// The report facts of one finished Turn: the live projection's bounded accumulator when it folded
-/// the Turn, otherwise the durable single-Turn slice.
-///
-/// The hot path takes the accumulator, which the projection maintained from the Turn's first
-/// record, so a Turn that committed its visible output over many effects reports all of it without a
-/// second copy of every body and without a history read. A Turn the resident projection never saw
-/// from its start — a Thread re-activated once its Turn had already run, or a recovered child — has
-/// no accumulator, and only then does this wait for the matching durable handoff and read the
-/// bounded single-Turn slice from history. That is the cold recovery path, never a routine commit.
-async fn turn_result(
-    services: &ObservationServices,
-    live: &LiveOwner,
-    turn_id: &str,
-) -> Result<crate::studio::thread_projection::TurnResult> {
-    if let Some(result) = live.retained.projection.turn_result(turn_id) {
-        return Ok(result.clone());
-    }
-    await_history_durable(
-        &live.channel,
-        &live.thread.id,
-        live.channel.handoff_ticket(),
-    )
-    .await?;
-    let history = services.store.history(&live.thread.id).await?;
-    let reader = history.reader();
-    let mut cursor = None;
-    let mut result = crate::studio::thread_projection::TurnResult::default();
-    loop {
-        let page = reader
-            .events_page(
-                crate::history::HistoryEventsQuery::Turn {
-                    turn_id: turn_id.to_owned(),
-                },
-                None,
-                cursor,
-                crate::history::HistoryDemand {
-                    max_rows: 512,
-                    max_bytes: 1024 * 1024,
-                },
-            )
-            .await?;
-        for detail in page.entries {
-            let Some(original) = detail.header.original.as_ref() else {
-                continue;
-            };
-            if !matches!(
-                original.original_kind,
-                crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
-            ) {
-                if let Some(entity) = detail.header.entity_id {
-                    result.observe_identity(&entity);
-                }
-                continue;
-            }
-            let item = crate::studio::runtime::chat_item::read_execution_item(
-                &reader,
-                detail,
-                &live.thread.id,
-            )
-            .await?;
-            result.observe(&item);
-            if let Some(finish) =
-                crate::studio::thread_projection::committed_finish_execution(&item)?
-            {
-                result.finish = Some(finish);
-            }
-        }
-        let Some(next) = page.next else {
-            break;
-        };
-        cursor = Some(next);
-    }
-    Ok(result)
 }
 
 /// Waits until the history writer's durable watermark covers the handoff ticket `sequence`.
@@ -2735,19 +2508,15 @@ async fn await_settled_target(
 
 /// The Thread's product association, from the resident directory entry or from durable storage.
 ///
-/// An archived hot entry may disappear before its original registration reaches SQLite, so the cold
-/// branch drains the accepted directory writes first. The target is fixed at admission time and later
-/// unrelated writes do not extend the wait. Only the first install and a product refresh resolve this
-/// DTO: a streaming preview belongs to the owner already installed and never reads the directory.
+/// Private assembly may not yet have published a directory view; its association is already in the
+/// RAM catalog. Neither branch reads persisted rows or waits for directory writes.
 async fn product_association(services: &ObservationServices, id: &str) -> Result<crate::Thread> {
     if let Some(thread) = services.events.thread_snapshot(id)? {
         return Ok(thread);
     }
-    let target = services.writer.admitted_ticket();
-    services.writer.flush_through(target).await?;
     let association = services
         .store
-        .read_thread_association(id)
+        .read_thread(id)
         .await?
         .context("observed Thread has no product association")?;
     Ok(crate::Thread::from(association))
@@ -2877,13 +2646,11 @@ impl ProjectionWorker {
             if sequence <= recovered_through {
                 // A fact the owner committed before this projection existed: it is already part of
                 // the snapshot the projection was seeded from, so it is folded for durability only.
-                live.prepare_behind(services, id.as_str(), &write, snapshot)
-                    .await?;
+                live.prepare_behind(services, &write, snapshot).await?;
                 transfer_terminal(services, state).await?;
                 continue;
             }
-            live.advance(services, id.as_str(), &write, snapshot)
-                .await?;
+            live.advance(services, &write, snapshot).await?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
             transfer_terminal(services, state).await?;
         }
@@ -2901,15 +2668,17 @@ impl ProjectionWorker {
         product.status = crate::studio::thread_projection::status(snapshot);
         product.updated_at = product.updated_at.max(newest_commit_at);
         // The directory summary is derived from the same reliable owner as the terminal report: the
-        // in-memory projection on the hot path, and durable history only for a Turn it never saw.
+        // in-memory projection; unobserved old Turns do not trigger a History read.
         let summary = match snapshot
             .turns
             .last()
             .filter(|turn| turn.state != pl_core::thread::TurnState::Running)
         {
-            Some(turn) => turn_result(services, live, &turn.turn_id)
-                .await?
-                .final_text(),
+            Some(turn) => live
+                .retained
+                .projection
+                .turn_result(&turn.turn_id)
+                .and_then(|result| result.final_text()),
             None => None,
         };
         directory::publish(

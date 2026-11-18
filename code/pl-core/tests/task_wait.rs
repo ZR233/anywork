@@ -565,6 +565,87 @@ async fn empty_selection_ignores_progress_until_a_message_arrives() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn delivery_markers_commit_and_clear_while_a_tool_waits_for_the_message() {
+    use pl_core::thread::extensions::ExtensionMutation;
+
+    let harness = Harness::start("delivery-marker-during-wait").await;
+    let (access, release, runner) = harness.retain_access("wait", true).await;
+    let waiting = access.wait(&[], Duration::from_secs(300), CancellationToken::new());
+    tokio::pin!(waiting);
+    assert_pending(&mut waiting).await;
+
+    // A host must save this marker before admitting its terminal report. The waiting tool
+    // cannot finish until that admission; routing the marker through the idle queue deadlocks.
+    let marker = tokio::time::timeout(
+        Duration::from_millis(100),
+        harness
+            .thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "delivery:child-report".into(),
+                expected_revision: None,
+                payload: OpaquePayload::text("pending"),
+            }]),
+    )
+    .await;
+    if marker.is_err() {
+        finish(release, runner).await;
+        harness.thread.close().await.unwrap();
+        panic!("delivery marker waited for the tool that needs its message");
+    }
+    let marker = marker.unwrap().unwrap()["delivery:child-report"].clone();
+    assert_pending(&mut waiting).await;
+    assert!(matches!(
+        harness
+            .thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: "delivery:child-report".into(),
+                expected_revision: None,
+                payload: OpaquePayload::text("conflicting"),
+            }])
+            .await,
+        Err(ThreadError::ExtensionConflict { .. })
+    ));
+    assert_eq!(
+        harness.thread.snapshot().extensions["delivery:child-report"],
+        marker
+    );
+    harness
+        .thread
+        .send_message_with_extensions(
+            report("terminal-child-report"),
+            vec![ExtensionMutation::Put {
+                id: "delivery:child-report".into(),
+                expected_revision: Some(marker.revision),
+                payload: OpaquePayload::text("accepted"),
+            }],
+        )
+        .await
+        .unwrap();
+    let observed = waiting.await.unwrap();
+    assert!(observed.messages_ready && !observed.timed_out);
+    let accepted = harness.thread.snapshot().extensions["delivery:child-report"].clone();
+    // Cleanup also runs before the enclosing tool/Turn ends.
+    harness
+        .thread
+        .mutate_extensions(vec![ExtensionMutation::Delete {
+            id: "delivery:child-report".into(),
+            expected_revision: accepted.revision,
+        }])
+        .await
+        .unwrap();
+    assert!(
+        !harness
+            .thread
+            .snapshot()
+            .extensions
+            .contains_key("delivery:child-report")
+    );
+    assert_eq!(harness.thread.snapshot().inbox.len(), 1);
+    finish(release, runner).await;
+    harness.thread.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn cancellation_receipt_precedes_cleanup_and_wait_observes_the_same_task_exit() {
     let harness = Harness::start("cancel-then-join").await;
     let cancelled = Arc::new(Notify::new());

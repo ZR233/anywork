@@ -209,13 +209,6 @@ impl StudioStore {
             })
             .transpose()
     }
-
-    pub(in crate::studio) async fn read_thread_association(
-        &self,
-        thread_id: &str,
-    ) -> Result<Option<ThreadRecord>> {
-        self.read_thread(thread_id).await
-    }
 }
 
 fn root_thread_record(

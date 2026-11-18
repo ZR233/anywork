@@ -692,10 +692,9 @@ impl StudioRuntime {
         self.ensure_interaction_target_from_bot(source, &args.session_id, &args.interaction_id)
             .await?;
         let current = self
-            .read_interaction_for_resolve(&args.interaction_id)
-            .await?
+            .current_interaction(&args.interaction_id)?
             .with_context(|| format!("interaction `{}` not found", args.interaction_id))?;
-        let resolution = build_resolution(&current.interaction)?;
+        let resolution = build_resolution(&current)?;
         ensure!(
             !context.cancellation.is_cancelled(),
             "session tool cancelled before resolution"
@@ -709,13 +708,13 @@ impl StudioRuntime {
         let operation_id = format!("bot-resolve:{}", crate::canonical_content_hash(&identity));
         // 决议经该交互所属成员的主会话宿主提交；原交互身份与版本不变。
         let host_thread_id = self
-            .interaction_host_thread(&current.interaction.scope.thread_id)
+            .interaction_host_thread(&current.scope.thread_id)
             .await?;
         let response = self
             .resolve_interaction(
                 operation_id,
                 host_thread_id,
-                current.interaction.revision,
+                current.revision,
                 args.interaction_id.clone(),
                 resolution,
             )

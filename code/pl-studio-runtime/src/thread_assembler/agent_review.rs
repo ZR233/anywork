@@ -1,7 +1,6 @@
 //! Frozen review relationships and restricted host feedback; ordinary send permissions are unchanged.
+use super::SessionRuntime;
 pub(crate) use super::agent_evaluation::validate_idle;
-use super::{SessionRuntime, observation::DurableMessageIdentity};
-use crate::studio::agent_close::terminal_report_id;
 use crate::{
     AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
     AgentWorkspaceAssignmentSnapshot,
@@ -11,7 +10,7 @@ use pl_core::{
     context::OpaquePayload,
     thread::{
         ThreadSnapshot,
-        inbox::{MessageIdentity, ThreadMessage, message_receipt},
+        inbox::{ThreadMessage, message_receipt},
     },
 };
 
@@ -275,163 +274,28 @@ fn exact_receipt_disposition(
     }
 }
 
-async fn saved_review_feedback_receipt(
-    services: &super::agent_services::AgentServices,
-    target: &pl_core::thread::ThreadHandle,
-    target_id: &str,
-    receipt_extension_id: &str,
-    message: &ThreadMessage,
-) -> Result<Option<MessageIdentity>, super::ThreadAssemblyError> {
-    let record = services.record(target_id).await.map_err(|source| {
-        super::ThreadAssemblyError::Resource {
-            operation: "read accepted review feedback recipient",
-            source: source.into(),
-        }
-    })?;
-    let current =
-        crate::studio::thread_factory::recovery::load_current_read_only(&services.store, &record)
-            .await
-            .map_err(|source| super::ThreadAssemblyError::Resource {
-                operation: "load accepted review feedback Current",
-                source: source.into(),
-            })?;
-    let Some(current) = current else {
-        return Ok(None);
-    };
-    if current.thread_id != target_id {
-        return Err(super::ThreadAssemblyError::Identity(target_id.into()));
-    }
-    if current.saved_runtime_epoch != target.runtime_epoch() {
-        return Err(super::ThreadAssemblyError::Resource {
-            operation: "verify accepted review feedback owner epoch",
-            source: Box::new(std::io::Error::other(
-                "saved review feedback receipt belongs to a different runtime epoch",
-            )),
-        });
-    }
-    message_receipt(
-        &current.state.to_paused_snapshot(),
-        receipt_extension_id,
-        message,
-    )
-    .map_err(super::ThreadAssemblyError::from)
-}
-
 impl SessionRuntime {
-    async fn adjudicate_review_message(
+    fn adjudicate_review_message(
         &self,
         target: &str,
         message: &ThreadMessage,
         receipt_extension_id: &str,
     ) -> Result<super::observation::DeliveryDisposition, super::ThreadAssemblyError> {
         use super::observation::DeliveryDisposition;
-        if let Some(thread) = self.thread(target) {
-            match exact_receipt_disposition(&thread.snapshot(), receipt_extension_id, message)? {
-                DeliveryDisposition::New => {}
-                DeliveryDisposition::Receipt(sequence) => {
-                    let services = self
-                        .0
-                        .state()
-                        .agent_services
-                        .clone()
-                        .ok_or(super::ThreadAssemblyError::Closed)?;
-                    services
-                        .store
-                        .conversation_store(target)
-                        .await
-                        .map_err(|source| super::ThreadAssemblyError::Resource {
-                            operation: "open review feedback receipt Current",
-                            source: source.into(),
-                        })?
-                        .flush_current(thread.runtime_epoch())
-                        .await
-                        .map_err(|source| super::ThreadAssemblyError::Resource {
-                            operation: "flush review feedback receipt Current",
-                            source: source.into(),
-                        })?;
-                    let saved = saved_review_feedback_receipt(
-                        &services,
-                        &thread,
-                        target,
-                        receipt_extension_id,
-                        message,
-                    )
-                    .await?
-                    .ok_or_else(|| super::ThreadAssemblyError::Resource {
-                        operation: "verify resident review feedback receipt",
-                        source: Box::new(std::io::Error::other(
-                            "resident review feedback receipt is absent from saved Current",
-                        )),
-                    })?;
-                    if saved.sequence == sequence {
-                        return Ok(DeliveryDisposition::Receipt(sequence));
-                    }
-                    return Ok(DeliveryDisposition::Conflict);
-                }
-                disposition => return Ok(disposition),
-            }
+        let Some(thread) = self.observed_thread(target) else {
+            return Ok(DeliveryDisposition::New);
+        };
+        let snapshot = thread.snapshot();
+        match exact_receipt_disposition(&snapshot, receipt_extension_id, message)? {
+            DeliveryDisposition::New => {}
+            known => return Ok(known),
         }
-        let services = self
-            .0
-            .state()
-            .agent_services
-            .clone()
-            .ok_or(super::ThreadAssemblyError::Closed)?;
-        let record = services.record(target).await.map_err(|source| {
-            super::ThreadAssemblyError::Resource {
-                operation: "read review feedback receipt Current",
-                source: source.into(),
-            }
-        })?;
-        if let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
-            &services.store,
-            &record,
-        )
-        .await
-        .map_err(|source| super::ThreadAssemblyError::Resource {
-            operation: "load review feedback receipt Current",
-            source: source.into(),
-        })? {
-            match exact_receipt_disposition(
-                &current.state.to_paused_snapshot(),
-                receipt_extension_id,
-                message,
-            )? {
-                DeliveryDisposition::New => {}
-                disposition => return Ok(disposition),
-            }
-        }
-        let disposition = self.adjudicate_message(target, message).await?;
-        if disposition != DeliveryDisposition::New {
-            return Ok(match disposition {
-                DeliveryDisposition::Receipt(_) => DeliveryDisposition::New,
-                disposition => disposition,
-            });
-        }
-        if let Some(thread) = self.thread(target) {
-            let snapshot = thread.snapshot();
-            let resident = snapshot
-                .inbox
-                .iter()
-                .find(|record| record.message.id == message.id)
-                .map(|record| record.message.digest())
-                .or_else(|| {
-                    snapshot
-                        .consumed_message_identities
-                        .iter()
-                        .find(|record| record.id == message.id)
-                        .map(|record| record.digest.clone())
-                });
-            if let Some(digest) = resident {
-                return Ok(if digest == message.digest() {
-                    DeliveryDisposition::New
-                } else {
-                    DeliveryDisposition::Conflict
-                });
-            }
-        }
-        Ok(DeliveryDisposition::New)
+        Ok(match self.adjudicate_message(target, message) {
+            DeliveryDisposition::Receipt(_) => DeliveryDisposition::New,
+            other => other,
+        })
     }
+
     /// Restricted host send. The only recipient and parent come from the frozen review relationship.
     pub(crate) async fn forward_review(
         &self,
@@ -468,10 +332,7 @@ impl SessionRuntime {
             request.body,
         );
         // Receipt adjudication precedes idle/version/availability checks, including cold activation.
-        match self
-            .adjudicate_review_message(target_id, &delivery, &receipt_extension_id)
-            .await
-        {
+        match self.adjudicate_review_message(target_id, &delivery, &receipt_extension_id) {
             Ok(DeliveryDisposition::Receipt(sequence)) => {
                 return ReviewForward::Accepted {
                     message_id: id,
@@ -539,75 +400,10 @@ impl SessionRuntime {
                 )));
             }
         };
-        let mut operation = self.agent_operation(target_id).await;
-        if self.thread(target_id).is_none() {
-            match self
-                .adjudicate_review_message(target_id, &delivery, &receipt_extension_id)
-                .await
-            {
-                Ok(DeliveryDisposition::Receipt(sequence)) => {
-                    return ReviewForward::Accepted {
-                        message_id: id,
-                        sequence,
-                    };
-                }
-                Ok(DeliveryDisposition::Conflict) => {
-                    return reject(ReviewForwardReason::IdentityConflict);
-                }
-                Err(error) => {
-                    return unknown(ReviewForwardReason::StorageUnavailable(Arc::new(error)));
-                }
-                Ok(DeliveryDisposition::New) => {}
-            }
-            let (snapshot, turn) = match self.review_target_state(target_id).await {
-                Ok(state) => state,
-                Err(error) => {
-                    return reject(ReviewForwardReason::AdmissionRejected(Arc::new(
-                        super::ThreadAssemblyError::Resource {
-                            operation: "read frozen cold target",
-                            source: error.into(),
-                        },
-                    )));
-                }
-            };
-            if !turn.as_ref().is_some_and(|turn| {
-                turn.state.is_terminal() && same_delivery(&baseline(&snapshot, turn), expected)
-            }) {
-                return reject(ReviewForwardReason::TargetChanged);
-            }
-            let workspace = match crate::studio::workspace_receipt::from_snapshot(&snapshot) {
-                Ok(Some(workspace)) if same_workspace(&workspace, request.assignment) => workspace,
-                _ => return reject(ReviewForwardReason::TargetChanged),
-            };
-            let proof = match services
-                .factory
-                .verify_local_review_resume(target_id, &workspace)
-                .await
-            {
-                Ok(proof) => proof,
-                Err(error) => {
-                    return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(error)));
-                }
-            };
-            // The existing activation worker consumes this very permit; it must not acquire it
-            // again while its caller waits. Only verified local resources can enter this branch.
-            if let Err(error) = services
-                .activate_verified_review_child(self, &parent, target_id, proof, operation)
-                .await
-            {
-                return reject(ReviewForwardReason::WorkspaceCheckRejected(Arc::new(
-                    crate::studio::thread_factory::ReviewWorkspaceError::Assembly(error),
-                )));
-            }
-            operation = self.agent_operation(target_id).await;
-        }
-        let _operation = operation;
+        let _operation = self.agent_operation(target_id).await;
         // Another incarnation's notification may have won while this sender waited for the gate.
         // Its original receipt wins before a busy/changed target can reject a replay.
-        match self
-            .adjudicate_review_message(target_id, &delivery, &receipt_extension_id)
-            .await
-        {
+        match self.adjudicate_review_message(target_id, &delivery, &receipt_extension_id) {
             Ok(DeliveryDisposition::Receipt(sequence)) => {
                 return ReviewForward::Accepted {
                     message_id: id,
@@ -710,7 +506,6 @@ impl SessionRuntime {
         }) {
             return unknown(ReviewForwardReason::RecoveryRequiresScheduling);
         }
-        let receipt_message = delivery.clone();
         match target
             .send_message_and_continue_with_receipt(delivery, options, receipt_extension_id.clone())
             .await
@@ -736,50 +531,9 @@ impl SessionRuntime {
                         )),
                     };
                 }
-                match saved_review_feedback_receipt(
-                    &services,
-                    &target,
-                    target_id,
-                    &receipt_extension_id,
-                    &receipt_message,
-                )
-                .await
-                {
-                    Ok(Some(receipt))
-                        if receipt.id == id
-                            && receipt.digest == receipt_message.digest()
-                            && receipt.sequence == sequence =>
-                    {
-                        ReviewForward::Accepted {
-                            message_id: id,
-                            sequence,
-                        }
-                    }
-                    Ok(Some(_)) => ReviewForward::Unconfirmed {
-                        message_id: id,
-                        reason: ReviewForwardReason::IdentityConflict,
-                    },
-                    Ok(None) => ReviewForward::Unconfirmed {
-                        message_id: id,
-                        reason: ReviewForwardReason::StorageUnavailable(Arc::new(
-                            super::ThreadAssemblyError::Resource {
-                                operation: "verify accepted review feedback in Current",
-                                source: Box::new(std::io::Error::other(
-                                    "accepted review feedback is absent from saved Current",
-                                )),
-                            },
-                        )),
-                    },
-                    Err(super::ThreadAssemblyError::Thread(
-                        pl_core::thread::ThreadError::InvalidIdentity,
-                    )) => ReviewForward::Unconfirmed {
-                        message_id: id,
-                        reason: ReviewForwardReason::IdentityConflict,
-                    },
-                    Err(error) => ReviewForward::Unconfirmed {
-                        message_id: id,
-                        reason: ReviewForwardReason::StorageUnavailable(Arc::new(error)),
-                    },
+                ReviewForward::Accepted {
+                    message_id: id,
+                    sequence,
                 }
             }
             Err(error) => ReviewForward::Unconfirmed {
@@ -820,14 +574,6 @@ impl SessionRuntime {
             turn.state.is_terminal(),
             "review target latest Turn is not terminal"
         );
-        let report_id = terminal_report_id(target, turn.revision);
-        ensure!(
-            matches!(
-                self.durable_message_identity(parent, &report_id).await?,
-                Some(DurableMessageIdentity::Proven { .. })
-            ),
-            "review target latest terminal report has not been durably delivered to its parent"
-        );
         let frozen_baseline = baseline(&snapshot, &turn);
         let workspace = crate::studio::workspace_receipt::from_snapshot(&snapshot)?
             .context("review target has no frozen workspace receipt")?;
@@ -861,60 +607,19 @@ impl SessionRuntime {
         &self,
         target: &str,
     ) -> Result<(ThreadSnapshot, Option<crate::Turn>)> {
-        let services = self
-            .0
-            .state()
-            .agent_services
-            .clone()
-            .context("review services unavailable")?;
-        let paths = services.store.registered_session_paths(target)?;
-        let history = crate::history::HistoryStore::open_reader(
-            paths.history_database(),
-            target,
-            crate::history::HistoryLimits::default(),
-        )
-        .await?;
-        services
-            .store
-            .ensure_agent_execution_allowed(target)
-            .await?;
-        services
-            .recovery
-            .ensure_thread_read_access(&services.record(target).await?)?;
-        let (snapshot, turn) = if let Some(thread) = self.thread(target) {
-            self.ensure_agent_admission_open(target)?;
-            let before = thread.snapshot();
-            validate_idle(&before)?;
-            thread.flush().await?;
-            let after = thread.snapshot();
-            ensure!(
-                after.commit_sequence == before.commit_sequence,
-                "review target changed during history barrier"
-            );
-            let turn = super::observation::latest_terminal_turn(&history).await?;
-            let current = thread.snapshot();
-            ensure!(
-                current.commit_sequence == after.commit_sequence,
-                "review target changed during history read"
-            );
-            (current, turn)
-        } else {
-            let record = services.record(target).await?;
-            let protocol: crate::Thread = record;
-            let current = crate::studio::thread_factory::recovery::load_current_read_only(
-                &services.store,
-                &protocol,
-            )
-            .await?
-            .context("review target complete current is missing")?;
-            let turn = super::observation::latest_terminal_turn(&history).await?;
-            (current.state.to_paused_snapshot(), turn)
-        };
+        self.ensure_agent_admission_open(target)?;
+        let thread = self
+            .thread(target)
+            .context("review target has no current owner")?;
+        let snapshot = thread.snapshot();
         validate_idle(&snapshot)?;
         ensure!(
             !crate::studio::agent_close::is_explicitly_closed(&snapshot)?,
             "review target is explicitly closed"
         );
+        let turn = self
+            .current_terminal_turn(target)
+            .map(|turn| (*turn).clone());
         Ok((snapshot, turn))
     }
 

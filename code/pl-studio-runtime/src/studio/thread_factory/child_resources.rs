@@ -98,7 +98,16 @@ impl StudioThreadFactory {
         } else {
             None
         };
-        self.check_bot_spawn_workspace(request, mode, &root_thread)
+        let bot = self
+            .services
+            .bots
+            .config_for_thread(&root_thread.agent.thread_id)
+            .await
+            .map_err(|error| resource_error("read current bot owner", error))?;
+        let managed_root = bot
+            .as_ref()
+            .map(|bot| self.services.bots.workspace_root(bot));
+        self.check_bot_spawn_workspace(request, mode, &root_thread, managed_root.as_deref())
             .await?;
         let workspace_usage = self
             .reserve_thread_workspace_use(&request.id, &parent.root_thread_id, &project)
@@ -270,7 +279,6 @@ impl StudioChildResources for StudioThreadFactory {
         );
         let mut prepared_tools = self
             .prepare_thread_tools(super::thread_tools::ThreadToolAssembly {
-                verified_local: None,
                 assignment: Some(&assignment),
                 workspace_usage: workspace_usage.clone(),
                 thread_id: &request.id,

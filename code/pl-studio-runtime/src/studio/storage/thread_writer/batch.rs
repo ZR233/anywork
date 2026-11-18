@@ -536,13 +536,6 @@ async fn prepare_basic_events(
     if append_run {
         events.push(run_candidate);
     }
-    events.extend(crate::history::input_events(
-        &prepared.history_inputs,
-        run,
-        prepared.sequence,
-        recorded_at,
-    )?);
-
     // Resolve every anchor predicate before allocating body IDs. Cancellation can then occur only
     // before this stage's immutable producer bytes exist; once they exist they are retained below.
     let mut local_anchors = BTreeSet::new();

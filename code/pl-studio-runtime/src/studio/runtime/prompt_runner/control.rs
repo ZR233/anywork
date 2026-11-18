@@ -178,55 +178,30 @@ impl StudioRuntime {
         })
     }
 
-    /// Continues the main session without new user content.
-    ///
-    /// The operation identity is the control input's own identity, so a repeat answers with the
-    /// original receipt instead of claiming the point twice, and a repeat never clears a stop the
-    /// user issued afterwards. The control input carries no user text: the work that is owed stays
-    /// the same session, the old Turn keeps its history and a new Turn starts from saved context.
-    ///
-    /// # Errors
-    /// Rejects a child target, an archived Thread, a stale continuation or route revision, a pending
-    /// interaction, storage pressure and a Thread that owes no work.
+    /// Accepts continuation from the current owner without a persistence acknowledgement.
     pub async fn continue_thread(
         &self,
         thread_id: String,
         request: ContinueThreadRequest,
     ) -> Result<ContinueThreadResponse> {
         Self::validate_operation_id(&request.operation_id)?;
-        let lifecycle_guard = self.lifecycle_lock.lock().await;
-        let thread_record = self.read_owned_thread(&thread_id).await?;
-        // A child target is refused from the trusted association before any owner is activated.
-        ensure_user_root_target(&thread_record, UserThreadAction::Continue)?;
-        // What this caller froze: the operation identity plus the two facts that must match a repeat.
-        let identity = ContinuationIdentity {
-            operation_id: &request.operation_id,
-            expected_continuation_id: Some(&request.expected_continuation_id),
-            expected_model_route_revision: Some(request.expected_model_route_revision),
-        };
-        // A repeat answers the original admission before any new validation: it is not new work, so
-        // a later stop, a later route change or a claimed point cannot turn it into a conflict.
-        // This site holds the lifecycle lock, so an admission that is resident but not yet durable
-        // answers the retryable Busy instead of waiting while it would block other lifecycle work.
-        if let Some(view) = self.replayable_continuation(&thread_id, &identity).await? {
-            return Ok(ContinueThreadResponse {
-                thread_id,
-                input_id: view.input_id,
-                continuation_id: view.continuation_id,
-                cursor: view.accepted_sequence,
-                receipt: view.receipt,
-            });
-        }
-        let (_, thread, agent_operation) = self
+        let _lifecycle = self.lifecycle_lock.lock().await;
+        let record = self.read_owned_thread(&thread_id).await?;
+        ensure_user_root_target(&record, UserThreadAction::Continue)?;
+        let (_, thread, _operation) = self
             .prepare_prompt_admission(
                 &thread_id,
                 UserThreadAction::Continue,
                 &request.operation_id,
             )
             .await?;
-        // Re-check the durable receipt now that the owner is resident: admission may have landed
-        // while this command was activating, and the queue would then hold the identity already.
-        if let Some(view) = self.replayable_continuation(&thread_id, &identity).await? {
+        let state = thread.snapshot();
+        if let Some(known) = current_continuation_record(&state, &request.operation_id) {
+            let view = self.continuation_view(&thread_id, &known)?;
+            anyhow::ensure!(
+                view.continuation_id == request.expected_continuation_id,
+                "operation identity belongs to another continuation"
+            );
             return Ok(ContinueThreadResponse {
                 thread_id,
                 input_id: view.input_id,
@@ -235,70 +210,28 @@ impl StudioRuntime {
                 receipt: view.receipt,
             });
         }
-        // An explicit continuation also repairs child decision notices that were not consumed.
-        // An already accepted retry above must not depend on this additional work succeeding.
-        self.reconcile_child_interaction_notices(&thread_id).await?;
-        let state = thread.snapshot();
-        // The qualification order is fixed: a current execution or its cleanup comes before the
-        // continuation point, so a stop that is still settling never starts a new Turn.
         if let Some(execution) = state.execution.as_ref() {
             return Err(anyhow::Error::new(
-                StudioError::new(
-                    StudioErrorCode::Busy,
-                    "The Thread is still executing or settling; wait for it to stop before continuing",
-                    true,
-                )
-                .with_reason(
-                    StudioErrorReason::ExecutionInProgress,
-                    serde_json::json!({
-                        "threadId": thread_id,
-                        "executionId": execution.id,
-                        "phase": format!("{:?}", execution.phase),
-                    }),
-                ),
+                StudioError::new(StudioErrorCode::Busy,
+                    "The Thread is still executing or settling; wait for it to stop before continuing", true)
+                .with_reason(StudioErrorReason::ExecutionInProgress, serde_json::json!({
+                    "threadId": thread_id, "executionId": execution.id,
+                    "phase": format!("{:?}", execution.phase),
+                })),
             ));
         }
-        // The caller's frozen route is a CAS against the saved route extension, exactly like an
-        // explicit submission: a stale selector must not continue with a model never observed.
         check_route_revision(&state, request.expected_model_route_revision)?;
         check_continuation(&thread_id, &state, &request)?;
-        let driver = pl_core::thread::input::InputDriverOptions {
-            // A continued main session keeps its existing unlimited main-session policy.
-            max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
-        };
-        thread
-            .continue_thread(request.operation_id.clone(), driver)
-            .await
-            .map_err(|error| match error {
-                pl_core::thread::ThreadError::NoContinuation => stale_identity(
-                    StudioErrorReason::ContinuationUnavailable,
-                    "This Thread has no continuation to claim",
-                    serde_json::json!({
-                        "threadId": thread_id,
-                        "expectedContinuationId": request.expected_continuation_id,
-                    }),
-                ),
-                pl_core::thread::ThreadError::InvalidControlInput => anyhow::Error::new(
-                    StudioError::invalid_argument("continuation control input carries content"),
-                ),
-                error => anyhow::Error::new(error),
-            })?;
-        self.residency.touch(&thread_id).await;
-        // The admission already happened under the lifecycle lock, so a stop, close or archive that
-        // arrives from here on is its own later fact and must not be delayed by this wait. Both the
-        // lifecycle lock and the per-Thread operation guard were only needed up to the admission, and
-        // the archive takes them in that order — lifecycle admission first, then the same per-Thread
-        // guard (`run_thread_lifecycle_operation` → `archive_thread_owned`) — so keeping either one alive through the
-        // durability wait would let this command block closing for the whole wait.
-        drop(lifecycle_guard);
-        drop(agent_operation);
-        // The admission is only a receipt once its identity is a durable fact: the history row is the
-        // single place a repeat (or a reopened process) rebuilds the same receipt from. Until that row
-        // lands this command reports a retryable condition instead of returning a receipt no
-        // canonical fact could reproduce.
-        let view = self
-            .await_accepted_continuation(&thread_id, &identity)
+        let accepted = thread
+            .continue_thread(
+                request.operation_id.clone(),
+                pl_core::thread::input::InputDriverOptions {
+                    max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
+                },
+            )
             .await?;
+        self.residency.touch(&thread_id).await;
+        let view = self.continuation_view(&thread_id, &accepted)?;
         Ok(ContinueThreadResponse {
             thread_id,
             input_id: view.input_id,
@@ -308,99 +241,8 @@ impl StudioRuntime {
         })
     }
 
-    /// Waits for the accepted operation to reach immutable History, then reads it back.
-    ///
-    /// The input fact is accepted by the same effect that admits the control input, so this is a
-    /// bounded wait on an already-committed fact — not a second source of truth. A caller whose
-    /// request is cancelled during the wait loses nothing: the admission stands and the same
-    /// operation identity reads the same receipt afterwards.
-    async fn await_accepted_continuation(
-        &self,
-        thread_id: &str,
-        identity: &ContinuationIdentity<'_>,
-    ) -> Result<ContinuationOperationView> {
-        let deadline = tokio::time::Instant::now() + ACCEPTED_IDENTITY_WAIT;
-        loop {
-            // The read itself is bounded by the remaining budget: a slow database must not extend the
-            // wait past the deadline.
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return self.accepted_identity_pending(thread_id, identity);
-            }
-            match tokio::time::timeout(
-                remaining,
-                self.read_continuation_operation_view(thread_id, identity),
-            )
-            .await
-            {
-                Ok(found) => {
-                    match found {
-                        Ok(Some(view)) => return Ok(view),
-                        // The admission is resident but its History cut is not readable yet: the
-                        // answer may land inside this budget, so keep polling instead of answering a
-                        // retryable Busy the caller did not have to receive.
-                        Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => {
-                        }
-                        // Any other failure is a real one and is propagated immediately.
-                        Err(error) => return Err(error),
-                        Ok(None) => {}
-                    }
-                }
-                Err(_) => return self.accepted_identity_pending(thread_id, identity),
-            }
-            // The poll wait is bounded by the same budget: a sleep that always ran its full interval
-            // would return past the deadline the caller was promised.
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if !remaining.is_zero() {
-                tokio::time::sleep(ACCEPTED_IDENTITY_POLL.min(remaining)).await;
-            }
-        }
-    }
-
-    /// The retryable answer for "accepted, but its receipt is not durable yet".
-    fn accepted_identity_pending(
-        &self,
-        thread_id: &str,
-        identity: &ContinuationIdentity<'_>,
-    ) -> Result<ContinuationOperationView> {
-        Err(Self::accepted_identity_pending_error(thread_id, identity))
-    }
-
-    /// The same retryable answer for callers that are not returning a receipt value.
-    ///
-    /// The internal pending marker never leaves a public command: a repeat during the
-    /// "admitted but not yet durable" window answers the documented retryable Busy instead.
-    fn accepted_identity_pending_error(
-        thread_id: &str,
-        identity: &ContinuationIdentity<'_>,
-    ) -> anyhow::Error {
-        anyhow::Error::new(
-            StudioError::new(
-                StudioErrorCode::Busy,
-                "The continuation was accepted but its receipt is not durable yet; retry the same operation",
-                true,
-            )
-            .with_reason(
-                StudioErrorReason::ContinuationUnavailable,
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "operationId": identity.operation_id,
-                    "accepted": true,
-                }),
-            ),
-        )
-    }
-
-    /// Reads one continuation operation without activating the Thread.
-    ///
-    /// The resident owner answers from its admitted input facts; a Thread with no owner answers from
-    /// immutable History input facts, so a receipt that was saved before the response was lost
-    /// is still readable after a restart. A query never re-authorises execution and never clears a
-    /// later stop; it also stays readable for an archived Thread, because reading a fact is not
-    /// deciding, continuing or stopping work in it.
-    ///
-    /// # Errors
-    /// Rejects an unknown Thread and an operation identity that carries no accepted continuation.
+    /// Observes only the operation facts retained by the current owner. A missing fact is not
+    /// recovered from History and does not prove that an old operation was never accepted.
     pub async fn read_continuation_operation(
         &self,
         thread_id: String,
@@ -408,195 +250,23 @@ impl StudioRuntime {
     ) -> Result<ContinuationOperationView> {
         Self::validate_operation_id(&operation_id)?;
         self.read_owned_thread(&thread_id).await?;
-        let identity = ContinuationIdentity {
-            operation_id: &operation_id,
-            // A read-only query names nothing to compare: it reports the accepted facts as they are.
-            expected_continuation_id: None,
-            expected_model_route_revision: None,
-        };
-        let view = match self
-            .read_continuation_operation_view(&thread_id, &identity)
-            .await
-        {
-            Ok(view) => view,
-            // A query has no budget to wait in, so the internal "row not readable yet" marker becomes
-            // the same public retryable answer the command returns.
-            Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => {
-                return self.accepted_identity_pending(&thread_id, &identity);
-            }
-            Err(error) => return Err(error),
-        };
-        view.ok_or_else(|| {
-            anyhow::Error::new(
-                StudioError::new(
-                    StudioErrorCode::NotFound,
-                    "No accepted continuation operation carries this identity",
-                    false,
-                )
-                .with_details(
-                    serde_json::json!({ "threadId": thread_id, "operationId": operation_id }),
-                ),
-            )
-        })
-    }
-
-    /// One projection shared by the command repeat check and the read-only query.
-    ///
-    /// Immutable History is consulted first, because it is the only place that carries the *frozen*
-    /// request identity (continuation point, route revision and admission revision). A resident
-    /// input is only proof that History acceptance is still pending; it is never returned as a
-    /// durable receipt.
-    /// Answers a repeat of an already accepted continuation without leaking the internal marker.
-    ///
-    /// While the admission is resident but its History fact is not readable yet, the honest public
-    /// answer is the documented retryable Busy: the same operation identity reads the same receipt
-    /// once that fact lands, so nothing is re-authorised and nothing is lost.
-    async fn replayable_continuation(
-        &self,
-        thread_id: &str,
-        identity: &ContinuationIdentity<'_>,
-    ) -> Result<Option<ContinuationOperationView>> {
-        match self
-            .read_continuation_operation_view(thread_id, identity)
-            .await
-        {
-            Ok(found) => Ok(found),
-            Err(error) if error.downcast_ref::<AcceptedIdentityPending>().is_some() => {
-                Err(Self::accepted_identity_pending_error(thread_id, identity))
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn read_continuation_operation_view(
-        &self,
-        thread_id: &str,
-        request: &ContinuationIdentity<'_>,
-    ) -> Result<Option<ContinuationOperationView>> {
-        if let Some(admission) = self
-            .read_input_admission(thread_id, request.operation_id)
-            .await?
-        {
-            if admission.purpose != pl_core::thread::input::InputPurpose::Continuation {
-                return Ok(None);
-            }
-            return Ok(Some(self.continuation_view(
-                thread_id,
-                ContinuationFacts {
-                    input_id: admission.id.clone(),
-                    continuation: admission.continuation.as_ref(),
-                    accepted_sequence: admission.accepted_sequence,
-                    state: &admission.state,
-                    expected_model_route_revision: admission.expected_model_route_revision,
-                    admission_revision: admission.admission_revision,
-                    stored_digest: admission.request_digest.as_deref(),
-                    durable: true,
-                },
-                request,
-            )?));
-        }
-        let Some(thread) = self
-            .session_of(thread_id)
-            .and_then(|session| session.thread(thread_id))
-        else {
-            return Ok(None);
-        };
-        let snapshot = thread.snapshot();
-        if snapshot.terminal_inputs.iter().any(|record| {
-            record.id == request.operation_id
-                && record.purpose == pl_core::thread::input::InputPurpose::Continuation
-        }) {
-            return Err(anyhow::Error::new(AcceptedIdentityPending));
-        }
-        let Some(record) = snapshot
-            .inputs
-            .iter()
-            .find(|record| record.input.id == request.operation_id)
-        else {
-            return Ok(None);
-        };
-        // The resident queue also has to prove the purpose: a pending normal message with the same
-        // identity must never be replayed as a continuation receipt.
-        if record.input.purpose != pl_core::thread::input::InputPurpose::Continuation {
-            return Ok(None);
-        }
-        // The live queue proves local admission, not that the History cut is readable. Until the
-        // History fact lands it is only a short retry signal, never a fabricated durable receipt.
-        Err(anyhow::Error::new(AcceptedIdentityPending))
-    }
-
-    /// Reads the canonical input-admission fact shared by continuation and submit replay.
-    ///
-    /// The query follows the existing entity-event index at one fixed cut. It does not activate the
-    /// Thread owner, load Current, or verify its workspace.
-    pub(super) async fn read_input_admission(
-        &self,
-        thread_id: &str,
-        input_id: &str,
-    ) -> Result<Option<crate::history::InputAdmission>> {
-        let paths = self.store.registered_session_paths(thread_id)?;
-        if self
-            .store
-            .thread_persistence()
-            .shared_history(thread_id)
-            .is_none()
-            && !tokio::fs::try_exists(paths.history_database()).await?
-        {
-            return Ok(None);
-        }
-        let reader = self.store.open_history_reader(thread_id).await?;
-        let result = crate::history::read_input_admission(&reader, input_id)
-            .await
-            .map_err(anyhow::Error::new);
-        reader.close().await;
-        result
+        let known = self
+            .session_of(&thread_id)
+            .and_then(|session| session.observed_thread(&thread_id))
+            .and_then(|thread| current_continuation_record(&thread.snapshot(), &operation_id))
+            .ok_or_else(|| StudioError::not_found("current continuation operation"))?;
+        self.continuation_view(&thread_id, &known)
     }
 
     fn continuation_view(
         &self,
         thread_id: &str,
-        facts: ContinuationFacts<'_>,
-        request: &ContinuationIdentity<'_>,
+        record: &pl_core::thread::input::InputRecord,
     ) -> Result<ContinuationOperationView> {
-        let Some(continuation) = facts.continuation else {
-            return Err(anyhow::Error::new(StudioError::invalid_argument(
-                "input identity is not a continuation operation",
-            )));
-        };
-        // Same operation identity with a different frozen continuation or a different frozen route
-        // revision is a conflicting request, not a receipt: answering it would claim work the caller
-        // never observed. A genuine repeat carries the same frozen facts, so it still gets the
-        // original receipt before any route staleness check.
-        ensure_accepted_continuation(
-            thread_id,
-            request,
-            &continuation.point_id,
-            facts.expected_model_route_revision,
-        )?;
-        // The durable request digest is the accepted request identity itself; a stored digest that no
-        // longer matches the frozen facts means the row does not describe this operation.
-        if let (Some(route_revision), Some(point_id), Some(accepted_digest)) = (
-            request.expected_model_route_revision,
-            request.expected_continuation_id,
-            facts.stored_digest,
-        ) {
-            let recomputed = crate::studio::thread_projection::continuation_request_digest(
-                thread_id,
-                point_id,
-                Some(route_revision),
-            );
-            if recomputed != accepted_digest {
-                return Err(stale_identity(
-                    StudioErrorReason::StaleContinuation,
-                    "The accepted request identity does not match this operation",
-                    serde_json::json!({
-                        "threadId": thread_id,
-                        "operationId": request.operation_id,
-                    }),
-                ));
-            }
-        }
-        let state = match facts.state {
+        let continuation = record.continuation.as_ref().ok_or_else(|| {
+            StudioError::invalid_argument("input is not a continuation operation")
+        })?;
+        let state = match &record.state {
             pl_core::thread::input::InputState::Pending => ContinuationOperationState::Pending,
             pl_core::thread::input::InputState::Consumed { turn_id, .. } => {
                 ContinuationOperationState::Consumed {
@@ -605,25 +275,15 @@ impl StudioRuntime {
             }
             pl_core::thread::input::InputState::Discarded => ContinuationOperationState::Discarded,
         };
-        // The receipt is rebuilt from the same canonical facts the first admission used: the control
-        // input stamp at its admission revision, the continuation stamp at the accepted sequence, and
-        // the "not yet effective / not yet durable" flags the admission really had. `durable` on the
-        // view describes where this read came from and never rewrites the receipt.
-        let admission_revision = facts
-            .admission_revision
-            .unwrap_or(ADMISSION_REVISION_FALLBACK);
         let mut receipt = self.command_receipt(
-            request.operation_id.to_owned(),
+            record.input.id.clone(),
             true,
             vec![
-                self.resource_stamp(
-                    format!("thread-input:{}", facts.input_id),
-                    admission_revision,
-                ),
+                self.resource_stamp(format!("thread-input:{}", record.input.id), record.revision),
                 ResourceStamp {
                     resource_key: format!("thread-continuation:{}", continuation.point_id),
                     owner_epoch: self.owner_epoch().to_owned(),
-                    revision: facts.accepted_sequence,
+                    revision: record.accepted_sequence,
                 },
             ],
             CommandEffectPoint::Immediate,
@@ -633,99 +293,36 @@ impl StudioRuntime {
         receipt.requires_identity_observation = true;
         Ok(ContinuationOperationView {
             thread_id: thread_id.to_owned(),
-            operation_id: request.operation_id.to_owned(),
-            input_id: facts.input_id,
+            operation_id: record.input.id.clone(),
+            input_id: record.input.id.clone(),
             continuation_id: continuation.point_id.clone(),
-            accepted_sequence: facts.accepted_sequence,
+            accepted_sequence: record.accepted_sequence,
             state,
-            durable: facts.durable,
             receipt,
         })
     }
 }
 
-/// Frozen facts of one accepted continuation operation from immutable History.
-struct ContinuationFacts<'a> {
-    input_id: String,
-    continuation: Option<&'a pl_core::thread::input::InputContinuation>,
-    accepted_sequence: u64,
-    state: &'a pl_core::thread::input::InputState,
-    expected_model_route_revision: Option<u64>,
-    admission_revision: Option<u64>,
-    stored_digest: Option<&'a str>,
-    durable: bool,
-}
-
-/// Revision core assigns to the commit that admits an input.
-///
-/// History normally records the original admission revision. This constant only covers a legacy
-/// fact that predates that field and therefore cannot prove the original value.
-const ADMISSION_REVISION_FALLBACK: u64 = 1;
-
-/// How long an accepted continuation may take to reach readable History.
-const ACCEPTED_IDENTITY_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Poll interval while waiting for that commit to land.
-const ACCEPTED_IDENTITY_POLL: std::time::Duration = std::time::Duration::from_millis(10);
-
-/// What a repeat or a query may assert about the operation it names.
-struct ContinuationIdentity<'a> {
-    operation_id: &'a str,
-    expected_continuation_id: Option<&'a str>,
-    expected_model_route_revision: Option<u64>,
-}
-
-/// Requires the request to describe the accepted continuation operation exactly.
-///
-/// The frozen facts come from the first admission recorded in History, so the same point and route
-/// revision answer the original receipt while anything else conflicts.
-fn ensure_accepted_continuation(
-    thread_id: &str,
-    request: &ContinuationIdentity<'_>,
-    accepted_point_id: &str,
-    accepted_route_revision: Option<u64>,
-) -> Result<()> {
-    if let Some(expected) = request.expected_continuation_id
-        && expected != accepted_point_id
-    {
-        return Err(stale_identity(
-            StudioErrorReason::StaleContinuation,
-            "The continuation this operation carries is not the one observed",
-            serde_json::json!({
-                "threadId": thread_id,
-                "operationId": request.operation_id,
-                "expectedContinuationId": expected,
-                "acceptedContinuationId": accepted_point_id,
-            }),
-        ));
-    }
-    if let Some(expected) = request.expected_model_route_revision {
-        let Some(accepted) = accepted_route_revision else {
-            return Err(stale_identity(
-                StudioErrorReason::StaleContinuation,
-                "This operation does not record the model route revision it was accepted with",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "operationId": request.operation_id,
-                    "expectedModelRouteRevision": expected,
-                    "acceptedModelRouteRevision": null,
-                }),
-            ));
-        };
-        if expected != accepted {
-            return Err(stale_identity(
-                StudioErrorReason::StaleContinuation,
-                "This operation was accepted with a different model route revision",
-                serde_json::json!({
-                    "threadId": thread_id,
-                    "operationId": request.operation_id,
-                    "expectedModelRouteRevision": expected,
-                    "acceptedModelRouteRevision": accepted,
-                }),
-            ));
-        }
-    }
-    Ok(())
+fn current_continuation_record(
+    state: &pl_core::thread::ThreadSnapshot,
+    operation_id: &str,
+) -> Option<pl_core::thread::input::InputRecord> {
+    state
+        .inputs
+        .iter()
+        .find(|record| {
+            record.input.id == operation_id
+                && record.input.purpose == pl_core::thread::input::InputPurpose::Continuation
+                && record.continuation.is_some()
+        })
+        .cloned()
+        .or_else(|| {
+            state
+                .terminal_inputs
+                .iter()
+                .find(|identity| identity.id == operation_id)
+                .and_then(|identity| identity.control_receipt(state.commit_sequence))
+        })
 }
 
 /// Compares the caller's frozen route revision with the saved route extension.
@@ -781,23 +378,6 @@ fn check_continuation(
     }
     Ok(())
 }
-
-/// The accepted admission is resident but its immutable History fact is not readable yet.
-///
-/// It is an internal marker, never a public outcome: the post-admission wait keeps polling on it, and
-/// every entry that must answer without waiting converts it into the public retryable `Busy`. Keeping
-/// it out of `StudioError` means a caller can never receive a condition that is expected to clear on
-/// its own inside the same command.
-#[derive(Debug)]
-struct AcceptedIdentityPending;
-
-impl std::fmt::Display for AcceptedIdentityPending {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the accepted continuation receipt is not readable yet")
-    }
-}
-
-impl std::error::Error for AcceptedIdentityPending {}
 
 #[cfg(test)]
 mod tests {
@@ -868,16 +448,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continue_after_idle_eviction_preserves_admission_and_replay() -> Result<()> {
-        const PROMPT: &str = "continue the interrupted work";
+    async fn continuation_uses_its_owner_and_missing_current_receipt_never_activates() -> Result<()>
+    {
+        const PROMPT: &str = "continue current work";
         let first = ReplyStage::new();
         let second = ReplyStage::new();
-        let third = ReplyStage::new();
         let env = support::Environment::new(
             vec![
                 support::prompt_step(PROMPT, 0, support::held_reply(&first, "first")),
                 support::prompt_step(PROMPT, 1, support::held_reply(&second, "continued")),
-                support::prompt_step(PROMPT, 2, support::held_reply(&third, "hot-continued")),
             ],
             vec![],
         )
@@ -885,205 +464,84 @@ mod tests {
         let result = async {
             let started = env.start(ThreadWorkspaceMode::Local, PROMPT).await?;
             let id = started.thread.id;
-            let original_submission = started.submission;
             support::reached(&first).await?;
             let session = env.runtime.require_session(&id)?;
-            let thread = session.thread(&id).context("initial owner")?;
+            let thread = session.thread(&id).context("current owner")?;
             let snapshot = thread.snapshot();
-            let execution = snapshot
-                .execution
-                .as_ref()
-                .context("initial execution")?
-                .id
-                .clone();
             let route = crate::studio::model_route::route_record(&snapshot, false)?
-                .context("saved route")?
+                .context("route")?
                 .0
                 .revision;
-            thread.flush().await?;
-            env.runtime
-                .thread_observations
-                .synchronize(Some(&id))
-                .await?;
-            let running_request = ContinueThreadRequest {
-                operation_id: "running".into(),
-                expected_continuation_id: "not-yet".into(),
-                expected_model_route_revision: route,
-            };
-            let error = env
-                .runtime
-                .continue_thread(id.clone(), running_request)
-                .await
-                .unwrap_err();
-            ensure!(
-                reason(&error) == Some("executionInProgress"),
-                "unexpected running error: {error:#}"
-            );
             env.runtime
                 .stop_thread(
                     id.clone(),
                     StopThreadRequest {
                         operation_id: "stop-first".into(),
-                        expected_execution_id: execution,
+                        expected_execution_id: snapshot.execution.context("execution")?.id,
                     },
                 )
                 .await?;
-            let stopped = settled(&thread).await?;
+            let point = settled(&thread)
+                .await?
+                .continuation
+                .context("continuation")?
+                .id;
             first.release();
-            thread.flush().await?;
-            env.runtime
-                .thread_observations
-                .synchronize(Some(&id))
-                .await?;
-            let point = stopped.continuation.context("stopped continuation")?.id;
             let request = ContinueThreadRequest {
-                operation_id: "continue-once".into(),
-                expected_continuation_id: point,
+                operation_id: "current-continue".into(),
+                expected_continuation_id: point.clone(),
                 expected_model_route_revision: route,
             };
-            let stale = ContinueThreadRequest {
-                operation_id: "stale".into(),
-                expected_continuation_id: "obsolete-point".into(),
-                ..request.clone()
-            };
-            let error = env
-                .runtime
-                .continue_thread(id.clone(), stale.clone())
-                .await
-                .unwrap_err();
-            ensure!(
-                reason(&error) == Some("staleContinuation"),
-                "unexpected hot stale error: {error:#}"
-            );
-            let wrong_route = ContinueThreadRequest {
-                operation_id: "wrong-route".into(),
-                expected_model_route_revision: route + 1,
-                ..request.clone()
-            };
-            let error = env
-                .runtime
-                .continue_thread(id.clone(), wrong_route)
-                .await
-                .unwrap_err();
-            ensure!(
-                error.downcast_ref::<crate::ConfigRuntimeError>().is_some(),
-                "unexpected route error: {error:#}"
-            );
-            evict(&env.runtime, &session, &id).await?;
-            let error = tokio::time::timeout(
-                support::integration_test_deadline()?,
-                env.runtime.continue_thread(id.clone(), stale),
-            )
-            .await
-            .context("cold stale continuation did not return")?
-            .unwrap_err();
-            ensure!(
-                reason(&error) == Some("staleContinuation"),
-                "unexpected cold stale error: {error:#}"
-            );
-            evict(&env.runtime, &session, &id).await?;
-            let accepted = tokio::time::timeout(
-                support::integration_test_deadline()?,
-                env.runtime.continue_thread(id.clone(), request.clone()),
-            )
-            .await
-            .context("cold continuation did not return")??;
-            support::reached(&second).await?;
-            let resumed = session.thread(&id).context("resumed owner")?;
-            let execution = resumed
-                .snapshot()
-                .execution
-                .context("continued execution")?
-                .id;
-            let replay = env
+            let accepted = env
                 .runtime
                 .continue_thread(id.clone(), request.clone())
                 .await?;
-            ensure!(replay == accepted, "repeat changed the original receipt");
+            support::reached(&second).await?;
+            let repeated = env.runtime.continue_thread(id.clone(), request).await?;
+            ensure!(
+                repeated.input_id == accepted.input_id && repeated.continuation_id == point,
+                "repeat changed the current input identity"
+            );
             env.runtime
                 .stop_thread(
                     id.clone(),
                     StopThreadRequest {
                         operation_id: "stop-second".into(),
-                        expected_execution_id: execution,
+                        expected_execution_id: thread
+                            .snapshot()
+                            .execution
+                            .context("continued execution")?
+                            .id,
                     },
                 )
                 .await?;
-            let stopped_again = settled(&resumed).await?;
+            settled(&thread).await?;
             second.release();
-            resumed.flush().await?;
-            env.runtime
-                .thread_observations
-                .synchronize(Some(&id))
-                .await?;
-            let hot_request = ContinueThreadRequest {
-                operation_id: "continue-hot".into(),
-                expected_continuation_id: stopped_again
-                    .continuation
-                    .context("second continuation")?
-                    .id,
-                expected_model_route_revision: route,
-            };
-            env.runtime.continue_thread(id.clone(), hot_request).await?;
-            support::reached(&third).await?;
-            let execution = resumed.snapshot().execution.context("hot execution")?.id;
-            env.runtime
-                .stop_thread(
-                    id.clone(),
-                    StopThreadRequest {
-                        operation_id: "stop-third".into(),
-                        expected_execution_id: execution,
-                    },
-                )
-                .await?;
-            settled(&resumed).await?;
-            third.release();
             evict(&env.runtime, &session, &id).await?;
-            let moved_repo = env.repo.with_file_name("temporarily-unavailable-repo");
-            std::fs::rename(&env.repo, &moved_repo)
-                .context("hide the workspace for cold receipt replay")?;
-            let replay = env
+            let error = env
                 .runtime
-                .continue_thread(id.clone(), request)
+                .read_continuation_operation(id.clone(), accepted.input_id)
                 .await
-                .context("replay the saved continuation while the workspace is absent");
-            let submit_again = env
-                .runtime
-                .submit_prompt(crate::StudioSubmitPromptRequest {
-                    thread_id: id.clone(),
-                    input: crate::StudioPromptInput {
-                        input_id: original_submission.input_id.clone(),
-                        text: PROMPT.into(),
-                        attachment_draft_ids: vec![],
-                    },
-                    options: Default::default(),
-                })
-                .await;
-            std::fs::rename(&moved_repo, &env.repo)
-                .context("restore the workspace after cold receipt replay")?;
+                .unwrap_err();
             ensure!(
-                submit_again? == original_submission,
-                "cold prompt repeat changed its receipt"
-            );
-            let replay = replay?;
-            ensure!(
-                replay == accepted,
-                "cold repeat changed the original receipt"
+                error
+                    .downcast_ref::<StudioError>()
+                    .is_some_and(|error| error.code == StudioErrorCode::NotFound),
+                "unexpected missing current receipt: {error:#}"
             );
             ensure!(
                 session.thread(&id).is_none(),
-                "replay materialized a new owner"
+                "receipt query activated a cold owner"
             );
             ensure!(
-                env.root_provider.recorded().len() == 3,
-                "repeat started another model request"
+                env.root_provider.recorded().len() == 2,
+                "receipt lookup dispatched new model work"
             );
             Ok(())
         }
         .await;
         first.release();
         second.release();
-        third.release();
         env.finish(result).await
     }
 

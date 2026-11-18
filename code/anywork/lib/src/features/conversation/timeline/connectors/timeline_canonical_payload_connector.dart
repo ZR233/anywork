@@ -6,10 +6,38 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../state/chat_item_presentation.dart';
+import '../state/timeline_history_item_content.dart';
 import '../state/timeline_display_unit.dart';
 import '../view_models/timeline_view_model.dart';
+import '../widgets/timeline_content_range_view.dart';
 
-/// Resolves only the mounted completion's metadata, never its body or siblings.
+/// The original History read hands one prepared immutable row to its display.
+class TimelineInitialHistoryContent extends InheritedWidget {
+  const TimelineInitialHistoryContent({
+    required this.content,
+    required super.child,
+    super.key,
+  });
+  final TimelinePreparedHistoryItem? content;
+
+  static AsyncSnapshot<TimelineHistoryItemContent>? read(
+    BuildContext context,
+    ChatItemPresentation item,
+  ) {
+    final content = context
+        .getInheritedWidgetOfExactType<TimelineInitialHistoryContent>()
+        ?.content;
+    return content?.identity == timelineHistoryItemIdentity(item)
+        ? content?.result
+        : null;
+  }
+
+  @override
+  bool updateShouldNotify(TimelineInitialHistoryContent oldWidget) =>
+      !identical(content, oldWidget.content);
+}
+
+/// Resolves the mounted completion's metadata and automatically disclosed text.
 /// The original content owner tracks this scope through retirement/cleanup join.
 class TimelineCanonicalPayloadConnector extends StatefulWidget {
   const TimelineCanonicalPayloadConnector({
@@ -38,6 +66,7 @@ class _TimelineCanonicalPayloadConnectorState
     extends State<TimelineCanonicalPayloadConnector> {
   HistoryReadScope? _historyScope;
   ChatItemPresentation? _resolved;
+  Map<Object, AsyncSnapshot<ContentWindow>> _initialBodyReads = const {};
   String? _error;
   int _request = 0;
   bool _scheduled = false;
@@ -52,7 +81,7 @@ class _TimelineCanonicalPayloadConnectorState
           _group!.bodyActive &&
               identical(_groupGeneration, _group!.bodyGeneration));
 
-  Object get _identity => _identityOf(widget);
+  Object get _identity => timelineHistoryItemIdentity(widget.item);
 
   HistoryReadScope? _openHistory() {
     if (widget.openHistory != null) return widget.openHistory!();
@@ -106,38 +135,30 @@ class _TimelineCanonicalPayloadConnectorState
       widget.retirement?.addListener(_qualificationChanged);
       _cancel();
     }
-    if (_identityOf(oldWidget) != _identity ||
+    if (timelineHistoryItemIdentity(oldWidget.item) != _identity ||
         oldWidget.threadId != widget.threadId) {
       _cancel();
       _resolved = null;
+      _initialBodyReads = const {};
       _error = null;
     }
     if (!_active) _cancel();
     _schedule();
   }
 
-  Object _identityOf(TimelineCanonicalPayloadConnector value) => (
-    value.item.id,
-    value.item.atom?.id,
-    value.item.atom?.source,
-    value.item.historyEventId,
-    value.item.historyDetailEventId,
-    switch (value.item.displayRecord?.contentSource) {
-      CurrentAtomSource() => (CurrentAtomSource,),
-      FrozenObservation(:final capturedAt, :final available) => (
-        FrozenObservation,
-        capturedAt,
-        available,
-      ),
-      CompletedOriginal(:final completionId) => (
-        CompletedOriginal,
-        completionId,
-      ),
-      null => null,
-    },
-  );
-
   void _schedule() {
+    if (_resolved == null && _error == null) {
+      final prepared = TimelineInitialHistoryContent.read(context, widget.item);
+      if (prepared != null) {
+        if (prepared.data case final content?) {
+          _resolved = widget.item.resolvePresentation(content.item);
+          _initialBodyReads = content.bodyReads;
+        } else if (prepared.error case final error?) {
+          _error = timelineHistoryItemError(error);
+        }
+        return;
+      }
+    }
     final needsOwnedBody = widget.item.historyEventId != null;
     if (widget.item.observationUnavailable ||
         !needsOwnedBody ||
@@ -148,7 +169,7 @@ class _TimelineCanonicalPayloadConnectorState
       return;
     }
     _scheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    scheduleMicrotask(() {
       _scheduled = false;
       if (_active &&
           _historyScope == null &&
@@ -185,65 +206,14 @@ class _TimelineCanonicalPayloadConnectorState
     _historyScope = history;
     bool eligible() => _active && request == _request && identity == _identity;
     try {
-      final detailId =
-          widget.item.historyDetailEventId ?? widget.item.historyEventId!;
-      final event = await history.readEvent(
-        eventId: detailId,
-        demand: const HistoryDemand(maxRows: 1, maxBytes: 64 * 1024),
-      );
-      var reference = event.payloadRef;
-      if (reference == null) {
-        final bodyEventId = widget.item.historyEventId!;
-        final bodyEvent = bodyEventId == detailId
-            ? event
-            : await history.readEvent(
-                eventId: bodyEventId,
-                demand: const HistoryDemand(maxRows: 1, maxBytes: 64 * 1024),
-              );
-        reference = bodyEvent.payloadRef;
-      }
-      if (reference == null) {
-        final bodies = await history.listBodies(
-          eventId: widget.item.historyEventId!,
-          demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
-        );
-        reference = bodies.entries
-            .where(
-              (entry) =>
-                  entry.role.kind == HistoryBodyRoleKind.canonicalPayload ||
-                  entry.role.kind == HistoryBodyRoleKind.body,
-            )
-            .firstOrNull
-            ?.reference;
-      }
+      final content = await readTimelineHistoryItem(history, widget.item);
       if (!eligible()) return;
-      if (reference == null || reference.byteLength > 64 * 1024) {
-        setState(() => _error = '完成内容超出单次读取预算或缺失');
-        return;
-      }
-      final window = await history.readBody(
-        reference: reference,
-        offset: 0,
-        maxBytes: 64 * 1024,
-      );
-      if (!eligible()) return;
-      if (window.offset != 0 ||
-          window.totalLength != reference.byteLength ||
-          window.bytes.length != window.totalLength) {
-        setState(() => _error = '完成内容窗口不连续');
-        return;
-      }
-      final resolved = widget.item.resolvePayload(
-        InlinePayload(bytes: window.bytes),
-      );
-      if (!eligible()) return;
-      if (resolved.compatibility != ChatItemCompatibility.current) {
-        setState(() => _error = '完成内容格式无法解析');
-        return;
-      }
-      setState(() => _resolved = resolved);
-    } catch (_) {
-      if (eligible()) setState(() => _error = '完成内容读取失败');
+      setState(() {
+        _resolved = content.item;
+        _initialBodyReads = content.bodyReads;
+      });
+    } catch (error) {
+      if (eligible()) setState(() => _error = timelineHistoryItemError(error));
     } finally {
       if (identical(_historyScope, history)) _historyScope = null;
       history.retire();
@@ -265,7 +235,12 @@ class _TimelineCanonicalPayloadConnectorState
       return widget.render(widget.item);
     }
     if (widget.item.historyEventId != null) {
-      if (_resolved case final item?) return widget.render(item);
+      if (_resolved case final item?) {
+        return TimelineInitialBodyReads(
+          results: _initialBodyReads,
+          child: widget.render(item),
+        );
+      }
       return Text(_error ?? '正在读取当前内容…');
     }
     if (widget.item.compatibility != ChatItemCompatibility.deferred) {

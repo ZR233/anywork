@@ -5,12 +5,16 @@ import 'dart:math';
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
-import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
+import 'package:flutter/widgets.dart'
+    show AsyncSnapshot, ConnectionState, ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
 import '../../features/conversation/timeline/live_status/live_status_state.dart'
     show LiveStatusView;
+import '../../features/conversation/timeline/state/content_reference_identity.dart';
+import '../../features/conversation/timeline/state/chat_item_presentation.dart';
+import '../../features/conversation/timeline/state/timeline_history_item_content.dart';
 import '../../features/conversation/timeline/state/timeline_image_resources.dart';
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
@@ -47,9 +51,9 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     required this.generation,
     required this.demand,
     required this.history,
-    required this.current,
     this.selectionId,
     this.selectionStartedMicros,
+    this.initialHistoryContent,
   }) : _controller = InMemoryChatController(),
        imageResources = TimelineImageResources(threadId: threadId) {
     _presentation = TimelineMessageController(
@@ -60,7 +64,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       expansionForBlock: expansionForBlock,
     );
     _historyQueries = openHistoryScope();
-    _currentQueries = openCurrentScope();
   }
 
   final ClientResourceId resourceId = _newTimelineResourceId();
@@ -71,10 +74,11 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final ReadDemand demand;
   late final int _historyRowLimit = max(demand.maxItems * 8, 128);
   final HistoryReader history;
-  final CurrentReader current;
+  CurrentReader? get current => _read.current;
   LiveStatusView? liveStatus;
   final int? selectionId;
   final int? selectionStartedMicros;
+  final TimelinePreparedHistoryItem? initialHistoryContent;
   final TimelineImageResources imageResources;
   InMemoryChatController? _controller;
   final ScrollController _scrollController = ScrollController(
@@ -289,14 +293,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
           !scope.isActive) {
         throw const StaleConversationScope();
       }
-      return ContentWindow(
-        offset: value.offset,
-        bytes: value.bytes,
-        generation:
-            '${reference.bodyId}:${reference.byteStart}:${reference.byteLength}',
-        availableThrough: value.totalLength,
-        sealed: true,
-      );
+      return historyBodyWindow(reference, value);
     };
     intent.readCurrentBody = (generation, reference, range) async {
       final scope = _currentQueries;
@@ -410,11 +407,12 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   }
 
   CurrentReadScope openCurrentScope({int? generation}) {
-    if (_retired) throw const StaleConversationScope();
+    final reader = current;
+    if (_retired || reader == null) throw const StaleConversationScope();
     final scope = CurrentReadScope(
       threadId: threadId,
       generation: generation ?? this.generation,
-      reader: current,
+      reader: reader,
       isEligible: () => !_retired,
     );
     _ownedQueries.add(scope);
@@ -808,20 +806,9 @@ final class TimelineSessionOwner {
       );
       read.history = history;
       if (!_ownsRead(read)) return;
-      final current = await client.conversations.openCurrentReader(
-        read.session.threadId,
-        demand: demand,
-      );
-      read.current = current;
-      if (!_ownsRead(read)) return;
-      if (history.metadata.historyProtocolVersion != historyProtocolVersion ||
-          history.metadata.readerId.isEmpty ||
-          current.metadata.currentProtocolVersion != currentProtocolVersion ||
-          current.metadata.readerId.isEmpty) {
-        throw const ConversationContinuityError(
-          'Unsupported history or current reader handshake',
-        );
-      }
+      final opening = Completer<void>();
+      read.currentOpening = opening.future;
+      opening.complete(_openCurrent(read, demand));
       final initial = await history.timelinePage(
         demand: HistoryDemand(
           maxRows: demand.maxItems,
@@ -829,17 +816,18 @@ final class TimelineSessionOwner {
         ),
       );
       if (!_ownsRead(read)) return;
-      final initialView = current.initialView;
+      final content = await _prepareInitialHistoryItem(read, initial);
+      if (!_ownsRead(read)) return;
       await _serialize(
         () => _set(
           read,
           initial.entries,
-          initialView,
           cut: initial.cut,
           olderCursor: initial.next,
+          initialContent: content,
         ),
       );
-      unawaited(_runCurrentWatch(read, demand));
+      unawaited(_connectCurrent(read, demand));
       var cut = initial.cut;
       while (_ownsRead(read)) {
         HistoryCut changed;
@@ -864,7 +852,7 @@ final class TimelineSessionOwner {
             'History page changed its requested cut',
           );
         }
-        final view = await current.snapshot(demand);
+        final view = await read.current?.snapshot(demand);
         if (!_ownsRead(read) || modeIntent == null) break;
         await _serialize(
           () => _applyLatestHistory(read, page, view, modeIntent),
@@ -881,6 +869,95 @@ final class TimelineSessionOwner {
     } finally {
       await read.close();
     }
+  }
+
+  Future<TimelinePreparedHistoryItem?> _prepareInitialHistoryItem(
+    _TimelineRead read,
+    HistoryTimelinePage page,
+  ) async {
+    for (final entry in page.entries) {
+      final block = TimelineHistoryProjection.block(entry, cut: page.cut);
+      if (block == null) continue;
+      final body = block.body;
+      if (body is! SingleDisplayBlock ||
+          body.visibility != HistorySingleVisibility.content ||
+          (body.record.atom.kind != ChatAtomKind.text &&
+              body.record.atom.kind != ChatAtomKind.input)) {
+        continue;
+      }
+      final item = ChatItemPresentation.forRecord(body.record, id: block.id);
+      if (item.observationUnavailable || item.historyEventId == null) continue;
+      final scope = HistoryReadScope(
+        threadId: read.session.threadId,
+        generation: read.selection,
+        reader: read.history!,
+        isEligible: () => _ownsRead(read),
+      );
+      final identity = timelineHistoryItemIdentity(item);
+      try {
+        final content = await readTimelineHistoryItem(scope, item);
+        return (
+          identity: identity,
+          result: AsyncSnapshot.withData(ConnectionState.done, content),
+        );
+      } catch (error, stack) {
+        if (!_ownsRead(read)) return null;
+        return (
+          identity: identity,
+          result: AsyncSnapshot<TimelineHistoryItemContent>.withError(
+            ConnectionState.done,
+            error,
+            stack,
+          ),
+        );
+      } finally {
+        scope.retire();
+        await scope.close();
+      }
+    }
+    return null;
+  }
+
+  Future<void> _openCurrent(_TimelineRead read, ReadDemand demand) async {
+    try {
+      final reader = await client.conversations.openCurrentReader(
+        read.session.threadId,
+        demand: demand,
+      );
+      read.current = reader;
+      if (_ownsRead(read)) await _connectCurrent(read, demand);
+    } catch (error) {
+      read.currentError = error;
+      if (_ownsRead(read)) _current?.currentCollectionError.value = error;
+    }
+  }
+
+  Future<void> _connectCurrent(_TimelineRead read, ReadDemand demand) {
+    final existing = read.currentConnecting;
+    if (existing != null) return existing;
+    final reader = read.current;
+    if (reader == null ||
+        !_ownsRead(read) ||
+        !identical(_current?._read, read)) {
+      return Future<void>.value();
+    }
+    final connected = Completer<void>();
+    read.currentConnecting = connected.future;
+    connected.complete(
+      Future<void>.sync(() async {
+        try {
+          await _serialize(() => _applyCurrentView(read, reader.initialView));
+          if (_ownsRead(read)) source.publish(source.value);
+          await _runCurrentWatch(read, demand);
+        } catch (error) {
+          if (_ownsRead(read)) {
+            _current?.currentCollectionError.value = error;
+            _restart(read);
+          }
+        }
+      }),
+    );
+    return connected.future;
   }
 
   Future<void> _runCurrentWatch(_TimelineRead read, ReadDemand demand) async {
@@ -1037,8 +1114,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
     if (_retired) return;
     _latestCurrentRevision = revision;
     _latestCurrentProjection = projection;
-    final scope = _currentQueries;
-    if (scope == null) return;
+    final scope = _currentQueries ??= openCurrentScope();
     final atomRef = projection.collections
         .where((reference) => reference.collection == 'atoms')
         .firstOrNull;
@@ -1211,7 +1287,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
   Future<void> _applyLatestHistory(
     _TimelineRead read,
     HistoryTimelinePage page,
-    CurrentView view,
+    CurrentView? view,
     int modeIntent,
   ) async {
     final current = _current;
@@ -1239,7 +1315,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         );
         return;
       }
-      await current._admitCurrentProject(view);
+      if (view != null) await current._admitCurrentProject(view);
       if (!_ownsRead(read)) return;
       _publishState(
         connection: TimelineConnectionPhase.ready,
@@ -1268,7 +1344,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     _TimelineRead read,
     TimelineDisplayLease current,
     HistoryTimelinePage page,
-    CurrentView view,
+    CurrentView? view,
     List<DisplayBlock> blocks, {
     required int modeIntent,
     required bool transitionFromHistory,
@@ -1287,10 +1363,12 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       } catch (error) {
         throw _TimelineApplyFailure(error);
       }
-      current.live.value = current._snapshotCurrent(
-        view.revision,
-        view.projection,
-      );
+      if (view != null) {
+        current.live.value = current._snapshotCurrent(
+          view.revision,
+          view.projection,
+        );
+      }
       current._historyCut = page.cut;
       current._before = page.next;
       current._hasOlder = page.next != null;
@@ -1306,7 +1384,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         current._modeIntent != modeIntent) {
       return;
     }
-    await current._admitCurrentProject(view);
+    if (view != null) await current._admitCurrentProject(view);
     if (!_ownsRead(read) ||
         !identical(_current, current) ||
         current.isRetired ||
@@ -1330,10 +1408,10 @@ extension TimelineSessionAccess on TimelineSessionOwner {
 
   Future<void> _set(
     _TimelineRead read,
-    List<HistoryTimelineEntry> entries,
-    CurrentView currentView, {
+    List<HistoryTimelineEntry> entries, {
     required HistoryCut cut,
     required String? olderCursor,
+    TimelinePreparedHistoryItem? initialContent,
   }) async {
     final session = read.session;
     final next = TimelineDisplayLease._(
@@ -1342,19 +1420,15 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       generation: ++_generation,
       demand: _readDemand!,
       history: read.history!,
-      current: read.current!,
       selectionId: _selectionTarget == session.threadId
           ? _visibleSelectionId
           : null,
       selectionStartedMicros: _selectionTarget == session.threadId
           ? _selectionStartedMicros
           : null,
+      initialHistoryContent: initialContent,
     );
     _preparingDisplays.add(next);
-    final live = next._snapshotCurrent(
-      currentView.revision,
-      currentView.projection,
-    );
     try {
       final presentation = next._presentation!;
       await next._mutate(() async {
@@ -1365,9 +1439,6 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           );
         } catch (error) {
           throw _TimelineApplyFailure(error);
-        }
-        if (_ownsRead(read)) {
-          next.live.value = live;
         }
       });
     } catch (_) {
@@ -1389,9 +1460,9 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
-    _markPresentedInputs(session.threadId, blocks, live.currentAtoms);
+    next.currentCollectionError.value = read.currentError;
+    _markPresentedInputs(session.threadId, blocks, const []);
     _olderInFlight = null;
-    await next._admitCurrentProject(currentView);
     if (previous != null) _retire(previous);
     if (!_ownsRead(read) || !identical(_current, next) || next.isRetired) {
       return;
@@ -1564,7 +1635,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           maxBytes: demand.maxBytes,
         ),
       );
-      final view = await current.current.snapshot(demand);
+      final view = await current.current?.snapshot(demand);
       if (!_ownsRead(read) ||
           current._modeIntent != requestedIntent ||
           current._mode != requestedMode ||
@@ -1999,6 +2070,9 @@ final class _TimelineRead {
   final int restarts;
   HistoryReader? history;
   CurrentReader? current;
+  Future<void>? currentOpening;
+  Future<void>? currentConnecting;
+  Object? currentError;
   CurrentWatch? currentWatch;
   // ignore: cancel_subscriptions
   StreamSubscription<CurrentFrame>? currentSubscription;
@@ -2049,6 +2123,9 @@ final class _TimelineRead {
       Future<void>.sync(() async {
         _requestStop();
         try {
+          // Openers retain late handles; cancellation cannot abandon their close duty.
+          await currentOpening;
+          await currentConnecting;
           final historyReader = history;
           final currentReader = current;
           final watch = currentWatch;

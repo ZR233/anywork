@@ -46,91 +46,6 @@ impl StudioRuntime {
         Ok(summaries)
     }
 
-    /// Re-delivers every child decision notice the main session may not have received yet.
-    ///
-    /// Discovery is the child's own durable decision receipts, so a decision the child's snapshot has
-    /// already dropped — the case a crash between the commit and the notice leaves behind — is still
-    /// found. Delivery is idempotent by identity: the message identity is derived from the child, the
-    /// interaction and the decision revision, and the parent inbox answers an already accepted
-    /// identity with its original receipt. It therefore never duplicates a notice, never replays
-    /// child work and never wakes a paused main session.
-    ///
-    /// Returns how many notice identities were reconciled, which is not the number of newly written
-    /// messages.
-    ///
-    /// # Errors
-    /// Enumerating a child, reading its durable facts and delivering one notice can all fail. A
-    /// delivery failure is returned instead of being counted as success, and the next explicit
-    /// main-session turn reconciles it again.
-    pub(in crate::studio::runtime) async fn reconcile_child_interaction_notices(
-        &self,
-        host_thread_id: &str,
-    ) -> Result<usize> {
-        let mut delivered = 0;
-        for child_id in self.child_thread_ids(host_thread_id).await? {
-            // Discovery is the child's own durable receipts, never its in-memory snapshot: a snapshot
-            // drops settled decisions, so a crash between the commit and the notice would otherwise
-            // lose the notice for good. Every discovered decision is therefore already saved.
-            let settled = self.settled_decisions(&child_id).await?;
-            // The Recovery state comes first: a decision that cannot be projected produces no notice at
-            // all, so it must be observable even when delivering the *other* notices fails below. Doing
-            // it after the delivery loop would skip it on exactly the failure paths that need it, and
-            // would also leave a stale entry behind.
-            self.publish_decision_notice_state(&child_id, settled.unprojectable.len())
-                .await;
-            for interaction in settled.deliverable {
-                // A delivery failure is returned to the caller: reconciliation is explicitly
-                // retryable and must not be silent. An already accepted identity answers with its
-                // original receipt, so a repeated pass never duplicates a notice.
-                self.deliver_child_interaction_notice(&child_id, host_thread_id, &interaction)
-                    .await?;
-                delivered += 1;
-            }
-        }
-        Ok(delivered)
-    }
-
-    /// Publishes (or clears) the Recovery state of a child whose saved decisions owe an unbuildable
-    /// notice.
-    ///
-    /// The message never carries content: only the fact and its count. Nothing is published when the
-    /// state is unchanged, so a repeated reconciliation does not churn the observed resource.
-    async fn publish_decision_notice_state(&self, child_id: &str, unprojectable: usize) {
-        let issue_id = format!("interaction-notice:{child_id}");
-        let next = (unprojectable > 0).then(|| crate::studio::StudioRecoveryIssue {
-            id: issue_id.clone(),
-            scope: crate::studio::StudioRecoveryIssueScope::Thread,
-            category: crate::studio::StudioRecoveryIssueCategory::Storage,
-            impact: crate::studio::StudioRecoveryImpact::ExecutionBlocked,
-            action: crate::studio::StudioRecoveryIssueAction::Retry,
-            workspace_id: None,
-            thread_id: Some(child_id.to_owned()),
-            worktree: None,
-            message: format!(
-                "{unprojectable} saved decision(s) of this session cannot be presented to the main \
-                 session, so their notices were not delivered"
-            ),
-        });
-        let current = self
-            .recovery
-            .snapshot()
-            .into_iter()
-            .find(|issue| issue.id == issue_id);
-        if current == next {
-            return;
-        }
-        self.recovery.update_if_current(
-            &issue_id,
-            next,
-            || true,
-            |issues| {
-                self.agent_facility
-                    .product_events
-                    .emit_recovery_state(issues);
-            },
-        );
-    }
-
     /// The Thread ids of every active direct child of `host_thread_id`, never activating one.
     async fn child_thread_ids(&self, host_thread_id: &str) -> Result<Vec<String>> {
         Ok(self
@@ -191,24 +106,12 @@ impl StudioRuntime {
             // A main session answers its own question in place; nothing is handed over.
             return Ok(());
         };
-        // A child Plan record is a diagnostic: replaying its terminal state must not write anything
-        // into the main session's inbox.
-        let local_id = interaction_local_id(interaction)?;
-        if self.is_child_plan_record(&owner, &local_id).await? {
+        if matches!(
+            interaction.scope.purpose,
+            crate::InteractionPurpose::AgentSessionPlanConfirmation(_)
+        ) {
             return Ok(());
         }
-        // Only a saved outcome may be announced. The decision path waits for the child's own commit
-        // first (`await_child_decision_durable`), and reconciliation discovers decisions from those
-        // same receipts, so an unsaved decision is a retryable condition here instead of a silent
-        // success the caller could mistake for a delivered notice.
-        if !self
-            .stored_decision_is_durable(&owner.id, &local_id, interaction.revision)
-            .await?
-        {
-            return Err(super::interaction::child_decision_not_saved(interaction));
-        }
-        // A delivery failure is reported to the caller (the same command is retryable) and reconciled
-        // by the next explicit main-session turn; it is never silently dropped.
         self.deliver_child_interaction_notice(&owner.id, &parent, interaction)
             .await
     }
@@ -358,11 +261,4 @@ fn notice_text(
              whether and how to schedule that member again.\n{content}"
         ),
     }
-}
-
-/// The local interaction identity inside its owning Thread.
-fn interaction_local_id(interaction: &crate::InteractionRequest) -> anyhow::Result<String> {
-    let (_thread, local) =
-        crate::thread_assembler::decode_interaction_key(&interaction.interaction_id)?;
-    Ok(local.to_owned())
 }

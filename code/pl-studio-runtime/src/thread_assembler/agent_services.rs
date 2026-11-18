@@ -359,7 +359,6 @@ impl AgentServices {
         // Recovery work. The same resolved activation is consumed by the assembler below.
         let activation = self.factory.activation(target)?;
         self.authorize(caller, target).await?;
-        self.store.ensure_agent_execution_allowed(target).await?;
         let record = self.record(target).await?;
         self.recovery.ensure_thread_read_access(&record)?;
         let live = owner
@@ -401,52 +400,14 @@ impl AgentServices {
         Ok(())
     }
 
-    pub(super) async fn activate_verified_review_child(
-        &self,
-        owner: &SessionRuntime,
-        caller: &str,
-        target: &str,
-        proof: crate::studio::thread_factory::VerifiedLocalResume,
-        operation: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<(), super::ThreadAssemblyError> {
-        let checked = async {
-            self.authorize(caller, target).await?;
-            self.store.ensure_agent_execution_allowed(target).await?;
-            let record = self.record(target).await?;
-            self.recovery.ensure_thread_read_access(&record)?;
-            self.recovery.ensure_thread_execution_access(&record)?;
-            anyhow::ensure!(
-                self.direct_child(caller, target)? && !record.archived,
-                "only the original direct child can consume a local review proof"
-            );
-            Ok::<_, anyhow::Error>(record)
-        }
-        .await
-        .map_err(|source| super::ThreadAssemblyError::Resource {
-            operation: "admit verified local review restore",
-            source: source.into(),
-        })?;
-        owner
-            .activate_verified_review(
-                self.factory.activation(&checked.id)?,
-                self.factory.clone(),
-                proof,
-                operation,
-            )
-            .await?;
-        Ok(())
-    }
-
     pub(super) async fn record(&self, id: &str) -> Result<crate::Thread> {
-        match self.events.thread_snapshot(id)? {
-            Some(thread) => Ok(thread),
-            None => self
-                .store
-                .read_thread(id)
-                .await?
-                .map(crate::Thread::from)
-                .context("agent product association is missing"),
-        }
+        // CatalogStore is the directory owner already loaded in RAM. There is no SQL/file read
+        // and no fallback through a second product mirror during unpublished preparation.
+        self.store
+            .read_thread(id)
+            .await?
+            .map(crate::Thread::from)
+            .context("agent product association is missing")
     }
     pub(super) async fn authorize(
         &self,

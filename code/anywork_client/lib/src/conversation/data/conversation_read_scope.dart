@@ -221,14 +221,6 @@ final class CurrentReadScope implements CurrentQueryScope {
           reason: watch.error ?? StateError('current watch still closing'),
           ownership: ClientOwnership.owned,
           stages: [
-            if (watch.openError case final error?)
-              ClientResourceStage(
-                owner: 'current-watch:$threadId:$generation',
-                phase: ClientClosePhase.opening,
-                ownership: ClientOwnership.owned,
-                error: error.$1,
-                stackTrace: error.$2,
-              ),
             if (watch.requestError case final error?)
               ClientResourceStage(
                 owner: 'current-watch:$threadId:$generation',
@@ -395,7 +387,7 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
     _output = StreamController<ContentWindow>(
       onPause: () => _subscription?.pause(),
       onResume: () => _subscription?.resume(),
-      onCancel: () => _join(closeOutput: false),
+      onCancel: _join,
     );
   }
 
@@ -410,7 +402,6 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
   Future<void>? _openingTask;
   Future<void>? _cancelling;
   Future<void>? _subscriptionCancellation;
-  (Object, StackTrace)? openError;
   (Object, StackTrace)? requestError;
   (Object, StackTrace)? subscriptionError;
   (Object, StackTrace)? handleError;
@@ -420,16 +411,10 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
   bool released = false;
 
   Object? get error =>
-      openError?.$1 ??
-      requestError?.$1 ??
-      subscriptionError?.$1 ??
-      handleError?.$1;
+      requestError?.$1 ?? subscriptionError?.$1 ?? handleError?.$1;
 
   @override
-  Stream<ContentWindow> get windows {
-    if (_output.isClosed) return const Stream.empty();
-    return _output.stream;
-  }
+  Stream<ContentWindow> get windows => _output.stream;
 
   void _start() {
     _openingTask ??= Future<void>.sync(() async {
@@ -457,7 +442,6 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
             if (!_requested && !_output.isClosed) _output.add(window);
           },
           onError: (Object failure, StackTrace stack) {
-            subscriptionError = (failure, stack);
             if (!_requested && !_output.isClosed) {
               _output.addError(failure, stack);
             }
@@ -466,15 +450,17 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
           onDone: () {
             subscriptionSettled = true;
             if (!_output.isClosed) unawaited(_output.close());
+            unawaited(_settle());
           },
         );
       } catch (failure, stack) {
-        openError = (failure, stack);
+        subscriptionSettled = true;
         handleSettled = true;
         if (!_output.isClosed) {
           _output.addError(failure, stack);
-          await _output.close();
+          unawaited(_output.close());
         }
+        unawaited(_settle());
       }
     });
     unawaited(_openingTask);
@@ -504,9 +490,9 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
   }
 
   @override
-  Future<void> close() => _join(closeOutput: true);
+  Future<void> close() => _join();
 
-  Future<void> _join({required bool closeOutput}) {
+  Future<void> _join() {
     if (released) return Future<void>.value();
     requestClose();
     return _cancelling ??= Future<void>.sync(() async {
@@ -527,6 +513,7 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
         final joined = Future<void>.sync(() async => handle?.close())
             .then<void>(
               (_) {
+                requestError = null;
                 handleError = null;
                 handleSettled = true;
               },
@@ -536,7 +523,9 @@ final class _ScopedCurrentBodyWatch implements CurrentBodyWatch {
               },
             );
         await Future.wait([cancelled, joined]);
-        if (closeOutput && !_output.isClosed) await _output.close();
+        // Stream completion may await this method through onCancel. Native
+        // cleanup must not wait for a listener to consume done or resume.
+        if (!_output.isClosed) unawaited(_output.close());
         if (error == null) scope._releaseWatch(this);
       } finally {
         _cancelling = null;

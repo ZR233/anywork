@@ -227,12 +227,28 @@ impl HistoryStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         HistoryStatus {
-            pending_events: self.inner.limits.pending_events as usize
+            pending_events: state.pending.events.len(),
+            pending_bytes: state.pending.bytes,
+            retained_events: self.inner.limits.pending_events as usize
                 - self.inner.item_budget.available_permits(),
-            pending_bytes: self.inner.limits.pending_bytes as usize
+            retained_bytes: self.inner.limits.pending_bytes as usize
                 - self.inner.byte_budget.available_permits(),
             write_error: state.write_error.clone(),
             accepting: state.accepting,
+        }
+    }
+
+    fn observe_status(&self, committed: bool) {
+        if tracing::enabled!(target: "conversation_work", tracing::Level::DEBUG) {
+            let status = self.status();
+            tracing::debug!(target: "conversation_work",
+                history_pending_events = status.pending_events,
+                history_pending_bytes = status.pending_bytes,
+                history_retained_events = status.retained_events,
+                history_retained_bytes = status.retained_bytes,
+                committed,
+                "history pending and retained memory"
+            );
         }
     }
     /// Atomic, bounded acceptance. Capacity is explicit so the producer can keep processing
@@ -251,6 +267,7 @@ impl HistoryStore {
         self.inner.admission.lock().await
     }
 
+    #[tracing::instrument(name = "history_accept", target = "conversation_work", level = "debug", skip_all, fields(thread_id = self.inner.thread_id))]
     pub(crate) async fn accept_locked(
         &self,
         _admission: &tokio::sync::MutexGuard<'_, ()>,
@@ -376,7 +393,7 @@ impl HistoryStore {
         });
         let prepared = new
             .into_iter()
-            .map(|(event, _)| event.clone())
+            .map(|(event, retained)| (event.clone(), retained))
             .collect::<Vec<_>>();
         let hash_reservation = reservation.clone();
         let hash_task = self.inner.operations.token();
@@ -384,11 +401,11 @@ impl HistoryStore {
             let _hash_task = hash_task;
             let prepared = prepared
                 .into_iter()
-                .map(|event| {
+                .map(|(event, retained)| {
                     let bodies = (0..event.bodies.len())
                         .map(|ordinal| db::Body::from_event(&event, ordinal))
                         .collect::<Vec<_>>();
-                    (event, bodies)
+                    (event, bodies, retained)
                 })
                 .collect::<Vec<_>>();
             (prepared, hash_reservation)
@@ -409,11 +426,12 @@ impl HistoryStore {
             .filter(|head| *head <= i64::MAX as u64)
             .ok_or_else(|| HistoryError::InvalidEvent("history sequence exhausted".into()))?;
         let mut seq = state.head;
-        for (mut event, body_headers) in prepared {
+        for (mut event, body_headers, retained_bytes) in prepared {
             seq += 1;
             event.header.seq = seq;
             Arc::make_mut(&mut state.pending).insert(Arc::new(Accepted {
                 event,
+                retained_bytes,
                 body_headers,
                 _reservation: reservation.clone(),
             }))?;
@@ -426,6 +444,8 @@ impl HistoryStore {
         }
         state.head = final_head;
         self.inner.changed.send_replace(final_head);
+        drop(state);
+        self.observe_status(false);
         Ok(sequences.into_iter().flatten().collect())
     }
     pub(super) async fn latest_record(&self, row: &str) -> Result<Option<Record>> {
@@ -444,6 +464,7 @@ impl HistoryStore {
     }
     /// A failed or cancelled transaction leaves the same pending events available for retry.
     /// New accepted batches may arrive during IO and are not acknowledged by this flush.
+    #[tracing::instrument(name = "history_flush", target = "conversation_work", level = "debug", skip_all, fields(thread_id = self.inner.thread_id))]
     pub async fn flush(&self) -> Result<()> {
         let _flush = self.inner.flush.lock().await;
         let snapshot = self
@@ -485,6 +506,9 @@ impl HistoryStore {
             Arc::make_mut(&mut state.pending).remove_through(through)?;
             state.write_error = None;
         }
+        drop(state);
+        drop(snapshot);
+        self.observe_status(result.is_ok());
         result
     }
     pub async fn close(&self) -> Result<()> {

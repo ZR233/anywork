@@ -14,15 +14,10 @@ use std::path::Path;
 pub(crate) enum ExecutionWorkspaceCheck {
     Audit,
     Prepare,
-    Execute,
 }
 
 impl StudioThreadFactory {
     pub(crate) async fn verify_project_workspace(&self, project: &WorkspaceRecord) -> Result<()> {
-        self.services
-            .store
-            .ensure_archive_execution_allowed(&project.id, None)
-            .await?;
         let identity = self
             .resolve_workspace_identity(project, Path::new(&project.path))
             .await
@@ -38,18 +33,12 @@ impl StudioThreadFactory {
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
         check: ExecutionWorkspaceCheck,
     ) -> Result<()> {
-        if check != ExecutionWorkspaceCheck::Audit {
-            self.services
-                .store
-                .ensure_archive_execution_allowed(&thread.workspace_id, Some(&thread.id))
-                .await?;
-        }
         let associated = self.project_record(&thread.workspace_id).await?;
         let frozen = self.services.store.workspace_identity(&thread.id).await?;
         if let Some(bot) = self
             .services
             .bots
-            .config_for_thread(&thread.root_thread_id)
+            .saved_config_for_thread(&thread.root_thread_id)
             .await?
         {
             ensure!(
@@ -63,10 +52,6 @@ impl StudioThreadFactory {
                 .workspace_migration_complete(&bot, &thread.id, &associated.path)
                 .await?;
             if !complete {
-                ensure!(
-                    check != ExecutionWorkspaceCheck::Execute,
-                    "bot execution files have not completed materialization"
-                );
                 ensure!(
                     associated.ssh_alias.is_none(),
                     "old bot migration source has no proven local binding"
@@ -104,7 +89,7 @@ impl StudioThreadFactory {
             );
             Self::verify_resolved_execution_identity(&identity).await?;
             if check != ExecutionWorkspaceCheck::Audit {
-                self.ensure_bot_execution_workspace(thread, snapshot)
+                self.verify_saved_bot_execution_workspace(thread, snapshot)
                     .await?;
             }
             return Ok(());

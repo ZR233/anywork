@@ -113,6 +113,14 @@ class _TimelineOwnedBodyConnectorState
       _cancel();
       return;
     }
+    if (widget.historyReference case final history?) {
+      final initial = TimelineInitialBodyReads.read(context, history);
+      if (_window == null && _error == null && initial != null) {
+        _window = initial.data;
+        _error = initial.error;
+      }
+      if (_window != null || _error != null) return;
+    }
     if (_watch == null && !_loading && _error == null) {
       unawaited(_start(_declaredRead));
     }

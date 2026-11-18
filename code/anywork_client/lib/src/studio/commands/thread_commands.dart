@@ -800,7 +800,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       completion.completeError(error);
       return tracked;
     }
-    final task = _sendContinuation(intent, resend: false);
+    final task = _sendContinuation(intent);
     unawaited(
       task.then(completion.complete, onError: completion.completeError),
     );
@@ -809,13 +809,10 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
 
   /// 首次发送与已查明 NotFound 的原身份再发共用同一发送 helper。
   ///
-  /// 冻结的 thread/continuation/route CAS 与原 OperationId 原样透传。[resend]
-  /// 为 true 时，发送前的本地 guard 失败只把 typed 错误交回调用方：不删除
-  /// 意图、不 reject 原操作、不分配新 ID，原 unknown 身份与观察责任保持不变。
+  /// 发送本次意图冻结的 thread/continuation/route CAS 与 OperationId。
   Future<ContinueThreadCommandReply> _sendContinuation(
-    _ContinuationIntent intent, {
-    required bool resend,
-  }) {
+    _ContinuationIntent intent,
+  ) {
     final operation = intent.operation!;
     final key = 'continue:${intent.threadId}';
     final intentKey = '${intent.threadId}:${intent.continuationId}';
@@ -833,19 +830,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             when status.blocksNewExecution) {
           throw _closedReadOnlyFailure;
         }
-        if (resend) {
-          _ensureOpen();
-          _throwIfAccessBlockedForThread(intent.threadId);
-          // The reconcile read and this dispatch are separate steps: state
-          // may have changed in between. A determined rejection must never
-          // reach the transport again under this identity.
-          final state = operation.state.value;
-          if (state.failurePhase == OperationPhase.rejected) {
-            throw StateError(
-              'The continuation identity reached a terminal disposition',
-            );
-          }
-        }
+
         _throwIfExecutionClosed(intent.threadId);
         final recoveryIssue = _executionBlockerForThread(intent.threadId);
         if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
@@ -879,7 +864,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       } catch (error) {
         if (transportInvoked) {
           _failOperation(operation, error);
-        } else if (!resend) {
+        } else {
           // The allocated ID was never sent and must not be reconciled as an
           // unknown operation after a local lane-time rejection.
           operation.reject(error);
@@ -887,9 +872,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
             _continuationIntents.remove(intentKey);
           }
         }
-        // A resend blocked before dispatch keeps the original unknown identity
-        // and its observation responsibility; nothing is rejected or replaced.
-        if (!resend && _isLatest(operation)) {
+        if (_isLatest(operation)) {
           _fail(key, intent.threadId, error);
         }
         rethrow;
@@ -1444,11 +1427,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     return false;
   }
 
-  /// 已存在意图按原身份回查一次；仅回查本身的 NotFound 才允许原身份再发。
-  ///
-  /// 已受理就沿用原回执；NotFound 证明该身份从未被受理，此时在串行 lane 内
-  /// 复核准入后以冻结输入与**同一 OperationId** 再发，不换编号、不递归公共
-  /// continueThread；其它回查错误原样上抛，保留未知结果，不盲目重发。
+  /// 仅查询当前 owner 仍保留的操作；NotFound 不证明未受理，不触发重发。
   Future<ContinueThreadCommandReply> _reconcileExistingIntent(
     _ContinuationIntent intent,
   ) async {
@@ -1457,43 +1436,15 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       throw StateError('A continuation intent has no operation identity');
     }
     final ContinuationOperationView view;
-    // A determined rejection proves this intent reached a terminal local
-    // disposition. Re-sending it after a NotFound would admit a second attempt
-    // under the frozen identity and only then reject the handle after the
-    // transport accepted it: fail closed instead. A held receipt is different:
-    // the original acceptance keeps its observation duty and later guards
-    // still return their typed failures through the normal resend path.
-    void throwIfDefinitelyDisposed() {
-      final state = operation.state.value;
-      if (state.failurePhase == OperationPhase.rejected) {
-        throw state.error ??
-            StateError('The continuation intent was already rejected');
-      }
-    }
-
-    try {
-      // 只读回查走并行跟踪的 run：它不排在 mutation 串行队列里，后续再发的
-      // enqueue 不会在持有同串行 lane 的闭包内等待自己。
-      view = await _lane.run(() {
-        _throwIfAccessBlockedForThread(intent.threadId);
-        return _api.readContinuationOperation(
-          intent.threadId,
-          operation.id.value,
-        );
-      });
-    } on StudioFailure catch (error, stackTrace) {
-      if (error.code != StudioFailureCode.notFound) {
-        Error.throwWithStackTrace(error, stackTrace);
-      }
-      // The backend proves this identity was never admitted: resend the frozen
-      // input under the SAME operation id after the serial lane re-checks
-      // admission. The intent, its unknown protection and its observation
-      // responsibility stay with the original identity.
-      // The read itself may have raced a reentrant disposition change, so the
-      // frozen identity is re-checked before any dispatch decision.
-      throwIfDefinitelyDisposed();
-      return _sendContinuation(intent, resend: true);
-    }
+    // A missing current identity is not proof that the command was never admitted.
+    // Keep the unknown result for observation; never resend from a negative read.
+    view = await _lane.run(() {
+      _throwIfAccessBlockedForThread(intent.threadId);
+      return _api.readContinuationOperation(
+        intent.threadId,
+        operation.id.value,
+      );
+    });
     if (view.threadId != intent.threadId ||
         view.operationId != operation.id.value) {
       throw StateError('Continuation read did not match the frozen identity');
@@ -1882,9 +1833,7 @@ final class _StopFlight {
 /// 一个 (会话, 继续点) 意图的一次性冻结身份与唯一在途结果。
 ///
 /// Thread、continuation 身份、route CAS 与 OperationId 在首次创建时冻结；
-/// 回执丢失或页面离开后，这个身份仍然可用：再次显式点击先按它回查原操作，
-/// 仅当回查证明 NotFound 时才以同一身份再发冻结输入，不换编号，也不会同时
-/// 存在两个操作。
+/// 回执丢失后保持原意图供当前态观察；未知结果不自动重发。
 final class _ContinuationIntent {
   _ContinuationIntent({
     required this.threadId,

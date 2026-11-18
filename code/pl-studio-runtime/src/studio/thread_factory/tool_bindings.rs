@@ -403,23 +403,21 @@ impl StudioThreadFactory {
                     "project target disappeared; reactivate this Thread".into(),
                 )
             })?;
-        self.verify_execution_workspace(
-            &thread.clone().into(),
-            Some(snapshot),
-            super::ExecutionWorkspaceCheck::Execute,
-        )
-        .await
-        .map_err(Self::workspace_usage_error)?;
-        self.ensure_bot_execution_workspace(&thread.clone().into(), Some(snapshot))
-            .await?;
-        self.bind_bot_project(
-            id,
-            &thread.root_thread_id,
-            &mut project,
-            &binding.workspace_usage,
-            super::root_resources::BotWorkspacePreparation::Existing,
-        )
-        .await?;
+        if let Some(bot) = self
+            .services
+            .bots
+            .config_for_thread(&thread.root_thread_id)
+            .await
+            .map_err(|error| resource_error("read current bot owner", error))?
+        {
+            project.path = self
+                .services
+                .bots
+                .workspace_root(&bot)
+                .to_string_lossy()
+                .into_owned();
+            project.ssh_alias = None;
+        }
         ensure_same_target(&binding.project, &project)?;
         ensure_frozen_ssh_profile(&self.services.ssh_manager, binding.ssh_profile.as_ref()).await?;
         let child = thread.parent_thread_id.is_some();
@@ -506,7 +504,6 @@ impl StudioThreadFactory {
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
-                    verified_local: None,
                     assignment: binding.assignment.as_ref(),
                     workspace_usage: binding.workspace_usage.clone(),
                     thread_id: id,

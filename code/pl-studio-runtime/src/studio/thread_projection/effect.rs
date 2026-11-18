@@ -72,6 +72,11 @@ pub(in crate::studio) fn project_effect_items(
     let mut call_ids = BTreeSet::new();
     let mut turn_ids = BTreeSet::new();
     let mut unresolved_calls = BTreeSet::new();
+    let user_inputs = effect
+        .interactions
+        .iter()
+        .filter_map(|record| super::user_input::project_user_input(&thread.id, record).transpose())
+        .collect::<Result<Vec<_>, _>>()?;
 
     for change in effect.inputs.iter() {
         let id = match change {
@@ -229,6 +234,23 @@ pub(in crate::studio) fn project_effect_items(
     for permission in effect.permissions.iter() {
         call_ids.insert(permission.call_id.as_str());
     }
+    // An interaction can be the only change after a cold reopen. Its invocation still belongs to
+    // Current even when there is no task/delivery in this effect and no History terminal original.
+    for user_input in &user_inputs {
+        let call_id = pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
+            .ok_or_else(|| {
+                ProjectionError::UserInput(format!(
+                    "user-input interaction `{}` names no tool call",
+                    user_input.interaction_id()
+                ))
+            })?;
+        if !existing
+            .get(&order::tool_id(call_id))
+            .is_some_and(|item| item.tool().is_some())
+        {
+            call_ids.insert(call_id);
+        }
+    }
     for delivery in effect.deliveries.iter() {
         call_ids.insert(delivery.call_id.as_str());
     }
@@ -322,7 +344,7 @@ pub(in crate::studio) fn project_effect_items(
                     effect.committed_at,
                 )?,
             )
-        } else if let Some(saved) = existing.get(&tool_id) {
+        } else if let Some(saved) = existing.get(&tool_id).filter(|item| item.tool().is_some()) {
             (
                 saved.turn_id.as_str(),
                 super::tools::project_saved_tool_call(
@@ -371,10 +393,7 @@ pub(in crate::studio) fn project_effect_items(
     // （提问工具或 plan_submit），不建立第二条持久化记录。交互身份给出它所属的 call，条目因此保留
     // ID、ordinal 与创建时间，只更新问答正文；同一次 effect 里刚投影的条目优先，其次是已提交的
     // durable 正文。
-    for record in effect.interactions.iter() {
-        let Some(user_input) = super::user_input::project_user_input(&thread.id, record)? else {
-            continue;
-        };
+    for user_input in user_inputs {
         let Some(call_id) =
             pl_core::tool::opaque::interaction_tool_call_id(user_input.interaction_id())
         else {

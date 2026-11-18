@@ -5438,7 +5438,6 @@ class DemoStudioTransport extends StudioTransport
       state: accepted.turnId == null
           ? const PendingContinuation()
           : ConsumedContinuation(accepted.turnId!),
-      durable: false,
       receipt: accepted.receipt,
     );
   }

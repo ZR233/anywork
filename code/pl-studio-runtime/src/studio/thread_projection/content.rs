@@ -175,30 +175,3 @@ pub(super) fn text_content(content: &[ContextContent]) -> String {
         })
         .collect()
 }
-
-/// 无正文控制输入的请求摘要：绑定会话、用途、继续点与调用方冻结的模型路由版本。
-///
-/// 控制输入没有 host 提交正文可摘要，它的「内容」就是这次继续针对的继续点与它观察到的路由
-/// 版本。三项都在首次受理时确定并由身份索引保留首写值，所以同一 operationId 的同一请求永远
-/// 得到同一个摘要；继续点或路由版本不同即明确冲突，而不是被当成原回执重放。
-pub(in crate::studio) fn continuation_request_digest(
-    thread_id: &str,
-    point_id: &str,
-    expected_model_route_revision: Option<u64>,
-) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"pl.studio.continuation-request\0");
-    hasher.update(thread_id.as_bytes());
-    hasher.update([0]);
-    hasher.update(b"continuation");
-    hasher.update([0]);
-    hasher.update(point_id.as_bytes());
-    hasher.update([0]);
-    match expected_model_route_revision {
-        Some(revision) => hasher.update(revision.to_le_bytes()),
-        // 无法证明路由版本时也必须是一个确定的值，不能让缺失退化成「任意版本都匹配」。
-        None => hasher.update(b"unknown-route-revision"),
-    };
-    format!("sha256:{}", hex::encode(hasher.finalize()))
-}

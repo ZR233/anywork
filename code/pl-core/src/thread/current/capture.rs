@@ -40,17 +40,31 @@ impl ThreadHandle {
         &self,
         cancellation: CancellationToken,
     ) -> Result<ThreadCurrent, CurrentError> {
-        tokio::time::timeout(
+        let started = std::time::Instant::now();
+        let mut producer_captures = 0usize;
+        let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            self.capture_current_within_deadline(cancellation),
+            self.capture_current_within_deadline(cancellation, &mut producer_captures),
         )
         .await
-        .map_err(|_| CurrentError::CaptureTimedOut)?
+        .map_err(|_| CurrentError::CaptureTimedOut)
+        .and_then(std::convert::identity);
+        tracing::debug!(
+            target: "current_work",
+            runtime_epoch = %self.runtime_epoch,
+            current_capture_ms = started.elapsed().as_secs_f64() * 1000.0,
+            current_capture_producer_requests = producer_captures,
+            current_capture_stale_retries = producer_captures.saturating_sub(1),
+            success = result.is_ok(),
+            "current capture finished"
+        );
+        result
     }
 
     async fn capture_current_within_deadline(
         &self,
         cancellation: CancellationToken,
+        producer_captures: &mut usize,
     ) -> Result<ThreadCurrent, CurrentError> {
         let mut captured = None;
         loop {
@@ -83,6 +97,7 @@ impl ThreadHandle {
                     attempt_id,
                     handle,
                 } => {
+                    *producer_captures += 1;
                     // The owner continues polling prepared.execute while this handle waits. In
                     // particular, mailbox dispatch never blocks the producer that must answer it.
                     let stream = handle

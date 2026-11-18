@@ -90,10 +90,12 @@ pub fn cases() -> Vec<Case> {
     }
     for active_threads in [1, 32] {
         cases.push(Case {
-            name: format!("effects/reliable_history_no_call_material/active_{active_threads}/working_1"),
+            name: format!(
+                "effects/reliable_history_no_call_material/active_{active_threads}/working_1"
+            ),
             input: json!({"activeThreads": active_threads, "workingThreads": 1,
                 "effects": EFFECTS_PER_OPERATION,
-                "completion": "reliable history/checkpoint commit and flush ACK; no calls obligation"}),
+                "completion": "append-only history commit and flush ACK; no calls obligation"}),
             workload: Workload::Effects { active_threads },
         });
     }
@@ -133,8 +135,8 @@ impl Case {
         }
     }
 
-    /// Pure reads reuse immutable seeds. Empty effects update only bounded latest checkpoints and
-    /// watermarks. Billing/parallel cases always use a fresh fixture so history never drifts.
+    /// Pure reads reuse immutable seeds. Empty effects append History without Current captures.
+    /// Billing/parallel cases always use a fresh fixture so history never drifts.
     pub fn reusable(&self) -> bool {
         matches!(
             self.workload,
@@ -398,7 +400,7 @@ impl PreparedCase {
                     samples,
                     json!({"effects": EFFECTS_PER_OPERATION,
                     "activeThreads": active_threads, "workingThreads": 1,
-                    "historySequence": sequence, "checkpointFence": sequence,
+                    "historySequence": sequence,
                     "callsAdmittedTicket": writer.calls().admitted_ticket(),
                     "callsProcessedTicket": writer.calls().processed_ticket()}),
                 )

@@ -223,7 +223,7 @@ void main() {
             expect(reopenedSeed.id, seedSingle.id);
             expect(reopened.generation, greaterThan(display.generation));
             expect(reopened.appliedSets, 1);
-            expect(reopened.controller.messages.map((item) => item.id), ids);
+            expect(reopened.loadedCount, lessThan(total));
             samples.last.addAll({
               'switchThreadId': switchThreadId,
               'switchGeneration': reopened.generation,

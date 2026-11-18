@@ -159,7 +159,7 @@ void main() {
       )!;
       final attemptId = graph.timeline
           .lease('thread-main')!
-          .current
+          .current!
           .metadata
           .readerId;
       final connection = _timelineReader(graph, 'thread-main');
@@ -377,7 +377,7 @@ void main() {
         'start draft entered before Settings',
       );
       expect(
-        graph.timeline.lease('thread-main')!.current.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
         isNot(attemptId),
       );
       expect(graph.timeline.lease('thread-main') != null, isTrue);

@@ -10,7 +10,6 @@ use crate::{ExecutionItem, ExecutionShape};
 mod history;
 use anyhow::{Result, ensure};
 pub(in crate::studio) use history::{freeze_history_observation, freeze_history_original};
-pub(crate) use history::{frozen_execution_item, read_execution_item};
 use pl_core::{
     chat::{
         ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatKey, ContentData,
@@ -25,7 +24,6 @@ mod atom;
 pub(in crate::studio) use accepted::{accepted_inbox_draft, accepted_input_draft};
 mod descriptor;
 mod payload;
-mod restore;
 pub(crate) use atom::atom;
 use descriptor::{
     PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,

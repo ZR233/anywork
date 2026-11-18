@@ -129,6 +129,8 @@ cargo bench --locked -p pl-studio-runtime --features benchmarks --bench statisti
 
 `timeline-history-20k` 复用隔离环境与模拟供应商，通过正常对话轮次累计生成 20,000 条独立文本历史记录并确认落盘，冷重启后在同一基准上执行多次进程冷加载、会话切换与分页滚动采样，并在高历史基数下继续并发追加轮次以观测首内容加载耗时（参考 p95 目标 500 ms）、分位数帧耗时与进程存储 I/O，不通过直接写库或关闭持久同步来制造通过。
 
+`manual-gui --preset conversation-read-work --profile-read-samples` 使用同一原生 Profile 场景采集 20 次首开和 20 次切换。重复验证当前实现时，可用 `--profile-read-seed <上次输出目录>` 复制已关闭的合成数据，省去重新执行 400 个输入 Turn；仍由当前 Runtime 公开接口重新核对两个会话各 200 个输入 Turn、20000 条模型文本。采样报告保留数据来源、当前源码与全部原生／Dart／bridge 构件身份，计时口径和 500 ms 门槛不变。工程工具按调用目录定位当前工作区，不使用编译缓存中旧 checkout 的物理路径。
+
 ## 24.9 按需打开、交付与保存的证据口径
 
 Current 与 History 分别验收。Current 通过唯一 State assembler 交付小状态、准确集合计数、有界分页与正文引用，owner 替换后旧引用失效；保存错误不依赖 History 的提交或回执。History 按固定 cut 读取原始事件、不可变正文及 Work/Single 分组，验证 pending 与落盘前缀合并、提交与回收交错、边界正文冻结及关闭取消。冷读不激活执行、不初始化工具，也不触发任一保存通路。

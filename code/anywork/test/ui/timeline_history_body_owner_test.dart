@@ -2,6 +2,9 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_history_item_content.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
@@ -183,15 +186,18 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  for (final source in <ChatSourceId>[
-    const ForegroundTurnChatSource(turnId: 'turn'),
-    const InputChatSource(inputId: 'input'),
+  for (final (source, failed) in <(ChatSourceId, bool)>[
+    (const ForegroundTurnChatSource(turnId: 'turn'), false),
+    (const InputChatSource(inputId: 'input'), false),
+    (const InputChatSource(inputId: 'input'), true),
   ]) {
     testWidgets(
-      'resolved historical ${source.runtimeType} keeps its body read owner',
+      'resolved historical ${source.runtimeType} keeps its body read owner (failed=$failed)',
       (tester) async {
         const text = '独立历史正文🙂';
         final bytes = utf8.encode(text);
+        final transferred = source is InputChatSource;
+        final prefix = utf8.encode('独立历史');
         final unit = TimelineDisplayUnit(
           block: DisplayBlock(
             id: 'row',
@@ -226,11 +232,11 @@ void main() {
         unit.expansion.readHistoryBody = (generation, reference, range) async {
           expect(identical(generation, unit.expansion.bodyGeneration), isTrue);
           expect(reference.ownerEventId, 'event');
-          expect(range.offset, 0);
+          expect(range.offset, transferred ? prefix.length : 0);
           reads++;
           return ContentWindow(
-            offset: 0,
-            bytes: bytes,
+            offset: range.offset,
+            bytes: bytes.sublist(range.offset),
             generation: reference.bodyId,
             availableThrough: bytes.length,
             sealed: true,
@@ -264,6 +270,54 @@ void main() {
             ),
           ),
         );
+        final original = ChatItemPresentation.forUnit(unit);
+        final prototype = ChatItemPresentation.forRecord(
+          (unit.body as SingleDisplayBlock).record,
+          id: unit.id,
+        ).resolvePresentation(item);
+        final body = transferred
+            ? TimelineInitialHistoryContent(
+                content: (
+                  identity: timelineHistoryItemIdentity(prototype),
+                  result: AsyncSnapshot.withData(
+                    ConnectionState.done,
+                    TimelineHistoryItemContent(
+                      item: prototype,
+                      bodyReads: {
+                        historyBodyIdentity(
+                          item.bodies.single.historyReference!,
+                        ): failed
+                            ? AsyncSnapshot.withError(
+                                ConnectionState.done,
+                                StateError('history body unavailable'),
+                              )
+                            : AsyncSnapshot.withData(
+                                ConnectionState.done,
+                                ContentWindow(
+                                  offset: 0,
+                                  bytes: prefix,
+                                  generation: 'original-window',
+                                  availableThrough: bytes.length,
+                                  sealed: true,
+                                ),
+                              ),
+                      },
+                    ),
+                  ),
+                ),
+                child: TimelineCanonicalPayloadConnector(
+                  item: original,
+                  threadId: 'thread',
+                  isActive: () => true,
+                  openHistory: () =>
+                      throw StateError('unexpected second query'),
+                  render: (resolved) => ChatItemView(
+                    item: resolved,
+                    bodyBuilder: (_, text) => Text(text),
+                  ),
+                ),
+              )
+            : ChatItemView(item: item, bodyBuilder: (_, text) => Text(text));
         await tester.pumpWidget(
           MaterialApp(
             theme: pureStudioTheme(),
@@ -273,17 +327,30 @@ void main() {
               ...GlobalMaterialLocalizations.delegates,
             ],
             supportedLocales: AppLocalizations.supportedLocales,
-            home: Scaffold(
-              body: ChatItemView(
-                item: item,
-                bodyBuilder: (_, text) => Text(text),
-              ),
-            ),
+            home: Scaffold(body: body),
           ),
         );
         await tester.pumpAndSettle();
-        expect(find.text(text), findsOneWidget);
-        expect(reads, 1);
+        if (failed) {
+          expect(
+            find.textContaining('history body unavailable'),
+            findsOneWidget,
+          );
+          expect(find.text(text), findsNothing);
+        } else if (transferred) {
+          expect(find.text('独立历史'), findsOneWidget);
+          expect(reads, 0);
+          await tester.tap(
+            find.byKey(
+              StudioDriverKeys.timelineContentNextWindow(item.id, 'body'),
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(find.text('正文🙂'), findsOneWidget);
+        } else {
+          expect(find.text(text), findsOneWidget);
+        }
+        expect(reads, failed ? 0 : 1);
         await tester.pumpWidget(const SizedBox());
         expect(unit.expansion.bodyActive, isFalse);
         expect(tester.takeException(), isNull);

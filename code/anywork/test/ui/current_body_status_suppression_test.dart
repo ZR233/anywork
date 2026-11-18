@@ -37,7 +37,7 @@ CurrentContentRef _bodyRef(String ownerId) => CurrentContentRef(
 
 final class _BodyStatusTransport extends RecordingDemoTransport {
   final changed = Completer<HistoryCut>();
-  String? currentOwnerId;
+  final currentOwner = Completer<String>();
 
   @override
   Future<CurrentReader> openCurrentReader(
@@ -50,7 +50,9 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
       currentProtocolVersion: currentProtocolVersion,
       demand: demand,
     );
-    currentOwnerId ??= reader.metadata.currentOwnerId;
+    if (!currentOwner.isCompleted) {
+      currentOwner.complete(reader.metadata.currentOwnerId);
+    }
     return reader;
   }
 
@@ -61,6 +63,7 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
   }) async {
     final reader = TestHistoryReader(threadId: threadId, cut: _cut);
     reader.onTimeline = (cut, cursor, demand) async {
+      final runId = await currentOwner.future;
       expectSync(cut, _cut);
       expectSync(cursor, isNull);
       return HistoryTimelinePage(
@@ -73,7 +76,7 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
             head: SingleHistoryRow(
               HistoryEntityHead(
                 entityId: _atomId,
-                runId: currentOwnerId,
+                runId: runId,
                 source: const ForegroundTurnChatSource(turnId: _turnId),
                 kind: ChatAtomKind.text,
                 delivery: ChatDeliveryKind.foreground,

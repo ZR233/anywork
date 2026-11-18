@@ -744,11 +744,21 @@ async fn save(
         }
         // This denotes completed capture, not a prediction of successful writing.
         current.saved_at = utc_millis();
-        ensure!(!cancellation.is_cancelled(), "current capture cancelled");
-        file.validate(&current, Some(&owner.epoch))?;
-        file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
-        ensure!(!cancellation.is_cancelled(), "current capture cancelled");
-        publish(file, shared, Arc::new(current)).await
+        let captured = std::time::Instant::now();
+        let result = async {
+            ensure!(!cancellation.is_cancelled(), "current capture cancelled");
+            file.validate(&current, Some(&owner.epoch))?;
+            file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
+            ensure!(!cancellation.is_cancelled(), "current capture cancelled");
+            publish(file, shared, Arc::new(current)).await
+        }.await;
+        tracing::debug!(target: "current_work",
+            thread_id = file.thread_id(),
+            current_save_ms = captured.elapsed().as_secs_f64() * 1000.0,
+            success = result.is_ok(),
+            "current save finished"
+        );
+        result
     }.await;
     complete_attempt(shared, result)
 }
@@ -774,8 +784,17 @@ async fn finish(
         }
         Err(error) => return complete_attempt(shared, Err(error)),
     };
+    let captured = std::time::Instant::now();
     shared.update(|state| state.final_current = Some(current.clone()));
-    save_final(file, shared, current, &mut owner.verified_resources).await
+    let result = save_final(file, shared, current, &mut owner.verified_resources).await;
+    tracing::debug!(target: "current_work",
+        thread_id = file.thread_id(),
+        current_save_ms = captured.elapsed().as_secs_f64() * 1000.0,
+        success = result.is_ok(),
+        final_save = true,
+        "current save finished"
+    );
+    result
 }
 
 async fn save_final(
@@ -822,6 +841,11 @@ async fn publish(
     );
     let thread_id = current.thread_id.clone();
     file.save(current).await?;
+    tracing::debug!(target: "current_work",
+        thread_id = file.thread_id(),
+        current_snapshot_age_ms = utc_millis().saturating_sub(captured_at).max(0),
+        "current capture saved"
+    );
     super::state::clear_checkpoint_recovery(&thread_id);
     shared.update(|state| {
         state.view.receipt = Some(receipt.clone());

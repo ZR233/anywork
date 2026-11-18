@@ -96,24 +96,26 @@ final class ChatItemPresentation {
     ]);
   }
 
-  ChatItemPresentation resolvePayload(InlinePayload payload) {
-    final value = decodePayload(id, payload);
-    return ChatItemPresentation(
-      id: id,
-      compatibility: value.compatibility,
-      type: value.type,
-      data: value.data,
-      bodies: value.bodies,
-      raw: value.raw,
-      createdAt: createdAt ?? value.createdAt,
-      authorId: authorId == 'unknown' ? value.authorId : authorId,
-      presentationContract: value.presentationContract,
-      diagnostic: value.diagnostic,
-      displayUnit: displayUnit,
-      atom: atom,
-      displayRecord: displayRecord,
-    );
-  }
+  ChatItemPresentation resolvePayload(InlinePayload payload) =>
+      resolvePresentation(decodePayload(id, payload));
+
+  /// Reuses parsed immutable content while keeping this row's display owner.
+  ChatItemPresentation resolvePresentation(ChatItemPresentation value) =>
+      ChatItemPresentation(
+        id: id,
+        compatibility: value.compatibility,
+        type: value.type,
+        data: value.data,
+        bodies: value.bodies,
+        raw: value.raw,
+        createdAt: createdAt ?? value.createdAt,
+        authorId: authorId == 'unknown' ? value.authorId : authorId,
+        presentationContract: value.presentationContract,
+        diagnostic: value.diagnostic,
+        displayUnit: displayUnit,
+        atom: atom,
+        displayRecord: displayRecord,
+      );
 
   bool get presentsFiles {
     if (type != 'tool' || presentationContract != 'builtin.show_files@1') {

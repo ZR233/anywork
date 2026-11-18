@@ -16,7 +16,14 @@ impl StudioRuntime {
             execution_activation = 1,
             "execution owner requested"
         );
-        // Directory identity/backend admission precedes workspace, history, model and tool reads.
+        // A resident owner is the current authority. Cold preparation belongs only to the
+        // materialization branch below, never to the admission of an already loaded Thread.
+        if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
+            self.check_thread_execution_access(&self.read_owned_thread(id).await?.into())?;
+            self.require_session(id)?.ensure_agent_admission_open(id)?;
+            self.residency.touch(id).await;
+            return Ok(thread);
+        }
         let requested_activation = self.thread_factory.activation(id)?;
         // Keep the preflight snapshot and its platform-dependent IO state out of ancestry
         // activation's inline future, while retaining this caller's cancellation ownership.
@@ -73,7 +80,6 @@ impl StudioRuntime {
                 break;
             }
             let record = self.read_owned_thread(&cursor).await?;
-            self.store.ensure_agent_execution_allowed(&cursor).await?;
             // The requested target was just verified by preflight (also for hot owners).
             // Only additional cold ancestors need their own physical workspace check.
             if cursor != id {
@@ -138,7 +144,6 @@ impl StudioRuntime {
 
     async fn verify_activation_preflight(&self, id: &str) -> Result<()> {
         let record = self.read_protocol_thread(id).await?;
-        self.store.ensure_agent_execution_allowed(id).await?;
         self.check_thread_read_access(&record)?;
         let live = self
             .session_of(id)
@@ -147,7 +152,6 @@ impl StudioRuntime {
         self.verify_thread_execution_preparation(&record, live.as_ref())
             .await?;
         self.check_thread_execution_access(&record)?;
-        self.store.ensure_agent_execution_allowed(id).await?;
         Ok(())
     }
 }
@@ -169,9 +173,6 @@ mod future_sizes {
     fn activation_futures_remain_bounded() {
         check("directory lookup", |runtime: &'static StudioRuntime| {
             runtime.read_owned_thread("size")
-        });
-        check("execution seal", |runtime: &'static StudioRuntime| {
-            runtime.store.ensure_agent_execution_allowed("size")
         });
         check(
             "first input admission",

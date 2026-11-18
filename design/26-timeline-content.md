@@ -105,11 +105,15 @@ Work 的成员引用和组关闭等 metadata 必须来自该行接纳的同一 c
 
 所有历史 apply 串行执行：前一个 controller 操作完成后才启动下一次 UI 应用。generation 覆盖换 Thread、换 reader、页面销毁和显示接管；旧 query 成功、失败或 finally 不能写入新 generation。普通绘制、动画或滚动不进业务 apply 队列，也不构成 ACK。
 
+主工作区在选择会话前向原时间线 owner 提供实际视口预算，时间线挂载后再按自身尺寸细化；首屏查询不等待一次额外绘制来建立预算。原 History 读取 owner 在组件提交队列之外，准备首屏最近的一项公开 Single 文本：解析 canonical metadata 并读取首个 64 KiB 正文窗口，将真实结果或读取错误随原 cut 的页面交给显示 lease。显示组件保留自己的行身份与正文读取 owner，直接接管已解析的 metadata 和首个不可变窗口，不重读、不再等待占位帧；错误仍在原行呈现，其余行按原挂载与披露资格读取。折叠工具和未公开正文不预读，后续范围仍沿原引用读取，取消与关闭由原 reader 收束。查询开始不以绘制回执为前提。
+
 controller 调用异常时，无法证明列表未被部分修改，因此终止当前 generation，并以新 HistoryReader 的 Set 重建；不盲重放 Prepend。重建成功前保留旧画面，成功后一次替换；失败显示真实错误，不删除草稿、Current 状态或无关会话。
 
 同组 Current 行与历史 row 以业务身份合并，不依赖到达顺序。Current 可显示执行资格和最新正文；canonical 历史出现后仍保留同一 row/entity 身份。旧组只读历史自身 bytes，不用后来 Current 内容替换。若两个存储短暂不一致，保留最后已见真实状态和等待说明，不伪造成功终态。
 
 关闭显示 owner 先撤销新需求，再取消自己拥有的 History/Current reader 与 body watches 并等待 join。一个 scope 失效不关闭共享 HistoryStore、其他页面或业务会话；迟到 Future 只能结算原 generation。
+
+Current 正文的打开失败或读取过期通过正文流交付，不作为原生句柄关闭失败长期保留。关闭等待实际取消与句柄回收，不等待显示消费者读取流终态；消费者从未监听或已暂停也必须能够收束。只有真实取消／关闭失败保留在原 owner 的清理报告中。
 
 ## 26.9 实时状态与展示组件
 

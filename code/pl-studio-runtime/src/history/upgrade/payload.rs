@@ -496,13 +496,12 @@ impl<C: ConnectionTrait> HistoryBodySource for InlineBodySource<'_, C> {
         let rows = self
             .connection
             .query_all_raw(statement(
-                "SELECT chunk_no*? AS chunk_offset,data FROM legacy_inline_body_chunks \
-                 WHERE source_ref=? AND chunk_no*?<? AND (chunk_no+1)*?>? \
+                "SELECT chunk_no*?1 AS chunk_offset,data FROM legacy_inline_body_chunks \
+                 WHERE source_ref=?2 AND chunk_no*?1<?3 AND (chunk_no+1)*?1>?4 \
                  ORDER BY chunk_no",
                 vec![
                     db::number(BODY_CHUNK_BYTES as u64)?.into(),
                     self.source_ref.clone().into(),
-                    db::number(BODY_CHUNK_BYTES as u64)?.into(),
                     db::number(end)?.into(),
                     db::number(offset)?.into(),
                 ],

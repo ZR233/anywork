@@ -622,6 +622,8 @@ impl ThreadHandle {
     }
 
     /// Atomically mutates producer-owned opaque records without projecting them into model context.
+    /// Services an active owner through its mailbox, including while a tool awaits a message whose
+    /// delivery first needs this marker. This does not start model or tool execution.
     ///
     /// # Errors
     /// Rejects stale revisions, invalid identities, overflow or a closed Thread without partial writes.
@@ -630,8 +632,8 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Extensions(mutations, reply))
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::Extensions(mutations, reply))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?

@@ -64,10 +64,15 @@ impl WriterFixture {
             for thread in threads {
                 let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone()).await?;
                 let mut projection = LiveProjection::new();
-                projection.bind_execution_history(
+                projection.bind_execution(
                     sink.0.channel.order_index(),
                     pl_core::thread::current::RuntimeEpoch::new(),
-                    fixture.store.history(&thread.id).await?,
+                    fixture
+                        .store
+                        .history(&thread.id)
+                        .await?
+                        .database_id()
+                        .to_owned(),
                 )?;
                 fixture.threads.push(ActiveThread {
                     sink,

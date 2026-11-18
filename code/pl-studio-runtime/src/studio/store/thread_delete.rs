@@ -300,28 +300,7 @@ impl StudioStore {
         )
         .await
     }
-    pub(in crate::studio) async fn ensure_delete_execution_allowed(
-        &self,
-        thread_id: Option<&str>,
-    ) -> Result<()> {
-        if let Some(id) = thread_id {
-            let root = self
-                .directory_member(id)?
-                .map(|member| member.root_thread_id);
-            ensure!(
-                !self
-                    .thread_deletes()
-                    .await?
-                    .iter()
-                    .any(
-                        |operation| operation.thread_ids.iter().any(|member| member == id)
-                            || root.as_deref() == Some(operation.root_id.as_str())
-                    ),
-                "Thread permanent deletion has sealed execution"
-            );
-        }
-        Ok(())
-    }
+
     pub(in crate::studio) async fn ensure_delete_read_allowed(
         &self,
         thread_id: &str,

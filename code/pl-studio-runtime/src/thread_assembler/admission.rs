@@ -16,36 +16,16 @@ impl AgentServices {
         thread: &ThreadHandle,
         workspace: WorkspaceAdmission<'_>,
     ) -> Result<()> {
-        self.store.ensure_agent_execution_allowed(id).await?;
         let snapshot = thread.snapshot();
         let record = self.record(id).await?;
-        self.store
-            .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
-            .await?;
         self.recovery.ensure_thread_read_access(&record)?;
-        let resources = match workspace {
-            WorkspaceAdmission::Explicit => {
-                self.factory
-                    .verify_execution_workspace(
-                        &record,
-                        Some(&snapshot),
-                        crate::studio::thread_factory::ExecutionWorkspaceCheck::Execute,
-                    )
-                    .await
-            }
-            WorkspaceAdmission::VerifiedReview(proof) => {
-                anyhow::ensure!(
-                    proof.target() == id,
-                    "workspace proof belongs to another target"
-                );
-                proof.confirm().await.map_err(anyhow::Error::from)
-            }
-        };
-        self.events.emit_recovery_state(
-            self.recovery
-                .apply_execution_workspace_check(&record, resources.as_ref().err()),
-        );
-        resources?;
+        if let WorkspaceAdmission::VerifiedReview(proof) = workspace {
+            anyhow::ensure!(
+                proof.target() == id,
+                "workspace proof belongs to another target"
+            );
+            proof.recheck()?;
+        }
         self.recovery.ensure_thread_execution_access(&record)?;
         anyhow::ensure!(
             !crate::studio::agent_close::is_explicitly_closed(&snapshot)?,
@@ -104,11 +84,8 @@ impl AgentServices {
             )
             .await?;
         if let WorkspaceAdmission::VerifiedReview(proof) = workspace {
-            proof.confirm().await?;
+            proof.recheck()?;
         }
-        self.store
-            .ensure_archive_execution_allowed(&record.workspace_id, Some(id))
-            .await?;
         Ok(())
     }
 }

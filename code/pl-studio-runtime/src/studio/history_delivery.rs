@@ -1,17 +1,10 @@
 //! Immutable delivery originals. Query positions belong to History, never to Current admission.
 use crate::history::{
-    HistoryDemand, HistoryError, HistoryEventDetail, HistoryEventsQuery, HistoryReader,
-    HistorySource,
+    HistoryDemand, HistoryEventDetail, HistoryEventsQuery, HistoryReader, HistorySource,
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::{context::OpaquePayload, thread::inbox::ThreadMessage};
 
-fn demand() -> HistoryDemand {
-    HistoryDemand {
-        max_rows: 128,
-        max_bytes: 64 * 1024,
-    }
-}
 pub(crate) fn source(thread_id: &str, kind: &str) -> HistorySource {
     HistorySource::Operation {
         operation_id: format!("studio.{kind}:{thread_id}"),
@@ -48,45 +41,6 @@ async fn decode<T: serde::de::DeserializeOwned>(
         "unsupported delivery producer contract"
     );
     Ok(serde_json::from_str(payload.content())?)
-}
-pub(crate) async fn parent_report(
-    reader: &HistoryReader,
-    thread: &str,
-    terminal: u64,
-) -> Result<Option<ThreadMessage>> {
-    let message = crate::studio::agent_close::terminal_report_id(thread, terminal);
-    let detail = match reader
-        .read_event(format!("parent_report:{message}"), demand())
-        .await
-    {
-        Ok(detail) => detail,
-        Err(HistoryError::NotFound(_)) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let original: ThreadMessage = decode(reader, &detail, "pl.studio.parent-report").await?;
-    ensure!(
-        original.id == message && detail.header.message_id.as_deref() == Some(message.as_str()),
-        "parent report identity differs"
-    );
-    Ok(Some(original))
-}
-pub(crate) async fn parent_report_bytes(
-    reader: &HistoryReader,
-    thread: &str,
-    terminal: u64,
-) -> Result<u64> {
-    let message = crate::studio::agent_close::terminal_report_id(thread, terminal);
-    match reader
-        .read_event(format!("parent_report:{message}"), demand())
-        .await
-    {
-        Ok(detail) => Ok(detail
-            .payload_ref
-            .context("parent report payload is missing")?
-            .byte_length),
-        Err(HistoryError::NotFound(_)) => Ok(0),
-        Err(error) => Err(error.into()),
-    }
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,24 +116,4 @@ pub(crate) async fn reports(
         });
     }
     Ok(page)
-}
-pub(crate) async fn review_exception(
-    reader: &HistoryReader,
-    id: &str,
-) -> Result<Option<crate::thread_assembler::review_delivery::ReviewDeliveryFact>> {
-    let event = match reader
-        .read_event(format!("review_delivery:{id}"), demand())
-        .await
-    {
-        Ok(event) => event,
-        Err(HistoryError::NotFound(_)) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let fact: crate::thread_assembler::review_delivery::ReviewDeliveryFact =
-        decode(reader, &event, "pl.studio.review-delivery").await?;
-    ensure!(
-        fact.message.id == id && event.header.message_id.as_deref() == Some(id),
-        "review delivery identity differs"
-    );
-    Ok(Some(fact))
 }

@@ -190,6 +190,14 @@ pub(super) enum MailboxCommand {
         mutations: Vec<extensions::ExtensionMutation>,
         reply: oneshot::Sender<Result<u64, ThreadError>>,
     },
+    /// Host-owned delivery markers must commit before their message is admitted. An active tool
+    /// can be waiting for that message, so routing this through the idle-only command queue deadlocks.
+    Extensions(
+        Vec<extensions::ExtensionMutation>,
+        oneshot::Sender<
+            Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError>,
+        >,
+    ),
     WakeAcceptedMessage {
         id: String,
         sequence: u64,
@@ -611,6 +619,14 @@ impl Owner {
                     Err(ThreadError::Closed)
                 } else {
                     self.receive_message_with_extensions(message, mutations)
+                };
+                let _ = reply.send(result);
+            }
+            MailboxCommand::Extensions(mutations, reply) => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.mutate_extensions(mutations)
                 };
                 let _ = reply.send(result);
             }

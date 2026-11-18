@@ -47,6 +47,7 @@ import '../conversation/acp/connectors/acp_workspace_connector.dart';
 import '../status/thread_status_bar.dart';
 import '../conversation/timeline/live_status/live_status_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
+import '../conversation/timeline/connectors/timeline_read_demand_viewport.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/connectors/file_reading_panel.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
@@ -331,9 +332,18 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                             const RecoveryCheckStatus(showChecking: false),
                             const Divider(height: 1),
                             Expanded(
-                              child: AgentWorkspacePane(
-                                threadId: selection.selectedThreadId,
-                                needsOpen: selection.needsOpen,
+                              child: TimelineReadDemandViewport(
+                                ownerIdentity: ref
+                                    .read(appGraphProvider)
+                                    .timeline,
+                                onDemand: ref
+                                    .read(appGraphProvider)
+                                    .timeline
+                                    .updateReadDemand,
+                                child: AgentWorkspacePane(
+                                  threadId: selection.selectedThreadId,
+                                  needsOpen: selection.needsOpen,
+                                ),
                               ),
                             ),
                           ],

@@ -94,7 +94,9 @@ pub(super) async fn event(db: &impl ConnectionTrait, id: &str) -> Result<Option<
         &format!("SELECT {COLUMNS} FROM history_events WHERE event_id=?"),
         vec![id.into()],
     ))
-    .await?
+    .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
     .map(decode)
     .transpose()
 }
@@ -105,7 +107,9 @@ pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
             "SELECT COALESCE(MAX(seq),0) AS seq FROM history_events",
             vec![],
         ))
-        .await?
+        .await.inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?
         .ok_or_else(|| HistoryError::Integrity("history head query returned no row".into()))?;
     u64::try_from(row.try_get::<i64>("", "seq")?)
         .map_err(|_| HistoryError::Integrity("negative history head".into()))
@@ -123,7 +127,9 @@ pub(super) async fn original_by_entity(
         ),
         vec![entity.into(), number(through)?.into()],
     ))
-    .await?
+    .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
     .map(decode)
     .transpose()
 }
@@ -139,19 +145,25 @@ pub(super) async fn latest_original(
         ),
         vec![number(through)?.into()],
     ))
-    .await?
+    .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
     .map(decode)
     .transpose()
 }
 pub(super) async fn head(db: &impl ConnectionTrait, row: &str, cut: u64) -> Result<Option<Record>> {
-    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![row.into(), number(cut)?.into()])).await?.map(decode).transpose()
+    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![row.into(), number(cut)?.into()])).await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?.map(decode).transpose()
 }
 pub(super) async fn anchor(db: &impl ConnectionTrait, row: &str) -> Result<Option<Record>> {
     db.query_one_raw(statement(
         &format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND is_anchor=1"),
         vec![row.into()],
     ))
-    .await?
+    .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
     .map(decode)
     .transpose()
 }
@@ -231,7 +243,9 @@ pub(super) async fn candidates(
 ) -> Result<Vec<Record>> {
     let (sql, values) = candidate_sql(query, cut, before, limit, COLUMNS)?;
     db.query_all_raw(statement(&sql, values))
-        .await?
+        .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
         .into_iter()
         .map(decode)
         .collect()
@@ -247,7 +261,9 @@ pub(super) async fn candidates_in_order(
 ) -> Result<Vec<Record>> {
     let (sql, values) = candidate_sql_order(query, cut, pivot, limit, COLUMNS, ascending)?;
     db.query_all_raw(statement(&sql, values))
-        .await?
+        .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
         .into_iter()
         .map(decode)
         .collect()
@@ -319,7 +335,9 @@ pub(super) async fn anchors(
 ) -> Result<Vec<(u64, String)>> {
     let (sql, values) = candidate_sql(query, cut, before, limit, "seq,row_key")?;
     db.query_all_raw(statement(&sql, values))
-        .await?
+        .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
         .into_iter()
         .map(|row| {
             Ok((
@@ -399,7 +417,9 @@ pub(super) async fn body(db: &impl ConnectionTrait, id: &str) -> Result<Option<B
         "SELECT * FROM history_bodies WHERE body_id=?",
         vec![id.into()],
     ))
-    .await?
+    .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
     .map(decode_body)
     .transpose()
 }
@@ -418,7 +438,9 @@ pub(super) async fn bodies(
     sql.push_str(" ORDER BY ordinal LIMIT ?");
     values.push((limit as i64).into());
     db.query_all_raw(statement(&sql, values))
-        .await?
+        .await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
         .into_iter()
         .map(decode_body)
         .collect()
@@ -441,14 +463,18 @@ pub(super) async fn window(
     }
     let first = start / BODY_CHUNK_BYTES as u64;
     let last = (end - 1) / BODY_CHUNK_BYTES as u64;
-    let rows = db.query_all_raw(statement("SELECT chunk_no,data FROM history_body_chunks WHERE body_id=? AND chunk_no BETWEEN ? AND ? ORDER BY chunk_no", vec![body.id.clone().into(), number(first)?.into(), number(last)?.into()])).await?;
+    let rows = db.query_all_raw(statement("SELECT chunk_no,data FROM history_body_chunks WHERE body_id=? AND chunk_no BETWEEN ? AND ? ORDER BY chunk_no", vec![body.id.clone().into(), number(first)?.into(), number(last)?.into()])).await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?;
     if rows.len() as u64 != last - first + 1 {
         return Err(HistoryError::Integrity("body chunk is missing".into()));
     }
     let mut bytes = Vec::with_capacity(length);
+    let mut loaded_bytes = 0usize;
     for (index, row) in rows.into_iter().enumerate() {
         let chunk = first + index as u64;
         let data: Vec<u8> = row.try_get("", "data")?;
+        loaded_bytes += data.len();
         let offset = chunk * BODY_CHUNK_BYTES as u64;
         let expected = (body.length - offset).min(BODY_CHUNK_BYTES as u64) as usize;
         if number(chunk)? != row.try_get::<i64>("", "chunk_no")? || data.len() != expected {
@@ -460,6 +486,12 @@ pub(super) async fn window(
         let upper = (end - offset).min(data.len() as u64) as usize;
         bytes.extend_from_slice(&data[lower..upper]);
     }
+    tracing::debug!(target: "conversation_work",
+        history_body_bytes_read = loaded_bytes,
+        history_body_chunks_read = last - first + 1,
+        source = "sqlite",
+        "history body chunks loaded"
+    );
     if start == 0 && end == body.length && Sha256::digest(&bytes).as_slice() != body.digest {
         return Err(HistoryError::Integrity("body digest differs".into()));
     }
@@ -484,6 +516,10 @@ pub(super) async fn insert(
                 ],
             ))
             .await?;
+            tracing::debug!(target: "conversation_work",
+                history_sql_write = 1u64, table = "history_body_chunks",
+                "history SQL write completed"
+            );
         }
     }
     Ok(())
@@ -537,10 +573,18 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
         ],
     ))
     .await?;
+    tracing::debug!(target: "conversation_work",
+        history_sql_write = 1u64, table = "history_events",
+        "history SQL write completed"
+    );
     Ok(())
 }
 pub(super) async fn insert_body_header(db: &impl ConnectionTrait, body: &Body) -> Result<()> {
     db.execute_raw(statement("INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) VALUES(?,?,?,?,?,?,?,?)", vec![body.id.clone().into(), body.owner.clone().into(), number(body.ordinal)?.into(), body.key.clone().into(), body.role.as_str().into(), number(body.length)?.into(), body.media_type.clone().into(), body.digest.clone().into()])).await?;
+    tracing::debug!(target: "conversation_work",
+        history_sql_write = 1u64, table = "history_bodies",
+        "history SQL write completed"
+    );
     Ok(())
 }
 
@@ -549,7 +593,9 @@ pub(super) async fn review_finish(
     turn: &str,
     cut: u64,
 ) -> Result<Option<Record>> {
-    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE query_class IS NOT NULL AND tool_name=? AND turn_id=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![pl_tool::finish_turn::TOOL_FINISH_TURN.into(), turn.into(), number(cut)?.into()])).await?.map(decode).transpose()
+    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE query_class IS NOT NULL AND tool_name=? AND turn_id=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![pl_tool::finish_turn::TOOL_FINISH_TURN.into(), turn.into(), number(cut)?.into()])).await.inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?.map(decode).transpose()
 }
 
 #[cfg(test)]

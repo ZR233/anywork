@@ -41,7 +41,6 @@ impl StudioRuntime {
         );
         let record = self.read_owned_thread(id).await?;
         ensure_user_root_target(&record, action)?;
-        self.store.ensure_agent_execution_allowed(id).await?;
         self.validate_prompt_owner(id, &session, &thread)?;
         Ok((record, thread, permit))
     }

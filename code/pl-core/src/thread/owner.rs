@@ -534,9 +534,6 @@ impl Owner {
                 Command::Application(update, reply) => {
                     let _ = reply.send(self.update_application(update));
                 }
-                Command::Extensions(mutations, reply) => {
-                    let _ = reply.send(self.mutate_extensions(mutations));
-                }
                 Command::Resources(resources, reply) => {
                     let result = if self.state.lifecycle == ThreadLifecycle::Open {
                         if !self
