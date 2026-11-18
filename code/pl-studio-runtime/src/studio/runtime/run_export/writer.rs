@@ -851,7 +851,7 @@ impl WriterWorker {
                 EventBodyV3::InferenceFinished {
                     status: fact.status.as_str().to_string(),
                     auxiliary: fact.auxiliary,
-                    billing: fact.record.clone(),
+                    billing: Box::new(fact.record.clone()),
                 },
             ));
         }
@@ -958,7 +958,7 @@ impl WriterWorker {
                     Some(thread_id.to_string()),
                     record.source,
                     EventBodyV3::Completion {
-                        header: record.header,
+                        header: Box::new(record.header),
                         atom: Box::new(record.atom),
                         payload: record.payload,
                         contents_manifest: record.contents_manifest,
