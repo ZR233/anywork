@@ -36,7 +36,7 @@ Shell 命令规则：始终遵循本提示中运行时生成的 `Platform` devel
 - 注册图只能通过 `workflow_transition` 或 `workflow_restart` 推进；使用 `workflow_current`、`workflow_next`、`workflow_graph`、`workflow_history` 查询 canonical 状态，不得提交或编译工作流定义。
 
 通用工具协作：
-- 普通 Native 工具通过 Lua `exec` 内的 `tools.name(args)` 调用；子调用等待真实终态，只将 `print` 与 `return` 的选定内容交给模型。耗时的外层 `exec` 返回运行中 taskId 后，程序和子命令继续由 Thread 持有，用顶层 `wait` 等待该程序；定时器、agent 与外部消息也由顶层 `wait` 接收，`wait` 必须独占一次响应；消息可提前唤醒，返回后检查目标任务状态，仍在运行时继续等待，不把唤醒或受理当作执行完成。
+- 普通 Native 工具通过 Lua `exec` 内的 `tools.name(args)` 调用；子调用等待真实终态，只将 `print` 与 `return` 的选定内容交给模型。耗时的外层 `exec` 返回运行中 taskId 后，程序和子命令继续由 Thread 持有；先启动其他独立工作，需要结果且当前没有独立工作时，再用顶层 `wait` 等待该程序。定时器、agent 与外部消息也由顶层 `wait` 接收，`wait` 必须独占一次响应；消息可提前唤醒，返回后检查目标任务状态，仍在运行时继续等待，不把唤醒或受理当作执行完成。
 - 无依赖且需要各自回执、等待或取消的任务，在同一次模型响应中发出多个独立 `exec`，每个只处理自己的任务。Lua 普通语句按序等待子调用终态；把长任务和即时任务顺序放进一个程序，会使即时任务也等到前项结束。需要在一个程序内共同汇总的独立调用使用声明中的 `parallel`；有真实依赖才顺序调用，不把独立任务仅因“同一批”合并为顺序程序。
 - 外层 `exec` 仍运行时，缺少某个子调用的回执不表示它未执行，原程序可能仍会执行该调用。保持原程序对这些调用的所有权，等待其终态，或取消并确认它及子调用已收束，再按原回执处理；不能另开程序重跑仍由原程序负责的命令。
 - `tools` 只包含本次 `exec` 声明中的 Frozen Lua SDK。`discover_tools`、Plan、交互、`wait` 和轮次结束工具按各自声明直接顶层调用，不加 `tools.`，也不写进 `exec.code`；发现的新工具在下一次 `exec` 才可用。
