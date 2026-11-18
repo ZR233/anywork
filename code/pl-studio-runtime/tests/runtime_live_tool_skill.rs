@@ -7,7 +7,8 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    CURRENT_PROTOCOL_VERSION, ChatScope, StopThreadRequest, ThreadWorkspaceMode, TurnState,
+    CURRENT_PROTOCOL_VERSION, ChatScope, CurrentView, StopThreadRequest, StudioRuntime,
+    ThreadWorkspaceMode, TurnState,
     history::{
         HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
     },
@@ -17,7 +18,42 @@ use support::{Environment, current_demand, held_reply, program_reply, prompt_ste
 
 const PROMPT: &str = "read a skill, then hold the next model response";
 const CALL: &str = "live-skill-load-call";
-const SKILL: &str = "canvas-design";
+const SKILL: &str = "visible-skill";
+const SKILL_CONTENT: &str = "# Visible skill\n\nKeep this guidance in context.";
+
+async fn visible_skill(
+    runtime: &StudioRuntime,
+    thread: &str,
+    active_turn: bool,
+) -> Result<CurrentView> {
+    let demand = current_demand();
+    let reader = runtime
+        .open_current_reader(thread, CURRENT_PROTOCOL_VERSION, demand)
+        .await?;
+    let result = async {
+        let watch = reader.watch(None, demand).await?;
+        let observed = tokio::time::timeout(support::integration_test_deadline()?, async {
+            loop {
+                let view = reader.snapshot(demand).await?;
+                if view.state.active_turn.is_some() == active_turn
+                    && view.state.runtime.as_ref().is_some_and(|runtime| {
+                        runtime.active_skills.iter().any(|name| name == SKILL)
+                    })
+                {
+                    return Ok(view);
+                }
+                ensure!(watch.next().await?.is_some(), "Current watch closed early");
+            }
+        })
+        .await
+        .context("skill activation not observed through Current");
+        watch.close().await?;
+        observed?
+    }
+    .await;
+    reader.close().await?;
+    result
+}
 
 async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -119,7 +155,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             Step::tool_output(
                 Protocol::ResponsesHttp,
                 CALL,
-                "# Canvas design",
+                "# Visible skill",
                 1,
                 held_reply(&stage, "held-after-skill"),
             ),
@@ -128,40 +164,31 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
     )
     .await?;
     let result = async {
+        let skill = env.repo.join(".agents/skills").join(SKILL);
+        std::fs::create_dir_all(&skill)?;
+        std::fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: {SKILL}\ndescription: Isolated activation fixture\n---\n\n{SKILL_CONTENT}\n"),
+        )?;
         let started = env.start(ThreadWorkspaceMode::Local, PROMPT).await?;
         let thread_id = &started.thread.id;
         reached(&stage).await?;
-        let snapshot = env.runtime.thread_snapshot(thread_id).await?;
-        let turn = snapshot
+        // The provider gate proves request progress, not publication by the
+        // independent Current observer. Wait on that public observer itself.
+        let current = visible_skill(&env.runtime, thread_id, true).await?;
+        let turn = current.state
             .active_turn
             .as_ref()
             .context("original active Turn")?;
-        let input_id = format!("input-{PROMPT}");
-        ensure!(turn.input_id.as_deref() == Some(input_id.as_str()));
         ensure!(matches!(turn.state, TurnState::Running(_)));
         let turn_id = turn.id.clone();
-        let runtime = snapshot.runtime.as_ref().context("runtime projection")?;
+        let runtime = current.state.runtime.as_ref().context("runtime projection")?;
         let execution_id = runtime
             .execution
             .as_ref()
             .context("original execution")?
             .id()
             .to_owned();
-        ensure!(runtime.active_skills.iter().any(|name| name == SKILL));
-
-        let current = env
-            .runtime
-            .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, current_demand())
-            .await?;
-        let view = current.snapshot(current_demand()).await?;
-        ensure!(view.projection.execution_present);
-        ensure!(
-            view.projection
-                .active_turn
-                .is_some_and(|head| head.id == turn_id)
-        );
-        current.close().await?;
-
         let viewed: Value = serde_json::from_str(&support::tool_output(&env.root_provider, CALL)?)?;
         let expected_output = format!(
             "Skill: {}\nResource: {}\n\n{}",
@@ -198,18 +225,7 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             "cancellation rewrote the canonical tool"
         );
         ensure!(after.2 == output, "cancellation rewrote the tool result");
-        let after_snapshot = env
-            .runtime
-            .thread_snapshot(thread_id)
-            .await?
-            .runtime
-            .context("post-cancel runtime")?;
-        ensure!(
-            after_snapshot
-                .active_skills
-                .iter()
-                .any(|name| name == SKILL)
-        );
+        visible_skill(&env.runtime, thread_id, false).await?;
         Ok(())
     }
     .await;

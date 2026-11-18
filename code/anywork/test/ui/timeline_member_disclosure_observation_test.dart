@@ -133,6 +133,41 @@ Future<void> _expectReadabilityFailure(Future<void> action) async {
 }
 
 void main() {
+  testWidgets('Main reveal reacquires a row remounted during the frame', (
+    tester,
+  ) async {
+    final generation = ValueNotifier(0);
+    addTearDown(generation.dispose);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ValueListenableBuilder<int>(
+              valueListenable: generation,
+              builder: (_, value, _) => SizedBox(
+                key: ValueKey(value),
+                height: 2000,
+                child: const Align(
+                  alignment: Alignment.bottomCenter,
+                  child: Text('visible remounted row', key: _target),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    final observation = TimelineObservation(
+      tester,
+      () => throw StateError('Revealing a row requires no domain query'),
+    );
+    scheduleMicrotask(() => generation.value++);
+    await observation.reveal(find.byKey(_target), 'row');
+    expect(generation.value, 1);
+    expect(find.text('visible remounted row').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   for (final type in ['thinking', 'tool']) {
     testWidgets('member disclosure waits for the real delayed $type control', (
       tester,

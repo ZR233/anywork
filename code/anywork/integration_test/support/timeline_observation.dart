@@ -274,23 +274,13 @@ final class TimelineObservation {
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
-      final matches = fragment.evaluate();
-      if (matches.isNotEmpty) {
-        await Scrollable.ensureVisible(matches.first, alignment: 0.5);
+      if (fragment.evaluate().isNotEmpty) {
+        await tester.ensureVisible(fragment);
         await tester.pump();
         expect(tester.takeException(), isNull);
-        // Structural rows need not accept a pointer at their center. Callers
-        // assert the actual text or control after its body has finished loading.
-        final bounds = tester.getRect(fragment);
-        final viewport = matches.first
-            .findAncestorRenderObjectOfType<RenderAbstractViewport>()!;
-        final viewportBounds = MatrixUtils.transformRect(
-          viewport.getTransformTo(null),
-          viewport.paintBounds,
-        );
-        expect(bounds.isEmpty, isFalse);
-        expect(bounds.overlaps(viewportBounds), isTrue);
-        return;
+        // Head replacement can remount the row during the frame. Re-query the
+        // finder; callers verify their actual content/control is visible.
+        if (fragment.evaluate().isNotEmpty) return;
       }
       await tester.pump(const Duration(milliseconds: 16));
     }
