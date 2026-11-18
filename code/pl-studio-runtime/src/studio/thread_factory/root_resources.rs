@@ -547,21 +547,20 @@ impl StudioThreadFactory {
             .map_err(|error| resource_error("open export history", error))?
             .reader();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "persistence", elapsed_ms = persistence_started.elapsed().as_millis() as u64, "completed");
-        let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&route)?,
-            route.reasoning_config(),
-        )
-        .with_hosted_tools(prepared.hosted);
+        let model = model_available
+            .then(|| {
+                crate::studio::model_binding::configured_model(
+                    &route,
+                    &config,
+                    self.services.thread_modes.clone(),
+                    prepared.hosted,
+                )
+            })
+            .transpose()
+            .map_err(|error| resource_error("prepare Native model binding", error))?;
         let spec = StudioThreadSpec {
             workspace_usage: Some(workspace_usage),
             preparation_guard: prepared.binding_guard.take(),
-            context_preparation: crate::compaction::preparer(
-                &route,
-                model.clone(),
-                config.runtime.openai_compaction_mode,
-                self.services.thread_modes.clone(),
-                &config.models,
-            )?,
             agent_controls,
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
@@ -569,7 +568,6 @@ impl StudioThreadFactory {
             id: id.into(),
             parent_id: None,
             route,
-            model_available,
             model,
             current,
             initial_context,

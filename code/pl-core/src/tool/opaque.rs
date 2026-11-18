@@ -367,7 +367,11 @@ impl ExecutionAuthority {
         self.may_call_nested
     }
     pub(crate) fn remains_authorized(&self, manager: &ToolManager) -> bool {
-        manager.tools.get(&self.tool_id).is_some_and(|current| {
+        self.matches_registration(manager.tools.get(&self.tool_id))
+    }
+
+    fn matches_registration(&self, current: Option<&FrozenTool>) -> bool {
+        current.is_some_and(|current| {
             authorization_active(self.authorization.as_ref())
                 && authorization_active(current.authorization.as_ref())
                 && self.authorization == current.authorization
@@ -447,6 +451,15 @@ impl Registration {
     /// Associates host policy identity with execution, independently from declaration bytes and reconnects.
     pub fn with_authorization(mut self, authorization: ToolAuthorization) -> Self {
         self.binding.authorization = Some(authorization);
+        self
+    }
+
+    /// Restricts existing execution authority to the lifetime of a host binding.
+    pub fn guard_authorization(mut self, guard: &ToolAuthorization) -> Self {
+        self.binding.authorization = Some(match self.binding.authorization {
+            Some(authority) => authority.guarded_by(guard),
+            None => guard.clone(),
+        });
         self
     }
 
@@ -711,6 +724,43 @@ pub enum RegistryError {
     DuplicateIdentity(String),
 }
 
+/// Validated replacement for a Thread's executable declarations.
+#[derive(Debug)]
+pub(crate) struct PreparedTools(BTreeMap<String, FrozenTool>);
+
+impl PreparedTools {
+    pub(crate) fn new(registrations: &[Registration]) -> Result<Self, crate::thread::ThreadError> {
+        let mut tools = BTreeMap::new();
+        for registration in registrations {
+            if !registration.binding.authorization_active() {
+                return Err(crate::thread::ThreadError::ToolPermissionRevoked);
+            }
+            let id = registration.binding.declaration.tool_id.clone();
+            if tools
+                .insert(id.clone(), registration.binding.clone())
+                .is_some()
+            {
+                return Err(RegistryError::DuplicateIdentity(id).into());
+            }
+        }
+        Ok(Self(tools))
+    }
+
+    pub(crate) fn authorizes(&self, authority: &ExecutionAuthority) -> bool {
+        authority.matches_registration(self.0.get(&authority.tool_id))
+    }
+
+    pub(crate) fn is_authorized(&self) -> bool {
+        self.0.values().all(FrozenTool::authorization_active)
+    }
+
+    pub(crate) fn retire(self, manager: &mut ToolManager) {
+        for (id, tool) in self.0 {
+            manager.executors.retain(&id, &tool.executor);
+        }
+    }
+}
+
 /// Thread-local registry; no global scope or inherited mutable tool instances.
 #[derive(Debug, Default)]
 pub(crate) struct ToolManager {
@@ -747,15 +797,13 @@ impl ToolManager {
         registrations: Vec<Registration>,
     ) -> Result<(), crate::thread::ThreadError> {
         self.retain_candidates(&registrations);
-        let mut tools = BTreeMap::new();
-        for registration in registrations {
-            if !registration.binding.authorization_active() {
-                return Err(crate::thread::ThreadError::ToolPermissionRevoked);
-            }
-            let id = registration.binding.declaration.tool_id.clone();
-            if tools.insert(id.clone(), registration.binding).is_some() {
-                return Err(RegistryError::DuplicateIdentity(id).into());
-            }
+        self.install(PreparedTools::new(&registrations)?);
+        Ok(())
+    }
+
+    pub(crate) fn install(&mut self, PreparedTools(tools): PreparedTools) {
+        for (id, tool) in &tools {
+            self.executors.retain(id, &tool.executor);
         }
         self.revealed.retain(|id, declaration| {
             tools
@@ -763,31 +811,13 @@ impl ToolManager {
                 .is_some_and(|tool| tool.deferred && &tool.declaration == declaration)
         });
         self.tools = tools;
-        Ok(())
     }
-    pub(crate) fn patch(
-        &mut self,
-        remove: &[String],
-        registrations: Vec<Registration>,
-    ) -> Result<(), crate::thread::ThreadError> {
-        self.retain_candidates(&registrations);
-        let mut changed = BTreeMap::new();
-        for registration in registrations {
-            let id = registration.binding.declaration.tool_id.clone();
-            if changed.insert(id.clone(), registration).is_some() {
-                return Err(RegistryError::DuplicateIdentity(id).into());
-            }
-        }
-        let mut next = self
-            .tools
-            .iter()
-            .filter(|(id, _)| !remove.contains(id) && !changed.contains_key(*id))
-            .map(|(_, binding)| Registration {
-                binding: binding.clone(),
-            })
-            .collect::<Vec<_>>();
-        next.extend(changed.into_values());
-        self.replace(next)
+
+    pub(crate) fn retire_revoked(&mut self) -> bool {
+        let previous = self.tools.len();
+        self.tools.retain(|_, tool| tool.authorization_active());
+        self.revealed.retain(|id, _| self.tools.contains_key(id));
+        previous != self.tools.len()
     }
 
     pub(crate) async fn close(&mut self) -> Result<(), ToolError> {
@@ -910,6 +940,12 @@ impl ToolPlan {
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>()
             .into()
+    }
+
+    pub(crate) fn is_authorized_by(&self, candidate: &PreparedTools) -> bool {
+        self.tools
+            .values()
+            .all(|tool| candidate.authorizes(&tool.authority()))
     }
 
     pub(crate) fn retry_compatible(&self, current: &Self) -> bool {

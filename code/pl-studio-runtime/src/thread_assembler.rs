@@ -73,14 +73,13 @@ pub use crate::studio::WorkspaceUsageLease;
 pub use crate::{DelegationSettings, PureError};
 use pl_core::{
     context::ResourceAccess,
-    model::ModelFactory,
     thread::{
         ContextCapacity, ThreadError, ThreadHandle, ThreadLifecycle,
         current::{CurrentError, ThreadCurrent},
     },
     tool::opaque::Registration,
 };
-use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
+use pl_model::config::ResolvedModelRoute;
 
 /// Product-selected collaboration exposure, independent from core tool scheduling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -97,16 +96,14 @@ pub struct StudioThreadSpec {
     pub workspace_usage: Option<WorkspaceUsageLease>,
     /// Owns unpublished preparation until the assembler registers its cleanup owner.
     pub preparation_guard: Option<ThreadPreparationGuard>,
-    pub context_preparation: Option<pl_core::thread::context_preparation::ContextPreparer>,
     /// Root-only controls prepared from one Profile generation before allocating physical tools.
     pub agent_controls: Vec<Registration>,
     pub execution: pl_core::thread::input::InputDriverOptions,
     pub id: String,
     pub parent_id: Option<String>,
     pub route: ResolvedModelRoute,
-    /// False publishes the owner without a physical model until a later deferred update succeeds.
-    pub model_available: bool,
-    pub model: ThreadModel,
+    /// The preflighted configuration; Core opens and installs it with the tools and host facts.
+    pub model: Option<pl_core::thread::RuntimeModel>,
     /// Complete current facts restored from `current.json`. New Threads start with no value.
     ///
     /// The assembler hands this exact object to Core, preserving saved model-call, tool-preview and
@@ -830,33 +827,11 @@ impl SessionRuntime {
             return Err(ThreadAssemblyError::ChildDepth);
         }
         spec.tools.append(&mut spec.agent_controls);
-        // Model opening is still owned by the managed preparation, including the unpublished
-        // use. If it fails, install a cleanup-only Thread so every allocated tool is closed/joined.
-        // Core consumes the complete current directly. The fresh path starts a new runtime epoch;
-        // the restored path activates only the frozen logical data under a new paused owner.
-        let (thread, opening_failure) = if spec.model_available {
-            match ModelFactory::new(spec.model).open_session().await {
-                Ok(model) => {
-                    let thread = match spec.current {
-                        Some(current) => ThreadHandle::restore_current(current, Some(model))?,
-                        None => ThreadHandle::start_current(spec.id.clone(), Some(model))?,
-                    };
-                    (thread, None)
-                }
-                Err(error) => {
-                    let thread = match spec.current {
-                        Some(current) => ThreadHandle::restore_current(current, None)?,
-                        None => ThreadHandle::start_current(spec.id.clone(), None)?,
-                    };
-                    (thread, Some(ThreadAssemblyError::from(error)))
-                }
-            }
-        } else {
-            let thread = match spec.current {
-                Some(current) => ThreadHandle::restore_current(current, None)?,
-                None => ThreadHandle::start_current(spec.id.clone(), None)?,
-            };
-            (thread, None)
+        // The paused owner receives the entire physical package before its admission or
+        // observation becomes visible. Its retirement path also owns failed candidates.
+        let thread = match spec.current {
+            Some(current) => ThreadHandle::restore_current(current, None)?,
+            None => ThreadHandle::start_current(spec.id.clone(), None)?,
         };
         let resources = self
             .0
@@ -874,7 +849,7 @@ impl SessionRuntime {
                 binding,
                 runtime: crate::session::AgentRuntime::Native(Box::new(
                     crate::session::NativeThreadRuntime {
-                        resources,
+                        resources: resources.clone(),
                         purpose: EntryPurpose::Execution,
                         workspace_usage: spec.workspace_usage.take(),
                         close_storage: None,
@@ -892,29 +867,66 @@ impl SessionRuntime {
         );
         let mut preparation_guard = spec.preparation_guard.take();
         let setup = async {
-            thread
-                .set_context_preparation(spec.context_preparation)
-                .await?;
-            thread.set_resources(spec.resources).await?;
-            thread.set_capacity(spec.capacity).await?;
-            if let Err(error) = thread.register_tools(spec.tools).await {
-                match error {
-                    ThreadError::RejectedTools(resources) => {
-                        let diagnostic = resources.to_string();
-                        self.native_resources(&thread)?
-                            .candidates
-                            .retain(thread.clone(), resources);
-                        return Err(ThreadAssemblyError::Resource {
-                            operation: "register prepared Thread tools",
-                            source: Box::new(std::io::Error::other(diagnostic)),
-                        });
-                    }
-                    error => return Err(error.into()),
+            let initial_binding = resources.binding();
+            let registrations = match &initial_binding {
+                Some(binding) => spec
+                    .tools
+                    .into_iter()
+                    .map(|registration| registration.guard_authorization(&binding.authorization))
+                    .collect(),
+                None => spec.tools,
+            };
+            let cancellation = initial_binding
+                .as_ref()
+                .map(|binding| binding.lifetime.cancellation.clone());
+            let runtime_binding = match initial_binding {
+                Some(binding) => pl_core::thread::RuntimeBinding::new(binding),
+                None => pl_core::thread::RuntimeBinding::new(()),
+            };
+            let update = pl_core::thread::RuntimeBundle {
+                base: thread.runtime_bundle_base(&thread.snapshot()),
+                desired: format!("initial:{}", spec.id).into(),
+                model: spec.model,
+                model_context_revision: None,
+                tools: Some(pl_core::thread::RuntimeTools {
+                    registrations,
+                    binding: runtime_binding,
+                    facts: spec.initial_runtime_facts,
+                }),
+                application: None,
+                is_current: Arc::new(move || {
+                    cancellation
+                        .as_ref()
+                        .is_none_or(|token| !token.is_cancelled())
+                }),
+            };
+            let receipt = match thread.install_runtime_bundle(update).await {
+                Ok(receipt) => receipt,
+                Err(ThreadError::RejectedTools(tools)) => {
+                    let diagnostic = tools.to_string();
+                    resources.candidates.retain(thread.clone(), tools);
+                    return Err(ThreadAssemblyError::Resource {
+                        operation: "register initial Native resources",
+                        source: Box::new(std::io::Error::other(diagnostic)),
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            };
+            receipt
+                .installed()
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "install initial Native resources",
+                    source: Box::new(source),
+                })?;
+            if resources.binding().is_some() {
+                resources.observe_binding(thread.runtime_binding());
+                if let Some(services) = self.0.state().agent_services.as_ref() {
+                    services.factory.notify_lsp_binding_changed();
                 }
             }
-            if let Some(error) = opening_failure {
-                return Err(error);
-            }
+            thread.set_resources(spec.resources).await?;
+            thread.set_capacity(spec.capacity).await?;
             if let Some(store) = spec.history_sink {
                 self.attach_execution_storage(&spec.id, store).await?;
             }
@@ -941,11 +953,6 @@ impl SessionRuntime {
                         reason: pl_core::thread::ContextReplacementReason::Rebuild,
                         records: spec.initial_context,
                     })
-                    .await?;
-            }
-            if !spec.initial_runtime_facts.is_empty() {
-                thread
-                    .queue_runtime_facts(spec.initial_runtime_facts)
                     .await?;
             }
             // Freeze the observer's recovery baseline before exposing this owner to execution.

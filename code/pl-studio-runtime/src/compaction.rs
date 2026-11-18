@@ -1376,11 +1376,12 @@ mod tests {
                 .await?,
             pl_model::runtime::ThreadCompactionDecision::Keep
         );
+        let model = crate::studio::model_binding::deferred_update(&target_route, &config, modes)?;
+        let update = pl_core::thread::RuntimeBundle::model_only(&thread, &thread.snapshot(), model);
         thread
-            .queue_deferred_model_update(
-                crate::studio::model_binding::deferred_update(&target_route, &config, modes)?,
-                vec![],
-            )
+            .install_runtime_bundle(update)
+            .await?
+            .installed()
             .await?;
         thread
             .run_turn(turn("target-turn", "TARGET_PENDING_INPUT_ONLY"))

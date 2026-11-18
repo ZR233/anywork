@@ -1578,19 +1578,14 @@ pub(crate) mod archive_tests {
         StudioThreadSpec {
             workspace_usage: None,
             preparation_guard: None,
-            context_preparation: None,
             agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
             },
             id,
             parent_id,
-            model: pl_model::runtime::ThreadModel::new(
-                pl_model::runtime::from_route(&route).unwrap(),
-                None,
-            ),
             route,
-            model_available: false,
+            model: None,
             current: None,
             initial_context: Vec::new(),
             initial_runtime_facts: Vec::new(),

@@ -30,7 +30,7 @@ impl LspObservationServices {
             let root = lease.map(|lease| lease.workspace_root().to_path_buf());
             let captured_binding_id = binding.lsp_binding_id.clone();
             let should_read = captured_binding_id.is_some()
-                && !binding.target_invalidated
+                && !binding.lifetime.target_invalidated()
                 && !binding.lifetime.cancellation.is_cancelled()
                 && lease.is_some_and(|lease| !lease.is_closed());
             let servers = if should_read {

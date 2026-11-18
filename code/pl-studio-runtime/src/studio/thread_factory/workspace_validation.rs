@@ -154,7 +154,8 @@ fn check_generation(
     if !Arc::ptr_eq(&current.incarnation, &expected.incarnation)
         || !Arc::ptr_eq(&current.lifetime, &expected.lifetime)
         || current.lifetime.cancellation.is_cancelled()
-        || current.target_invalidated
+        || current.lifetime.target_invalidated()
+        || !current.authorization.is_active()
     {
         return Err(ReviewWorkspaceError::Unconfirmed(
             "execution binding was replaced, cancelled or invalidated",

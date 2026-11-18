@@ -28,8 +28,6 @@ mod workspace_validation;
 pub(crate) use workspace_validation::{ReviewWorkspaceCheck, ReviewWorkspaceError};
 mod workspace_usage;
 
-pub(in crate::studio) use tool_bindings::RefreshedToolBinding;
-
 use crate::studio::{ProductEventBus, StudioStore};
 use std::sync::Arc;
 
@@ -59,18 +57,18 @@ pub(in crate::studio) struct StudioThreadServices {
     pub run_export: Option<Arc<crate::studio::runtime::run_export::RunExportCoordinator>>,
 }
 
-/// Assembles fresh model and tool instances from product inputs, without the old Turn engine.
+type NativeResourceScopes = std::sync::Mutex<
+    std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
+>;
+
+/// Assembles fresh model and tool instances from product inputs.
 #[derive(Clone)]
 pub(crate) struct StudioThreadFactory {
     // Assembly inputs are immutable service leases. Factory clones retain this one bundle
     // instead of inlining it into every preparation permit and suspended operation.
     services: Arc<StudioThreadServices>,
     lsp_binding_updates: Arc<tokio::sync::Notify>,
-    scopes: Arc<
-        std::sync::Mutex<
-            std::collections::BTreeMap<String, std::sync::Weak<crate::session::NativeResources>>,
-        >,
-    >,
+    scopes: Arc<NativeResourceScopes>,
     // Immutable assembly inputs admitted before a new directory identity is
     // published. Every concurrent activation sees the same frozen selector.
     initial_routes: Arc<
@@ -156,39 +154,38 @@ impl StudioThreadFactory {
         let Some(scope) = self.resource_scope(thread_id) else {
             return captured.is_none().then(|| commit(false));
         };
-        let bindings = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(binding) = bindings.as_ref() else {
-            return captured.is_none().then(|| commit(false));
-        };
-        let LspProjectionBinding {
-            incarnation,
-            binding_id,
-            endpoint,
-            root,
-        } = captured?;
-        if !Arc::ptr_eq(&binding.incarnation, incarnation)
-            || binding.lsp_binding_id.as_deref() != binding_id
-        {
-            return None;
-        }
-        let _qualification = binding.lifetime.qualification_guard();
-        let lease = binding.lsp_lease.as_ref();
-        let valid = binding_id.is_some()
-            && !binding.target_invalidated
-            && !binding.lifetime.cancellation.is_cancelled()
-            && lease.is_some_and(|lease| {
-                !lease.is_closed()
-                    && Some(lease.workspace_root()) == root
-                    && crate::studio::runtime::lsp_state::execution_endpoint(
-                        binding.project.ssh_alias.as_deref(),
-                    )
-                    .as_str()
-                        == endpoint.unwrap_or_default()
-            });
-        Some(commit(valid))
+        scope.with_binding(|binding| {
+            let Some(binding) = binding else {
+                return captured.is_none().then(|| commit(false));
+            };
+            let LspProjectionBinding {
+                incarnation,
+                binding_id,
+                endpoint,
+                root,
+            } = captured?;
+            if !Arc::ptr_eq(&binding.incarnation, incarnation)
+                || binding.lsp_binding_id.as_deref() != binding_id
+            {
+                return None;
+            }
+            let _qualification = binding.lifetime.qualification_guard();
+            let lease = binding.lsp_lease.as_ref();
+            let valid = binding_id.is_some()
+                && !binding.lifetime.target_invalidated()
+                && binding.authorization.is_active()
+                && !binding.lifetime.cancellation.is_cancelled()
+                && lease.is_some_and(|lease| {
+                    !lease.is_closed()
+                        && Some(lease.workspace_root()) == root
+                        && crate::studio::runtime::lsp_state::execution_endpoint(
+                            binding.project.ssh_alias.as_deref(),
+                        )
+                        .as_str()
+                            == endpoint.unwrap_or_default()
+                });
+            Some(commit(valid))
+        })
     }
 
     pub(crate) fn bind_resource_scope(

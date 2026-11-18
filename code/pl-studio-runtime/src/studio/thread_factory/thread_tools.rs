@@ -82,12 +82,12 @@ impl StudioThreadFactory {
 
         let binding = super::tool_bindings::ToolBinding {
             assignment: assembly.assignment.cloned(),
-            workspace_usage: assembly.workspace_usage.clone(),
+            workspace_usage: assembly.workspace_usage.downgrade(),
             lifetime: std::sync::Arc::new(super::tool_bindings::ThreadToolLifetime::new(
                 self.lsp_binding_updates(),
             )),
             incarnation: std::sync::Arc::new(()),
-            target_invalidated: false,
+            authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
             permission_mode: assembly.config.runtime.permission_mode,
             initial_skill_prompt: String::new(),
             catalog: None,
@@ -161,18 +161,7 @@ impl StudioThreadFactory {
         let scope = self
             .resource_scope(&id)
             .ok_or(ThreadAssemblyError::Closed)?;
-        let previous = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(binding);
-        self.notify_lsp_binding_changed();
-        if let Some(lease) = previous.and_then(|binding| binding.lsp_lease) {
-            lease
-                .close()
-                .await
-                .map_err(|error| resource_error("close previous LSP binding", error))?;
-        }
+        scope.prepare_binding(binding)?;
         Ok(tools)
     }
 

@@ -25,6 +25,11 @@ pub mod journal;
 mod owner;
 pub mod permissions;
 mod recovery;
+mod runtime_bundle;
+pub use runtime_bundle::{
+    RuntimeApplication, RuntimeBinding, RuntimeBindingReader, RuntimeBundle, RuntimeBundleBase,
+    RuntimeBundleReceipt, RuntimeBundleState, RuntimeModel, RuntimeTools,
+};
 mod subscription;
 pub mod task;
 mod task_access;
@@ -51,13 +56,10 @@ use crate::model::{
 };
 
 mod handle;
-mod reconfiguration;
-pub use reconfiguration::IdleReconfiguration;
 mod mailbox;
 mod model_members;
 mod model_step;
-mod model_update;
-pub use model_update::{DeferredModelUpdate, DeferredModelUpdatePrecondition};
+mod reconfiguration;
 mod replacement;
 mod tool_execution;
 mod types;

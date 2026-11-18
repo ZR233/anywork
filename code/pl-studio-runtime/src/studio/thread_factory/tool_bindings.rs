@@ -14,10 +14,10 @@ use pl_tool::workspace::ToolWorkspace;
 #[derive(Clone)]
 pub(crate) struct ToolBinding {
     pub assignment: Option<crate::AgentWorkspaceAssignmentSnapshot>,
-    pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
+    pub workspace_usage: crate::studio::agent_host::worktree_lease::WeakWorkspaceUsageLease,
     pub lifetime: std::sync::Arc<ThreadToolLifetime>,
     pub incarnation: std::sync::Arc<()>,
-    pub target_invalidated: bool,
+    pub authorization: pl_core::tool::opaque::ToolAuthorization,
     pub catalog: Option<std::sync::Arc<pl_tool::skill::FrozenSkillCatalog>>,
     pub initial_skill_prompt: String,
     pub policy_key: String,
@@ -37,6 +37,7 @@ pub(crate) struct ThreadToolLifetime {
     pub(crate) gate: std::sync::Arc<tokio::sync::Mutex<()>>,
     pub(crate) cancellation: tokio_util::sync::CancellationToken,
     qualification_gate: std::sync::Mutex<()>,
+    target_invalidated: std::sync::atomic::AtomicBool,
     lsp_binding_updates: std::sync::Arc<tokio::sync::Notify>,
 }
 
@@ -46,6 +47,7 @@ impl ThreadToolLifetime {
             gate: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             cancellation: tokio_util::sync::CancellationToken::new(),
             qualification_gate: std::sync::Mutex::new(()),
+            target_invalidated: std::sync::atomic::AtomicBool::new(false),
             lsp_binding_updates,
         }
     }
@@ -57,6 +59,17 @@ impl ThreadToolLifetime {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.cancellation.cancel();
         self.lsp_binding_updates.notify_one();
+    }
+
+    pub(crate) fn target_invalidated(&self) -> bool {
+        self.target_invalidated
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn invalidate_target(&self) {
+        self.target_invalidated
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.cancel();
     }
 
     pub(crate) fn qualification_guard(&self) -> std::sync::MutexGuard<'_, ()> {
@@ -73,14 +86,51 @@ impl Default for ThreadToolLifetime {
     }
 }
 
-/// Candidate metadata is published only after the Thread accepts its registrations.
-pub(in crate::studio) struct RefreshedToolBinding {
-    previous: std::sync::Arc<()>,
-    binding: ToolBinding,
-    release_lsp: Option<pl_lsp::runtime::LspWorkspaceLease>,
+struct PermissionModeObserver {
+    scopes: std::sync::Weak<super::NativeResourceScopes>,
+}
+
+impl crate::config::SettingsCommitObserver for PermissionModeObserver {
+    fn settings_committed(&self, settings: &crate::ConfigRuntimeSnapshot) {
+        let Some(scopes) = self.scopes.upgrade() else {
+            return;
+        };
+        let scopes = scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect::<Vec<_>>();
+        let permission_mode = settings.config.runtime.permission_mode;
+        for scope in scopes {
+            let changed = scope.with_binding(|binding| {
+                binding.is_some_and(|binding| {
+                    if binding.permission_mode == permission_mode
+                        || !binding.authorization.is_active()
+                    {
+                        return false;
+                    }
+                    binding.authorization.revoke();
+                    true
+                })
+            });
+            if changed {
+                scope.authorization_changed();
+            }
+        }
+    }
 }
 
 impl StudioThreadFactory {
+    pub(crate) fn observe_permission_mode(&self) -> anyhow::Result<()> {
+        self.services
+            .config_runtime
+            .install_settings_observer(std::sync::Arc::new(PermissionModeObserver {
+                scopes: std::sync::Arc::downgrade(&self.scopes),
+            }))?;
+        Ok(())
+    }
+
     pub(crate) fn binding_snapshots(&self) -> std::collections::BTreeMap<String, ToolBinding> {
         let scopes = self
             .scopes
@@ -91,47 +141,29 @@ impl StudioThreadFactory {
             .collect::<Vec<_>>();
         scopes
             .into_iter()
-            .filter_map(|(id, scope)| {
-                scope
-                    .binding
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-                    .map(|binding| (id, binding))
-            })
+            .filter_map(|(id, scope)| scope.binding().map(|binding| (id, binding)))
             .collect()
     }
 
     pub(crate) fn binding_snapshot(&self, id: &str) -> Option<ToolBinding> {
-        self.resource_scope(id)?
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.resource_scope(id)?.binding()
     }
 
-    /// The execution workspace is owned by the live tool binding, not the product directory row.
+    /// Reads the actual execution workspace from Core's current package.
     pub(super) fn actual_tool_workspace(
         &self,
         id: &str,
     ) -> Result<(ToolWorkspace, WorkspaceRecord), ThreadAssemblyError> {
-        let scope = self
-            .resource_scope(id)
+        let binding = self
+            .binding_snapshot(id)
             .ok_or(pl_core::thread::ThreadError::Closed)?;
-        let bindings = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let binding = bindings.as_ref().ok_or_else(|| {
-            ThreadAssemblyError::Identity(format!("caller {id} has no actual execution workspace"))
-        })?;
-        if binding.target_invalidated || binding.lifetime.cancellation.is_cancelled() {
+        if binding.lifetime.cancellation.is_cancelled() || !binding.authorization.is_active() {
             return Err(ThreadAssemblyError::Closed);
         }
-        Ok((binding.workspace.clone(), binding.project.clone()))
+        Ok((binding.workspace, binding.project))
     }
 
-    pub(in crate::studio) fn tool_operation(
+    pub(crate) fn tool_operation(
         &self,
         id: &str,
     ) -> Result<
@@ -141,15 +173,8 @@ impl StudioThreadFactory {
         ),
         ThreadAssemblyError,
     > {
-        let scope = self
-            .resource_scope(id)
-            .ok_or(pl_core::thread::ThreadError::Closed)?;
-        let bindings = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let binding = bindings
-            .as_ref()
+        let binding = self
+            .binding_snapshot(id)
             .ok_or(pl_core::thread::ThreadError::Closed)?;
         Ok((
             binding.lifetime.gate.clone(),
@@ -163,7 +188,7 @@ impl StudioThreadFactory {
             .map(|binding| binding.project.clone())
     }
 
-    pub(in crate::studio) fn tool_authority_invalidated(&self, id: &str) -> anyhow::Result<bool> {
+    pub(crate) fn tool_authority_invalidated(&self, id: &str) -> anyhow::Result<bool> {
         let mode = self
             .services
             .config_runtime
@@ -171,84 +196,41 @@ impl StudioThreadFactory {
             .config
             .runtime
             .permission_mode;
-        let scope = self
-            .resource_scope(id)
-            .ok_or(pl_core::thread::ThreadError::Closed)?;
-        let bindings = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(bindings
-            .as_ref()
-            .is_some_and(|binding| binding.target_invalidated || binding.permission_mode != mode))
+        Ok(self.binding_snapshot(id).is_some_and(|binding| {
+            binding.permission_mode != mode || !binding.authorization.is_active()
+        }))
     }
 
-    pub(in crate::studio) fn commit_refreshed_binding(
-        &self,
-        id: &str,
-        candidate: RefreshedToolBinding,
-    ) -> Result<(), ThreadAssemblyError> {
-        let scope = self
-            .resource_scope(id)
-            .ok_or(pl_core::thread::ThreadError::Closed)?;
-        let mut bindings = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current = bindings
-            .as_mut()
-            .ok_or(pl_core::thread::ThreadError::Closed)?;
-        if !std::sync::Arc::ptr_eq(&current.incarnation, &candidate.previous)
-            || current.lifetime.cancellation.is_cancelled()
+    pub(crate) fn revoke_tool_binding(&self, id: &str, binding: &ToolBinding) {
+        binding.authorization.revoke();
+        if let Some(scope) = self.resource_scope(id) {
+            scope.authorization_changed();
+        }
+    }
+
+    pub(crate) fn bundle_facts(
+        binding: &ToolBinding,
+        snapshot: &ThreadSnapshot,
+    ) -> Vec<pl_core::thread::RuntimeFact> {
+        let mut facts = Vec::new();
+        if let Some(fact) = super::session_files::session_files_fact(&binding.workspace)
+            && snapshot
+                .runtime_facts
+                .iter()
+                .find(|current| current.source_id == fact.source_id)
+                != Some(&fact)
         {
-            return Err(pl_core::thread::ThreadError::Closed.into());
+            facts.push(fact);
         }
-        if current.target_invalidated {
-            return Err(ThreadAssemblyError::InvalidatedBinding(
-                "SSH target or credentials changed during tool refresh; reactivate this Thread"
-                    .into(),
-            ));
-        }
-        let lifetime = current.lifetime.clone();
-        let _qualification = lifetime.qualification_guard();
-        if lifetime.cancellation.is_cancelled() {
-            return Err(pl_core::thread::ThreadError::Closed.into());
-        }
-        *current = candidate.binding;
-        self.notify_lsp_binding_changed();
-        if let Some(lease) = candidate.release_lsp {
-            // close eagerly invalidates the user and records the async reclaim
-            // with the directory owner; commit itself remains synchronous.
-            drop(lease.close());
-        }
-        Ok(())
-    }
-    pub(in crate::studio) fn session_files_fact(
-        &self,
-        id: &str,
-        snapshot: &ThreadSnapshot,
-    ) -> Option<pl_core::thread::RuntimeFact> {
-        let binding = self.binding_snapshot(id)?;
-        let fact = super::session_files::session_files_fact(&binding.workspace)?;
-        let previous = snapshot
-            .runtime_facts
-            .iter()
-            .find(|current| current.source_id == "studio.session-files");
-        (previous != Some(&fact)).then_some(fact)
-    }
-
-    pub(in crate::studio) fn skill_catalog_fact(
-        &self,
-        id: &str,
-        snapshot: &ThreadSnapshot,
-    ) -> Option<pl_core::thread::RuntimeFact> {
-        let binding = self.binding_snapshot(id)?;
         let prompt = binding
             .catalog
             .as_ref()
             .map(|catalog| pl_tool::skill::build_skills_prompt_from_catalog(catalog.snapshot()))
             .unwrap_or_default();
-        catalog_fact(prompt, &binding.initial_skill_prompt, snapshot)
+        if let Some(fact) = catalog_fact(prompt, &binding.initial_skill_prompt, snapshot) {
+            facts.push(fact);
+        }
+        facts
     }
 
     pub(in crate::studio) fn skill_suggestions(
@@ -268,16 +250,13 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) fn invalidate_ssh_bindings(&self, server_id: &str) {
         for scope in self.resource_scopes() {
-            if let Some(binding) = scope
-                .binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_mut()
+            if let Some(binding) = scope.binding()
                 && binding.project.ssh_alias.as_deref() == Some(server_id)
             {
-                binding.target_invalidated = true;
-                binding.lifetime.cancel();
-                if let Some(lease) = &binding.lsp_lease {
+                binding.authorization.revoke();
+                binding.lifetime.invalidate_target();
+                scope.authorization_changed();
+                if let Some(lease) = binding.lsp_lease {
                     drop(lease.close());
                 }
             }
@@ -289,12 +268,8 @@ impl StudioThreadFactory {
         id: &str,
         scope: &std::sync::Arc<crate::session::NativeResources>,
     ) -> anyhow::Result<()> {
-        let lifetime = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|binding| binding.lifetime.clone());
+        let lifetime =
+            scope.with_binding(|binding| binding.map(|binding| binding.lifetime.clone()));
         if let Some(lifetime) = &lifetime {
             lifetime.cancel();
         }
@@ -302,12 +277,8 @@ impl StudioThreadFactory {
             Some(lifetime) => Some(lifetime.gate.lock().await),
             None => None,
         };
-        let lsp_lease = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|binding| binding.lsp_lease.clone());
+        let lsp_lease =
+            scope.with_binding(|binding| binding.and_then(|binding| binding.lsp_lease.clone()));
         let (mcp_result, lsp_result) = tokio::join!(self.shutdown_scope_mcp(scope), async {
             match lsp_lease {
                 Some(lease) => lease.close().await.map_err(anyhow::Error::from),
@@ -317,15 +288,11 @@ impl StudioThreadFactory {
         // Preserve the binding when either owner failed, so close can be retried.
         mcp_result?;
         lsp_result?;
-        let removed = scope
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        if removed.is_some() {
+        scope.release_binding();
+        if lifetime.is_some() {
             self.notify_lsp_binding_changed();
         }
-        if removed.is_some() && self.services.worktrees.get(id).is_none() {
+        if lifetime.is_some() && self.services.worktrees.get(id).is_none() {
             self.services
                 .worktrees
                 .release_stopped_runtime_resources(id);
@@ -350,27 +317,24 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) fn stop_all_tool_operations(&self) {
         for scope in self.resource_scopes() {
-            if let Some(binding) = scope
-                .binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-            {
+            if let Some(binding) = scope.binding() {
                 binding.lifetime.cancel();
             }
         }
     }
 
-    pub(in crate::studio) async fn refresh_thread_tools(
+    pub(crate) async fn refresh_thread_tools(
         &self,
         id: &str,
         snapshot: &ThreadSnapshot,
+        config: &crate::StudioConfig,
+        route: &pl_model::config::ResolvedModelRoute,
         cancellation: tokio_util::sync::CancellationToken,
     ) -> Result<
         (
             StudioThreadTools,
             crate::thread_assembler::AgentControlExposure,
-            RefreshedToolBinding,
+            ToolBinding,
         ),
         ThreadAssemblyError,
     > {
@@ -379,7 +343,7 @@ impl StudioThreadFactory {
                 "Thread tool binding is unavailable; reactivate this Thread".into(),
             )
         })?;
-        if binding.target_invalidated {
+        if binding.lifetime.target_invalidated() {
             return Err(ThreadAssemblyError::InvalidatedBinding(
                 "SSH target or credentials changed; reactivate this Thread".into(),
             ));
@@ -423,14 +387,6 @@ impl StudioThreadFactory {
         let child = thread.parent_thread_id.is_some();
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(|error| resource_error("decode workspace binding", error))?;
-        let config = self.services.config_runtime.read()?.config;
-        let (_, selector) = crate::studio::model_route::route_record(snapshot, child)
-            .map_err(|error| resource_error("decode saved model route", error))?
-            .ok_or_else(|| {
-                ThreadAssemblyError::Identity(
-                    "Thread has no saved model route; reactivate this Thread".into(),
-                )
-            })?;
         if child {
             let (profile, _) = crate::studio::model_route::saved_profile(snapshot)
                 .map_err(|error| resource_error("decode saved child Agent Profile", error))?
@@ -448,12 +404,6 @@ impl StudioThreadFactory {
                 ));
             }
         }
-        let role = if child {
-            crate::AgentRoleId::new(thread.role.clone())?
-        } else {
-            crate::config::root_agent_route_id()
-        };
-        let route = config.models.resolve_route(role, &selector)?;
         let resources = crate::resource_store::FileResourceStore::new(
             self.services
                 .store
@@ -494,22 +444,28 @@ impl StudioThreadFactory {
             (None, None) => true,
             _ => false,
         };
-        let previous_commands = if same_connection {
+        let policy_changed =
+            binding.policy_key != super::thread_tools::approval_policy_key(config, route);
+        if policy_changed || !same_connection {
+            self.revoke_tool_binding(id, &binding);
+        }
+        let previous_commands = if binding.authorization.is_active() {
             binding.commands.clone()
         } else {
             None
         };
-        let policy_changed =
-            binding.policy_key != super::thread_tools::approval_policy_key(&config, &route);
         let mut prepared = self
             .prepare_thread_tools_with(
                 ThreadToolAssembly {
                     assignment: binding.assignment.as_ref(),
-                    workspace_usage: binding.workspace_usage.clone(),
+                    workspace_usage: binding
+                        .workspace_usage
+                        .upgrade()
+                        .ok_or(pl_core::thread::ThreadError::Closed)?,
                     thread_id: id,
                     cancellation: &cancellation,
-                    config: &config,
-                    route: &route,
+                    config,
+                    route,
                     project: &project,
                     root_thread_id: &thread.root_thread_id,
                     workspace: binding.workspace.clone(),
@@ -585,25 +541,22 @@ impl StudioThreadFactory {
                     crate::studio::ids::new_id("lsp-binding")
                 }
             });
-        let candidate = RefreshedToolBinding {
-            previous: binding.incarnation.clone(),
-            release_lsp: if prepared.lsp_lease.is_none() {
-                binding.lsp_lease.clone()
+        let candidate = ToolBinding {
+            lsp_lease: next_lsp_lease,
+            lsp_binding_id: next_lsp_binding_id,
+            incarnation: std::sync::Arc::new(()),
+            authorization: if binding.authorization.is_active() {
+                binding.authorization.clone()
             } else {
-                None
+                pl_core::tool::opaque::ToolAuthorization::unique()
             },
-            binding: ToolBinding {
-                lsp_lease: next_lsp_lease,
-                lsp_binding_id: next_lsp_binding_id,
-                incarnation: std::sync::Arc::new(()),
-                commands,
-                remote: prepared.remote.clone(),
-                catalog: prepared.catalog.clone(),
-                policy_key: super::thread_tools::approval_policy_key(&config, &route),
-                permission_mode: config.runtime.permission_mode,
-                policies: prepared.tools.approval_policies.clone(),
-                ..binding
-            },
+            commands,
+            remote: prepared.remote.clone(),
+            catalog: prepared.catalog.clone(),
+            policy_key: super::thread_tools::approval_policy_key(config, route),
+            permission_mode: config.runtime.permission_mode,
+            policies: prepared.tools.approval_policies.clone(),
+            ..binding
         };
         Ok((prepared.tools, exposure, candidate))
     }

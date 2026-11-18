@@ -429,21 +429,18 @@ impl StudioChildResources for StudioThreadFactory {
                 .await;
             }
         }
-        let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&profile.route)?,
-            profile.route.reasoning_config(),
-        )
-        .with_hosted_tools(prepared_tools.hosted);
+        let model = Some({
+            crate::studio::model_binding::configured_model(
+                &profile.route,
+                &profile.config,
+                self.services.thread_modes.clone(),
+                prepared_tools.hosted,
+            )
+            .map_err(|error| resource_error("prepare Native model binding", error))?
+        });
         let spec = StudioThreadSpec {
             workspace_usage: Some(workspace_usage),
             preparation_guard: prepared_tools.binding_guard.take(),
-            context_preparation: crate::compaction::preparer(
-                &profile.route,
-                model.clone(),
-                profile.config.runtime.openai_compaction_mode,
-                self.services.thread_modes.clone(),
-                &profile.config.models,
-            )?,
             agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
@@ -451,7 +448,6 @@ impl StudioChildResources for StudioThreadFactory {
             id: request.id.clone(),
             parent_id: Some(request.caller.clone()),
             route: profile.route.clone(),
-            model_available: true,
             model,
             current: None,
             tools: Vec::new(),

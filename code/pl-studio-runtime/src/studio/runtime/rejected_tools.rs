@@ -1,7 +1,7 @@
 //! Owns failed candidate closures across refresh retries and cancelled shutdown waiters.
 use pl_core::{
-    thread::{IdleReconfiguration, ThreadError, ThreadHandle, ThreadSnapshot},
-    tool::opaque::{Registration, RejectedTools, ToolError},
+    thread::{RuntimeBundle, ThreadError, ThreadHandle, ThreadSnapshot},
+    tool::opaque::{RejectedTools, ToolError},
 };
 use std::sync::{Arc, Mutex};
 
@@ -69,18 +69,16 @@ impl NativeToolCandidates {
         self.insert(thread, Resources::Rejected(resources), None);
     }
 
-    /// Owns retirement before its first await. Cancelling the waiter leaves the exact in-flight
-    /// transfer registered for retry/shutdown, including a late RejectedTools result.
-    pub(super) async fn retire(
+    pub(crate) async fn stage_runtime_bundle(
         &self,
         thread: ThreadHandle,
-        tools: Vec<Registration>,
-        operation: String,
-    ) -> anyhow::Result<()> {
+        update: pl_core::thread::RuntimeBundle,
+    ) -> anyhow::Result<pl_core::thread::RuntimeBundleReceipt> {
         let owner = thread.clone();
+        let operation = format!("install Native resources {}", update.desired);
         self.transfer(thread, operation, async move {
             owner
-                .retire_tools(tools)
+                .install_runtime_bundle(update)
                 .await
                 .map_err(TransferFailure::Core)
         })
@@ -92,21 +90,25 @@ impl NativeToolCandidates {
     pub(super) async fn reconfigure<T, F, C>(
         &self,
         thread: ThreadHandle,
-        update: IdleReconfiguration,
+        update: RuntimeBundle,
         operation: String,
         complete: F,
     ) -> anyhow::Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(ThreadSnapshot) -> C + Send + 'static,
+        F: FnOnce(Arc<ThreadSnapshot>) -> C + Send + 'static,
         C: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
     {
         let owner = thread.clone();
         self.transfer(thread, operation, async move {
-            let snapshot = owner
-                .reconfigure(update)
+            let receipt = owner
+                .install_runtime_bundle(update)
                 .await
                 .map_err(TransferFailure::Core)?;
+            let snapshot = receipt
+                .installed()
+                .await
+                .map_err(|error| TransferFailure::Product(anyhow::Error::new(error)))?;
             complete(snapshot).await.map_err(TransferFailure::Product)
         })
         .await
@@ -318,24 +320,16 @@ impl RejectedToolOwners {
             .map(|scope| scope.candidates.clone())
             .ok_or_else(|| ThreadError::Closed.into())
     }
-    pub(super) async fn retire(
-        &self,
-        thread: ThreadHandle,
-        tools: Vec<Registration>,
-        operation: String,
-    ) -> anyhow::Result<()> {
-        self.pool(&thread)?.retire(thread, tools, operation).await
-    }
     pub(super) async fn reconfigure<T, F, C>(
         &self,
         thread: ThreadHandle,
-        update: IdleReconfiguration,
+        update: RuntimeBundle,
         operation: String,
         complete: F,
     ) -> anyhow::Result<T>
     where
         T: Send + 'static,
-        F: FnOnce(ThreadSnapshot) -> C + Send + 'static,
+        F: FnOnce(Arc<ThreadSnapshot>) -> C + Send + 'static,
         C: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
     {
         self.pool(&thread)?

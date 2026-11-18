@@ -233,6 +233,7 @@ impl StudioRuntime {
         // Fallible assembly precedes account activation, so a failed startup cannot leave
         // eagerly started ACP processes behind. Installation and the first canonical
         // observation still share the Settings command boundary.
+        runtime.thread_factory.observe_permission_mode()?;
         runtime
             .acp_accounts
             .install_settings_observer(&runtime.config_runtime)?;

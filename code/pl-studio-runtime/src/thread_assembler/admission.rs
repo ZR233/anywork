@@ -1,7 +1,8 @@
 //! Last-mile admission shared by direct assembler inputs and interaction continuations.
 use super::{SessionRuntime, ThreadAssemblyError, agent_services::AgentServices};
-use anyhow::{Context, Result};
-use pl_core::thread::{DeferredModelUpdatePrecondition, ThreadHandle};
+use crate::studio::model_binding::{NativeBundleOwner, NativeModelConfiguration};
+use anyhow::Result;
+use pl_core::thread::{ThreadError, ThreadHandle};
 
 #[derive(Clone, Copy)]
 pub(super) enum WorkspaceAdmission<'a> {
@@ -12,6 +13,7 @@ pub(super) enum WorkspaceAdmission<'a> {
 impl AgentServices {
     pub(super) async fn prepare_model_admission(
         &self,
+        session: &SessionRuntime,
         id: &str,
         thread: &ThreadHandle,
         workspace: WorkspaceAdmission<'_>,
@@ -31,58 +33,7 @@ impl AgentServices {
             !crate::studio::agent_close::is_explicitly_closed(&snapshot)?,
             "child is explicitly closed"
         );
-        let config = self.config.read()?.config;
-        let child = crate::studio::model_route::saved_profile(&snapshot)?;
-        let (extension, route) = if let Some((profile, _)) = child {
-            (
-                crate::studio::model_route::AGENT_PROFILE_EXTENSION,
-                crate::studio::delegation::resolve_child_route(&config, &profile)?,
-            )
-        } else {
-            let selector = crate::studio::model_route::saved(&snapshot)?
-                .context("Thread has no frozen model route")?
-                .route;
-            let route = config
-                .models
-                .resolve_route(crate::config::root_agent_route_id(), &selector)?;
-            crate::studio::delegation::validate_credential(&route)?;
-            (crate::studio::model_route::MODEL_ROUTE_EXTENSION, route)
-        };
-        let content = snapshot
-            .context
-            .records
-            .iter()
-            .flat_map(|record| &record.content)
-            .chain(
-                snapshot
-                    .inputs
-                    .iter()
-                    .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
-                    .flat_map(|record| &record.input.context),
-            );
-        pl_model::runtime::validate_attachment_content(content, &route.model)?;
-        pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&route)?,
-            route.reasoning_config(),
-        )
-        .validate_context_origin(&snapshot.context)?;
-        thread
-            .queue_deferred_model_update_if_current(
-                crate::studio::model_binding::deferred_update(
-                    &route,
-                    &config,
-                    self.config.thread_mode_manager(),
-                )?,
-                DeferredModelUpdatePrecondition::extension(
-                    extension,
-                    snapshot
-                        .extensions
-                        .get(extension)
-                        .map(|record| record.revision),
-                ),
-                Vec::new(),
-            )
-            .await?;
+        session.prepare_native_input(id, thread).await?;
         if let WorkspaceAdmission::VerifiedReview(proof) = workspace {
             proof.recheck()?;
         }
@@ -91,6 +42,71 @@ impl AgentServices {
 }
 
 impl SessionRuntime {
+    /// Resolves and validates the exact saved Native route. A newly selected model uses the
+    /// same package preparation as a catalog refresh, and old command controls remain reachable
+    /// while an incompatible ordinary candidate waits for its outstanding leases.
+    pub(crate) async fn prepare_native_input(
+        &self,
+        id: &str,
+        thread: &ThreadHandle,
+    ) -> Result<pl_model::config::ResolvedModelRoute> {
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        let mut snapshot = thread.snapshot();
+        let mut config = NativeModelConfiguration::resolve(&services.config, &snapshot)?;
+        let model_ready = |state: &pl_core::thread::ThreadSnapshot,
+                           config: &NativeModelConfiguration| {
+            state.model_available
+                && (state.runtime_bundle.model_identity.as_deref() == Some(config.model.identity())
+                    || state.runtime_bundle.preparing_model_identity.as_deref()
+                        == Some(config.model.identity()))
+        };
+        if model_ready(&snapshot, &config) {
+            return Ok(config.route);
+        }
+
+        let scope = self.native_resources(thread)?;
+        let (gate, cancellation) = services.factory.tool_operation(id)?;
+        let installation = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(ThreadError::Closed.into()),
+            guard = gate.lock_owned() => guard,
+        };
+        snapshot = thread.snapshot();
+        config = NativeModelConfiguration::resolve(&services.config, &snapshot)?;
+        let route = config.route.clone();
+        if model_ready(&snapshot, &config) {
+            return Ok(route);
+        }
+        let desired = config.desired().into();
+        let candidate = config
+            .prepare_bundle(
+                NativeBundleOwner {
+                    id,
+                    session: self,
+                    factory: &services.factory,
+                    config: &services.config,
+                    thread,
+                    snapshot: &snapshot,
+                },
+                cancellation,
+                desired,
+                || true,
+            )
+            .await?;
+        let mut receipt = scope
+            .candidates
+            .stage_runtime_bundle(thread.clone(), candidate)
+            .await?;
+        drop(installation);
+        receipt.prepared().await?;
+        Ok(route)
+    }
+
     /// The caller holds the same identity's operation permit through actual core admission.
     pub(super) async fn prepare_input_admission(
         &self,
@@ -105,12 +121,17 @@ impl SessionRuntime {
             // Model/workspace preparation carries its own snapshot and IO state. Keep it
             // out of interaction continuations while the same caller retains admission,
             // cancellation and the service snapshot; no independent task is introduced.
-            Box::pin(services.prepare_model_admission(id, thread, WorkspaceAdmission::Explicit))
-                .await
-                .map_err(|source| ThreadAssemblyError::Resource {
-                    operation: "admit Thread model",
-                    source: source.into(),
-                })?;
+            Box::pin(services.prepare_model_admission(
+                self,
+                id,
+                thread,
+                WorkspaceAdmission::Explicit,
+            ))
+            .await
+            .map_err(|source| ThreadAssemblyError::Resource {
+                operation: "admit Thread model",
+                source: source.into(),
+            })?;
         }
         Ok(())
     }
@@ -129,7 +150,7 @@ impl SessionRuntime {
             .clone()
             .ok_or(ThreadAssemblyError::Closed)?;
         services
-            .prepare_model_admission(id, thread, WorkspaceAdmission::VerifiedReview(proof))
+            .prepare_model_admission(self, id, thread, WorkspaceAdmission::VerifiedReview(proof))
             .await
             .map_err(|source| ThreadAssemblyError::Resource {
                 operation: "admit frozen review input",

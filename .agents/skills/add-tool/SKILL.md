@@ -20,7 +20,7 @@ description: Use when implementing, registering, migrating, or testing a 糊来�
 1. 独立作者使用领域上下文、结果与错误；宿主静态适配后再注册。宿主中返回原生 ToolOutput/ToolError 的适配器用 `pl_tool::binding::prepare_native_tool`；普通 Serialize 输出用 `prepare_json_tool`，显式选择 context/error 映射。独立应用用 `typed::prepare_json`，无需依赖 core 或 RMCP。
 2. 使用 `binding::prepare_registration` 先完成模型投影、原 opaque 声明编码和内部 ID 校验，再创建/移动服务实例。prepared adapter 的 attach 不失败，全部静态包装完成后只调用一次 `ToolHandle::new`；由 `PreparedRegistration::attach` 接管固定 `RuntimeTool`。core-only 消费方直接准备其不透明声明。
 3. 所有控制、曝光、授权和调度 builder 仍在 Registration。内部 tool_id 与模型名不要求相同。消费实例的 registration 便利方法只能接收已准备材料，不能在错误路径 drop 活资源。
-4. 在 StudioThreadFactory/Assembler 中显式装配 root、child 与恢复工具；每 Thread 独占实例和命令管理器，共用物理服务使用隔离租约。动态刷新保留稳定授权身份；声明、执行代次与权限身份分别处理，冻结旧调用继续持有旧租约并接受撤销检查。
+4. 在 StudioThreadFactory/Assembler 中显式装配根会话、子会话与恢复工具。每个 Thread 独占实例和命令管理器，共用物理服务使用隔离租约。Native 工具目录、执行绑定与事实通过 `InstallRuntimeBundle` 同时安装，从同一发布读取当前绑定。普通刷新复用仍有效的授权与物理租约，明确撤权后由原所有者取消并收束对应任务。
 5. 可共享宿主工具进入所属能力家族的公共注册入口，由 Native/MCP 消费器准备各自投影并附着实例。新增工具不要再写一份 ACP 名称分支、参数 schema 或 execute 闭包；业务上下文只包含真实所需能力，Native 状态效果仍交原 owner。不要用假 CallContext 借执行入口，也不要在通用接口库增加产品注册表。
 
 ## 输出、失败与控制

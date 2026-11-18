@@ -68,22 +68,17 @@ pub(super) enum MailboxCommand {
         fault: Arc<cold::OutputStorageFault>,
         reply: oneshot::Sender<Result<(), ThreadError>>,
     },
-    QueueModelUpdate(
-        super::model_update::DeferredModelUpdate,
-        super::model_update::DeferredModelUpdatePrecondition,
-        Vec<extensions::ExtensionMutation>,
-        oneshot::Sender<Result<ThreadSnapshot, ThreadError>>,
+    InstallRuntimeBundle(
+        Box<RuntimeBundle>,
+        crate::tool::opaque::RegistrationBatch,
+        oneshot::Sender<Result<RuntimeBundleReceipt, ThreadError>>,
     ),
+    RuntimeAuthorizationChanged,
     BeginIdleClose(oneshot::Sender<bool>),
     RetryToolCleanup(oneshot::Sender<Result<(), ThreadError>>),
     RetireTools(
         crate::tool::opaque::RegistrationBatch,
         oneshot::Sender<Result<(), ThreadError>>,
-    ),
-    Reconfigure(
-        IdleReconfiguration,
-        crate::tool::opaque::RegistrationBatch,
-        oneshot::Sender<Result<ThreadSnapshot, ThreadError>>,
     ),
     InterruptTurn {
         expected: Option<String>,
@@ -237,11 +232,29 @@ impl Owner {
             MailboxCommand::ReadResume(request, reply) => {
                 let _ = reply.send(self.read_resume(&request));
             }
+            MailboxCommand::InstallRuntimeBundle(update, batch, reply) => {
+                // The managed sender closes a batch refused before handoff. During shutdown
+                // the existing ToolManager may already be owned by its close future.
+                let result = if self.interrupt.is_closing()
+                    || self.state.lifecycle != ThreadLifecycle::Open
+                {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.queue_runtime_bundle(*update, batch.take().unwrap_or_default())
+                };
+                let _ = reply.send(result);
+            }
+            MailboxCommand::RuntimeAuthorizationChanged => {
+                if let Err(error) = self.retire_revoked_runtime_tools() {
+                    self.fail_owner_work(error);
+                }
+            }
             MailboxCommand::QueueRuntimeFacts(facts, reply) => {
                 let _ = reply.send(self.queue_runtime_facts(facts));
             }
             MailboxCommand::RetryToolCleanup(reply) => {
                 self.tools.retry_cleanup();
+                self.retry_retired_runtime_models();
                 self.publish_snapshot();
                 let _ = reply.send(Ok(()));
             }
@@ -268,10 +281,6 @@ impl Owner {
                 reply,
             } => {
                 let result = self.report_tool_output_storage_fault(caller, executor, fault);
-                let _ = reply.send(result);
-            }
-            MailboxCommand::QueueModelUpdate(update, precondition, mutations, reply) => {
-                let result = self.queue_model_update(update, precondition, mutations);
                 let _ = reply.send(result);
             }
             MailboxCommand::BeginIdleClose(reply) => {
@@ -333,22 +342,6 @@ impl Owner {
                     false
                 };
                 let _ = reply.send(idle);
-            }
-
-            MailboxCommand::Reconfigure(mut update, batch, reply) => {
-                update.tools = batch.take().unwrap_or_default();
-                self.tools.retain_candidates(&update.tools);
-                let result = if self.state.lifecycle == ThreadLifecycle::Open
-                    && !self.interrupt.is_closing()
-                {
-                    self.reconfigure(update)
-                } else {
-                    Err(ThreadError::Closed)
-                };
-                if result.is_err() {
-                    self.publish_snapshot();
-                }
-                let _ = reply.send(result);
             }
 
             MailboxCommand::CancelRunningTurn { expected, reply } => {

@@ -4,8 +4,8 @@ use super::{
     background_task::{self, BackgroundTask},
 };
 use crate::protocol::StudioProductEventKind;
-use anyhow::Context;
-use pl_core::thread::{ThreadHandle, ThreadLifecycle, task::TaskStatus};
+use crate::studio::model_binding::{NativeBundleOwner, NativeModelConfiguration};
+use pl_core::thread::{ThreadError, ThreadHandle, ThreadLifecycle, task::TaskStatus};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Default)]
@@ -233,7 +233,13 @@ impl StudioRuntime {
                     let project = runtime.thread_factory.tool_project(&id);
                     let selected = sources.for_project(project.as_ref(), &id);
                     if let Some((_, updates)) = workers.get(&id) {
-                        updates.send_replace(selected);
+                        updates.send_if_modified(|previous| {
+                            if previous.0 == selected.0 {
+                                return false;
+                            }
+                            *previous = selected;
+                            true
+                        });
                         continue;
                     }
                     let (updates, mut receiver) = tokio::sync::watch::channel(selected);
@@ -349,21 +355,13 @@ impl StudioRuntime {
                     continue;
                 }
             };
+            if authority_invalidated
+                && let Some(binding) = self.thread_factory.binding_snapshot(&id)
+            {
+                self.thread_factory.revoke_tool_binding(&id, &binding);
+            }
             if snapshot.tool_cleanup.pending > 0 && !authority_invalidated {
                 continue;
-            }
-            let mut facts = Vec::new();
-            if let Some(fact) = self.thread_factory.session_files_fact(&id, &snapshot) {
-                facts.push(fact);
-            }
-            if let Some(fact) = self.thread_factory.skill_catalog_fact(&id, &snapshot) {
-                facts.push(fact);
-            }
-            if !facts.is_empty()
-                && let Err(error) = thread.queue_runtime_facts(facts).await
-                && !matches!(error, pl_core::thread::ThreadError::Closed)
-            {
-                tracing::warn!(thread_id = %id, %error, "could not queue refreshed host facts");
             }
             if snapshot.lifecycle != ThreadLifecycle::Open {
                 continue;
@@ -376,41 +374,90 @@ impl StudioRuntime {
             }) {
                 continue;
             }
-            let result = self
-                .install_refreshed_tools(
-                    &id,
-                    &thread,
-                    &snapshot,
-                    cancellation.clone(),
-                    sources,
-                    latest,
-                )
-                .await;
-            let result = match result {
-                Err(error) => match error.downcast::<pl_core::thread::ThreadError>() {
-                    Ok(pl_core::thread::ThreadError::RejectedTools(resources)) => {
-                        tracing::warn!(thread_id = %id, error = %resources, "retaining rejected candidate cleanup owner");
-                        resources_scope.candidates.retain(thread.clone(), resources);
-                        // Retry the original owner once promptly. Persistent failure waits for a source event
-                        // or shutdown; no new candidates accumulate while cleanup remains pending.
-                        self.tool_catalog_updates.notify_one();
-                        continue;
-                    }
-                    Ok(error) => Err(anyhow::Error::new(error)),
-                    Err(error) => Err(error),
-                },
-                Ok(()) => Ok(()),
+            let attempt = cancellation.child_token();
+            let result = {
+                let desired = sources.clone();
+                let latest_revision = latest.clone();
+                let preparation = async {
+                    let session = self.require_session(&id)?;
+                    let configuration =
+                        NativeModelConfiguration::resolve(&self.config_runtime, &snapshot)?;
+                    let identity = format!("{}:{fingerprint}", configuration.desired()).into();
+                    configuration
+                        .prepare_bundle(
+                            NativeBundleOwner {
+                                id: &id,
+                                session: &session,
+                                factory: &self.thread_factory,
+                                config: &self.config_runtime,
+                                thread: &thread,
+                                snapshot: &snapshot,
+                            },
+                            attempt.clone(),
+                            identity,
+                            move || latest_revision.borrow().0 == desired.0,
+                        )
+                        .await
+                };
+                tokio::pin!(preparation);
+                let mut changes = latest.clone();
+                tokio::select! {
+                    result = &mut preparation => result,
+                    _ = changes.changed() => {
+                        attempt.cancel();
+                        preparation.await
+                    },
+                    () = stopping.cancelled() => {
+                        attempt.cancel();
+                        preparation.await
+                    },
+                }
             };
-            if result.as_ref().err().is_some_and(|error| {
-                matches!(
-                    error.downcast_ref::<pl_core::thread::ThreadError>(),
-                    Some(pl_core::thread::ThreadError::ExtensionSequenceConflict { .. })
-                )
-            }) {
-                // The stale candidate was closed by the transfer API. Reprepare against the
-                // new producer state; never mark this fingerprint attempted or clear its tools.
-                self.tool_catalog_updates.notify_one();
+            // Release the producer permit after handing off the candidate. The old package
+            // remains available for input, including write_stdin, while Core defers its swap.
+            let transfer = match result {
+                Ok(candidate) => {
+                    resources_scope
+                        .candidates
+                        .stage_runtime_bundle(thread.clone(), candidate)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            drop(_installation);
+            let result = match transfer {
+                Ok(receipt) => {
+                    let mut changed = latest.clone();
+                    tokio::select! {
+                        biased;
+                        () = stopping.cancelled() => continue,
+                        () = cancellation.cancelled() => continue,
+                        _ = changed.changed() => continue,
+                        result = receipt.installed() => result.map(|_| ()).map_err(anyhow::Error::new),
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result
+                && error.chain().any(|cause| {
+                    let error = cause.downcast_ref::<ThreadError>().or_else(|| {
+                        cause
+                            .downcast_ref::<std::sync::Arc<ThreadError>>()
+                            .map(std::sync::Arc::as_ref)
+                    });
+                    matches!(
+                        error,
+                        Some(ThreadError::StaleRuntimeBundle | ThreadError::ContextConflict { .. })
+                    )
+                })
+            {
+                // A fresher snapshot or source superseded the candidate after preparation.
+                // Its resources remain under the original installation owner's cleanup.
                 continue;
+            }
+            if result.is_ok() {
+                self.thread_factory.notify_lsp_binding_changed();
+                tracing::debug!(target: "thread_preparation", thread_id = id, stage = "catalog_install", "completed");
             }
             // Cache attempts, including failures, until an input revision changes.
             // Recovery issues remain visible; only successful transfer commits a binding.
@@ -461,119 +508,6 @@ impl StudioRuntime {
                     .emit_recovery_state(issues);
             },
         );
-    }
-
-    async fn install_refreshed_tools(
-        &self,
-        id: &str,
-        thread: &ThreadHandle,
-        snapshot: &pl_core::thread::ThreadSnapshot,
-        cancellation: tokio_util::sync::CancellationToken,
-        sources: &CatalogSources,
-        latest: &tokio::sync::watch::Receiver<CatalogSources>,
-    ) -> anyhow::Result<()> {
-        if self.thread_factory.tool_authority_invalidated(id)? {
-            thread
-                .register_tools_if_extensions(snapshot.extension_sequence, Vec::new())
-                .await?;
-        }
-        let prepared = self
-            .thread_factory
-            .refresh_thread_tools(id, snapshot, cancellation.clone())
-            .await;
-        let (tools, exposure, binding) = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                if matches!(
-                    error,
-                    crate::thread_assembler::ThreadAssemblyError::InvalidatedBinding(_)
-                ) {
-                    thread
-                        .register_tools_if_extensions(snapshot.extension_sequence, Vec::new())
-                        .await?;
-                }
-                return Err(error.into());
-            }
-        };
-        let mut registrations = tools.into_registrations();
-        let controls = (|| -> anyhow::Result<_> {
-            let profile_revision = match exposure {
-                crate::thread_assembler::AgentControlExposure::Enabled => {
-                    let profiles = self.config_runtime.agent_profiles_snapshot()?;
-                    let expected = profiles.revision.to_string();
-                    if sources.0.get("agent-profiles") != Some(&expected) {
-                        return Err(pl_core::thread::ThreadError::Cancelled.into());
-                    }
-                    let selection = crate::studio::delegation::saved(snapshot)?
-                        .context("Thread has no frozen delegation selection")?;
-                    registrations.extend(
-                        self.require_session(id)?
-                            .agent_control_tools_for_thread(id, thread, &profiles, selection)?,
-                    );
-                    Some(profiles.revision)
-                }
-                crate::thread_assembler::AgentControlExposure::Disabled => None,
-            };
-            // A configuration publication may beat the source watch forwarder. Check the
-            // canonical generation too, before transferring this candidate to the Thread.
-            let stale_profiles = match profile_revision {
-                Some(revision) => {
-                    self.config_runtime.agent_profiles_snapshot()?.revision != revision
-                }
-                None => false,
-            };
-            if cancellation.is_cancelled() || sources.0 != latest.borrow().0 || stale_profiles {
-                return Err(pl_core::thread::ThreadError::Cancelled.into());
-            }
-            Ok(())
-        })();
-        if let Err(error) = controls {
-            // This includes catalog/schema errors: the complete physical candidate must enter
-            // the existing retirement owner rather than being dropped on an early `?`.
-            thread.retire_tools(registrations).await?;
-            return Err(error);
-        }
-        thread
-            .register_tools_if_extensions(snapshot.extension_sequence, registrations)
-            .await?;
-        tracing::debug!(target: "thread_preparation", thread_id = id, stage = "catalog_install", "completed");
-        self.publish_tool_binding(id, thread, snapshot.extension_sequence, binding)
-            .await?;
-        let snapshot = thread.snapshot();
-        let mut facts = Vec::new();
-        if let Some(fact) = self.thread_factory.session_files_fact(id, &snapshot) {
-            facts.push(fact);
-        }
-        if let Some(fact) = self.thread_factory.skill_catalog_fact(id, &snapshot) {
-            facts.push(fact);
-        }
-        if !facts.is_empty() {
-            thread.queue_runtime_facts(facts).await?;
-        }
-        Ok(())
-    }
-
-    // The refresh loop serializes installations. An extension change can still
-    // supersede this catalog, so rollback uses the same producer sequence guard.
-    async fn publish_tool_binding(
-        &self,
-        id: &str,
-        thread: &ThreadHandle,
-        extension_sequence: u64,
-        binding: crate::studio::thread_factory::RefreshedToolBinding,
-    ) -> anyhow::Result<()> {
-        if thread.snapshot().lifecycle != ThreadLifecycle::Open {
-            return Err(pl_core::thread::ThreadError::Closed.into());
-        }
-        if let Err(error) = self.thread_factory.commit_refreshed_binding(id, binding) {
-            if self.thread_factory.tool_authority_invalidated(id)? {
-                thread
-                    .register_tools_if_extensions(extension_sequence, Vec::new())
-                    .await?;
-            }
-            return Err(error.into());
-        }
-        Ok(())
     }
 
     pub(super) async fn stop_tool_refresh(&self) -> anyhow::Result<()> {

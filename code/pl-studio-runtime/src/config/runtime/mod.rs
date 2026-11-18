@@ -32,7 +32,7 @@ pub struct ConfigRuntime {
     store: ConfigStore,
     command_lock: Arc<Mutex<()>>,
     state: Arc<RwLock<RuntimeState>>,
-    catalog_updates: tokio::sync::broadcast::Sender<CatalogChange>,
+    catalog_updates: tokio::sync::broadcast::Sender<()>,
     /// canonical Settings 提交的同步观察者（ACP 身份与账号用量 owner）。
     ///
     /// 配置 owner 强持有该观察者，观察者自身只以 `Weak` 引用运行时 owner，因此不会形成
@@ -68,11 +68,6 @@ struct RuntimeState {
 pub(crate) trait SettingsCommitObserver: Send + Sync {
     /// 已提交的 canonical 设置 revision 与其内容。
     fn settings_committed(&self, snapshot: &ConfigRuntimeSnapshot);
-}
-
-#[derive(Clone)]
-pub(crate) struct CatalogChange {
-    pub affected: Vec<AccountId>,
 }
 
 /// 已校验 Studio 配置及其单调 revision。
@@ -326,6 +321,12 @@ impl ConfigRuntime {
     ) -> ConfigRuntimeResult<(ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot)> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
         Ok((state.snapshot.clone(), state.catalog.clone()))
+    }
+
+    /// The same two revisions used to qualify a prepared Native configuration.
+    pub(crate) fn native_runtime_revision(&self) -> ConfigRuntimeResult<(u64, u64)> {
+        let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+        Ok((state.snapshot.revision, state.catalog.revision))
     }
 
     /// 安装 Settings 提交观察者，并在同一 command 边界内立即观察当前 canonical 快照。

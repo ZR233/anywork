@@ -59,42 +59,21 @@ pub(crate) fn encode() -> Result<OpaquePayload> {
     )?)
 }
 
-/// The existing model-update mailbox can commit host extensions while a Turn is running.
-/// Its unavailable pending binding prevents another paid Turn, without touching the frozen route
-/// or interrupting the admitted Turn before the close record actually becomes durable.
+/// The Session has sealed the child's admission. Pause the existing queue before saving
+/// the durable close marker, leaving already admitted execution to the normal close path.
 pub(crate) async fn commit(thread: &pl_core::thread::ThreadHandle) -> Result<()> {
+    thread.pause_inputs().await?;
     if !is_explicitly_closed(&thread.snapshot())? {
         thread
-            .queue_deferred_model_update(
-                pl_core::thread::DeferredModelUpdate::new(
-                    EXTENSION.into(),
-                    pl_core::model::ModelFactory::new(ClosedAdmission),
-                    None,
-                ),
-                vec![pl_core::thread::extensions::ExtensionMutation::Put {
-                    id: EXTENSION.into(),
-                    expected_revision: None,
-                    payload: encode()?,
-                }],
-            )
+            .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                id: EXTENSION.into(),
+                expected_revision: None,
+                payload: encode()?,
+            }])
             .await?;
     }
     thread.flush().await?;
     Ok(())
-}
-
-struct ClosedAdmission;
-impl pl_core::model::Model for ClosedAdmission {
-    async fn open_session(
-        &self,
-    ) -> Result<pl_core::model::DynModelSession, pl_core::model::ModelError> {
-        Err(pl_core::model::ModelError {
-            kind: pl_core::model::ModelFailureKind::Unavailable,
-            details: None,
-            usage: Default::default(),
-            source: None,
-        })
-    }
 }
 
 /// Cold projections expose resumability, not the previous process owner's resource lifecycle.

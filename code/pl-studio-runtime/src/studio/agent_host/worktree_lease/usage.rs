@@ -134,6 +134,21 @@ impl Drop for UsageToken {
 /// Opaque Studio workspace use; only the canonical product owner can issue or assign it.
 #[derive(Clone)]
 pub struct WorkspaceUsageLease(Arc<UsageToken>);
+
+#[derive(Clone)]
+pub(crate) struct WeakWorkspaceUsageLease(Weak<UsageToken>);
+
+impl WorkspaceUsageLease {
+    pub(crate) fn downgrade(&self) -> WeakWorkspaceUsageLease {
+        WeakWorkspaceUsageLease(Arc::downgrade(&self.0))
+    }
+}
+
+impl WeakWorkspaceUsageLease {
+    pub(crate) fn upgrade(&self) -> Option<WorkspaceUsageLease> {
+        self.0.upgrade().map(WorkspaceUsageLease)
+    }
+}
 /// An already-admitted write, not a durable binding proof.
 pub(in crate::studio) struct VerifiedBindingWrite {
     confirmed: super::WorktreeLease,

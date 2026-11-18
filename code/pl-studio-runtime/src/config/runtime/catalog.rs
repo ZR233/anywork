@@ -31,7 +31,7 @@ impl ConfigRuntime {
         observation.status.probing = false;
         observation.status.error = Some(StudioModelCatalogError::TaskFailed);
         observation.status.checked_at = Some(unix_seconds());
-        self.publish_catalog_locked(&mut state, Vec::new(), &account);
+        self.publish_catalog_locked(&mut state, &account);
         Ok(())
     }
 
@@ -51,9 +51,7 @@ impl ConfigRuntime {
         Ok(observation.generation)
     }
 
-    pub(crate) fn subscribe_model_catalogs(
-        &self,
-    ) -> tokio::sync::broadcast::Receiver<CatalogChange> {
+    pub(crate) fn subscribe_model_catalogs(&self) -> tokio::sync::broadcast::Receiver<()> {
         self.catalog_updates.subscribe()
     }
 
@@ -101,7 +99,7 @@ impl ConfigRuntime {
                     observation.status.error = Some(error);
                     observation.status.checked_at = Some(unix_seconds());
                 }
-                self.publish_catalog_locked(&mut state, Vec::new(), &account_id);
+                self.publish_catalog_locked(&mut state, &account_id);
                 return Ok(None);
             }
         };
@@ -137,7 +135,7 @@ impl ConfigRuntime {
             cancellation: observation.cancellation.child_token(),
         };
         let account = probe.account.clone();
-        self.publish_catalog_locked(&mut state, Vec::new(), &account);
+        self.publish_catalog_locked(&mut state, &account);
         Ok(Some(probe))
     }
 
@@ -217,14 +215,12 @@ impl ConfigRuntime {
         };
         let mut next_observations = state.observations.clone();
         let desired = state.desired.clone();
-        let current_accounts = state.snapshot.config.models.accounts.clone();
         drop(state);
         let next = next_observations
             .get_mut(&probe.account)
             .ok_or_else(|| PureError::ConfigError("model observation is missing".into()))?;
         next.status.probing = false;
         next.status.checked_at = Some(unix_seconds());
-        let mut affected = Vec::new();
         let mut effective_config = None;
         match cache {
             Ok(cache) => {
@@ -243,11 +239,6 @@ impl ConfigRuntime {
                 })();
                 match accepted {
                     Ok(effective) => {
-                        for (id, account) in &effective.models.accounts {
-                            if current_accounts.get(id) != Some(account) {
-                                affected.push(id.clone());
-                            }
-                        }
                         effective_config = Some(effective);
                         let next = next_observations.get_mut(&probe.account).ok_or_else(|| {
                             PureError::ConfigError("model observation is missing".into())
@@ -275,7 +266,7 @@ impl ConfigRuntime {
             state.snapshot.config = config;
         }
         state.observations = next_observations;
-        self.publish_catalog_locked(&mut state, affected, &probe.account);
+        self.publish_catalog_locked(&mut state, &probe.account);
         drop(state);
         // Model withdrawal/recovery changes whether an otherwise enabled child Profile can run.
         // Publish that availability through the existing Profile owner and generation channel.
@@ -286,12 +277,7 @@ impl ConfigRuntime {
         Ok(())
     }
 
-    fn publish_catalog_locked(
-        &self,
-        state: &mut RuntimeState,
-        affected: Vec<AccountId>,
-        source_account: &AccountId,
-    ) {
+    fn publish_catalog_locked(&self, state: &mut RuntimeState, source_account: &AccountId) {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
         if let Some(revisions) =
             state
@@ -304,7 +290,7 @@ impl ConfigRuntime {
         }
         state.catalog.updated_at = unix_seconds();
         state.catalog.catalogs = statuses(&state.observations);
-        let _ = self.catalog_updates.send(CatalogChange { affected });
+        let _ = self.catalog_updates.send(());
     }
 
     /// Serializes with commit, prevents new publication, and cancels outstanding network futures.

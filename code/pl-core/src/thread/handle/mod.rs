@@ -18,7 +18,8 @@ pub struct ThreadHandle {
     pub(in crate::thread) commands: mpsc::Sender<Command>,
     _producer_facts: mpsc::Sender<super::mailbox::MailboxCommand>,
     interrupt: cancellation::InterruptHandle,
-    snapshots: watch::Receiver<ThreadSnapshot>,
+    snapshots: watch::Receiver<super::subscription::OwnerPublication>,
+    authorization_dirty: Arc<std::sync::atomic::AtomicBool>,
     effect_window: Arc<EffectWindow>,
 }
 

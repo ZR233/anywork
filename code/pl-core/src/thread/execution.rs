@@ -36,12 +36,6 @@ pub(super) enum PrimaryCompletion {
         step: StepWork,
         exit: crate::model::ModelCallExit,
     },
-    Replaced {
-        model: Option<DynModelSession>,
-        result: Result<(), ThreadError>,
-        update: Option<DeferredModelUpdate>,
-        reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
-    },
     ExecutionsJoined(
         crate::tool::task::ExecutionTasks<super::tool_execution::ToolExecutionCompletion>,
     ),
@@ -150,6 +144,14 @@ pub(super) enum CloseStage {
 }
 
 pub(super) enum MaintenanceCompletion {
+    RuntimeModelOpened {
+        generation: u64,
+        result: Result<DynModelSession, ThreadError>,
+    },
+    RetiredRuntimeModel {
+        model: DynModelSession,
+        result: Result<(), ModelError>,
+    },
     Flush {
         through: Option<u64>,
         result: Result<(), ThreadError>,
@@ -169,6 +171,12 @@ pub(super) enum MaintenanceCompletion {
 impl Owner {
     pub(super) fn finish_maintenance(&mut self, completion: MaintenanceCompletion) {
         match completion {
+            MaintenanceCompletion::RuntimeModelOpened { generation, result } => {
+                self.finish_runtime_model_open(generation, result);
+            }
+            MaintenanceCompletion::RetiredRuntimeModel { model, result } => {
+                self.finish_retired_runtime_model(model, result);
+            }
             MaintenanceCompletion::Flush {
                 through,
                 result,
@@ -578,6 +586,8 @@ impl Owner {
             return;
         }
         self.state.lifecycle = ThreadLifecycle::Closing;
+        self.reject_pending_bundle(ThreadError::Closed);
+        self.retry_retired_runtime_models();
         if purpose == owner::ClosePurpose::Preserve && !self.interrupt.is_deleting() {
             self.form_host_shutdown();
         }
@@ -619,6 +629,12 @@ impl Owner {
                 }));
             }
             CloseStage::Model => {
+                if self.runtime_model_jobs != 0 {
+                    return Ok(false);
+                }
+                if let Some((_, error)) = self.retired_runtime_models.first() {
+                    return Err(ThreadError::Model(error.clone()));
+                }
                 self.closing.as_mut().unwrap().stage = CloseStage::Tools;
                 if let Some(mut model) = self.model.take() {
                     self.primary = Some(PrimaryWork::new(false, async move {
@@ -743,6 +759,8 @@ impl Owner {
     /// Only bounded, local transitions run here. Returning true requests another fair loop tick.
     pub(super) fn start_ready_work(&mut self) -> Result<bool, ThreadError> {
         self.expire_tool_waiters()?;
+        self.retire_revoked_runtime_tools()?;
+        self.install_ready_bundle();
         if self.primary.is_some() {
             return Ok(false);
         }
@@ -768,12 +786,6 @@ impl Owner {
         let phase = std::mem::replace(&mut run.phase, RunPhase::Preparing);
         match phase {
             RunPhase::Starting => {
-                if let Some(update) = self.pending_model_update.take() {
-                    run.phase = RunPhase::Starting;
-                    self.active = Some(run);
-                    self.start_model_replacement(update.factory.clone(), Some(update), None)?;
-                    return Ok(false);
-                }
                 if !matches!(run.reply, RunReply::Step(_) | RunReply::Compact(_)) {
                     let mut turns = self.state.turns.to_vec();
                     turns.push(TurnRecord {
@@ -1018,27 +1030,6 @@ impl Owner {
                 self.finish_step(&step.input.attempt_id);
                 self.accept_step_result(step, result)?;
             }
-            PrimaryCompletion::Replaced {
-                model,
-                result,
-                update,
-                reply,
-            } => {
-                self.model = model;
-                if let Some(update) = update {
-                    if result.is_ok() {
-                        self.model_identity = Some(update.identity);
-                        self.context_preparation = update.preparation;
-                    } else if self.pending_model_update.is_none() {
-                        self.pending_model_update = Some(update);
-                    }
-                }
-                if let Some(reply) = reply {
-                    let _ = reply.send(result);
-                } else {
-                    result?;
-                }
-            }
             PrimaryCompletion::ExecutionsJoined(executions) => self.executions = executions,
             PrimaryCompletion::ClosedModel { model, result } => {
                 if let Err(error) = result {
@@ -1254,43 +1245,6 @@ impl Owner {
                 let _ = reply.send(result.map(|_| self.state.context.clone()));
             }
         }
-        Ok(())
-    }
-
-    pub(super) fn start_model_replacement(
-        &mut self,
-        factory: crate::model::ModelFactory,
-        update: Option<DeferredModelUpdate>,
-        reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
-    ) -> Result<(), ThreadError> {
-        let previous = self.model.take();
-        self.retry_plan = None;
-        self.primary = Some(PrimaryWork::new(false, async move {
-            let mut model = previous;
-            let result = async {
-                if let Some(previous) = model.as_mut() {
-                    previous
-                        .close()
-                        .await
-                        .map_err(|e| ThreadError::Model(Arc::new(e)))?;
-                }
-                model = None;
-                model = Some(
-                    factory
-                        .open_session()
-                        .await
-                        .map_err(|e| ThreadError::Model(Arc::new(e)))?,
-                );
-                Ok(())
-            }
-            .await;
-            PrimaryCompletion::Replaced {
-                model,
-                result,
-                update,
-                reply,
-            }
-        }));
         Ok(())
     }
 }

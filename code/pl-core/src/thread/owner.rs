@@ -66,8 +66,15 @@ pub(super) struct Owner {
         std::collections::BTreeMap<String, current::SavedToolProgress>,
     pub(super) final_current:
         watch::Sender<Option<Result<current::ThreadCurrent, Arc<current::CurrentError>>>>,
-    pub(super) model_identity: Option<String>,
-    pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
+    pub(super) runtime_binding: Option<RuntimeBinding>,
+    pub(super) pending_bundle: Option<super::runtime_bundle::PendingBundle>,
+    pub(super) bundle_generation: u64,
+    pub(super) runtime_model_jobs: usize,
+    pub(super) retired_runtime_models: Vec<(DynModelSession, Arc<ModelError>)>,
+    pub(super) revoked_runtime_tools: bool,
+    pub(super) authorization_dirty: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) executing_authorities:
+        std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
     pub(super) compaction_call: Option<context_preparation::CompactionCall>,
@@ -215,7 +222,7 @@ pub(super) struct Owner {
     pub(super) retry_plan: Option<(String, crate::tool::opaque::ToolPlan)>,
     pub(super) published: ThreadSnapshot,
     pub(super) state: ThreadSnapshot,
-    pub(super) publish: watch::Sender<ThreadSnapshot>,
+    pub(super) publish: watch::Sender<super::subscription::OwnerPublication>,
     pub(super) tools: crate::tool::opaque::ToolManager,
     pub(super) pending: std::collections::BTreeMap<String, PendingCall>,
 }
@@ -497,16 +504,6 @@ impl Owner {
                     let _ = reply.send(Err(error));
                 }
             },
-            Command::ReplaceModel(factory, preparation, reply) => {
-                if self.active.is_some() || self.primary.is_some() {
-                    let _ = reply.send(Err(ThreadError::InputRequiresIdle));
-                } else {
-                    self.model_identity = None;
-                    self.pending_model_update = None;
-                    self.context_preparation = preparation;
-                    let _ = self.start_model_replacement(factory, None, Some(reply));
-                }
-            }
             Command::ContextPreparation(preparation, reply) => {
                 self.context_preparation = preparation;
                 let _ = reply.send(Ok(()));
@@ -756,7 +753,11 @@ impl Owner {
             .observation_revision
             .checked_add(1)
             .expect("Thread observation revision exhausted");
-        self.publish.send_replace(snapshot);
+        self.publish
+            .send_replace(super::subscription::OwnerPublication {
+                snapshot,
+                binding: self.runtime_binding.clone(),
+            });
         if self.current_task_start_ordinal.is_some() {
             self.current_dirty.send_modify(|revision| {
                 *revision = revision
