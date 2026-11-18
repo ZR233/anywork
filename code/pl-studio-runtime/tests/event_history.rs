@@ -218,6 +218,85 @@ fn single(id: &str, run: RuntimeEpoch, body: &[u8]) -> HistoryEvent {
     ));
     event
 }
+#[tokio::test]
+async fn ordinary_question_answer_continues_from_current_without_history_reconstruction()
+-> Result<()> {
+    use pl_provider_fixture::{GUI_QUESTION_HISTORY_PROMPT, RequestMatch};
+    use pl_studio_runtime::{InteractionResolution, ThreadWorkspaceMode, UserInputResolution};
+    let continuation = pl_provider_fixture::ReplyStage::new();
+    let mut steps = pl_provider_fixture::gui_question_history_script();
+    // Reuse the exact native scenario; only hold the new model request so its Current can be observed.
+    steps
+        .iter_mut()
+        .find(|step| matches!(step.request, RequestMatch::InteractionAnswers { .. }))
+        .context("question answer fixture step")?
+        .reply = support::held_reply(&continuation, "question-continued");
+    let env = Environment::new(steps, vec![]).await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let started = env
+            .start(ThreadWorkspaceMode::Local, GUI_QUESTION_HISTORY_PROMPT)
+            .await?;
+        let id = started.thread.id;
+        support::completed_prompt(&env.runtime, &id, GUI_QUESTION_HISTORY_PROMPT).await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let reader = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let reference = reader
+            .snapshot(current_demand())
+            .await?
+            .projection
+            .interactions
+            .context("pending question collection")?;
+        let entry = reader
+            .page_collection(reference, None, current_demand())
+            .await?
+            .entries
+            .into_iter()
+            .next()
+            .context("pending question")?;
+        let bytes = match entry.payload {
+            pl_studio_runtime::CurrentPayloadData::Inline { bytes } => bytes,
+            pl_studio_runtime::CurrentPayloadData::Deferred { reference, .. } => {
+                read_current_body(&reader, &reference).await?
+            }
+        };
+        let pending: pl_studio_runtime::InteractionRequest = serde_json::from_slice(&bytes)?;
+        let answers: UserInputResolution =
+            serde_json::from_str(&pl_provider_fixture::gui_question_history_answers_json())?;
+        env.runtime
+            .resolve_interaction(
+                "answer-current-question".into(),
+                id.clone(),
+                pending.revision,
+                pending.interaction_id,
+                InteractionResolution::UserInput(answers),
+            )
+            .await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        reached(&continuation).await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let input = reader
+            .snapshot(current_demand())
+            .await?
+            .state
+            .active_turn
+            .and_then(|turn| turn.input_id)
+            .context("running answer continuation")?;
+        continuation.release();
+        support::terminal(&env.runtime, &id, Some(&input)).await?;
+        env.runtime.synchronize_thread_observation(&id).await?;
+        reader.close().await?;
+        Ok(())
+    })
+    .await
+    .context("ordinary question continuation did not settle")
+    .and_then(std::convert::identity);
+    continuation.release();
+    env.finish(result).await
+}
+
 async fn raw(path: &Path) -> Result<DatabaseConnection> {
     let path = path.to_path_buf();
     let mut options = sea_orm::ConnectOptions::new("sqlite:");

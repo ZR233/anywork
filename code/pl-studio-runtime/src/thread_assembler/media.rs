@@ -55,7 +55,7 @@ mod tests {
             ModelToolCall, PreparedModelCall,
         },
         persistence::{SqliteSessionOptions, SqliteSessionStore, ThreadEffectQuery},
-        thread::{ModelStepLimit, ThreadHandle, TurnInput, cold::ColdStoreHandle},
+        thread::{StepInput, ThreadHandle, ToolDispatch, cold::ColdStoreHandle},
     };
     use pl_tool::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
     use std::{collections::VecDeque, io::Cursor};
@@ -184,17 +184,23 @@ mod tests {
             .attach_storage(ColdStoreHandle::new(history.clone()))
             .await?;
         thread.register_tools(vec![view, show]).await?;
-        thread
-            .run_turn(TurnInput {
-                turn_id: "media".into(),
-                attempt_prefix: "media".into(),
-                content: vec![ContextContent::Text {
-                    text: "inspect and display".into(),
-                }],
-                max_model_steps: ModelStepLimit::Limited(4.try_into().unwrap()),
-                cancellation: Default::default(),
-            })
-            .await?;
+        // This test verifies media and cold persistence, independently of automatic Turn scheduling.
+        for attempt in ["view", "show"] {
+            thread
+                .step(StepInput {
+                    turn_id: "media".into(),
+                    attempt_id: attempt.into(),
+                    content: Vec::new(),
+                    cancellation: Default::default(),
+                })
+                .await?;
+            if let ToolDispatch::Running(task) = thread
+                .execute_tool(attempt.into(), Default::default())
+                .await?
+            {
+                thread.wait_task(&task.id, Default::default()).await?;
+            }
+        }
         thread.close().await?;
         history.shutdown().await.unwrap();
         drop((thread, history, store));

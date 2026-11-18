@@ -1403,6 +1403,12 @@ impl Drop for LiveProjection {
     }
 }
 
+struct ProjectedContent {
+    items: Vec<ExecutionItem>,
+    review_delivery: Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
+    completion_drafts: Vec<ChatDraft>,
+}
+
 impl LiveProjection {
     /// Creates an empty projection owner.
     ///
@@ -1574,8 +1580,11 @@ impl LiveProjection {
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
-        let (items, review_delivery, mut completion_drafts) =
-            self.project(thread, effect, state)?;
+        let ProjectedContent {
+            items,
+            review_delivery,
+            mut completion_drafts,
+        } = self.project(thread, effect, state)?;
         #[cfg(test)]
         if std::mem::take(&mut self.fail_after_project) {
             return Err(ProjectionError::History(
@@ -1668,8 +1677,11 @@ impl LiveProjection {
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let (items, review_delivery, mut completion_drafts) =
-            self.project(thread, effect, state)?;
+        let ProjectedContent {
+            items,
+            review_delivery,
+            mut completion_drafts,
+        } = self.project(thread, effect, state)?;
         self.complete_provenance(
             effect,
             state,
@@ -1738,14 +1750,7 @@ impl LiveProjection {
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
-    ) -> Result<
-        (
-            Vec<ExecutionItem>,
-            Vec<crate::thread_assembler::review_delivery::ReviewDeliveryFact>,
-            Vec<ChatDraft>,
-        ),
-        ProjectionError,
-    > {
+    ) -> Result<ProjectedContent, ProjectionError> {
         let review_delivery =
             review_delivery_facts(&thread.id, effect).map_err(ProjectionError::ReviewDelivery)?;
         let mut turn_failures = self.turn_failures.clone();
@@ -2008,7 +2013,11 @@ impl LiveProjection {
                 self.results.entry(turn).or_default().finish = Some(finish);
             }
         }
-        Ok((items, review_delivery, completion_drafts))
+        Ok(ProjectedContent {
+            items,
+            review_delivery,
+            completion_drafts,
+        })
     }
 
     /// Freezes and publishes this effect's completion batch, exactly once per identity.
@@ -2987,8 +2996,6 @@ impl LiveProjection {
             },
         );
     }
-
-    /// Retains one committed body while it can still change or be re-projected.
 
     /// Stores one canonical body, keeping the retained-byte estimate in step.
     ///

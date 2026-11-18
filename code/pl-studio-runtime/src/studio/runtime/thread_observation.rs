@@ -708,8 +708,7 @@ impl ThreadObservations {
                 let feed = position
                     .source
                     .filter(|source| !source.is_delivery_closed())?;
-                let value = feed.last_turn.borrow().clone();
-                value
+                feed.last_turn.borrow().clone()
             })),
             move |id, thread, purpose| {
                 if let Some(owner) = closing.upgrade() {
@@ -1438,10 +1437,8 @@ impl LiveOwner {
     /// The batch is published before it is handed over, so the writer can only ever confirm a body
     /// the shared window already holds: there is no save-before-publish interleaving to lose.
     ///
-    /// A reliable-output repair can name an identity the bounded window already released. This owner is
-    /// still the single fact source for the canonical item and its content version, so it reads that
-    /// already-committed body back once here and folds it in before projecting; the ordinary path reads
-    /// nothing, and the writer never invents a version or re-projects a written effect.
+    /// The producer cut and retained RAM material supply every projection fact. No History lookup
+    /// supplements a released body, and the writer never re-projects an execution effect.
     async fn advance(
         &mut self,
         services: &ObservationServices,

@@ -53,17 +53,12 @@ pub(super) fn input_event(
     fact: &InputFact,
     body_id: String,
 ) -> Result<(HistoryEvent, HistoryBody)> {
-    if event_id.is_empty() || body_id.is_empty() || fact.admission().id.as_str().is_empty() {
+    if event_id.is_empty() || body_id.is_empty() || fact.admission().id.is_empty() {
         return Err(HistoryError::InvalidEvent(
             "input event, body and entity identities must not be empty".into(),
         ));
     }
     let kind = HistoryEventKind::InputAccepted;
-    if matches!(&kind, HistoryEventKind::Other(_)) {
-        return Err(HistoryError::InvalidEvent(
-            "a pending state is not an input event kind".into(),
-        ));
-    }
     let payload = pl_core::context::OpaquePayload::new(
         INPUT_FACT_FORMAT,
         INPUT_FACT_VERSION,

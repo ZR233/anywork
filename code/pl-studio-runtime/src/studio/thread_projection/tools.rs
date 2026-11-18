@@ -183,9 +183,14 @@ fn project_invocation(
                 updated_at,
                 "Tool execution was cancelled; observed facts remain in the journal.".into(),
             )),
-            TaskStatus::Succeeded | TaskStatus::Failed => {
-                return Err(ProjectionError::MissingToolResult(id));
+            TaskStatus::Succeeded => {
+                // Answer consumption retires the delivery while the terminal Task can remain.
+                // Its paired result already belongs to this same Current context.
+                let output = completed_interaction_output(snapshot, &id, invocation.name())
+                    .ok_or_else(|| ProjectionError::MissingToolResult(id.clone()))?;
+                ThreadToolState::Succeeded(crate::SucceededThreadTool::new(updated_at, output))
             }
+            TaskStatus::Failed => return Err(ProjectionError::MissingToolResult(id)),
             TaskStatus::Running => {
                 let progress = snapshot
                     .tool_progress
