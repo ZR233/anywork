@@ -140,9 +140,8 @@ impl ToolStream {
         item_id: &str,
     ) -> String {
         resolve_key(
-            self.accumulators
-                .iter()
-                .map(|(key, tool)| (key, tool.identity())),
+            &self.accumulators,
+            ToolCallAccumulator::identity,
             stream_id,
             call_id,
             item_id,

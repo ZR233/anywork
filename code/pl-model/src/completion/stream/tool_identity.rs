@@ -1,4 +1,5 @@
 //! Shared tool correlation rules for lifecycle validation and argument accumulation.
+use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
 pub(super) struct ToolIdentity<'a> {
@@ -36,27 +37,31 @@ pub(super) fn tool_key(
         .map_or_else(|| item_id.to_owned(), Clone::clone)
 }
 
-pub(super) fn resolve_key<'a>(
-    entries: impl Iterator<Item = (&'a String, ToolIdentity<'a>)> + Clone,
+pub(super) fn resolve_key<'a, T>(
+    entries: &'a HashMap<String, T>,
+    identity: impl Fn(&'a T) -> ToolIdentity<'a>,
     stream_id: Option<&String>,
     call_id: Option<&String>,
     item_id: &str,
 ) -> String {
     let key = tool_key(stream_id, call_id, item_id);
-    if entries.clone().any(|(stored, _)| *stored == key) {
+    if entries.contains_key(&key) {
         return key;
     }
-    if let Some(found) = entries
-        .clone()
-        .find_map(|(key, identity)| identity.matches(call_id, item_id).then(|| key.clone()))
-    {
+    if let Some(found) = entries.iter().find_map(|(key, value)| {
+        identity(value)
+            .matches(call_id, item_id)
+            .then(|| key.clone())
+    }) {
         return found;
     }
     // Late call-only metadata may upgrade an item fallback only when it is unambiguous.
     if stream_id.is_none_or(String::is_empty)
         && call_id.is_some_and(|id| !id.is_empty() && id == item_id)
     {
-        let mut candidates = entries.filter(|(_, identity)| identity.uses_item_fallback());
+        let mut candidates = entries
+            .iter()
+            .filter(|(_, value)| identity(value).uses_item_fallback());
         if let Some((candidate, _)) = candidates.next()
             && candidates.next().is_none()
         {

@@ -372,9 +372,8 @@ impl StreamLifecycle {
         item_id: &str,
     ) -> String {
         resolve_key(
-            self.open_tools
-                .iter()
-                .map(|(key, tool)| (key, tool.identity())),
+            &self.open_tools,
+            OpenToolInput::identity,
             stream_id,
             call_id,
             item_id,
