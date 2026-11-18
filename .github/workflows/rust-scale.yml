@@ -53,6 +53,11 @@ jobs:
           cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
           save-if: false
           cache-bin: false
+      - name: Verify indexed history at one hundred thousand records
+        run: |
+          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
+            studio::storage::history::conversation::record_read_tests::hundred_thousand_records_use_index_seeks_without_loading_bodies \
+            -- --exact --ignored --nocapture
       - name: Verify current and history at two thousand items
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite \

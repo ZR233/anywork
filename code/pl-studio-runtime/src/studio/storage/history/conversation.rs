@@ -496,12 +496,22 @@ pub(in crate::studio) mod record_read_tests {
     }
 
     #[tokio::test]
+    async fn bounded_record_pages_use_index_seeks_without_loading_bodies() -> Result<()> {
+        verify_indexed_record_pages(&[20, 100]).await
+    }
+
+    #[tokio::test]
+    #[ignore = "full record scale coverage runs in Rust Scale Checks"]
     async fn hundred_thousand_records_use_index_seeks_without_loading_bodies() -> Result<()> {
+        verify_indexed_record_pages(&[20, 100, 10_000, 100_000]).await
+    }
+
+    async fn verify_indexed_record_pages(sizes: &[u64]) -> Result<()> {
         let (_dir, db) = super::tests::fixture().await?;
         let seed = record(1, atom("record-1", ChatAtomKind::ToolCall, "F"));
         append_records(&db, [&seed], true).await?;
         let mut baseline = None;
-        for size in [20u64, 100, 10_000, 100_000] {
+        for &size in sizes {
             db.execute_raw(statement("WITH RECURSIVE n(i) AS (SELECT (SELECT MAX(seq)+1 FROM conversation_items) UNION ALL SELECT i+1 FROM n WHERE i<?)
                 INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata)
                 SELECT i,'record-'||i,query_class,parent_id,payload,
@@ -540,7 +550,7 @@ pub(in crate::studio) mod record_read_tests {
         }
         let sampler = sqlite_work::Sampler::install(&db).await?;
         let lifetime = sampler.lifetime();
-        let mut invalid = request(100_000, None, 20);
+        let mut invalid = request(20, None, 20);
         invalid.demand.max_items = 0;
         let result = page(&db, &invalid, &super::tests::Budget, false).await;
         let work = sampler.finish(&db).await?;
