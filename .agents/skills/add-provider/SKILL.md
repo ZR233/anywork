@@ -20,11 +20,12 @@ metadata:
 
 模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。`ProtocolKind` 决定受信指令角色和
 目录方言，`WireApi` 选择共享 Chat/Responses 编解码，真实厂商差异落在 typed parser、模型绑定
-及服务能力。不要新增仅转发的厂商客户端、适配器 trait 或分派宏。
+及服务能力。把厂商目录、服务和模型声明放在 `code/model-protocols/` 下对应的协议 crate。
+通用兼容端点用 OpenAI crate，端点能力独立声明。
 异步重试、取消、连接、continuation、流和计量由唯一执行流程拥有；不使用 async_trait 或
 隐藏 Future 的 Send。普通完成与原生压缩仅携带各自的调用级用途材料。
-账号 OAuth/OIDC、身份类型、凭据会话和配额查询位于独立的 `pl-model-auth::chatgpt`；
-Studio 拥有登录操作与受保护存储，模型执行在发送前向已绑定的认证会话解析凭据。
+`pl-model-auth::chatgpt` 持有 OAuth/OIDC、身份类型和刷新会话；OpenAI 协议持有 Codex wire 和配额查询。
+Studio 拥有登录操作与受保护存储，协议在发送前使用已绑定的凭据能力。
 
 原生 thinking、tool_stream、Files、搜索、缓存、余额、配额与远程压缩保留类型化能力边界。
 Responses 兼容不自动意味着支持这些能力；自定义地址的服务能力撤销规则遵循权威设计。
@@ -55,7 +56,7 @@ Responses 兼容不自动意味着支持这些能力；自定义地址的服务�
 
 ## 验证与交付
 
-现有 pl-model 行为测试可提供 loopback 请求、协议解析、账号隔离和失败传播证据；以下补充模型协议与迁移的实际风险。
+用 [协议示例](../../../code/model-protocols/README.md) 手动调试真实端点。协议集成测试通过 `tests/` 调用公开 API，账号装配测试通过 `pl-model` 入口验证。内部编解码规则放在源码末尾的单元测试。
 
 迁移夹具先与基线实际写盘格式核对：SQL 旧列名、JSON casing、版本号、嵌套非空诊断及缺失值
 都不能随新术语机械改名。用实际启动、日志解码、存储打开或生产者回执读取入口证明升级，不能

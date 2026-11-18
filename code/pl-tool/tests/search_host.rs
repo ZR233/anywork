@@ -7,10 +7,8 @@ use axum::{
 };
 use pl_agent_tool::Tool;
 use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
-use pl_model::protocol::{
-    ProtocolEndpoint,
-    deepseek::tools::{ToolsClient, ToolsError, ToolsOptions},
-};
+use pl_model::protocol::ProtocolEndpoint;
+use pl_model_openai_deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_tool::{binding::prepare_native_tool, search::*};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -104,7 +102,13 @@ async fn standalone_search_host_preserves_frozen_options_commands_and_payload() 
     .unwrap();
     let options = ThreadSearchOptions {
         model: "search-model".into(),
-        settings: pl_tool::search::SearchSettings::from_config(&Default::default()),
+        settings: SearchSettings {
+            user_location: None,
+            search_context_size: None,
+            filters: None,
+            allowed_callers: vec![pl_model_openai::search::SearchAllowedCaller::Direct],
+            external_web_access: pl_model_openai::search::ExternalWebAccess::Boolean(false),
+        },
         max_output_tokens: Some(512),
     };
     let tool = prepare_native_tool()

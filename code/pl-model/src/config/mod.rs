@@ -4,7 +4,6 @@ mod account;
 mod auth;
 mod catalog;
 mod descriptor;
-mod id;
 mod model_catalog;
 mod route;
 
@@ -12,5 +11,5 @@ pub use account::*;
 pub use auth::*;
 pub use catalog::*;
 pub use descriptor::*;
-pub use id::*;
+pub use pl_model_types::config::*;
 pub use route::*;

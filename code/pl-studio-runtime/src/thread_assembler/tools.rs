@@ -299,7 +299,7 @@ impl StudioThreadTools {
             ToolCallPolicy::DirectOnly,
         )?;
         let client =
-            pl_model::protocol::images::ImagesClient::new(backend.endpoint).map_err(|error| {
+            pl_model_openai::images::ImagesClient::new(backend.endpoint).map_err(|error| {
                 ThreadAssemblyError::Resource {
                     operation: "bind image generation",
                     source: Box::new(error),

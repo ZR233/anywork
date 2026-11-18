@@ -1,55 +1,21 @@
 //! Endpoint-owned model discovery, independent of inference/model selection.
-pub(crate) mod decode;
-pub(crate) use decode::enrich_unknown_model_fallback;
+
+pub(crate) use pl_model_types::discovery::enrich_unknown_model_fallback;
+use pl_model_types::discovery::{DiscoveryDialect, models};
 
 use super::{ProtocolEndpoint, ProtocolKind};
 use crate::{
     config::{AccountConfig, AccountModelCatalogConfig},
     model::ModelInfo,
-    runtime::transport,
 };
-use futures::StreamExt;
-use reqwest::{
-    Url,
-    header::{ETAG, IF_NONE_MATCH},
-};
+use pl_model_openai_wire::transport;
+use reqwest::Url;
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, time::Duration};
-use thiserror::Error;
 
 pub use pl_protocol::ProviderFailureKind;
 
-const BODY_LIMIT: usize = 4 * 1024 * 1024;
-
-/// Safe diagnostic categories; never includes URLs, headers, response text or credentials.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum ModelCatalogQueryError {
-    #[error(transparent)]
-    Authentication(#[from] super::chatgpt::ChatGptAuthError),
-    #[error(transparent)]
-    Definition(#[from] crate::model::ModelDefinitionError),
-    #[error("model discovery is not supported by this adapter/catalog source")]
-    Unsupported,
-    #[error("model discovery endpoint or headers are invalid")]
-    Configuration,
-    #[error("model discovery timed out")]
-    Timeout,
-    #[error("model discovery transport failed ({kind:?})")]
-    Transport {
-        kind: ProviderFailureKind,
-        http_status: Option<u16>,
-    },
-    #[error("model discovery returned HTTP {status}")]
-    Http { status: u16 },
-    #[error("model discovery response exceeded 4 MiB")]
-    TooLarge,
-    #[error("model discovery returned an invalid declaration")]
-    Protocol,
-    #[error("model discovery cache does not belong to this query")]
-    CacheIdentity,
-    #[error("model discovery returned 304 without a same-identity successful cache")]
-    UnexpectedNotModified,
-}
+pub use pl_model_types::discovery::ModelCatalogQueryError;
 
 /// Only a successful, same-query observation may be used as a conditional request or metadata source.
 #[derive(Debug, Clone, PartialEq)]
@@ -133,9 +99,9 @@ impl ModelCatalogQuery {
             .pop_if_empty()
             .push("models");
         if endpoint
-            .chatgpt_session
+            .authorization
             .as_ref()
-            .is_some_and(|session| session.codex_account().is_some())
+            .is_some_and(|session| session.workspace_id().is_some())
         {
             url.query_pairs_mut()
                 .append_pair("client_version", env!("CARGO_PKG_VERSION"));
@@ -156,7 +122,7 @@ impl ModelCatalogQuery {
             url.as_str(),
             &headers,
         );
-        let identity = if let Some(session) = &endpoint.chatgpt_session {
+        let identity = if let Some(session) = &endpoint.authorization {
             let mut hash = Sha256::new();
             hash.update(identity.as_bytes());
             hash.update(session.registration_id().as_bytes());
@@ -235,69 +201,49 @@ impl ModelCatalogQuery {
         &self,
         previous: Option<&ModelCatalogQueryCache>,
     ) -> Result<ModelCatalogQueryResult, ModelCatalogQueryError> {
-        let token = if let Some(session) = &self.endpoint.chatgpt_session {
-            session.validate_resource(&self.endpoint.base_url)?;
-            Some(session.access_token().await?)
-        } else {
-            self.endpoint.bearer_token.clone()
-        };
+        let token = self
+            .endpoint
+            .resolve_bearer_token()
+            .await
+            .map_err(|_| ModelCatalogQueryError::Authentication)?;
         let headers = self
             .endpoint
             .request_headers(token.as_deref(), &HashMap::new())
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .pool_max_idle_per_host(0)
-            .timeout(Duration::from_secs(10))
-            .build()
-            .map_err(query_transport_error)?;
-        let mut request = client.get(self.url.clone()).headers(headers);
-        if let Some(etag) = previous.and_then(|cache| cache.etag.as_deref()) {
-            let mut value = reqwest::header::HeaderValue::from_str(etag)
-                .map_err(|_| ModelCatalogQueryError::Configuration)?;
-            value.set_sensitive(true);
-            request = request.header(IF_NONE_MATCH, value);
-        }
-        let response = request.send().await.map_err(query_transport_error)?;
-        let status = response.status().as_u16();
-        let etag = response
-            .headers()
-            .get(ETAG)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| value.len() <= 1024)
-            .map(str::to_owned);
-        if status == 304 {
-            if previous.is_none() {
-                return Err(ModelCatalogQueryError::UnexpectedNotModified);
+        let response = pl_model_openai_wire::catalog_http::fetch(
+            self.url.clone(),
+            headers,
+            previous.and_then(|cache| cache.etag.as_deref()),
+        )
+        .await?;
+        use pl_model_openai_wire::catalog_http::CatalogResponse;
+        let (bytes, etag) = match response {
+            CatalogResponse::Updated { bytes, etag } => (bytes, etag),
+            CatalogResponse::NotModified { etag } => {
+                let previous = previous.ok_or(ModelCatalogQueryError::UnexpectedNotModified)?;
+                return Ok(ModelCatalogQueryResult::NotModified {
+                    identity: self.identity.clone(),
+                    etag: etag.or_else(|| previous.etag.clone()),
+                });
             }
-            return Ok(ModelCatalogQueryResult::NotModified {
-                identity: self.identity.clone(),
-                etag: etag.or_else(|| previous.and_then(|p| p.etag.clone())),
-            });
-        }
-        if !(200..300).contains(&status) {
-            return Err(ModelCatalogQueryError::Http { status });
-        }
-        if response
-            .content_length()
-            .is_some_and(|len| len > BODY_LIMIT as u64)
-        {
-            return Err(ModelCatalogQueryError::TooLarge);
-        }
-        let mut bytes = Vec::new();
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(query_transport_error)?;
-            if chunk.len() > BODY_LIMIT - bytes.len() {
-                return Err(ModelCatalogQueryError::TooLarge);
+        };
+        let dialect = DiscoveryDialect::of(self.endpoint.protocol);
+        let records = match self.endpoint.protocol {
+            ProtocolKind::OpenAi => pl_model_openai::openai_catalog::records(&bytes, dialect),
+            ProtocolKind::OpenAiCompatible => {
+                pl_model_openai::generic_catalog::records(&bytes, dialect)
             }
-            bytes.extend_from_slice(&chunk);
-        }
-        let models = decode::models(
-            &bytes,
+            ProtocolKind::Zhipu => pl_model_openai_glm::generic_catalog::records(&bytes, dialect),
+            ProtocolKind::MiMo => pl_model_openai_mimo::generic_catalog::records(&bytes, dialect),
+            ProtocolKind::DeepSeek => {
+                pl_model_openai_deepseek::deepseek_catalog::records(&bytes, dialect)
+            }
+            ProtocolKind::Xai => pl_model_openai_xai::xai_catalog::records(&bytes, dialect),
+        }?;
+        let models = models(
+            records,
             &self.discovery,
-            decode::DiscoveryDialect::of(self.endpoint.protocol),
+            dialect,
             previous.map(|p| p.models.as_slice()),
             &self.defaults,
         )?;
@@ -309,24 +255,7 @@ impl ModelCatalogQuery {
     }
 }
 
-pub(crate) fn valid_discovery_transport(
-    profile: &crate::model::ModelTransportProfile,
-    expected: &crate::model::ModelTransportProfile,
-) -> bool {
-    profile.protocol == expected.protocol
-        && profile.default_connection_mode == expected.default_connection_mode
-        && profile
-            .supported_connection_modes
-            .contains(&profile.default_connection_mode)
-        && profile
-            .supported_connection_modes
-            .iter()
-            .enumerate()
-            .all(|(index, mode)| {
-                expected.supported_connection_modes.contains(mode)
-                    && !profile.supported_connection_modes[..index].contains(mode)
-            })
-}
+pub(crate) use pl_model_types::discovery::valid_discovery_transport;
 
 /// Length-prefixed canonical query identity; vendor protocol is part of the current version.
 fn query_identity(
@@ -383,19 +312,5 @@ fn discovery_transport_id(profile: &crate::model::ModelTransportProfile) -> &'st
             [crate::protocol::ConnectionMode::Http],
         ) => "chat-completions-http",
         _ => "unsupported",
-    }
-}
-
-fn query_transport_error(error: reqwest::Error) -> ModelCatalogQueryError {
-    if error.is_timeout() {
-        return ModelCatalogQueryError::Timeout;
-    }
-    // Reuse the inference transport's classification/redaction, but never expose its diagnostic prose.
-    match transport::reqwest_error_to_pure(error) {
-        pl_protocol::PureError::Provider(failure) => ModelCatalogQueryError::Transport {
-            kind: failure.kind,
-            http_status: failure.http_status,
-        },
-        _ => ModelCatalogQueryError::Configuration,
     }
 }

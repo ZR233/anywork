@@ -1,0 +1,440 @@
+use crate::completion::ModelTextChannel;
+
+use crate::completion::visible_text::{VisibleTextEvent, VisibleTextKind, VisibleTextParser};
+
+use super::event::{ModelBlockContent, ModelBlockKind, ModelStreamEvent};
+
+/// 标签式可见输出中未标记文本的处理策略。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UntaggedTextPolicy {
+    /// 流式增量阶段：未标记文本作为 Final 可见输出回退。
+    Emit,
+    /// 结束/权威内容阶段：丢弃未标记文本，以权威内容为准。
+    Drop,
+}
+
+pub struct TaggedVisibleOutputAdapter {
+    text_parser: VisibleTextParser,
+    reasoning_parser: VisibleTextParser,
+    next_segment_ordinal: u64,
+    active_text_block: Option<TaggedBlock>,
+    active_reasoning_block: Option<TaggedBlock>,
+    diagnostics: TaggedOutputDiagnostics,
+}
+
+#[derive(Debug, Clone)]
+struct TaggedBlock {
+    kind: VisibleTextKind,
+    id: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaggedOutputDiagnostics {
+    pub untagged_visible_text_segments: usize,
+    pub untagged_visible_text_chars: usize,
+}
+
+impl Default for TaggedVisibleOutputAdapter {
+    fn default() -> Self {
+        Self {
+            text_parser: VisibleTextParser::new(),
+            reasoning_parser: VisibleTextParser::new(),
+            next_segment_ordinal: 0,
+            active_text_block: None,
+            active_reasoning_block: None,
+            diagnostics: TaggedOutputDiagnostics::default(),
+        }
+    }
+}
+
+impl TaggedVisibleOutputAdapter {
+    pub fn diagnostics(&self) -> TaggedOutputDiagnostics {
+        self.diagnostics
+    }
+
+    pub fn adapt(&mut self, event: ModelStreamEvent) -> Vec<ModelStreamEvent> {
+        match event {
+            ModelStreamEvent::BlockOpened {
+                id,
+                kind: ModelBlockKind::Text { channel },
+                provider_metadata,
+                provider,
+            } => {
+                if channel == ModelTextChannel::Final {
+                    Vec::new()
+                } else {
+                    vec![ModelStreamEvent::BlockOpened {
+                        id,
+                        kind: ModelBlockKind::Text { channel },
+                        provider_metadata,
+                        provider,
+                    }]
+                }
+            }
+            ModelStreamEvent::BlockDelta {
+                id,
+                kind: ModelBlockKind::Text { channel },
+                field,
+                delta,
+                section_index,
+                provider,
+            } => {
+                if channel == ModelTextChannel::Final {
+                    Self::parse_visible_events(
+                        &mut self.text_parser,
+                        &mut self.active_text_block,
+                        &mut self.next_segment_ordinal,
+                        &mut self.diagnostics,
+                        &delta,
+                        UntaggedTextPolicy::Emit,
+                    )
+                } else {
+                    vec![ModelStreamEvent::BlockDelta {
+                        id,
+                        kind: ModelBlockKind::Text { channel },
+                        field,
+                        delta,
+                        section_index,
+                        provider,
+                    }]
+                }
+            }
+            ModelStreamEvent::BlockClosed {
+                id,
+                kind: ModelBlockKind::Text { channel },
+                authoritative_content,
+                provider_metadata,
+                provider,
+            } => {
+                if channel == ModelTextChannel::Final {
+                    let mut events = Self::finish_visible_events(
+                        &mut self.text_parser,
+                        &mut self.active_text_block,
+                        &mut self.next_segment_ordinal,
+                        &mut self.diagnostics,
+                        UntaggedTextPolicy::Emit,
+                    );
+                    if let Some(ModelBlockContent::Text(text)) = authoritative_content {
+                        events.extend(Self::authoritative_visible_events(
+                            &mut self.next_segment_ordinal,
+                            text,
+                        ));
+                    }
+                    events
+                } else {
+                    vec![ModelStreamEvent::BlockClosed {
+                        id,
+                        kind: ModelBlockKind::Text { channel },
+                        authoritative_content,
+                        provider_metadata,
+                        provider,
+                    }]
+                }
+            }
+            ModelStreamEvent::BlockOpened { .. } | ModelStreamEvent::BlockDelta { .. } => {
+                vec![event]
+            }
+            ModelStreamEvent::ReasoningRawDelta {
+                id,
+                content_index,
+                delta,
+                provider,
+            } => vec![ModelStreamEvent::ReasoningRawDelta {
+                id,
+                content_index,
+                delta,
+                provider,
+            }],
+            ModelStreamEvent::BlockClosed {
+                id,
+                kind: ModelBlockKind::ReasoningSummary,
+                authoritative_content,
+                provider_metadata,
+                provider,
+            } => {
+                let visible = Self::finish_visible_events(
+                    &mut self.reasoning_parser,
+                    &mut self.active_reasoning_block,
+                    &mut self.next_segment_ordinal,
+                    &mut self.diagnostics,
+                    UntaggedTextPolicy::Drop,
+                );
+                visible
+                    .into_iter()
+                    .chain([ModelStreamEvent::BlockClosed {
+                        id,
+                        kind: ModelBlockKind::ReasoningSummary,
+                        authoritative_content,
+                        provider_metadata,
+                        provider,
+                    }])
+                    .collect()
+            }
+            ModelStreamEvent::Completed { response_id } => self
+                .flush_all()
+                .into_iter()
+                .chain([ModelStreamEvent::Completed { response_id }])
+                .collect(),
+            ModelStreamEvent::Failed {
+                request_id,
+                code,
+                http_status,
+                retry_after_ms,
+                message,
+            } => self
+                .flush_all()
+                .into_iter()
+                .chain([ModelStreamEvent::Failed {
+                    request_id,
+                    code,
+                    http_status,
+                    retry_after_ms,
+                    message,
+                }])
+                .collect(),
+            event @ (ModelStreamEvent::ToolInputStarted { .. }
+            | ModelStreamEvent::ToolInputDelta { .. }
+            | ModelStreamEvent::ToolCallReady { .. }
+            | ModelStreamEvent::ResponseStarted { .. }) => self
+                .flush_visible_text()
+                .into_iter()
+                .chain([event])
+                .collect(),
+            other => vec![other],
+        }
+    }
+
+    fn flush_visible_text(&mut self) -> Vec<ModelStreamEvent> {
+        Self::finish_visible_events(
+            &mut self.text_parser,
+            &mut self.active_text_block,
+            &mut self.next_segment_ordinal,
+            &mut self.diagnostics,
+            UntaggedTextPolicy::Emit,
+        )
+    }
+
+    fn flush_all(&mut self) -> Vec<ModelStreamEvent> {
+        self.flush_visible_text()
+            .into_iter()
+            .chain(Self::finish_visible_events(
+                &mut self.reasoning_parser,
+                &mut self.active_reasoning_block,
+                &mut self.next_segment_ordinal,
+                &mut self.diagnostics,
+                UntaggedTextPolicy::Drop,
+            ))
+            .collect()
+    }
+
+    fn authoritative_visible_events(
+        next_segment_ordinal: &mut u64,
+        text: String,
+    ) -> Vec<ModelStreamEvent> {
+        let mut parser = VisibleTextParser::new();
+        let mut active_block = None;
+        let mut diagnostics = TaggedOutputDiagnostics::default();
+        Self::parse_visible_events(
+            &mut parser,
+            &mut active_block,
+            next_segment_ordinal,
+            &mut diagnostics,
+            &text,
+            UntaggedTextPolicy::Emit,
+        )
+        .into_iter()
+        .chain(Self::finish_visible_events(
+            &mut parser,
+            &mut active_block,
+            next_segment_ordinal,
+            &mut diagnostics,
+            UntaggedTextPolicy::Emit,
+        ))
+        .collect()
+    }
+
+    fn parse_visible_events(
+        parser: &mut VisibleTextParser,
+        active_block: &mut Option<TaggedBlock>,
+        next_segment_ordinal: &mut u64,
+        diagnostics: &mut TaggedOutputDiagnostics,
+        delta: &str,
+        untagged_policy: UntaggedTextPolicy,
+    ) -> Vec<ModelStreamEvent> {
+        parser
+            .push_events(delta)
+            .events
+            .into_iter()
+            .flat_map(|event| {
+                Self::visible_event_events(
+                    active_block,
+                    next_segment_ordinal,
+                    diagnostics,
+                    untagged_policy,
+                    event,
+                )
+            })
+            .collect()
+    }
+
+    fn finish_visible_events(
+        parser: &mut VisibleTextParser,
+        active_block: &mut Option<TaggedBlock>,
+        next_segment_ordinal: &mut u64,
+        diagnostics: &mut TaggedOutputDiagnostics,
+        untagged_policy: UntaggedTextPolicy,
+    ) -> Vec<ModelStreamEvent> {
+        let mut events: Vec<_> = parser
+            .finish_events()
+            .events
+            .into_iter()
+            .flat_map(|event| {
+                Self::visible_event_events(
+                    active_block,
+                    next_segment_ordinal,
+                    diagnostics,
+                    untagged_policy,
+                    event,
+                )
+            })
+            .collect();
+        if let Some(block) = active_block.take() {
+            events.push(ModelStreamEvent::text_completed(
+                block.id,
+                Self::text_channel(block.kind),
+                None,
+                None,
+            ));
+        }
+        events
+    }
+
+    fn visible_event_events(
+        active_block: &mut Option<TaggedBlock>,
+        next_segment_ordinal: &mut u64,
+        diagnostics: &mut TaggedOutputDiagnostics,
+        untagged_policy: UntaggedTextPolicy,
+        event: VisibleTextEvent,
+    ) -> Vec<ModelStreamEvent> {
+        match event {
+            VisibleTextEvent::Untagged(text) => {
+                if untagged_policy == UntaggedTextPolicy::Drop || text.is_empty() {
+                    return Vec::new();
+                }
+                diagnostics.untagged_visible_text_segments += 1;
+                diagnostics.untagged_visible_text_chars += text.len();
+                Self::text_delta(
+                    active_block,
+                    next_segment_ordinal,
+                    VisibleTextKind::Final,
+                    text,
+                )
+            }
+            VisibleTextEvent::Open(kind) => {
+                let mut events = Vec::new();
+                if let Some(block) = active_block.take() {
+                    events.push(ModelStreamEvent::text_completed(
+                        block.id,
+                        Self::text_channel(block.kind),
+                        None,
+                        None,
+                    ));
+                }
+                let id = Self::next_segment_id(next_segment_ordinal, kind);
+                *active_block = Some(TaggedBlock {
+                    kind,
+                    id: id.clone(),
+                });
+                events.push(ModelStreamEvent::text_started(
+                    id,
+                    Self::text_channel(kind),
+                    None,
+                ));
+                events
+            }
+            VisibleTextEvent::Delta(kind, delta) => {
+                if delta.is_empty() {
+                    return Vec::new();
+                }
+                Self::text_delta(active_block, next_segment_ordinal, kind, delta)
+            }
+            VisibleTextEvent::Close(_) => {
+                let Some(block) = active_block.take() else {
+                    return Vec::new();
+                };
+                vec![ModelStreamEvent::text_completed(
+                    block.id,
+                    Self::text_channel(block.kind),
+                    None,
+                    None,
+                )]
+            }
+        }
+    }
+
+    fn text_delta(
+        active_block: &mut Option<TaggedBlock>,
+        next_segment_ordinal: &mut u64,
+        kind: VisibleTextKind,
+        delta: String,
+    ) -> Vec<ModelStreamEvent> {
+        let mut events = Vec::new();
+        let id = match active_block.as_ref() {
+            Some(block) if block.kind == kind => block.id.clone(),
+            Some(_) => {
+                if let Some(block) = active_block.take() {
+                    events.push(ModelStreamEvent::text_completed(
+                        block.id,
+                        Self::text_channel(block.kind),
+                        None,
+                        None,
+                    ));
+                }
+                let id = Self::next_segment_id(next_segment_ordinal, kind);
+                *active_block = Some(TaggedBlock {
+                    kind,
+                    id: id.clone(),
+                });
+                events.push(ModelStreamEvent::text_started(
+                    id.clone(),
+                    Self::text_channel(kind),
+                    None,
+                ));
+                id
+            }
+            None => {
+                let id = Self::next_segment_id(next_segment_ordinal, kind);
+                *active_block = Some(TaggedBlock {
+                    kind,
+                    id: id.clone(),
+                });
+                events.push(ModelStreamEvent::text_started(
+                    id.clone(),
+                    Self::text_channel(kind),
+                    None,
+                ));
+                id
+            }
+        };
+        events.push(ModelStreamEvent::text_delta(
+            id,
+            Self::text_channel(kind),
+            delta,
+            None,
+        ));
+        events
+    }
+
+    fn next_segment_id(next_segment_ordinal: &mut u64, kind: VisibleTextKind) -> String {
+        *next_segment_ordinal += 1;
+        let label = kind.channel_label();
+        format!("tagged-{label}-{next_segment_ordinal}")
+    }
+
+    fn text_channel(kind: VisibleTextKind) -> ModelTextChannel {
+        match kind {
+            VisibleTextKind::Commentary => ModelTextChannel::Commentary,
+            VisibleTextKind::Final => ModelTextChannel::Final,
+        }
+    }
+}

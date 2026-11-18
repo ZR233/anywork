@@ -328,7 +328,7 @@ impl StudioThreadFactory {
         .map_err(|error| resource_error("open restored child persistence", error))?;
         let initial_extensions = BTreeMap::new();
         let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            pl_model::runtime::from_route(&route)?,
             route.reasoning_config(),
         )
         .with_hosted_tools(prepared.hosted);

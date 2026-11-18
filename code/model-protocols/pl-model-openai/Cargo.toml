@@ -1,0 +1,29 @@
+[package]
+name = "pl-model-openai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-tool-search = { workspace = true }
+secrecy = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+pl-protocol = { workspace = true }
+reqwest = { workspace = true }
+futures = { workspace = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+pl-model-types = { workspace = true }
+pl-model-openai-wire = { workspace = true }
+
+[dev-dependencies]
+pl-model-auth = { workspace = true }
+pretty_assertions = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }
+tempfile = { workspace = true }
+axum = { workspace = true }
+pl-model-runtime = { workspace = true, features = ["live-examples"] }
+clap = { workspace = true }
+tokio = { workspace = true }

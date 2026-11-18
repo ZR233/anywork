@@ -81,7 +81,7 @@ impl StudioRuntime {
         let state = thread.snapshot();
         Self::validate_model_media(&state, &route.model, &[])?;
         let instruction_model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            pl_model::runtime::from_route(&route)?,
             route.reasoning_config(),
         );
         instruction_model.validate_context_origin(&state.context)?;

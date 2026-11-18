@@ -1,3 +1,9 @@
+use super::ModelCatalogDiscovery;
+use pl_model_openai_glm::models::{
+    responses_models as zhipu_responses_models, zhipu_default_model_ids,
+    zhipu_responses_default_model_ids,
+};
+use pl_model_openai_mimo::models::mimo_default_model_ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{
@@ -11,10 +17,7 @@ use pl_protocol::{PureError, Result};
 
 use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
 use super::{AccountModelEntry, AccountModelOrigin};
-use crate::model::{
-    ModelInfo, ModelModality, bundled_model_definition, default_models, mimo_default_model_ids,
-    zhipu_default_model_ids, zhipu_responses_default_model_ids, zhipu_responses_models,
-};
+use crate::model::{ModelInfo, ModelModality, bundled_model_definition, default_models};
 use crate::protocol::{
     ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, WireApi,
     wire_transport_profile_revision,
@@ -22,12 +25,6 @@ use crate::protocol::{
 
 const MIMO_API_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const MIMO_TOKEN_PLAN_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
-
-/// 目录声明的在线探测能力；未声明时该 catalog 保持静态或显式语义。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelCatalogDiscovery {
-    pub transport: crate::model::ModelTransportProfile,
-}
 
 /// 一组由 PL 维护且对产品只读的模型定义。
 #[derive(Debug, Clone, PartialEq)]

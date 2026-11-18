@@ -504,7 +504,7 @@ impl StudioCompaction {
                 },
             )?;
             let model = ThreadModel::new(
-                pl_model::runtime::ModelRuntime::from_route(&route)?,
+                pl_model::runtime::from_route(&route)?,
                 route.reasoning_config(),
             );
             Ok((model, route))
@@ -1183,7 +1183,6 @@ mod tests {
         config::{AccountConfig, AccountId, ModelRouteConfig},
         model::{ModelInfo, ModelTransportProfile},
         protocol::ProtocolEndpoint,
-        runtime::ModelRuntime,
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     use serde_json::json;
@@ -1274,7 +1273,7 @@ mod tests {
         };
         let source_route = resolve("source")?;
         let target_route = resolve("target")?;
-        let source_model = ThreadModel::new(ModelRuntime::from_route(&source_route)?, None);
+        let source_model = ThreadModel::new(pl_model::runtime::from_route(&source_route)?, None);
         let modes = crate::mode::ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&modes)?;
         let mode = registry
@@ -1339,7 +1338,7 @@ mod tests {
             before.last_attempt_usage.as_ref().unwrap().input_tokens,
             Some(604_202)
         );
-        let target_model = ThreadModel::new(ModelRuntime::from_route(&target_route)?, None);
+        let target_model = ThreadModel::new(pl_model::runtime::from_route(&target_route)?, None);
         let mut preview = before.context.records.to_vec();
         preview.push(pl_core::context::ContextRecord {
             id: "target-input".into(),

@@ -1606,7 +1606,7 @@ pub(crate) mod archive_tests {
             id,
             parent_id,
             model: pl_model::runtime::ThreadModel::new(
-                pl_model::runtime::ModelRuntime::from_route(&route).unwrap(),
+                pl_model::runtime::from_route(&route).unwrap(),
                 None,
             ),
             route,

@@ -4,7 +4,7 @@ use pl_model::model::ModelInfo;
 use pl_model::runtime::migration::migrate_payload;
 use pl_model::{
     protocol::{ProtocolEndpoint, ProtocolKind, WireApi},
-    runtime::{ModelRuntime, model_failure_receipt, model_request_receipt, model_response_receipt},
+    runtime::{model_failure_receipt, model_request_receipt, model_response_receipt},
 };
 use serde_json::json;
 
@@ -505,8 +505,8 @@ fn runtime_requires_an_explicit_stable_account_id() {
     let endpoint =
         ProtocolEndpoint::compatible("Display name is not an identity", "http://127.0.0.1:1");
     let model = ModelInfo::compatible("model");
-    assert!(ModelRuntime::new_with_account_id("  ", endpoint.clone(), model.clone()).is_err());
-    let runtime = ModelRuntime::new_with_account_id("account-stable", endpoint, model)
+    assert!(pl_model::runtime::new_with_account_id("  ", endpoint.clone(), model.clone()).is_err());
+    let runtime = pl_model::runtime::new_with_account_id("account-stable", endpoint, model)
         .expect("explicit account id is valid");
     assert_eq!(runtime.account_id(), "account-stable");
 }
@@ -641,7 +641,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
         context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
         model::{ModelRequest, ToolCallMode},
     };
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "deepseek",
         ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
         ModelInfo::compatible("deepseek-v4-pro"),

@@ -4,8 +4,7 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::{PromptCacheDialect, ProtocolEndpoint},
     runtime::{
-        ModelInvocationContext, ModelRuntime, ModelSession, ModelTurnClient, ModelTurnOptions,
-        ModelTurnRequest, PromptCacheScope,
+        ModelInvocationContext, ModelSession, ModelTurnOptions, ModelTurnRequest, PromptCacheScope,
     },
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
@@ -193,7 +192,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             pricing_mode: pl_model::model::PricingMode::NoCharge,
             effort: None,
         };
-        let runtime = ModelRuntime::from_route(&route).unwrap();
+        let runtime = pl_model::runtime::from_route(&route).unwrap();
         let scope = purpose.map_or_else(
             || PromptCacheScope::thread(thread),
             |purpose| PromptCacheScope::auxiliary(thread, purpose),
@@ -205,7 +204,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             inference_id: format!("attempt-{index}"),
         };
         let text = if purpose.is_some() {
-            ModelTurnClient::from_route(&route)
+            pl_model::runtime::turn_client_from_route(&route)
                 .unwrap()
                 .complete_text(
                     &request().input,

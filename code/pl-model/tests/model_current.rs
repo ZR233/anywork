@@ -8,7 +8,7 @@ use pl_model::{
     completion::{ModelStreamCurrent, ModelStreamCurrentState, ReasoningConfig},
     model::{ModelInfo, ModelProtocolOptions, ModelTransportProfile, ResponsesMaxTokensField},
     protocol::ProtocolEndpoint,
-    runtime::{CancellationToken, HostedTool, ModelRuntime, ThreadModel},
+    runtime::{CancellationToken, HostedTool, ThreadModel},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
@@ -53,7 +53,7 @@ fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     ModelFactory::new(ThreadModel::new(
-        ModelRuntime::new_with_account_id(
+        pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", base_url),
             model,
@@ -129,7 +129,7 @@ fn recovery_factory_with_endpoint(
         .programmatic_tool_calling = info.binding.request.supports_programmatic_tool_calling();
     ModelFactory::new(
         ThreadModel::new(
-            ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
+            pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
             reasoning,
         )
         .with_hosted_tools(hosted),

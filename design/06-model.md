@@ -59,7 +59,7 @@ Responses 的工具输出声明与实际交给模型的内容必须一致：工�
 - **工具调用能力**：函数调用（`function_calling`）、并行工具调用（`parallel_tool_calls`）、自定义工具（`custom_tools`）、自由格式工具（`freeform_tools`）、编程式工具调用（`programmatic_tool_calling`）。
 - **交错推理字段**：`interleaved.field`，当前支持 `reasoning`、`reasoning_content`、`reasoning_details`。
 
-Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入要求目标模型声明 `image` 输入能力，工具调用需匹配工具能力，推理强度配置需匹配 `reasoning` 能力；厂商私有差异封装在 `pl-model` 内，不扩散至 `pl-core`。
+Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入要求目标模型声明 `image` 输入能力，工具调用需匹配工具能力，推理强度配置需匹配 `reasoning` 能力；厂商私有差异归对应协议 crate，`pl-core` 消费统一的模型契约。
 
 两项外部服务能力与模型自身能力严格解耦：
 - **提示词缓存（Prompt Cache）**：不由 `model_id` 隐式推断。账号服务能力声明端点的缓存方言，模型目录声明该模型是否上报缓存写入词元（token），模型层将两者与线协议合成为穷尽的有效缓存策略。未声明缓存能力的自定义端点默认不发送任何缓存专属字段。
@@ -85,12 +85,11 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 ### 协议栈分工与执行器单点所有权
 
-协议栈按调用编排、协议编解码和网络传输分工：
-- **按协议选择真实差异**：`ProtocolKind` 决定受信指令角色和目录方言；`WireApi` 决定 Responses 或 Chat Completions 编解码。目录沿用各厂商的 typed parser，能力与参数由已解析的模型绑定声明。共同请求和事件处理直接调用共享函数，不为厂商建立只做转发的客户端或适配器。
-- **执行与传输复用**：`ModelRuntime` 持有唯一模型绑定及共享 HTTP 客户端，请求准备、单次执行、恢复决策和计时按职责组织。普通完成与原生压缩使用调用级用途材料，共享重试预算、取消收束、续接及计量流程。Responses HTTP 与 WebSocket 共享请求组装和事件归一化，Chat Completions 保留独立 wire codec；HTTP JSON、SSE 与 multipart 继续复用现有传输组件。
-- **流事实与观测**：唯一累积器拥有规范流事实；Core 的实时 progress、可靠成员交付和完整 Current 捕获分别消费其对应边界。模型层不再维护另一份 trace part 账本或广播流。请求 trace 元数据仍用于诊断关联；正文频道复用 Core 的 `ModelTextChannel`，其保存形状不变。
-- **SSE 增量行扫描**：SSE 传输层按完整行向事件解析器交付数据，流式读取时仅增量扫描新到达的网络字节，避免超长 `data:` 行在每个网络分块到达时重复扫描已知前缀。LF、CRLF 与 CR 行尾语义一致，允许 UTF-8 多字节字符跨网络分块；当下游提前停止或取消时，读取器与未完成行缓冲区立即一并释放，不残留后台读取任务。
-- **统一推理与独立服务**：模型生成通过 `ModelRuntime::complete` 执行；目录发现、文件和图像使用各自的协议 API。认证与套餐配额由选定账号的认证会话提供；原生压缩只在 endpoint 和模型共同声明支持时提供能力对象，Responses 兼容本身不授予压缩能力。
+- `pl-model` 根据账号配置和 `ProtocolKind` 选择适配器，合成账号有效目录。端点能力控制文件、图像、托管工具和缓存。OpenAI 官方和通用自定义端点由 `pl-model-openai` 处理，自定义端点沿用显式配置能力和保守默认值。
+- GLM、DeepSeek、xAI 和 MiMo 各持有自己的目录解释和模型声明。它们组合 `pl-model-openai-wire` 中的共享 Chat Completions 或 Responses 编解码。HTTP/SSE 与 WebSocket 使用同一份 Responses 事件契约。
+- `pl-model-runtime` 持有冻结模型绑定和 HTTP 客户端。普通完成与原生压缩共用执行器、取消、恢复、续接和计量，文件上传由装配层注入对应实现。流累积器拥有规范事件；Core 的实时 progress、可靠成员交付和 Current 捕获消费同一次执行的观察结果。
+- SSE 增量扫描新到达的字节，兼容 LF、CRLF、CR 和跨网络分块的 UTF-8。取消或提前结束时，请求与未完成缓冲区随读取器释放。
+- `pl-model-auth` 持有 OAuth/OIDC、身份和刷新状态，运行时通过已绑定的凭据接口按请求获取令牌。OpenAI 协议持有 Codex 请求格式和订阅用量查询。API Key 协议示例可以独立运行。使用命令见 [协议示例](../code/model-protocols/README.md)。
 
 ### 附件准备与文件输入协议
 

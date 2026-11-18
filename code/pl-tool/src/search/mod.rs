@@ -1,5 +1,4 @@
 mod binding;
-mod client;
 mod config;
 mod hosted_options;
 mod plan;
@@ -7,14 +6,15 @@ mod standalone;
 mod thread;
 
 pub use binding::{SearchBindingError, ThreadSearchBinding};
-pub use client::{SearchEndpoint, WebSearchClient, WebSearchError};
 pub use config::{WebSearchConfig, WebSearchLocation, WebSearchMode};
+pub use pl_model_openai::search::{
+    SearchEndpoint, SearchSettings, WebSearchClient, WebSearchError,
+};
 pub use plan::{
     WebSearchAvailability, WebSearchBackend, WebSearchDeepSeekOptions, WebSearchPath,
     WebSearchPlan, WebSearchPlans, WebSearchResolution, WebSearchService, WebSearchServices,
     plan_deepseek_web_search, plan_openai_web_search, plan_web_search_services, plan_web_searches,
 };
-pub use standalone::SearchSettings;
 pub use thread::{
     ThreadDeepSeekWebFetchTool, ThreadDeepSeekWebSearchTool, ThreadSearchOptions,
     ThreadWebSearchTool,

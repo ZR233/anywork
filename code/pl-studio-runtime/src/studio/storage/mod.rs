@@ -1071,7 +1071,7 @@ mod mode_migration_tests {
             config::{AccountId, ResolvedModelRoute},
             model::ModelInfo,
             protocol::ProtocolEndpoint,
-            runtime::{ModelRuntime, ThreadModel},
+            runtime::ThreadModel,
         };
         use std::sync::Arc;
 
@@ -1092,7 +1092,7 @@ mod mode_migration_tests {
             model: model_info,
             effort: None,
         };
-        let model = ThreadModel::new(ModelRuntime::from_route(&route)?, None);
+        let model = ThreadModel::new(pl_model::runtime::from_route(&route)?, None);
         let snapshot = InstructionSnapshot {
             agent: agent_identity(
                 "root:main",

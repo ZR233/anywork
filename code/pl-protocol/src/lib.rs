@@ -5,6 +5,7 @@
 //! 最小身份、工作区回执、路由与分发契约。单一领域或单一根消费者的定义均归各自所属 crate。
 
 mod collaboration;
+pub mod credential;
 mod error;
 mod first_output;
 mod id;

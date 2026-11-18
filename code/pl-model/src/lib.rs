@@ -13,7 +13,7 @@
 //! 出现的 `pl-protocol` 类型，错误基础类型（`PureError`/`Result`）在根重导出，
 //! 消费方无需为命名完整签名而额外依赖 `pl-protocol`。
 
-pub mod completion;
+pub use pl_model_types::completion;
 pub mod config;
 pub mod model;
 pub mod protocol;

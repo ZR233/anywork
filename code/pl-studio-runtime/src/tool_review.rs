@@ -16,7 +16,7 @@ struct ReviewBinding {
 }
 
 pub(crate) fn reviewer(route: &ResolvedModelRoute) -> crate::Result<ToolReviewCallback> {
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         route.account_id.as_str(),
         route.endpoint.clone(),
         route.model.clone(),
@@ -51,7 +51,7 @@ fn review_completion(
         .reasoning(reasoning);
     // These are internal policy defaults, not explicit user request parameters.
     // SIWC does not support either control; strict decision parsing stays fail-closed.
-    let builder = if endpoint.chatgpt_session.is_some() {
+    let builder = if endpoint.authorization.is_some() {
         builder
     } else {
         builder.temperature(Some(0.0)).max_tokens(512)
@@ -243,11 +243,13 @@ mod tests {
         let api = review_completion(&endpoint, reasoning.clone(), message.clone());
         assert_eq!(api.temperature, Some(0.0));
         assert_eq!(api.max_tokens, Some(512));
-        endpoint.chatgpt_session = Some(ChatGptSession::new(
-            &record,
-            Arc::new(NoCredentialIo),
-            temp.path().join("unused-review-credential-lock"),
-        )?);
+        endpoint.authorization = Some(pl_model::protocol::EndpointAuthorization::new(
+            ChatGptSession::new(
+                &record,
+                Arc::new(NoCredentialIo),
+                temp.path().join("unused-review-credential-lock"),
+            )?,
+        ));
         let subscription = review_completion(&endpoint, reasoning, message);
         assert!(subscription.temperature.is_none());
         assert!(subscription.max_tokens.is_none());

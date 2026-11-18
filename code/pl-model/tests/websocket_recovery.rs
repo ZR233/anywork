@@ -42,7 +42,7 @@ fn runtime(fixture: &FixtureServer) -> ModelRuntime {
 fn runtime_with_profile(fixture: &FixtureServer, profile: ModelTransportProfile) -> ModelRuntime {
     let mut model = ModelInfo::compatible("recovery-model");
     model.binding.set_transport(profile);
-    ModelRuntime::new_with_account_id(
+    pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model,
@@ -103,7 +103,7 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
             .set_transport(ModelTransportProfile::responses_websocket());
         model.capabilities.web_search = true;
         model.capabilities.tools.programmatic_tool_calling = true;
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model,
@@ -185,7 +185,7 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
     model
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", format!("http://{address}/v1")),
         model,

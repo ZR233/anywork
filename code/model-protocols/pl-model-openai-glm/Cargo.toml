@@ -1,0 +1,15 @@
+[package]
+name = "pl-model-openai-glm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+pl-model-types = { workspace = true }
+pl-model-openai-wire = { workspace = true }
+
+[dev-dependencies]
+pl-model-runtime = { workspace = true, features = ["live-examples"] }
+clap = { workspace = true }
+tokio = { workspace = true }

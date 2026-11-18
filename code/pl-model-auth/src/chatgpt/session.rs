@@ -378,6 +378,27 @@ impl ChatGptSession {
     }
 }
 
+impl pl_protocol::credential::BearerCredential for ChatGptSession {
+    fn registration_id(&self) -> &str {
+        ChatGptSession::registration_id(self)
+    }
+
+    fn workspace_id(&self) -> Option<&str> {
+        self.codex_account()
+            .map(|account| account.account_id.as_str())
+    }
+
+    fn token<'a>(&'a self, resource: &'a str) -> pl_protocol::credential::TokenFuture<'a> {
+        Box::pin(async move {
+            self.validate_resource(resource)
+                .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+            self.access_token()
+                .await
+                .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -153,6 +153,8 @@ pub struct AccountConfig {
     pub chatgpt_credentials: Option<pl_model_auth::chatgpt::ChatGptCredentialRecord>,
     #[serde(skip)]
     pub chatgpt_session: Option<pl_model_auth::chatgpt::ChatGptSession>,
+    #[serde(skip)]
+    pub delegated_authorization: Option<crate::protocol::EndpointAuthorization>,
     #[serde(default)]
     pub protocol: crate::protocol::ProtocolKind,
     /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
@@ -238,7 +240,8 @@ impl AccountConfig {
             authentication: Default::default(),
             chatgpt_account: None,
             chatgpt_credentials: None,
-            chatgpt_session: info.chatgpt_session,
+            chatgpt_session: None,
+            delegated_authorization: info.authorization,
             protocol: info.protocol,
             template: None,
             billing_kind: None,
@@ -932,7 +935,11 @@ impl AccountConfig {
             name: self.name.clone(),
             base_url: self.base_url.clone(),
             bearer_token: self.resolved_bearer_token(),
-            chatgpt_session: self.chatgpt_session.clone(),
+            authorization: self
+                .chatgpt_session
+                .clone()
+                .map(crate::protocol::EndpointAuthorization::new)
+                .or_else(|| self.delegated_authorization.clone()),
             http_headers: self.http_headers.clone(),
             tool_wire_policy: self.tool_wire_policy,
             apply_patch_tool_type: self.apply_patch_tool_type,

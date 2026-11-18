@@ -1029,7 +1029,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart,
             Message, MessageContent, MessageRole, ReasoningConfig,
         },
-        runtime::{ModelInvocationContext, ModelRuntime},
+        runtime::ModelInvocationContext,
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     for (adapter, body, effort_path, declares_image, expected_limit) in [
@@ -1114,7 +1114,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             _ => ProtocolEndpoint::deepseek(Some(fixture.base_url())),
         };
         model.binding.transport.default_connection_mode = pl_model::protocol::ConnectionMode::Http;
-        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
+        let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(1, 1)
             .write_to(&mut png, image::ImageFormat::Png)
@@ -1862,7 +1862,7 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
 async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inherited_window() {
     use pl_model::{
         completion::{CompletionRequest, ContentPart, Message, MessageContent, MessageRole},
-        runtime::{ModelInvocationContext, ModelRuntime},
+        runtime::ModelInvocationContext,
     };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     let definition = bundled_model_definition("deepseek").unwrap();
@@ -1996,7 +1996,7 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::deepseek(Some(fixture.base_url())),
         flash.clone(),

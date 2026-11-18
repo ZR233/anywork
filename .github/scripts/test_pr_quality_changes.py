@@ -97,6 +97,8 @@ class PlanFromPathsTest(unittest.TestCase):
         for path in (
             "code/pl-core/src/thread/runner.rs",
             "code/pl-model/Cargo.toml",
+            "code/model-protocols/pl-model-openai/src/lib.rs",
+            "code/pl-model-auth/src/chatgpt/session.rs",
             "code/pl-studio-runtime/assets/skills/office/SKILL.md",
             "code/pl-studio-runtime/assets/README.md",
         ):
@@ -116,6 +118,7 @@ class PlanFromPathsTest(unittest.TestCase):
             "code/pl-core/tests/support/mod.rs",
             "code/pl-core/tests/fixtures/history.json",
             "code/pl-model/tests/protocol_wire.rs",
+            "code/model-protocols/pl-model-runtime/tests/http_lifecycle.rs",
             "code/pl-studio-runtime/tests/runtime_live_tool_skill.rs",
             "code/tools/filesystem/tests/mutation.rs",
             "code/tools/fixtures/downstream/tests/media_execution.rs",

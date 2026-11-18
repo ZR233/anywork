@@ -19,9 +19,7 @@ use pl_model::{
         ApplyPatchToolType, FileUploadCapability, PromptCacheDialect, ProtocolEndpoint,
         ProtocolKind, ToolWirePolicy,
     },
-    runtime::{
-        CancellationToken, ModelInvocationContext, ModelRuntime, ModelSession, PromptCacheScope,
-    },
+    runtime::{CancellationToken, ModelInvocationContext, ModelSession, PromptCacheScope},
 };
 use pl_provider_fixture::{
     FixtureServer, GUI_PROMPT, Protocol, Reply, RequestMatch, Step, gui_script, responses_text,
@@ -68,7 +66,7 @@ fn assert_frozen_tool_bindings(
 fn selectable_models_still_reject_unsupported_tools_before_io() {
     let mut model = ModelInfo::compatible("selectable-text-model");
     model.capabilities.tools.function_calling = false;
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
         model,
@@ -141,7 +139,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
     let mut info = model("preview-model", ModelTransportProfile::responses_http());
     info.capabilities.web_search = true;
     let plain = ThreadModel::new(
-        ModelRuntime::new_with_account_id("preview", endpoint, info).unwrap(),
+        pl_model::runtime::new_with_account_id("preview", endpoint, info).unwrap(),
         None,
     );
     let hosted = plain.clone().with_hosted_tools(vec![HostedTool::WebSearch(
@@ -304,7 +302,7 @@ async fn complete(
     request: CompletionRequest,
     session: ModelSession,
 ) -> pl_model::completion::CompletionResponse {
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model,
@@ -458,7 +456,7 @@ async fn provider_reported_usage_is_committed_to_core_effects() {
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("core-fixture", ModelTransportProfile::responses_http()),
@@ -552,7 +550,7 @@ async fn commentary_only_responses_continue_until_final_or_step_limit() {
                 script.push(next);
             }
             let fixture = FixtureServer::start(script).await.unwrap();
-            let runtime = ModelRuntime::new_with_account_id(
+            let runtime = pl_model::runtime::new_with_account_id(
                 "fixture",
                 ProtocolEndpoint::compatible("fixture", fixture.base_url()),
                 model("planning-fixture", profile.clone()),
@@ -710,7 +708,7 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
         replay_model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
             field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
         });
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             replay_model,
@@ -834,7 +832,7 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
     )])
     .await
     .unwrap();
-    let source_runtime = ModelRuntime::new_with_account_id(
+    let source_runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("provider-a", source.base_url()),
         model("provider-a", ModelTransportProfile::responses_http()),
@@ -864,7 +862,7 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
 
     assert_eq!(source.finish().await.unwrap().len(), 1);
     let target = FixtureServer::start(vec![]).await.unwrap();
-    let target_runtime = ModelRuntime::new_with_account_id(
+    let target_runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("provider-b", target.base_url()),
         model("provider-b", ModelTransportProfile::responses_http()),
@@ -939,7 +937,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
     let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-        ModelRuntime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
+        pl_model::runtime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
         None,
     ));
     let thread = ThreadHandle::start_current(
@@ -969,7 +967,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
     let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-        ModelRuntime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
+        pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
         None,
     ));
     let restored =
@@ -1031,7 +1029,8 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
         let mut source_model = model("source-model", ModelTransportProfile::responses_http());
         source_model.capabilities.native_context_family = source_family.map(str::to_owned);
         let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            ModelRuntime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
+            pl_model::runtime::new_with_account_id("fixture", endpoint.clone(), source_model)
+                .unwrap(),
             None,
         ));
         let thread = ThreadHandle::start(
@@ -1061,7 +1060,7 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
         let mut target_model = model("target-model", ModelTransportProfile::responses_http());
         target_model.capabilities.native_context_family = target_family.map(str::to_owned);
         let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            ModelRuntime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
+            pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
             None,
         ));
         let restored = ThreadHandle::resume(
@@ -1224,7 +1223,7 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
         ])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::openai(Some(fixture.base_url())),
             model("fixture-model", profile),
@@ -1318,7 +1317,7 @@ async fn responses_functions_keep_optional_role_specific_arguments() {
         .unwrap();
         let mut info = bundled("gpt-6.2-sol");
         info.binding.set_transport(transport);
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::openai(Some(fixture.base_url())),
             info,
@@ -1381,7 +1380,7 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
     let mut info = bundled("gpt-5.5");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let cases = [
         (
             "object",
@@ -1613,7 +1612,7 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         .await
         .unwrap();
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            ModelRuntime::new_with_account_id(
+            pl_model::runtime::new_with_account_id(
                 "fixture",
                 ProtocolEndpoint::compatible("fixture", server.base_url()),
                 model("fixture-model", profile),
@@ -1972,7 +1971,7 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
         let mut info = model("fixture-model", profile);
         info.capabilities.tools.custom_tools = false;
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            ModelRuntime::new_with_account_id(
+            pl_model::runtime::new_with_account_id(
                 "fixture",
                 ProtocolEndpoint::compatible("fixture", server.base_url()),
                 info,
@@ -2112,7 +2111,7 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         let mut endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
         endpoint.service_capabilities.prompt_cache.dialect =
             PromptCacheDialect::OpenAiPromptCacheKey;
-        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, fixture_model)
+        let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, fixture_model)
             .unwrap()
             .with_pricing_mode(pl_model::model::PricingMode::NoCharge);
         let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
@@ -2379,9 +2378,12 @@ async fn auxiliary_requests_keep_frozen_replay_and_mutated_input_is_rejected() {
         let fixture = FixtureServer::start(steps).await.unwrap();
         let mut endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
         endpoint.service_capabilities.remote_compaction = true;
-        let runtime =
-            ModelRuntime::new_with_account_id("fixture", endpoint, model("fixture-model", profile))
-                .unwrap();
+        let runtime = pl_model::runtime::new_with_account_id(
+            "fixture",
+            endpoint,
+            model("fixture-model", profile),
+        )
+        .unwrap();
         let first = runtime
             .complete(request("question"), ModelInvocationContext::default())
             .await
@@ -2487,7 +2489,7 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
             Reply::Sse(responses_text("complete", "terminal-next", "fixture-model")))
             .with_replay(pl_provider_fixture::ReplayExpectation { history: output.clone(), previous_response_id: None }),
     ]).await.unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("fixture-model", ModelTransportProfile::responses_http()),
@@ -2560,7 +2562,7 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
         )])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("fixture-model", ModelTransportProfile::responses_http()),
@@ -2603,7 +2605,7 @@ async fn responses_replay_strips_output_only_status_for_strict_input() {
     )])
     .await
     .unwrap();
-    let source_runtime = ModelRuntime::new_with_account_id(
+    let source_runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("source", source.base_url()),
         model("source-model", ModelTransportProfile::responses_http()),
@@ -2657,7 +2659,7 @@ async fn responses_replay_strips_output_only_status_for_strict_input() {
     ])
     .await
     .unwrap();
-    let target_runtime = ModelRuntime::new_with_account_id(
+    let target_runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("target", target.base_url()),
         model("target-model", ModelTransportProfile::responses_http()),
@@ -2721,7 +2723,7 @@ async fn mixed_provider_events_preserve_identity_order_and_content() {
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("fixture-model", ModelTransportProfile::responses_http()),
@@ -3003,7 +3005,7 @@ async fn responses_message_parts_retain_distinct_provider_identity_and_content()
         let fixture = FixtureServer::start(vec![Step::prompt(protocol, "two parts", 0, reply)])
             .await
             .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("parts-model", profile),
@@ -3097,7 +3099,7 @@ async fn responses_content_part_added_rejects_invalid_parts_without_losing_prefi
         )])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("parts-model", ModelTransportProfile::responses_http()),
@@ -3291,7 +3293,7 @@ async fn websocket_keeps_session_connection_and_continuation_scoped_to_it() {
     .unwrap();
     let session = ModelSession::default();
     let model = model("ws-fixture", ModelTransportProfile::responses_websocket());
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model,
@@ -3427,7 +3429,7 @@ async fn apply_patch_freeform_declares_custom_grammar_for_native_responses() {
     let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
     endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
     let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
         .open_session()
         .await
@@ -3552,7 +3554,7 @@ async fn apply_patch_falls_back_to_function_without_freeform_tool_type() {
     let mut endpoint = ProtocolEndpoint::openai(Some(fixture.base_url()));
     endpoint.apply_patch_tool_type = None;
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
     let lookup_schema = json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Lookup by name or id",
@@ -3647,7 +3649,7 @@ async fn apply_patch_falls_back_to_function_on_non_native_endpoint() {
     endpoint.tool_wire_policy = ToolWirePolicy::FunctionFallback;
     endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
     runtime
         .complete(
             CompletionRequest::builder()
@@ -3686,7 +3688,7 @@ async fn apply_patch_falls_back_to_function_without_required_model_capabilities(
         let mut info = custom_tool_model();
         info.capabilities.tools.custom_tools = custom_tools;
         info.capabilities.tools.freeform_tools = freeform_tools;
-        let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+        let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
         runtime
             .complete(
                 CompletionRequest::builder()
@@ -3727,7 +3729,7 @@ async fn xai_responses_preserves_effort_cache_scope_and_function_schema() {
     .unwrap();
     let mut endpoint = ProtocolEndpoint::xai(Some(fixture.base_url()));
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::OpenAiPromptCacheKey;
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let reply = runtime
         .complete(
             CompletionRequest::builder()
@@ -3847,7 +3849,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
         ])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("identity-model", transport),
@@ -4162,7 +4164,7 @@ async fn chat_tool_result_replays_the_provider_item_id_on_the_next_step() {
     ])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("chat-tools", ModelTransportProfile::chat_completions_http()),
@@ -4240,7 +4242,8 @@ async fn deepseek_and_zhipu_use_their_declared_protocol_and_effort_wire() {
     let mut endpoint = ProtocolEndpoint::deepseek(Some(deepseek.base_url()));
     endpoint.bearer_token = Some("local-only".into());
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, bundled("deepseek-v4-pro")).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-v4-pro"))
+            .unwrap();
     let reply = runtime
         .complete(
             CompletionRequest::builder()
@@ -4271,7 +4274,7 @@ async fn deepseek_and_zhipu_use_their_declared_protocol_and_effort_wire() {
     let mut endpoint = ProtocolEndpoint::zhipu(Some(zhipu.base_url()));
     endpoint.bearer_token = Some("local-only".into());
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, bundled("glm-5.3")).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("glm-5.3")).unwrap();
     let reply = runtime
         .complete(
             CompletionRequest::builder()
@@ -4306,7 +4309,7 @@ async fn cancellation_unwinds_a_stalled_sse_without_fabricating_usage() {
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("cancel-fixture", ModelTransportProfile::responses_http()),
@@ -4372,7 +4375,7 @@ async fn failed_stream_retains_every_received_item_beyond_the_live_window() {
     ])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model("fixture-model", ModelTransportProfile::responses_http()),
@@ -4454,7 +4457,7 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
             FixtureServer::start(vec![Step::prompt(Protocol::Chat, "bad request", 0, reply)])
                 .await
                 .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model(
@@ -4488,7 +4491,7 @@ async fn provider_error_is_permanent_and_unknown_prompt_is_rejected() {
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("fixture", fixture.base_url()),
         model(
@@ -4535,7 +4538,7 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
     let mut info = bundled("gpt-5.5");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let tools = vec![
         ToolSpec::WebSearch {
             options: HostedWebSearchOptions::OpenAi {
@@ -4618,7 +4621,7 @@ async fn explicitly_enabled_deepseek_hosted_search_has_its_own_minimal_wire_dial
     let endpoint = ProtocolEndpoint::deepseek(Some(fixture.base_url()));
     let mut model = bundled("deepseek-v4-pro");
     model.capabilities.web_search = true;
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, model).unwrap();
+    let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
     let result = runtime
         .complete(
             CompletionRequest::builder()
@@ -4659,7 +4662,7 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
     )])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::zhipu_coding_plan(Some(fixture.base_url())),
         model,
@@ -4700,7 +4703,7 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
     let mut info = bundled("gpt-5.5");
     info.binding
         .set_transport(ModelTransportProfile::responses_http());
-    let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap();
+    let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let result = runtime
         .complete(
             image_request("describe", bytes.clone()),
@@ -4745,7 +4748,8 @@ async fn deepseek_file_upload_precedes_responses_and_sends_only_file_reference()
     let mut endpoint = ProtocolEndpoint::deepseek(Some(fixture.base_url()));
     endpoint.service_capabilities.files = FileUploadCapability::DeepSeek;
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash")).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
+            .unwrap();
     let result = runtime
         .complete(
             image_request("inspect", bytes),
@@ -4800,7 +4804,8 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
     let mut endpoint = ProtocolEndpoint::deepseek(Some(fixture.base_url()));
     endpoint.service_capabilities.files = FileUploadCapability::DeepSeek;
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash")).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
+            .unwrap();
     let session = ModelSession::default();
     let failure = runtime
         .complete(
@@ -4872,7 +4877,7 @@ async fn native_compaction_returns_checkpoint_and_retains_reported_usage() {
     endpoint.service_capabilities.remote_compaction = true;
     endpoint.apply_patch_tool_type = None;
     let runtime =
-        ModelRuntime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
+        pl_model::runtime::new_with_account_id("fixture", endpoint, custom_tool_model()).unwrap();
     let prefix = CompletionRequest::builder()
         .messages(vec![user("compact")])
         .tools(vec![
@@ -4981,7 +4986,7 @@ async fn empty_native_checkpoint_is_rejected_before_commit_and_keeps_usage() {
         json!({"type":"response.completed","response":{"id":"empty","usage":{"input_tokens":31,"output_tokens":2}}})]))]).await.unwrap();
     let mut endpoint = ProtocolEndpoint::compatible("fixture", fixture.base_url());
     endpoint.service_capabilities.remote_compaction = true;
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         endpoint,
         model("origin-model", ModelTransportProfile::responses_http()),
@@ -5015,7 +5020,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let mut info = model("source-model", ModelTransportProfile::responses_http());
     info.capabilities.native_context_family = Some("explicit-fixture-family".into());
     let source = ThreadModel::new(
-        ModelRuntime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
+        pl_model::runtime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
         None,
     );
     let result = source
@@ -5134,7 +5139,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     let mut vendor_endpoint = endpoint.clone();
     vendor_endpoint.protocol = ProtocolKind::DeepSeek;
     let vendor = ThreadModel::new(
-        ModelRuntime::new_with_account_id("source", vendor_endpoint, info.clone()).unwrap(),
+        pl_model::runtime::new_with_account_id("source", vendor_endpoint, info.clone()).unwrap(),
         None,
     );
     assert!(vendor.validate_context_origin(&legacy_context).is_err());
@@ -5143,7 +5148,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         .binding
         .set_transport(ModelTransportProfile::chat_completions_http());
     let wire = ThreadModel::new(
-        ModelRuntime::new_with_account_id("source", endpoint.clone(), wire_info).unwrap(),
+        pl_model::runtime::new_with_account_id("source", endpoint.clone(), wire_info).unwrap(),
         None,
     );
     assert!(wire.validate_context_origin(&legacy_context).is_err());
@@ -5166,20 +5171,21 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     };
     assert!(source.validate_context_origin(&future_context).is_err());
     let other_account = ThreadModel::new(
-        ModelRuntime::new_with_account_id("other-account", endpoint.clone(), info.clone()).unwrap(),
+        pl_model::runtime::new_with_account_id("other-account", endpoint.clone(), info.clone())
+            .unwrap(),
         None,
     );
     assert!(other_account.validate_context_origin(&context).is_err());
     info.model_id = "target-model".into();
     info.capabilities.native_context_family = None;
     let unproven = ThreadModel::new(
-        ModelRuntime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
+        pl_model::runtime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
         None,
     );
     assert!(unproven.validate_context_origin(&context).is_err());
     info.capabilities.native_context_family = Some("explicit-fixture-family".into());
     let explicit = ThreadModel::new(
-        ModelRuntime::new_with_account_id("source", endpoint, info).unwrap(),
+        pl_model::runtime::new_with_account_id("source", endpoint, info).unwrap(),
         None,
     );
     explicit.validate_context_origin(&context).unwrap();
@@ -5282,7 +5288,7 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
         let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
         info.capabilities.instruction_snapshot_overrides = model_support;
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
-            ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
+            pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
             None,
         ))
         .open_session()
@@ -5405,7 +5411,7 @@ async fn instruction_snapshot_revision_and_hash_are_validated_before_admission()
     };
     use pl_model::runtime::ThreadModel;
     let factory = ModelFactory::new(ThreadModel::new(
-        ModelRuntime::new_with_account_id(
+        pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
             model("snapshot-model", ModelTransportProfile::responses_http()),
@@ -5485,7 +5491,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
     let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
     info.capabilities.instruction_snapshot_overrides = true;
     let factory = ModelFactory::new(ThreadModel::new(
-        ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
+        pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
         None,
     ));
     let mut session = factory.open_session().await.unwrap();
@@ -5577,7 +5583,7 @@ async fn deepseek_responses_replaces_instruction_prefix_instead_of_appending() {
     .await
     .unwrap();
     let factory = ModelFactory::new(ThreadModel::new(
-        ModelRuntime::new_with_account_id(
+        pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::deepseek(Some(fixture.base_url())),
             bundled("deepseek-flash"),
@@ -5664,7 +5670,7 @@ async fn reserved_top_level_instructions_channel_is_rejected_before_network() {
             .request
             .body
             .insert("instructions".into(), json!("sneaky"));
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             info,
@@ -5707,7 +5713,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
         } else {
             ProtocolEndpoint::compatible("fixture", fixture.base_url())
         };
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             endpoint,
             model("role-model", ModelTransportProfile::responses_http()),
@@ -5738,7 +5744,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
         )])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::deepseek(Some(fixture.base_url())),
             model("role-model", ModelTransportProfile::responses_http()),
@@ -5769,7 +5775,7 @@ async fn trusted_instructions_use_the_protocol_dispatch_role_not_the_model_name(
         )])
         .await
         .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("role-model", ModelTransportProfile::chat_completions_http()),
@@ -5819,7 +5825,7 @@ async fn chat_reasoning_replay_uses_target_capability_and_rejects_untyped_detail
             ModelTransportProfile::chat_completions_http(),
         );
         info.capabilities.interleaved = field.map(|field| ReasoningInterleaved { field });
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("target", fixture.base_url()),
             info,
@@ -5889,7 +5895,7 @@ async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions(
     let mut endpoint = ProtocolEndpoint::compatible("cache", fixture.base_url());
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::OpenAiPromptCacheKey;
     let factory = ModelFactory::new(ThreadModel::new(
-        ModelRuntime::new_with_account_id(
+        pl_model::runtime::new_with_account_id(
             "fixture",
             endpoint,
             model("cache-model", ModelTransportProfile::responses_http()),
@@ -5979,7 +5985,7 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         Step::prompt(Protocol::ResponsesHttp, "resume-proof", 3, Reply::Sse(responses_text("already completed", "proof-resume", "proof-model"))),
     ]).await.unwrap();
     let source = ThreadModel::new(
-        ModelRuntime::new_with_account_id(
+        pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("proof", fixture.base_url()),
             model("proof-model", ModelTransportProfile::responses_http()),
@@ -6136,7 +6142,7 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
             FixtureServer::start(vec![Step::prompt(protocol, "oversized input", 0, reply)])
                 .await
                 .unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", fixture.base_url()),
             model("capacity-model", transport),
@@ -6219,7 +6225,7 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
             replay: vec![pl_model::model::MediaRepresentation::DataUrl],
         });
     let source = ThreadModel::new(
-        ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
+        pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
         None,
     );
     let mut session = ModelFactory::new(source.clone())

@@ -185,7 +185,7 @@ impl AccountEdit {
             None => {
                 let current_custom = current.filter(|account| account.template_id().is_none());
                 let info = ProtocolEndpoint {
-                    chatgpt_session: None,
+                    authorization: None,
                     protocol: self.protocol,
                     name: name.clone(),
                     base_url: base_url.clone(),

@@ -1301,7 +1301,7 @@ mod storage_fault_tests {
                     effort: None,
                 };
                 let model = pl_model::runtime::ThreadModel::new(
-                    pl_model::runtime::ModelRuntime::from_route(&route)?,
+                    pl_model::runtime::from_route(&route)?,
                     None,
                 );
                 Ok(StudioThreadSpec {

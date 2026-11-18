@@ -18,6 +18,7 @@ pl-provider-fixture = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dependencies]
+pl-model-openai = { workspace = true }
 pl-model-auth = { workspace = true }
 pl-studio-update = { workspace = true }
 pl-studio-statistics = { workspace = true }

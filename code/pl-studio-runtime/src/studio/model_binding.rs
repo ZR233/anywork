@@ -1,10 +1,7 @@
 //! One deferred model binding construction for UI/API and parent-agent continuation.
 use anyhow::Result;
 use pl_core::{model::ModelFactory, thread::DeferredModelUpdate};
-use pl_model::{
-    config::ResolvedModelRoute,
-    runtime::{ModelRuntime, ThreadModel},
-};
+use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
 
 pub(crate) fn deferred_update(
     route: &ResolvedModelRoute,
@@ -32,8 +29,11 @@ pub(crate) fn deferred_update(
             pl_model::runtime::HostedTool::ProgrammaticToolCalling => crate::ToolSpec::ProgrammaticToolCalling,
         }).collect::<Vec<_>>(),
     }));
-    let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-        .with_hosted_tools(hosted);
+    let model = ThreadModel::new(
+        pl_model::runtime::from_route(route)?,
+        route.reasoning_config(),
+    )
+    .with_hosted_tools(hosted);
     Ok(DeferredModelUpdate::new(
         key,
         ModelFactory::new(model.clone()),

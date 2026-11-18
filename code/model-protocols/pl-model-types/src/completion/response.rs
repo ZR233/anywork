@@ -1,0 +1,196 @@
+//! Canonical completion 响应与 trace 上下文。
+
+use crate::completion::ModelTextChannel;
+use serde::{Deserialize, Serialize};
+
+use crate::completion::InferenceModelObservation;
+use crate::completion::tool_call::ToolCall;
+use crate::completion::{InferenceTiming, ResponsesContextItem};
+use crate::model::InferenceAccounting;
+use pl_protocol::PureError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
+    pub content: Option<String>,
+    /// Frozen model history, including commentary that is not part of the final-answer view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<super::AssistantReplay>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    #[serde(default)]
+    pub responses_context_items: Vec<ResponsesContextItem>,
+    /// Ordered provider output items, or Chat segments decoded from its complete replay.
+    /// Chat segment identities are local display identities and never enter model input.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presentation_items: Vec<CompletionPresentationItem>,
+    #[serde(default)]
+    pub orchestration: crate::completion::InferenceOrchestrationMetrics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<InferenceTiming>,
+    pub accounting: InferenceAccounting,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_observation: Option<InferenceModelObservation>,
+    /// Display-only recovery facts; abandoned candidates never become response content.
+    #[serde(default)]
+    pub observation: pl_core::model::ModelObservation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionPresentationItem {
+    pub provider_item_id: String,
+    pub output_index: Option<u32>,
+    pub kind: CompletionPresentationItemKind,
+    pub parts: Vec<CompletionPresentationPart>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "channel", rename_all = "camelCase")]
+pub enum CompletionPresentationItemKind {
+    Text(ModelTextChannel),
+    Reasoning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletionPresentationPart {
+    pub content_index: u32,
+    pub provider_part_id: Option<String>,
+    pub kind: CompletionPresentationPartKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CompletionPresentationPartKind {
+    OutputText,
+    ReasoningText,
+    SummaryText,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionTraceContext {
+    pub session_id: String,
+    pub turn_id: String,
+    pub inference_id: String,
+}
+
+/// Invocation failure retaining all service-reported usage received before failure.
+///
+/// `cancelled` carries the implementation's own observation that this invocation was
+/// targeted by a runtime interrupt and unwound through its cancellation branch. It is
+/// set only at the observation point that produced the failure; it is never inferred
+/// from error text, nor from another signal that merely coincides with the failure.
+#[derive(Debug, thiserror::Error)]
+#[error("{source}")]
+pub struct CompletionFailure {
+    #[source]
+    pub source: Box<PureError>,
+    pub accounting: Box<InferenceAccounting>,
+    pub timing: Option<InferenceTiming>,
+    pub model_observation: Option<Box<InferenceModelObservation>>,
+    /// All provider output items received before this invocation failed.
+    pub presentation_items: Vec<CompletionPresentationItem>,
+    pub partial_progress: Option<Box<pl_core::model::ModelProgress>>,
+    pub cancelled: bool,
+}
+
+impl CompletionFailure {
+    /// Builds a failure that is explicitly **not** the invocation's own cancellation.
+    ///
+    /// Use this to preserve the observed accounting when folding a secondary cause (for
+    /// example a session-close error) into a failure that was already produced elsewhere.
+    /// The cancellation fact cannot be forged here: `new(..).is_cancelled()` is always
+    /// `false`, and only pl-model's own cancellation branch may produce a cancelled failure.
+    pub fn new(source: PureError, accounting: Box<InferenceAccounting>) -> Self {
+        Self {
+            source: Box::new(source),
+            accounting,
+            timing: None,
+            model_observation: None,
+            presentation_items: Vec::new(),
+            partial_progress: None,
+            cancelled: false,
+        }
+    }
+
+    /// Whether this invocation itself terminated because it observed a targeting cancellation.
+    ///
+    /// Provider failures, timeouts and transport errors keep this `false`, even when a
+    /// cancellation happens to arrive around the same time.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    pub fn model_observation(&self) -> Option<&InferenceModelObservation> {
+        self.model_observation.as_deref()
+    }
+
+    /// A local recovery failure replaces the cause, not facts received from the provider.
+    pub fn with_source(mut self, source: PureError) -> Self {
+        self.source = Box::new(source);
+        self
+    }
+
+    pub fn with_model_observation(mut self, model_observation: InferenceModelObservation) -> Self {
+        self.model_observation = Some(Box::new(model_observation));
+        self
+    }
+
+    pub fn with_optional_model_observation(
+        mut self,
+        model_observation: Option<InferenceModelObservation>,
+    ) -> Self {
+        self.model_observation = model_observation.map(Box::new);
+        self
+    }
+
+    /// Builds the failure produced by the invocation's own cancellation branch.
+    ///
+    /// Only the code that drove the call and matched its cancellation branch may use this;
+    /// a caller outside pl-model cannot fabricate the cancellation fact.
+    pub fn cancelled(source: PureError, accounting: Box<InferenceAccounting>) -> Self {
+        Self {
+            source: Box::new(source),
+            accounting,
+            timing: None,
+            model_observation: None,
+            presentation_items: Vec::new(),
+            partial_progress: None,
+            cancelled: true,
+        }
+    }
+}
+
+impl From<PureError> for CompletionFailure {
+    fn from(source: PureError) -> Self {
+        Self {
+            source: Box::new(source),
+            accounting: Box::default(),
+            timing: None,
+            model_observation: None,
+            presentation_items: Vec::new(),
+            partial_progress: None,
+            cancelled: false,
+        }
+    }
+}
+
+impl std::ops::Deref for CompletionFailure {
+    type Target = PureError;
+    fn deref(&self) -> &PureError {
+        self.source.as_ref()
+    }
+}
+
+impl From<CompletionFailure> for PureError {
+    fn from(failure: CompletionFailure) -> Self {
+        *failure.source
+    }
+}
