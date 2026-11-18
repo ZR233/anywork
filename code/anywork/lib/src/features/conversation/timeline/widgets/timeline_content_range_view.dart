@@ -115,6 +115,7 @@ class TimelineContentRangeView extends StatelessWidget {
     this.window,
     this.error,
     this.bodyBuilder,
+    this.frameBody,
   });
 
   final String itemId;
@@ -128,6 +129,7 @@ class TimelineContentRangeView extends StatelessWidget {
   final ContentWindow? window;
   final Object? error;
   final Widget Function(String text)? bodyBuilder;
+  final Widget Function(Widget body)? frameBody;
   final ValueChanged<bool> onExpansionChanged;
   final VoidCallback? onNext;
   final VoidCallback? onCopy;
@@ -145,6 +147,8 @@ class TimelineContentRangeView extends StatelessWidget {
         window.bytes.isNotEmpty &&
         end < window.availableThrough;
     final showRange = !disclosed || hasNext || (window?.offset ?? 0) > 0;
+    final showCopy =
+        window != null && onCopy != null && (bodyBuilder == null || showRange);
     final contents = <Widget>[
       if (loading) const LinearProgressIndicator(minHeight: 1),
       if (error != null)
@@ -181,68 +185,98 @@ class TimelineContentRangeView extends StatelessWidget {
                   child: bodyBuilder!(text),
                 ),
         ),
-        if (bodyBuilder == null || showRange) ...[
-          const SizedBox(height: 4),
-          Wrap(
-            spacing: 4,
-            children: [
-              TextButton(
-                key: StudioDriverKeys.timelineContentCopyWindow(
-                  itemId,
-                  contentKey,
-                ),
-                onPressed: active && !loading ? onCopy : null,
-                child: const Text('复制当前段'),
-              ),
-              if (hasNext)
-                TextButton(
-                  key: StudioDriverKeys.timelineContentNextWindow(
-                    itemId,
-                    contentKey,
-                  ),
-                  onPressed: active && !loading ? onNext : null,
-                  child: const Text('下一段'),
-                ),
-            ],
-          ),
-        ],
       ],
     ];
+    final actions = showCopy || hasNext
+        ? Padding(
+            padding: const EdgeInsets.only(top: 3),
+            child: Wrap(
+              alignment: frameBody == null
+                  ? WrapAlignment.start
+                  : WrapAlignment.end,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 4,
+              children: [
+                if (hasNext)
+                  TextButton(
+                    key: StudioDriverKeys.timelineContentNextWindow(
+                      itemId,
+                      contentKey,
+                    ),
+                    onPressed: active && !loading ? onNext : null,
+                    child: const Text('下一段'),
+                  ),
+                if (showCopy)
+                  IconButton(
+                    key: StudioDriverKeys.timelineContentCopyWindow(
+                      itemId,
+                      contentKey,
+                    ),
+                    onPressed: active && !loading ? onCopy : null,
+                    style: IconButton.styleFrom(
+                      foregroundColor: context.colors.onSurfaceVariant,
+                      minimumSize: const Size.square(28),
+                      padding: EdgeInsets.zero,
+                      visualDensity: VisualDensity.standard,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: const CircleBorder(),
+                    ),
+                    icon: Icon(
+                      Icons.copy_rounded,
+                      size: 14,
+                      semanticLabel: MaterialLocalizations.of(context)
+                          .copyButtonLabel,
+                    ),
+                  ),
+              ],
+            ),
+          )
+        : null;
+    final notReady = canRead
+        ? null
+        : Padding(
+            padding: const EdgeInsetsDirectional.only(
+              start: TimelineActivityRow.contentIndent,
+              bottom: 4,
+            ),
+            child: Text(
+              '内容读取尚未就绪',
+              style: context.text.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          );
+    final frame = frameBody;
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (disclosed) ...[
+          ...contents,
+          if (frame == null) ?actions,
+        ] else
+          TimelineActivityDisclosure(
+            key: StudioDriverKeys.timelineContentOpen(itemId, contentKey),
+            initiallyExpanded: initiallyExpanded,
+            enabled: !loading && active && canRead,
+            onExpansionChanged: onExpansionChanged,
+            titleBuilder: (context, expanded) => TimelineActivityRow(
+              icon: Icons.article_outlined,
+              label: label,
+              active: loading,
+              expanded: expanded,
+            ),
+            children: [...contents, ?actions],
+          ),
+        ?notReady,
+      ],
+    );
     return TimelineActivityTileTheme(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (disclosed)
-            ...contents
-          else
-            TimelineActivityDisclosure(
-              key: StudioDriverKeys.timelineContentOpen(itemId, contentKey),
-              initiallyExpanded: initiallyExpanded,
-              enabled: !loading && active && canRead,
-              onExpansionChanged: onExpansionChanged,
-              titleBuilder: (context, expanded) => TimelineActivityRow(
-                icon: Icons.article_outlined,
-                label: label,
-                active: loading,
-                expanded: expanded,
-              ),
-              children: contents,
+      child: frame == null
+          ? body
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [frame(body), if (disclosed) ?actions],
             ),
-          if (!canRead)
-            Padding(
-              padding: const EdgeInsetsDirectional.only(
-                start: TimelineActivityRow.contentIndent,
-                bottom: 4,
-              ),
-              child: Text(
-                '内容读取尚未就绪',
-                style: context.text.bodySmall?.copyWith(
-                  color: context.colors.onSurfaceVariant,
-                ),
-              ),
-            ),
-        ],
-      ),
     );
   }
 }

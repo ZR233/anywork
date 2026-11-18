@@ -76,6 +76,23 @@ final class ChatItemPresentation {
       !(displayRecord!.contentSource as FrozenObservation).available;
   late final ToolCardReading toolCard = readToolCard(this);
 
+  bool get showsTextCopy => switch (authorId) {
+    'user' || 'parentAgent' => true,
+    _ => switch (atom) {
+      ChatAtom(
+        kind: ChatAtomKind.text,
+        textChannel: ThreadTextChannel.finalAnswer,
+        lifecycle: TerminalChatAtom(outcome: ChatTerminalOutcome.completed),
+        :final id,
+      ) =>
+        // The producer reserves this entity namespace for committed finish_turn
+        // deliveries. Provider text can also be on the final-answer channel.
+        displayRecord?.contentSource is CompletedOriginal &&
+            id.startsWith('completion:'),
+      _ => false,
+    },
+  };
+
   // The original producer's declaration, not envelope metadata, grants Body
   // intent. Keeping it on the original atom also keeps it stable after decode.
   late final List<int> publicInputBodyIndices = _publicInputBodyIndices();

@@ -93,6 +93,8 @@ Current 正文按 `CurrentContentRef` 的有界窗口读取；History 正文按 
 
 Markdown、代码、补丁和工具 renderer 消费类型化内容与明确角色。未知契约、opaque 内容和不支持的结构按原字节/诊断边界呈现；客户端不依据文本猜测权限、完成状态或外部发送资格。搜索、选择复制、安全链接和媒体限制沿用现有组件。
 
+用户及上级智能体输入的复制图标位于气泡外下方，与气泡末端对齐。智能体输出中，只有 `finish_turn` 成功交付后写入历史的原始最终正文显示复制图标，图标位于正文下方起始侧。复制图标通过无障碍语义提供本地化名称。生产者将 `completion:` 实体身份命名空间专用于这类交付，界面结合最终正文通道与已完成的原始历史记录识别。长正文的「下一段」独立于复制操作。
+
 ## 26.8 Flutter 唯一窗口与串行 apply
 
 Flutter 的现有 timeline controller 是应用内唯一已加载历史窗口。它只保存有界 rows、成员页和展开状态；不是 Rust HistoryStore 的镜像，也不为每个 scope 建立第二 reducer。Current overlay 只保存一个当前 run 的 State 与当前正文观察。

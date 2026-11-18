@@ -451,15 +451,48 @@ void main() {
     }
 
     expect(controller().isExpanded, isTrue);
-    expect(find.text('复制当前段'), findsOneWidget);
+    final copy = find.byKey(
+      StudioDriverKeys.timelineContentCopyWindow('preview-deferred', 'payload'),
+    );
+    expect(copy, findsOneWidget);
+    expect(
+      find.descendant(of: copy, matching: find.byIcon(Icons.copy_rounded)),
+      findsOneWidget,
+    );
     await tester.tap(find.text('按需查看原文 · 196608 字节'));
     await tester.pumpAndSettle();
     expect(controller().isExpanded, isFalse);
-    expect(find.text('复制当前段'), findsNothing);
+    expect(copy, findsNothing);
     await tester.tap(find.text('按需查看原文 · 196608 字节'));
     await tester.pumpAndSettle();
     expect(controller().isExpanded, isTrue);
-    expect(find.text('复制当前段'), findsOneWidget);
+    expect(copy, findsOneWidget);
+  });
+
+  testWidgets('用户复制图标在气泡外且与末端对齐，最终正文复制仅显示图标', (tester) async {
+    await tester.pumpWidget(timelineTextCopyPreview());
+    await tester.pumpAndSettle();
+
+    Finder copy(int row) => find.byKey(
+      StudioDriverKeys.timelineContentCopyWindow(
+        'preview-copy-event-$row',
+        'body',
+      ),
+    );
+    final bubble = find.byKey(
+      const ValueKey('timeline-prompt-bubble:preview-copy-event-1'),
+    );
+    final userCopy = copy(1);
+    expect(
+      tester.getTopRight(userCopy).dy,
+      greaterThanOrEqualTo(tester.getBottomRight(bubble).dy),
+    );
+    expect(tester.getTopRight(userCopy).dx, tester.getTopRight(bubble).dx);
+    expect(copy(2), findsNothing);
+    expect(copy(4), findsOneWidget);
+    expect(find.byIcon(Icons.copy_rounded), findsNWidgets(2));
+    expect(find.text('复制'), findsNothing);
+    expect(find.bySemanticsLabel('复制'), findsNWidgets(2));
   });
 
   testWidgets(
