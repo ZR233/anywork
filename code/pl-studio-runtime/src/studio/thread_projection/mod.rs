@@ -15,16 +15,13 @@ mod completed_activity;
 pub(in crate::studio) use activity::project_activity;
 pub(in crate::studio) use completed_activity::activity_identity;
 mod completions;
-pub(crate) use completions::committed_finish_execution;
 mod content;
 mod current;
 mod current_page;
 pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
 pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
 mod current_projection;
-pub(in crate::studio) use content::{
-    ContentError, InputView, continuation_request_digest, input_presentation, input_view,
-};
+pub(in crate::studio) use content::{ContentError, InputView, input_presentation, input_view};
 pub(in crate::studio) use current::CurrentState;
 pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
@@ -32,8 +29,7 @@ pub(in crate::studio) use effect::project_effect_items;
 pub(in crate::studio) mod live;
 pub(in crate::studio) mod presentation;
 pub(in crate::studio) use live::{
-    LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
-    seed_repaired_targets,
+    LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult,
 };
 pub(crate) use presentation::{hidden, work};
 mod runtime;

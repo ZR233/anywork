@@ -10,7 +10,7 @@ impl StudioStore {
     ) -> Result<Option<InteractionRequest>> {
         let (thread_id, local_id) =
             crate::thread_assembler::decode_interaction_key(interaction_id)?;
-        let Some(record) = self.read_thread_association(thread_id).await? else {
+        let Some(record) = self.read_thread(thread_id).await? else {
             return Ok(None);
         };
         let thread = crate::Thread::from(record);
@@ -30,7 +30,7 @@ impl StudioStore {
         &self,
         thread_id: &str,
     ) -> Result<Vec<InteractionRequest>> {
-        let Some(record) = self.read_thread_association(thread_id).await? else {
+        let Some(record) = self.read_thread(thread_id).await? else {
             return Ok(Vec::new());
         };
         let thread = crate::Thread::from(record);

@@ -833,8 +833,8 @@ impl StudioThreadFactory {
         if let Some(owner) = self.mcp_owner(thread_id) {
             return Ok(owner.read_snapshot());
         }
-        let thread = self.thread_record(thread_id).await?;
-        let project = self.project_record(&thread.workspace_id).await?;
+        let member = self.directory_member(thread_id)?;
+        let project = self.project_record(&member.session.workspace_id).await?;
         let scope = match project.ssh_alias {
             Some(ssh_alias) => McpScope::Ssh { ssh_alias },
             None => McpScope::Host,

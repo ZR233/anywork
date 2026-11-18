@@ -288,7 +288,6 @@ struct Preparation {
     identity: Option<crate::AgentThreadIdentity>,
     /// The factory has stopped; its original preparation still owns settlement until ACK.
     settlement: Option<WorkspacePreparationOwner>,
-    purpose: Option<activation::ActivationPurpose>,
     parent_id: Option<String>,
     cancellation: tokio_util::sync::CancellationToken,
     result: Option<tokio::sync::watch::Receiver<Option<ActivationOutcome>>>,
@@ -820,25 +819,6 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        if spec.model_available {
-            let services = { self.0.state().agent_services.clone() };
-            if let Some(services) = services {
-                let record = services.record(&spec.id).await.map_err(|source| {
-                    ThreadAssemblyError::Resource {
-                        operation: "resolve model archive admission",
-                        source: source.into_boxed_dyn_error(),
-                    }
-                })?;
-                services
-                    .store
-                    .ensure_archive_execution_allowed(&record.workspace_id, Some(&spec.id))
-                    .await
-                    .map_err(|source| ThreadAssemblyError::Resource {
-                        operation: "model archive admission",
-                        source: source.into_boxed_dyn_error(),
-                    })?;
-            }
-        }
         let activation = self.consume_activation(&spec.id)?;
         if activation.parent_id() != spec.parent_id.as_deref() {
             return Err(ThreadAssemblyError::Identity(spec.id));
@@ -1146,7 +1126,6 @@ impl SessionRuntime {
                 resources,
                 identity: None,
                 settlement: None,
-                purpose: None,
                 parent_id: parent.map(str::to_owned),
                 cancellation,
                 result: None,

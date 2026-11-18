@@ -13,6 +13,24 @@ fn bot_err(error: crate::bots::FeishuError) -> anyhow::Error {
 }
 
 impl StudioRuntime {
+    pub(crate) fn current_bot_owner(&self, thread_id: &str) -> Result<Option<String>> {
+        let Some(member) = self
+            .agent_facility
+            .product_events
+            .directory_member(thread_id)?
+        else {
+            return Ok(None);
+        };
+        if !member.is_native() {
+            return Ok(None);
+        }
+        self.session_of(&member.root_thread_id)
+            .and_then(|session| session.observed_thread(&member.root_thread_id))
+            .map(|owner| crate::studio::model_route::bot_owner(&owner.snapshot()))
+            .transpose()
+            .map(Option::flatten)
+    }
+
     /// The bot reply owner serializes this final check with Thread-scoped sealing.
     /// Do not take lifecycle_lock: archive holds it while joining these producers.
     pub(crate) async fn ensure_bot_dispatch_allowed(
@@ -20,9 +38,9 @@ impl StudioRuntime {
         workspace_id: &str,
         thread_id: &str,
     ) -> Result<()> {
-        self.store
-            .ensure_archive_execution_allowed(workspace_id, Some(thread_id))
-            .await?;
+        if let Some(session) = self.session_of(thread_id) {
+            session.ensure_agent_admission_open(thread_id)?;
+        }
         let catalog = self.store.catalog();
         if let Some(agent) = catalog.agent_by_thread(thread_id) {
             let session = catalog.get_session(&agent.session_id);
@@ -66,11 +84,11 @@ impl StudioRuntime {
         id: &str,
         thread: &pl_core::thread::ThreadHandle,
     ) -> Result<()> {
+        let state = thread.snapshot();
         let Some(bot) = self.bots.config_for_thread(id).await.map_err(bot_err)? else {
             return Ok(());
         };
         let selector = self.bots.model_selector(&bot).map_err(bot_err)?;
-        let state = thread.snapshot();
         let (previous, saved) = crate::studio::model_route::route_record(&state, false)?
             .ok_or_else(|| anyhow::anyhow!("bot session has no model route"))?;
         if saved == selector

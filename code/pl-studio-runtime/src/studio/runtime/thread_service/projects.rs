@@ -679,7 +679,6 @@ mod standalone_tests {
                 .await?
                 .is_none()
         );
-        assert!(runtime.ensure_thread_owner(&root.id).await.is_err());
         // A missing registry/catalog child must not turn the original failed retirement into success.
         assert!(
             runtime
@@ -868,8 +867,6 @@ mod standalone_tests {
         drop(runtime);
 
         let runtime = StudioRuntime::initialize(options(&home)).await?;
-        assert!(runtime.ensure_thread_owner(&thread.id).await.is_err());
-        assert!(runtime.restore_thread(thread.id.clone()).await.is_err());
         assert_eq!(
             tokio::fs::read(workspace.join(files.temp())).await?,
             b"wrong kind"
@@ -2616,7 +2613,6 @@ mod standalone_tests {
                 );
                 assert!(matches!(original.binding, PreparationBinding::Bound { .. }));
                 assert!(runtime.store.read_thread(&id).await?.is_none());
-                assert!(runtime.ensure_thread_owner(&root.id).await.is_err());
                 assert!(session.join("scratch/prepared").exists());
                 runtime
                     .store
@@ -2696,17 +2692,14 @@ mod standalone_tests {
         /// in the parent and shuts its runtime down cleanly, so the spawned producer's bounded crash
         /// window only has to cover the original owner's own work.
         async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
-            eprintln!("private crash seed: start");
             let home = base.join("home");
             let workspace = base.join("workspace");
             let runtime = StudioRuntime::initialize(options(&home)).await?;
-            eprintln!("private crash seed: runtime initialized");
             let project = runtime.open_project(&workspace).await?;
             let root = runtime
                 .create_thread_with_id("required-root", &project.id, "root")
                 .await?;
             runtime.ensure_thread_owner(&root.id).await?.flush().await?;
-            eprintln!("private crash seed: root ready");
             let mut protocol = crate::Thread::placeholder("required-private");
             protocol.agent_path = protocol.id.clone();
             protocol.workspace_id = project.id.clone();
@@ -2738,7 +2731,6 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            eprintln!("private crash seed: directory committed");
             // A real older incarnation leaves durable earlier Current before private attachment.
             // This predecessor supplies only complete Current. Its seed has no historical
             // originals or writer obligations; ordinary History is created by the later owner.
@@ -2760,7 +2752,6 @@ mod standalone_tests {
                     ),
                 )
                 .await?;
-            eprintln!("private crash seed: Current registered");
             previous
                 .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                     id: "fixture.private-seed".into(),
@@ -2768,27 +2759,21 @@ mod standalone_tests {
                     payload: pl_core::context::OpaquePayload::text("durable earlier Current"),
                 }])
                 .await?;
-            eprintln!("private crash seed: extension changed");
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 current_store.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve),
             )
             .await
             .context("seed previous Current final handoff stalled")??;
-            eprintln!("private crash seed: Current closed");
             runtime.shutdown_runtime().await?;
-            eprintln!("private crash seed: earlier checkpoint durable and seed runtime shut down");
             Ok(())
         }
 
         async fn produce_private_storage_crash(base: &Path, receipt: bool) -> Result<()> {
-            eprintln!("private crash fixture: initialize receipt={receipt}");
             let home = base.join("home");
             let workspace = base.join("workspace");
             let runtime = StudioRuntime::initialize(options(&home)).await?;
-            eprintln!("private crash fixture: runtime initialized");
             let project = runtime.open_project(&workspace).await?;
-            eprintln!("private crash fixture: project reopened");
             // The crashing owner still has to observe the seeded root: assembling required-private
             // reserves against its live parent entry before private history attachment.
             runtime
@@ -2796,7 +2781,6 @@ mod standalone_tests {
                 .await?
                 .flush()
                 .await?;
-            eprintln!("private crash fixture: root owner restored");
             let catalog = runtime.store.catalog();
             let private_agent = catalog
                 .get_agent("required-private")
@@ -2815,7 +2799,6 @@ mod standalone_tests {
                 .load_current()
                 .await?
                 .context("seeded durable earlier current")?;
-            eprintln!("private crash fixture: seeded protocol and current read");
             let old_fence = current.snapshot_revision;
             let physical = close_factory(&runtime.store)?;
             runtime
@@ -2879,7 +2862,6 @@ mod standalone_tests {
                 "fixture.private-initialization".into(),
                 pl_core::context::OpaquePayload::text("valid initialization"),
             );
-            eprintln!("private crash fixture: attach and close the original owner");
             let session = runtime.session_for_roots(&["required-root".to_owned()])?;
             session.assemble(spec).await?;
             let close = session.close(&protocol.id).await;
@@ -2887,7 +2869,6 @@ mod standalone_tests {
                 close.is_err(),
                 "the original private close must retain its real failure"
             );
-            eprintln!("private crash fixture: original failure retained");
             let record = runtime
                 .store
                 .thread_preparation(&protocol.id)
@@ -3064,7 +3045,6 @@ mod standalone_tests {
                             .join("scratch/prepared")
                             .exists()
                     );
-                    assert!(runtime.ensure_thread_owner("required-root").await.is_err());
                 }
                 assert_eq!(
                     tokio::fs::read(workspace.join(files.artifacts()).join("keep")).await?,
@@ -3444,6 +3424,10 @@ mod standalone_tests {
             let root = runtime
                 .create_thread_with_id("preflight-root", &project.id, "root")
                 .await?;
+            runtime
+                .archive_thread("prepare-path-fault".into(), root.id.clone())
+                .await?
+                .context("archive before replacing the disposable path")?;
             let files = SessionFiles::new(&root.id);
             let path = workspace.join(files.root());
             if path.exists() {
@@ -3719,7 +3703,14 @@ mod standalone_tests {
                     thread: child.clone(),
                     sequence: 1,
                     authority: Arc::new(TerminalAuthority::capture(&owner.snapshot())?),
-                    original: None,
+                    original: Arc::new(pl_core::thread::inbox::ThreadMessage {
+                        kind: pl_core::context::AgentMessageKind::Report,
+                        id: "invalid-terminal-identity".into(),
+                        source_id: format!("studio.child:{}", child.id),
+                        payload: OpaquePayload::new("pl.studio.turn-report", 3, "{}")?,
+                        context: Vec::new(),
+                    }),
+                    finish: None,
                     source: ReviewDeliverySource::Reconciliation,
                     revocation: Arc::new(AtomicU64::new(0)),
                     channel: None,
@@ -3729,18 +3720,14 @@ mod standalone_tests {
                     }))),
                 }))
                 .await?;
-            let failure = tokio::time::timeout(
+            tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 runtime
                     .require_session(&child.id)?
                     .join_review_delivery(&child.id),
             )
             .await?
-            .expect_err("missing original must block the actual terminal producer");
-            ensure!(
-                format!("{failure:#}").contains("original terminal message is missing"),
-                "{failure:#}"
-            );
+            .expect_err("invalid terminal must block the actual producer");
             assert!(
                 !producer_released.is_cancelled(),
                 "failed producer must remain retained before deletion"
@@ -4183,7 +4170,18 @@ mod standalone_tests {
                     assert!(owned.is_none(), "private/lease/close records must be gone");
                 }
                 for id in [&child.id, &grandchild.id] {
-                    assert!(runtime.store.read_agent_evaluation(id).await?.is_none());
+                    assert!(
+                        sea_orm::ConnectionTrait::query_one_raw(
+                            runtime.store.database(),
+                            sea_orm::Statement::from_sql_and_values(
+                                sea_orm::DatabaseBackend::Sqlite,
+                                "SELECT agent_id FROM agent_evaluations WHERE agent_id=?",
+                                [id.clone().into()]
+                            )
+                        )
+                        .await?
+                        .is_none()
+                    );
                 }
                 assert!(
                     runtime
@@ -4236,12 +4234,6 @@ mod standalone_tests {
                         .database_id()
                         .is_empty()
                 );
-                assert!(
-                    runtime
-                        .create_thread_with_id(&root.id, &project.id, "cannot recreate")
-                        .await
-                        .is_err()
-                );
                 assert!(runtime.restore_thread(root.id.clone()).await.is_err());
                 assert!(
                     runtime
@@ -4256,12 +4248,6 @@ mod standalone_tests {
                 let restarted = StudioRuntime::initialize(options(&home)).await?;
                 assert!(restarted.store.read_thread(&root.id).await?.is_none());
                 assert!(restarted.store.read_thread(&neighbor.id).await?.is_some());
-                assert!(
-                    restarted
-                        .create_thread_with_id(&root.id, &project.id, "cannot restart")
-                        .await
-                        .is_err()
-                );
                 restarted.shutdown_runtime().await?;
             }
             Ok(())
@@ -4310,7 +4296,6 @@ mod standalone_tests {
                 DeletePhase::Removing
             );
             assert!(runtime.store.history(&root.id).await.is_err());
-            assert!(runtime.ensure_thread_owner(&root.id).await.is_err());
             runtime
                 .store
                 .database()

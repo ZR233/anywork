@@ -362,7 +362,8 @@ mod startup_fault_tests {
         tokio::fs::rename(&original, temp.path().join("original-offline")).await?;
         let before = runtime.store.catalog().sessions().len();
         // No scan has described this failure yet: actual new-root preparation must still reject it
-        // before directory publication, and the hot ordinary owner cannot reuse a cached binding.
+        // before directory publication. An already materialized owner uses RAM until audit
+        // reports the failed resource; command admission does not repeat physical/DB preflight.
         assert!(
             runtime
                 .create_thread(&project.id, "must not publish")
@@ -370,17 +371,13 @@ mod startup_fault_tests {
                 .is_err()
         );
         assert_eq!(runtime.store.catalog().sessions().len(), before);
-        let physical = runtime.ensure_thread_owner(&ordinary.id).await.unwrap_err();
-        assert!(
-            physical
-                .chain()
-                .any(|error| error.downcast_ref::<std::io::Error>().is_some())
-        );
+        runtime.ensure_thread_owner(&ordinary.id).await?;
         runtime.retry_recovery().await?;
         super::super::background_task::finish(&runtime.recovery_task)
             .await
             .map_err(anyhow::Error::new)?;
         let issues = runtime.recovery_issues();
+        assert!(runtime.ensure_thread_owner(&ordinary.id).await.is_err());
         assert!(issues.iter().any(|issue| issue.scope == Scope::Project
             && issue.workspace_id.as_deref() == Some(&project.id)
             && issue.impact == Impact::ExecutionBlocked));
@@ -435,10 +432,12 @@ mod startup_fault_tests {
             .map_err(anyhow::Error::new)?;
         runtime.ensure_thread_owner(bot_root_id).await?;
         tokio::fs::rename(&managed, temp.path().join("managed-offline")).await?;
-        assert!(
-            runtime.ensure_thread_owner(bot_root_id).await.is_err(),
-            "hot M resource loss is checked without another scan"
-        );
+        runtime.ensure_thread_owner(bot_root_id).await?;
+        runtime.retry_recovery().await?;
+        super::super::background_task::finish(&runtime.recovery_task)
+            .await
+            .map_err(anyhow::Error::new)?;
+        assert!(runtime.ensure_thread_owner(bot_root_id).await.is_err());
         assert!(runtime.thread_snapshot(bot_root_id).await.is_ok());
         runtime.shutdown_runtime().await?;
         endpoint.set_nonblocking(true)?;

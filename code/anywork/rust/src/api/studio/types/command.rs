@@ -107,7 +107,6 @@ pub struct BridgeContinuationOperationView {
     pub continuation_id: String,
     pub accepted_sequence: u64,
     pub state: BridgeContinuationOperationState,
-    pub durable: bool,
     pub receipt: BridgeStudioCommandReceipt,
 }
 

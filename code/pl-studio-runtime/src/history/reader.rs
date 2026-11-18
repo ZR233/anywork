@@ -119,19 +119,26 @@ impl HistoryReader {
     pub async fn capture(&self) -> Result<HistoryCut> {
         self.capture_position().await.map(|(cut, _)| cut)
     }
-    /// Persistence receipts require a committed prefix; accepted RAM events are not a save ACK.
-    pub(crate) async fn capture_committed_position(&self) -> Result<(HistoryCut, u64)> {
-        self.run(move |reader| async move {
-            let tx = reader.inner.store.reader.begin().await?;
-            let head = db::event_head(&tx).await?;
-            let cut = reader.inner.codec.cut(head)?;
-            tx.commit().await?;
-            Ok((cut, head))
-        })
-        .await
-    }
-    /// The opaque read cut and its actual event position from one captured RAM/database snapshot.
+    /// The opaque accepted cut and its event position; this is not a persistence ACK.
+    /// Writable owners capture their RAM head without opening a database transaction.
     pub async fn capture_position(&self) -> Result<(HistoryCut, u64)> {
+        if !self.inner.store.read_only {
+            let state = self
+                .inner
+                .store
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let reader = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if reader.closed || state.closing {
+                return Err(HistoryError::Closed);
+            }
+            return Ok((self.inner.codec.cut(state.head)?, state.head));
+        }
         self.run(move |reader| async move {
             let snapshot = reader.snapshot().await?;
             let cut = reader.inner.codec.cut(snapshot.head)?;
@@ -143,13 +150,7 @@ impl HistoryReader {
     }
     /// The accepted event head, or the current committed head for a cold read-only capability.
     pub async fn head(&self) -> Result<u64> {
-        self.run(move |reader| async move {
-            let snapshot = reader.snapshot().await?;
-            let head = snapshot.head;
-            snapshot.tx.commit().await?;
-            Ok(head)
-        })
-        .await
+        self.capture_position().await.map(|(_, head)| head)
     }
     fn page_cut(
         &self,
@@ -1100,6 +1101,33 @@ async fn latest_head(snapshot: &Snapshot, row: &str, cut: u64) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn live_cut_uses_the_admitted_head_without_database_access() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            "ram-cut",
+            HistoryLimits::default(),
+        )
+        .await?;
+        store
+            .accept_batch(&[HistoryEvent::new("first", HistoryEventKind::RunStarted, 1)])
+            .await?;
+        let reader = store.reader();
+        store.inner.reader.clone().close().await?;
+        let (cut, head) = reader.capture_position().await?;
+        assert_eq!(head, 1);
+        assert_eq!(reader.capture().await?, cut);
+        assert_eq!(reader.head().await?, 1);
+        reader.close().await;
+        assert!(matches!(
+            reader.capture_position().await,
+            Err(HistoryError::Closed)
+        ));
+        store.close().await?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn committed_pending_root_stays_readable_and_retains_its_capacity_until_query_finishes()

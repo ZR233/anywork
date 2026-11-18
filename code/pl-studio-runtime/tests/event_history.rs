@@ -1744,7 +1744,7 @@ async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mu
 }
 
 #[tokio::test]
-async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_old_work()
+async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_saved_json()
 -> Result<()> {
     use pl_provider_fixture::{Reply, ReplyStage};
     use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode};
@@ -1768,6 +1768,7 @@ async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_ol
         vec![
             prompt_step("restart-r1", 0, staged("r1", &first_stage)?),
             prompt_step("restart-r2", 1, staged("r2", &second_stage)?),
+            prompt_step("restart-r3", 2, support::text_reply("third output", "r3")),
         ],
         vec![],
     )
@@ -1801,6 +1802,7 @@ async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_ol
         first_stage.release();
         support::completed_prompt(&env.runtime, id, "restart-r1").await?;
         env.restart().await?;
+        let saved = support::saved(&env.home, id).await?;
         ensure!(
             old_watch.next().await?.is_none(),
             "retired owner still delivered metadata"
@@ -1922,9 +1924,33 @@ async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_ol
         );
         second_stage.release();
         support::completed_prompt(&env.runtime, id, "restart-r2").await?;
-        ensure!(env.root_provider.recorded().len() == 2);
+        // Direct overwrite can make the saved JSON unreadable. A directory holds that
+        // condition deterministically even if the periodic writer runs during admission.
+        let path = saved.root.join("current.json");
+        let bytes = std::fs::read(&path)?;
+        std::fs::remove_file(&path)?;
+        std::fs::create_dir(&path)?;
+        let submitted = env
+            .runtime
+            .submit_prompt_command(
+                id.clone(),
+                SubmitPromptRequest {
+                    input: StudioPromptInput {
+                        input_id: "input-restart-r3".into(),
+                        text: "restart-r3".into(),
+                        attachment_draft_ids: Vec::new(),
+                    },
+                    expected_model_route_revision: route,
+                },
+            )
+            .await;
+        std::fs::remove_dir(&path)?;
+        std::fs::write(&path, bytes)?;
         history.close().await;
         current.close().await?;
+        submitted.context("live admission read the saved Current")?;
+        support::completed_prompt(&env.runtime, id, "restart-r3").await?;
+        ensure!(env.root_provider.recorded().len() == 3);
         Ok(())
     })
     .await

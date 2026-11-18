@@ -146,7 +146,7 @@ void main() {
       final connection = _timelineCurrentReader(graph, 'thread-main');
       final attemptId = graph.timeline
           .lease('thread-main')!
-          .current
+          .current!
           .metadata
           .readerId;
       final workspaceId = graph.client.selection.state.selectedProjectId!;
@@ -189,7 +189,7 @@ void main() {
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
       expect(
-        graph.timeline.lease('thread-main')!.current.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
         attemptId,
       );
       expect(graph.timeline.lease('thread-main'), isNotNull);
@@ -223,7 +223,7 @@ void main() {
       addTearDown(rebuiltComposer.close);
 
       expect(
-        graph.timeline.lease('thread-main')!.current.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current!.metadata.readerId,
         attemptId,
       );
       expect(
@@ -376,74 +376,77 @@ void main() {
     );
   });
 
-  test(
-    'late open after selecting B is reclaimed without clearing current B',
-    () async {
-      final transport = _LateTimelineOpenTransport();
-      final graph = testAppGraph(
-        statisticsFeed: const TestStatisticsFeedPort(),
-        transport: transport,
-        clientId: 'late-demo-attempt',
-      );
-      addTearDown(() async {
-        if (!transport.releaseFirstTimelineOpen.isCompleted) {
-          transport.releaseFirstTimelineOpen.complete();
-        }
-        await graph.close(budget: testBudgetUntil(_deadline()));
-      });
-      await graph.client.bootstrap();
-      final lateSelection =
-          (graph
-                ..timeline.updateReadDemand(chatDemand)
-                ..setConversationPageVisible(true))
-              .client
-              .directoryCommands
-              .selectThread('thread-main');
-      await transport.firstTimelineOpenEntered.future;
-      final late = transport.currentReaders.lastWhere(
-        (reader) =>
-            reader.threadId == 'thread-main' &&
-            reader.demand.maxItems == chatDemand.maxItems,
-      );
-      await (graph
-            ..timeline.updateReadDemand(chatDemand)
-            ..setConversationPageVisible(true))
-          .client
-          .directoryCommands
-          .selectThread('thread-alt');
-      await timelineReady(graph.timeline, 'thread-alt');
-      await _awaitCurrentReaders(graph, transport, 'thread-alt');
-      final currentAttempt = graph.timeline
-          .lease('thread-alt')!
-          .current
-          .metadata
-          .readerId;
-      final current =
-          graph.timeline.lease('thread-alt')!.current as RecordingCurrentReader;
-      expect(current, isNot(same(late)));
+  test('History opens before Current and late Current is reclaimed after switching', () async {
+    final transport = _LateTimelineOpenTransport();
+    final graph = testAppGraph(
+      statisticsFeed: const TestStatisticsFeedPort(),
+      transport: transport,
+      clientId: 'late-demo-attempt',
+    );
+    addTearDown(() async {
+      if (!transport.releaseFirstTimelineOpen.isCompleted) {
+        transport.releaseFirstTimelineOpen.complete();
+      }
+      await graph.close(budget: testBudgetUntil(_deadline()));
+    });
+    await graph.client.bootstrap();
+    final lateSelection =
+        (graph
+              ..timeline.updateReadDemand(chatDemand)
+              ..setConversationPageVisible(true))
+            .client
+            .directoryCommands
+            .selectThread('thread-main');
+    await transport.firstTimelineOpenEntered.future;
+    await timelineReady(graph.timeline, 'thread-main');
+    expect(
+      graph.timeline.lease('thread-main')!.controller.messages,
+      isNotEmpty,
+      reason: 'History is visible while Current is still opening',
+    );
+    final late = transport.currentReaders.lastWhere(
+      (reader) =>
+          reader.threadId == 'thread-main' &&
+          reader.demand.maxItems == chatDemand.maxItems,
+    );
+    await (graph
+          ..timeline.updateReadDemand(chatDemand)
+          ..setConversationPageVisible(true))
+        .client
+        .directoryCommands
+        .selectThread('thread-alt');
+    await timelineReady(graph.timeline, 'thread-alt');
+    await _awaitCurrentReaders(graph, transport, 'thread-alt');
+    final currentAttempt = graph.timeline
+        .lease('thread-alt')!
+        .current!
+        .metadata
+        .readerId;
+    final current =
+        graph.timeline.lease('thread-alt')!.current as RecordingCurrentReader;
+    expect(current, isNot(same(late)));
 
-      transport.releaseFirstTimelineOpen.complete();
-      await lateSelection;
-      await late.joined.future;
+    transport.releaseFirstTimelineOpen.complete();
+    await lateSelection;
+    await late.joined.future;
 
-      expect(
-        late.initialViewReads,
-        0,
-        reason: 'retired open never becomes a baseline',
-      );
-      expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
-      expect(late.closeCalls, 1);
-      expect(current.requestCloseCalls, 0);
-      expect(
-        graph.timeline.lease('thread-alt')!.current.metadata.readerId,
-        currentAttempt,
-      );
-      expect(graph.timeline.lease('thread-alt'), isNotNull);
-      final display = graph.timeline.lease('thread-alt')!;
-      expect(display.controller.messages, isNotEmpty);
-      // This is the Client attempt contract over Demo connections, not native FRB.
-    },
-  );
+    expect(
+      late.initialViewReads,
+      0,
+      reason: 'retired open never becomes a baseline',
+    );
+    expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
+    expect(late.closeCalls, 1);
+    expect(current.requestCloseCalls, 0);
+    expect(
+      graph.timeline.lease('thread-alt')!.current!.metadata.readerId,
+      currentAttempt,
+    );
+    expect(graph.timeline.lease('thread-alt'), isNotNull);
+    final display = graph.timeline.lease('thread-alt')!;
+    expect(display.controller.messages, isNotEmpty);
+    // This is the Client attempt contract over Demo connections, not native FRB.
+  });
 }
 
 final class _LateTimelineOpenTransport extends RecordingDemoTransport {

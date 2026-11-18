@@ -387,8 +387,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bot_input_retry_uses_history_and_new_message_keeps_its_identity() -> anyhow::Result<()>
-    {
+    async fn bot_current_identity_deduplicates_and_new_platform_message_stays_distinct()
+    -> anyhow::Result<()> {
         use crate::StudioPromptInput;
         use crate::runtime_test_support as support;
         use crate::studio::{StudioSubmitPromptOptions, StudioSubmitPromptRequest};
@@ -435,8 +435,8 @@ mod tests {
                 .submit_queued_prompt(request(&original, BODY), &cancellation)
                 .await?;
             anyhow::ensure!(
-                replay == accepted,
-                "bot retry changed its original admission receipt"
+                replay.input_id == accepted.input_id && replay.thread_id == accepted.thread_id,
+                "bot retry changed its current input identity"
             );
             anyhow::ensure!(
                 env.runtime

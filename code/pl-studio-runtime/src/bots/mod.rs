@@ -28,15 +28,15 @@ pub(crate) use host::StudioBotSessionHost;
 pub(crate) use owner::BotRuntime;
 pub(crate) use protocol::error::FeishuError;
 
-/// 一条已受理输入的持久身份读取：显式区分 Ready/Absent，不把读失败折叠成 None。
+/// 当前 owner 的有界输入身份；缺失不证明从未受理。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInputRead {
-    /// 持久索引知道该输入：原始路由与消费状态。
+    /// 当前 owner 仍保留该输入的路由与消费状态。
     Ready {
         delivery: pl_core::thread::input::InputDelivery,
         state: pl_core::thread::input::InputState,
     },
-    /// 持久索引没有该输入：尚未受理（首个 effect 未提交），不等于未执行过。
+    /// 当前 owner 不再保留该身份，不表示可以重放或重发。
     Absent,
 }
 
@@ -62,7 +62,7 @@ pub(crate) struct BotInteractionFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInteractionRead {
     Ready(BotInteractionFact),
-    /// 驻留、checkpoint 与持久回执都不知道该身份。
+    /// 当前 owner 不保留该交互。
     Absent,
 }
 

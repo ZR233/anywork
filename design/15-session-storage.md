@@ -16,7 +16,9 @@ Native 会话有三个用途不同的事实载体：
 
 普通 current 捕获、保存、读取和恢复不等待、查询或校验历史；历史接纳也不读取或确认 `current.json`。两者没有共同事务、提交水位、恢复栅栏或历史回放修补关系，可以分别加载、分别失败。一次性的 schema 24 升级顺序只归 [17.21](./17-studio-storage.md#1721-独立当前状态与追加历史的升级边界)，不能推广成日常写路径。
 
-重开后的交互决议仍从同一 Current 中的请求、调用与结果归并。交互本身足以触发原调用的局部投影，不要求同时出现新的 task 或 delivery，也不要求尚在等待用户的计划已有历史终稿。只有已从 Current 与驻留投影裁剪掉的调用才按身份查询历史原文；准备该历史投影失败时立即沿原 writer 回执报告原因，不等无进展 watchdog 代报。
+模型／工具结果、终态报告和结构化评审由产生它们的 owner 直接交接现有 RAM 材料，不等待 History COMMIT 后重读正文或验证摘要。投影本身不持有 HistoryReader／HistoryStore，也不因当前内容缺失发起历史查询。历史 writer 仍在自己的存储边界维护事务完整性、预算及写入回执；显式历史查询仍按 HistoryReader 的有界接口执行。冷激活、明确恢复和迁移先加载一次完整 Current，建立新的内存 owner；后续命令、权限与关闭准入由该 owner、目录和生命周期许可裁决，不反复读取归档、退休或关闭表。
+
+重开后的交互决议仍从同一 Current 中的请求、调用与结果归并。交互本身足以触发原调用的局部投影，不要求同时出现新的 task 或 delivery，也不要求尚在等待用户的计划已有历史终稿。回答已消费、交互集合已裁剪时，Core 保留的同身份终态 context 与配对工具结果继续证明原调用已完成；不能因集合为空把它重建为排队。已从 Current 和驻留投影裁剪的调用不再参与实时重建；不可变历史保持原样，不通过回查补齐当前命令。
 
 `ThreadSnapshot` 使用 schema 18；Current 与 History 的公开协议版本各为 1，磁盘 Current schema 与 History schema 分别按自身版本校验。客户端收到不支持的 schema 或协议版本时必须明确拒绝，不保留旧客户端的双读、兼容分支或隐藏降级。
 
@@ -38,6 +40,8 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 自动保存失败保留 dirty 和类型化错误，固定间隔后重试；显式 flush 只尝试一次。捕获完成后在锁外编码完整 JSON，并直接覆盖 `current.json`。新建文件在 Unix 使用仅所有者可读写的权限；覆盖写入中断可能留下空文件或不完整 JSON，因此保存成功只表示写入接口返回，不承诺父目录同步或断电后仍保留。资源校验失败不得开始替换文件。
 
+运行中检查 Native 报告／评审的待交付标记、反馈结算与授权时，直接读取原 owner 已接受的状态，关闭中的驻留 owner 也继续提供这一事实。仅无驻留 owner 的冷恢复读取完整 JSON；检查待交付工作不以重新解码正在覆写的文件为前提。交付流程原有的持久化回执仍须单独确认，内存观察不等于已保存。重放标记为空时仍须收束此前失败的临时接收器，标记删除不能替代 writer 与观察任务的清理回执。
+
 附件缓存以资源根、身份、摘要、长度和媒体类型限定；首次加载验证全部必需资源，周期保存只验证当前 owner 尚未验证的新引用。外部删除或损坏在后续加载、读取或保存验证时明确失败，不承诺每轮保存主动重读全部附件。
 
 关闭先停止新工作、取消并等待在途捕获，再由原执行生命周期收束生产者。生产者必须在累积器销毁前交出最后完整观察；Core 保留已接纳结果后执行一次最终 flush 并等待 current writer。取不到最终观察或写入失败必须报告，不能以历史 flush 成功替代 current 保存成功。
@@ -56,7 +60,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 只使用 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`。旧 v24 wire 只允许出现在冻结迁移 schema。
 
-普通输入与 Continue 的原受理身份、请求摘要、路由版本及后续状态写入独立的 `InputAccepted`／`InputConsumed`／`InputDiscarded` 事件；它们不建立 UI 行，不复制用户正文。受理元数据由原 effect 冻结，正文 ID 在运行期冻结时生成，writer 重试沿用原候选。重复请求按输入身份索引读取一个固定的已提交历史切面，只有原事实可证明的回执才可重放；不会为了重放激活会话、访问工作区、认领继续点或清除后来发出的 Stop。RAM 接纳尚未落盘时只报告可重试的等待，不能冒充保存成功。
+普通输入、Continue、交互决定和 Native 消息准入只使用当前 owner 已接受的输入、交互与有界身份集合，不查询 History 或 `current.json`。操作身份用于关联本次命令；不承诺永久幂等、历史回执重放或识别已裁剪的旧命令。不再额外写入仅服务回查的 `input_fact` 接纳／状态事件、请求摘要和路由回执；schema 24 迁移在明确的升级边界保留这些旧原件供历史读取。Continue 查询仅返回当前 owner 仍保留的输入，`NotFound` 不证明从未受理，客户端不得据此自动重发。
 
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 

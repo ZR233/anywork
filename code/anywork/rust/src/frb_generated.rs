@@ -15396,7 +15396,6 @@ impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperati
             <crate::api::studio::types::command::BridgeContinuationOperationState>::sse_decode(
                 deserializer,
             );
-        let mut var_durable = <bool>::sse_decode(deserializer);
         let mut var_receipt =
             <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_decode(
                 deserializer,
@@ -15408,7 +15407,6 @@ impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperati
             continuation_id: var_continuationId,
             accepted_sequence: var_acceptedSequence,
             state: var_state,
-            durable: var_durable,
             receipt: var_receipt,
         };
     }
@@ -36270,7 +36268,6 @@ impl flutter_rust_bridge::IntoDart
             self.continuation_id.into_into_dart().into_dart(),
             self.accepted_sequence.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
-            self.durable.into_into_dart().into_dart(),
             self.receipt.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -53022,7 +53019,6 @@ impl SseEncode for crate::api::studio::types::command::BridgeContinuationOperati
         <crate::api::studio::types::command::BridgeContinuationOperationState>::sse_encode(
             self.state, serializer,
         );
-        <bool>::sse_encode(self.durable, serializer);
         <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_encode(
             self.receipt,
             serializer,

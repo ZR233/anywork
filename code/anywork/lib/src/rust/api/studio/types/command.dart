@@ -68,7 +68,6 @@ class BridgeContinuationOperationView {
   final String continuationId;
   final BigInt acceptedSequence;
   final BridgeContinuationOperationState state;
-  final bool durable;
   final BridgeStudioCommandReceipt receipt;
 
   const BridgeContinuationOperationView({
@@ -78,7 +77,6 @@ class BridgeContinuationOperationView {
     required this.continuationId,
     required this.acceptedSequence,
     required this.state,
-    required this.durable,
     required this.receipt,
   });
 
@@ -90,7 +88,6 @@ class BridgeContinuationOperationView {
       continuationId.hashCode ^
       acceptedSequence.hashCode ^
       state.hashCode ^
-      durable.hashCode ^
       receipt.hashCode;
 
   @override
@@ -104,7 +101,6 @@ class BridgeContinuationOperationView {
           continuationId == other.continuationId &&
           acceptedSequence == other.acceptedSequence &&
           state == other.state &&
-          durable == other.durable &&
           receipt == other.receipt;
 }
 

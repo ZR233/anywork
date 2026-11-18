@@ -3,12 +3,6 @@ use super::*;
 use futures::FutureExt;
 use std::future::Future;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ActivationPurpose {
-    Explicit,
-    VerifiedReview,
-}
-
 /// Product identity selected before allocating physical resources.
 #[derive(Debug, Clone)]
 pub struct ThreadActivation {
@@ -98,46 +92,10 @@ impl SessionRuntime {
         identity: ThreadActivation,
         factory: impl StudioActivationFactory,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
-        self.activate_owned(identity, factory, None).await
-    }
-
-    pub(crate) async fn activate_verified_review(
-        &self,
-        identity: ThreadActivation,
-        factory: crate::studio::StudioThreadFactory,
-        proof: crate::studio::thread_factory::VerifiedLocalResume,
-        operation: tokio::sync::OwnedMutexGuard<()>,
-    ) -> Result<ThreadHandle, ThreadAssemblyError> {
-        self.activate_owned(
-            identity,
-            factory,
-            Some((
-                super::WorkspacePreparationOwner::verified_review(proof),
-                operation,
-            )),
-        )
-        .await
-    }
-
-    async fn activate_owned(
-        &self,
-        identity: ThreadActivation,
-        factory: impl StudioActivationFactory,
-        restricted: Option<(
-            super::WorkspacePreparationOwner,
-            tokio::sync::OwnedMutexGuard<()>,
-        )>,
-    ) -> Result<ThreadHandle, ThreadAssemblyError> {
         identity.ensure_native()?;
         if &identity.agent.session_id != self.id() {
             return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
         }
-        let is_restricted = restricted.is_some();
-        let purpose = if is_restricted {
-            ActivationPurpose::VerifiedReview
-        } else {
-            ActivationPurpose::Explicit
-        };
         // A retained failed owner can carry the entire cleanup/settlement future.
         // Isolate that retry before composing the new activation's admission state.
         Box::pin(self.close_failed_preparation(identity.id())).await?;
@@ -151,9 +109,6 @@ impl SessionRuntime {
                     return Err(ThreadAssemblyError::Closed);
                 }
                 if let Some(entry) = state.entries.get(identity.id()) {
-                    if is_restricted {
-                        return Err(ThreadAssemblyError::Preparing(identity.id().to_owned()));
-                    }
                     if entry.native()?.parent_id.as_deref() != identity.parent_id()
                         || entry.identity != identity.agent
                         || entry.binding != identity.binding
@@ -173,12 +128,6 @@ impl SessionRuntime {
                     }
                 }
                 let preparation = match state.creating.get(identity.id()) {
-                    Some(preparation)
-                        if is_restricted
-                            || preparation.purpose.is_some_and(|mode| mode != purpose) =>
-                    {
-                        return Err(ThreadAssemblyError::Preparing(identity.id().to_owned()));
-                    }
                     Some(preparation)
                         if preparation.parent_id.as_deref() == identity.parent_id() =>
                     {
@@ -231,21 +180,14 @@ impl SessionRuntime {
                     .get_mut(identity.id())
                     .ok_or(ThreadAssemblyError::Closed)?;
                 preparation.result = Some(result.clone());
-                preparation.purpose = Some(purpose);
                 preparation.cancellation.clone()
             };
             self.0.changed.notify_waiters();
             let owner = self.clone();
             tokio::spawn(async move {
-                let (workspace_owner, operation) = match restricted {
-                    Some((workspace, operation)) => (workspace, Some(operation)),
-                    None => (super::WorkspacePreparationOwner::default(), None),
-                };
+                let workspace_owner = super::WorkspacePreparationOwner::default();
                 let operation = std::panic::AssertUnwindSafe(async {
-                    let _operation = match operation {
-                        Some(operation) => operation,
-                        None => owner.agent_operation(identity.id()).await,
-                    };
+                    let _operation = owner.agent_operation(identity.id()).await;
                     if owner.0.state().sealed_agents.contains_key(identity.id()) {
                         return Err(ThreadAssemblyError::Closed);
                     }

@@ -1,6 +1,6 @@
 //! Final evaluations are owned operations, not cancellable tool-side SQL futures.
 use super::{SessionRuntime, agent_services::AgentServices};
-use crate::{AgentEvaluation, AgentEvaluationWrite, EvaluateAgentReceipt, EvaluateAgentRequest};
+use crate::{AgentEvaluation, EvaluateAgentReceipt, EvaluateAgentRequest};
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
     ThreadLifecycle, ThreadSnapshot, TurnState,
@@ -18,8 +18,12 @@ impl AgentServices {
         request: EvaluateAgentRequest,
     ) -> Result<EvaluateAgentReceipt> {
         let _operation = owner.agent_operation(&request.target).await;
-        // The same gate is held through flush, terminal validation and the full SQL transaction.
-        let (resident, sealed) = {
+        let record = self.record(&request.target).await?;
+        ensure!(
+            self.direct_child(caller, &request.target)?,
+            "evaluate_agent target must be the caller's direct child"
+        );
+        let thread = {
             let state = owner.0.state();
             ensure!(!state.closing, "agent coordinator is closing");
             let parent = state
@@ -33,153 +37,44 @@ impl AgentServices {
                     && parent.native()?.thread.snapshot().lifecycle == ThreadLifecycle::Open,
                 "only an active parent root may evaluate its direct child"
             );
-            let sealed = state.sealed_agents.contains_key(&request.target)
-                || state
-                    .entries
-                    .get(&request.target)
-                    .is_some_and(|entry| entry.native().is_ok_and(|native| !native.ready));
-            (
-                state.entries.get(&request.target).and_then(|entry| {
-                    let native = entry.native().ok()?;
-                    Some((native.thread.clone(), native.incarnation.clone()))
-                }),
-                sealed,
-            )
-        };
-        let record = self.record(&request.target).await?;
-        ensure!(
-            self.direct_child(caller, &request.target)?,
-            "evaluate_agent target must be the caller's direct child"
-        );
-        // A close seal denies writes, not the receipt of an already committed identical write.
-        // Read this canonical fact under the same target permit, including the interval before
-        // its older checkpoint extension has been committed.
-        let close = self.store.agent_close(&request.target).await?;
-        if let Some(close) = &close {
             ensure!(
-                close.parent_id == caller
-                    && close.root_id == record.root_thread_id
-                    && close.workspace_id == record.workspace_id,
-                "closed evaluation target identity conflicts with its directory"
+                !state.sealed_agents.contains_key(&request.target) && !record.archived,
+                "evaluation target is closing or archived"
             );
-        }
-        ensure!(
-            !self.store.has_legacy_retirement(&request.target).await?,
-            "unreconciled legacy close facts cannot authorize an evaluation"
-        );
-        self.recovery.ensure_thread_read_access(&record)?;
-        let paths = self.store.registered_session_paths(&request.target)?;
-        let history = crate::history::HistoryStore::open_reader(
-            paths.history_database(),
-            &request.target,
-            crate::history::HistoryLimits::default(),
-        )
-        .await?;
-        let (snapshot, turn) = if let Some((thread, _)) = &resident {
-            let before = thread.snapshot();
-            validate_idle(&before)?;
-            thread.flush().await?;
-            let after = thread.snapshot();
-            ensure!(
-                after.commit_sequence == before.commit_sequence,
-                "child changed during final evaluation validation; retry with latest state"
-            );
-            let turn = super::observation::latest_terminal_turn(&history).await?;
-            (after, turn)
-        } else {
-            let protocol: crate::Thread = record.clone();
-            let current = crate::studio::thread_factory::recovery::load_current_read_only(
-                &self.store,
-                &protocol,
-            )
-            .await
-            .context("cold evaluation cannot read complete current")?
-            .context("cold child has no complete current")?;
-            let turn = super::observation::latest_terminal_turn(&history).await?;
-            (current.state.to_paused_snapshot(), turn)
+            let target = state
+                .entries
+                .get(&request.target)
+                .context("evaluation target has no current owner")?
+                .native()?;
+            ensure!(target.ready, "evaluation target is not ready");
+            target.thread.clone()
         };
+        let snapshot = thread.snapshot();
         validate_idle(&snapshot)?;
-        // Finished Turns are intentionally absent from Core's resident/checkpoint set. Resolve
-        // the latest admission, including non-terminal states, from the existing history owner.
-        let turn = turn.context("child has no committed Turn")?;
+        ensure!(
+            !crate::studio::agent_close::is_explicitly_closed(&snapshot)?,
+            "closed child cannot receive a new evaluation"
+        );
+        let turn = owner
+            .current_terminal_turn(&request.target)
+            .context("child has no current terminal delivery")?;
         ensure!(
             turn.id == request.expected_turn_id && turn.state.is_terminal(),
-            "expectedTurnId is not the latest committed terminal Turn"
+            "expectedTurnId is not the current terminal delivery"
         );
-        if let Some((thread, incarnation)) = &resident {
-            let current = thread.snapshot();
-            ensure!(
-                current.commit_sequence == snapshot.commit_sequence
-                    && owner
-                        .0
-                        .state()
-                        .entries
-                        .get(&request.target)
-                        .is_some_and(|entry| entry.native().is_ok_and(|native| {
-                            std::sync::Arc::ptr_eq(&native.incarnation, incarnation)
-                        })),
-                "child changed during final evaluation history read; retry with latest state"
-            );
-            validate_idle(&current)?;
-        }
         let (profile, _) = crate::studio::model_route::saved_profile(&snapshot)?
-            .context("child has no provable frozen Profile model")?;
+            .context("child has no frozen Profile model")?;
         ensure!(
             profile.profile_id == record.role,
-            "saved child Profile identity conflicts with directory"
+            "child Profile identity conflicts with directory"
         );
-        // Missing old provenance has the explicit legacy semantics, never today's global default.
-        let delegation = match crate::studio::delegation::saved(&snapshot)? {
-            Some(selection) => selection,
-            None => {
-                ensure!(
-                    record.delegation_mode == crate::DelegationMode::Profile
-                        && record.delegation_preference == crate::DelegationPreference::Balanced,
-                    "child has no canonical delegation provenance"
-                );
-                crate::DelegationSettings::default()
-            }
-        };
-        let model = crate::studio::delegation::profile_model(&profile);
-        if close.is_some()
-            || sealed
-            || record.archived
-            || crate::studio::agent_close::is_explicitly_closed(&snapshot)?
-        {
-            let previous = self
-                .store
-                .read_agent_evaluation(&request.target)
-                .await?
-                .context("closed child cannot receive a new evaluation")?;
-            ensure!(
-                previous.agent_id == request.target
-                    && previous.parent_agent_id == caller
-                    && previous.model == model
-                    && previous.profile_id == profile.profile_id
-                    && previous.mode == delegation.mode
-                    && previous.preference == delegation.preference
-                    && crate::studio::store::agent_evaluations::same_content(&previous, &request),
-                "closed child accepts only an already committed identical evaluation"
-            );
-            ensure!(
-                request.expected_revision == previous.revision
-                    || request.expected_revision.checked_add(1) == Some(previous.revision),
-                "evaluation revision conflict"
-            );
-            return Ok(EvaluateAgentReceipt {
-                target: request.target,
-                write: AgentEvaluationWrite::Unchanged,
-                evaluation: previous,
-            });
-        }
-        self.store
-            .ensure_agent_execution_allowed(&request.target)
-            .await?;
+        let delegation = crate::studio::delegation::saved(&snapshot)?
+            .context("child has no delegation provenance")?;
         let now = crate::studio::unix_seconds();
         let candidate = AgentEvaluation {
             agent_id: request.target.clone(),
             parent_agent_id: caller.into(),
-            model,
+            model: crate::studio::delegation::profile_model(&profile),
             profile_id: profile.profile_id,
             mode: delegation.mode,
             preference: delegation.preference,

@@ -1997,20 +1997,28 @@ mod tests {
             Some(binding)
         );
         assert!(
-            fixture
-                .runtime
-                .store
-                .read_agent_evaluation(&target.agent_id)
-                .await?
-                .is_none()
+            sea_orm::ConnectionTrait::query_one_raw(
+                fixture.runtime.store.database(),
+                sea_orm::Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "SELECT agent_id FROM agent_evaluations WHERE agent_id=?",
+                    [target.agent_id.clone().into()]
+                )
+            )
+            .await?
+            .is_none()
         );
         assert!(
-            fixture
-                .runtime
-                .store
-                .read_agent_evaluation(&native.agent_id)
-                .await?
-                .is_some()
+            sea_orm::ConnectionTrait::query_one_raw(
+                fixture.runtime.store.database(),
+                sea_orm::Statement::from_sql_and_values(
+                    sea_orm::DatabaseBackend::Sqlite,
+                    "SELECT agent_id FROM agent_evaluations WHERE agent_id=?",
+                    [native.agent_id.clone().into()]
+                )
+            )
+            .await?
+            .is_some()
         );
         assert!(
             fixture

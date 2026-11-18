@@ -4,23 +4,25 @@
 //! first publishes a self-contained current file and a logical backup, and only then lets the
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
+mod input;
 use super::{
     BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole, HistoryEntityHead,
     HistoryError, HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation,
     HistoryRowHead, HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
-    HistoryWaitIntentHead, HistoryWorkHead, INPUT_FACT_BODY_KEY, InputAdmission, InputFact, Result,
+    HistoryWaitIntentHead, HistoryWorkHead, Result,
     db::{self, statement},
     import::{
         HistoryBodySource, HistoryImport, HistoryImportBody, V24Body, V24BodyReader,
         V24HistorySource,
     },
-    input_event, schema,
+    schema,
 };
 use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
 use crate::{
     ChatAtom, ChatAtomLifecycle, ChatSourceLifecycle, ContentOwner, ContentRef, ContentTarget,
     PayloadData, Turn,
 };
+use input::{INPUT_FACT_BODY_KEY, InputAdmission, InputFact, input_event};
 use pl_core::{
     context::OpaquePayload,
     thread::current::{RuntimeEpoch, ThreadCurrent, ThreadCurrentState},
@@ -4592,21 +4594,33 @@ mod migration_tests {
             .as_deref()
             .ok_or_else(|| HistoryError::NotFound("pending review id".into()))?;
         assert!(
-            crate::studio::history_delivery::review_exception(&reader, pending_review)
-                .await?
-                .is_some(),
-            "the exact current review obligation remains recoverable"
+            reader
+                .read_event(
+                    format!("review_delivery:{pending_review}"),
+                    HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 64 * 1024
+                    }
+                )
+                .await
+                .is_ok()
         );
         let acknowledged_review = fixture
             .acknowledged_review_id
             .as_deref()
             .ok_or_else(|| HistoryError::NotFound("acknowledged review id".into()))?;
-        assert!(
-            crate::studio::history_delivery::review_exception(&reader, acknowledged_review)
-                .await?
-                .is_none(),
-            "an acknowledged receipt is not recreated as a history obligation"
-        );
+        assert!(matches!(
+            reader
+                .read_event(
+                    format!("review_delivery:{acknowledged_review}"),
+                    HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 64 * 1024
+                    }
+                )
+                .await,
+            Err(HistoryError::NotFound(_))
+        ));
         let originals = reader
             .events_page(
                 HistoryEventsQuery::Originals {
@@ -4987,30 +5001,33 @@ mod migration_tests {
                     CurrentHistoryStore::open(&history_path, &thread_id, HistoryLimits::default())
                         .await?;
                 let reader = store.reader();
-                let admission =
-                    crate::history::read_input_admission(&reader, "identity-only").await?;
-                let admission = admission.expect("migrated input admission");
-                assert_eq!(admission.id, "identity-only");
-                assert_eq!(admission.digest, "sha256:identity-only");
-                assert_eq!(admission.request_digest.as_deref(), Some("sha256:request"));
-                assert_eq!(
-                    admission.continuation,
-                    Some(pl_core::thread::input::InputContinuation {
-                        point_id: "point-1".into(),
-                        source_turn_id: Some("turn-1".into()),
-                    })
-                );
-                assert_eq!(
-                    admission.purpose,
-                    pl_core::thread::input::InputPurpose::Continuation
-                );
-                assert_eq!(admission.accepted_sequence, 5);
-                assert_eq!(admission.admission_revision, Some(2));
-                assert_eq!(admission.expected_model_route_revision, Some(7));
-                assert_eq!(
-                    admission.state,
-                    pl_core::thread::input::InputState::Discarded
-                );
+                let detail = reader
+                    .read_event(
+                        "legacy:v24:input:identity-only:accepted".into(),
+                        crate::history::HistoryDemand {
+                            max_rows: 1,
+                            max_bytes: 16 * 1024,
+                        },
+                    )
+                    .await?;
+                let body = reader
+                    .read_body(
+                        detail.payload_ref.expect("preserved admission body"),
+                        0,
+                        16 * 1024,
+                    )
+                    .await?;
+                let saved: pl_core::context::OpaquePayload = serde_json::from_slice(&body.bytes)?;
+                let saved: serde_json::Value = serde_json::from_str(saved.content())?;
+                assert_eq!(saved["kind"], "admission");
+                let value = &saved["value"];
+                assert_eq!(value["id"], "identity-only");
+                assert_eq!(value["digest"], "sha256:identity-only");
+                assert_eq!(value["requestDigest"], "sha256:request");
+                assert_eq!(value["continuation"]["pointId"], "point-1");
+                assert_eq!(value["acceptedSequence"], 5);
+                assert_eq!(value["admissionRevision"], 2);
+                assert_eq!(value["state"]["kind"], "discarded");
                 reader.close().await;
                 store.close().await?;
             }

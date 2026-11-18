@@ -135,12 +135,6 @@ void main() {
     );
 
     final lease = graph.timeline.lease(threadId!)!;
-    expect(lease.history.threadId, threadId);
-    expect(lease.current.threadId, threadId);
-    expect(
-      lease.history.metadata.readerId,
-      isNot(lease.current.metadata.readerId),
-    );
     final observed = TimelineObservation(tester, () => lease);
     await _until(
       tester,

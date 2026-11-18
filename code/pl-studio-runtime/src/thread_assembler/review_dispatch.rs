@@ -50,13 +50,28 @@ pub(crate) struct TerminalDelivery {
     pub thread: crate::Thread,
     pub sequence: u64,
     pub authority: Arc<TerminalAuthority>,
-    pub original: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
+    pub original: Arc<pl_core::thread::inbox::ThreadMessage>,
+    pub finish: Option<Arc<SavedFinishTurn>>,
     pub source: ReviewDeliverySource,
     pub revocation: Arc<AtomicU64>,
     pub channel: Option<Arc<HistoryChannel>>,
     pub wake: bool,
     pub _material: Option<Arc<TerminalMaterialRetention>>,
 }
+pub(crate) fn finish_material_bytes(finish: &SavedFinishTurn) -> u64 {
+    (std::mem::size_of::<SavedFinishTurn>() as u64)
+        .saturating_add(finish.message.len() as u64)
+        .saturating_add(
+            finish
+                .feedback_message
+                .as_ref()
+                .map_or(0, |text| text.len()) as u64,
+        )
+        .saturating_add(finish.review.as_ref().map_or(0, |review| {
+            review.summary.len() + review.reviewed_version.len()
+        }) as u64)
+}
+
 /// Frozen authority, not a partial ThreadSnapshot masquerading as a complete core state. The
 /// workspace opaque record shares its original payload; the only Profile fact used by dispatch
 /// is its validated workspace mode. Context, inbox, inputs and unrelated extensions never enter.
@@ -103,7 +118,6 @@ pub(crate) struct ReviewDispatch {
     pub finish: Option<SavedFinishTurn>,
     pub source: ReviewDeliverySource,
     pub revocation: Arc<AtomicU64>,
-    pub channel: Option<Arc<HistoryChannel>>,
     pub original: pl_core::thread::inbox::ThreadMessage,
 }
 
@@ -351,48 +365,18 @@ impl SessionRuntime {
         // A prior failed exception CAS may also have left a temporary source receiver to join.
         // A durable exception alone never discharges that retained physical cleanup obligation.
         self.finish_report_receiver(&terminal.thread.id).await?;
-        if let Some(channel) = &terminal.channel {
-            if channel.handoff_ticket() >= terminal.sequence {
-                channel
-                    .await_handoff_durable(&terminal.thread.id, terminal.sequence)
-                    .await?;
-            } else {
-                ensure!(
-                    channel.delivery_retry_mark().0 >= terminal.sequence,
-                    "terminal operation has no handed history ticket"
-                );
-            }
-        }
-        let history = services.store.history(&terminal.thread.id).await?;
-        let bytes = crate::studio::history_delivery::parent_report_bytes(
-            &history.reader(),
+        let extra = terminal
+            .authority
+            .retained_bytes()
+            .saturating_add(terminal.finish.as_deref().map_or(0, finish_material_bytes));
+        let _copy = services.store.thread_persistence().retain_review_delivery(
             &terminal.thread.id,
-            terminal.sequence,
-        )
-        .await?;
-        let extra = terminal.authority.retained_bytes();
-        let _parent_copy = services.store.thread_persistence().retain_review_delivery(
-            &terminal.thread.id,
-            bytes
+            (terminal.original.payload.content().len() as u64)
                 .saturating_mul(4)
                 .saturating_add(extra.saturating_mul(4))
                 .saturating_add(8192),
         )?;
-        let original = crate::studio::history_delivery::parent_report(
-            &history.reader(),
-            &terminal.thread.id,
-            terminal.sequence,
-        )
-        .await?
-        .ok_or(TerminalIntegrityError(
-            "original terminal message is missing",
-        ))?;
-        if let Some(expected) = &terminal.original {
-            ensure!(
-                expected.digest() == original.digest(),
-                TerminalIntegrityError("prepared original differs from durable original")
-            );
-        }
+        let original = terminal.original.as_ref().clone();
         let parent = terminal
             .thread
             .parent_thread_id
@@ -404,52 +388,18 @@ impl SessionRuntime {
         else {
             return Ok(());
         };
-        let reader = history.reader();
-        let finish_event = reader
-            .review_finish_call(
-                report.turn_id.clone(),
-                None,
-                crate::history::HistoryDemand {
-                    max_rows: 1,
-                    max_bytes: 1024 * 1024,
-                },
-            )
-            .await?;
-        let finish_bytes = finish_event.as_ref().map_or(0, |event| {
-            event
-                .payload_ref
-                .as_ref()
-                .map_or(0, |body| body.byte_length)
-                .saturating_add(serde_json::to_vec(event).map_or(0, |bytes| bytes.len() as u64))
-        });
-        let _review_copy = services.store.thread_persistence().retain_review_delivery(
-            &terminal.thread.id,
-            finish_bytes.saturating_mul(4).saturating_add(128 * 1024),
-        )?;
-        let finish = if let Some(event) = finish_event {
-            let item = crate::studio::runtime::chat_item::read_execution_item(
-                &reader,
-                event,
-                &terminal.thread.id,
-            )
-            .await?;
-            crate::studio::thread_projection::committed_finish_execution(&item)?
-        } else {
-            None
-        };
         self.perform_review_delivery(ReviewDispatch {
             reviewer: terminal.thread.clone(),
             turn: report.turn,
             terminal_sequence: terminal.sequence,
             authority: terminal.authority.clone(),
-            finish,
+            finish: terminal.finish.as_deref().cloned(),
             source: if terminal.revocation.load(Ordering::Acquire) >= terminal.sequence {
                 ReviewDeliverySource::Reconciliation
             } else {
                 terminal.source
             },
             revocation: terminal.revocation.clone(),
-            channel: None,
             original,
         })
         .await
@@ -483,15 +433,10 @@ impl SessionRuntime {
         reviewer: &crate::Thread,
         services: &super::agent_services::AgentServices,
     ) -> Result<()> {
-        let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
-            &services.store,
-            reviewer,
-        )
-        .await?
-        else {
+        let Some(current) = self.restore_delivery_snapshot(reviewer).await? else {
             return Ok(());
         };
-        let settlements = ReviewFeedbackSettlement::saved_in(&current.state.to_paused_snapshot())?;
+        let settlements = ReviewFeedbackSettlement::saved_in(&current)?;
         if settlements.is_empty() {
             return Ok(());
         }
@@ -539,15 +484,11 @@ impl SessionRuntime {
         if decisions.is_empty() {
             return Ok(());
         }
-        let checkpoint = crate::studio::thread_factory::recovery::load_current_for_recovery(
-            &services.store,
-            reviewer,
-        )
-        .await?
-        .context("review decision source has no saved current")?;
-        let authority = Arc::new(TerminalAuthority::capture(
-            &checkpoint.state.to_paused_snapshot(),
-        )?);
+        let checkpoint = self
+            .restore_delivery_snapshot(reviewer)
+            .await?
+            .context("review decision source has no saved current")?;
+        let authority = Arc::new(TerminalAuthority::capture(&checkpoint)?);
         drop(checkpoint);
         let material_channel = services
             .store
@@ -579,7 +520,8 @@ impl SessionRuntime {
                 thread: reviewer.clone(),
                 sequence,
                 authority: authority.clone(),
-                original: Some(Arc::new(decision.message().clone())),
+                original: Arc::new(decision.message().clone()),
+                finish: None,
                 source: ReviewDeliverySource::Reconciliation,
                 revocation: Arc::new(AtomicU64::new(u64::MAX)),
                 channel: None,
@@ -631,6 +573,59 @@ impl SessionRuntime {
                 TerminalIntegrityError("review dispatch differs from its immutable terminal")
             );
             let Some(finish) = request.finish else {
+                if request.source == ReviewDeliverySource::Reconciliation
+                    && let Some(target) = review.target.as_ref().filter(|target| {
+                        target.feedback == Some(crate::AgentReviewFeedback::ToExecutor)
+                            && review.disposition == ReviewDisposition::NeedsChanges
+                    })
+                {
+                    // Cold recovery owns the saved decision marker, not a new execution grant.
+                    // Report its scheduling obligation without re-reading a historical finish or
+                    // manufacturing the missing live feedback body.
+                    let services = self
+                        .0
+                        .state()
+                        .agent_services
+                        .clone()
+                        .context("review services unavailable")?;
+                    let forward = ReviewForward::Unconfirmed {
+                        message_id: super::agent_review::review_message_id(
+                            &request.reviewer.id,
+                            &request.turn.turn_id,
+                            request.terminal_sequence,
+                        ),
+                        reason: ReviewForwardReason::RecoveryRequiresScheduling,
+                    };
+                    let fact = ReviewDeliveryException::from_forward(
+                        &request.reviewer.id,
+                        &request.turn.turn_id,
+                        request.turn.input_id.as_deref(),
+                        request.terminal_sequence,
+                        &target.agent_id,
+                        request.source,
+                        &forward,
+                    )
+                    .context("recovery exception identity missing")?
+                    .into_fact()?;
+                    let fact = services
+                        .persist_review_delivery(self, &request.reviewer.id, fact)
+                        .await?;
+                    let parent = request
+                        .reviewer
+                        .parent_thread_id
+                        .as_deref()
+                        .context("reviewer has no parent")?;
+                    self.acknowledge_review_exception(parent, fact.message, false)
+                        .await?;
+                    services
+                        .clear_pending_native_source(
+                            self,
+                            &request.reviewer.id,
+                            PendingNativeDelivery::review_decision(request.original)?,
+                        )
+                        .await?;
+                    return Ok(());
+                }
                 ensure!(
                     review.reason.is_some()
                         || review.disposition == ReviewDisposition::Inconclusive,
@@ -700,31 +695,18 @@ impl SessionRuntime {
             let reviewer = request.reviewer;
             let turn = request.turn;
             let sequence = request.terminal_sequence;
-            let channel = request.channel;
             let revocation = request.revocation;
             let source = request.source;
             let decision_message_id = request.original.id.clone();
             Box::pin(async move {
-                if let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
-                    &services.store, &reviewer,
-                ).await? {
-                    let settled = ReviewFeedbackSettlement::saved_in(&current.state.to_paused_snapshot())?
+                if let Some(current) = owner.delivery_snapshot(&reviewer)? {
+                    let settled = ReviewFeedbackSettlement::saved_in(&current)?
                         .iter().any(|settlement| settlement.decision_message_id() == decision_message_id);
                     if settled {
                         owner.recover_review_feedback_settlements(&reviewer, &services).await?;
                         return Ok(());
                     }
                 }
-                if let Some(channel) = channel.filter(|channel| channel.handoff_ticket() >= sequence) {
-                    channel
-                        .await_handoff_durable(&reviewer.id, sequence)
-                        .await?;
-                }
-                let history = services.store.history(&reviewer.id).await?;
-                ensure!(
-                    crate::studio::history_delivery::parent_report(&history.reader(),&reviewer.id,sequence).await?.is_some(),
-                    "review terminal has no durable original report"
-                );
                 // The source marker brackets the restricted inbox+continue operation. Recovery may
                 // observe that exact receipt, but a fresh source never sends feedback after restart.
                 if let Some(decision) = &review_decision {
@@ -732,29 +714,7 @@ impl SessionRuntime {
                         .persist_pending_native_source(&owner, &reviewer.id, decision.clone())
                         .await?;
                 }
-                let recovery = ReviewForward::Unconfirmed {
-                    message_id: super::agent_review::review_message_id(
-                        &reviewer.id,
-                        &turn.turn_id,
-                        sequence,
-                    ),
-                    reason: ReviewForwardReason::RecoveryRequiresScheduling,
-                };
-                let recovery_fact = ReviewDeliveryException::from_forward(
-                    &reviewer.id,
-                    &turn.turn_id,
-                    turn.input_id.as_deref(),
-                    sequence,
-                    &target_id,
-                    source,
-                    &recovery,
-                )
-                .context("recovery exception identity missing")?
-                .into_fact()?;
-                let saved = crate::studio::history_delivery::review_exception(&history.reader(),&recovery_fact.message.id).await?;
-                let (fact, feedback_settlement) = if let Some(saved) = saved {
-                    (Some(saved), None)
-                } else {
+                let (fact, feedback_settlement) = {
                     // Terminal is observable before its execution residency is released. Wait only
                     // for this exact execution, not for a later incarnation to become idle again.
                     if source == ReviewDeliverySource::LiveTerminal

@@ -10,13 +10,6 @@ use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, Transact
 const COLUMNS: &str = "agent_id,parent_agent_id,account_id,model_id,effort,profile_id,mode,preference,turn_id,revision,task_category,outcome,quality,instruction_following,comment,created_at,updated_at";
 
 impl StudioStore {
-    pub(crate) async fn read_agent_evaluation(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<AgentEvaluation>> {
-        read(&self.db, agent_id).await
-    }
-
     /// Caller is the managed collaboration operation, holding the child admission permit until
     /// commit (or rollback) is known. Dropping a tool waiter never cancels this future.
     pub(crate) async fn write_agent_evaluation(

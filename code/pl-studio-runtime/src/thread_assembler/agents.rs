@@ -896,25 +896,19 @@ impl AgentHost {
                 text: Arc::from(request.message),
             }],
         };
-        // The child's initial delivery is adjudicated against the child's durable identity index
-        // first: a repeated spawn command must answer with the original receipt instead of queueing
-        // the same initial message as new work, and an unverifiable or conflicting identity is
-        // rejected rather than delivered again.
-        let delivery = match owner.adjudicate_message(&id, &message).await {
-            Ok(DeliveryDisposition::Receipt(sequence)) => Ok(sequence),
-            Ok(DeliveryDisposition::New) => {
-                match owner.prepare_input_admission(&id, &child).await {
-                    Ok(()) => child
-                        .send_message_and_continue(message, options)
-                        .await
-                        .map_err(ThreadAssemblyError::from),
-                    Err(error) => Err(error),
-                }
-            }
-            Ok(DeliveryDisposition::Conflict) => {
+        // The existing owner resolves only its bounded current identities.
+        let delivery = match owner.adjudicate_message(&id, &message) {
+            DeliveryDisposition::Receipt(sequence) => Ok(sequence),
+            DeliveryDisposition::New => match owner.prepare_input_admission(&id, &child).await {
+                Ok(()) => child
+                    .send_message_and_continue(message, options)
+                    .await
+                    .map_err(ThreadAssemblyError::from),
+                Err(error) => Err(error),
+            },
+            DeliveryDisposition::Conflict => {
                 Err(ThreadAssemblyError::MessageConflict(message.id.clone()))
             }
-            Err(error) => Err(error),
         };
         let (sequence, message_error) = match delivery {
             Ok(sequence) => (Some(sequence), None),
@@ -1004,13 +998,6 @@ impl AgentControlHost for AgentHost {
         if let Some(services) = &services {
             services
                 .authorize(caller, &message.target)
-                .await
-                .map_err(|error| {
-                    ControlError::service(super::agent_services::ServiceError(error))
-                })?;
-            services
-                .store
-                .ensure_agent_execution_allowed(&message.target)
                 .await
                 .map_err(|error| {
                     ControlError::service(super::agent_services::ServiceError(error))
@@ -1114,15 +1101,8 @@ impl AgentControlHost for AgentHost {
                 text: Arc::from(message.message),
             }],
         };
-        // The target's durable identity index adjudicates the delivery before it can become new work:
-        // an identical repeat answers with its original receipt instead of a second delivery, while a
-        // conflicting or unverifiable identity is rejected and a failed lookup never admits a
-        // possible duplicate.
-        let sequence = match owner
-            .adjudicate_message(&message.target, &delivery)
-            .await
-            .map_err(ControlError::service)?
-        {
+        // Admission uses the current owner, never a saved identity index.
+        let sequence = match owner.adjudicate_message(&message.target, &delivery) {
             DeliveryDisposition::Receipt(sequence) => sequence,
             DeliveryDisposition::New => {
                 owner
@@ -2532,30 +2512,13 @@ mod control_tests {
         }
     }
 
-    async fn spawning_owner(
-        path: &std::path::Path,
-        fail_initial: bool,
-        wait_for_cancel: bool,
-    ) -> SessionRuntime {
+    async fn spawning_owner(path: &std::path::Path, wait_for_cancel: bool) -> SessionRuntime {
         let owner = SessionRuntime::default();
         owner
             .observe_assembly(
                 |_, _, _| {},
                 |_, _| Box::pin(async { Ok(()) }),
-                Some(Arc::new(move |_, message| {
-                    Box::pin(async move {
-                        if fail_initial && message.starts_with("initial:") {
-                            Err(ThreadAssemblyError::Resource {
-                                operation: "lookup initial message identity",
-                                source: Box::new(std::io::Error::other(
-                                    "fixture message index unavailable",
-                                )),
-                            })
-                        } else {
-                            Ok(None)
-                        }
-                    })
-                })),
+                None,
                 |_, _, _| Box::pin(async { Ok(()) }),
                 |_| Box::pin(async { Ok(()) }),
             )
@@ -2579,43 +2542,9 @@ mod control_tests {
     }
 
     #[tokio::test]
-    async fn published_spawn_input_failure_keeps_child_identity_and_source() {
-        let dir = tempfile::tempdir().unwrap();
-        let owner = spawning_owner(dir.path(), true, false).await;
-        let request: AgentSpawn = pl_agent_tool::typed::decode_json(
-            r#"{"profileId":"fixture","taskSummary":"test","message":"first input"}"#,
-        )
-        .unwrap();
-        let result = host(&owner, "native-root")
-            .spawn(call("root-member"), request)
-            .await
-            .unwrap();
-        assert!(!result.receipt.message_accepted);
-        assert!(result.receipt.message_sequence.is_none());
-        assert!(owner.thread(&result.receipt.agent_id).is_some());
-        assert_eq!(
-            result.receipt.workspace.as_ref().unwrap().root,
-            dir.path().to_string_lossy()
-        );
-        let control = result.message_error.unwrap();
-        assert!(
-            std::error::Error::source(&control)
-                .unwrap()
-                .is::<ThreadAssemblyError>()
-        );
-        assert_eq!(
-            std::error::Error::source(std::error::Error::source(&control).unwrap())
-                .unwrap()
-                .to_string(),
-            "fixture message index unavailable"
-        );
-        assert!(owner.close_session().await.is_empty());
-    }
-
-    #[tokio::test]
     async fn preparing_capacity_and_root_policy_use_product_membership() {
         let dir = tempfile::tempdir().unwrap();
-        let owner = spawning_owner(dir.path(), false, false).await;
+        let owner = spawning_owner(dir.path(), false).await;
         let request: AgentSpawn = pl_agent_tool::typed::decode_json(
         r#"{"profileId":"fixture","taskSummary":"invalid review","message":"test","reviewTargetAgentId":"root-member"}"#,
     ).unwrap();
@@ -2686,7 +2615,7 @@ mod control_tests {
     #[tokio::test]
     async fn call_cancellation_settles_the_original_unpublished_preparation() {
         let dir = tempfile::tempdir().unwrap();
-        let owner = spawning_owner(dir.path(), false, true).await;
+        let owner = spawning_owner(dir.path(), true).await;
         let context = call("root-member");
         let cancellation = context.cancellation.clone();
         let request = pl_agent_tool::typed::decode_json(

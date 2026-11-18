@@ -2830,13 +2830,9 @@ pub(super) mod archive_tests {
     }
 
     #[tokio::test]
-    async fn durable_seal_and_archived_catalog_reject_actual_enqueue_without_changing_identity()
-    -> Result<()> {
+    async fn archived_catalog_rejects_enqueue_without_changing_platform_identity() -> Result<()> {
         let fixture = Fixture::new().await?;
-        let sealed = fixture.inbound("sealed", true).await?;
         let archived = fixture.inbound("archived", true).await?;
-        fixture.host.seal_thread(&sealed.creation_id).await?;
-        assert!(fixture.bots.enqueue_inbound(sealed.clone()).await.is_err());
         fixture
             .host
             .runtime
@@ -2854,11 +2850,9 @@ pub(super) mod archive_tests {
         let due = fixture
             .managed
             .store
-            .list_due_inbound(&sealed.bot_id)
+            .list_due_inbound(&archived.bot_id)
             .await?;
-        assert_eq!(due.len(), 2);
-        assert!(due.contains(&sealed));
-        assert!(due.contains(&archived));
+        assert_eq!(due, vec![archived]);
         fixture.shutdown().await
     }
 

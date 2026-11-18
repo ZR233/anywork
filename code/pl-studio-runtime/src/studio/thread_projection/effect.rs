@@ -344,7 +344,7 @@ pub(in crate::studio) fn project_effect_items(
                     effect.committed_at,
                 )?,
             )
-        } else if let Some(saved) = existing.get(&tool_id) {
+        } else if let Some(saved) = existing.get(&tool_id).filter(|item| item.tool().is_some()) {
             (
                 saved.turn_id.as_str(),
                 super::tools::project_saved_tool_call(

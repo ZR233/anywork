@@ -239,7 +239,6 @@ final class ContinuationOperationView {
     required this.continuationId,
     required this.acceptedSequence,
     required this.state,
-    required this.durable,
     required this.receipt,
   });
   final String threadId;
@@ -248,7 +247,6 @@ final class ContinuationOperationView {
   final String continuationId;
   final int acceptedSequence;
   final ContinuationOperationState state;
-  final bool durable;
   final StudioCommandReceipt receipt;
 }
 

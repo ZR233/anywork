@@ -297,8 +297,42 @@ impl BotRuntime {
         })
     }
 
-    /// Resolve ownership from durable bindings, never from a user-controlled ID prefix.
+    /// Resolve a materialized root's frozen owner from the current product projection.
+    /// Historical channel bindings are only read by cold preparation/migration.
     pub(crate) async fn config_for_thread(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<BotConfigFile>, FeishuError> {
+        let Some(bot_id) = self
+            .studio_host()
+            .map(|host| host.current_bot_owner(thread_id))
+            .transpose()
+            .map_err(|error| {
+                FeishuError::new(FeishuErrorKind::Unavailable, error.to_string(), false, None)
+            })?
+            .flatten()
+        else {
+            return Ok(None);
+        };
+        let bot = self
+            .inner
+            .bots
+            .lock()
+            .await
+            .get(&bot_id)
+            .and_then(|record| record.published.clone());
+        match bot {
+            Some(bot) => Ok(Some(bot.config.lock().await.clone())),
+            None => Err(FeishuError::new(
+                FeishuErrorKind::Unavailable,
+                "bot owner is unavailable",
+                false,
+                None,
+            )),
+        }
+    }
+
+    pub(crate) async fn saved_config_for_thread(
         &self,
         thread_id: &str,
     ) -> Result<Option<BotConfigFile>, FeishuError> {

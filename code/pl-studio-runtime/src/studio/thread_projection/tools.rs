@@ -259,11 +259,15 @@ fn completed_interaction_output(
     call_id: &str,
     tool_id: &str,
 ) -> Option<ThreadToolOutput> {
-    // Core admits a tool-produced interaction with its successful result. After restart its task
-    // and delivery can be gone while the interaction and the paired result still belong to Current.
-    if !snapshot.interactions.values().any(|record| {
-        pl_core::tool::opaque::interaction_tool_call_id(&record.request.id) == Some(call_id)
-    }) {
+    // Core admits a tool-produced interaction with its successful result. Consuming its answer
+    // prunes the interaction but retains Core's terminal context alongside the paired result.
+    let interaction_id = pl_core::tool::opaque::tool_interaction_id(call_id);
+    let admitted = snapshot.interactions.contains_key(&interaction_id)
+        || snapshot.context.records.iter().any(|record| {
+            matches!(&record.source, pl_core::context::ContextSource::Runtime { source_id }
+                if source_id.strip_prefix("interaction:") == Some(interaction_id.as_str()))
+        });
+    if !admitted {
         return None;
     }
     let result = snapshot.context.records.iter().find(|record| {
@@ -390,6 +394,69 @@ fn command_exit_code(delivery: &ToolDelivery) -> Option<i32> {
         .ok()?
         .state
         .exit_code()
+}
+
+#[cfg(test)]
+mod interaction_current_tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use pl_core::context::{ContextContent, ContextRecord, ContextSource, OpaquePayload};
+
+    #[test]
+    fn consumed_interaction_keeps_only_its_proven_completed_result() -> Result<()> {
+        let call = pl_core::model::ModelToolCall {
+            call_id: "call".into(),
+            tool_id: "request_user_input".into(),
+            arguments: OpaquePayload::new("application/json", 1, "{}")?,
+            presentation_contract: None,
+            rejection: None,
+        };
+        for (source, expected) in [
+            ("interaction:tool-interaction:call", Some("accepted")),
+            ("interaction:tool-interaction:other", None),
+        ] {
+            let mut snapshot = ThreadSnapshot::default();
+            snapshot.context.records = [
+                ContextRecord {
+                    id: "call".into(),
+                    turn_id: Some("turn".into()),
+                    source: ContextSource::Assistant,
+                    content: vec![],
+                    tool_calls: vec![call.clone()],
+                },
+                ContextRecord {
+                    id: "result".into(),
+                    turn_id: Some("turn".into()),
+                    source: ContextSource::ToolResult {
+                        call_id: "call".into(),
+                        tool_id: "request_user_input".into(),
+                    },
+                    content: vec![ContextContent::Text {
+                        text: "accepted".into(),
+                    }],
+                    tool_calls: vec![],
+                },
+                ContextRecord {
+                    id: "answer".into(),
+                    turn_id: Some("turn".into()),
+                    source: ContextSource::Runtime {
+                        source_id: source.into(),
+                    },
+                    content: vec![],
+                    tool_calls: vec![],
+                },
+            ]
+            .into();
+            let items = project_tool_call("thread", &snapshot, "turn", &call, 1, 1, 1, 1)?;
+            let tool = items[0].tool().context("projected interaction tool")?;
+            assert_eq!(
+                tool.terminal_output().map(|output| output.result()),
+                expected,
+                "{source}"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -4228,7 +4228,6 @@ void main() {
           continuationId: 'continuation-1',
           acceptedSequence: 4,
           state: ConsumedContinuation('turn-continued'),
-          durable: true,
           receipt: _identityReceipt(operation.id),
         );
         final reread = await client.threadCommands.continueThread(
@@ -4243,7 +4242,6 @@ void main() {
           operation.id.value,
         );
         expect(view.state, const ConsumedContinuation('turn-continued'));
-        expect(view.durable, isTrue);
         expect(
           client.mutations.operations.where(
             (value) => value.target == 'continue:thread',
@@ -4332,7 +4330,6 @@ void main() {
       continuationId: 'continuation-1',
       acceptedSequence: 4,
       state: ConsumedContinuation('turn-continued'),
-      durable: true,
       receipt: _identityReceipt(operation.id),
     );
     final reread = await client.threadCommands.continueThread(
@@ -4349,7 +4346,6 @@ void main() {
       operation.id.value,
     );
     expect(view.state, const ConsumedContinuation('turn-continued'));
-    expect(view.durable, isTrue);
     expect(
       client.mutations.operations.where(
         (value) => value.target == 'continue:thread',
@@ -4359,238 +4355,44 @@ void main() {
     );
   });
 
-  test('a lost continue receipt resends the frozen input under the original identity', () async {
-    final transport = _Transport();
-    final client = await _client(transport);
-    final entered = transport.continues.stream.first;
-    final first = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 1,
-    );
-    final call = await entered;
-    final operation = client.mutations.latest('continue:thread')!;
-    call.reply.completeError(StateError('continue response was lost'));
-    await expectLater(first, throwsA(isA<StateError>()));
-    expect(operation.state.value.phase, OperationPhase.unknownOutcome);
-
-    // 后续点击传不同 route：仍按原身份回查；回查 NotFound 证明从未受理后，
-    // 以冻结的原 route CAS 与同一 OperationId 再发。
-    transport.continuationReadReply = null;
-    final second = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 9,
-    );
-    final resent = await transport.continues.stream.first;
-    expect(resent.operationId, call.operationId);
-    expect(resent.expectedModelRouteRevision, 1);
-    expect(resent.continuationId, call.continuationId);
-    expect(transport.continuationReadCalls, 1);
-    resent.reply.complete(
-      ContinueThreadCommandReply(
-        threadId: 'thread',
-        inputId: resent.operationId.value,
-        continuationId: resent.continuationId,
-        cursor: 6,
-        receipt: _identityReceipt(resent.operationId),
-      ),
-    );
-    final reply = await second;
-    expect(reply.inputId, resent.operationId.value);
-    expect(transport.continueCalls, 2);
-    expect(
-      client.mutations.operations.where(
-        (value) => value.target == 'continue:thread',
-      ),
-      hasLength(1),
-      reason: '原身份再发不分配第二个操作',
-    );
-    expect(operation.state.value.receipt, isNotNull);
-    expect(operation.state.value.failurePhase, isNull);
-  });
-
-  test('a determined rejection after NotFound resends nothing and keeps the identity', () async {
-    final transport = _Transport();
-    final client = await _client(transport);
-    final entered = transport.continues.stream.first;
-    final first = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 1,
-    );
-    final call = await entered;
-    final operation = client.mutations.latest('continue:thread')!;
-    // A typed conflict from the transport is a determined rejection: the
-    // intent keeps its frozen identity but never dispatches again.
-    final conflict = StudioFailure(
-      code: StudioFailureCode.conflict,
-      message: 'The continuation point is already claimed',
-      retryable: false,
-      correlationId: 'client-test-conflict',
-      reason: StudioFailureReason.continuationClaimed,
-    );
-    call.reply.completeError(conflict);
-    await expectLater(first, throwsA(same(conflict)));
-    expect(operation.state.value.failurePhase, OperationPhase.rejected);
-
-    transport.continuationReadReply = null;
-    final blocked = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 1,
-    );
-    await expectLater(blocked, throwsA(same(conflict)));
-    expect(transport.continuationReadCalls, 1);
-    expect(transport.continueCalls, 1);
-    expect(operation.state.value.failurePhase, OperationPhase.rejected);
-    expect(
-      client.mutations.operations.where(
-        (value) => value.target == 'continue:thread',
-      ),
-      hasLength(1),
-      reason: 'A determined rejection never re-begins or re-sends',
-    );
-  });
-
-  for (final blocked in ['execution', 'closed', 'storage']) {
-    test(
-      'a resend blocked after NotFound keeps the unknown identity ($blocked)',
-      () async {
-        final transport = _Transport();
-        final client = await _client(transport);
-        final entered = transport.continues.stream.first;
-        final first = client.threadCommands.continueThread(
-          'thread',
-          _continuation(),
-          expectedModelRouteRevision: 1,
-        );
-        final call = await entered;
-        final operation = client.mutations.latest('continue:thread')!;
-        call.reply.completeError(StateError('response lost while blocked'));
-        await expectLater(first, throwsA(isA<StateError>()));
-        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
-        transport.continuationReadReply = null;
-
-        if (blocked == 'execution') {
-          client.recovery.apply(
-            RecoveryStateSnapshot(
-              revision: 2,
-              values: const [
-                StudioRecoveryIssue(
-                  id: 'resend-execution-paused',
-                  scope: RecoveryIssueScope.thread,
-                  category: RecoveryIssueCategory.storage,
-                  impact: RecoveryIssueImpact.executionBlocked,
-                  availableActions: [],
-                  workspaceId: 'project',
-                  threadId: 'thread',
-                  detail: 'Execution is paused before the resend',
-                ),
-              ],
-            ),
-          );
-        } else if (blocked == 'closed') {
-          transport.emitThread(
-            _row().copyWith(
-              backend: const NativeAgentBackendView(
-                config: NativeAgentConfigView(),
-                status: ThreadStatusView.closing,
-              ),
-            ),
+  test(
+    'missing current continuation keeps the outcome unknown without resending',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final entered = transport.continues.stream.first;
+      final first = client.threadCommands.continueThread(
+        'thread',
+        _continuation(),
+        expectedModelRouteRevision: 1,
+      );
+      final call = await entered;
+      final operation = client.mutations.latest('continue:thread')!;
+      call.reply.completeError(StateError('continue response was lost'));
+      await expectLater(first, throwsA(isA<StateError>()));
+      transport.continuationReadReply = null;
+      for (final route in [9, 10]) {
+        await expectLater(
+          client.threadCommands.continueThread(
             'thread',
-            revision: 2,
-          );
-          await Future<void>.delayed(Duration.zero);
-        } else {
-          await client.conversations
-              .session('thread')
-              .deliverWorkspace(
-                _workspace(
-                  revision: 2,
-                  storage: const ThreadStorageStateView(
-                    execution: ThreadStorageExecution.paused,
-                    resumeRequired: true,
-                    lastError: 'writer paused before the resend',
-                  ),
-                ),
-              );
-        }
-
-        // 回查仍允许（只读），但再发被 guard 阻断：原 typed 错误返回调用方，
-        // 意图、原 unknown 操作与观察责任保持不变，零新发送。
-        final blockedClick = client.threadCommands.continueThread(
-          'thread',
-          _continuation(),
-          expectedModelRouteRevision: 1,
-        );
-        Object? failure;
-        try {
-          await blockedClick;
-        } on Object catch (error) {
-          failure = error;
-        }
-        expect(failure, isA<StudioFailure>());
-        expect(transport.continuationReadCalls, 1);
-        expect(transport.continueCalls, 1);
-        expect(operation.state.value.phase, OperationPhase.unknownOutcome);
-        // The blocked resend leaves the original unknown disposition intact:
-        // phase comes from failurePhase, so both must stay unknownOutcome.
-        expect(
-          operation.state.value.failurePhase,
-          OperationPhase.unknownOutcome,
-        );
-        expect(
-          client.mutations.operations.where(
-            (value) => value.target == 'continue:thread',
+            _continuation(),
+            expectedModelRouteRevision: route,
           ),
-          hasLength(1),
-        );
-
-        if (blocked == 'execution') {
-          client.recovery.apply(
-            RecoveryStateSnapshot(revision: 3, values: const []),
-          );
-        } else if (blocked == 'closed') {
-          transport.emitThread(_row(), 'thread', revision: 3);
-          await Future<void>.delayed(Duration.zero);
-        } else {
-          await client.conversations
-              .session('thread')
-              .deliverWorkspace(_workspace(revision: 3));
-        }
-        // 解除后下一次点击仍先回查原身份；再次 NotFound 才以同 ID 再发。
-        final retry = client.threadCommands.continueThread(
-          'thread',
-          _continuation(),
-          expectedModelRouteRevision: 4,
-        );
-        final resent = await transport.continues.stream.first;
-        expect(resent.operationId, call.operationId);
-        expect(
-          resent.expectedModelRouteRevision,
-          1,
-          reason: '冻结的原 route CAS 不被后续点击覆盖',
-        );
-        expect(
-          transport.continuationReadCalls,
-          2,
-          reason: '不缓存 NotFound：每次点击都先回查',
-        );
-        resent.reply.complete(
-          ContinueThreadCommandReply(
-            threadId: 'thread',
-            inputId: resent.operationId.value,
-            continuationId: resent.continuationId,
-            cursor: 7,
-            receipt: _identityReceipt(resent.operationId),
+          throwsA(
+            isA<StudioFailure>().having(
+              (error) => error.code,
+              'code',
+              StudioFailureCode.notFound,
+            ),
           ),
         );
-        await retry;
-        expect(transport.continueCalls, 2);
-      },
-    );
-  }
+      }
+      expect(transport.continueCalls, 1);
+      expect(transport.continuationReadCalls, 2);
+      expect(operation.state.value.phase, OperationPhase.unknownOutcome);
+      expect(client.mutations.latest('continue:thread')!.id, operation.id);
+    },
+  );
 
   test('continuation reentry shares one future and close releases the retained observer', () async {
     final transport = _Transport();
@@ -4718,65 +4520,6 @@ void main() {
       expect(transport.continueCalls, 1);
     },
   );
-
-  test('a not-found continue identity cannot send a new request through storage pause', () async {
-    final transport = _Transport();
-    final client = await _client(transport);
-    final entered = transport.continues.stream.first;
-    final continuing = client.threadCommands.continueThread(
-      'thread',
-      _continuation(),
-      expectedModelRouteRevision: 1,
-    );
-    final call = await entered;
-    call.reply.complete(
-      ContinueThreadCommandReply(
-        threadId: 'thread',
-        inputId: call.operationId.value,
-        continuationId: call.continuationId,
-        cursor: 4,
-        receipt: _identityReceipt(call.operationId),
-      ),
-    );
-    await continuing;
-    expect(transport.continueCalls, 1);
-
-    await client.conversations
-        .session('thread')
-        .deliverWorkspace(
-          _workspace(
-            revision: 2,
-            storage: const ThreadStorageStateView(
-              execution: ThreadStorageExecution.paused,
-              resumeRequired: true,
-              lastError: 'writer recovery still requires an explicit continue',
-            ),
-          ),
-        );
-    await expectLater(
-      client.threadCommands.continueThread(
-        'thread',
-        _continuation(),
-        expectedModelRouteRevision: 1,
-      ),
-      throwsA(
-        isA<StudioFailure>().having(
-          (failure) => failure.code,
-          'code',
-          StudioFailureCode.storage,
-        ),
-      ),
-    );
-    expect(transport.continuationReadCalls, 1);
-    expect(transport.continueCalls, 1);
-    expect(
-      client.mutations.operations.where(
-        (operation) => operation.target == 'continue:thread',
-      ),
-      hasLength(1),
-      reason: 'A missing old operation does not allocate a new blocked request',
-    );
-  });
 
   test('a storage gate discovered while continue waits in the lane rejects the unsent identity', () async {
     final transport = _Transport();
@@ -4906,7 +4649,6 @@ void main() {
       continuationId: call.continuationId,
       acceptedSequence: 5,
       state: const ConsumedContinuation('continued-turn'),
-      durable: true,
       receipt: _identityReceipt(operation.id),
     );
     final reconciled = await client.threadCommands.continueThread(

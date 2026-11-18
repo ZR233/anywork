@@ -520,9 +520,6 @@ pub(crate) mod bot_archive_test_host {
 
     use super::StudioRuntime;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
-    use crate::studio::store::thread_archive::{
-        ArchivePhase, ArchiveScope, ThreadArchiveOperation,
-    };
     use crate::{StudioHostKind, StudioRuntimeOptions};
 
     pub(crate) struct BotArchiveTestHost {
@@ -624,22 +621,6 @@ pub(crate) mod bot_archive_test_host {
 
         pub(crate) fn drafts_dir(&self) -> std::path::PathBuf {
             self.runtime.store.attachment_drafts_dir()
-        }
-
-        pub(crate) async fn seal_thread(&self, thread_id: &str) -> Result<()> {
-            // A durable scope seal alone must reject dispatch, independently of
-            // resident producers and even before member cleanup has completed.
-            self.runtime
-                .store
-                .save_thread_archive(&ThreadArchiveOperation {
-                    scope: ArchiveScope::Thread(thread_id.into()),
-                    revision: 1,
-                    members: Vec::new(),
-                    private_members: Vec::new(),
-                    worktrees: Vec::new(),
-                    phase: ArchivePhase::Sealed,
-                })
-                .await
         }
     }
 }

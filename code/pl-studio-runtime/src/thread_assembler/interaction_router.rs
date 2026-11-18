@@ -104,23 +104,19 @@ impl SessionRuntime {
     /// Rejects wrong response kinds, stale records and failed canonical state transitions.
     /// Commits one decision for `wire_id` under the caller's operation identity.
     ///
-    /// The identity is stored inside the decision fact itself, so a repeat is answered from the same
-    /// record instead of needing a second operation table.
+    /// The operation identity is command provenance; it does not admit or replay old decisions.
     pub async fn resolve_product_interaction(
         &self,
         wire_id: &str,
+        expected_revision: u64,
         operation_id: &str,
         response: InteractionResolution,
     ) -> Result<InteractionRequest, StudioInteractionError> {
         let current = self
             .read_product_interaction(wire_id)?
             .ok_or(StudioInteractionError::Identity)?;
-        if current.status() != InteractionStatus::Pending {
-            return if current.resolution().as_ref() == Some(&response) {
-                Ok(current)
-            } else {
-                Err(StudioInteractionError::Identity)
-            };
+        if current.status() != InteractionStatus::Pending || current.revision != expected_revision {
+            return Err(StudioInteractionError::Identity);
         }
         let operation_id = operation_id.to_owned();
         let resolved_at = crate::studio::unix_seconds();
@@ -133,7 +129,7 @@ impl SessionRuntime {
                         &current.scope.thread_id,
                         crate::ResolveToolApproval {
                             interaction_id: wire_id.into(),
-                            expected_revision: current.revision,
+                            expected_revision,
                             operation_id,
                             resolved_at,
                             decision: response.decision,
@@ -147,7 +143,7 @@ impl SessionRuntime {
             {
                 let command = crate::ResolveUserInput {
                     interaction_id: wire_id.into(),
-                    expected_revision: current.revision,
+                    expected_revision,
                     operation_id,
                     resolved_at,
                     answers: response.answers,

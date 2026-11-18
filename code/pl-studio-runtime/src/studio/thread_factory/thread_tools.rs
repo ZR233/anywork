@@ -12,7 +12,6 @@ use pl_tool::workspace::ToolWorkspace;
 use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
-    pub verified_local: Option<&'a super::VerifiedLocalResume>,
     pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
     pub assignment: Option<&'a crate::AgentWorkspaceAssignmentSnapshot>,
     pub thread_id: &'a str,
@@ -80,22 +79,7 @@ impl StudioThreadFactory {
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
-        if let Some(proof) = assembly.verified_local {
-            proof
-                .confirm_admission()
-                .await
-                .map_err(|error| resource_error("restricted review archive admission", error))?;
-            proof
-                .check_inputs(
-                    assembly.project,
-                    assembly.assignment.ok_or_else(|| {
-                        ThreadAssemblyError::Identity(
-                            "restricted restoration has no assignment".into(),
-                        )
-                    })?,
-                )
-                .map_err(|error| resource_error("check original local preparation proof", error))?;
-        }
+
         let binding = super::tool_bindings::ToolBinding {
             assignment: assembly.assignment.cloned(),
             workspace_usage: assembly.workspace_usage.clone(),
@@ -199,7 +183,6 @@ impl StudioThreadFactory {
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
-            verified_local,
             assignment: _,
             workspace_usage,
             thread_id,
@@ -212,6 +195,18 @@ impl StudioThreadFactory {
             store,
             helper_source,
         } = assembly;
+        let bot = match &preparation {
+            CatalogPreparation::Initial => {
+                self.services
+                    .bots
+                    .saved_config_for_thread(root_thread_id)
+                    .await
+            }
+            CatalogPreparation::Refresh { .. } => {
+                self.services.bots.config_for_thread(root_thread_id).await
+            }
+        }
+        .map_err(|error| resource_error("resolve tool bot owner", error))?;
         let mut search = pl_tool::search::plan_web_searches(
             &config.models,
             route,
@@ -242,21 +237,12 @@ impl StudioThreadFactory {
         // File backends, semantic tools and status must retain the same endpoint view.
         let workspace = workspace.with_lsp_runtime(Some(lsp.clone()));
         let root = workspace.root().to_owned();
-        let remote = if verified_local.is_some() {
-            if project.ssh_alias.is_some() {
-                return Err(ThreadAssemblyError::Identity(
-                    "local proof cannot prepare SSH tools".into(),
-                ));
-            }
-            None
-        } else {
-            match &preparation {
-                CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
-                CatalogPreparation::Initial => self
-                    .open_remote_workspace(project, &root)
-                    .await
-                    .map_err(|error| resource_error("open child remote workspace", error))?,
-            }
+        let remote = match &preparation {
+            CatalogPreparation::Refresh { remote, .. } => remote.as_deref().cloned(),
+            CatalogPreparation::Initial => self
+                .open_remote_workspace(project, &root)
+                .await
+                .map_err(|error| resource_error("open child remote workspace", error))?,
         };
         if cancellation.is_cancelled() {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
@@ -268,22 +254,20 @@ impl StudioThreadFactory {
                 )),
                 host.files().canonical_path().into(),
             ),
-            None => match verified_local {
-                Some(proof) => Ok(proof.identity()),
-                None => {
-                    self.resolve_workspace_identity(project, workspace.root())
-                        .await
-                }
-            },
+            None => {
+                self.resolve_workspace_identity(project, workspace.root())
+                    .await
+            }
         }
         .map_err(Self::workspace_usage_error)?;
-        if self
-            .services
-            .store
-            .thread_preparation(thread_id)
-            .await
-            .map_err(|error| resource_error("read assembly binding owner", error))?
-            .is_some()
+        if matches!(preparation, CatalogPreparation::Initial)
+            && self
+                .services
+                .store
+                .thread_preparation(thread_id)
+                .await
+                .map_err(|error| resource_error("read assembly binding owner", error))?
+                .is_some()
         {
             self.services
                 .store
@@ -311,12 +295,7 @@ impl StudioThreadFactory {
             })?,
         )
         .map_err(|error| resource_error("bind Thread execution workspace", error))?;
-        if verified_local.is_some() {
-            super::session_files::verify_existing_session_files(workspace.root(), thread_id)
-                .await?;
-        } else {
-            super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
-        }
+        super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
         let shell_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", "starting");
         let environment = remote
@@ -324,14 +303,7 @@ impl StudioThreadFactory {
             .map(|host| host.execution_environment.clone())
             .unwrap_or_else(pl_tool::environment::ExecutionEnvironment::detect_local);
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_shell", elapsed_ms = shell_started.elapsed().as_millis() as u64, "completed");
-        let child_environment = if self
-            .services
-            .bots
-            .config_for_thread(root_thread_id)
-            .await
-            .map_err(|error| resource_error("resolve Python workspace", error))?
-            .is_some()
-        {
+        let child_environment = if bot.is_some() {
             let path =
                 root.join(pl_tool::workspace::SessionFiles::new(thread_id).python_environment());
             std::collections::BTreeMap::from([(
@@ -532,14 +504,7 @@ impl StudioThreadFactory {
         }
         if thread_id == root_thread_id {
             tools = tools.with_bot_tools(self.services.bots.clone(), project.id.clone())?;
-            if self
-                .services
-                .bots
-                .config_for_thread(thread_id)
-                .await
-                .map_err(|error| resource_error("resolve bot session", error))?
-                .is_some()
-            {
+            if bot.is_some() {
                 tools = tools.with_tools(crate::studio::runtime::session_tools::registrations(
                     self.services.bots.clone(),
                     thread_id,

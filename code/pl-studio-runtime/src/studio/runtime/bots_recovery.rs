@@ -5,7 +5,7 @@
 //! idempotency from history and never activates a model or tool.
 
 use crate::InteractionStatus;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pl_core::thread::interactions::{InteractionRecord, InteractionState};
 use pl_core::thread::permissions::{PermissionRecord, PermissionState};
 
@@ -64,12 +64,7 @@ impl StudioRuntime {
         {
             return Ok(handle.snapshot());
         }
-        let thread = self.read_protocol_thread(thread_id).await?;
-        let current =
-            crate::studio::thread_factory::recovery::load_current_read_only(&self.store, &thread)
-                .await?
-                .context("bot recovery has no complete current")?;
-        Ok(current.state.to_paused_snapshot())
+        Err(crate::StudioError::not_found("current bot owner").into())
     }
 }
 

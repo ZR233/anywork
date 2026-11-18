@@ -257,22 +257,6 @@ impl StudioStore {
         let tx = self.database().begin().await?;
         put_object(&tx, &record.agent_id, record, crate::studio::unix_seconds()).await?;
         tx.commit().await?;
-        ensure!(
-            self.agent_close(&record.agent_id).await?.as_ref() == Some(record),
-            "agent close transaction verification failed"
-        );
-        Ok(())
-    }
-
-    pub(crate) async fn ensure_agent_execution_allowed(&self, id: &str) -> Result<()> {
-        if self.agent_close(id).await?.is_some() || self.has_legacy_retirement(id).await? {
-            return Err(crate::StudioError::new(
-                crate::StudioErrorCode::Conflict,
-                "Permanently closed agent cannot execute or receive a new evaluation",
-                false,
-            )
-            .into());
-        }
         Ok(())
     }
 }

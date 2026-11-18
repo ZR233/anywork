@@ -608,12 +608,6 @@ impl StudioRuntime {
         if previous.is_none() {
             session_record.title = definition.display_name.clone();
         }
-        self.store
-            .ensure_archive_execution_allowed(&project.id, Some(&thread_id))
-            .await?;
-        self.store
-            .ensure_agent_execution_allowed(&thread_id)
-            .await?;
         let identity = crate::AgentThreadIdentity {
             session_id: crate::SessionId::new(session_record.session_id.clone())?,
             agent_id: crate::AgentId::new(agent_id.clone())?,
