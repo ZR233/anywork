@@ -263,19 +263,18 @@ pub struct BridgeThreadRuntimeSnapshot {
     pub plan: Option<BridgePlanRuntimeSnapshot>,
     /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
     pub execution: Option<BridgeAgentExecution>,
-    /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationId 只能来自它。
+    /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationToken 只能来自它。
     pub continuation: Option<BridgeContinuationView>,
     pub updated_at: i64,
 }
 
-/// 继续点的只读投影：`claimed` 区分「可以继续」与「继续已受理、仍在准备」。
+/// 当前未消费的继续 token；受理进度通过原操作回执查询。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeContinuationView {
     pub id: String,
     pub source_turn_id: Option<String>,
     pub reason: Option<BridgeContinuationReason>,
     pub created_at: i64,
-    pub claimed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

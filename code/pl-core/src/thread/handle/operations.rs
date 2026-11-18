@@ -52,7 +52,7 @@ impl ThreadHandle {
         self.commands
             .send(Command::CurrentResume {
                 epoch: self.runtime_epoch,
-                authorized_stops: self.interrupt.stops(),
+                expected_stop_generation: self.interrupt.stops(),
                 input,
                 reply,
             })
@@ -130,12 +130,14 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<ThreadSnapshot, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::QueueModelUpdate(
-                update,
-                precondition,
-                mutations,
-                reply,
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::QueueModelUpdate(
+                    update,
+                    precondition,
+                    mutations,
+                    reply,
+                ),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -283,21 +285,20 @@ impl ThreadHandle {
         );
         let current_paused = matches!(&initial, InitialState::RestoredCurrent(_));
         let current_owner = !matches!(&initial, InitialState::Checkpoint(_));
-        let (published, state, restored_history_fence, restored_current) = match initial {
+        let (published, state, restored_current) = match initial {
             InitialState::Checkpoint(Some(checkpoint)) => {
                 let history_fence = checkpoint.history_fence;
-                let (published, state) = checkpoint.into_states(&id)?;
-                (published, state, history_fence, None)
+                let (published, mut state) = checkpoint.into_states(&id)?;
+                state.persistence.durable_sequence = history_fence;
+                state.persistence.admitted_sequence = history_fence;
+                (published, state, None)
             }
-            InitialState::Checkpoint(None) => (
-                ThreadSnapshot::default(),
-                ThreadSnapshot::default(),
-                0,
-                None,
-            ),
+            InitialState::Checkpoint(None) => {
+                (ThreadSnapshot::default(), ThreadSnapshot::default(), None)
+            }
             InitialState::FreshCurrent(current) | InitialState::RestoredCurrent(current) => {
                 let state = current.state.to_paused_snapshot();
-                (state.clone(), state, 0, Some(current))
+                (state.clone(), state, Some(current))
             }
         };
         let (commands, receiver) = mpsc::channel(64);
@@ -317,6 +318,9 @@ impl ThreadHandle {
         let (final_current, final_current_rx) = watch::channel(None);
         let (current_dirty, current_dirty_rx) = watch::channel(0);
         let mut owner = Owner {
+            active: None,
+            primary: None,
+            closing: None,
             runtime_epoch,
             current_call: None,
             current_capture: None,
@@ -351,14 +355,11 @@ impl ThreadHandle {
             active_inputs: Vec::new(),
             input_batch_through: None,
             frozen_turn: None,
-            continuation_cancel: None,
-            superseded_batch: None,
-            authorized_stops: None,
             interrupted_turn: None,
-            input_driver: if resumed {
-                input::InputDriver::Paused
+            policy: if resumed {
+                input::ExecutionPolicy::Paused(input::PauseReason::User)
             } else {
-                input::InputDriver::Dormant
+                input::ExecutionPolicy::Paused(input::PauseReason::Initial)
             },
             turn_admission,
             turn_admission_waiting: false,
@@ -367,7 +368,6 @@ impl ThreadHandle {
             task_commands: mailbox.downgrade(),
             id,
             model,
-            preparing_model_available: false,
             state,
             publish,
             tools,
@@ -377,23 +377,24 @@ impl ThreadHandle {
             nested_sequence: 0,
             nested_plans: Default::default(),
             background: Default::default(),
-            uncommitted_tools: Default::default(),
             capacity: Default::default(),
             pending_effects: Default::default(),
             cold: None,
-            restored_history_fence,
             cold_error: None,
             fault_fence: None,
             store_fault_generation: None,
             verified_recovery_generation: None,
             local_fault: None,
             output_obligations: Default::default(),
-            output_retry_finished: None,
+            output_retry_active: None,
+            maintenance: Default::default(),
+            tool_waiters: Default::default(),
             pressure_watch_closed: false,
             pending_output_repairs: Default::default(),
             satisfied_output_obligations: Default::default(),
             output_backpressure: false,
             threshold_paused: false,
+            task_metadata: Default::default(),
             operation_budgets: Default::default(),
             output_refusals,
             output_refusal_rx,
@@ -419,7 +420,7 @@ impl ThreadHandle {
             thread_id,
             _lifetime: Arc::new(HandleLifetime(interrupt.clone())),
             commands,
-            mailbox,
+            _producer_facts: mailbox,
             interrupt,
             snapshots,
             effect_window,
@@ -435,8 +436,10 @@ impl ThreadHandle {
             return Ok(true);
         }
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::BeginIdleClose(reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::BeginIdleClose(reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         if !response.await.map_err(|_| ThreadError::Closed)? {
@@ -457,11 +460,9 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(std::mem::take(&mut update.tools));
         let (reply, response) = oneshot::channel();
         let result = match self
-            .mailbox
-            .send(super::mailbox::MailboxCommand::Reconfigure(
-                update,
-                batch.clone(),
-                reply,
+            .commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::Reconfigure(update, batch.clone(), reply),
             ))
             .await
         {
@@ -481,8 +482,10 @@ impl ThreadHandle {
     /// Returns `InvalidIdentity` when another Turn is active, or `Closed` when the owner has exited.
     pub async fn interrupt_turn(&self, expected: Option<String>) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::InterruptTurn { expected, reply })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::InterruptTurn { expected, reply },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -504,11 +507,13 @@ impl ThreadHandle {
         expected_execution_id: String,
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::InterruptExecution {
-                expected: expected_execution_id,
-                reply,
-            })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::InterruptExecution {
+                    expected: expected_execution_id,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -522,8 +527,10 @@ impl ThreadHandle {
     /// Returns task cleanup errors or `Closed` when the owner is no longer reachable.
     pub async fn cancel_running_turn(&self, expected: String) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::CancelRunningTurn { expected, reply })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::CancelRunningTurn { expected, reply },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -632,8 +639,10 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<std::collections::BTreeMap<String, extensions::ExtensionRecord>, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::Extensions(mutations, reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::Extensions(mutations, reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -645,10 +654,10 @@ impl ThreadHandle {
     /// Rejects changed content under an existing ID, invalid identities or a closed owner.
     pub async fn send_message(&self, message: inbox::ThreadMessage) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::Message(
+        self.commands
+            .send(Command::Control(super::mailbox::MailboxCommand::Message(
                 message, None, reply,
-            ))
+            )))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -667,12 +676,14 @@ impl ThreadHandle {
         mutations: Vec<extensions::ExtensionMutation>,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::MessageWithExtensions {
-                message,
-                mutations,
-                reply,
-            })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::MessageWithExtensions {
+                    message,
+                    mutations,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -689,12 +700,12 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::Message(
+        self.commands
+            .send(Command::Control(super::mailbox::MailboxCommand::Message(
                 message,
                 Some(options),
                 reply,
-            ))
+            )))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -713,13 +724,15 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<bool, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::WakeAcceptedMessage {
-                id: id.to_owned(),
-                sequence,
-                options,
-                reply,
-            })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::WakeAcceptedMessage {
+                    id: id.to_owned(),
+                    sequence,
+                    options,
+                    reply,
+                },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -736,9 +749,9 @@ impl ThreadHandle {
         options: input::InputDriverOptions,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::ContinueMessage(
-                message, options, None, reply,
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::ContinueMessage(message, options, None, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -759,12 +772,14 @@ impl ThreadHandle {
         receipt_extension_id: String,
     ) -> Result<u64, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::ContinueMessage(
-                message,
-                options,
-                Some(receipt_extension_id),
-                reply,
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::ContinueMessage(
+                    message,
+                    options,
+                    Some(receipt_extension_id),
+                    reply,
+                ),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -797,9 +812,7 @@ impl ThreadHandle {
                             .find(|record| record.id == id)
                     })
                     .ok_or(ThreadError::InvalidIdentity)?;
-                if snapshot.pending_tool_commits.contains(&task.call_id) {
-                    return Err(ThreadError::PendingToolCommit);
-                }
+
                 if task.status != task::TaskStatus::Running {
                     // A settled result is committed history: read the resident queue while the result
                     // is still owed to model context, otherwise the exact committed delivery from the
@@ -834,10 +847,12 @@ impl ThreadHandle {
     ///
     /// # Errors
     /// Returns the original commit boundary failure if the state still cannot accept the result.
-    pub async fn retry_tool_commits(&self) -> Result<(), ThreadError> {
+    pub async fn retry_history_admission(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::RetryToolCommits(reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::RetryHistoryAdmission(reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -852,8 +867,10 @@ impl ThreadHandle {
         id: String,
     ) -> Result<task::TaskCancellationReceipt, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::CancelTask(id, reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::CancelTask(id, reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -869,9 +886,9 @@ impl ThreadHandle {
         resolution: permissions::PermissionResolution,
     ) -> Result<permissions::PermissionRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(mailbox::MailboxCommand::ResolvePermission(
-                resolution, reply,
+        self.commands
+            .send(Command::Control(
+                mailbox::MailboxCommand::ResolvePermission(resolution, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -887,8 +904,10 @@ impl ThreadHandle {
         submission: input::InputSubmission,
     ) -> Result<input::InputRecord, ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(mailbox::MailboxCommand::SubmitInput(submission, reply))
+        self.commands
+            .send(Command::Control(mailbox::MailboxCommand::SubmitInput(
+                submission, reply,
+            )))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1003,12 +1022,12 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(tools);
         let (reply, response) = oneshot::channel();
         let result = match self
-            .mailbox
-            .send(super::mailbox::MailboxCommand::Register(
+            .commands
+            .send(Command::Control(super::mailbox::MailboxCommand::Register(
                 expected,
                 batch.clone(),
                 reply,
-            ))
+            )))
             .await
         {
             Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
@@ -1024,8 +1043,10 @@ impl ThreadHandle {
     /// Returns `Closed` when the owner no longer accepts operations.
     pub async fn retry_tool_cleanup(&self) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::RetryToolCleanup(reply))
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::RetryToolCleanup(reply),
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1042,10 +1063,9 @@ impl ThreadHandle {
         let batch = crate::tool::opaque::RegistrationBatch::new(tools);
         let (reply, response) = oneshot::channel();
         let result = match self
-            .mailbox
-            .send(super::mailbox::MailboxCommand::RetireTools(
-                batch.clone(),
-                reply,
+            .commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::RetireTools(batch.clone(), reply),
             ))
             .await
         {
@@ -1080,9 +1100,9 @@ impl ThreadHandle {
     /// Rejects empty or duplicate source identities and a closing owner.
     pub async fn queue_runtime_facts(&self, facts: Vec<RuntimeFact>) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::QueueRuntimeFacts(
-                facts, reply,
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::QueueRuntimeFacts(facts, reply),
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;
@@ -1205,8 +1225,10 @@ impl ThreadHandle {
     /// owner.
     pub async fn resume_storage(&self, generation: u64) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.mailbox
-            .send(super::mailbox::MailboxCommand::ResumeStorage { generation, reply })
+        self.commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::ResumeStorage { generation, reply },
+            ))
             .await
             .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
@@ -1232,8 +1254,10 @@ impl ThreadHandle {
     pub async fn retry_output_storage(&self) -> Result<(), ThreadError> {
         loop {
             let (reply, response) = oneshot::channel();
-            self.mailbox
-                .send(super::mailbox::MailboxCommand::RetryOutputStorage(reply))
+            self.commands
+                .send(Command::Control(
+                    super::mailbox::MailboxCommand::RetryOutputStorage(reply),
+                ))
                 .await
                 .map_err(|_| ThreadError::Closed)?;
             match response.await.map_err(|_| ThreadError::Closed)? {
@@ -1249,10 +1273,8 @@ impl ThreadHandle {
     /// watermark covered the final commit, so live observation can finish projecting a closed
     /// Thread without a live owner.
     ///
-    /// The request reaches an owner that is already inside a running or paused Turn: it travels the
-    /// mailbox the Turn services at every storage safety point, and the durability target is fixed
-    /// when the owner handles it. An explicit flush therefore still has a reachable fixed-target
-    /// meaning while a Turn is paused, instead of waiting on a Turn that cannot end on its own.
+    /// The owner fixes the durability target when it handles this command. Its maintenance
+    /// future remains independent of model/tool work and of subsequent admissions.
     ///
     /// # Errors
     /// Returns storage failure, temporary admission backpressure for an unhanded tail (without
@@ -1262,50 +1284,21 @@ impl ThreadHandle {
             return Ok(());
         }
         let (reply, response) = oneshot::channel();
-        // The flush travels the bounded mailbox rather than the outer command channel so an owner
-        // that is *inside* a running or paused Turn can still service it at a storage safety point.
-        // A paused Turn only returns to the outer loop once it is released, so a flush sent there
-        // could never reach it: the request itself would wait for the very Turn it is meant to make
-        // durable. The admitted watermark is fixed when the owner handles it, so a later admission
-        // never extends the barrier.
+        // The owner fixes this target in its single command loop and retains the original
+        // writer future independently of execution and of this caller's response lifetime.
         if self
-            .mailbox
-            .send(super::mailbox::MailboxCommand::Flush(reply))
+            .commands
+            .send(Command::Control(super::mailbox::MailboxCommand::Flush(
+                reply,
+            )))
             .await
             .is_err()
         {
             return self.settled_flush();
         }
-        let ticket = match response.await {
-            Ok(result) => result?,
-            Err(_) => return self.settled_flush(),
-        };
-        let through = ticket.pending_target();
-        let result = ticket.wait().await;
-        let Some(through) = through else {
-            return result;
-        };
-        let completion = match result {
-            Ok(()) => Ok(through),
-            Err(ThreadError::Storage(error)) => Err(error),
-            Err(error) => return Err(error),
-        };
-        // A backend may not publish pressure notifications. Both a successful fixed-target
-        // receipt and an explicit failed ACK belong to the original owner's public snapshot.
-        let (reply, response) = oneshot::channel();
-        let sent = self
-            .mailbox
-            .send(super::mailbox::MailboxCommand::CompleteFlush {
-                result: completion.clone(),
-                reply,
-            })
-            .await
-            .is_ok();
-        let published = sent && response.await.is_ok();
-        match completion {
-            Err(error) => Err(ThreadError::Storage(error)),
-            Ok(_) if published => Ok(()),
-            Ok(_) => self.settled_flush(),
+        match response.await {
+            Ok(result) => result,
+            Err(_) => self.settled_flush(),
         }
     }
 

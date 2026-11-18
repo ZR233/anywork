@@ -310,8 +310,6 @@ extension StudioLocalizationsX on BuildContext {
         l10n.composerFailureChildRequiresParentScheduling,
       StudioFailureReason.continuationUnavailable =>
         l10n.composerFailureContinuationUnavailable,
-      StudioFailureReason.continuationClaimed =>
-        l10n.composerFailureContinuationClaimed,
       StudioFailureReason.staleContinuation =>
         l10n.composerFailureStaleContinuation,
       StudioFailureReason.staleExecution => l10n.composerFailureStaleExecution,

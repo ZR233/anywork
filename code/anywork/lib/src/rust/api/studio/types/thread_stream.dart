@@ -106,20 +106,18 @@ enum BridgeContinuationReason {
   executionFailed,
 }
 
-/// 继续点的只读投影：`claimed` 区分「可以继续」与「继续已受理、仍在准备」。
+/// 当前未消费的继续 token；受理进度通过原操作回执查询。
 class BridgeContinuationView {
   final String id;
   final String? sourceTurnId;
   final BridgeContinuationReason? reason;
   final PlatformInt64 createdAt;
-  final bool claimed;
 
   const BridgeContinuationView({
     required this.id,
     this.sourceTurnId,
     this.reason,
     required this.createdAt,
-    required this.claimed,
   });
 
   @override
@@ -127,8 +125,7 @@ class BridgeContinuationView {
       id.hashCode ^
       sourceTurnId.hashCode ^
       reason.hashCode ^
-      createdAt.hashCode ^
-      claimed.hashCode;
+      createdAt.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -138,8 +135,7 @@ class BridgeContinuationView {
           id == other.id &&
           sourceTurnId == other.sourceTurnId &&
           reason == other.reason &&
-          createdAt == other.createdAt &&
-          claimed == other.claimed;
+          createdAt == other.createdAt;
 }
 
 enum BridgeFirstOutputSource {
@@ -755,7 +751,7 @@ class BridgeThreadRuntimeSnapshot {
   /// 主会话自己的当前执行身份；精确停止的目标来自它，而不是当前轮次投影。
   final BridgeAgentExecution? execution;
 
-  /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationId 只能来自它。
+  /// 该会话当前仍然欠着的继续点；继续命令的 expectedContinuationToken 只能来自它。
   final BridgeContinuationView? continuation;
   final PlatformInt64 updatedAt;
 

@@ -166,8 +166,7 @@ class AgentReadOnlyDockView extends StatelessWidget {
     final continuation = view.continuation;
     // 只有在 canonical 确实等待调度（有未认领继续点且没有当前执行）时才说明；
     // 执行中的成员不能同时显示「正在运行」和「等待调度」。
-    final waitingForScheduling =
-        execution == null && continuation != null && !continuation.claimed;
+    final waitingForScheduling = execution == null && continuation != null;
     return StudioChildReadOnlyPanel(
       showScopeTooltip: true,
       children: [

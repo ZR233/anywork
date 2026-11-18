@@ -2,158 +2,8 @@
 use super::*;
 
 impl Owner {
-    pub(super) async fn run_turn(
-        &mut self,
-        input: TurnInput,
-    ) -> Result<TurnCompletion, ThreadError> {
-        if self.current_saved_lifecycle.is_some() {
-            return Err(ThreadError::CurrentPaused);
-        }
-        if self.state.lifecycle != ThreadLifecycle::Open {
-            return Err(ThreadError::Closed);
-        }
-        if input.turn_id.is_empty()
-            || input.attempt_prefix.is_empty()
-            || self
-                .state
-                .turns
-                .iter()
-                .any(|turn| turn.turn_id == input.turn_id)
-        {
-            return Err(ThreadError::InvalidIdentity);
-        }
-        let first_step = StepInput {
-            turn_id: input.turn_id.clone(),
-            attempt_id: self.turn_attempt_identity(&input.attempt_prefix, 0),
-            content: input.content.clone(),
-            cancellation: input.cancellation.clone(),
-        };
-        let turn_id = input.turn_id.clone();
-        let result = self.execute_turn(input, first_step).await;
-        // A Turn that ended before it ever created its record (a stop during preparation) still has to
-        // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
-        // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
-        if !self.state.turns.iter().any(|turn| turn.turn_id == turn_id) {
-            if let Err(error) = self.settle_replaced_controls() {
-                self.input_driver.fail(Arc::new(error));
-                self.pause_inputs();
-            }
-            self.publish()?;
-        }
-        // The execution identity belongs to live state only, so every exit path releases it — a
-        // failed or cancelled Turn as well as a completed one. A stop that named this generation
-        // settles here too; the continuation point it formed is a separate durable fact and stays.
-        self.finish_execution(&turn_id);
-        if result
-            .as_ref()
-            .is_ok_and(|completion| completion.outcome == TurnOutcome::Completed)
-        {
-            self.finish_current_work_if_idle();
-        }
-        result
-    }
-
-    async fn execute_turn(
-        &mut self,
-        input: TurnInput,
-        first_step: StepInput,
-    ) -> Result<TurnCompletion, ThreadError> {
-        if input.cancellation.is_cancelled() {
-            return Err(ThreadError::Cancelled);
-        }
-        // A direct Turn reaches this point without the queue driver, so the execution identity is
-        // allocated here when nobody did it yet. A driver-started Turn keeps the generation the
-        // driver already published.
-        self.begin_execution()?;
-        // run_turn may wait before it ever reaches run_step. Preserve only genuinely direct
-        // content here; queue-owned input remains in the original input records.
-        let plan = self.tools.freeze();
-        self.begin_current_step(&first_step, &plan);
-        // The Turn admission gate is the one place new Turns are held back, and it is checked before
-        // this Turn owns anything: while the owner waits here no Turn record exists and no input is
-        // consumed, so a held Turn leaves the queue exactly as it found it.
-        let _admitted = self.await_turn_admission(&input.cancellation).await?;
-        let started = tokio::time::Instant::now();
-        let turn_id = input.turn_id.clone();
-        let mut turns = self.state.turns.to_vec();
-        turns.push(TurnRecord {
-            elapsed_ms: None,
-            input_id: self.active_inputs.first().cloned(),
-            turn_id: turn_id.clone(),
-            state: TurnState::Running,
-            model_steps: 0,
-        });
-        self.state.turns = turns.clone().into();
-        self.enter_running_execution(&turn_id);
-        self.publish()?;
-        // Publish the generation before any asynchronous preparation: input received while a
-        // model is being opened must redirect this Turn, not silently queue behind it.
-        let mut result = async {
-            self.apply_model_update().await?;
-            if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
-                return Err(ThreadError::Cancelled);
-            }
-            self.execute_turn_loop(input, first_step.attempt_id).await
-        }
-        .await;
-        if matches!(result, Err(ThreadError::Closed)) && self.interrupt.is_closing() {
-            result = Err(ThreadError::Cancelled);
-        }
-        if matches!(result, Err(ThreadError::Cancelled)) {
-            self.cancel_pending_calls(Some(&turn_id))?;
-            if self.interrupted_turn.as_deref() == Some(&turn_id) {
-                self.settle_turn_cancellation(&turn_id).await;
-            }
-        }
-        if let Some(turn) = turns.last_mut() {
-            turn.elapsed_ms = Some(
-                started
-                    .elapsed()
-                    .as_millis()
-                    .try_into()
-                    .map_err(|_| ThreadError::RevisionExhausted)?,
-            );
-            turn.model_steps = self
-                .state
-                .attempts
-                .iter()
-                .filter(|attempt| attempt.turn_id == turn_id)
-                .count()
-                .try_into()
-                .map_err(|_| ThreadError::RevisionExhausted)?;
-            turn.state = match &result {
-                Ok(completed) => TurnState::Finished(completed.outcome),
-                Err(ThreadError::Cancelled) => match self.input_driver.error() {
-                    Some(error) => failed_turn(error),
-                    None if self.interrupted_turn.as_deref() == Some(&turn_id) => {
-                        TurnState::Interrupted
-                    }
-                    None => TurnState::Cancelled,
-                },
-                Err(error) => failed_turn(error),
-            };
-        }
-        self.state.turns = turns.into();
-        // Only a terminal outcome that really owes work becomes continuable, and it does so in this
-        // same commit. Interaction waits, storage faults, cancellations and validation or identity
-        // failures all have their own state and are never disguised as "continue".
-        if let Some(reason) = self.turn_continuation_reason(&result) {
-            self.form_continuation(reason, Some(turn_id.clone()), &format!("turn:{turn_id}"));
-        }
-        // The batch this Turn froze is settled with the same commit: a body-less control the batch
-        // carried but never consumed, and whose authorization this outcome spent or replaced, can
-        // never authorize anything again. Keeping it pending would leave phantom owed work that
-        // recovery would later report as interrupted.
-        if let Err(error) = self.settle_replaced_controls() {
-            self.input_driver.fail(Arc::new(error));
-            self.pause_inputs();
-        }
-        self.publish()?;
-        result
-    }
-
     /// The continuation a Turn's terminal outcome leaves behind, if it leaves one.
-    fn turn_continuation_reason(
+    pub(super) fn turn_continuation_reason(
         &self,
         result: &Result<TurnCompletion, ThreadError>,
     ) -> Option<ContinuationReason> {
@@ -172,7 +22,7 @@ impl Owner {
             // A cancellation that latched a real failure is that failure, exactly like the terminal
             // state records it; the run itself reports cancellation.
             Err(ThreadError::Cancelled) => self
-                .input_driver
+                .policy
                 .error()
                 .filter(|error| recoverable_continuation(error))
                 .map(|_| ContinuationReason::ExecutionFailed),
@@ -181,61 +31,6 @@ impl Owner {
             }
             Ok(_) | Err(_) => None,
         }
-    }
-
-    /// Holds this Turn at the admission gate until the gate is open, and claims its permit.
-    ///
-    /// Every way a Turn can start reaches this method through [`Self::run_turn`] — a direct
-    /// `run_turn`, the queued-input driver, an inbox wake-up and an internal continuation — so this
-    /// is the single admission point and no second scheduler (and no per-model-step check) is
-    /// needed. While it waits the owner keeps servicing its mailbox, so close, cancellation, flush
-    /// and storage recovery still settle; the wait itself consumes no input and creates no Turn
-    /// record.
-    async fn await_turn_admission(
-        &mut self,
-        cancellation: &CancellationToken,
-    ) -> Result<admission::TurnAdmissionPermit, ThreadError> {
-        let Some(gate) = self.turn_admission.clone() else {
-            return Ok(admission::TurnAdmissionPermit::ungated());
-        };
-        // Subscribe before reading the state: a release that lands between the read and the wait
-        // must still wake this owner instead of leaving it waiting for an already open gate.
-        let mut transitions = gate.subscribe();
-        if let Some(permit) = gate.try_admit() {
-            return Ok(permit);
-        }
-        self.turn_admission_waiting = true;
-        self.note_execution_phase(ExecutionPhase::AwaitingAdmission);
-        self.publish_snapshot();
-        let outcome = loop {
-            if cancellation.is_cancelled() || self.interrupt.is_closing() {
-                break Err(ThreadError::Cancelled);
-            }
-            if self.state.lifecycle != ThreadLifecycle::Open {
-                break Err(ThreadError::Closed);
-            }
-            let transitioned = self
-                .await_with_mailbox(async {
-                    tokio::select! {
-                        () = cancellation.cancelled() => None,
-                        changed = transitions.changed() => Some(changed),
-                    }
-                })
-                .await;
-            match transitioned {
-                None => break Err(ThreadError::Cancelled),
-                // The last gate handle is gone, so nothing can ever open admission for this Turn.
-                Some(false) => break Err(ThreadError::Closed),
-                Some(true) => {}
-            }
-            if let Some(permit) = gate.try_admit() {
-                break Ok(permit);
-            }
-        };
-        self.turn_admission_waiting = false;
-        self.note_execution_phase(self.execution_progress_phase());
-        self.publish_snapshot();
-        outcome
     }
 
     pub(super) fn cancel_pending_calls(
@@ -251,20 +46,10 @@ impl Owner {
         if selected.is_empty() {
             return Ok(());
         }
-        let revision = self
-            .state
-            .context
-            .revision
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
-        let mut records = self.state.context.records.to_vec();
+        let mut context = self.state.context.clone();
         let mut deliveries = self.state.deliveries.to_vec();
-        let mut identities = records
-            .iter()
-            .map(|record| record.id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        for call_id in selected {
-            let Some(call) = self.pending.remove(&call_id) else {
+        for call_id in &selected {
+            let Some(call) = self.pending.get(call_id) else {
                 return Err(ThreadError::MissingCall);
             };
             let content = vec![ContextContent::Text {
@@ -272,28 +57,28 @@ impl Owner {
                     "Tool call was cancelled before execution. No tool side effects were started.",
                 ),
             }];
-            let mut suffix = 0_u64;
-            let id = loop {
-                let id = format!("cancelled:{revision}:{call_id}:{suffix}");
-                if identities.insert(id.clone()) {
-                    break id;
-                }
-                suffix += 1;
-            };
-            records.push(ContextRecord {
-                id,
-                turn_id: Some(call.turn_id),
-                source: ContextSource::ToolResult {
-                    call_id: call_id.clone(),
-                    tool_id: call.call.tool_id.clone(),
+            let id = super::background::unique_id(
+                &format!("cancelled:{}:{call_id}", context.revision),
+                context.records.iter().map(|record| record.id.as_str()),
+            )?;
+            current::pair_known_call_result(
+                &mut context,
+                ContextRecord {
+                    id,
+                    turn_id: Some(call.turn_id.clone()),
+                    source: ContextSource::ToolResult {
+                        call_id: call_id.clone(),
+                        tool_id: call.call.tool_id.clone(),
+                    },
+                    content: content.clone(),
+                    tool_calls: Vec::new(),
                 },
-                content: content.clone(),
-                tool_calls: Vec::new(),
-            });
+            )
+            .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))?;
             deliveries.push(ToolDelivery {
                 target: ToolDeliveryTarget::CallResult,
-                call_id,
-                tool_id: call.call.tool_id,
+                call_id: call_id.clone(),
+                tool_id: call.call.tool_id.clone(),
                 output: crate::tool::ToolOutput::new(
                     OpaquePayload::text("cancelled before execution"),
                     content.clone(),
@@ -302,138 +87,16 @@ impl Owner {
                 outcome: ToolOutcome::Cancelled,
             });
         }
-        self.state.context = ContextSnapshot {
-            revision,
-            records: records.into(),
-        };
+        for call_id in selected {
+            self.pending.remove(&call_id);
+        }
+        self.state.context = context;
         self.state.deliveries = deliveries.into();
         Ok(())
     }
-
-    async fn execute_turn_loop(
-        &mut self,
-        input: TurnInput,
-        first_attempt_id: String,
-    ) -> Result<TurnCompletion, ThreadError> {
-        if input.attempt_prefix.is_empty() {
-            return Err(ThreadError::InvalidIdentity);
-        }
-        let mut content = input.content;
-        let mut step = 0_u32;
-        let mut recovered_capacity = false;
-        let mut correction_source = None;
-        let mut next_attempt_id = Some(first_attempt_id);
-        loop {
-            let completed = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
-            let attempt_id = next_attempt_id
-                .take()
-                .unwrap_or_else(|| self.turn_attempt_identity(&input.attempt_prefix, step));
-            let step_input = StepInput {
-                turn_id: input.turn_id.clone(),
-                attempt_id: attempt_id.clone(),
-                content,
-                cancellation: input.cancellation.clone(),
-            };
-            let result = self
-                .step_in_turn(
-                    step_input,
-                    correction_source.take(),
-                    &mut recovered_capacity,
-                )
-                .await;
-            let output = match result {
-                Err(ThreadError::Model(ref error))
-                    if error.kind == crate::model::ModelFailureKind::ContextLimit
-                        && !recovered_capacity
-                        && !input.max_model_steps.reached(completed)
-                        && self.state.attempts.last().is_some_and(|attempt| {
-                            attempt.attempt_id == attempt_id
-                                && attempt.status == AttemptStatus::Failed
-                        }) =>
-                {
-                    recovered_capacity = true;
-                    let next = StepInput {
-                        turn_id: input.turn_id.clone(),
-                        attempt_id: self.turn_attempt_identity(&input.attempt_prefix, completed),
-                        content: Vec::new(),
-                        cancellation: input.cancellation.clone(),
-                    };
-                    // The failed attempt already admitted its input. Reduce committed history,
-                    // then let the next identified attempt proceed without consuming it again.
-                    if !self.recover_context(&next, Some(&attempt_id)).await? {
-                        return Err(ThreadError::Model(error.clone()));
-                    }
-                    content = Vec::new();
-                    next_attempt_id = Some(next.attempt_id);
-                    step = completed;
-                    continue;
-                }
-                Err(ThreadError::ModelOutput(ref reason))
-                    if reason.is_correctable() && !input.max_model_steps.reached(completed) =>
-                {
-                    if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
-                        return Err(ThreadError::Cancelled);
-                    }
-                    content = vec![ContextContent::Text {
-                        text: Arc::from(reason.correction_feedback()),
-                    }];
-                    correction_source = Some(attempt_id);
-                    step = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
-                    continue;
-                }
-                other => other?,
-            };
-            if output.tool_calls.is_empty()
-                && output.turn_action == crate::model::ModelTurnAction::Finish
-            {
-                return Ok(TurnCompletion {
-                    model_steps: completed,
-                    outcome: TurnOutcome::Completed,
-                    last_output: output,
-                });
-            }
-            for call in &output.tool_calls {
-                match self
-                    .execute_tool(call.call_id.clone(), input.cancellation.clone())
-                    .await
-                {
-                    Ok(ToolDispatch::Completed(result))
-                        if result.control() == crate::tool::ToolControl::EndTurn =>
-                    {
-                        return Ok(TurnCompletion {
-                            model_steps: completed,
-                            outcome: TurnOutcome::Completed,
-                            last_output: output,
-                        });
-                    }
-                    Ok(ToolDispatch::Completed(result))
-                        if result.control() == crate::tool::ToolControl::AwaitInteraction =>
-                    {
-                        return Ok(TurnCompletion {
-                            model_steps: completed,
-                            outcome: TurnOutcome::WaitingInteraction,
-                            last_output: output,
-                        });
-                    }
-                    Err(ThreadError::Cancelled) if !input.cancellation.is_cancelled() => {}
-                    Ok(_) | Err(ThreadError::Tool(_)) => {} // Failed tool facts were committed for model recovery.
-                    Err(error) => return Err(error),
-                }
-            }
-            if input.max_model_steps.reached(completed) {
-                return Ok(TurnCompletion {
-                    model_steps: completed,
-                    outcome: TurnOutcome::StepLimit,
-                    last_output: output,
-                });
-            }
-            content = Vec::new();
-            step = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
-        }
-    }
 }
 
-fn failed_turn(error: &ThreadError) -> TurnState {
+pub(super) fn failed_turn(error: &ThreadError) -> TurnState {
     TurnState::Failed {
         description: error.to_string(),
         model_failure: match error {
@@ -457,8 +120,8 @@ fn failed_turn(error: &ThreadError) -> TurnState {
 ///
 /// Everything else keeps its own state instead of pretending to be continuable: `InvalidResponse` (the
 /// answer could not be used), `ImplementationPanicked` (an adapter defect), `IncompatibleContext` (the
-/// request shape has to change, not the authorization), a storage fault (explicit save recovery), a
-/// pending tool commit (retry), an interaction (its own resolution entry), a closed owner, a cancellation
+/// request shape has to change, not the authorization), a storage fault (explicit save recovery),
+/// an interaction (its own resolution entry), a closed owner, a cancellation
 /// and every validation or identity violation. Nothing here ever retries by itself: a point only makes an
 /// explicit continuation possible.
 fn recoverable_continuation(error: &ThreadError) -> bool {

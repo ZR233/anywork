@@ -2612,7 +2612,12 @@ mod atomic_tests {
                     // preparation trust gate before a current reader can observe their records.
                     let result =
                         tokio::time::timeout(Duration::from_secs(10), initialize(&db, THREAD))
-                            .await?;
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "migrate identity affinity: declared={declared:?}, strict={strict}, current={current}, populated={populated}"
+                                )
+                            })?;
                     if allowed {
                         result?;
                         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
@@ -2673,6 +2678,7 @@ mod atomic_tests {
                             .collect::<std::result::Result<Vec<_>, _>>()?
                     };
                     assert_eq!(preserved, original);
+                    cold.close_for_deletion().await?;
                     db.close().await?;
                 }
             }

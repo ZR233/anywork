@@ -23,11 +23,10 @@ pub(super) fn settle(mut state: ThreadSnapshot) -> Result<ThreadSnapshot, Thread
     // A claim names an authorization of the incarnation that is gone, so it can never be reused;
     // the point itself is not deleted here, because the work it names is still owed.
     if let Some(point) = state.continuation.as_mut() {
-        point.claim = None;
+        point.id = uuid::Uuid::new_v4().to_string();
     }
     // Nothing may be resumed automatically: the restored checkpoint was written by an owner that is
     // gone, so a durable watermark it already met cannot authorize anything by itself.
-    state.required_durable_sequence = None;
     // The execution that was live when the process died was allocated but could not be committed
     // before it died, so advancing past it is what keeps a caller that still holds that identity from
     // addressing the first execution of the restored incarnation.

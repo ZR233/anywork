@@ -706,7 +706,44 @@ mod tests {
             assert_eq!(record.accounting, accounting);
             assert_eq!(record.timing, Some(timing));
             assert_eq!(record.orchestration.transport_attempts, 2);
+            let exported = serde_json::to_value(&record).unwrap();
+            for field in [
+                "actualParallelCalls",
+                "parallelCandidates",
+                "toolBatchElapsedMillis",
+                "toolExecutionMillis",
+                "toolCriticalPathMillis",
+                "toolSchemaEstimatedTokens",
+                "toolResultEstimatedTokens",
+                "toolCacheHits",
+                "duplicateSuppressed",
+            ] {
+                assert!(
+                    exported["orchestration"].get(field).is_none(),
+                    "an immutable model receipt cannot measure later tool execution: {field}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn historical_orchestration_values_round_trip_without_changing_admission_bytes() {
+        let encoded = concat!(
+            r#"{"toolSchemaEstimatedTokens":0,"toolResultEstimatedTokens":0,"toolCalls":2,"#,
+            r#""parallelCandidates":0,"actualParallelCalls":0,"toolBatchElapsedMillis":0,"#,
+            r#""toolExecutionMillis":0,"toolCriticalPathMillis":0,"toolCacheHits":0,"#,
+            r#""duplicateSuppressed":0,"programCount":0,"programToolCalls":0,"#,
+            r#""transportAttempts":1,"continuationAttempts":0,"continuationUsed":0,"#,
+            r#""continuationInvalid":0,"httpFallbacks":0}"#,
+        );
+        let historical: crate::completion::InferenceOrchestrationMetrics =
+            serde_json::from_str(encoded).unwrap();
+        assert_eq!(serde_json::to_string(&historical).unwrap(), encoded);
+        let mut unknown = crate::completion::InferenceOrchestrationMetrics::default();
+        assert_eq!(unknown.parallel_saved_millis(), None);
+        unknown.merge(&historical);
+        assert_eq!(unknown.actual_parallel_calls, None);
+        assert_eq!(unknown.parallel_saved_millis(), None);
     }
 
     #[test]

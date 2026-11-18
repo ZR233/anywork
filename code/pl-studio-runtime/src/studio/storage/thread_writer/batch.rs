@@ -607,7 +607,33 @@ async fn prepare_basic_events(
         events.push(event);
     }
     for (source, anchor) in prepared.history_sources.iter().zip(source_anchors) {
-        events.push(source_event(source, recorded_at, anchor)?);
+        let mut event = source_event(source, recorded_at, anchor)?;
+        if let crate::HistorySource::Operation { operation_id } = &source.source
+            && let Some(operation) = effect
+                .write
+                .effect
+                .continuations
+                .iter()
+                .find(|operation| &operation.request.operation_id == operation_id)
+        {
+            let payload = pl_core::context::OpaquePayload::new(
+                "pl.core.resume-operation",
+                1,
+                serde_json::to_string(operation)?,
+            )?;
+            let mut body = crate::history::HistoryBody::new(
+                "resume",
+                crate::history::HistoryBodyRole::CanonicalPayload,
+                Arc::<[u8]>::from(serde_json::to_vec(&payload)?),
+            );
+            body.media_type = Some("application/json".into());
+            event.payload_body_id = Some(body.body_id.clone());
+            event.header.entity_id = Some(operation_id.clone());
+            event.header.run_id = Some(operation.acceptance_epoch.to_string());
+            event.header.turn_id = Some(operation.turn_id.clone());
+            event.bodies.push(body);
+        }
+        events.push(event);
     }
     Ok(events)
 }

@@ -185,7 +185,7 @@ fn event_v3_writer_reader_is_independent_of_object_field_order() -> Result<()> {
         run_id: "field-order-run".into(),
         event_seq: 1,
         body: EventBodyV3::Completion {
-            header: ChatItemHeaderExportV3::from_history(&history.header),
+            header: Box::new(ChatItemHeaderExportV3::from_history(&history.header)),
             atom: Box::new(head),
             payload: ExportedBlobV3 {
                 path: "contents/payload.bin".into(),

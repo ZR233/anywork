@@ -452,7 +452,6 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
                     }
                 }),
                 created_at: continuation.created_at(),
-                claimed: continuation.claimed(),
             }),
         updated_at: value.updated_at,
     }

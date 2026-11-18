@@ -191,63 +191,36 @@ final class ContinueThreadCommandReply {
 }
 
 /// 一次已受理继续操作的当前事实。
-sealed class ContinuationOperationState {
-  const ContinuationOperationState();
-}
+enum ContinuationOperationState { known, notAccepted }
 
-/// 已受理、尚未被模型请求消费的控制输入。
-final class PendingContinuation extends ContinuationOperationState {
-  const PendingContinuation();
+enum ContinuationDisposition { scheduled, effective, notExecuted }
 
-  @override
-  bool operator ==(Object other) => other is PendingContinuation;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-}
-
-/// 控制输入已被某次模型请求消费，并接续到 [turnId]。
-final class ConsumedContinuation extends ContinuationOperationState {
-  const ConsumedContinuation(this.turnId);
-  final String turnId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is ConsumedContinuation && turnId == other.turnId;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, turnId);
-}
-
-/// 被新的明确授权取代而放弃的控制输入。
-final class DiscardedContinuation extends ContinuationOperationState {
-  const DiscardedContinuation();
-
-  @override
-  bool operator ==(Object other) => other is DiscardedContinuation;
-
-  @override
-  int get hashCode => runtimeType.hashCode;
-}
-
-/// 继续操作的只读回查结果；查询本身不激活执行。
+/// An owner receipt names the exact reserved execution. History durability is independent.
 final class ContinuationOperationView {
   const ContinuationOperationView({
     required this.threadId,
     required this.operationId,
-    required this.inputId,
-    required this.continuationId,
-    required this.acceptedSequence,
+    required this.expectedContinuationToken,
     required this.state,
-    required this.receipt,
+    this.acceptanceEpoch,
+    this.executionId,
+    this.turnId,
+    this.acceptedRevision,
+    this.disposition,
+    this.notExecutedReason,
+    this.receipt,
   });
   final String threadId;
   final String operationId;
-  final String inputId;
-  final String continuationId;
-  final int acceptedSequence;
+  final String expectedContinuationToken;
   final ContinuationOperationState state;
-  final StudioCommandReceipt receipt;
+  final String? acceptanceEpoch;
+  final String? executionId;
+  final String? turnId;
+  final int? acceptedRevision;
+  final ContinuationDisposition? disposition;
+  final String? notExecutedReason;
+  final StudioCommandReceipt? receipt;
 }
 
 /// 主会话可见的一条子任务待决交互摘要。

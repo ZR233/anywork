@@ -50,6 +50,9 @@ pub(super) struct PendingEffect {
 }
 
 pub(super) struct Owner {
+    pub(super) active: Option<super::execution::ActiveRun>,
+    pub(super) primary: Option<super::execution::PrimaryWork>,
+    pub(super) closing: Option<super::execution::Closing>,
     pub(super) runtime_epoch: current::RuntimeEpoch,
     pub(super) current_call: Option<current::CurrentModelCall>,
     pub(super) current_capture: Option<crate::model::CurrentCaptureHandle>,
@@ -84,30 +87,8 @@ pub(super) struct Owner {
     /// A batch copies its content when it freezes, so a replacement that arrives afterwards cannot be
     /// absorbed into it; this is what lets the owner recognize that case and re-freeze instead.
     pub(super) frozen_turn: Option<String>,
-    /// Stop generation the last continuation request produced when it cancelled a running Turn.
-    ///
-    /// `request_continuation` deliberately keeps the queue enabled so the continuation itself can run;
-    /// remembering the exact generation its own cancellation produced is what lets the driver tell that
-    /// authorization apart from a later external stop.
-    pub(super) continuation_cancel: Option<u64>,
-    /// Turn whose frozen batch a newer authorization replaced, with the stop generation that replacement
-    /// itself produced.
-    ///
-    /// Live state only: the driver consumes it at the exact cancelled Turn it caused, so the queue keeps
-    /// running with the new authorization instead of pausing. A later external stop changes the stop
-    /// generation, which is what keeps a replacement from swallowing it.
-    pub(super) superseded_batch: Option<(String, u64)>,
-    /// Stop generation the next queued Turn may start under, when a cancellation kept the queue
-    /// running to reach it.
-    ///
-    /// A replacement re-freeze and a continuation request both keep the queue enabled through their
-    /// own cancellation; the generation that cancellation produced is the authorization their next
-    /// queued Turn starts under, so a stop that arrives first refuses that Turn instead of being
-    /// consumed as a fresh request it never caused. Live state only: an explicit resume of a queue
-    /// that had stopped spends it.
-    pub(super) authorized_stops: Option<u64>,
     pub(super) interrupted_turn: Option<String>,
-    pub(super) input_driver: input::InputDriver,
+    pub(super) policy: input::ExecutionPolicy,
     /// Turn admission gate installed for this incarnation, if the host supplied one.
     ///
     /// It is read at every Turn admission and never persisted, so a resumed Thread gets the gate its
@@ -120,8 +101,6 @@ pub(super) struct Owner {
     /// [`input::InputExecution::Blocked`], and what keeps an interrupt from treating a
     /// not-yet-admitted Turn as "nothing to stop".
     pub(super) turn_admission_waiting: bool,
-    pub(super) uncommitted_tools:
-        std::collections::BTreeMap<String, super::tool_execution::ToolExecutionCompletion>,
     pub(super) task_commands: mpsc::WeakSender<mailbox::MailboxCommand>,
     pub(super) background:
         futures::stream::FuturesUnordered<super::tool_execution::ToolExecutionFuture>,
@@ -139,13 +118,10 @@ pub(super) struct Owner {
     pub(super) model: Option<DynModelSession>,
     /// Availability while prepare temporarily borrows the session out of `model`.
     /// Cleared before publishing its result, so poison/close still comes from the session.
-    pub(super) preparing_model_available: bool,
     pub(super) capacity: ContextCapacity,
     pub(super) effect_window: Arc<EffectWindow>,
     pub(super) pending_effects: std::collections::VecDeque<PendingEffect>,
     pub(super) cold: Option<cold::StorageHandle>,
-    /// Durable history fence carried by the checkpoint until a store proves it owns the history.
-    pub(super) restored_history_fence: u64,
     pub(super) cold_error: Option<Arc<cold::ColdStoreError>>,
     /// `(fault_generation, durability fence)` a latched storage fault must be recovered to, fixed
     /// when that generation's fault is first observed. `None` means this owner owes no recovery.
@@ -184,7 +160,11 @@ pub(super) struct Owner {
     pub(super) output_obligations:
         std::collections::BTreeMap<String, (u64, Arc<dyn cold::OutputRetryObligation>)>,
     /// Completion of the one original output retry in flight; callers own their own waits.
-    pub(super) output_retry_finished: Option<CancellationToken>,
+    pub(super) output_retry_active: Option<CancellationToken>,
+    pub(super) maintenance: futures::stream::FuturesUnordered<
+        futures::future::BoxFuture<'static, super::execution::MaintenanceCompletion>,
+    >,
+    pub(super) tool_waiters: std::collections::BTreeMap<String, super::execution::ToolWaiter>,
     /// The attached backend cannot be replaced; never reopen its known-closed notification source.
     pub(super) pressure_watch_closed: bool,
     /// Repaired resource references whose committed result is not resident yet, keyed by call id.
@@ -218,6 +198,7 @@ pub(super) struct Owner {
     /// One entry per in-flight model call or tool call, removed at the same boundary that hands the
     /// result over, so the map is bounded by the number of concurrent operations and never grows
     /// with history.
+    pub(super) task_metadata: std::collections::BTreeMap<String, crate::model::OutputBudget>,
     pub(super) operation_budgets:
         std::collections::BTreeMap<String, std::sync::Arc<crate::model::OutputBudget>>,
     /// Owner-owned wakeup every in-flight operation's budget reports its first refusal through.
@@ -317,30 +298,6 @@ impl Owner {
         }
     }
 
-    /// Whether the current execution still holds a frozen batch that was never admitted.
-    ///
-    /// An admitted batch has already copied its content into a request and consumed its inputs; a
-    /// frozen one has not, so its content cannot be changed by patching the queue afterwards.
-    pub(super) fn execution_preparing(&self) -> bool {
-        let Some(turn_id) = self.frozen_turn.as_ref() else {
-            return false;
-        };
-        self.state.execution.is_some()
-            && !self
-                .state
-                .attempts
-                .iter()
-                .any(|attempt| &attempt.turn_id == turn_id)
-    }
-
-    /// The phase the execution really is in after a wait returned.
-    pub(super) fn execution_progress_phase(&self) -> ExecutionPhase {
-        match self.state.execution.as_ref() {
-            Some(execution) if execution.turn_id.is_some() => ExecutionPhase::Running,
-            Some(_) | None => ExecutionPhase::Preparing,
-        }
-    }
-
     /// Releases the live execution identity on every exit path of its Turn.
     ///
     /// The owner is serial and owns at most one execution, so the execution this Turn ran is the one
@@ -399,324 +356,322 @@ impl Owner {
     }
 
     pub(super) async fn run(mut self, mut commands: mpsc::Receiver<Command>) {
-        // The backend's own storage watch, subscribed once a store is attached. An idle owner reads
-        // the same typed report a paused Turn's safety point reads, so a save that recovered — or a
-        // fault that just latched — reaches this Thread without waiting for its next command. It is
-        // a wake-up only: the latch and the readiness are still computed here, by this one owner.
+        use futures::{FutureExt, StreamExt};
         let mut pressure_updates = self.subscribe_pressure();
         let mut pressure_subscribed = self.cold.is_some();
+        let mut commands_open = true;
+        let mut admitted_batch: Option<(usize, usize, usize)> = None;
         loop {
-            tokio::task::consume_budget().await;
-            if self.tools.poll_cleanup() {
-                self.publish_snapshot();
+            let (mut control_remaining, mut producer_remaining, mut results_remaining) =
+                admitted_batch.take().unwrap_or_else(|| {
+                    (
+                        commands.len(),
+                        self.mailbox.len(),
+                        self.background.len() + self.maintenance.len(),
+                    )
+                });
+            let mut ready = 0;
+            while ready < 31 && (control_remaining > 0 || producer_remaining > 0) {
+                if control_remaining > 0 {
+                    control_remaining -= 1;
+                    if let Ok(command) = commands.try_recv() {
+                        self.handle_command(command);
+                    }
+                } else {
+                    producer_remaining -= 1;
+                    if let Ok(message) = self.mailbox.try_recv() {
+                        self.process_mailbox(message);
+                    }
+                }
+                ready += 1;
+            }
+            while ready < 31 && results_remaining > 0 {
+                if let Some(Some(completion)) = self.background.next().now_or_never() {
+                    self.finish_background(completion);
+                } else if let Some(Some(completion)) = self.maintenance.next().now_or_never() {
+                    self.finish_maintenance(completion);
+                } else {
+                    results_remaining = 0;
+                    break;
+                }
+                ready += 1;
+                results_remaining -= 1;
+            }
+            if control_remaining > 0 || producer_remaining > 0 || results_remaining > 0 {
+                // A ready slice cannot stop the original primary from being polled. Keep the
+                // frozen admission batch finite even when more producer traffic arrives.
+                if let Some(work) = self.primary.as_mut()
+                    && let Some(completion) = (&mut work.future).now_or_never()
+                {
+                    // Retain the completed operation and its session. In particular, preparation
+                    // cannot admit a new paid request before this frozen control/result batch ends.
+                    work.future = Box::pin(std::future::ready(completion));
+                }
+                admitted_batch = Some((control_remaining, producer_remaining, results_remaining));
+                tokio::task::yield_now().await;
+                continue;
             }
             if !pressure_subscribed && self.cold.is_some() {
                 pressure_updates = self.subscribe_pressure();
                 pressure_subscribed = true;
+                self.admit_cold();
+                self.refresh_storage_pressure();
+                self.publish_snapshot();
             }
-            if let Some(Some(completion)) =
-                futures::FutureExt::now_or_never(futures::StreamExt::next(&mut self.background))
+            if self.tools.poll_cleanup() {
+                self.publish_snapshot();
+            }
+            match self.start_ready_work() {
+                Ok(true) => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+                Ok(false) => (),
+                Err(error) => {
+                    self.fail_owner_work(error);
+                    tokio::task::yield_now().await;
+                    continue;
+                }
+            }
+            if self.closing.is_none()
+                && self.primary.is_none()
+                && self.active.is_none()
+                && ((!commands_open)
+                    || (self.state.lifecycle == ThreadLifecycle::Closed
+                        && self.final_current.borrow().is_some()))
             {
-                self.finish_background(completion);
+                self.handoff_final_current();
+                return;
             }
-            // Service the admitted mailbox batch before another paid request. Bound the batch
-            // so a continuous notification producer cannot starve close or other owner commands.
-            for _ in 0..self.mailbox.len() {
-                if let Ok(message) = self.mailbox.try_recv() {
-                    self.dispatch_mailbox(message).await;
-                }
-            }
-            let command = match commands.try_recv() {
-                Ok(command) => command,
-                Err(mpsc::error::TryRecvError::Disconnected) => break,
-                Err(mpsc::error::TryRecvError::Empty) => {
-                    if self.drive_one_input().await {
-                        continue;
+            let cancelled = self.interrupt.active_token().filter(|t| !t.is_cancelled());
+            let deadline = self.batch_deadline();
+            tokio::select! {
+                command = commands.recv(), if commands_open => match command {
+                    Some(command) => self.handle_command(command),
+                    None => { commands_open = false; self.begin_closing(ClosePurpose::Preserve, None); }
+                },
+                message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => if let Some(message) = message { self.process_mailbox(message); },
+                completion = async { match self.primary.as_mut() { Some(work) => (&mut work.future).await, None => std::future::pending().await } } => {
+                    self.primary = None;
+                    if let Err(error) = self.accept_primary(completion) { self.fail_owner_work(error); }
+                },
+                Some(completion) = self.background.next(), if !self.background.is_empty() => self.finish_background(completion),
+                Some(completion) = self.maintenance.next(), if !self.maintenance.is_empty() => self.finish_maintenance(completion),
+                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
+                () = async { match cancelled { Some(token) => token.cancelled().await, None => std::future::pending().await } } => self.publish_snapshot(),
+                () = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } } => (),
+                Some(admission) = async { match self.model_members.as_mut() { Some(call) => call.receiver.recv().await, None => std::future::pending().await } }, if self.model_members.as_ref().is_some_and(|call| !call.receiver.is_closed() || !call.receiver.is_empty()) => self.admit_model_member(admission),
+                Some(reply) = async { match self.compaction_call.as_mut() { Some(call) => call.receiver.recv().await, None => std::future::pending().await } }, if self.compaction_call.as_ref().is_some_and(|call| !call.receiver.is_closed() || !call.receiver.is_empty()) => self.admit_context_compaction(reply),
+                changed = async { match self.model_progress.as_mut() { Some((_, receiver)) => receiver.changed().await, None => std::future::pending().await } } => {
+                    if changed.is_ok() { self.publish_snapshot(); } else {
+                        if let Some(call) = self.model_members.as_mut() && let Some((_, receiver)) = self.model_progress.as_ref() { call.generation = receiver.borrow().observation().generation; }
+                        self.model_progress = None;
                     }
-                    tokio::select! {
-                        () = self.tools.next_cleanup(), if self.tools.has_cleanup() => {
-                            self.publish_snapshot();
-                            continue;
-                        },
-                        Some(completion) = futures::StreamExt::next(&mut self.background), if !self.background.is_empty() => {
-                            self.finish_background(completion);
-                            continue;
-                        },
-                        update = async {
-                            match pressure_updates.as_mut() {
-                                Some(update) => update.changed().await.is_ok(),
-                                None => std::future::pending::<bool>().await,
-                            }
-                        } => {
-                            if !update {
-                                // This owner cannot replace its attached backend. Once that binding
-                                // closes its watch, read its final report below and never subscribe
-                                // to the same closed source again.
-                                pressure_updates = None;
-                                self.pressure_watch_closed = true;
-                            }
-                            // A storage change is a wake-up, never a second fact source: this owner
-                            // re-reads the backend's typed report, re-presents what it never handed
-                            // over, and republishes the readiness it owns — so a Thread parked
-                            // between Turns learns about the recovery instead of waiting for work.
-                            self.admit_cold();
-                            self.refresh_storage_pressure();
-                            if self.cold_error.is_some() {
-                                // A failed save is not pressure: new model/tool admission stays held
-                                // until an explicit continue releases this generation.
-                                self.state.persistence.resume_required = true;
-                            }
-                            self.publish_snapshot();
-                            continue;
-                        },
-                        command = commands.recv() => match command {
-                            Some(command) => command,
-                            None => break,
-                        },
-                        message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => {
-                            if let Some(message) = message {
-                                self.dispatch_mailbox(message).await;
-                            }
-                            continue;
-                        }
+                },
+                changed = self.output_refusal_rx.changed() => if changed.is_ok() {
+                    let refusal = self.output_refusal_rx.borrow_and_update().clone();
+                    if let Some(refusal) = refusal && self.operation_budgets.contains_key(&refusal.operation_id) { self.latch_output_budget_fault(&refusal.operation_id, refusal.accepted, refusal.limit); }
+                },
+                changed = async { match pressure_updates.as_mut() { Some(updates) => updates.changed().await.is_ok(), None => std::future::pending::<bool>().await } } => {
+                    if !changed { pressure_updates = None; self.pressure_watch_closed = true; }
+                    self.admit_cold(); self.refresh_storage_pressure();
+                    if self.cold_error.is_some() { self.state.persistence.resume_required = true; }
+                    self.publish_snapshot();
+                },
+            }
+        }
+    }
+
+    fn handle_command(&mut self, command: Command) {
+        if let Command::Control(command) = command {
+            self.process_mailbox(command);
+            return;
+        }
+        if self.interrupt.is_closing() && !matches!(command, Command::Close(_, _)) {
+            command.reject();
+            return;
+        }
+        match command {
+            Command::Control(_) => unreachable!("control already handled"),
+            Command::CurrentResume {
+                epoch,
+                expected_stop_generation,
+                input,
+                reply,
+            } => match self.prepare_current_resume(epoch, expected_stop_generation, input) {
+                Ok(input) => {
+                    match self.start_run(input, super::execution::RunReply::Current(reply)) {
+                        Err((error, reply)) => reply.reject(error),
+                        Ok(()) => self.active.as_mut().unwrap().restored = true,
                     }
                 }
-            };
-            if self.interrupt.is_closing() && !matches!(command, Command::Close(_, _)) {
-                command.reject();
-                continue;
-            }
-            match command {
-                Command::CurrentResume {
-                    epoch,
-                    authorized_stops,
-                    input,
-                    reply,
-                } => {
-                    let result = self.resume_current(epoch, authorized_stops, input).await;
-                    let _ = reply.send(result);
+                Err(error) => {
+                    let _ = reply.send(Err(error));
                 }
-                Command::ReplaceModel(factory, preparation, reply) => {
+            },
+            Command::ReplaceModel(factory, preparation, reply) => {
+                if self.active.is_some() || self.primary.is_some() {
+                    let _ = reply.send(Err(ThreadError::InputRequiresIdle));
+                } else {
                     self.model_identity = None;
                     self.pending_model_update = None;
-                    let result = self.replace_model(factory).await;
-                    if result.is_ok() {
-                        self.context_preparation = preparation;
-                    }
-                    let _ = reply.send(result);
-                }
-                Command::ContextPreparation(preparation, reply) => {
                     self.context_preparation = preparation;
-                    let _ = reply.send(Ok(()));
+                    let _ = self.start_model_replacement(factory, None, Some(reply));
                 }
-                Command::Reveal(ids, reply) => {
-                    let result =
-                        self.tools
-                            .reveal(&ids)
-                            .map_err(ThreadError::from)
-                            .and_then(|()| {
-                                self.state.discovered_tools = self.tools.discovery();
-                                self.publish()
-                            });
-                    let _ = reply.send(result);
-                }
-
-                Command::RequestInteraction(request, reply) => {
-                    let _ = reply.send(self.request_interaction(request));
-                }
-                Command::CancelInteraction(cancellation, reply) => {
-                    let _ = reply.send(self.cancel_interaction(cancellation));
-                }
-                Command::ResolveInteraction(resolution, reply) => {
-                    let _ = reply.send(self.resolve_interaction(resolution));
-                }
-
-                Command::Application(update, reply) => {
-                    let _ = reply.send(self.update_application(update));
-                }
-                Command::Resources(resources, reply) => {
-                    let result = if self.state.lifecycle == ThreadLifecycle::Open {
-                        if !self
-                            .resources
-                            .as_ref()
-                            .is_some_and(|current| current.same_service(&resources))
-                        {
-                            self.retry_plan = None;
-                        }
-                        self.resources = Some(resources);
-                        Ok(())
-                    } else {
-                        Err(ThreadError::Closed)
-                    };
-                    let _ = reply.send(result);
-                }
-
-                Command::Retry {
-                    source,
-                    attempt,
-                    cancellation,
-                    reply,
-                } => {
-                    let active = self.interrupt.activate(&cancellation, None);
-                    let result = self
-                        .retry_attempt(source, attempt, active.token.clone())
-                        .await;
-                    let _ = reply.send(result);
-                }
-                Command::AttachCold(store, reply) => {
-                    let store = store.0;
-                    let result = if self.current_task_start_ordinal.is_some() {
-                        Err(ThreadError::CurrentCheckpointStore)
-                    } else if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
-                        Err(ThreadError::InvalidIdentity)
-                    } else {
-                        let pressure = store.pressure(&self.id);
-                        if pressure.durable_sequence < self.restored_history_fence {
-                            Err(ThreadError::StorageRecoveryPending {
-                                durable: pressure.durable_sequence,
-                                required: self.restored_history_fence,
-                            })
-                        } else {
-                            self.state.persistence.admitted_sequence = self.restored_history_fence;
-                            self.state.persistence.durable_sequence = self.restored_history_fence;
-                            self.cold = Some(store);
-                            self.admit_cold();
-                            self.publish_snapshot();
-                            Ok(())
-                        }
-                    };
-                    let _ = reply.send(result);
-                }
-                Command::AttachHistory(store, reply) => {
-                    let result = if self.current_task_start_ordinal.is_none()
-                        || self.cold.is_some()
-                        || self.state.lifecycle != ThreadLifecycle::Open
-                    {
-                        Err(ThreadError::InvalidIdentity)
-                    } else {
-                        self.cold = Some(store.into_storage());
-                        self.admit_cold();
-                        self.publish_snapshot();
-                        Ok(())
-                    };
-                    let _ = reply.send(result);
-                }
-                Command::QueuedTurn(request, reply) => {
-                    let result = self.run_next_input(request).await;
-                    let _ = reply.send(result);
-                }
-                Command::Turn(mut input, reply) => {
-                    let active = self.interrupt.activate(&input.cancellation, None);
-                    input.cancellation = active.token.clone();
-                    let result = self.run_turn(input).await;
-                    let _ = reply.send(result);
-                }
-                Command::Capacity(capacity, reply) => {
-                    let result = if self.state.lifecycle == ThreadLifecycle::Open {
-                        self.capacity = capacity;
-                        Ok(())
-                    } else {
-                        Err(ThreadError::Closed)
-                    };
-                    let _ = reply.send(result);
-                }
-
-                Command::PatchRuntimeFacts(facts, reply) => {
-                    let _ = reply.send(self.patch_runtime_facts(facts));
-                }
-                Command::UpdateFacts(facts, reply) => {
-                    let _ = reply.send(self.update_facts(facts));
-                }
-                Command::CompactContext(revision, cancellation, reply) => {
-                    let active = self.interrupt.activate(&cancellation, None);
-                    let result = self
-                        .compact_idle_context(revision, active.token.clone())
-                        .await;
-                    let _ = reply.send(result);
-                }
-                Command::ReplaceContext(replacement, reply) => {
-                    let _ = reply.send(self.replace_context(replacement));
-                }
-                Command::Execute(id, cancellation, reply) => {
-                    let active = self.interrupt.activate(&cancellation, None);
-                    let result = self.execute_tool(id, active.token.clone()).await;
-                    let _ = reply.send(result);
-                }
-
-                Command::Step(mut input, reply) => {
-                    let active = self.interrupt.activate(&input.cancellation, None);
-                    input.cancellation = active.token.clone();
-                    let result = self.step(input).await;
-                    let _ = reply.send(result);
-                }
-                Command::Close(purpose, reply) => {
-                    let started = if self.state.lifecycle == ThreadLifecycle::Open {
-                        self.state.lifecycle = ThreadLifecycle::Closing;
-                        // Preserving close records cut work for recovery; deletion owes only
-                        // actual resource shutdown, because its caller will remove the content.
-                        if purpose == ClosePurpose::Preserve && !self.interrupt.is_deleting() {
-                            self.form_host_shutdown();
-                        }
+            }
+            Command::ContextPreparation(preparation, reply) => {
+                self.context_preparation = preparation;
+                let _ = reply.send(Ok(()));
+            }
+            Command::Reveal(ids, reply) => {
+                let result = self
+                    .tools
+                    .reveal(&ids)
+                    .map_err(ThreadError::from)
+                    .and_then(|()| {
+                        self.state.discovered_tools = self.tools.discovery();
                         self.publish()
-                    } else {
-                        Ok(())
-                    };
-                    let result = match started {
-                        Err(error) => Err(error),
-                        Ok(()) => match self.close_resources().await {
-                            Ok(()) => {
-                                self.state.lifecycle = ThreadLifecycle::Closed;
-                                if let Err(error) = self.publish() {
-                                    Err(error)
-                                } else if purpose == ClosePurpose::Delete
-                                    || self.interrupt.is_deleting()
-                                {
-                                    Ok(())
-                                } else {
-                                    self.flush_cold().await
-                                }
-                            }
-                            Err(error) => Err(error),
-                        },
-                    };
-                    let finished = result.is_ok();
-                    self.publish_snapshot();
-                    if finished {
-                        self.handoff_final_current();
+                    });
+                let _ = reply.send(result);
+            }
+
+            Command::RequestInteraction(request, reply) => {
+                let _ = reply.send(self.request_interaction(request));
+            }
+            Command::CancelInteraction(cancellation, reply) => {
+                let _ = reply.send(self.cancel_interaction(cancellation));
+            }
+            Command::ResolveInteraction(resolution, reply) => {
+                let _ = reply.send(self.resolve_interaction(resolution));
+            }
+
+            Command::Application(update, reply) => {
+                let _ = reply.send(self.update_application(update));
+            }
+            Command::Resources(resources, reply) => {
+                let result = if self.state.lifecycle == ThreadLifecycle::Open {
+                    if !self
+                        .resources
+                        .as_ref()
+                        .is_some_and(|current| current.same_service(&resources))
+                    {
+                        self.retry_plan = None;
                     }
-                    let _ = reply.send(result);
-                    if finished {
+                    self.resources = Some(resources);
+                    Ok(())
+                } else {
+                    Err(ThreadError::Closed)
+                };
+                let _ = reply.send(result);
+            }
+
+            Command::Retry {
+                source,
+                attempt,
+                cancellation,
+                reply,
+            } => {
+                self.schedule_retry(source, attempt, cancellation, reply);
+            }
+            Command::AttachCold(store, reply) => {
+                let store = store.0;
+                let result = if self.current_task_start_ordinal.is_some() {
+                    Err(ThreadError::CurrentCheckpointStore)
+                } else if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
+                    Err(ThreadError::InvalidIdentity)
+                } else {
+                    let pressure = store.pressure(&self.id);
+                    // Legacy checkpoints belong to their existing History prefix. This validates
+                    // attachment once; independent Current owners never carry this watermark.
+                    if pressure.durable_sequence < self.state.persistence.durable_sequence {
+                        let _ = reply.send(Err(ThreadError::StorageRecoveryPending {
+                            durable: pressure.durable_sequence,
+                            required: self.state.persistence.durable_sequence,
+                        }));
                         return;
                     }
-                }
+                    self.state.persistence.admitted_sequence = pressure.durable_sequence;
+                    self.state.persistence.durable_sequence = pressure.durable_sequence;
+                    self.cold = Some(store);
+                    self.admit_cold();
+                    self.publish_snapshot();
+                    Ok(())
+                };
+                let _ = reply.send(result);
             }
-        }
-        // A last-handle drop seals admission and still settles owned work before releasing it. The
-        // work the shutdown is cutting stays owed, so a restart offers an explicit continuation.
-        self.state.lifecycle = ThreadLifecycle::Closing;
-        if !self.interrupt.is_deleting() {
-            self.form_host_shutdown();
-        }
-        if let Err(error) = self.publish() {
-            tracing::error!(thread = self.id, %error, "abandoned Thread closing commit failed");
-        }
-        match self.close_resources().await {
-            Ok(()) => {
-                self.state.lifecycle = ThreadLifecycle::Closed;
-                if let Err(error) = self.publish() {
-                    tracing::error!(thread = self.id, %error, "abandoned Thread closed commit failed");
-                }
-                if !self.interrupt.is_deleting()
-                    && let Err(error) = self.flush_cold().await
+            Command::AttachHistory(store, reply) => {
+                let result = if self.current_task_start_ordinal.is_none()
+                    || self.cold.is_some()
+                    || self.state.lifecycle != ThreadLifecycle::Open
                 {
-                    tracing::error!(thread = self.id, %error, "abandoned Thread flush failed");
+                    Err(ThreadError::InvalidIdentity)
+                } else {
+                    self.cold = Some(store.into_storage());
+                    self.admit_cold();
+                    self.publish_snapshot();
+                    Ok(())
+                };
+                let _ = reply.send(result);
+            }
+            Command::QueuedTurn(request, reply) => {
+                if self.active.is_some() {
+                    let _ = reply.send(Err(ThreadError::InputRequiresIdle));
+                } else if let Some(content) = self.freeze_next_input_batch() {
+                    if let Err((error, reply)) = self.start_run(
+                        TurnInput {
+                            turn_id: request.turn_id,
+                            attempt_prefix: request.attempt_prefix,
+                            content,
+                            max_model_steps: request.max_model_steps,
+                            cancellation: request.cancellation,
+                        },
+                        super::execution::RunReply::Queued(reply),
+                    ) {
+                        reply.reject(error);
+                    }
+                } else {
+                    let _ = reply.send(Ok(None));
                 }
             }
-            Err(error) => {
-                tracing::error!(thread = self.id, %error, "abandoned Thread resource close failed")
+            Command::Turn(input, reply) => {
+                if let Err((error, reply)) =
+                    self.start_run(input, super::execution::RunReply::Turn(reply))
+                {
+                    reply.reject(error);
+                }
+            }
+            Command::Capacity(capacity, reply) => {
+                let result = if self.state.lifecycle == ThreadLifecycle::Open {
+                    self.capacity = capacity;
+                    Ok(())
+                } else {
+                    Err(ThreadError::Closed)
+                };
+                let _ = reply.send(result);
+            }
+
+            Command::PatchRuntimeFacts(facts, reply) => {
+                let _ = reply.send(self.patch_runtime_facts(facts));
+            }
+            Command::UpdateFacts(facts, reply) => {
+                let _ = reply.send(self.update_facts(facts));
+            }
+            Command::CompactContext(revision, cancellation, reply) => {
+                self.schedule_compaction(revision, cancellation, reply);
+            }
+            Command::ReplaceContext(replacement, reply) => {
+                let _ = reply.send(self.replace_context(replacement));
+            }
+            Command::Execute(id, cancellation, reply) => {
+                self.schedule_tool(id, cancellation, reply);
+            }
+            Command::Step(input, reply) => {
+                self.schedule_step(input, None, super::execution::RunReply::Step(reply));
+            }
+            Command::Close(purpose, reply) => {
+                self.begin_closing(purpose, Some(reply));
             }
         }
-        self.handoff_final_current();
     }
 
     /// Subscribes to the attached backend's storage-change notification.
@@ -730,64 +685,6 @@ impl Owner {
         self.cold
             .as_ref()
             .and_then(|store| store.subscribe_pressure(&self.id))
-    }
-
-    async fn close_resources(&mut self) -> Result<(), ThreadError> {
-        if !self.interrupt.is_deleting() {
-            self.retry_tool_commits()?;
-        }
-        self.executions.stop_admission();
-        let tasks = self.executions.keys();
-        for id in tasks {
-            self.cancel_task(&id)?;
-        }
-        self.drain_background().await;
-        self.executions.join().await;
-        if !self.interrupt.is_deleting() {
-            self.retry_tool_commits()?;
-        }
-        self.cancel_pending_calls(None)?;
-        // Submitted interactions are persistent logical facts, not runtime resources: closing the
-        // model, tools and background tasks must not answer or cancel them. Only the explicit
-        // cancel command settles Pending -> Cancelled, so the final checkpoint below keeps every
-        // pending request (with its revision and extension association) for recovery.
-        self.publish()?;
-        if self.state.tasks.values().any(|task| {
-            task.status == task::TaskStatus::Running
-                    && (self.current_task_start_ordinal.is_none() || self.executions.token(&task.id).is_some())
-                    // Deletion already owns disposal of the exact retained completion. It owes
-                    // joining real work, not committing a terminal cut it is about to delete.
-                    && !(self.interrupt.is_deleting()
-                        && self.uncommitted_tools.contains_key(&task.call_id))
-        }) {
-            return Err(ThreadError::InvalidOutput);
-        }
-        if let Some(mut model) = self.model.take()
-            && let Err(error) = self.await_with_mailbox(model.close()).await
-        {
-            self.model = Some(model);
-            return Err(ThreadError::Model(Arc::new(error)));
-        }
-        self.retry_plan = None;
-        self.pending.clear();
-        if self.interrupt.is_deleting() {
-            // All executions joined above. Deletion owns disposal of their retained completions,
-            // including both shared and Native references to the frozen executor leases that
-            // tools.close must no longer wait for. Preserving close retains its original retries.
-            for id in self.executions.keys() {
-                self.executions.forget(&id);
-            }
-            self.uncommitted_tools.clear();
-            self.pending_effects.clear();
-        }
-        self.tools
-            .close()
-            .await
-            .map_err(|error| ThreadError::Tool(Arc::new(error)))?;
-        self.pending.clear();
-        self.retry_plan = None;
-        self.resources = None;
-        Ok(())
     }
 
     pub(super) fn publish_snapshot(&self) {
@@ -828,7 +725,7 @@ impl Owner {
                     progress,
                 }
             });
-        snapshot.input_execution = if let Some(error) = self.input_driver.error() {
+        snapshot.input_execution = if let Some(error) = self.policy.error() {
             input::InputExecution::Failed {
                 error: error.clone(),
             }
@@ -845,7 +742,7 @@ impl Owner {
             input::InputExecution::Running {
                 input_id: input_id.clone(),
             }
-        } else if self.input_driver.options().is_some()
+        } else if self.policy.options().is_some()
             && self.state.lifecycle == ThreadLifecycle::Open
             && !self.interrupt.is_closing()
         {
@@ -854,10 +751,12 @@ impl Owner {
             input::InputExecution::Paused
         };
         snapshot.model_available = self.model.as_ref().map_or(
-            self.preparing_model_available,
+            self.primary
+                .as_ref()
+                .is_some_and(|work| work.model_available),
             DynModelSession::is_available,
         );
-        snapshot.pending_tool_commits = self.uncommitted_tools.keys().cloned().collect();
+
         if snapshot.lifecycle == ThreadLifecycle::Closed
             && self.current_task_start_ordinal.is_none()
             && !self.interrupt.is_deleting()

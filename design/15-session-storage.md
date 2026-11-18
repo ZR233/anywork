@@ -52,7 +52,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 冷加载只读取并验证完整 `current.json` 及其所需资源，恢复逻辑事实并进入 paused；不启动模型、工具、进程或对外投递，也不从历史猜测正文、终态或最近执行。旧模型流和工具观察只作为上次运行的暂停事实展示，不表示仍在执行，不拼接为新流。
 
-继续执行属于 Core 与 Continue 控制契约；嵌套执行循环、Continue 控制 DTO 及资源安装分别由其所属边界维护，本文不定义平行控制 DTO。普通新会话即使暂未配置模型，也创建 fresh Current owner，不把空对象当作冷恢复。恢复后的明确输入、继续或队列恢复请求由现有 owner 输入驱动调用同一个 Current 本地对账与普通 Turn 准备流程；被动读取、消息通知或重复回执不获得新的执行授权。恢复得到的新请求只能通过普通准备流程建立新 owner、execution、attempt 和累积器，完整历史不能修补 current，旧 partial stream 不进入新上下文。累计用量以最后一次有效 current 为基线，不从全部历史追补。
+继续执行使用 [16](./16-core-contracts.md) 的唯一 owner 循环与控制缓存，产品回查见 [14](./14-runtime-host.md)；本文只定义保存与恢复边界。普通新会话即使暂未配置模型，也创建 fresh Current owner，不把空对象当作冷恢复。恢复后的明确输入、继续或队列恢复请求由同一 owner 进行 Current 本地对账并进入普通请求准备；被动读取、消息通知或重复回执不获得新的执行授权。恢复得到的新请求只能通过普通准备流程建立新 owner、execution、attempt 和累积器，完整历史不能修补 current，旧 partial stream 不进入新上下文。累计用量以最后一次有效 current 为基线，不从全部历史追补。
 
 <a id="独立追加历史"></a>
 
@@ -60,7 +60,11 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 只使用 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`。旧 v24 wire 只允许出现在冻结迁移 schema。
 
-普通输入、Continue、交互决定和 Native 消息准入只使用当前 owner 已接受的输入、交互与有界身份集合，不查询 History 或 `current.json`。操作身份用于关联本次命令；不承诺永久幂等、历史回执重放或识别已裁剪的旧命令。不再额外写入仅服务回查的 `input_fact` 接纳／状态事件、请求摘要和路由回执；schema 24 迁移在明确的升级边界保留这些旧原件供历史读取。Continue 查询仅返回当前 owner 仍保留的输入，`NotFound` 不证明从未受理，客户端不得据此自动重发。
+普通输入、Resume、交互决定和 Native 消息准入只使用当前 owner 已接受的输入、交互与有界身份集合，不查询 History 或 `current.json`。不再额外写入仅服务回查的 `input_fact` 接纳／状态事件、请求摘要和路由回执；schema 24 迁移在明确的升级边界保留这些旧原件供历史读取。真实输入继续沿原驻留队列与有界身份去重；已经裁剪的身份不从 History 恢复。Resume 使用已有 `Operation` source 的 `source_started`／`source_ended`，`source_id=operationId`；请求与回执材料作为不可变正文保存，不增加表或字段。旧控制输入只供历史显示，不再进入正常执行队列。
+
+Continue 的重复接纳与回查来自 owner 的有界控制缓存，不读 History 补永久去重，不等待 COMMIT。Current 保存缓存用于恢复后的反馈；冷恢复发行新 token，旧 `Scheduled` 标为 `NotExecuted(RestoredPaused)`，不补写旧 History 终态。它不能恢复旧 executor 权限。History 仍独立保存已经接纳的不可变事实，写失败不撤销 Current 已知结果。
+
+回查只有在当前 owner 确认原 token 仍有效且未被消费时才返回 `NotAccepted`，允许后续明确点击以原操作身份重发。缓存淘汰、token 换代、无驻留 owner 或其它未知结果不构成这个证明；`StaleContinuation`、`NotFound` 和传输失败均不得触发重发。实时准入、结果配对与报告交接不读持久化材料；冷准备与显式历史查询保留各自入口。
 
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 
@@ -119,7 +123,7 @@ SDK 把 History page 机械交给 Flutter 时间线所有者，把 Current State
 
 ## 15.5 通用 Core 存储与诊断
 
-Core 的通用 SQLite 后端仍可独立使用既有 effect、checkpoint 与 durable pressure 契约；这些内部机制只属于该通用存储的调用方，不定义 Native Studio 的 `current.json` 或 schema 25 history 关系。本文不声称 Core 嵌套执行循环、Continue 控制 DTO 或所有调用方已经统一重写；相关边界按其所属合同处理。
+Core 的通用 SQLite 后端仍可独立使用既有 effect、checkpoint 与 durable pressure 契约；这些内部机制只属于该通用存储的调用方，不定义 Native Studio 的 `current.json` 或 schema 25 history 关系。这些调用方同样通过唯一 owner 的命令入口推进执行；通用 checkpoint 的历史读取能力不参与 Continue 控制去重。
 
 模型与工具调用诊断继续使用版本化 JSONL 与可重建的 `calls.sqlite` 索引，不参与当前态恢复或历史正文。诊断写入失败只形成诊断缺口，不阻塞 Current 或 History 的可靠事实；会话累计用量来自 current 中的绝对摘要，不从已过期日志回填。
 

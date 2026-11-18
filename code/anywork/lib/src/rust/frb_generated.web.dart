@@ -878,6 +878,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeContentWindow dco_decode_box_autoadd_bridge_content_window(dynamic raw);
 
   @protected
+  BridgeContinuationDisposition
+  dco_decode_box_autoadd_bridge_continuation_disposition(dynamic raw);
+
+  @protected
   BridgeContinuationReason dco_decode_box_autoadd_bridge_continuation_reason(
     dynamic raw,
   );
@@ -1346,6 +1350,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeStoppedResource dco_decode_box_autoadd_bridge_stopped_resource(
     dynamic raw,
   );
+
+  @protected
+  BridgeStudioCommandReceipt
+  dco_decode_box_autoadd_bridge_studio_command_receipt(dynamic raw);
 
   @protected
   BridgeStudioPromptInput dco_decode_box_autoadd_bridge_studio_prompt_input(
@@ -2552,6 +2560,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeContentWindow dco_decode_bridge_content_window(dynamic raw);
+
+  @protected
+  BridgeContinuationDisposition dco_decode_bridge_continuation_disposition(
+    dynamic raw,
+  );
 
   @protected
   BridgeContinuationOperationState
@@ -4671,6 +4684,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeContinuationDisposition?
+  dco_decode_opt_box_autoadd_bridge_continuation_disposition(dynamic raw);
+
+  @protected
   BridgeContinuationReason?
   dco_decode_opt_box_autoadd_bridge_continuation_reason(dynamic raw);
 
@@ -4861,6 +4878,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeStateError? dco_decode_opt_box_autoadd_bridge_state_error(dynamic raw);
+
+  @protected
+  BridgeStudioCommandReceipt?
+  dco_decode_opt_box_autoadd_bridge_studio_command_receipt(dynamic raw);
 
   @protected
   BridgeThreadActivity? dco_decode_opt_box_autoadd_bridge_thread_activity(
@@ -5962,6 +5983,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeContinuationDisposition
+  sse_decode_box_autoadd_bridge_continuation_disposition(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeContinuationReason sse_decode_box_autoadd_bridge_continuation_reason(
     SseDeserializer deserializer,
   );
@@ -6556,6 +6583,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeStoppedResource sse_decode_box_autoadd_bridge_stopped_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeStudioCommandReceipt
+  sse_decode_box_autoadd_bridge_studio_command_receipt(
     SseDeserializer deserializer,
   );
 
@@ -8168,6 +8201,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeContentWindow sse_decode_bridge_content_window(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeContinuationDisposition sse_decode_bridge_continuation_disposition(
     SseDeserializer deserializer,
   );
 
@@ -10777,6 +10815,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeContinuationDisposition?
+  sse_decode_opt_box_autoadd_bridge_continuation_disposition(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeContinuationReason?
   sse_decode_opt_box_autoadd_bridge_continuation_reason(
     SseDeserializer deserializer,
@@ -11017,6 +11061,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeStateError? sse_decode_opt_box_autoadd_bridge_state_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeStudioCommandReceipt?
+  sse_decode_opt_box_autoadd_bridge_studio_command_receipt(
     SseDeserializer deserializer,
   );
 
@@ -12319,6 +12369,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_continuation_disposition(
+    BridgeContinuationDisposition self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_continuation_reason(
     BridgeContinuationReason self,
     SseSerializer serializer,
@@ -12981,6 +13037,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_stopped_resource(
     BridgeStoppedResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_studio_command_receipt(
+    BridgeStudioCommandReceipt self,
     SseSerializer serializer,
   );
 
@@ -14892,6 +14954,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_content_window(
     BridgeContentWindow self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_continuation_disposition(
+    BridgeContinuationDisposition self,
     SseSerializer serializer,
   );
 
@@ -18031,6 +18099,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_continuation_disposition(
+    BridgeContinuationDisposition? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_continuation_reason(
     BridgeContinuationReason? self,
     SseSerializer serializer,
@@ -18291,6 +18365,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_state_error(
     BridgeStateError? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_studio_command_receipt(
+    BridgeStudioCommandReceipt? self,
     SseSerializer serializer,
   );
 

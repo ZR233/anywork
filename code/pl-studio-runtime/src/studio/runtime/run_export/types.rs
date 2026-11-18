@@ -483,13 +483,13 @@ pub enum EventBodyV3 {
     InferenceFinished {
         status: String,
         auxiliary: bool,
-        billing: InferenceBillingRecord,
+        billing: Box<InferenceBillingRecord>,
     },
     ExecutionLifecycle {
         facts: Vec<ExecutionLifecycleExportV3>,
     },
     Completion {
-        header: ChatItemHeaderExportV3,
+        header: Box<ChatItemHeaderExportV3>,
         atom: Box<HistoryEntityHead>,
         payload: ExportedBlobV3,
         contents_manifest: ExportedBlobV3,

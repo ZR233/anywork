@@ -30,7 +30,6 @@ final _continuation = ContinuationView(
   sourceTurnId: 'child-turn',
   reason: ContinuationReason.userStop,
   createdAt: DateTime.utc(2026, 1, 1),
-  claimed: false,
 );
 
 const _approval = PendingInteraction(

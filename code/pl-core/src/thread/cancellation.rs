@@ -15,35 +15,21 @@ struct InterruptState {
     closing: Option<super::owner::ClosePurpose>,
     /// Monotonic count of stop requests issued against this Thread.
     ///
-    /// A replacement cancels the preparing generation itself and remembers the count it produced, so
-    /// any later stop — the public interrupt, a Turn stop, an execution stop — makes the count differ
-    /// and is never mistaken for the replacement it did not cause.
+    /// Explicit stops advance this count; internal draining cancels only its original token.
+    /// The owner compares a run's starting count so a later user stop keeps the queue paused.
     stops: u64,
 }
 
 impl InterruptHandle {
-    /// Starts the next execution generation, optionally bound to the stop count that authorized it.
-    ///
-    /// The comparison and the installation share one lock acquisition, so a queued Turn authorized
-    /// by an earlier stop generation can never lose a stop between its check and its start: a stop
-    /// that already arrived makes the fresh generation born cancelled — it settles as stopped
-    /// instead of making the request that stop never authorized — and a stop that arrives afterwards
-    /// cancels the token this call installed.
-    pub(super) fn activate(
-        &self,
-        parent: &CancellationToken,
-        authorized_stops: Option<u64>,
-    ) -> ActiveExecution {
+    /// Installs the one active token under the same lock used by direct Stop and shutdown.
+    pub(super) fn activate(&self, parent: &CancellationToken) -> ActiveExecution {
         let token = parent.child_token();
         {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.closing.is_some()
-                || self.shutdown.is_cancelled()
-                || authorized_stops.is_some_and(|authorized| authorized != state.stops)
-            {
+            if state.closing.is_some() || self.shutdown.is_cancelled() {
                 token.cancel();
             }
             state.active = Some(token.clone());
@@ -136,37 +122,25 @@ impl InterruptHandle {
     }
 
     pub(super) fn interrupt(&self) -> bool {
-        self.interrupt_generation().0
-    }
-
-    /// Cancels the active generation and returns the exact stop generation it produced.
-    ///
-    /// The counter and the token snapshot are taken under one lock acquisition, so an internal caller
-    /// (a replacement cancelling its own preparing generation) records a generation that is provably its
-    /// own: a concurrent external stop can only ever produce a *later* number, which is what keeps the two
-    /// cancellations distinguishable without a second read that another thread could slip between.
-    pub(super) fn interrupt_generation(&self) -> (bool, u64) {
-        let (token, generation) = {
+        let token = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.stops = state.stops.saturating_add(1);
-            (state.active.clone(), state.stops)
+            state.active.clone()
         };
-        match token {
-            Some(token) => {
-                token.cancel();
-                (true, generation)
-            }
-            None => (false, generation),
+        if let Some(token) = token {
+            token.cancel();
+            true
+        } else {
+            false
         }
     }
 
     /// Monotonic count of stop requests issued against this Thread.
     ///
-    /// It is the observable "an external stop happened" state: a caller that cancels for its own reason
-    /// records the count its cancellation produced, and any later stop makes the count differ.
+    /// This records explicit stops independently of internal cancellation and physical completion.
     pub(super) fn stops(&self) -> u64 {
         self.state
             .lock()

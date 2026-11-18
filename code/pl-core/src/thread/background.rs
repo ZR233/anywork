@@ -30,26 +30,30 @@ impl Owner {
                 .map(|record| record.id.as_str()),
         )?;
         let content = vec![ContextContent::Text {
-            text: Arc::from(format!(
-                "Task {} is running. Its result will be delivered when execution finishes.",
-                task.id
-            )),
+            text: Arc::from(
+                serde_json::json!({
+                    "taskId": task.id,
+                    "toolName": task.tool_id,
+                    "status": task.status,
+                })
+                .to_string(),
+            ),
         }];
-        let mut records = self.state.context.records.to_vec();
-        records.push(ContextRecord {
-            id: id.clone(),
-            turn_id: Some(task.turn_id.clone()),
-            source: ContextSource::ToolResult {
-                call_id: task.call_id.clone(),
-                tool_id: task.tool_id.clone(),
+        let mut context = self.state.context.clone();
+        current::pair_known_call_result(
+            &mut context,
+            ContextRecord {
+                id: id.clone(),
+                turn_id: Some(task.turn_id.clone()),
+                source: ContextSource::ToolResult {
+                    call_id: task.call_id.clone(),
+                    tool_id: task.tool_id.clone(),
+                },
+                content,
+                tool_calls: Vec::new(),
             },
-            content,
-            tool_calls: Vec::new(),
-        });
-        let context = ContextSnapshot {
-            revision,
-            records: records.into(),
-        };
+        )
+        .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))?;
         context.pending_calls()?;
         task.revision = task
             .revision
@@ -73,6 +77,21 @@ impl Owner {
     ) {
         let id = completion.call.call.call_id.clone();
         let result = self.commit_tool_execution(completion);
+        if let Some(run) = self.active.as_mut()
+            && let super::execution::RunPhase::ToolBatch(batch) = &mut run.phase
+        {
+            let belongs_to_batch = batch.waiting.remove(&id);
+            if belongs_to_batch
+                && let Ok(output) = &result
+                && output.control() != crate::tool::ToolControl::Continue
+            {
+                batch.control = Some(output.control());
+            }
+        }
+        if let Some(super::execution::ToolWaiter { reply, .. }) = self.tool_waiters.remove(&id) {
+            let _ = reply.send(result.map(ToolDispatch::Completed));
+            return;
+        }
         if let Some(reply) = self.nested_replies.remove(&id) {
             let _ = reply.send(result);
             return;
@@ -81,18 +100,6 @@ impl Owner {
             && !matches!(error, ThreadError::Tool(_) | ThreadError::Cancelled)
         {
             tracing::error!(thread = self.id, %error, "background result commit failed");
-        }
-    }
-
-    pub(super) async fn drain_background(&mut self) {
-        while !self.background.is_empty() {
-            tokio::select! {
-                () = self.tools.next_cleanup(), if self.tools.has_cleanup() => self.publish_snapshot(),
-                Some(completion) = futures::StreamExt::next(&mut self.background) => self.finish_background(completion),
-                message = self.mailbox.recv(), if !self.mailbox.is_closed() || !self.mailbox.is_empty() => {
-                    if let Some(message) = message { self.dispatch_mailbox(message).await; }
-                },
-            }
         }
     }
 }

@@ -119,6 +119,8 @@ SIGINT/SIGTERM 锁存第一个信号；重复信号不启动第二个关闭所�
 
 一个模型调用可产生多条文本、公开推理摘要和工具记录，调用计量仅按 `(threadId, inferenceId)` 附加一次。模型身份保留配置、发送、报告三个原始字段，不由根模型覆盖子调用。工具记录的 `attemptId` 可以为空；程序化工具内部的嵌套调用也不是额外模型推理。关联应依据同线程原生来源、效果位置和生命周期，未知关联继续保留未知，不能以字符串拆分补造调用身份。线程自己的用量只累计一次，父工具结果携带的子报告不再次计费。
 
+模型账单中的编排计数只包含响应与传输已有的观测，不携带后续工具并发数、执行耗时、缓存收益或未采集的词元估算。V3 schema 中这组旧字段原本就是可选字段，新的归档不再写出它们；已有归档原样保留。分析工具并发应核对生命周期和真实任务结果，不能将字段缺失或旧归档中的默认零解读为没有并发。
+
 适配器必须在 `run()` 返回前校验本次全新目录的版本、运行标识、真实退出码、原生关闭报告、事件连续性与哈希、成员与来源关系、内容长度与哈希、最终封口，并使用固定 Harbor 版本的官方类型及验证器验证 ATIF。`usageComplete` 或 `costComplete` 为假本身不使正常任务失败：未知值保持 `null`，已知小计不冒充总量。Harbor `ModelUsage` 的词元字段默认值为零，因此不完整模型组只保留原生已知事实，并显式填充 `model_usage` 字典（包括空字典），避免自动回填把未知值变成零。具体接入与取消契约见 [Harbor 实施议题](https://github.com/ZR233/anywork/issues/424)，官方类型基线见该议题固定的 [ATIF 类型](https://github.com/harbor-framework/harbor/tree/06d0e86a8cfbac213548e0caec533afc5d81ff31/src/harbor/models/trajectories)及 [AgentContext](https://github.com/harbor-framework/harbor/blob/06d0e86a8cfbac213548e0caec533afc5d81ff31/src/harbor/models/agent/context.py)。
 
 

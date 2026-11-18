@@ -3876,7 +3876,6 @@ pub(crate) mod storage_fault_tests {
     ) -> Result<Arc<HistoryExport>> {
         let mut write = (*ticket(thread_id, sequence)).clone();
         let input = InputRecord {
-            continuation: None,
             accepted_sequence: sequence,
             delivery: Default::default(),
             input: ThreadInput {
@@ -4072,6 +4071,94 @@ mod writer_tests {
 
     fn sqlite_literal(value: &str) -> String {
         format!("'{}'", value.replace('\'', "''"))
+    }
+
+    #[tokio::test]
+    async fn resume_feedback_uses_operation_sources_and_immutable_original_receipts() -> Result<()>
+    {
+        use pl_core::thread::{ContinuationDisposition, ContinuationOperation, ResumeRequest};
+        let id = "resume-history";
+        let mut fixture = Fixture::new(id).await?;
+        let mut operation = ContinuationOperation {
+            request: ResumeRequest {
+                operation_id: "resume-once".into(),
+                expected_continuation_token: "original-token".into(),
+                request_digest: Some("original-route".into()),
+            },
+            acceptance_epoch: pl_core::thread::current::RuntimeEpoch::new(),
+            execution_id: "reserved-execution".into(),
+            turn_id: "reserved-turn".into(),
+            accepted_revision: 1,
+            disposition: ContinuationDisposition::Scheduled,
+        };
+        for (sequence, disposition) in [
+            (1, ContinuationDisposition::Scheduled),
+            (2, ContinuationDisposition::Effective),
+        ] {
+            operation.disposition = disposition;
+            let mut export = (*ticket(id, sequence)).clone();
+            export
+                .state
+                .continuation_operations
+                .push_back(operation.clone());
+            Arc::make_mut(&mut export.effect).continuations = Arc::from([operation.clone()]);
+            Arc::make_mut(&mut export.effect).committed_at = sequence as i64;
+            fixture.handoff(&Arc::new(export)).await?;
+        }
+        fixture.finish(2).await?;
+        let reader = fixture.store.history(id).await?.reader();
+        let page = reader
+            .events_page(
+                HistoryEventsQuery::AllEvents,
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: 32,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await?;
+        let mut events: Vec<_> = page.entries.into_iter().filter(|event| matches!(&event.header.source, Some(crate::HistorySource::Operation { operation_id }) if operation_id == "resume-once")).collect();
+        events.sort_by_key(|event| event.header.seq);
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].header.kind,
+            crate::HistoryEventKind::SourceStarted
+        );
+        assert_eq!(events[1].header.kind, crate::HistoryEventKind::SourceEnded);
+        for (event, expected) in events.iter().zip([
+            ContinuationDisposition::Scheduled,
+            ContinuationDisposition::Effective,
+        ]) {
+            assert_eq!(event.header.entity_id.as_deref(), Some("resume-once"));
+            assert_eq!(event.header.turn_id.as_deref(), Some("reserved-turn"));
+            let detail = reader
+                .read_event(
+                    event.header.event_id.clone(),
+                    HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 64 * 1024,
+                    },
+                )
+                .await?;
+            let body = reader
+                .read_body(
+                    detail.payload_ref.context("immutable resume payload")?,
+                    0,
+                    64 * 1024,
+                )
+                .await?;
+            let payload: pl_core::context::OpaquePayload = serde_json::from_slice(&body.bytes)?;
+            assert_eq!(payload.format(), "pl.core.resume-operation");
+            let saved: ContinuationOperation = serde_json::from_str(payload.content())?;
+            assert_eq!(saved.request, operation.request);
+            assert_eq!(saved.acceptance_epoch, operation.acceptance_epoch);
+            assert_eq!(saved.execution_id, operation.execution_id);
+            assert_eq!(saved.accepted_revision, 1);
+            assert_eq!(saved.disposition, expected);
+        }
+        reader.close().await;
+        Ok(())
     }
 
     fn normalized_event_body(bytes: &[u8]) -> Option<serde_json::Value> {

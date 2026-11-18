@@ -325,6 +325,168 @@ impl Drop for InFlightTool {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn ordinary_tool_segment_starts_together_before_its_shared_deadline() {
+    let (model, _) = ScriptedModel::new(&["first", "second"]);
+    let thread =
+        ThreadHandle::start("concurrent-segment".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    thread
+        .register_tools(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| {
+                    Registration::prepare(id.into(), OpaquePayload::text(id))
+                        .unwrap()
+                        .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
+                            events: events.clone(),
+                            release: release.clone(),
+                        }))
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let started_at = tokio::time::Instant::now();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("concurrent")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    assert_eq!(received.recv().await, Some("executing"));
+    let spread = started_at.elapsed();
+    release.notify_waiters();
+    let result = running.await.unwrap();
+    thread.close().await.unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        spread < std::time::Duration::from_secs(1),
+        "second task only started after {spread:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn mixed_batch_receipts_distinguish_running_calls_from_an_instant_result() {
+    let (model, requests) = ScriptedModel::new(&["slow-first", "quick", "slow-last"]);
+    let thread = ThreadHandle::start("mixed-receipts".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let mut registrations = ["slow-first", "slow-last"]
+        .map(|id| {
+            Registration::prepare(id.into(), OpaquePayload::text(id))
+                .unwrap()
+                .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
+                    events: events.clone(),
+                    release: release.clone(),
+                }))
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    registrations.push(
+        Registration::prepare("quick".into(), OpaquePayload::text("quick"))
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+                events,
+            ))),
+    );
+    thread.register_tools(registrations).await.unwrap();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("receipt-order")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    assert_eq!(received.recv().await, Some("executing"));
+    let result = running.await.unwrap();
+    let snapshot = thread.snapshot();
+    thread.interrupt();
+    release.notify_waiters();
+    thread.close().await.unwrap();
+    result.unwrap();
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let records = requests[1]
+        .records
+        .iter()
+        .filter(|record| matches!(record.source, ContextSource::ToolResult { .. }))
+        .collect::<Vec<_>>();
+    let order = records
+        .iter()
+        .map(|record| match &record.source {
+            ContextSource::ToolResult { tool_id, .. } => tool_id.as_str(),
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(order, ["slow-first", "quick", "slow-last"]);
+    for record in [records[0], records[2]] {
+        let ContextSource::ToolResult { call_id, tool_id } = &record.source else {
+            unreachable!();
+        };
+        let [ContextContent::Text { text }] = record.content.as_slice() else {
+            panic!("running receipt must be readable model context");
+        };
+        let receipt: serde_json::Value = serde_json::from_str(text)
+            .expect("a running receipt must state its identity and status structurally");
+        let task = &snapshot.tasks[&format!("task:{call_id}")];
+        assert_eq!(receipt["status"], "running");
+        assert_eq!(receipt["taskId"], task.id);
+        assert_eq!(receipt["toolName"], *tool_id);
+    }
+}
+
+#[tokio::test]
+async fn stopping_at_a_foreground_barrier_keeps_unstarted_results_in_call_order() {
+    let (model, _) = ScriptedModel::new(&["gate", "z-later", "a-later"]);
+    let thread = ThreadHandle::start("cancel-order".into(), DynModelSession::new(model)).unwrap();
+    let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let later_started = Arc::new(AtomicBool::new(false));
+    let mut registrations = vec![
+        Registration::prepare("gate".into(), OpaquePayload::text("gate"))
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(InFlightTool {
+                events,
+                release: release.clone(),
+            }))
+            .foreground_coexisting(),
+    ];
+    registrations.extend(["z-later", "a-later"].map(|id| {
+        Registration::prepare(id.into(), OpaquePayload::text(id))
+            .unwrap()
+            .attach(pl_core::tool::opaque::RuntimeTool::new(SideEffectTool(
+                later_started.clone(),
+            )))
+    }));
+    thread.register_tools(registrations).await.unwrap();
+    let running = {
+        let thread = thread.clone();
+        tokio::spawn(async move { thread.run_turn(turn("ordered-stop")).await })
+    };
+    assert_eq!(received.recv().await, Some("executing"));
+    let execution = thread.snapshot().execution.as_ref().unwrap().id.clone();
+    assert!(thread.interrupt_execution(execution).await.unwrap());
+    release.notify_one();
+    let result = running.await.unwrap();
+    let snapshot = thread.snapshot();
+    thread.close().await.unwrap();
+    assert!(matches!(result, Err(ThreadError::Cancelled)));
+    assert!(!later_started.load(Ordering::SeqCst));
+    assert!(
+        snapshot.tasks.values().all(|task| task.tool_id == "gate"),
+        "unstarted calls must have no task"
+    );
+    let results = snapshot
+        .context
+        .records
+        .iter()
+        .filter_map(|record| match &record.source {
+            ContextSource::ToolResult { tool_id, .. } => Some(tool_id.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(results, ["gate", "z-later", "a-later"]);
+}
+
 #[tokio::test]
 async fn a_replaced_executor_lives_until_its_in_flight_result_is_committed() {
     replaced_executor_result_is_committed(false).await;

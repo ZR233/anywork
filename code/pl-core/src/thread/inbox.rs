@@ -218,7 +218,6 @@ impl Owner {
         &mut self,
         message: ThreadMessage,
         drive: Option<input::InputDriverOptions>,
-        claim_point: Option<&str>,
         receipt_extension_id: Option<&str>,
     ) -> Result<u64, ThreadError> {
         if self.state.lifecycle != ThreadLifecycle::Open {
@@ -235,11 +234,6 @@ impl Owner {
         }
         let previous = self.accepted_message_receipt(&message)?;
         let sequence = previous.map_or_else(|| next_sequence(&self.state), Ok)?;
-        let accepting_sequence = self
-            .state
-            .commit_sequence
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
         if let Some(id) = receipt_extension_id {
             let receipt = MessageIdentity {
                 id: message.id.clone(),
@@ -272,54 +266,10 @@ impl Owner {
         // The commit that admits the message is also the commit that will carry its claim and the
         // durable watermark that claim owes, so all three facts are fixed together.
         let sequence = admit_message(&mut self.state, message)?;
-        // A parent message that explicitly continues owed work carries the claim itself: the point
-        // only records the reference, and consuming the message is what clears it again. The claim it
-        // takes over from is captured first, so a body-less control it replaces is voided in this very
-        // commit instead of being consumed later under an authorization that no longer exists.
-        if let Some(point_id) = claim_point {
-            let previous = self
-                .state
-                .continuation
-                .as_ref()
-                .and_then(|point| point.claim.clone());
-            self.record_message_claim(point_id, sequence, accepting_sequence)?;
-            if let Some(previous) = previous {
-                self.settle_replaced_carrier(&previous, None)?;
-            }
-        }
         self.request_message_wakeup(sequence, drive);
         self.publish()?;
         self.publish_snapshot();
         Ok(sequence)
-    }
-
-    /// Records that the just admitted message `sequence` carries the named continuation point.
-    ///
-    /// This is the message half of the single claim boundary: the durable requirement names the very
-    /// commit that admits the message, so a parent dispatch can never authorize work before its own
-    /// admission is durable.
-    fn record_message_claim(
-        &mut self,
-        point_id: &str,
-        sequence: u64,
-        accepting_sequence: u64,
-    ) -> Result<(), ThreadError> {
-        let message_id = self
-            .state
-            .inbox
-            .iter()
-            .find(|record| record.sequence == sequence)
-            .map(|record| record.message.id.clone())
-            .ok_or(ThreadError::InvalidIdentity)?;
-        self.record_claim(
-            point_id,
-            ContinuationClaim::InboxMessage {
-                message_id,
-                sequence,
-            },
-            accepting_sequence,
-        );
-        Ok(())
     }
 
     fn request_message_wakeup(&mut self, sequence: u64, drive: Option<input::InputDriverOptions>) {
@@ -327,7 +277,7 @@ impl Owner {
             && let Some(options) = drive
         {
             self.state.wake_messages_through = self.state.wake_messages_through.max(sequence);
-            self.input_driver.wake(options);
+            self.policy.wake(options);
         }
     }
 

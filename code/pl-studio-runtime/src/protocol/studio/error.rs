@@ -70,8 +70,6 @@ pub enum StudioErrorReason {
     ChildThreadRequiresParentScheduling,
     /// 目标会话当前没有可认领的继续点。
     ContinuationUnavailable,
-    /// 目标继续点已被另一次受理认领。
-    ContinuationClaimed,
     /// 调用方冻结的继续点已经不是当前继续点。
     StaleContinuation,
     /// 调用方冻结的执行编号不是当前执行。
@@ -107,7 +105,6 @@ impl StudioErrorReason {
             Self::AccountModelDiscoveryUnsupported => "accountModelDiscoveryUnsupported",
             Self::ChildThreadRequiresParentScheduling => "childThreadRequiresParentScheduling",
             Self::ContinuationUnavailable => "continuationUnavailable",
-            Self::ContinuationClaimed => "continuationClaimed",
             Self::StaleContinuation => "staleContinuation",
             Self::StaleExecution => "staleExecution",
             Self::ExecutionInProgress => "executionInProgress",

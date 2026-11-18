@@ -160,7 +160,7 @@ async fn lua_program_receipts_wait_for_their_own_terminal_output() {
         let mut body = json!({"stream":true,"input":[
             {"type":"function_call","name":"exec","call_id":"parent","arguments":"{}"},
             {"type":"function_call_output","call_id":"parent","output":
-                "Task task:parent is running. Its result will be delivered when execution finishes."}
+                json!({"taskId":"task:parent","toolName":"exec","status":"running"}).to_string()}
         ]});
         let waiting = client.post(&url).json(&body).send().await.unwrap();
         assert!(waiting.status().is_success());
@@ -224,7 +224,7 @@ async fn chat_lua_running_receipt_returns_a_chat_wait_call() {
     let body = json!({"stream":true,"messages":[
         {"role":"assistant","tool_calls":[{"id":"parent","type":"function","function":{"name":"exec","arguments":"{}"}}]},
         {"role":"tool","tool_call_id":"parent","content":
-            "Task task:parent is running. Its result will be delivered when execution finishes."}
+            json!({"taskId":"task:parent","toolName":"exec","status":"running"}).to_string()}
     ]});
     let reply = reqwest::Client::new()
         .post(format!("{}/chat/completions", fixture.base_url()))

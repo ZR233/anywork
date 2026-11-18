@@ -539,14 +539,9 @@ fn thread_error(error: &pl_core::thread::ThreadError) -> Option<StudioError> {
             true,
         )),
         pl_core::thread::ThreadError::Storage(_) => Some(StudioError::storage()),
-        pl_core::thread::ThreadError::NoContinuation => Some(StudioError::new(
-            StudioErrorCode::Conflict,
-            "This Thread has no continuation to claim",
-            false,
-        )),
         pl_core::thread::ThreadError::InvalidControlInput => Some(StudioError::new(
             StudioErrorCode::InvalidArgument,
-            "Studio sent a continuation control input that carries content",
+            "Historical continuation controls cannot be submitted as messages",
             false,
         )),
         pl_core::thread::ThreadError::Closed => Some(StudioError::new(

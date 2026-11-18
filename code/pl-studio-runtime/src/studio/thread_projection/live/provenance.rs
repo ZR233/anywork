@@ -36,6 +36,7 @@ fn member_base(effect: &ThreadEffectBatch) -> Result<usize, ProjectionError> {
         effect.inputs.len(),
         effect.inbox.len(),
         effect.context_compactions.len(),
+        effect.continuations.len(),
         effect.model_member_starts.len(),
         effect.model_member_content_available.len(),
     ])
@@ -171,6 +172,29 @@ impl LiveProjection {
                 )?;
             }
         }
+        for (index, operation) in effect.continuations.iter().enumerate() {
+            let outcome = match operation.disposition {
+                pl_core::thread::ContinuationDisposition::Scheduled => None,
+                pl_core::thread::ContinuationDisposition::Effective => {
+                    Some(ChatTerminalOutcome::Completed)
+                }
+                pl_core::thread::ContinuationDisposition::NotExecuted(_) => {
+                    Some(ChatTerminalOutcome::Cancelled)
+                }
+            };
+            self.source_change(
+                ChatSourceId::Operation {
+                    operation_id: operation.request.operation_id.clone(),
+                },
+                outcome,
+                outcome.is_none(),
+                position(
+                    effect,
+                    slots(&[1, effect.inputs.len(), effect.inbox.len(), index])?,
+                )?,
+                &mut changes,
+            )?;
+        }
         for (index, event) in effect.context_compactions.iter().enumerate() {
             use pl_core::thread::{
                 ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome,
@@ -196,7 +220,13 @@ impl LiveProjection {
             };
             let at = position(
                 effect,
-                slots(&[1, effect.inputs.len(), effect.inbox.len(), index])?,
+                slots(&[
+                    1,
+                    effect.inputs.len(),
+                    effect.inbox.len(),
+                    effect.continuations.len(),
+                    index,
+                ])?,
             )?;
             self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut changes)?;
             if let Event::Started {
@@ -317,6 +347,7 @@ impl LiveProjection {
                         1,
                         effect.inputs.len(),
                         effect.inbox.len(),
+                        effect.continuations.len(),
                         effect.context_compactions.len(),
                         index,
                     ])?,

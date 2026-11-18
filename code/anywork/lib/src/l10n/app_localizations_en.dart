@@ -5995,10 +5995,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'There is no interrupted work left to continue.';
 
   @override
-  String get composerFailureContinuationClaimed =>
-      'The continuation was already accepted and is being prepared.';
-
-  @override
   String get composerFailureStaleContinuation =>
       'The observed continuation point is out of date.';
 

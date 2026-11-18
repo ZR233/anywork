@@ -17,6 +17,9 @@ tokio = { workspace = true, features = ["test-util"] }
 pl-provider-fixture = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = { workspace = true }
+
 [dependencies]
 pl-model-openai = { workspace = true }
 pl-model-auth = { workspace = true }

@@ -3,9 +3,8 @@ use super::*;
 
 /// Immutable host-authored input. Only `context` is placed in the user context record.
 ///
-/// `purpose` separates a normal message from the body-less control a trusted host submits to
-/// continue already claimed work. The distinction is a typed field, never a fixed payload text, an
-/// empty string or a payload flag, so nothing downstream has to guess intent from content.
+/// Only Message is admitted. The historical Continuation discriminator is decoded for old
+/// stored observations; new execution intent is an explicit Resume owner command.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadInput {
@@ -16,15 +15,14 @@ pub struct ThreadInput {
     pub context: Vec<ContextContent>,
 }
 
-/// What an input is for. A control input carries framework intent and no user content.
+/// Historical input discriminator; current admission accepts only Message.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InputPurpose {
     /// Ordinary host message; its context becomes user context.
     #[default]
     Message,
-    /// Framework control that authorises continuing already owed work; it has no context and
-    /// never becomes user context.
+    /// Historical control record, rejected by current admission.
     Continuation,
 }
 
@@ -34,56 +32,20 @@ pub enum InputPurpose {
 /// inspectable without carrying task content of its own.
 pub const CONTINUATION_PAYLOAD_FORMAT: &str = "pl.core.thread-continuation";
 
-/// Version of [`CONTINUATION_PAYLOAD_FORMAT`] this build writes.
+/// Historical version of [`CONTINUATION_PAYLOAD_FORMAT`] accepted by display decoders.
 pub const CONTINUATION_PAYLOAD_VERSION: u32 = 1;
 
 impl ThreadInput {
-    /// Builds the body-less control input that authorises one already claimed continuation.
-    ///
-    /// This is the only trusted constructor for a control input: the context is empty by
-    /// construction, so a caller can never smuggle user content into framework control.
-    pub fn for_continuation(
-        id: impl Into<String>,
-        point_id: &str,
-        source_turn_id: Option<&str>,
-    ) -> Self {
-        Self {
-            id: id.into(),
-            purpose: InputPurpose::Continuation,
-            payload: OpaquePayload::new(
-                CONTINUATION_PAYLOAD_FORMAT,
-                CONTINUATION_PAYLOAD_VERSION,
-                serde_json::json!({
-                    "pointId": point_id,
-                    "sourceTurnId": source_turn_id,
-                })
-                .to_string(),
-            )
-            .expect("static nonempty format and nonzero version"),
-            context: Vec::new(),
-        }
-    }
-
     /// Rejects a purpose and a payload that contradict each other.
     ///
-    /// The purpose is the typed fact and the payload is only its encoding, so the two must agree:
-    /// a `Continuation` carries the control payload and no user content, while an ordinary `Message`
-    /// never claims the control format. The constraint is enforced where the input is admitted, so
-    /// the reserved format only ever enters history as the control input it names; readers trust the
-    /// stored facts and never re-interpret a payload.
+    /// Historical control discriminators and their reserved payload are never accepted as new
+    /// messages. History display decodes those old observations at its own boundary.
     pub fn validate_purpose(&self) -> Result<(), ThreadError> {
         let control_payload = self.payload.format() == CONTINUATION_PAYLOAD_FORMAT;
         match self.purpose {
             // Framework control is never content: context would make it indistinguishable from a
             // user message, and a different payload would make the control unverifiable later.
-            InputPurpose::Continuation => {
-                if !self.context.is_empty()
-                    || !control_payload
-                    || self.payload.version() != CONTINUATION_PAYLOAD_VERSION
-                {
-                    return Err(ThreadError::InvalidControlInput);
-                }
-            }
+            InputPurpose::Continuation => return Err(ThreadError::InvalidControlInput),
             InputPurpose::Message => {
                 if control_payload {
                     return Err(ThreadError::InvalidControlInput);
@@ -167,9 +129,6 @@ pub enum InputState {
 pub struct InputRecord {
     /// Commit that first admitted this input; retained unchanged after consumption.
     pub accepted_sequence: u64,
-    /// Continuation this input carries, when it was admitted to continue already owed work.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation: Option<InputContinuation>,
     #[serde(default)]
     pub delivery: InputDelivery,
     pub input: ThreadInput,
@@ -178,31 +137,15 @@ pub struct InputRecord {
     pub state: InputState,
 }
 
-/// Frozen association between one admitted input and the continuation point it carries.
-///
-/// It records the reference, not the point's content: the point itself stays the single fact that
-/// says what work is owed, and the admission commit is what clears it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InputContinuation {
-    pub point_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_turn_id: Option<String>,
-}
-
 /// Minimal resident identity of an admitted input that already reached a terminal state.
 ///
-/// The body and framework routing facts stay in the durable effect history; this record is the
-/// only thing the live owner keeps so a repeated submission can still be answered idempotently.
+/// The live owner retains a bounded tail of these receipts after dropping terminal input bodies.
+/// Duplicate detection ends when an identity leaves that window; admission never queries History.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputIdentity {
     /// Content digest of the originally accepted body.
     pub digest: String,
-    /// Continuation this input carried, retained so a repeated operation still answers with the same
-    /// association instead of a body-less receipt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation: Option<InputContinuation>,
     pub delivery: InputDelivery,
     pub id: String,
     pub ordinal: u64,
@@ -215,14 +158,11 @@ pub struct InputIdentity {
 }
 
 impl InputIdentity {
-    /// Projects one terminal input record into its minimal durable identity.
-    ///
-    /// The Studio runtime persists this record in the per-Thread history identity index so a
-    /// repeated submission can be answered after the resident terminal input has left core state.
+    /// Projects one terminal input into its bounded owner receipt.
+    /// Saving Current may preserve this window; no permanent input identity index is required.
     pub fn from_record(record: &InputRecord) -> Self {
         Self {
             digest: record.input.digest(),
-            continuation: record.continuation.clone(),
             delivery: record.delivery.clone(),
             id: record.input.id.clone(),
             ordinal: record.ordinal,
@@ -236,7 +176,6 @@ impl InputIdentity {
     pub fn receipt(&self, input: ThreadInput, accepted_sequence: u64) -> InputRecord {
         InputRecord {
             accepted_sequence,
-            continuation: self.continuation.clone(),
             delivery: self.delivery.clone(),
             input,
             ordinal: self.ordinal,
@@ -244,46 +183,19 @@ impl InputIdentity {
             state: self.state.clone(),
         }
     }
-
-    /// Rebuilds the receipt of a control operation whose body cannot be re-derived from current
-    /// state.
-    ///
-    /// A body-less continuation names the point it was admitted for, so its immutable body is
-    /// recomputed from the association this identity retained. That keeps a repeated operation a
-    /// pure receipt: it neither re-claims the point nor wakes execution again.
-    pub fn control_receipt(&self, accepted_sequence: u64) -> Option<InputRecord> {
-        if self.purpose != InputPurpose::Continuation {
-            return None;
-        }
-        let continuation = self.continuation.clone()?;
-        let input = ThreadInput::for_continuation(
-            self.id.clone(),
-            &continuation.point_id,
-            continuation.source_turn_id.as_deref(),
-        );
-        // The receipt must be the operation this identity was really admitted with: a synthesized
-        // control body whose digest differs from the recorded one is a different operation, not a
-        // repeat, so it is refused exactly like a conflicting body.
-        if input.digest() != self.digest {
-            return None;
-        }
-        Some(self.receipt(input, accepted_sequence))
-    }
 }
 
-/// Builds the minimal durable identity of a terminal input record.
-///
-/// Host layers use this to persist the identity index entry alongside the effect that settled the
-/// input; core keeps only the pending queue and never re-reads the durable history.
+/// Builds the minimal receipt of a terminal input record.
+/// The receipt is serializable for explicit storage or upgrade consumers, but grants no
+/// History lookup or permanent deduplication contract to normal input admission.
 pub fn input_identity(record: &InputRecord) -> InputIdentity {
     InputIdentity::from_record(record)
 }
 
-/// Rebuilds one framework receipt from a stored identity.
+/// Rebuilds one framework receipt from an already available identity.
 ///
-/// The caller passes the watermark that answers the repeat (the current commit for a live owner,
-/// or the durable write sequence for a cold Thread), so a repeated submission returns a receipt
-/// without re-admission.
+/// The caller supplies the identity and its acceptance watermark; this helper performs no lookup
+/// and does not admit or execute an input.
 pub fn input_receipt(
     identity: &InputIdentity,
     input: ThreadInput,
@@ -374,23 +286,27 @@ pub enum InputExecution {
 /// Execution authorization is independent from physical cancellation and pending input facts.
 /// Notifications may wake a dormant driver, but only explicit continuation can leave a pause.
 #[derive(Debug)]
-pub(super) enum InputDriver {
-    Dormant,
+pub(super) enum ExecutionPolicy {
     Enabled(InputDriverOptions),
-    Paused,
+    Paused(PauseReason),
+}
+#[derive(Debug)]
+pub(super) enum PauseReason {
+    Initial,
+    User,
     Failed(Arc<ThreadError>),
 }
 
-impl InputDriver {
+impl ExecutionPolicy {
     pub(super) fn options(&self) -> Option<InputDriverOptions> {
         match self {
             Self::Enabled(options) => Some(*options),
-            _ => None,
+            Self::Paused(_) => None,
         }
     }
     pub(super) fn error(&self) -> Option<&Arc<ThreadError>> {
         match self {
-            Self::Failed(error) => Some(error),
+            Self::Paused(PauseReason::Failed(error)) => Some(error),
             _ => None,
         }
     }
@@ -398,20 +314,17 @@ impl InputDriver {
         *self = Self::Enabled(options);
     }
     pub(super) fn wake(&mut self, options: InputDriverOptions) {
-        match self {
-            Self::Dormant | Self::Enabled(_) => self.enable(options),
-            Self::Paused | Self::Failed(_) => {}
+        if matches!(self, Self::Paused(PauseReason::Initial) | Self::Enabled(_)) {
+            self.enable(options);
         }
     }
     pub(super) fn pause(&mut self) {
-        if !matches!(self, Self::Failed(_)) {
-            *self = Self::Paused;
+        if !matches!(self, Self::Paused(PauseReason::Failed(_))) {
+            *self = Self::Paused(PauseReason::User);
         }
     }
     pub(super) fn fail(&mut self, error: Arc<ThreadError>) {
-        if !matches!(self, Self::Failed(_)) {
-            *self = Self::Failed(error);
-        }
+        *self = Self::Paused(PauseReason::Failed(error));
     }
 }
 
@@ -423,202 +336,63 @@ impl Owner {
         // An explicit resume of a queue that had stopped is a fresh authorization, so the stop
         // generation an earlier cancellation armed for the queue's next Turn is spent: the resumed
         // queue runs under the stop count it now has, not under one a stop already overtook.
-        if self.input_driver.options().is_none() {
-            self.authorized_stops = self.current_saved_lifecycle.map(|_| self.interrupt.stops());
-        }
-        self.input_driver.enable(options);
+        self.policy.enable(options);
         self.publish_snapshot();
         Ok(())
     }
 
     pub(super) fn pause_inputs(&mut self) {
-        self.input_driver.pause();
+        self.policy.pause();
         self.publish_snapshot();
     }
 
-    pub(super) async fn drive_one_input(&mut self) -> bool {
-        if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
-            return false;
+    pub(super) fn start_queued_work(&mut self) -> Result<bool, ThreadError> {
+        if self.state.lifecycle != ThreadLifecycle::Open
+            || self.interrupt.is_closing()
+            || !self.continuation_ready()
+        {
+            return Ok(false);
         }
-        if !self.continuation_ready() {
-            return false;
-        }
-        let Some(options) = self.input_driver.options() else {
-            return false;
+        let Some(options) = self.policy.options() else {
+            return Ok(false);
         };
-        let pending_input = self
-            .state
-            .inputs
-            .iter()
-            .find(|record| self.driveable(record));
-        let source = if let Some(record) = pending_input {
+        let source = if let Some(record) = self.state.inputs.iter().find(|r| self.driveable(r)) {
             format!("input:{}", record.input.id)
         } else if self.state.wake_messages_through > self.state.consumed_messages {
             format!("message:{}", self.state.wake_messages_through)
         } else {
-            return false;
+            return Ok(false);
         };
-        let has_input = pending_input.is_some();
-        let mut suffix = self.state.commit_sequence;
-        let turn_id = loop {
-            let candidate = format!("{source}:{suffix}");
-            if !self
-                .state
-                .turns
-                .iter()
-                .any(|turn| turn.turn_id == candidate)
-                && !self
-                    .state
-                    .attempts
-                    .iter()
-                    .any(|attempt| attempt.turn_id == candidate)
-            {
-                break candidate;
-            }
-            let Some(next) = suffix.checked_add(1) else {
-                self.input_driver
-                    .fail(Arc::new(ThreadError::RevisionExhausted));
-                self.pause_inputs();
-                return false;
-            };
-            suffix = next;
-        };
-        // The execution identity exists before any Turn record or storage wait, so a stop can name
-        // exactly this generation even while it is still preparing.
-        if self.current_saved_lifecycle.is_none()
-            && let Err(error) = self.begin_execution()
-        {
-            self.input_driver.fail(Arc::new(error));
-            self.pause_inputs();
-            return false;
-        }
-        let driven_turn = turn_id.clone();
-        let request = QueuedTurn {
-            attempt_prefix: turn_id.clone(),
-            turn_id,
+        let turn_id = format!("{source}:{}", uuid::Uuid::new_v4());
+        let mut input = TurnInput {
+            turn_id: turn_id.clone(),
+            attempt_prefix: turn_id,
+            content: Vec::new(),
             max_model_steps: options.max_model_steps,
             cancellation: CancellationToken::new(),
         };
-        let result = if self.current_saved_lifecycle.is_some() {
-            // Only the already-authorized queue driver reaches here. Use the same Current resume
-            // reconciliation and the same Turn loop; restoring an owner alone never enables it.
-            let authorized_stops = self
-                .authorized_stops
-                .take()
-                .unwrap_or_else(|| self.interrupt.stops());
-            self.resume_current(
-                self.runtime_epoch,
-                authorized_stops,
-                TurnInput {
-                    turn_id: request.turn_id,
-                    attempt_prefix: request.attempt_prefix,
-                    content: Vec::new(),
-                    max_model_steps: request.max_model_steps,
-                    cancellation: request.cancellation,
-                },
-            )
-            .await
-            .map(Some)
-            .map_err(|error| match error {
-                current::CurrentError::Cancelled => ThreadError::Cancelled,
-                current::CurrentError::Owner(ref owner)
-                    if matches!(owner.as_ref(), ThreadError::Cancelled) =>
-                {
-                    ThreadError::Cancelled
-                }
-                error => ThreadError::CurrentResume(Arc::new(error)),
-            })
-        } else if has_input {
-            self.run_next_input(request).await
+        let restored = self.current_saved_lifecycle.is_some();
+        if restored {
+            input = self
+                .prepare_current_resume(self.runtime_epoch, self.interrupt.stops(), input)
+                .map_err(|e| ThreadError::CurrentResume(Arc::new(e)))?;
         } else {
-            let active = self
-                .interrupt
-                .activate(&request.cancellation, self.authorized_stops.take());
-            // A message-only Turn also holds a frozen (empty) batch, so a replacement arriving while it
-            // prepares must re-freeze here for the same reason the queue batch does.
-            self.frozen_turn = Some(request.turn_id.clone());
-            let result = self
-                .run_turn(TurnInput {
-                    turn_id: request.turn_id,
-                    attempt_prefix: request.attempt_prefix,
-                    max_model_steps: request.max_model_steps,
-                    content: Vec::new(),
-                    cancellation: active.token.clone(),
-                })
-                .await
-                .map(Some);
-            self.frozen_turn = None;
-            result
-        };
-        // A replacement this owner caused itself is recognized by the exact Turn it cancelled **and** by
-        // the stop generation that cancellation produced. Any later stop request — the public interrupt,
-        // a Turn stop, an execution stop — changes the generation and therefore wins over the
-        // replacement, and a closing owner is never re-frozen either.
-        let re_freeze = match self.superseded_batch.take() {
-            Some((turn, stops))
-                if turn == driven_turn
-                    && stops == self.interrupt.stops()
-                    && !self.interrupt.is_closing()
-                    && self.input_driver.options().is_some() =>
-            {
-                Some(stops)
-            }
-            _ => None,
-        };
-        // A continuation request that cancelled the running Turn keeps the queue enabled so the
-        // continuation itself can run — but only while no later stop replaced that authorization. The
-        // marker is always consumed, so a stale generation can never authorize a later cancellation.
-        let continuation_cancel = self.continuation_cancel.take();
-        let continuation_allowed =
-            continuation_cancel.is_none_or(|generation| generation == self.interrupt.stops());
-        // The stop generation that kept the queue running through this cancellation is exactly the
-        // one the Turn it authorized may start under: a stop that arrives before that Turn activates
-        // pauses the queue through it, instead of being silently consumed by a fresh generation the
-        // stop never caused.
-        let authorized_stops = re_freeze
-            .or(continuation_cancel.filter(|generation| *generation == self.interrupt.stops()));
-        match result {
-            Ok(Some(TurnCompletion {
-                outcome: TurnOutcome::Completed,
-                ..
-            })) => {}
-            Ok(Some(TurnCompletion {
-                outcome: TurnOutcome::WaitingInteraction | TurnOutcome::StepLimit,
-                ..
-            }))
-            | Ok(None) => self.pause_inputs(),
-            // The batch this Turn froze was replaced before it was ever admitted, so the content it
-            // holds no longer matches what it would consume. It is dropped and the queue keeps running
-            // with the new authorization instead of pausing or sending a request without that content.
-            Err(ThreadError::Cancelled) if re_freeze.is_some() => {
-                self.authorized_stops = authorized_stops;
-            }
-            Err(ThreadError::Cancelled)
-                if self.interrupted_turn.is_some()
-                    && self.input_driver.options().is_some()
-                    && !self.interrupt.is_closing()
-                    && continuation_allowed =>
-            {
-                self.authorized_stops = authorized_stops
-            }
-            Err(ThreadError::Cancelled) => self.pause_inputs(),
-            Err(error) => {
-                self.input_driver.fail(Arc::new(error));
-                self.pause_inputs();
-            }
+            input.content = self.freeze_next_input_batch().unwrap_or_default();
         }
-        true
+        self.start_run(input, super::execution::RunReply::Driver)
+            .map_err(|(error, _)| error)?;
+        self.active.as_mut().unwrap().restored = restored;
+        Ok(true)
     }
 
     pub(super) fn accept_input(&mut self, input: ThreadInput) -> Result<InputRecord, ThreadError> {
-        self.accept_input_with_policy(input, InputPolicy::StartOrQueue, None)
+        self.accept_input_with_policy(input, InputPolicy::StartOrQueue)
     }
 
     pub(super) fn accept_input_with_policy(
         &mut self,
         input: ThreadInput,
         policy: InputPolicy,
-        continuation: Option<InputContinuation>,
     ) -> Result<InputRecord, ThreadError> {
         if input.id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -664,31 +438,7 @@ impl Owner {
                 }),
             InputPolicy::StartOnly | InputPolicy::StartOrQueue => InputDelivery::NextTurn,
         };
-        // Whether this submission may carry the point is decided before anything is admitted, so a
-        // refused claim never leaves an input behind that would have to be withdrawn afterwards.
-        if let Some(continuation) = &continuation
-            && !self.may_claim_continuation(&continuation.point_id)
-        {
-            return Err(ThreadError::NoContinuation);
-        }
-        let record = stage_input_with_delivery(&mut self.state, input, delivery, continuation)?;
-        if record.continuation.is_some() {
-            // The claim this submission takes over from is captured before the new claim replaces it,
-            // so the replaced placeholder is settled in the very commit that authorizes the new one.
-            let previous = self
-                .state
-                .continuation
-                .as_ref()
-                .and_then(|point| point.claim.clone());
-            // Admitting the claim and fixing the durable watermark it owes is one commit: the
-            // requirement names the very sequence that records the claim, so no submission can claim
-            // without owing its own durability and no unclaimed submission can leave a requirement.
-            self.record_input_claim(&record);
-            if let Some(previous) = previous {
-                self.settle_replaced_carrier(&previous, Some(&record.input.id))?;
-            }
-            self.discard_superseded_control_inputs(Some(&record.input.id))?;
-        }
+        let record = stage_input_with_delivery(&mut self.state, input, delivery)?;
         self.publish()?;
         Ok(record)
     }
@@ -725,34 +475,6 @@ impl Owner {
         let record = self.change_input(id, InputState::Discarded)?;
         self.publish()?;
         Ok(record)
-    }
-
-    pub(super) async fn run_next_input(
-        &mut self,
-        request: QueuedTurn,
-    ) -> Result<Option<TurnCompletion>, ThreadError> {
-        let Some(content) = self.freeze_next_input_batch() else {
-            return Ok(None);
-        };
-        let active = self
-            .interrupt
-            .activate(&request.cancellation, self.authorized_stops.take());
-        // The batch copies its content here, so this is the window in which a replacement has to
-        // re-freeze instead of patching the queue.
-        self.frozen_turn = Some(request.turn_id.clone());
-        let result = self
-            .run_turn(TurnInput {
-                turn_id: request.turn_id,
-                attempt_prefix: request.attempt_prefix,
-                content,
-                max_model_steps: request.max_model_steps,
-                cancellation: active.token.clone(),
-            })
-            .await;
-        self.frozen_turn = None;
-        self.active_inputs.clear();
-        self.publish_snapshot();
-        result.map(Some)
     }
 
     /// Freeze a batch without consuming it; ordinary admission later confirms consumption.
@@ -843,7 +565,7 @@ impl Owner {
                 .find(|record| record.input.id == id)
             else {
                 // The input already reached a terminal state and left the bounded resident queue
-                // when an earlier step of this Turn consumed it. Its durable receipt stays the
+                // when an earlier step of this Turn consumed it. Its resident receipt stays the
                 // authority: a consumption attributed to this Turn completes normally, while any
                 // other terminal state stays an input conflict.
                 if active_input_already_consumed(&self.state, &id, turn_id) {
@@ -913,7 +635,7 @@ fn steering_record_id(turn_id: &str, input_id: &str) -> String {
 ///
 /// A still-pending input keeps its full record; a terminal input is answered from the bounded
 /// identity window by comparing the immutable content digest. An identity older than that window
-/// is answered by the host's durable identity index, so core never accumulates history.
+/// is unknown to admission; the owner never asks a host or History to recover it.
 /// A repeated id with a different body stays an identity conflict.
 pub(super) fn duplicate_input_receipt(
     state: &ThreadSnapshot,
@@ -942,10 +664,10 @@ pub(super) fn duplicate_input_receipt(
     Ok(Some(identity.receipt(input.clone(), state.commit_sequence)))
 }
 
-/// Reports whether bounded durable state already records `id` as consumed by `turn_id`.
+/// Reports whether bounded owner state already records `id` as consumed by `turn_id`.
 ///
 /// A consumed input leaves the resident queue as soon as its commit publishes, so a later step of
-/// the same Turn sees only its durable receipt. An identity that already left the bounded window is
+/// the same Turn sees only its resident receipt. An identity that already left the bounded window is
 /// accepted as this Turn's own admission receipt: the owner lists only inputs it admitted into the
 /// active batch, discarding an in-use input is refused, and Turns are serial, so a listed input that
 /// is no longer resident can only have been consumed by this Turn.
@@ -964,7 +686,7 @@ pub(super) fn stage_input(
     state: &mut ThreadSnapshot,
     input: ThreadInput,
 ) -> Result<InputRecord, ThreadError> {
-    stage_input_with_delivery(state, input, InputDelivery::NextTurn, None)
+    stage_input_with_delivery(state, input, InputDelivery::NextTurn)
 }
 
 /// Stages one input under the delivery it was routed to and the continuation it carries.
@@ -972,28 +694,11 @@ pub(super) fn stage_input_with_delivery(
     state: &mut ThreadSnapshot,
     input: ThreadInput,
     delivery: InputDelivery,
-    continuation: Option<InputContinuation>,
 ) -> Result<InputRecord, ThreadError> {
     if input.id.is_empty() {
         return Err(ThreadError::InvalidIdentity);
     }
     input.validate_purpose()?;
-    if input.purpose == InputPurpose::Continuation {
-        // Framework control is only ever the canonical operation body for its own association: a
-        // hand-written control would let a caller mint an identity that later answers a receipt for
-        // work it never authorized, so it is refused instead of admitted under a purpose it does not
-        // really have.
-        let canonical = continuation.as_ref().is_some_and(|continuation| {
-            ThreadInput::for_continuation(
-                input.id.clone(),
-                &continuation.point_id,
-                continuation.source_turn_id.as_deref(),
-            ) == input
-        });
-        if !canonical {
-            return Err(ThreadError::InvalidControlInput);
-        }
-    }
     if let Some(previous) = state
         .inputs
         .iter()
@@ -1018,7 +723,6 @@ pub(super) fn stage_input_with_delivery(
             .commit_sequence
             .checked_add(1)
             .ok_or(ThreadError::RevisionExhausted)?,
-        continuation,
         delivery,
         input,
         ordinal,

@@ -47,10 +47,18 @@ pub(crate) fn checkpoint_recovery_snapshot() -> BTreeMap<String, String> {
         .clone()
 }
 
+/// Frozen continuation provenance decoded only during schema-24 import.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LegacyInputContinuation {
+    pub(crate) point_id: String,
+    pub(crate) source_turn_id: Option<String>,
+}
+
 /// Frozen schema-24 backup identity for an admitted input.
 ///
-/// This is migration material only. Normal idempotency comes from the resident Thread state and
-/// exact History entity/original reads; Current recovery must not use this row as a fallback.
+/// This is migration material only. Normal idempotency comes from the resident Thread state;
+/// neither realtime admission nor Current recovery reads this row as a fallback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InputIdentityEntry {
@@ -60,7 +68,7 @@ pub(crate) struct InputIdentityEntry {
     ///
     /// 旧版本写入的行没有这个字段，按「没有接续来源」解码，历史身份保持原样。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) continuation: Option<pl_core::thread::input::InputContinuation>,
+    pub(crate) continuation: Option<LegacyInputContinuation>,
     /// Delivery routing receipt retained from the original admission.
     pub(crate) delivery: pl_core::thread::input::InputDelivery,
     pub(crate) id: String,
@@ -90,7 +98,7 @@ impl InputIdentityEntry {
     ) -> Self {
         Self {
             digest: identity.digest,
-            continuation: identity.continuation,
+            continuation: None,
             delivery: identity.delivery,
             id: identity.id,
             purpose: identity.purpose,

@@ -70,6 +70,7 @@ abstract interface class CommandTransport {
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   );
 
   /// 主会话可见的子任务待决交互；列举不激活任何子会话。
@@ -320,6 +321,7 @@ abstract class StudioTransport
   Future<ContinuationOperationView> readContinuationOperation(
     String threadId,
     String operationId,
+    String expectedContinuationToken,
   );
   Future<List<ChildInteractionSummary>> readChildInteractions(String threadId);
 

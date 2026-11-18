@@ -2,8 +2,8 @@
 use super::*;
 
 /// Upper bound on how many terminal input identities stay resident for same-incarnation
-/// idempotency. History keeps the authoritative identity; the host answers older repeats from its
-/// durable identity index, so this ledger is a fixed window and never grows with history.
+/// idempotency. Older identities are unknown to live admission, which never queries History to
+/// recover them. Saving Current preserves at most this same bounded window.
 pub(super) const TERMINAL_INPUT_LEDGER_CAPACITY: usize = 64;
 
 /// Upper bound on how many consumed message identities stay resident for same-incarnation
@@ -43,8 +43,8 @@ pub struct HistoryExport {
 ///
 /// The owner and its handles read the newest committed interaction, permission or tool delivery
 /// from this window instead of keeping a checkpoint-visible payload ledger. It is the same buffer
-/// live observers consume, it is never serialized into checkpoints, and its released entries are
-/// answered by the host's durable identity index and history reader.
+/// live observers consume and is never serialized into checkpoints. Once an entry is released,
+/// only an explicit historical query may read its archive; live commands do not recover it.
 ///
 /// # Bound and release semantics
 /// The window retains exactly the write batches that are neither admitted-and-persisted nor
@@ -52,7 +52,7 @@ pub struct HistoryExport {
 /// when a Thread accumulates too many not-yet-durable bytes the owner pauses further admission
 /// (see `refresh_storage_pressure`) instead of dropping an accepted fact here. As soon as a fixed
 /// durable watermark is confirmed the covered batches are released immediately, and a consumer that
-/// still needs them reads the durable history store through the documented host contract.
+/// explicitly requesting historical data reads it through the separate History API.
 ///
 /// The window therefore performs no serialization and no byte accounting of its own: a commit only
 /// clones an `Arc` into the deque, so publishing never blocks on encoding a full body.
@@ -233,9 +233,8 @@ impl EffectWindowState {
 ///
 /// Terminal interaction, permission and delivery bodies are committed history: they must not be
 /// cached inside the serialized snapshot. An identical repeated command or a read-only task
-/// inspection returns the exact committed body while that commit is still not durable; once the
-/// durable handoff has released it, the host answers from the durable identity index and
-/// history store.
+/// inspection can return the exact committed body while the window retains it. After handoff,
+/// this lookup returns no body; normal commands do not fall back to persisted history.
 pub(crate) fn recent_effect_fact<T>(
     window: &EffectWindow,
     mut select: impl FnMut(&ThreadEffectBatch) -> Option<T>,
@@ -302,8 +301,8 @@ pub struct ActiveContextCompaction {
 /// bounded ledgers keep the minimal identity of facts that an identical repeated command, a
 /// finished task's read-only inspection or a retry still has to answer. Finished interaction,
 /// permission and tool-result bodies are never kept here: while their commit is still inside the
-/// bounded live [`EffectWindow`] a repeat reads the exact body from there, and older identities are
-/// answered by the host's durable identity index (see the W6-1 handoff contract).
+/// bounded live [`EffectWindow`] a repeat can read the exact body from there. Older bodies require
+/// an explicit historical query and are never fetched to decide live admission.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
@@ -359,8 +358,8 @@ pub struct ThreadSnapshot {
     /// Content is not retained: a repeated submission matches the stored digest and is answered
     /// from the receipt, while a conflicting body remains an identity conflict. Only the newest
     /// [`TERMINAL_INPUT_LEDGER_CAPACITY`] entries stay resident so the ledger cannot grow with
-    /// history; older identities are answered by the host's durable identity index in
-    /// `history.sqlite`, never by moving history entities back into core.
+    /// history. Older identities are unknown to admission; neither core nor its host fetches a
+    /// permanent identity index to recover them.
     #[serde(default)]
     pub terminal_inputs: Arc<[input::InputIdentity]>,
     /// Commit-export buffer for input changes; drained by the commit that exports it.
@@ -369,9 +368,6 @@ pub struct ThreadSnapshot {
     /// Live session availability; replay never constructs physical model resources.
     #[serde(skip)]
     pub model_available: bool,
-    /// Completed executions retained in memory until their atomic result commit succeeds.
-    #[serde(skip)]
-    pub pending_tool_commits: Vec<String>,
     /// Tasks that are still running or whose result has not reached model context yet.
     #[serde(default)]
     pub tasks: std::collections::BTreeMap<String, task::TaskRecord>,
@@ -383,12 +379,12 @@ pub struct ThreadSnapshot {
     pub lifecycle: ThreadLifecycle,
     /// Work this Thread still owes after an interruption; `None` when nothing is owed.
     ///
-    /// It is the one durable logical fact a body-less continuation relies on: it names the work,
-    /// never copies its content, and only references an existing input or inbox message as its
-    /// claim. The commit that admits the claimed model request clears it, so a Thread that finished
-    /// normally never offers an empty continuation.
+    /// The one-shot token names owed work without repeating its content. Resume consumes it
+    /// when its new execution is reserved; the bounded operation cache retains acceptance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<ContinuationPoint>,
+    #[serde(default)]
+    pub continuation_operations: std::collections::VecDeque<ContinuationOperation>,
     /// Identity and phase of the execution this owner currently owns.
     ///
     /// Allocated once the driver has selected work and before any Turn record or storage wait
@@ -405,13 +401,6 @@ pub struct ThreadSnapshot {
     /// never address a newer execution.
     #[serde(default)]
     pub execution_sequence: u64,
-    /// Fixed durable watermark a claimed continuation has to reach before a new model request.
-    ///
-    /// Set in the same commit that admits the claim, so the requirement always names the commit that
-    /// carries it. A host without a cold store never claims durability, so the wait is skipped there
-    /// instead of pretending the fact was saved.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub required_durable_sequence: Option<u64>,
     pub context: ContextSnapshot,
     /// Attempts of turns that are still unfinished; their identity and order are needed for
     /// retry, correction and usage observation inside the live Turn.
@@ -610,7 +599,6 @@ impl ThreadSnapshot {
         self.active_context_compaction = None;
         self.tool_progress.clear();
         self.model_available = false;
-        self.pending_tool_commits.clear();
         self.input_execution = Default::default();
         self.persistence = Default::default();
     }
@@ -909,14 +897,12 @@ pub struct ReplaceContext {
 
 /// Durable fact that this Thread still owes work because execution was interrupted.
 ///
-/// A point names the work, never its content: it carries a stable identity, the Turn it came from
-/// when there is one, the reason only when the interruption really established one, the moment it
-/// was formed and an optional claim that references an already admitted input or inbox message.
-/// Claiming never deletes the point; the commit that admits the claimed model request clears it.
+/// The token names owed work and its interruption source without copying content. Resume
+/// consumes it at acceptance, and a later pause or cold activation issues a fresh token.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContinuationPoint {
-    /// Stable identity derived from the forming commit and its source, so it is never reused.
+    /// One-shot identity; current owners issue a fresh UUID for each new pause.
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_turn_id: Option<String>,
@@ -924,8 +910,6 @@ pub struct ContinuationPoint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<ContinuationReason>,
     pub created_at: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub claim: Option<ContinuationClaim>,
 }
 
 impl ContinuationPoint {
@@ -945,7 +929,6 @@ impl ContinuationPoint {
             source_turn_id,
             reason,
             created_at: crate::time::unix_seconds(),
-            claim: None,
         }
     }
 
@@ -959,22 +942,6 @@ impl ContinuationPoint {
         reason: Option<ContinuationReason>,
     ) -> bool {
         self.source_turn_id.as_deref() == source_turn_id && self.reason == reason
-    }
-
-    /// The input identity this point is claimed by, when the claim is input-shaped.
-    pub fn claimed_input(&self) -> Option<&str> {
-        match self.claim.as_ref()? {
-            ContinuationClaim::Input { input_id } => Some(input_id),
-            ContinuationClaim::InboxMessage { .. } => None,
-        }
-    }
-
-    /// The inbox message sequence this point is claimed by, when the claim is message-shaped.
-    pub fn claimed_message(&self) -> Option<u64> {
-        match self.claim.as_ref()? {
-            ContinuationClaim::InboxMessage { sequence, .. } => Some(*sequence),
-            ContinuationClaim::Input { .. } => None,
-        }
     }
 }
 
@@ -992,21 +959,6 @@ pub enum ContinuationReason {
     StepLimit,
     /// Execution failed with a typed error.
     ExecutionFailed,
-}
-
-/// Already admitted fact that currently carries one continuation point.
-///
-/// A claim only references an existing input or inbox message; it never creates a second queue, a
-/// pause table or a shadow copy of the operation's state.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    tag = "kind"
-)]
-pub enum ContinuationClaim {
-    Input { input_id: String },
-    InboxMessage { message_id: String, sequence: u64 },
 }
 
 /// One execution this owner owns, from work selection until it is settled.
@@ -1030,7 +982,7 @@ pub struct ActiveExecution {
 pub enum ExecutionPhase {
     /// Work was selected; no Turn record and no storage wait exist yet.
     Preparing,
-    /// Waiting for the claimed facts to become durable.
+    /// Waiting for actual storage or output capacity.
     AwaitingStorage,
     /// Waiting for the Turn admission gate.
     AwaitingAdmission,
@@ -1469,16 +1421,14 @@ pub enum ThreadError {
     InputInUse,
     #[error("a control input carries no user content, so it cannot be built with context")]
     InvalidControlInput,
-    #[error("Thread has no claimable continuation point")]
-    NoContinuation,
+    #[error("the continuation token is stale")]
+    StaleContinuation,
     #[error("input was already consumed")]
     InputConsumed,
     #[error("Thread model session is unavailable; replace the model binding to continue")]
     ModelUnavailable,
     #[error("frozen tool permissions were revoked before admission or execution")]
     ToolPermissionRevoked,
-    #[error("completed tool results are waiting for a successful Thread commit")]
-    PendingToolCommit,
     #[error("task control is not granted to this tool")]
     TaskAccessDenied,
     #[error("task control caller is no longer running")]

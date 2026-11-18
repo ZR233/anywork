@@ -134,6 +134,8 @@ pub struct ThreadCurrentState {
     pub execution: Option<ActiveExecution>,
     #[serde(with = "serde_views::continuation")]
     pub continuation: Option<ContinuationPoint>,
+    #[serde(default)]
+    pub continuation_operations: std::collections::VecDeque<super::ContinuationOperation>,
     #[serde(with = "serde_views::inputs")]
     pub inputs: Arc<[input::InputRecord]>,
     pub input_ordinal: u64,
@@ -280,6 +282,62 @@ pub enum CurrentError {
     Resource(#[from] crate::context::ResourceReadError),
 }
 
+/// Pure confirmed-result pairing shared by live acceptance and paused Current reconciliation.
+/// Execution authority, interaction controls and extension CAS never enter this function.
+pub(in crate::thread) fn pair_known_call_result(
+    context: &mut ContextSnapshot,
+    record: ContextRecord,
+) -> Result<bool, CurrentError> {
+    let ContextSource::ToolResult { call_id, tool_id } = &record.source else {
+        return Err(CurrentError::InvalidIdentity);
+    };
+    if let Some(existing) = context.records.iter().find(|existing| matches!(&existing.source, ContextSource::ToolResult { call_id: known, .. } if known == call_id)) {
+        if existing.source != record.source || existing.content != record.content { return Err(CurrentError::RecordConflict(existing.id.clone())); }
+        return Ok(false);
+    }
+    if context
+        .records
+        .iter()
+        .any(|existing| existing.id == record.id)
+    {
+        return Err(CurrentError::RecordConflict(record.id));
+    }
+    let batch = context
+        .records
+        .iter()
+        .find_map(|source| {
+            source
+                .tool_calls
+                .iter()
+                .position(|call| &call.call_id == call_id && &call.tool_id == tool_id)
+                .map(|ordinal| (&source.tool_calls, ordinal))
+        })
+        .ok_or(CurrentError::InvalidIdentity)?;
+    let insertion = context
+        .records
+        .iter()
+        .position(|existing| match &existing.source {
+            ContextSource::ToolResult { call_id: known, .. } => batch
+                .0
+                .iter()
+                .position(|call| &call.call_id == known)
+                .is_some_and(|ordinal| ordinal > batch.1),
+            _ => false,
+        })
+        .unwrap_or(context.records.len());
+    let revision = context
+        .revision
+        .checked_add(1)
+        .ok_or(CurrentError::RevisionExhausted)?;
+    let mut records = context.records.to_vec();
+    records.insert(insertion, record);
+    *context = ContextSnapshot {
+        revision,
+        records: records.into(),
+    };
+    Ok(true)
+}
+
 impl ThreadCurrentState {
     /// Moves no live capability across owners. Source execution and lifecycle are retained by the
     /// caller as observations; the new physical owner starts open, without an active execution.
@@ -287,6 +345,7 @@ impl ThreadCurrentState {
         ThreadSnapshot {
             lifecycle: ThreadLifecycle::Open,
             continuation: self.continuation.clone(),
+            continuation_operations: self.continuation_operations.clone(),
             inputs: self.inputs.clone(),
             input_ordinal: self.input_ordinal,
             terminal_inputs: self.terminal_inputs.clone(),
@@ -345,16 +404,14 @@ impl ThreadCurrentState {
             saved.restore()?;
             tool_previews.insert(task.call_id.clone(), saved);
         }
-        let mut continuation = state.continuation.clone();
-        if let Some(point) = &mut continuation {
-            point.claim = None;
-        }
+        let continuation = state.continuation.clone();
         let mut usage_summary = state.usage_summary.clone();
         usage_summary.applied_sequence = 0;
         Ok(Self {
             lifecycle: state.lifecycle,
             execution: state.execution.clone(),
             continuation,
+            continuation_operations: state.continuation_operations.clone(),
             inputs: state.inputs.clone(),
             input_ordinal: state.input_ordinal,
             terminal_inputs: state.terminal_inputs.clone(),
@@ -450,6 +507,20 @@ impl ThreadCurrent {
         if thread_id.is_empty() || self.thread_id != thread_id {
             return Err(CurrentError::ThreadIdentity(thread_id.into()));
         }
+        if self.state.continuation_operations.len() > 64 {
+            return Err(CurrentError::InvalidIdentity);
+        }
+        let mut operations = std::collections::BTreeSet::new();
+        for operation in &self.state.continuation_operations {
+            if operation.request.operation_id.is_empty()
+                || operation.request.expected_continuation_token.is_empty()
+                || operation.execution_id.is_empty()
+                || operation.turn_id.is_empty()
+                || !operations.insert(&operation.request.operation_id)
+            {
+                return Err(CurrentError::InvalidIdentity);
+            }
+        }
         self.state.context.pending_calls()?;
         for preview in self.state.tool_previews.values() {
             preview.validate()?;
@@ -470,8 +541,48 @@ impl ThreadCurrent {
         self.validate(thread_id)?;
         self.saved_runtime_epoch = RuntimeEpoch::new();
         self.snapshot_revision = 0;
+        self.state.inputs = self
+            .state
+            .inputs
+            .iter()
+            .filter(|record| record.input.purpose == input::InputPurpose::Message)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        self.state.terminal_inputs = self
+            .state
+            .terminal_inputs
+            .iter()
+            .filter(|identity| identity.purpose == input::InputPurpose::Message)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        if self.state.continuation.is_none()
+            && (self.state.execution.is_some()
+                || self.model_call.is_some()
+                || !self.state.inputs.is_empty())
+        {
+            self.state.continuation = Some(ContinuationPoint::new(
+                0,
+                "restored",
+                self.state
+                    .execution
+                    .as_ref()
+                    .and_then(|e| e.turn_id.clone()),
+                Some(super::ContinuationReason::ProcessInterrupted),
+            ));
+        }
+
+        for operation in &mut self.state.continuation_operations {
+            if operation.disposition == super::ContinuationDisposition::Scheduled {
+                operation.disposition = super::ContinuationDisposition::NotExecuted(
+                    super::ContinuationNotExecuted::RestoredPaused,
+                );
+            }
+        }
+
         if let Some(point) = &mut self.state.continuation {
-            point.claim = None;
+            point.id = uuid::Uuid::new_v4().to_string();
         }
         Ok(self)
     }
@@ -546,33 +657,20 @@ impl ThreadCurrent {
         for delivery in self.state.deliveries.iter() {
             match &delivery.target {
                 ToolDeliveryTarget::CallResult => {
-                    let existing = next.context.records.iter().find(|record| {
-                        matches!(&record.source,
-                        ContextSource::ToolResult { call_id, .. } if *call_id == delivery.call_id)
-                    });
-                    if let Some(record) = existing {
-                        if record.source
-                            != (ContextSource::ToolResult {
-                                call_id: delivery.call_id.clone(),
-                                tool_id: delivery.tool_id.clone(),
-                            })
-                            || record.content != delivery.delivered_context
-                        {
-                            return Err(CurrentError::RecordConflict(record.id.clone()));
-                        }
-                    } else {
-                        let turn_id = next
-                            .context
-                            .records
-                            .iter()
-                            .find(|record| {
-                                record
-                                    .tool_calls
-                                    .iter()
-                                    .any(|call| call.call_id == delivery.call_id)
-                            })
-                            .and_then(|record| record.turn_id.clone());
-                        next.append_record(ContextRecord {
+                    let turn_id = next
+                        .context
+                        .records
+                        .iter()
+                        .find(|record| {
+                            record
+                                .tool_calls
+                                .iter()
+                                .any(|call| call.call_id == delivery.call_id)
+                        })
+                        .and_then(|record| record.turn_id.clone());
+                    pair_known_call_result(
+                        &mut next.context,
+                        ContextRecord {
                             id: format!("current:result:{}", delivery.call_id),
                             turn_id,
                             source: ContextSource::ToolResult {
@@ -581,8 +679,8 @@ impl ThreadCurrent {
                             },
                             content: delivery.delivered_context.clone(),
                             tool_calls: Vec::new(),
-                        })?;
-                    }
+                        },
+                    )?;
                 }
                 ToolDeliveryTarget::Inbox { message_id } => {
                     deliver_message(

@@ -3,9 +3,10 @@ use super::*;
 
 #[derive(Debug)]
 pub(in crate::thread) enum Command {
+    Control(mailbox::MailboxCommand),
     CurrentResume {
         epoch: current::RuntimeEpoch,
-        authorized_stops: u64,
+        expected_stop_generation: u64,
         input: TurnInput,
         reply: oneshot::Sender<Result<TurnCompletion, current::CurrentError>>,
     },
@@ -100,6 +101,7 @@ impl Command {
             let _ = reply.send(Err(ThreadError::Closed));
         }
         match self {
+            Self::Control(command) => drop(command),
             Self::CurrentResume { reply, .. } => {
                 let _ = reply.send(Err(current::CurrentError::Closed));
             }

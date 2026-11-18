@@ -17,30 +17,33 @@ pub struct InferenceTokenUsage {
     pub total_tokens: u64,
 }
 
-/// 单次 inference 及其直接工具批次的脱敏编排收益指标。
+/// 单次 inference 实际观测到的模型输出与传输计数。
+///
+/// 工具在模型调用结束后才执行，其并发与耗时不属于这份不可变回执。
+/// 未采集项保持缺失；历史回执中已编码的可选值保留原样，避免改变原计量的幂等载荷。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct InferenceOrchestrationMetrics {
-    #[serde(default)]
-    pub tool_schema_estimated_tokens: u64,
-    #[serde(default)]
-    pub tool_result_estimated_tokens: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_schema_estimated_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result_estimated_tokens: Option<u64>,
     #[serde(default)]
     pub tool_calls: u64,
-    #[serde(default)]
-    pub parallel_candidates: u64,
-    #[serde(default)]
-    pub actual_parallel_calls: u64,
-    #[serde(default)]
-    pub tool_batch_elapsed_millis: u64,
-    #[serde(default)]
-    pub tool_execution_millis: u64,
-    #[serde(default)]
-    pub tool_critical_path_millis: u64,
-    #[serde(default)]
-    pub tool_cache_hits: u64,
-    #[serde(default)]
-    pub duplicate_suppressed: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_candidates: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_parallel_calls: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_batch_elapsed_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_execution_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_critical_path_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_cache_hits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_suppressed: Option<u64>,
     #[serde(default)]
     pub program_count: u64,
     #[serde(default)]
@@ -62,38 +65,50 @@ impl InferenceOrchestrationMetrics {
         self == &Self::default()
     }
 
-    pub fn parallel_saved_millis(&self) -> u64 {
+    pub fn parallel_saved_millis(&self) -> Option<u64> {
         self.tool_execution_millis
-            .saturating_sub(self.tool_batch_elapsed_millis)
+            .zip(self.tool_batch_elapsed_millis)
+            .map(|(execution, elapsed)| execution.saturating_sub(elapsed))
     }
 
     pub fn merge(&mut self, other: &Self) {
         self.tool_schema_estimated_tokens = self
             .tool_schema_estimated_tokens
-            .saturating_add(other.tool_schema_estimated_tokens);
+            .zip(other.tool_schema_estimated_tokens)
+            .map(|(left, right)| left.saturating_add(right));
         self.tool_result_estimated_tokens = self
             .tool_result_estimated_tokens
-            .saturating_add(other.tool_result_estimated_tokens);
+            .zip(other.tool_result_estimated_tokens)
+            .map(|(left, right)| left.saturating_add(right));
         self.tool_calls = self.tool_calls.saturating_add(other.tool_calls);
         self.parallel_candidates = self
             .parallel_candidates
-            .saturating_add(other.parallel_candidates);
+            .zip(other.parallel_candidates)
+            .map(|(left, right)| left.saturating_add(right));
         self.actual_parallel_calls = self
             .actual_parallel_calls
-            .saturating_add(other.actual_parallel_calls);
+            .zip(other.actual_parallel_calls)
+            .map(|(left, right)| left.saturating_add(right));
         self.tool_batch_elapsed_millis = self
             .tool_batch_elapsed_millis
-            .saturating_add(other.tool_batch_elapsed_millis);
+            .zip(other.tool_batch_elapsed_millis)
+            .map(|(left, right)| left.saturating_add(right));
         self.tool_execution_millis = self
             .tool_execution_millis
-            .saturating_add(other.tool_execution_millis);
+            .zip(other.tool_execution_millis)
+            .map(|(left, right)| left.saturating_add(right));
         self.tool_critical_path_millis = self
             .tool_critical_path_millis
-            .saturating_add(other.tool_critical_path_millis);
-        self.tool_cache_hits = self.tool_cache_hits.saturating_add(other.tool_cache_hits);
+            .zip(other.tool_critical_path_millis)
+            .map(|(left, right)| left.saturating_add(right));
+        self.tool_cache_hits = self
+            .tool_cache_hits
+            .zip(other.tool_cache_hits)
+            .map(|(left, right)| left.saturating_add(right));
         self.duplicate_suppressed = self
             .duplicate_suppressed
-            .saturating_add(other.duplicate_suppressed);
+            .zip(other.duplicate_suppressed)
+            .map(|(left, right)| left.saturating_add(right));
         self.program_count = self.program_count.saturating_add(other.program_count);
         self.program_tool_calls = self
             .program_tool_calls

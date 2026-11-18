@@ -112,6 +112,8 @@ pub struct ThreadEffectBatch {
     /// Reliable start/end facts; a replaceable execution-phase snapshot is not their source.
     #[serde(default)]
     pub context_compactions: Arc<[ContextCompactionEvent]>,
+    #[serde(default)]
+    pub continuations: Arc<[ContinuationOperation]>,
     pub turn: Option<TurnRecord>,
     pub discovered_tools: Option<Arc<[ModelToolDeclaration]>>,
     pub deliveries: Arc<[ToolDelivery]>,
@@ -303,6 +305,19 @@ impl ThreadEffectBatch {
             .into();
         let discovered_tools = (previous.discovered_tools != current.discovered_tools)
             .then(|| current.discovered_tools.clone());
+        let continuations: Arc<[ContinuationOperation]> = current
+            .continuation_operations
+            .iter()
+            .filter(|operation| {
+                previous
+                    .continuation_operations
+                    .iter()
+                    .find(|old| old.request.operation_id == operation.request.operation_id)
+                    != Some(*operation)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
         let lifecycle = (previous.lifecycle != current.lifecycle).then_some(current.lifecycle);
         if context.is_none()
             && private_context.is_none()
@@ -311,6 +326,7 @@ impl ThreadEffectBatch {
             && model_member_starts.is_empty()
             && model_member_content_available.is_empty()
             && context_compactions.is_empty()
+            && continuations.is_empty()
             && turn.is_none()
             && discovered_tools.is_none()
             && tasks.is_empty()
@@ -343,6 +359,7 @@ impl ThreadEffectBatch {
             model_member_starts,
             model_member_content_available,
             context_compactions,
+            continuations,
             turn,
             discovered_tools,
             deliveries,

@@ -599,7 +599,7 @@ void main() {
       () =>
           session.state.runtime?.execution == null &&
           session.state.runtime?.continuation?.sourceTurnId == stoppedTurnId &&
-          session.state.runtime?.continuation?.claimed == false &&
+          session.state.runtime?.continuation != null &&
           find.byKey(const ValueKey('composer-continue')).evaluate().length ==
               1,
       'stopped execution ended and canonical continuation is available',
@@ -618,8 +618,9 @@ void main() {
       'continuationId': continuation.id,
     });
 
-    // No text is submitted to recover. Only the production Continue action may
-    // claim this exact canonical continuation and admit a new execution.
+    // Continue consumes the exact canonical token and starts a new execution
+    // without submitting a real or synthetic input.
+    final submittedPromptCount = transport.submittedPromptCount;
     await tester.tap(find.byKey(const ValueKey('composer-continue')));
     await tester.pump();
     await until(() {
@@ -629,12 +630,14 @@ void main() {
           execution?.phase == AgentExecutionPhase.running &&
           execution?.id != stoppedExecution.id &&
           turn?.turnId == execution?.turnId &&
-          turn?.inputId != null &&
+          turn?.inputId == null &&
           turn?.state.status == StudioTurnStatus.running;
     }, 'explicit continuation starts a new real execution');
     final resumedExecution = session.state.runtime!.execution!;
     expect(resumedExecution.turnId, isNot(stoppedTurnId));
     expect(activeTurn()!.turnId, resumedExecution.turnId);
+    expect(activeTurn()!.inputId, isNull);
+    expect(transport.submittedPromptCount, submittedPromptCount);
     expect(activeTurn()!.state.isTerminal, isFalse);
     expect(find.byKey(const ValueKey('composer-stop')), findsOneWidget);
     expect(find.byKey(const ValueKey('composer-continue')), findsNothing);
@@ -710,6 +713,7 @@ class _SubmissionTransport extends FrbStudioTransport {
   StudioPromptInput? blockedInput;
   SubmitPromptReceipt? receipt;
   bool realSecondRpcStarted = false;
+  int submittedPromptCount = 0;
   int heldFrames = 0;
   String? lastHeldCursor;
 
@@ -768,6 +772,7 @@ class _SubmissionTransport extends FrbStudioTransport {
     StudioPromptInput input, {
     required int expectedModelRouteRevision,
   }) async {
+    submittedPromptCount++;
     if (input.text != _second) {
       return super.submitPrompt(
         threadId,

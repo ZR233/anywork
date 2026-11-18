@@ -841,16 +841,23 @@ async fn stop_thread(
     ))
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReadContinuationQuery {
+    expected_continuation_token: String,
+}
+
 /// 只读回查一次继续操作；查询不激活执行，也不解除后来发生的停止。
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/continuations/{operation_id}", operation_id = "thread.readContinuation", params(("thread_id" = String, Path), ("operation_id" = String, Path)), responses(StudioApiErrors, (status = 200, body = ContinuationOperationView)))]
+#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/continuations/{operation_id}", operation_id = "thread.readContinuation", params(("thread_id" = String, Path), ("operation_id" = String, Path), ("expectedContinuationToken" = String, Query)), responses(StudioApiErrors, (status = 200, body = ContinuationOperationView)))]
 async fn read_continuation_operation(
     State(state): State<AppState>,
     Path((thread_id, operation_id)): Path<(String, String)>,
+    Query(query): Query<ReadContinuationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
             .runtime
-            .read_continuation_operation(thread_id, operation_id)
+            .read_continuation_operation(thread_id, operation_id, query.expected_continuation_token)
             .await
             .map_err(ApiError::from)?,
     ))

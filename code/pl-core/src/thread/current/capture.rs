@@ -78,7 +78,7 @@ impl ThreadHandle {
             tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(CurrentError::Cancelled),
-                result = self.mailbox.send(MailboxCommand::ReadCurrent { captured: captured.take(), reply }) => {
+                result = self.commands.send(crate::thread::Command::Control(MailboxCommand::ReadCurrent { captured: captured.take(), reply })) => {
                     if result.is_err() {
                         return self.final_current.borrow().as_ref().cloned()
                             .ok_or(CurrentError::Closed)?.map_err(CurrentError::Final);
@@ -149,12 +149,12 @@ impl Owner {
     }
 
     /// Reconcile local facts once, then use the normal Turn and model preparation path.
-    pub(in crate::thread) async fn resume_current(
+    pub(in crate::thread) fn prepare_current_resume(
         &mut self,
         epoch: RuntimeEpoch,
-        authorized_stops: u64,
+        expected_stop_generation: u64,
         mut input: TurnInput,
-    ) -> Result<super::super::TurnCompletion, CurrentError> {
+    ) -> Result<TurnInput, CurrentError> {
         if epoch != self.runtime_epoch || input.turn_id.is_empty() {
             return Err(CurrentError::InvalidIdentity);
         }
@@ -164,7 +164,7 @@ impl Owner {
         if self.interrupt.is_closing() {
             return Err(CurrentError::Closed);
         }
-        if input.cancellation.is_cancelled() || authorized_stops != self.interrupt.stops() {
+        if input.cancellation.is_cancelled() || expected_stop_generation != self.interrupt.stops() {
             return Err(CurrentError::Cancelled);
         }
         if self
@@ -195,28 +195,14 @@ impl Owner {
         if let Some(content) = self.freeze_next_input_batch() {
             input.content.extend(content);
         }
-        let active = self
-            .interrupt
-            .activate(&input.cancellation, Some(authorized_stops));
-        input.cancellation = active.token.clone();
         self.current_saved_execution = None;
         self.current_saved_lifecycle = None;
-        self.frozen_turn = Some(input.turn_id.clone());
-        let result = self.run_turn(input).await;
-        self.frozen_turn = None;
-        self.active_inputs.clear();
-        if result.is_err() {
-            self.current_saved_lifecycle = Some(ThreadLifecycle::Open);
-            self.pause_inputs();
-        }
-        self.publish_snapshot();
-        result.map_err(|error| CurrentError::Owner(Arc::new(error)))
+        Ok(input)
     }
 
     pub(in crate::thread) fn finish_current_work_if_idle(&mut self) {
         if !self.current_model_running
             && self.pending.is_empty()
-            && self.uncommitted_tools.is_empty()
             && self.state.tasks.is_empty()
             && self.state.continuation.is_none()
             && self.state.turns.is_empty()
@@ -337,64 +323,6 @@ impl Owner {
                 .entry(call_id.clone())
                 .or_insert_with(|| preview.clone());
         }
-        // A result can have finished while the old reliable commit is blocked. It is nevertheless
-        // known current data and must never be downgraded to an unknown external operation.
-        let mut deliveries = state.deliveries.to_vec();
-        let mut next_message = state.inbox_sequence;
-        for completion in self.uncommitted_tools.values() {
-            let call = &completion.call;
-            if deliveries
-                .iter()
-                .any(|delivery| delivery.call_id == call.call.call_id)
-            {
-                continue;
-            }
-            let (output, outcome) = if let Some(delivery) = &completion.pending_delivery {
-                (delivery.output.clone(), delivery.outcome.clone())
-            } else {
-                let (mut output, mut outcome) =
-                    super::super::tool_execution::observed_completion(completion);
-                if completion.cancellation.is_cancelled() {
-                    outcome = super::super::ToolOutcome::Cancelled;
-                }
-                super::super::tool_execution::annotate_failure_context(&mut output, &outcome);
-                (output, outcome)
-            };
-            let mut delivered_context =
-                super::super::tool_execution::model_delivery_context(&output, &outcome);
-            let target = if let Some(parent_call_id) = &call.parent_call_id {
-                ToolDeliveryTarget::Nested {
-                    parent_call_id: parent_call_id.clone(),
-                }
-            } else if let Some(task) = state
-                .tasks
-                .get(&format!("task:{}", call.call.call_id))
-                .filter(|task| task.acknowledgement.is_some())
-            {
-                next_message = next_message
-                    .checked_add(1)
-                    .ok_or(CurrentError::RevisionExhausted)?;
-                delivered_context = super::super::background::result_context(
-                    task,
-                    task::TaskStatus::from_outcome(&outcome),
-                    delivered_context,
-                );
-                ToolDeliveryTarget::Inbox {
-                    message_id: format!("task-result:{next_message}"),
-                }
-            } else {
-                ToolDeliveryTarget::CallResult
-            };
-            deliveries.push(ToolDelivery {
-                target,
-                call_id: call.call.call_id.clone(),
-                tool_id: call.call.tool_id.clone(),
-                output,
-                delivered_context,
-                outcome,
-            });
-        }
-        state.deliveries = deliveries.into();
         let current = ThreadCurrent {
             schema_version: CURRENT_SCHEMA_VERSION,
             thread_id: self.id.clone(),

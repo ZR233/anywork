@@ -6,9 +6,6 @@ pub(super) struct ToolExecutionCompletion {
     pub(super) call: PendingCall,
     pub(super) output: Result<crate::tool::ToolOutput, Arc<crate::tool::opaque::ToolError>>,
     pub(super) cancellation: CancellationToken,
-    /// Last fully staged local projection, retained if only its reliable publication failed.
-    /// The producer result above remains available to the existing commit retry path.
-    pub(super) pending_delivery: Option<Box<ToolDelivery>>,
 }
 
 pub(super) type ToolExecutionFuture = futures::future::BoxFuture<'static, ToolExecutionCompletion>;
@@ -75,65 +72,49 @@ pub(super) fn tool_output_operation(call_id: &str) -> String {
     format!("task:{call_id}")
 }
 
-impl Owner {
-    pub(super) async fn execute_tool(
-        &mut self,
-        id: String,
-        cancellation: CancellationToken,
-    ) -> Result<ToolDispatch, ThreadError> {
-        self.await_storage_admission(&cancellation).await?;
-        let foreground = self
-            .pending
-            .get(&id)
-            .ok_or(ThreadError::MissingCall)?
-            .executor
-            .requires_foreground_execution();
-        // The call may only start once the reliable budget really funds the output it will stream;
-        // this waits at a storage safety point instead of starting a tool whose result could not be
-        // retained. The quota is held until the call's result is committed.
-        let operation = tool_output_operation(&id);
-        self.reserve_operation_output(&operation, &cancellation)
-            .await?;
-        let mut execution = match self.begin_tool_execution(id.clone(), cancellation.clone()) {
-            Ok(execution) => execution,
-            Err(error) => {
-                // The call never started, so hand its unused quota straight back; nothing was lost.
-                self.finish_operation_output(&operation);
-                return Err(error);
-            }
-        };
-        if foreground {
-            let completion = self.await_with_mailbox(execution).await;
-            return self
-                .commit_tool_execution(completion)
-                .map(ToolDispatch::Completed);
-        }
-        let completed = self
-            .await_with_mailbox(async {
-                tokio::select! {
-                    biased;
-                    _ = cancellation.cancelled() => None,
-                    completed = &mut execution => Some(completed),
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => None,
-                }
-            })
-            .await;
-        if let Some(completed) = completed {
-            if !cancellation.is_cancelled() {
-                return self
-                    .commit_tool_execution(completed)
-                    .map(ToolDispatch::Completed);
-            }
-            execution = Box::pin(async move { completed });
-        }
-        self.background.push(execution);
-        let task = self.acknowledge_task(&id)?;
-        if cancellation.is_cancelled() {
-            return Err(ThreadError::Cancelled);
-        }
-        Ok(ToolDispatch::Running(task))
-    }
+#[derive(Debug, thiserror::Error)]
+#[error("tool capacity unavailable; no execution was started")]
+pub(super) struct ToolCapacityUnavailable;
 
+/// The same known result is measured before dispatch and accepted if task admission fails.
+pub(super) fn capacity_result(
+    call: &PendingCall,
+    revision: u64,
+) -> Result<(ContextRecord, ToolDelivery), ThreadError> {
+    let id = &call.call.call_id;
+    let body = serde_json::json!({"code":"capacity_unavailable", "notStarted":true, "callId":id, "toolId":call.call.tool_id}).to_string();
+    let content = vec![ContextContent::Text {
+        text: Arc::from(body.clone()),
+    }];
+    let output = crate::tool::ToolOutput::new(
+        OpaquePayload::new("pl.core.tool-error", 1, body)
+            .map_err(|_| ThreadError::InvalidOutput)?,
+        content.clone(),
+    );
+    let record = ContextRecord {
+        id: format!("not-started:{revision}:{id}"),
+        turn_id: Some(call.turn_id.clone()),
+        source: ContextSource::ToolResult {
+            call_id: id.clone(),
+            tool_id: call.call.tool_id.clone(),
+        },
+        content: content.clone(),
+        tool_calls: Vec::new(),
+    };
+    let delivery = ToolDelivery {
+        target: ToolDeliveryTarget::CallResult,
+        call_id: id.clone(),
+        tool_id: call.call.tool_id.clone(),
+        output,
+        delivered_context: content,
+        outcome: ToolOutcome::Failed(Arc::new(crate::tool::opaque::ToolError::new(
+            ToolCapacityUnavailable,
+        ))),
+    };
+    Ok((record, delivery))
+}
+
+impl Owner {
     pub(super) fn begin_tool_execution(
         &mut self,
         id: String,
@@ -145,8 +126,39 @@ impl Owner {
         if cancellation.is_cancelled() || self.interrupt.is_closing() {
             return Err(ThreadError::Cancelled);
         }
+        let call = self.pending.get(&id).ok_or(ThreadError::MissingCall)?;
+        // Bodies, context and frozen catalogs are shared with the original owner. Charge the new
+        // owned identities and task slots, without serializing another PendingCall mirror.
+        let metadata_bytes = 1024_u64
+            .saturating_add(
+                (std::mem::size_of::<PendingCall>() + std::mem::size_of::<task::TaskRecord>())
+                    as u64,
+            )
+            .saturating_add(
+                (call.call.call_id.len() * 4
+                    + call.call.tool_id.len() * 3
+                    + call.turn_id.len()
+                    + call.parent_call_id.as_ref().map_or(0, String::len)) as u64,
+            );
+        let metadata_id = format!("task-metadata:{id}");
+        let metadata = crate::model::OutputBudget::reserve(
+            self.cold.clone(),
+            &self.id,
+            &metadata_id,
+            metadata_bytes,
+            None,
+        )
+        .map_err(|_| ThreadError::StoragePressure)?;
+        if metadata.charge(metadata_bytes).is_err() {
+            metadata.release();
+            return Err(ThreadError::StoragePressure);
+        }
+        self.task_metadata.insert(id.clone(), metadata);
         let call = self.pending.remove(&id).ok_or(ThreadError::MissingCall)?;
         if let Err(error) = self.start_task(&call) {
+            if let Some(metadata) = self.task_metadata.remove(&id) {
+                metadata.release();
+            }
             self.pending.insert(id, call);
             return Err(error);
         }
@@ -209,7 +221,6 @@ impl Owner {
                     call,
                     output,
                     cancellation,
-                    pending_delivery: None,
                 }
             })
             .map_err(|_| ThreadError::Closed)?;
@@ -220,7 +231,6 @@ impl Owner {
                     call: failed_call,
                     output: Err(Arc::new(crate::tool::opaque::ToolError::new(error))),
                     cancellation: failed_cancellation,
-                    pending_delivery: None,
                 },
             }
         }))
@@ -245,56 +255,75 @@ impl Owner {
             );
         }
         let operation = tool_output_operation(&id);
-        let previous = self.state.clone();
-        let result = self.stage_tool_execution(completion.clone());
+        let result = self.stage_tool_execution(completion);
         let terminal =
             result.is_ok() || matches!(result, Err(ThreadError::Tool(_) | ThreadError::Cancelled));
-        if terminal && self.state.deliveries.len() > previous.deliveries.len() {
-            completion.pending_delivery = self.state.deliveries.last().cloned().map(Box::new);
-            // The result being committed is exactly the output this call reserved budget for, so the
-            // store transfers that reservation onto the fact instead of charging it a second time.
-            self.uncommitted_tools.remove(&id);
-            let previous_claim = self.pending_output_claim.replace(operation.clone());
-            if let Err(error) = self.publish() {
-                // The tool already ran: retain its exact completion and charged output ceiling,
-                // restore the published resource cut, and let retry_tool_commits retry only commit.
-                self.state = previous;
-                self.pending_output_claim = previous_claim;
-                self.uncommitted_tools.insert(id, completion);
-                self.publish_snapshot();
-                return Err(error);
-            }
+        if terminal {
+            self.pending_output_claim = Some(operation.clone());
+            // Known context, effects and usage are accepted once. History owns its pending export;
+            // publication failure can never restore pre-completion business state or rerun the tool.
+            let published = self.publish();
             self.permission_leases.remove(&format!("permission:{id}"));
             self.executions.forget(&format!("task:{id}"));
             self.nested_plans.remove(&format!("task:{id}"));
-            // The call returned and its result is now enrolled by the same `publish`/`admit` the
-            // ordinary path uses, so the transient ceiling can be given back — but only once that
-            // hand-over really completed. Handing it back before the result was enrolled would let a
-            // new operation take budget the retained bytes still need, so a backpressured admission
-            // defers the release to the boundary the queue drains at.
-            self.settle_operation_output(&operation);
-        } else {
-            self.state = previous;
-            self.uncommitted_tools.insert(id, completion);
-            self.publish_snapshot();
-            // The completion stays resident here until a retry commit hands it over, so its
-            // reservation stays charged: the retained bytes are real memory, and releasing the
-            // ceiling now would make the Thread look drained while still holding them.
+            if published.is_ok() {
+                self.settle_operation_output(&operation);
+                self.release_retired_task_metadata();
+            } else {
+                self.publish_snapshot();
+            }
+            published?;
         }
         result
     }
 
-    pub(super) fn retry_tool_commits(&mut self) -> Result<(), ThreadError> {
-        let completed = self.uncommitted_tools.values().cloned().collect::<Vec<_>>();
-        for completion in completed {
-            let id = completion.call.call.call_id.clone();
-            let result = self.commit_tool_execution(completion);
-            if self.uncommitted_tools.contains_key(&id) {
-                result?;
-                return Err(ThreadError::PendingToolCommit);
+    pub(super) fn reject_tool_capacity(
+        &mut self,
+        id: &str,
+        receipt_operation: &str,
+    ) -> Result<(), ThreadError> {
+        let call = self.pending.remove(id).ok_or(ThreadError::MissingCall)?;
+        let (record, delivery) = capacity_result(&call, self.state.context.revision)?;
+        current::pair_known_call_result(&mut self.state.context, record)
+            .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))?;
+        let mut deliveries = self.state.deliveries.to_vec();
+        deliveries.push(delivery);
+        self.state.deliveries = deliveries.into();
+        self.claim_output(receipt_operation.to_owned());
+        self.publish()
+    }
+
+    pub(super) fn release_retired_task_metadata(&mut self) {
+        if self.cold.is_some() && !self.pending_effects.is_empty() {
+            return;
+        }
+        let retired: Vec<_> = self
+            .task_metadata
+            .keys()
+            .filter(|id| {
+                self.executions.token(&format!("task:{id}")).is_none()
+                    && !self
+                        .state
+                        .tasks
+                        .get(&format!("task:{id}"))
+                        .is_some_and(|task| task.status == task::TaskStatus::Running)
+            })
+            .cloned()
+            .collect();
+        for id in retired {
+            if let Some(metadata) = self.task_metadata.remove(&id) {
+                metadata.release();
             }
         }
-        Ok(())
+    }
+
+    pub(super) fn retry_history_admission(&mut self) -> Result<(), ThreadError> {
+        self.publish()?;
+        self.admit_cold();
+        self.release_retired_task_metadata();
+        self.cold_error
+            .as_ref()
+            .map_or(Ok(()), |error| Err(ThreadError::Storage(error.clone())))
     }
 
     /// Accepts one increment of a running tool call's live output under its reliable output quota.
@@ -489,38 +518,49 @@ impl Owner {
                 ThreadError::InvalidIdentity,
             )));
         }
-        if matches!(outcome, ToolOutcome::Succeeded)
-            && !output.extension_mutations().is_empty()
-            && let Err(error) = super::extensions::stage_extensions(
-                &mut self.state,
-                output.extension_mutations().to_vec(),
-            )
-        {
-            outcome = ToolOutcome::Failed(Arc::new(crate::tool::opaque::ToolError::new(error)));
-        }
-        if matches!(outcome, ToolOutcome::Succeeded)
-            && let Some(payload) = output.interaction()
-        {
-            let now = crate::time::unix_seconds();
-            let record = interactions::InteractionRecord {
-                created_at: now,
-                updated_at: now,
-                continuation_id: None,
-                request: interactions::InteractionRequest {
-                    id: interaction_id.clone(),
-                    turn_id: call.turn_id.clone(),
-                    payload: payload.clone(),
-                },
-                revision: 1,
-                state: interactions::InteractionState::Pending,
-                extension_mutations: Vec::new(),
-            };
-            self.state
-                .interactions
-                .insert(interaction_id, record.clone());
-            let mut changes = self.state.interaction_changes.to_vec();
-            changes.push(record);
-            self.state.interaction_changes = changes.into();
+        if matches!(outcome, ToolOutcome::Succeeded) {
+            let mut candidate = self.state.clone();
+            let admitted = (|| {
+                super::extensions::stage_extensions(
+                    &mut candidate,
+                    output.extension_mutations().to_vec(),
+                )?;
+                if let Some(payload) = output.interaction() {
+                    let now = crate::time::unix_seconds();
+                    let record = interactions::InteractionRecord {
+                        created_at: now,
+                        updated_at: now,
+                        continuation_id: None,
+                        request: interactions::InteractionRequest {
+                            id: interaction_id.clone(),
+                            turn_id: call.turn_id.clone(),
+                            payload: payload.clone(),
+                        },
+                        revision: 1,
+                        state: interactions::InteractionState::Pending,
+                        extension_mutations: Vec::new(),
+                    };
+                    candidate
+                        .interactions
+                        .insert(interaction_id, record.clone());
+                    let mut changes = candidate.interaction_changes.to_vec();
+                    changes.push(record);
+                    candidate.interaction_changes = changes.into();
+                }
+                candidate.interaction_collection_revision_for(
+                    &self.published,
+                    &candidate.interactions,
+                    &candidate.permissions,
+                )?;
+                Ok::<_, ThreadError>(())
+            })();
+            match admitted {
+                Ok(()) => self.state = candidate,
+                Err(error) => {
+                    outcome =
+                        ToolOutcome::Failed(Arc::new(crate::tool::opaque::ToolError::new(error)))
+                }
+            }
         }
         annotate_failure_context(&mut output, &outcome);
         let delivered_context = model_delivery_context(&output, &outcome);
@@ -546,34 +586,28 @@ impl Owner {
             )?;
             (ToolDeliveryTarget::Inbox { message_id }, context)
         } else {
-            let revision = self
-                .state
-                .context
-                .revision
-                .checked_add(1)
-                .ok_or(ThreadError::RevisionExhausted)?;
-            let mut records = self.state.context.records.to_vec();
-            records.push(ContextRecord {
-                tool_calls: Vec::new(),
-                id: super::background::unique_id(
-                    &format!("tool-result:{id}"),
-                    self.state
-                        .context
-                        .records
-                        .iter()
-                        .map(|record| record.id.as_str()),
-                )?,
-                turn_id: Some(call.turn_id),
-                source: ContextSource::ToolResult {
-                    call_id: id.clone(),
-                    tool_id: call.call.tool_id.clone(),
+            let record_id = super::background::unique_id(
+                &format!("tool-result:{id}"),
+                self.state
+                    .context
+                    .records
+                    .iter()
+                    .map(|record| record.id.as_str()),
+            )?;
+            current::pair_known_call_result(
+                &mut self.state.context,
+                ContextRecord {
+                    id: record_id,
+                    turn_id: Some(call.turn_id),
+                    source: ContextSource::ToolResult {
+                        call_id: id.clone(),
+                        tool_id: call.call.tool_id.clone(),
+                    },
+                    content: delivered_context.clone(),
+                    tool_calls: Vec::new(),
                 },
-                content: delivered_context.clone(),
-            });
-            self.state.context = ContextSnapshot {
-                revision,
-                records: records.into(),
-            };
+            )
+            .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))?;
             (ToolDeliveryTarget::CallResult, delivered_context)
         };
         let mut deliveries = self.state.deliveries.to_vec();

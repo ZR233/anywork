@@ -3858,7 +3858,7 @@ fn wire__crate__api__studio__handlers__prompt__continue_thread_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
             let api_thread_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_continuation_id = <String>::sse_decode(&mut deserializer);
+            let api_expected_continuation_token = <String>::sse_decode(&mut deserializer);
             let api_expected_model_route_revision = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
@@ -3867,7 +3867,7 @@ fn wire__crate__api__studio__handlers__prompt__continue_thread_impl(
                         let output_ok = crate::api::studio::handlers::prompt::continue_thread(
                             api_operation_id,
                             api_thread_id,
-                            api_expected_continuation_id,
+                            api_expected_continuation_token,
                             api_expected_model_route_revision,
                         )
                         .await?;
@@ -5479,6 +5479,7 @@ fn wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_thread_id = <String>::sse_decode(&mut deserializer);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
+            let api_expected_continuation_token = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
@@ -5487,6 +5488,7 @@ fn wire__crate__api__studio__handlers__prompt__read_continuation_operation_impl(
                             crate::api::studio::handlers::prompt::read_continuation_operation(
                                 api_thread_id,
                                 api_operation_id,
+                                api_expected_continuation_token,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)
@@ -15362,20 +15364,20 @@ impl SseDecode for crate::api::studio::types::chat::BridgeContentWindow {
     }
 }
 
-impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperationState {
+impl SseDecode for crate::api::studio::types::command::BridgeContinuationDisposition {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut tag_ = <i32>::sse_decode(deserializer);
         match tag_ {
             0 => {
-                return crate::api::studio::types::command::BridgeContinuationOperationState::Pending;
+                return crate::api::studio::types::command::BridgeContinuationDisposition::Scheduled;
             }
             1 => {
-                let mut var_turnId = <String>::sse_decode(deserializer);
-                return crate::api::studio::types::command::BridgeContinuationOperationState::Consumed{turn_id: var_turnId};
+                return crate::api::studio::types::command::BridgeContinuationDisposition::Effective;
             }
             2 => {
-                return crate::api::studio::types::command::BridgeContinuationOperationState::Discarded;
+                let mut var_reason = <String>::sse_decode(deserializer);
+                return crate::api::studio::types::command::BridgeContinuationDisposition::NotExecuted{reason: var_reason};
             }
             _ => {
                 unimplemented!("");
@@ -15384,29 +15386,51 @@ impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperati
     }
 }
 
+impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperationState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut inner = <i32>::sse_decode(deserializer);
+        return match inner {
+            0 => crate::api::studio::types::command::BridgeContinuationOperationState::Known,
+            1 => crate::api::studio::types::command::BridgeContinuationOperationState::NotAccepted,
+            _ => unreachable!(
+                "Invalid variant for BridgeContinuationOperationState: {}",
+                inner
+            ),
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::command::BridgeContinuationOperationView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_operationId = <String>::sse_decode(deserializer);
-        let mut var_inputId = <String>::sse_decode(deserializer);
-        let mut var_continuationId = <String>::sse_decode(deserializer);
-        let mut var_acceptedSequence = <u64>::sse_decode(deserializer);
+        let mut var_expectedContinuationToken = <String>::sse_decode(deserializer);
         let mut var_state =
             <crate::api::studio::types::command::BridgeContinuationOperationState>::sse_decode(
                 deserializer,
             );
-        let mut var_receipt =
-            <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_decode(
-                deserializer,
-            );
+        let mut var_acceptanceEpoch = <Option<String>>::sse_decode(deserializer);
+        let mut var_executionId = <Option<String>>::sse_decode(deserializer);
+        let mut var_turnId = <Option<String>>::sse_decode(deserializer);
+        let mut var_acceptedRevision = <Option<u64>>::sse_decode(deserializer);
+        let mut var_disposition = <Option<
+            crate::api::studio::types::command::BridgeContinuationDisposition,
+        >>::sse_decode(deserializer);
+        let mut var_receipt = <Option<
+            crate::api::studio::types::command::BridgeStudioCommandReceipt,
+        >>::sse_decode(deserializer);
         return crate::api::studio::types::command::BridgeContinuationOperationView {
             thread_id: var_threadId,
             operation_id: var_operationId,
-            input_id: var_inputId,
-            continuation_id: var_continuationId,
-            accepted_sequence: var_acceptedSequence,
+            expected_continuation_token: var_expectedContinuationToken,
             state: var_state,
+            acceptance_epoch: var_acceptanceEpoch,
+            execution_id: var_executionId,
+            turn_id: var_turnId,
+            accepted_revision: var_acceptedRevision,
+            disposition: var_disposition,
             receipt: var_receipt,
         };
     }
@@ -15436,13 +15460,11 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeContinuationV
             crate::api::studio::types::thread_stream::BridgeContinuationReason,
         >>::sse_decode(deserializer);
         let mut var_createdAt = <i64>::sse_decode(deserializer);
-        let mut var_claimed = <bool>::sse_decode(deserializer);
         return crate::api::studio::types::thread_stream::BridgeContinuationView {
             id: var_id,
             source_turn_id: var_sourceTurnId,
             reason: var_reason,
             created_at: var_createdAt,
-            claimed: var_claimed,
         };
     }
 }
@@ -26625,6 +26647,21 @@ impl SseDecode for Option<crate::api::studio::types::chat::BridgeContentWindow> 
     }
 }
 
+impl SseDecode for Option<crate::api::studio::types::command::BridgeContinuationDisposition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::command::BridgeContinuationDisposition>::sse_decode(
+                    deserializer,
+                ),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
 impl SseDecode for Option<crate::api::studio::types::thread_stream::BridgeContinuationReason> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -27256,6 +27293,21 @@ impl SseDecode for Option<crate::api::studio::types::runtime::BridgeStateError> 
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::runtime::BridgeStateError>::sse_decode(deserializer),
+            );
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode for Option<crate::api::studio::types::command::BridgeStudioCommandReceipt> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(
+                <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_decode(
+                    deserializer,
+                ),
             );
         } else {
             return None;
@@ -36222,22 +36274,47 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::chat::BridgeCo
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::command::BridgeContinuationDisposition
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::command::BridgeContinuationDisposition::Scheduled => {
+                [0.into_dart()].into_dart()
+            }
+            crate::api::studio::types::command::BridgeContinuationDisposition::Effective => {
+                [1.into_dart()].into_dart()
+            }
+            crate::api::studio::types::command::BridgeContinuationDisposition::NotExecuted {
+                reason,
+            } => [2.into_dart(), reason.into_into_dart().into_dart()].into_dart(),
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::command::BridgeContinuationDisposition
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::command::BridgeContinuationDisposition,
+    > for crate::api::studio::types::command::BridgeContinuationDisposition
+{
+    fn into_into_dart(self) -> crate::api::studio::types::command::BridgeContinuationDisposition {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::command::BridgeContinuationOperationState
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
-            crate::api::studio::types::command::BridgeContinuationOperationState::Pending => {
-                [0.into_dart()].into_dart()
-            }
-            crate::api::studio::types::command::BridgeContinuationOperationState::Consumed {
-                turn_id,
-            } => [1.into_dart(), turn_id.into_into_dart().into_dart()].into_dart(),
-            crate::api::studio::types::command::BridgeContinuationOperationState::Discarded => {
-                [2.into_dart()].into_dart()
-            }
-            _ => {
-                unimplemented!("");
-            }
+            Self::Known => 0.into_dart(),
+            Self::NotAccepted => 1.into_dart(),
+            _ => unreachable!(),
         }
     }
 }
@@ -36264,10 +36341,15 @@ impl flutter_rust_bridge::IntoDart
         [
             self.thread_id.into_into_dart().into_dart(),
             self.operation_id.into_into_dart().into_dart(),
-            self.input_id.into_into_dart().into_dart(),
-            self.continuation_id.into_into_dart().into_dart(),
-            self.accepted_sequence.into_into_dart().into_dart(),
+            self.expected_continuation_token
+                .into_into_dart()
+                .into_dart(),
             self.state.into_into_dart().into_dart(),
+            self.acceptance_epoch.into_into_dart().into_dart(),
+            self.execution_id.into_into_dart().into_dart(),
+            self.turn_id.into_into_dart().into_dart(),
+            self.accepted_revision.into_into_dart().into_dart(),
+            self.disposition.into_into_dart().into_dart(),
             self.receipt.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -36324,7 +36406,6 @@ impl flutter_rust_bridge::IntoDart
             self.source_turn_id.into_into_dart().into_dart(),
             self.reason.into_into_dart().into_dart(),
             self.created_at.into_into_dart().into_dart(),
-            self.claimed.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -52985,21 +53066,21 @@ impl SseEncode for crate::api::studio::types::chat::BridgeContentWindow {
     }
 }
 
-impl SseEncode for crate::api::studio::types::command::BridgeContinuationOperationState {
+impl SseEncode for crate::api::studio::types::command::BridgeContinuationDisposition {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {
-            crate::api::studio::types::command::BridgeContinuationOperationState::Pending => {
+            crate::api::studio::types::command::BridgeContinuationDisposition::Scheduled => {
                 <i32>::sse_encode(0, serializer);
             }
-            crate::api::studio::types::command::BridgeContinuationOperationState::Consumed {
-                turn_id,
-            } => {
+            crate::api::studio::types::command::BridgeContinuationDisposition::Effective => {
                 <i32>::sse_encode(1, serializer);
-                <String>::sse_encode(turn_id, serializer);
             }
-            crate::api::studio::types::command::BridgeContinuationOperationState::Discarded => {
+            crate::api::studio::types::command::BridgeContinuationDisposition::NotExecuted {
+                reason,
+            } => {
                 <i32>::sse_encode(2, serializer);
+                <String>::sse_encode(reason, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -53008,18 +53089,33 @@ impl SseEncode for crate::api::studio::types::command::BridgeContinuationOperati
     }
 }
 
+impl SseEncode for crate::api::studio::types::command::BridgeContinuationOperationState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(match self {crate::api::studio::types::command::BridgeContinuationOperationState::Known => { 0 }
+crate::api::studio::types::command::BridgeContinuationOperationState::NotAccepted => { 1 }
+ _ => { unimplemented!(""); }}, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::command::BridgeContinuationOperationView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.thread_id, serializer);
         <String>::sse_encode(self.operation_id, serializer);
-        <String>::sse_encode(self.input_id, serializer);
-        <String>::sse_encode(self.continuation_id, serializer);
-        <u64>::sse_encode(self.accepted_sequence, serializer);
+        <String>::sse_encode(self.expected_continuation_token, serializer);
         <crate::api::studio::types::command::BridgeContinuationOperationState>::sse_encode(
             self.state, serializer,
         );
-        <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_encode(
+        <Option<String>>::sse_encode(self.acceptance_epoch, serializer);
+        <Option<String>>::sse_encode(self.execution_id, serializer);
+        <Option<String>>::sse_encode(self.turn_id, serializer);
+        <Option<u64>>::sse_encode(self.accepted_revision, serializer);
+        <Option<crate::api::studio::types::command::BridgeContinuationDisposition>>::sse_encode(
+            self.disposition,
+            serializer,
+        );
+        <Option<crate::api::studio::types::command::BridgeStudioCommandReceipt>>::sse_encode(
             self.receipt,
             serializer,
         );
@@ -53048,7 +53144,6 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeContinuationV
             serializer,
         );
         <i64>::sse_encode(self.created_at, serializer);
-        <bool>::sse_encode(self.claimed, serializer);
     }
 }
 
@@ -61654,6 +61749,18 @@ impl SseEncode for Option<crate::api::studio::types::chat::BridgeContentWindow> 
     }
 }
 
+impl SseEncode for Option<crate::api::studio::types::command::BridgeContinuationDisposition> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::command::BridgeContinuationDisposition>::sse_encode(
+                value, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Option<crate::api::studio::types::thread_stream::BridgeContinuationReason> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -62172,6 +62279,18 @@ impl SseEncode for Option<crate::api::studio::types::runtime::BridgeStateError> 
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::runtime::BridgeStateError>::sse_encode(value, serializer);
+        }
+    }
+}
+
+impl SseEncode for Option<crate::api::studio::types::command::BridgeStudioCommandReceipt> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::command::BridgeStudioCommandReceipt>::sse_encode(
+                value, serializer,
+            );
         }
     }
 }

@@ -326,9 +326,7 @@ impl TaskAccess {
                     .find(|record| record.id == id)
             })
             .ok_or_else(|| ThreadError::TaskNotFound { task_id: id.into() })?;
-        if snapshot.pending_tool_commits.contains(&task.call_id) {
-            return Err(ThreadError::PendingToolCommit);
-        }
+
         if task.status == task::TaskStatus::Running {
             return Ok(None);
         }
@@ -437,12 +435,7 @@ impl TaskAccess {
                         None => missing.push(id.clone()),
                     }
                 }
-                if tasks
-                    .iter()
-                    .any(|task| snapshot.pending_tool_commits.contains(&task.call_id))
-                {
-                    return Err(ThreadError::PendingToolCommit);
-                }
+
                 // The resident queue holds only pending messages, so readiness is a sequence
                 // comparison against the consumption watermark, never a queue length.
                 let messages_ready = snapshot

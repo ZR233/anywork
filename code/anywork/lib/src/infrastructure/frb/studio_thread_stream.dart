@@ -592,7 +592,6 @@ ContinuationView _continuationFromFrb(
       ContinuationReason.executionFailed,
   },
   createdAt: _dateFromUnix(continuation.createdAt),
-  claimed: continuation.claimed,
 );
 
 PlanRuntimeView _planRuntimeFromFrb(frb.BridgePlanRuntimeSnapshot value) {
@@ -711,17 +710,6 @@ InteractionKind? _interactionKindFromLabel(String label) => switch (label) {
   'userInput' => InteractionKind.userInput,
   'toolApproval' => InteractionKind.toolApproval,
   _ => null,
-};
-
-ContinuationOperationState _continuationStateFromFrb(
-  frb_command.BridgeContinuationOperationState state,
-) => switch (state) {
-  frb_command.BridgeContinuationOperationState_Pending() =>
-    const PendingContinuation(),
-  frb_command.BridgeContinuationOperationState_Consumed(:final turnId) =>
-    ConsumedContinuation(turnId),
-  frb_command.BridgeContinuationOperationState_Discarded() =>
-    const DiscardedContinuation(),
 };
 
 bool _interactionIsPending(frb.BridgeInteractionRequest value) {

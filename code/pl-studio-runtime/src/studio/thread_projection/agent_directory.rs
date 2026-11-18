@@ -3,16 +3,13 @@ use crate::AgentState;
 use anyhow::Result;
 use pl_core::thread::{ThreadLifecycle, ThreadSnapshot, TurnState};
 
-/// Whether this member owes work nobody has claimed yet (stopped or interrupted, waiting for the
+/// Whether this member has an unconsumed Resume token (stopped or interrupted, waiting for the
 /// main agent).
 ///
 /// One predicate serves the hot directory row and the cold reconciliation, so the two can never
 /// drift apart.
 pub(in crate::studio) fn awaiting_scheduling(snapshot: &ThreadSnapshot) -> Result<bool> {
-    Ok(snapshot
-        .continuation
-        .as_ref()
-        .is_some_and(|point| point.claim.is_none())
+    Ok(snapshot.continuation.is_some()
         && snapshot.lifecycle == ThreadLifecycle::Open
         && !crate::studio::agent_close::is_explicitly_closed(snapshot)?)
 }

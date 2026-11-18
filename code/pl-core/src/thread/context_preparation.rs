@@ -146,17 +146,25 @@ impl ContextPreparer {
     }
 }
 
+pub(super) type PreparationWork = futures::future::BoxFuture<'static, PreparationCompletion>;
+pub(super) struct PreparationCompletion {
+    expected_context_revision: u64,
+    expected_extension_sequence: u64,
+    previous_phase: Option<ModelExecutionPhase>,
+    result: Result<ContextPreparation, ThreadError>,
+}
+
 impl Owner {
-    pub(super) async fn prepare_context(
+    pub(super) fn start_context_preparation(
         &mut self,
         input: &StepInput,
         plan: &mut crate::tool::opaque::ToolPlan,
         frozen_input: &[ContextRecord],
         force_compaction: bool,
         source_attempt_id: Option<&str>,
-    ) -> Result<bool, ThreadError> {
+    ) -> Result<Option<PreparationWork>, ThreadError> {
         let Some(hook) = self.context_preparation.clone() else {
-            return Ok(false);
+            return Ok(None);
         };
         let previous_phase = self.state.model_execution;
         let mut preview_records = self.state.context.records.to_vec();
@@ -257,17 +265,44 @@ impl Owner {
             turn_id,
             attempt_id,
         });
-        let result = self
-            .await_with_mailbox(crate::error_record::catch_boundary(
-                "context preparation",
-                async move {
-                    if force_compaction {
-                        request.enter_compacting().await?;
-                    }
-                    Ok::<_, ThreadError>(hook.0.before_step(request).await)
-                },
-            ))
-            .await;
+        Ok(Some(Box::pin(async move {
+            let result = crate::error_record::catch_boundary("context preparation", async move {
+                if force_compaction {
+                    request.enter_compacting().await?;
+                }
+                Ok::<_, ThreadError>(hook.0.before_step(request).await)
+            })
+            .await
+            .map_err(|source| {
+                ThreadError::Model(Arc::new(ModelError {
+                    kind: crate::model::ModelFailureKind::ImplementationPanicked,
+                    details: None,
+                    usage: Default::default(),
+                    source: Some(Box::new(source)),
+                }))
+            })
+            .and_then(|result| result);
+            PreparationCompletion {
+                expected_context_revision,
+                expected_extension_sequence,
+                previous_phase,
+                result,
+            }
+        })))
+    }
+
+    pub(super) fn finish_context_preparation(
+        &mut self,
+        input: &StepInput,
+        plan: &mut crate::tool::opaque::ToolPlan,
+        completion: PreparationCompletion,
+    ) -> Result<bool, ThreadError> {
+        let PreparationCompletion {
+            expected_context_revision,
+            expected_extension_sequence,
+            previous_phase,
+            result,
+        } = completion;
         // Completion may win select in the same poll as a producer fills the slot. Close and drain
         // it before interpreting the result; request clones never own the invocation's lifetime.
         if let Some(call) = self.compaction_call.as_mut() {
@@ -287,14 +322,7 @@ impl Owner {
         let mut replacement_accepted = false;
         let mut preparation_storage_error = None;
         let result = (|| {
-            let result = result.map_err(|source| {
-                ThreadError::Model(Arc::new(ModelError {
-                    kind: crate::model::ModelFailureKind::ImplementationPanicked,
-                    details: None,
-                    usage: Default::default(),
-                    source: Some(Box::new(source)),
-                }))
-            })??;
+            let result = result?;
             if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
                 let mutations = match result {
                     ContextPreparation::Prepared {

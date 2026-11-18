@@ -3974,7 +3974,6 @@ mod storage_fault_tests {
         interaction.updated_at = 2;
         interaction.continuation_id = Some(id.clone());
         let input = InputRecord {
-            continuation: None,
             accepted_sequence: 1,
             delivery: Default::default(),
             input: ThreadInput {
@@ -4177,7 +4176,7 @@ mod storage_fault_tests {
                 entry: crate::studio::storage::state::InputIdentityEntry::new(
                     pl_core::thread::input::InputIdentity {
                         purpose: Default::default(),
-                        continuation: None,
+
                         id: "consumed".into(),
                         ordinal: 3,
                         revision: 2,

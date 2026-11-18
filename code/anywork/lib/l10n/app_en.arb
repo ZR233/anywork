@@ -2899,7 +2899,6 @@
   "composerBlockerUnknown": "The last action could not be confirmed. Check the session state before retrying.",
   "composerFailureChildRequiresParentScheduling": "A child agent is scheduled by the main agent.",
   "composerFailureContinuationUnavailable": "There is no interrupted work left to continue.",
-  "composerFailureContinuationClaimed": "The continuation was already accepted and is being prepared.",
   "composerFailureStaleContinuation": "The observed continuation point is out of date.",
   "composerFailureStaleExecution": "The observed execution already ended or was replaced.",
   "composerFailureExecutionInProgress": "The session is still executing or settling.",

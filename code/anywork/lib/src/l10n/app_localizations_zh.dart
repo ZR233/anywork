@@ -5680,9 +5680,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get composerFailureContinuationUnavailable => '当前没有可继续的中断工作。';
 
   @override
-  String get composerFailureContinuationClaimed => '继续已被受理，正在准备。';
-
-  @override
   String get composerFailureStaleContinuation => '观察到的继续点已经过期。';
 
   @override

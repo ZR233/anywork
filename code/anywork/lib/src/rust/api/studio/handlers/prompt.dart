@@ -37,22 +37,24 @@ Future<BridgeStopThreadReply> stopThread({
 Future<BridgeContinueThreadReply> continueThread({
   required String operationId,
   required String threadId,
-  required String expectedContinuationId,
+  required String expectedContinuationToken,
   required BigInt expectedModelRouteRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersPromptContinueThread(
   operationId: operationId,
   threadId: threadId,
-  expectedContinuationId: expectedContinuationId,
+  expectedContinuationToken: expectedContinuationToken,
   expectedModelRouteRevision: expectedModelRouteRevision,
 );
 
 Future<BridgeContinuationOperationView> readContinuationOperation({
   required String threadId,
   required String operationId,
+  required String expectedContinuationToken,
 }) =>
     RustLib.instance.api.crateApiStudioHandlersPromptReadContinuationOperation(
       threadId: threadId,
       operationId: operationId,
+      expectedContinuationToken: expectedContinuationToken,
     );
 
 /// 主会话可见的子任务待决交互只读摘要；列举不激活任何子会话。
