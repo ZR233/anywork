@@ -387,8 +387,9 @@ impl ConnectedMcp {
             () = cancellation.cancelled() => (cancelled(), "tool execution cancelled by owner"),
             () = tokio::time::sleep_until(deadline) => (ServiceError::Timeout { timeout }, "request timeout"),
         };
-        // Keep the original deadline even if the peer stops reading the transport.
-        let _ = tokio::time::timeout_at(deadline, handle.cancel(Some(reason.into()))).await;
+        // The existing close budget also bounds notification delivery to a stalled peer.
+        let cancel_deadline = deadline.min(tokio::time::Instant::now() + self.close_timeout);
+        let _ = tokio::time::timeout_at(cancel_deadline, handle.cancel(Some(reason.into()))).await;
         Err(error)
     }
 
