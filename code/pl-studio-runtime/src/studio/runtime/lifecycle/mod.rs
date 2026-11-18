@@ -41,6 +41,10 @@ mod startup_fault_tests {
         StudioRuntimeOptions {
             studio_home: Some(home.to_owned()),
             host: StudioHostKind::Test,
+            skill_search: pl_tool::skill::SkillSearchOptions {
+                include_default_user_dir: false,
+                additional_dirs: Vec::new(),
+            },
             ..StudioRuntimeOptions::desktop()
         }
     }
@@ -120,9 +124,6 @@ mod startup_fault_tests {
             crate::config::STUDIO_CONFIG_SCHEMA_VERSION
         );
         runtime.shutdown_runtime().await?;
-        let reopened = StudioRuntime::initialize(options(home)).await?;
-        assert!(reopened.startup_recovery.is_none());
-        reopened.shutdown_runtime().await?;
         assert_eq!(std::fs::read_dir(home.join("startup-backups"))?.count(), 1);
         assert!(!home.join("startup-recovery.toml").exists());
         Ok(archived)
@@ -451,8 +452,14 @@ mod startup_fault_tests {
     }
 
     async fn seed(home: &Path) -> Result<StudioPaths> {
-        let runtime = StudioRuntime::initialize(options(home)).await?;
-        let store = runtime.store.clone();
+        // Prepare the persisted configuration and directories used by startup faults.
+        std::fs::create_dir_all(home)?;
+        let paths = StudioPaths::resolve(Some(home.to_owned()))?;
+        crate::studio::startup::storage_layout::prepare(&paths).await?;
+        let store = crate::StudioStore::prepare_database(&paths.database()).await?;
+        crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
+            paths.config_paths(),
+        ))?;
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: "project-cold".into(),
@@ -479,8 +486,7 @@ mod startup_fault_tests {
         delta.session_upserts = thread_delta.session_upserts;
         delta.agent_upserts = thread_delta.agent_upserts;
         store.persist_directory_summaries(&delta).await?;
-        runtime.shutdown_runtime().await?;
-        let paths = StudioPaths::resolve(Some(home.to_owned()))?;
+        store.close().await?;
         let session = cold_session(&paths)?;
         for (path, bytes) in [
             (home.join("agents/preserved.bin"), b"agent bytes".as_slice()),
@@ -624,7 +630,8 @@ mod startup_fault_tests {
     }
 
     #[tokio::test]
-    async fn canonical_toml_document_faults_are_backed_up_before_default_startup() -> Result<()> {
+    async fn canonical_toml_document_faults_reject_storage_admission_without_rewriting()
+    -> Result<()> {
         for name in ["catalog", "settings", "workspaces"] {
             for (case, bytes) in [
                 ("future-version", b"schemaVersion = 99\n".as_slice()),
@@ -632,7 +639,9 @@ mod startup_fault_tests {
             ] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let paths = seed(&home).await?;
+                let paths = StudioPaths::resolve(Some(home.clone()))?;
+                let store = crate::StudioStore::prepare_database(&paths.database()).await?;
+                store.close().await?;
                 let path = match name {
                     "catalog" => paths.catalog_file(),
                     "settings" => paths.settings_file(),
@@ -640,12 +649,42 @@ mod startup_fault_tests {
                     _ => unreachable!(),
                 };
                 std::fs::write(&path, bytes)?;
-                let original = std::fs::read(&path)?;
-                recover_defaults(&home, &path, &original)
-                    .await
-                    .unwrap_or_else(|error| panic!("{name} {case}: {error:#}"));
+                let failed = crate::StudioStore::prepare_database(&paths.database()).await;
+                let error = match failed {
+                    Err(error) => error,
+                    Ok(store) => {
+                        store.close().await?;
+                        panic!("{name} {case}: invalid document was admitted");
+                    }
+                };
+                assert_eq!(
+                    crate::StudioStartupError::input("prepare_storage", error).kind,
+                    StudioStartupErrorKind::Migration,
+                    "{name} {case}",
+                );
+                assert_eq!(std::fs::read(&path)?, bytes, "{name} {case}");
+                assert!(!home.join("startup-backups").exists());
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canonical_document_recovery_preserves_backup_and_is_not_repeated_after_restart()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let home = temp.path().join("home");
+        let paths = seed(&home).await?;
+        let original = b"schemaVersion = 99\n";
+        std::fs::write(paths.catalog_file(), original)?;
+        let archived = recover_defaults(&home, &paths.catalog_file(), original).await?;
+        let reopened = StudioRuntime::initialize(options(&home)).await?;
+        assert!(reopened.startup_recovery.is_none());
+        assert!(reopened.store.catalog().sessions().is_empty());
+        reopened.shutdown_runtime().await?;
+        assert_eq!(std::fs::read(archived.join("data/catalog.toml"))?, original);
+        assert_eq!(std::fs::read_dir(home.join("startup-backups"))?.count(), 1);
+        assert!(!home.join("startup-recovery.toml").exists());
         Ok(())
     }
 
