@@ -13,6 +13,80 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.44.0](https://github.com/ZR233/anywork/compare/v6.43.0...v6.44.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **agent-runtime:** ContinuationOperationView 移除 durable 字段；继续查询只观察当前 owner 的有界输入身份，NotFound 不再授权客户端自动重发。
+* **studio:** ContinuationOperationView 移除 durable 字段；继续查询只观察当前 owner 的有界输入身份，NotFound 不再授权客户端自动重发。
+* **model:** 拆分厂商协议与共享运行时 ([#517](https://github.com/ZR233/anywork/issues/517))
+* **model:** 账号认证协议与身份类型迁至 pl-model-auth::chatgpt。移除厂商完成客户端、protocol_client 和旧 trace 发布接口；统一使用 ModelRuntime、模型绑定以及 Core 观测接口。
+* **studio:** Host MCP Text/Grammar 输入统一使用 input 字符串载体，anywork_apply_patch 不再接受 patch 字段；共享工作区 Rust 作者使用 WorkspaceInvocation，移除旧 execute_workspace 转发接口。
+* **studio:** Current 与 History 采用独立协议和读取句柄；旧 Timeline 读取协议随迁移删除。
+* **studio:** 成员接口删除 window 和 DisplayMemberPage，改为 openDisplayMembers(reference, demand) 与 DisplayMemberBatch；仓库外 HTTP/SSE 和 SDK 消费者须同步升级请求与解码。
+* **studio:** ACP 账户观察要求 connection 状态；pl-acp 的供应商额度动作迁移为宿主提供的 ProbeRequest。
+* **protocol:** pl-protocol 移除了单一拥有者及 Studio/模型/工具细分领域导出，仓库外消费方需改为从对应领域拥有者 crate（pl-model、pl-tool、pl-studio-statistics、pl-studio-runtime）导入。
+* **studio:** list_delegation_models removes limit, cursor and taskCategory; pricing, performance and evaluations move to details. Model callers must replace get_delegation_model with get_delegation_models and pass a models array. The UI single-detail read remains supported.
+* **studio:** AgentDirectory 成员运行状态改为按 Native 与 ACP 区分的 activity 联合类型；HTTP 和 SDK 消费者需迁移至对应分支。
+
+### Features
+
+* **cli:** 接入本地 Harbor 评测并随桌面包分发 anywk ([#456](https://github.com/ZR233/anywork/issues/456)) ([e5e5fd2](https://github.com/ZR233/anywork/commit/e5e5fd208b7b053ee4d7cc0c611f6f7900a40f32))
+* **lifecycle:** 新增作用域资源生命周期管理 ([#463](https://github.com/ZR233/anywork/issues/463)) ([7db7302](https://github.com/ZR233/anywork/commit/7db73029c7d11888a1114067f8686fe64e84660c))
+* **model:** 支持 GPT-6.2 Astra 与 Sol ([#507](https://github.com/ZR233/anywork/issues/507)) ([3b1d5a3](https://github.com/ZR233/anywork/commit/3b1d5a31a60bc8f41aca472482e3aa8e6e582932))
+* **studio:** 内置通用测试技能并统一测试开发规范 ([#495](https://github.com/ZR233/anywork/issues/495)) ([a0c6f74](https://github.com/ZR233/anywork/commit/a0c6f74d3baa883e7080e48533efd9b52d7d02ae))
+* **studio:** 增加独立当前状态保存与暂停恢复 ([#475](https://github.com/ZR233/anywork/issues/475)) ([2d88cb0](https://github.com/ZR233/anywork/commit/2d88cb00bab4520e2a8067a2f6a75ef55bd1a040))
+* **studio:** 增加独立追加历史及有界查询 ([#486](https://github.com/ZR233/anywork/issues/486)) ([1b1f5c8](https://github.com/ZR233/anywork/commit/1b1f5c88a7384dc1f4328fd21167abeb90d5f770))
+* **studio:** 提前获取 ACP 配置并统一会话创建界面 ([#492](https://github.com/ZR233/anywork/issues/492)) ([6417c3f](https://github.com/ZR233/anywork/commit/6417c3f2399a47aef817afb4aaa02c82f760e2c8))
+* **studio:** 统一 ACP 账户后台实例与自动重连 ([#497](https://github.com/ZR233/anywork/issues/497)) ([f823a2e](https://github.com/ZR233/anywork/commit/f823a2eb13d434211dd11569682b1a46e2139f41))
+* **studio:** 补齐 ACP CLI、宿主工具与子会话配置 ([#504](https://github.com/ZR233/anywork/issues/504)) ([7e083dd](https://github.com/ZR233/anywork/commit/7e083ddac29a336357be90a77737af5750cf59fb))
+* **studio:** 记录 ACP 实时正文输出速度 ([#518](https://github.com/ZR233/anywork/issues/518)) ([82a1f44](https://github.com/ZR233/anywork/commit/82a1f445e67978066f30a22888b5fb670f5474e8))
+
+
+### Bug Fixes
+
+* **agent-runtime:** 统一 Thread 执行循环与 Resume 控制 ([#515](https://github.com/ZR233/anywork/issues/515)) ([2cfaba3](https://github.com/ZR233/anywork/commit/2cfaba39581b844c0025e8dfff3f86351f8d44ed))
+* **agent-runtime:** 统一原生会话资源的安装 ([#520](https://github.com/ZR233/anywork/issues/520)) ([4d9831f](https://github.com/ZR233/anywork/commit/4d9831f2ecca6d139e8b5852a4b483489a76136b))
+* **model:** 修复网页搜索选模和结果引用 ([#521](https://github.com/ZR233/anywork/issues/521)) ([ef2f654](https://github.com/ZR233/anywork/commit/ef2f65451ba79883ff98ba0f1e3b8abbb3f018da))
+* **model:** 显式禁用 Responses 工具参数严格化 ([#513](https://github.com/ZR233/anywork/issues/513)) ([1d69f8b](https://github.com/ZR233/anywork/commit/1d69f8ba04dcf027d829fe7c44887e00f6343c54))
+* **studio:** 保留 ACP 真实输入并隐藏宿主指令回显 ([#493](https://github.com/ZR233/anywork/issues/493)) ([1387615](https://github.com/ZR233/anywork/commit/1387615cf0a45147b3a792456ab898b5d72d6b07))
+* **studio:** 修复 Windows 旧会话迁移与冷快照读取 ([#511](https://github.com/ZR233/anywork/issues/511)) ([b654181](https://github.com/ZR233/anywork/commit/b654181b2cc78bcefff6156e2c2aa08a19485c17))
+* **studio:** 修复冷会话继续执行的准入顺序 ([#482](https://github.com/ZR233/anywork/issues/482)) ([d66fed1](https://github.com/ZR233/anywork/commit/d66fed157fa56c21eb93d568b27191e4d00baba2))
+* **studio:** 修复后台工具结果分页回查 ([#524](https://github.com/ZR233/anywork/issues/524)) ([eedc342](https://github.com/ZR233/anywork/commit/eedc34296e7666c26ca1baf910eb338a2fede0c5))
+* **studio:** 修复工作组耗时显示 ([#523](https://github.com/ZR233/anywork/issues/523)) ([ec4995d](https://github.com/ZR233/anywork/commit/ec4995d49862b3fea8d0dd90bbb9fb41c192668e))
+* **studio:** 全量列出模型并主动比较近期评价 ([#490](https://github.com/ZR233/anywork/issues/490)) ([a4a0946](https://github.com/ZR233/anywork/commit/a4a094627f9fbfffd11e5ccba8fd00bb418ba476))
+* **studio:** 完善 ACP 会话展示与成员目录 ([#466](https://github.com/ZR233/anywork/issues/466)) ([744a6e1](https://github.com/ZR233/anywork/commit/744a6e17d29d417d0d9dcc3ff06234e1de00390c))
+* **studio:** 完整展开工作组并统一时间线滚动 ([#506](https://github.com/ZR233/anywork/issues/506)) ([1b34b48](https://github.com/ZR233/anywork/commit/1b34b48a062a1d95270768df8706f501c8d4d7fb))
+* **studio:** 将时间线复制图标移至气泡外 ([#522](https://github.com/ZR233/anywork/issues/522)) ([34ec5b6](https://github.com/ZR233/anywork/commit/34ec5b60bacdd72e3c0a892bbf9fb630bf75df4d))
+* **studio:** 折叠 ACP 过程分组并补齐阶段进展 ([#502](https://github.com/ZR233/anywork/issues/502)) ([4155535](https://github.com/ZR233/anywork/commit/4155535adcae164f846b88ce7ba0ccde217a3025))
+* **studio:** 拆分工具展示策略并补齐国际化 ([#503](https://github.com/ZR233/anywork/issues/503)) ([0581923](https://github.com/ZR233/anywork/commit/0581923527e17ddfccbb3c20de49eb042a0926fb))
+* **studio:** 按文本展示网页搜索与抓取结果 ([#500](https://github.com/ZR233/anywork/issues/500)) ([b8098d2](https://github.com/ZR233/anywork/commit/b8098d2192375d8e1e93bd6fe8892704b63aef40))
+* **studio:** 统一上级智能体消息气泡展示 ([#474](https://github.com/ZR233/anywork/issues/474)) ([fd4b03d](https://github.com/ZR233/anywork/commit/fd4b03d504a79dd9956435031cd4491fda4d462a))
+* **studio:** 统一发送框与动态配置菜单 ([#501](https://github.com/ZR233/anywork/issues/501)) ([6230bb4](https://github.com/ZR233/anywork/commit/6230bb450ccdb29c1c84cb578f9a65fc36071c3d))
+* **tools:** 为 Lua 回执语法错误提供局部恢复指引 ([#489](https://github.com/ZR233/anywork/issues/489)) ([8c1c658](https://github.com/ZR233/anywork/commit/8c1c6588f3ba367ed86fb3c423381d3a0d92bf28))
+* **tools:** 分离 Lua 编排代码与输入数据 ([#473](https://github.com/ZR233/anywork/issues/473)) ([8fb71a6](https://github.com/ZR233/anywork/commit/8fb71a6ce303a2591f0855e0bc9effe74945098f))
+
+
+### Performance
+
+* **ci:** 共享 anywk 与 bridge 的原生发布编译缓存 ([#516](https://github.com/ZR233/anywork/issues/516)) ([04725a4](https://github.com/ZR233/anywork/commit/04725a464ad8a9e6e1590eadf6f478d100d8bc13))
+
+
+### Refactoring
+
+* **bridge:** 收敛订阅生命周期并传递取消回执 ([#465](https://github.com/ZR233/anywork/issues/465)) ([29c1caa](https://github.com/ZR233/anywork/commit/29c1caadb8c9e7bd14b2d195899ec05edc10d695))
+* **client:** 统一资源作用域与关闭确认 ([#472](https://github.com/ZR233/anywork/issues/472)) ([219c40f](https://github.com/ZR233/anywork/commit/219c40f644a54c4e535d605d047f2a7efbc2007a)), closes [#443](https://github.com/ZR233/anywork/issues/443)
+* **lifecycle:** 完成总计划验收与遗留清理 ([#484](https://github.com/ZR233/anywork/issues/484)) ([d1234b1](https://github.com/ZR233/anywork/commit/d1234b1d399036092b943607bf026e7379e7eaea))
+* **model:** 拆分厂商协议与共享运行时 ([#517](https://github.com/ZR233/anywork/issues/517)) ([df4d07d](https://github.com/ZR233/anywork/commit/df4d07d34a709e58d47def879edc7857707d33ac))
+* **model:** 精简模型运行时并拆分认证职责 ([#512](https://github.com/ZR233/anywork/issues/512)) ([d6cf8b7](https://github.com/ZR233/anywork/commit/d6cf8b7203ec56c08462db6e9048734fc869c124))
+* **protocol:** 清理并按领域归属迁移 pl-protocol 定义 ([#496](https://github.com/ZR233/anywork/issues/496)) ([8b30434](https://github.com/ZR233/anywork/commit/8b3043435007b268b1dd51dbbe053e11d8b5cdf1))
+* **runtime:** 统一观察作用域并回收主题注册 ([#476](https://github.com/ZR233/anywork/issues/476)) ([c8548e0](https://github.com/ZR233/anywork/commit/c8548e0a6ce027770ad4858ecb6c14f9f2e32098))
+* **studio:** 清理实时存储回查并补齐解耦验收 ([#509](https://github.com/ZR233/anywork/issues/509)) ([ce7db34](https://github.com/ZR233/anywork/commit/ce7db345ebe0ff3d0cf55ece3e54b5a52099259b))
+* **studio:** 独立 Current 与 History 并迁移 Timeline ([#488](https://github.com/ZR233/anywork/issues/488)) ([b126ebd](https://github.com/ZR233/anywork/commit/b126ebd72a7d00ff3a4844ead9b6931cc4aef337))
+* **studio:** 精简集成测试职责并清理手写焦点控制与测试文档 ([#494](https://github.com/ZR233/anywork/issues/494)) ([ce69f2d](https://github.com/ZR233/anywork/commit/ce69f2d97e2e40717b3764cea30f675848577662))
+* **studio:** 统一宿主工具注册与 Host MCP 自动投影 ([#505](https://github.com/ZR233/anywork/issues/505)) ([889adaf](https://github.com/ZR233/anywork/commit/889adaf8bd4e0423777a597aa1f6d6e059b52fda))
+
 ## [6.43.0](https://github.com/ZR233/anywork/compare/v6.42.0...v6.43.0) (2026-11-15)
 
 
