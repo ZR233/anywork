@@ -3915,7 +3915,7 @@ mod writer_tests {
     };
     use super::*;
     use crate::history::{HistoryDemand, HistoryEventsQuery};
-    use pl_core::thread::history_sink::HistorySink;
+    use pl_core::thread::{ToolDeliveryTarget, history_sink::HistorySink};
     use sea_orm::{ConnectionTrait, Database};
 
     struct Fixture {
@@ -3978,12 +3978,25 @@ mod writer_tests {
     #[tokio::test]
     async fn completed_tool_payload_remains_queryable_after_current_releases_delivery() -> Result<()>
     {
+        assert_saved_tool_payload_is_queryable(ToolDeliveryTarget::CallResult).await
+    }
+
+    #[tokio::test]
+    async fn background_tool_payload_remains_queryable_after_release() -> Result<()> {
+        assert_saved_tool_payload_is_queryable(ToolDeliveryTarget::Inbox {
+            message_id: "task-result:1".into(),
+        })
+        .await
+    }
+
+    async fn assert_saved_tool_payload_is_queryable(target: ToolDeliveryTarget) -> Result<()> {
         use pl_core::{
-            context::{ContextContent, OpaquePayload},
+            context::{AgentMessageKind, ContextContent, OpaquePayload},
             model::ModelToolCall,
             thread::{
                 ToolDelivery, ToolOutcome,
-                task::{TaskRecord, TaskStatus},
+                inbox::{InboxRecord, ThreadMessage},
+                task::{TaskAcknowledgement, TaskRecord, TaskStatus},
             },
             tool::ToolOutput,
         };
@@ -4013,11 +4026,16 @@ mod writer_tests {
             revision: 2,
             status: TaskStatus::Succeeded,
             cancel_requested: false,
-            acknowledgement: None,
+            acknowledgement: matches!(target, ToolDeliveryTarget::Inbox { .. }).then(|| {
+                TaskAcknowledgement {
+                    record_id: "task-receipt:0".into(),
+                    context_revision: 1,
+                }
+            }),
             started_sequence: Some(1),
         };
         let delivery = ToolDelivery {
-            target: Default::default(),
+            target,
             call_id: task.call_id.clone(),
             tool_id: task.tool_id.clone(),
             output: ToolOutput::new(
@@ -4032,10 +4050,26 @@ mod writer_tests {
             outcome: ToolOutcome::Succeeded,
         };
         let mut write = ticket(&id, 1);
-        Arc::make_mut(&mut write).state.terminal_tasks = Arc::from([task.clone()]);
-        Arc::make_mut(&mut write).state.deliveries = Arc::from([delivery.clone()]);
-        Arc::make_mut(&mut Arc::make_mut(&mut write).effect).tasks = Arc::from([task.clone()]);
-        Arc::make_mut(&mut Arc::make_mut(&mut write).effect).deliveries = Arc::from([delivery]);
+        let export = Arc::make_mut(&mut write);
+        let effect = Arc::make_mut(&mut export.effect);
+        if let ToolDeliveryTarget::Inbox { message_id } = &delivery.target {
+            let inbox = Arc::from([InboxRecord {
+                sequence: 1,
+                message: ThreadMessage {
+                    id: message_id.clone(),
+                    source_id: task.id.clone(),
+                    kind: AgentMessageKind::Report,
+                    payload: delivery.output.payload().clone(),
+                    context: delivery.delivered_context.clone(),
+                },
+            }]);
+            export.state.inbox = Arc::clone(&inbox);
+            effect.inbox = inbox;
+        }
+        export.state.terminal_tasks = Arc::from([task.clone()]);
+        export.state.deliveries = Arc::from([delivery.clone()]);
+        effect.tasks = Arc::from([task.clone()]);
+        effect.deliveries = Arc::from([delivery]);
         fixture.handoff(&write).await?;
         fixture.finish(1).await?;
 

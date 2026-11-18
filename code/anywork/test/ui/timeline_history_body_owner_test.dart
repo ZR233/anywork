@@ -13,6 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -186,18 +187,36 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  for (final (source, failed) in <(ChatSourceId, bool)>[
-    (const ForegroundTurnChatSource(turnId: 'turn'), false),
-    (const InputChatSource(inputId: 'input'), false),
-    (const InputChatSource(inputId: 'input'), true),
+  for (final (entityId, channel, expectedCopy, failed) in [
+    ('model-commentary', ThreadTextChannel.commentary, false, false),
+    ('model-final', ThreadTextChannel.finalAnswer, false, false),
+    ('completion:4:call', ThreadTextChannel.finalAnswer, true, false),
+    ('input', ThreadTextChannel.user, true, false),
+    ('input', ThreadTextChannel.user, false, true),
   ]) {
     testWidgets(
-      'resolved historical ${source.runtimeType} keeps its body read owner (failed=$failed)',
+      'history $entityId keeps its body reader and expected copy action (failed=$failed)',
       (tester) async {
         const text = '独立历史正文🙂';
         final bytes = utf8.encode(text);
-        final transferred = source is InputChatSource;
+        final transferred = channel == ThreadTextChannel.user;
+        final source = transferred
+            ? const InputChatSource(inputId: 'input')
+            : const ForegroundTurnChatSource(turnId: 'turn');
         final prefix = utf8.encode('独立历史');
+        final clipboard = <Object?>[];
+        final messenger = tester.binding.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(SystemChannels.platform, (
+          call,
+        ) async {
+          if (call.method == 'Clipboard.setData') {
+            clipboard.add((call.arguments as Map)['text']);
+          }
+          return null;
+        });
+        addTearDown(() {
+          messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+        });
         final unit = TimelineDisplayUnit(
           block: DisplayBlock(
             id: 'row',
@@ -208,18 +227,17 @@ void main() {
                 historyEventId: 'event',
                 contentSource: const CompletedOriginal(completionId: 'event'),
                 atom: ChatAtom(
-                  id: 'entity',
+                  id: entityId,
                   sourceOrder: null,
                   source: source,
-                  kind: source is InputChatSource
-                      ? ChatAtomKind.input
-                      : ChatAtomKind.text,
+                  kind: transferred ? ChatAtomKind.input : ChatAtomKind.text,
                   delivery: ChatDeliveryKind.independent,
                   lifecycle: const TerminalChatAtom(
                     started: null,
                     ended: null,
                     outcome: ChatTerminalOutcome.completed,
                   ),
+                  textChannel: channel,
                   contentPresent: true,
                   contents: const [],
                 ),
@@ -249,7 +267,9 @@ void main() {
                 'contract': 'anywork.chat/1',
                 'type': 'text',
                 'data': {
-                  'channel': source is InputChatSource ? 'user' : 'final',
+                  'channel': channel == ThreadTextChannel.finalAnswer
+                      ? 'final'
+                      : channel.name,
                   'attachments': <Object?>[],
                 },
                 'bodies': [
@@ -331,6 +351,10 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
+        final copy = find.byKey(
+          StudioDriverKeys.timelineContentCopyWindow(item.id, 'body'),
+        );
+        expect(copy, expectedCopy ? findsOneWidget : findsNothing);
         if (failed) {
           expect(
             find.textContaining('history body unavailable'),
@@ -340,6 +364,8 @@ void main() {
         } else if (transferred) {
           expect(find.text('独立历史'), findsOneWidget);
           expect(reads, 0);
+          await tester.tap(copy);
+          expect(clipboard, ['独立历史']);
           await tester.tap(
             find.byKey(
               StudioDriverKeys.timelineContentNextWindow(item.id, 'body'),
@@ -347,8 +373,14 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(find.text('正文🙂'), findsOneWidget);
+          await tester.tap(copy);
+          expect(clipboard, ['独立历史', '正文🙂']);
         } else {
           expect(find.text(text), findsOneWidget);
+          if (expectedCopy) {
+            await tester.tap(copy);
+          }
+          expect(clipboard, expectedCopy ? [text] : isEmpty);
         }
         expect(reads, failed ? 0 : 1);
         await tester.pumpWidget(const SizedBox());

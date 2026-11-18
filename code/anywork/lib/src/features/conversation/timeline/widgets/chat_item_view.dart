@@ -41,6 +41,7 @@ class ChatItemView extends StatefulWidget {
     this.groupMembersBuilder,
     this.onExpansionChanged,
     this.initiallyExpanded = false,
+    this.promptBubble = false,
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
@@ -55,6 +56,7 @@ class ChatItemView extends StatefulWidget {
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
   final ValueChanged<bool>? onExpansionChanged;
   final bool initiallyExpanded;
+  final bool promptBubble;
   @override
   State<ChatItemView> createState() => _ChatItemViewState();
 }
@@ -180,6 +182,10 @@ class _ChatItemViewState extends State<ChatItemView> {
         child: content,
       );
     }
+    return widget.promptBubble ? content : _withParentLabel(content);
+  }
+
+  Widget _withParentLabel(Widget content) {
     if (item.authorId != 'parentAgent') return content;
     // Identity is independent of payload availability. Keep the same read
     // widgets below it when metadata or body ranges have not arrived yet.
@@ -196,42 +202,61 @@ class _ChatItemViewState extends State<ChatItemView> {
     );
   }
 
+  Widget _promptBubble(Widget content) {
+    if (!widget.promptBubble) return content;
+    return DecoratedBox(
+      key: ValueKey('timeline-prompt-bubble:${item.id}'),
+      decoration: BoxDecoration(
+        color: context.colors.surfaceContainerLow,
+        borderRadius: const BorderRadiusDirectional.only(
+          topStart: Radius.circular(16),
+          topEnd: Radius.circular(16),
+          bottomStart: Radius.circular(16),
+          bottomEnd: Radius.circular(4),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        child: _withParentLabel(content),
+      ),
+    );
+  }
+
   Widget _buildContent(BuildContext context) {
     if (item.observationUnavailable) {
       final record = item.displayRecord!;
-      return Text(
-        record.startFact != null && record.endFact == null
-            ? '旧边界观察不可用 · 封存时尚未结束'
-            : '旧边界观察不可用',
+      return _promptBubble(
+        Text(
+          record.startFact != null && record.endFact == null
+              ? '旧边界观察不可用 · 封存时尚未结束'
+              : '旧边界观察不可用',
+        ),
       );
     }
     if (item.hasPublicInputBody) {
       // This branch and its Body positions remain the same while metadata is
       // pending, restricted, or resolved. Metadata never replaces the read owner.
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final index in item.publicInputBodyIndices)
-            _declaredContent(item.atom!, index),
-          _publicInputMedia(),
-        ],
+      return _textLayout(
+        item.publicInputBodyIndices,
+        (index, frame) => _declaredContent(item.atom!, index, frameBody: frame),
+        trailing: _publicInputMedia(),
       );
     }
     if (item.finalEmptyAfterContent) {
-      return const Text('该输出的最终内容为空');
+      return _promptBubble(const Text('该输出的最终内容为空'));
     }
     if (item.isKnownEmptyText) return const SizedBox.shrink();
     final unit = item.displayUnit;
     if (unit != null && item.type == 'displayUnit') {
       if (unit.body is SingleDisplayBlock) {
         final atom = unit.atom!;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (item.currentContents.isEmpty) const Text('内容状态未知'),
+        return _textLayout(
+          [
             for (var index = 0; index < item.currentContents.length; index++)
-              _declaredContent(atom, index),
+              index,
           ],
+          (index, frame) => _declaredContent(atom, index, frameBody: frame),
+          leading: item.currentContents.isEmpty ? const Text('内容状态未知') : null,
         );
       }
       return KeyedSubtree(
@@ -249,18 +274,21 @@ class _ChatItemViewState extends State<ChatItemView> {
       arguments: {'itemId': item.id},
     );
     if (item.compatibility != ChatItemCompatibility.current) {
-      return _unavailable(
-        item.compatibility == ChatItemCompatibility.unknown
-            ? '未知内容格式'
-            : '内容格式错误',
-        item.diagnostic,
+      return _promptBubble(
+        _unavailable(
+          item.compatibility == ChatItemCompatibility.unknown
+              ? '未知内容格式'
+              : '内容格式错误',
+          item.diagnostic,
+        ),
       );
     }
     Widget content;
     try {
       content = _content(context);
+      if (item.type != 'text') content = _promptBubble(content);
     } on FormatException catch (error) {
-      content = _unavailable('内容格式错误', error.message);
+      content = _promptBubble(_unavailable('内容格式错误', error.message));
     }
     return Material(
       key: ValueKey('chat-item:${item.id}'),
@@ -286,7 +314,7 @@ class _ChatItemViewState extends State<ChatItemView> {
   }
 
   Widget _content(BuildContext context) => switch (item.type) {
-    'text' => _text(context),
+    'text' => _text(),
     'thinking' => _thinking(context),
     'tool' => item.presentsFiles ? _media() : _tool(context),
     'turn' => _turn(context),
@@ -314,18 +342,46 @@ class _ChatItemViewState extends State<ChatItemView> {
     'raw' => _raw(context),
     _ => _unavailable('未知内容类别：${item.type}', null),
   };
-  Widget _text(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (item.authorId != 'parentAgent')
-        if (item.atom?.source case InboxMessageChatSource(:final sourceId))
-          Text('来源 · $sourceId'),
-      for (final body in _textBodies) _body(body, disclosed: true),
-      _media(),
-      // The independent Turn receipt owns terminal reasons. Accepted partial
-      // text stays readable without repeating its failure/stop diagnostics.
-    ],
+  Widget _text() => _textLayout(
+    _textBodies.toList(growable: false),
+    (body, frame) => _body(
+      body,
+      disclosed: true,
+      showCopy: _showTextCopy(frame),
+      frameBody: frame,
+    ),
+    leading: switch (item.atom?.source) {
+      InboxMessageChatSource(:final sourceId)
+          when item.authorId != 'parentAgent' =>
+        Text('来源 · $sourceId'),
+      _ => null,
+    },
+    trailing: _media(),
   );
+
+  /// An input's single Body owns its footer. Frame the content and attachments
+  /// together, allowing the same reader to lay out its actions below the frame.
+  Widget _textLayout<T>(
+    List<T> bodies,
+    Widget Function(T body, Widget Function(Widget)? frame) buildBody, {
+    Widget? leading,
+    Widget? trailing,
+  }) {
+    Widget column(List<Widget> children) => Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [?leading, ...children, ?trailing],
+    );
+    if (widget.promptBubble && bodies.length == 1) {
+      return buildBody(bodies.single, (body) => _promptBubble(column([body])));
+    }
+    return _promptBubble(
+      column([for (final body in bodies) buildBody(body, null)]),
+    );
+  }
+
+  bool _showTextCopy(Widget Function(Widget)? frame) =>
+      item.showsTextCopy && (!widget.promptBubble || frame != null);
+
   Widget _thinking(BuildContext context) {
     final outcome = item.data['outcome'];
     final state = outcome is Map<String, Object?> ? outcome['kind'] : null;
@@ -845,24 +901,33 @@ class _ChatItemViewState extends State<ChatItemView> {
       children: children,
     ),
   );
-  Widget _declaredContent(ChatAtom atom, int index) {
+  Widget _declaredContent(
+    ChatAtom atom,
+    int index, {
+    Widget Function(Widget)? frameBody,
+  }) {
     final id = '${item.id}:content-$index';
     final content = index < item.currentContents.length
         ? item.currentContents[index]
         : null;
-    if (content == null) return const Text('内容引用缺失');
+    if (content == null) {
+      const missing = Text('内容引用缺失');
+      return frameBody?.call(missing) ?? missing;
+    }
+    final isTextBody =
+        content.role == ChatContentRole.body &&
+        (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input);
     final range = TimelineOwnedBodyConnector(
       itemId: item.id,
       contentKey: content.reference.contentKey,
       label: '查看内容',
       currentReference: content.reference,
-      disclosed:
-          content.role == ChatContentRole.body &&
-          (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input),
+      disclosed: isTextBody,
+      showCopy: !isTextBody || _showTextCopy(frameBody),
+      frameBody: frameBody,
       witness: _contentWitness,
     );
-    return content.role == ChatContentRole.body &&
-            (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input)
+    return isTextBody
         ? TimelineBodyReadIntent(
             bodyBuilder: (text) =>
                 widget.bodyBuilder?.call(id, text) ??
@@ -876,6 +941,8 @@ class _ChatItemViewState extends State<ChatItemView> {
     ChatBodyPresentation body, {
     bool code = false,
     bool disclosed = false,
+    bool showCopy = true,
+    Widget Function(Widget)? frameBody,
   }) {
     final id = '${item.id}:${body.key}';
     Widget render(String text) => code
@@ -890,18 +957,24 @@ class _ChatItemViewState extends State<ChatItemView> {
         historyReference: body.historyReference,
         currentReference: body.currentReference,
         disclosed: disclosed,
+        showCopy: showCopy,
+        frameBody: frameBody,
         witness: (text, child) => _contentWitness(text, render(text)),
       );
     }
     final bytes = body.inline;
-    if (bytes == null) return Text('${body.key} · 未提供内容或引用');
-    final String text;
-    try {
-      text = utf8.decode(bytes);
-    } on FormatException catch (error) {
-      return Text('${body.key} · ${error.message}');
+    Widget inline;
+    if (bytes == null) {
+      inline = Text('${body.key} · 未提供内容或引用');
+    } else {
+      try {
+        final text = utf8.decode(bytes);
+        inline = _contentWitness(text, render(text));
+      } on FormatException catch (error) {
+        inline = Text('${body.key} · ${error.message}');
+      }
     }
-    return _contentWitness(text, render(text));
+    return frameBody?.call(inline) ?? inline;
   }
 
   Widget _contentWitness(String text, Widget child) {

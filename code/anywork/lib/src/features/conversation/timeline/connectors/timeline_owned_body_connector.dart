@@ -20,7 +20,9 @@ class TimelineOwnedBodyConnector extends StatefulWidget {
     this.historyReference,
     this.currentReference,
     this.disclosed = false,
+    this.showCopy = true,
     this.bodyBuilder,
+    this.frameBody,
     super.key,
   }) : assert(
          (historyReference == null) != (currentReference == null),
@@ -33,7 +35,9 @@ class TimelineOwnedBodyConnector extends StatefulWidget {
   final HistoryEventBodyRef? historyReference;
   final CurrentContentRef? currentReference;
   final bool disclosed;
+  final bool showCopy;
   final Widget Function(String text)? bodyBuilder;
+  final Widget Function(Widget body)? frameBody;
   final Widget Function(String text, Widget child) witness;
 
   @override
@@ -328,10 +332,13 @@ class _TimelineOwnedBodyConnectorState
         }
       },
       onNext: canNext ? _next : null,
-      onCopy: _window == null ? null : () => unawaited(_copy()),
+      onCopy: widget.showCopy && window != null
+          ? () => unawaited(_copy())
+          : null,
       witness: widget.witness,
       bodyBuilder:
           widget.bodyBuilder ?? TimelineBodyReadIntent.bodyBuilderOf(context),
+      frameBody: widget.frameBody,
     );
   }
 }

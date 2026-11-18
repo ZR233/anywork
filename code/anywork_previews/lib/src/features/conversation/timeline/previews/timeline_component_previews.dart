@@ -784,26 +784,42 @@ Widget timelineCombinedPreview() =>
   group: 'Timeline · 组合视图',
   size: Size(390, 720),
 )
-Widget timelineParentAgentPreview() =>
-    _timelinePreviewHost(const _TimelineCombinedPreview(parentMessages: true));
+Widget timelineParentAgentPreview() => _timelinePreviewHost(
+  const _TimelineCombinedPreview(
+    messages: TimelinePreviewFixtures.parentAgentMessages,
+  ),
+);
 
 @Preview(name: '间距 / 正文与工作组', group: 'Timeline · 组合视图', size: Size(1040, 680))
-Widget timelineSpacingPreview() =>
-    _timelinePreviewHost(const _TimelineCombinedPreview(spacing: true));
+Widget timelineSpacingPreview() => _timelinePreviewHost(
+  const _TimelineCombinedPreview(
+    messages: TimelinePreviewFixtures.spacingMessages,
+  ),
+);
 
 @Preview(name: '间距 / 窄窗大字', group: 'Timeline · 组合视图', size: Size(390, 1040))
 Widget timelineSpacingNarrowPreview() => _timelinePreviewHost(
-  const _TimelineCombinedPreview(spacing: true),
+  const _TimelineCombinedPreview(
+    messages: TimelinePreviewFixtures.spacingMessages,
+  ),
   textScale: 1.6,
 );
 
+@Preview(name: '正文 / 复制操作', group: 'Timeline · 组合视图', size: Size(820, 420))
+@Preview(
+  name: '正文 / 复制操作 · 窄窗口',
+  group: 'Timeline · 组合视图',
+  size: Size(390, 580),
+)
+Widget timelineTextCopyPreview() => _timelinePreviewHost(
+  const _TimelineCombinedPreview(
+    messages: TimelinePreviewFixtures.copyActionMessages,
+  ),
+);
+
 class _TimelineCombinedPreview extends StatefulWidget {
-  const _TimelineCombinedPreview({
-    this.spacing = false,
-    this.parentMessages = false,
-  });
-  final bool spacing;
-  final bool parentMessages;
+  const _TimelineCombinedPreview({this.messages});
+  final List<Message> Function()? messages;
 
   @override
   State<_TimelineCombinedPreview> createState() =>
@@ -812,11 +828,7 @@ class _TimelineCombinedPreview extends StatefulWidget {
 
 class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
   late final _PreviewTimelineControls controls = _PreviewTimelineControls(
-    messages: widget.parentMessages
-        ? TimelinePreviewFixtures.parentAgentMessages()
-        : widget.spacing
-        ? TimelinePreviewFixtures.spacingMessages()
-        : null,
+    messages: widget.messages?.call(),
   );
 
   @override

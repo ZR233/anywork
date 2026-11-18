@@ -482,11 +482,6 @@ class _TimelineViewState extends State<TimelineView> {
                                             true) {
                                           return const SizedBox.shrink();
                                         }
-                                        final promptLike =
-                                            isSentByMe ||
-                                            chatItemPresentationOf(message)
-                                                    ?.authorId ==
-                                                'parentAgent';
                                         return ChatMessage(
                                           key: StudioDriverKeys.timelineRow(
                                             message.id,
@@ -501,53 +496,10 @@ class _TimelineViewState extends State<TimelineView> {
                                           // 时间套用聊天气泡的第二套间距规则。
                                           verticalPadding: 12,
                                           verticalGroupedPadding: 12,
-                                          child: promptLike
-                                              ? Align(
-                                                  alignment:
-                                                      AlignmentDirectional
-                                                          .centerEnd,
-                                                  child: Container(
-                                                    constraints:
-                                                        const BoxConstraints(
-                                                          maxWidth: StudioLayout
-                                                              .conversationPromptWidth,
-                                                        ),
-                                                    padding:
-                                                        const EdgeInsets.symmetric(
-                                                          horizontal: 16,
-                                                          vertical: 10,
-                                                        ),
-                                                    decoration: BoxDecoration(
-                                                      color: context
-                                                          .colors
-                                                          .surfaceContainerLow,
-                                                      borderRadius:
-                                                          const BorderRadius.only(
-                                                            topLeft:
-                                                                Radius.circular(
-                                                                  16,
-                                                                ),
-                                                            topRight:
-                                                                Radius.circular(
-                                                                  16,
-                                                                ),
-                                                            bottomLeft:
-                                                                Radius.circular(
-                                                                  16,
-                                                                ),
-                                                            bottomRight:
-                                                                Radius.circular(
-                                                                  4,
-                                                                ),
-                                                          ),
-                                                    ),
-                                                    child: child,
-                                                  ),
-                                                )
-                                              : SizedBox(
-                                                  width: double.infinity,
-                                                  child: child,
-                                                ),
+                                          child: SizedBox(
+                                            width: double.infinity,
+                                            child: child,
+                                          ),
                                         );
                                       },
                                   customMessageBuilder:
@@ -558,10 +510,17 @@ class _TimelineViewState extends State<TimelineView> {
                                         required bool isSentByMe,
                                         MessageGroupStatus? groupStatus,
                                       }) {
+                                        final item = chatItemPresentationOf(
+                                          message,
+                                        )!;
+                                        final promptBubble =
+                                            isSentByMe ||
+                                            item.authorId == 'parentAgent';
                                         Widget render(
-                                          ChatItemPresentation item,
+                                          ChatItemPresentation resolved,
                                         ) => ChatItemView(
-                                          item: item,
+                                          item: resolved,
+                                          promptBubble: promptBubble,
                                           bodyBuilder: _body,
                                           attachmentBuilder:
                                               widget.attachmentBuilder,
@@ -578,13 +537,22 @@ class _TimelineViewState extends State<TimelineView> {
                                           groupMembersBuilder:
                                               widget.groupMembersBuilder,
                                         );
-                                        final item = chatItemPresentationOf(
-                                          message,
-                                        )!;
-                                        return widget
-                                                .canonicalPresentationBuilder
+                                        final rendered =
+                                            widget.canonicalPresentationBuilder
                                                 ?.call(item, render) ??
                                             render(item);
+                                        if (!promptBubble) return rendered;
+                                        return Align(
+                                          alignment:
+                                              AlignmentDirectional.centerEnd,
+                                          child: ConstrainedBox(
+                                            constraints: const BoxConstraints(
+                                              maxWidth: StudioLayout
+                                                  .conversationPromptWidth,
+                                            ),
+                                            child: rendered,
+                                          ),
+                                        );
                                       },
                                 ),
                               ),
