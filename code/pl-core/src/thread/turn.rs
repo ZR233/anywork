@@ -46,20 +46,10 @@ impl Owner {
         if selected.is_empty() {
             return Ok(());
         }
-        let revision = self
-            .state
-            .context
-            .revision
-            .checked_add(1)
-            .ok_or(ThreadError::RevisionExhausted)?;
-        let mut records = self.state.context.records.to_vec();
+        let mut context = self.state.context.clone();
         let mut deliveries = self.state.deliveries.to_vec();
-        let mut identities = records
-            .iter()
-            .map(|record| record.id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        for call_id in selected {
-            let Some(call) = self.pending.remove(&call_id) else {
+        for call_id in &selected {
+            let Some(call) = self.pending.get(call_id) else {
                 return Err(ThreadError::MissingCall);
             };
             let content = vec![ContextContent::Text {
@@ -67,28 +57,28 @@ impl Owner {
                     "Tool call was cancelled before execution. No tool side effects were started.",
                 ),
             }];
-            let mut suffix = 0_u64;
-            let id = loop {
-                let id = format!("cancelled:{revision}:{call_id}:{suffix}");
-                if identities.insert(id.clone()) {
-                    break id;
-                }
-                suffix += 1;
-            };
-            records.push(ContextRecord {
-                id,
-                turn_id: Some(call.turn_id),
-                source: ContextSource::ToolResult {
-                    call_id: call_id.clone(),
-                    tool_id: call.call.tool_id.clone(),
+            let id = super::background::unique_id(
+                &format!("cancelled:{}:{call_id}", context.revision),
+                context.records.iter().map(|record| record.id.as_str()),
+            )?;
+            current::pair_known_call_result(
+                &mut context,
+                ContextRecord {
+                    id,
+                    turn_id: Some(call.turn_id.clone()),
+                    source: ContextSource::ToolResult {
+                        call_id: call_id.clone(),
+                        tool_id: call.call.tool_id.clone(),
+                    },
+                    content: content.clone(),
+                    tool_calls: Vec::new(),
                 },
-                content: content.clone(),
-                tool_calls: Vec::new(),
-            });
+            )
+            .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))?;
             deliveries.push(ToolDelivery {
                 target: ToolDeliveryTarget::CallResult,
-                call_id,
-                tool_id: call.call.tool_id,
+                call_id: call_id.clone(),
+                tool_id: call.call.tool_id.clone(),
                 output: crate::tool::ToolOutput::new(
                     OpaquePayload::text("cancelled before execution"),
                     content.clone(),
@@ -97,10 +87,10 @@ impl Owner {
                 outcome: ToolOutcome::Cancelled,
             });
         }
-        self.state.context = ContextSnapshot {
-            revision,
-            records: records.into(),
-        };
+        for call_id in selected {
+            self.pending.remove(&call_id);
+        }
+        self.state.context = context;
         self.state.deliveries = deliveries.into();
         Ok(())
     }
@@ -130,8 +120,8 @@ pub(super) fn failed_turn(error: &ThreadError) -> TurnState {
 ///
 /// Everything else keeps its own state instead of pretending to be continuable: `InvalidResponse` (the
 /// answer could not be used), `ImplementationPanicked` (an adapter defect), `IncompatibleContext` (the
-/// request shape has to change, not the authorization), a storage fault (explicit save recovery), a
-/// pending tool commit (retry), an interaction (its own resolution entry), a closed owner, a cancellation
+/// request shape has to change, not the authorization), a storage fault (explicit save recovery),
+/// an interaction (its own resolution entry), a closed owner, a cancellation
 /// and every validation or identity violation. Nothing here ever retries by itself: a point only makes an
 /// explicit continuation possible.
 fn recoverable_continuation(error: &ThreadError) -> bool {
