@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
+import 'package:anywork/src/features/conversation/acp/state/acp_timeline_row.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_timeline_view_model.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -546,23 +548,30 @@ final class _Phases {
         }
         result['hostEvidenceDrained'] = await hostEvidence!.verifyDrained();
       }
-      final assistantIndex = owner.state.content.lastIndexWhere(
-        (item) =>
-            item is AcpConversationMessageItem &&
-            item.kind == AcpConversationMessageKind.assistant,
+      final rows = mapAcpTimelineRows(
+        threadId: threadId,
+        content: owner.state.content,
+        running: false,
       );
-      final assistantItem = find.byKey(
-        ValueKey(AcpViewKeyValues.timelineItem(threadId, assistantIndex)),
+      final assistantIndex = rows.lastIndexWhere(
+        (row) =>
+            row is AcpTimelineMessageRow &&
+            row.item is AcpTimelineAssistantMessage,
       );
+      expect(assistantIndex, greaterThanOrEqualTo(0));
+      Finder rowAt(int index) =>
+          find.byKey(ValueKey(AcpViewKeyValues.timelineItem(threadId, index)));
+      final assistantItem = rowAt(assistantIndex);
+      final scrollable = find
+          .descendant(
+            of: find.byType(AcpConversationContentView),
+            matching: find.byType(Scrollable),
+          )
+          .first;
       await scene.tester.scrollUntilVisible(
         assistantItem,
         250,
-        scrollable: find
-            .descendant(
-              of: find.byType(AcpConversationContentView),
-              matching: find.byType(Scrollable),
-            )
-            .first,
+        scrollable: scrollable,
         maxScrolls: 20,
       );
       await scene.until(
@@ -578,20 +587,31 @@ final class _Phases {
             .isNotEmpty,
         'phase ${spec.id} final assistant reply rendered',
       );
-      if (remote == null) {
-        expect(
-          find.descendant(
-            of: find.byWidgetPredicate(
-              (widget) =>
-                  widget is AcpTimelineEntryView &&
-                  widget.item is AcpTimelineUserMessage,
-            ),
-            matching: find.text('hi', findRichText: true),
-          ),
-          findsNWidgets(2),
-        );
-      }
       await scene.capture('agy-live-phase-${spec.id.toLowerCase()}-response');
+      if (remote == null) {
+        final userIndexes = [
+          for (final (index, row) in rows.indexed)
+            if (row is AcpTimelineMessageRow &&
+                row.item is AcpTimelineUserMessage)
+              index,
+        ];
+        expect(userIndexes, hasLength(2));
+        for (final index in userIndexes.reversed) {
+          final userItem = rowAt(index);
+          await scene.tester.scrollUntilVisible(
+            userItem,
+            -250,
+            scrollable: scrollable,
+          );
+          expect(
+            find.descendant(
+              of: userItem,
+              matching: find.text(spec.prompt, findRichText: true),
+            ),
+            findsOneWidget,
+          );
+        }
+      }
       result['verdict'] = 'passed';
       return result;
     } catch (error) {

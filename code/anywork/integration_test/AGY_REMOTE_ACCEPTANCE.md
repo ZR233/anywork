@@ -98,13 +98,24 @@ cargo xtask test-project --suite desktop --case acp_agy_conversation \
 `--output` 的目录须尚不存在。`--case`、`--suite`、`--output`、`--list` 当前在
 `xtask/src/cli/mod.rs` 中定义；该用例已由测试发现机制选取，不新增选择器。
 不要运行 `manual-gui --ssh-target` 来代替：该选项仍只属于 `tool-scroll`。
-Linux 无显示服务时使用系统 Xvfb，并按构建技能将 `TMPDIR` 指向本 Thread
-scratch 中准备好的目录；不能占用 1420 端口。
+使用系统 Xvfb 时显式让 GTK 使用 X11，即使宿主终端未设置
+`WAYLAND_DISPLAY`，GTK 仍可能发现宿主的默认 Wayland socket。
+按构建技能将 `TMPDIR` 指向本 Thread scratch 中准备好的目录，并运行：
+
+```bash
+GDK_BACKEND=x11 xvfb-run --auto-servernum --server-args="-screen 0 1600x1200x24" \
+  cargo xtask test-project --suite desktop --case acp_agy_conversation \
+  --output "$ANYWORK_AGY_ARTIFACTS/test-project-report"
+```
+
+不能占用 1420 端口。
 
 本场景需要 Linux 宿主和明确的本机 agy 命令，用 `/proc` 观察原位进程身份；
 不接受 `ANYWORK_AGY_MANAGED=1`。托管安装的原本地文本分支保留，必须沿原
 隔离安装准备，不能把开关当作已验证登录的证明。原本地文本场景继续使用
 `ANYWORK_AGY_PROJECT=$ANYWORK_AGY_SANDBOX/project`，且不设置两个 SSH 环境变量。
+本地场景会切换到 Git worktree，须先在该隔离项目中提交内容为
+`Disposable ACP live acceptance workspace. No private data.`（带末尾换行）的 `README.md`。
 
 ## 独立证据与失败收束
 

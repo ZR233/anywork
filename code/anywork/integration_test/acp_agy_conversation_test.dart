@@ -643,17 +643,26 @@ void main() {
         final blocks = mapAcpMessageBlocks(user, itemId: 'startup-user');
         expect(blocks, hasLength(1));
         expect((blocks.single as AcpTextBlockPresentation).text, startupPrompt);
-        expect(
-          find.descendant(
-            of: find.byWidgetPredicate(
-              (widget) =>
-                  widget is AcpTimelineEntryView &&
-                  widget.item is AcpTimelineUserMessage,
-            ),
-            matching: find.text(startupPrompt, findRichText: true),
+        final visiblePrompt = find.descendant(
+          of: find.byWidgetPredicate(
+            (widget) =>
+                widget is AcpTimelineEntryView &&
+                widget.item is AcpTimelineUserMessage,
           ),
-          findsOneWidget,
+          matching: find.text(startupPrompt, findRichText: true),
         );
+        // A streamed reply can move the user's row outside the lazy list.
+        await tester.scrollUntilVisible(
+          visiblePrompt,
+          -250,
+          scrollable: find
+              .descendant(
+                of: find.byType(AcpConversationContentView),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        expect(visiblePrompt, findsOneWidget);
         expect(owner.state.lastCompleted!.completionSequence, BigInt.one);
       }
       expect(
