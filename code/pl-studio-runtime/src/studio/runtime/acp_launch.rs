@@ -211,7 +211,10 @@ wait
         loop {
             let stat = match std::fs::read_to_string(&descendant) {
                 Ok(stat) => stat,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                // procfs can also return ESRCH if the process is reaped after the open.
+                Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                    break;
+                }
                 Err(error) => panic!("read descendant state: {error}"),
             };
             if stat

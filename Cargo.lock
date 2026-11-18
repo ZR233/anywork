@@ -4427,6 +4427,7 @@ dependencies = [
  "http",
  "image",
  "keyring",
+ "libc",
  "libsqlite3-sys",
  "pl-acp",
  "pl-agent-tool",
