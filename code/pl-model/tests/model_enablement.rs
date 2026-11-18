@@ -89,6 +89,28 @@ fn bundled_models_stay_enabled_after_successful_empty_inventory() {
     assert_eq!(config.routes.values().next(), Some(&route));
 }
 
+#[test]
+fn retired_openai_model_is_unavailable_for_an_existing_route() {
+    let account_id = AccountId::new("openai").unwrap();
+    let route = ModelRouteConfig {
+        account_id: account_id.clone(),
+        model_id: "gpt-5.5".into(),
+        effort: Some(ReasoningEffort::new("low")),
+    };
+    let config = AgentModelConfig {
+        accounts: [(account_id.clone(), openai_account())].into(),
+        routes: [(AgentRoleId::new("executor").unwrap(), route.clone())].into(),
+    };
+    config.validate_declarations().unwrap();
+    assert_eq!(
+        config.route_availability(&route).unwrap(),
+        ModelRouteAvailability::ModelUnavailable {
+            account_id,
+            model_id: route.model_id,
+        }
+    );
+}
+
 /// 禁用保留成员、来源与其他覆盖，只是把它从选择资格里排除。
 #[test]
 fn disabled_model_stays_in_catalog_but_loses_selection_qualification() {
@@ -547,7 +569,6 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
 fn selection_guides_require_catalog_membership_and_explicit_sharing() {
     assert!(bundled_selection_guide("deepseek", "gpt-6-luna").is_none());
     assert!(bundled_selection_guide("openai", "mimo-v2.5-pro").is_none());
-    assert!(bundled_selection_guide("openai", "gpt-5.5").is_none());
 
     // 同一供应商的多套目录显式共享资料。
     let shared = bundled_selection_guide("zhipu", "glm-5.3").expect("shared guide");

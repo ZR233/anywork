@@ -36,7 +36,7 @@ impl pl_tool_search::tools::web_search::SearchService for StandaloneSearchServic
         request: pl_tool_search::tools::web_search::Request,
     ) -> Result<pl_tool_search::tools::web_search::Response, Self::Error> {
         let request = SearchRequest {
-            id: request.id,
+            id: request.session_id,
             model: self.options.model.clone(),
             input: request.input,
             commands: request.commands,
@@ -87,7 +87,7 @@ impl TypedTool for ThreadWebSearchTool {
             .execute(
                 commands,
                 pl_tool_search::tools::web_search::Context {
-                    request_id: format!("{}:{}", context.turn_id, context.call_id),
+                    session_id: context.thread_id,
                     input: recent_context(&context.context),
                     cancellation: context.cancellation,
                 },

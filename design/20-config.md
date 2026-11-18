@@ -305,7 +305,7 @@ Studio 维护两段相互独立的顶层联网搜索配置：
 
 两路搜索并非互斥单选：`StudioWebSearchSettings` 与 `StudioDeepSeekWebSearchSettings` 分别暴露各自的 `configured`、`effective`、`availability` 与 `account_id`（其中 `effective = configured && availability == available`）。权威 DeepSeek 模板默认声明 `DeepSeekToolsApi` 独立服务能力；若实例覆盖了非官方 `base_url`，则 `TemplateDefaults` 自动撤销该方言及缓存方言（而 OpenAI 模板覆盖 `base_url` 时仍保留 `/alpha/search` 独立搜索能力）。
 
-设置页运行独立的服务规划器（service planner），仅根据账号服务能力与凭据完整性解析各搜索后端的可用性（`disabled`、`missingCredential` 或 `accountUnsupported`），不依赖当前会话或角色路由：OpenAI 独立搜索优先选用所属账号目录中的 `gpt-6-sol`（不存在时取首个有效模型），DeepSeek 独立搜索直接调用原生工具接口而无需绑定模型。实际会话轮次执行时，再根据当前对话模型是否支持函数调用（function calling）决定是否为本轮注册对应的独立搜索工具；OpenAI 独立搜索、DeepSeek 原生搜索与托管搜索互不抢占（多后端仲裁规则见 [06](./06-model.md)）。
+设置页显示默认搜索服务及其可用性，OpenAI 的默认搜索模型为 `gpt-6-luna`。实际会话根据当前对话模型的函数调用能力注册可用的独立搜索工具。OpenAI 独立搜索优先使用具备搜索能力和可用凭据的当前账号，沿用以 `gpt-` 开头的当前请求模型标识，其他模型使用默认值。DeepSeek 独立搜索直接调用原生工具接口。多后端仲裁规则见 [模型与供应商](./06-model.md#611-联网搜索web-search与账号边界)。
 
 ## 20.13 LSP 服务器配置
 

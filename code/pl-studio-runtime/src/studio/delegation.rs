@@ -186,7 +186,7 @@ mod tests {
             .account;
         let selector = ModelRouteConfig {
             account_id: AccountId::new("credential-admission")?,
-            model_id: "gpt-5.5".into(),
+            model_id: "gpt-6-luna".into(),
             effort: Some(ReasoningEffort::new("low")),
         };
         config.models.accounts.clear();

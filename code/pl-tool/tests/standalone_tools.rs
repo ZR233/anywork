@@ -35,7 +35,7 @@ async fn web_search_executes_commands_and_bounds_only_the_preview() {
         .unwrap()
         .attach(pl_tool_search::tools::web_search::WebSearch::new(service));
     let output = tool.execute(r#"{"search_query":[{"q":"rust","domains":["rust-lang.org"]}],"time":[{"utc_offset":"+08:00"}]}"#.into(),
-        pl_tool_search::tools::web_search::Context { request_id: "turn:call".into(), input: Some(vec![serde_json::json!({"role":"user","content":"question"})]), cancellation: CancellationToken::new() }).await.unwrap();
+        pl_tool_search::tools::web_search::Context { session_id: "search-session".into(), input: Some(vec![serde_json::json!({"role":"user","content":"question"})]), cancellation: CancellationToken::new() }).await.unwrap();
     assert_eq!(output.response.output.len(), 18_000);
     assert!(output.preview.contains("preview omitted"));
     assert_eq!(
@@ -43,7 +43,7 @@ async fn web_search_executes_commands_and_bounds_only_the_preview() {
         Some("opaque-provider-state")
     );
     let request = requests.lock().unwrap();
-    assert_eq!(request[0].id, "turn:call");
+    assert_eq!(request[0].session_id, "search-session");
     assert_eq!(
         request[0].commands.search_query.as_ref().unwrap()[0].q,
         "rust"

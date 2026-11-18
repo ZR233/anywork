@@ -293,6 +293,9 @@ Pin arrays contain stable IDs. The application uses a fixed light theme.
 (default), `indexed` or `live`; optional `context_size` is `low`, `medium` or `high`;
 `allowed_domains` defaults to `[]`. Optional `[web_search.location]` contains
 string `country`, `region`, `city`, `timezone` fields, each independently optional.
+OpenAI standalone search uses the current request model ID when it starts with
+`gpt-`, and uses `gpt-6-luna` otherwise. The current account has priority when
+it declares standalone search and has working credentials.
 
 `[deepseek_web_search]` has only `enabled` and `fetch_enabled`, both default `true`.
 They independently enable Search and Fetch; it has no result-count or OpenAI
