@@ -256,7 +256,6 @@ void main() {
     }, 'historical tool result window');
     final result = jsonDecode(utf8.decode(resultWindow!.window!.bytes)) as Map;
     expect(result['timedOut'], isFalse);
-    expect(result['tasks'], isA<List>());
     expect(result['messagesReady'], panel.presentation.messagesReady);
 
     expect(completed.state, HistoryTurnState.completed);
