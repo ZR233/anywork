@@ -139,8 +139,8 @@ pub struct InputRecord {
 
 /// Minimal resident identity of an admitted input that already reached a terminal state.
 ///
-/// The body and framework routing facts stay in the durable effect history; this record is the
-/// only thing the live owner keeps so a repeated submission can still be answered idempotently.
+/// The live owner retains a bounded tail of these receipts after dropping terminal input bodies.
+/// Duplicate detection ends when an identity leaves that window; admission never queries History.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InputIdentity {
@@ -158,10 +158,8 @@ pub struct InputIdentity {
 }
 
 impl InputIdentity {
-    /// Projects one terminal input record into its minimal durable identity.
-    ///
-    /// The Studio runtime persists this record in the per-Thread history identity index so a
-    /// repeated submission can be answered after the resident terminal input has left core state.
+    /// Projects one terminal input into its bounded owner receipt.
+    /// Saving Current may preserve this window; no permanent input identity index is required.
     pub fn from_record(record: &InputRecord) -> Self {
         Self {
             digest: record.input.digest(),
@@ -187,19 +185,17 @@ impl InputIdentity {
     }
 }
 
-/// Builds the minimal durable identity of a terminal input record.
-///
-/// Host layers use this to persist the identity index entry alongside the effect that settled the
-/// input; core keeps only the pending queue and never re-reads the durable history.
+/// Builds the minimal receipt of a terminal input record.
+/// The receipt is serializable for explicit storage or upgrade consumers, but grants no
+/// History lookup or permanent deduplication contract to normal input admission.
 pub fn input_identity(record: &InputRecord) -> InputIdentity {
     InputIdentity::from_record(record)
 }
 
-/// Rebuilds one framework receipt from a stored identity.
+/// Rebuilds one framework receipt from an already available identity.
 ///
-/// The caller passes the watermark that answers the repeat (the current commit for a live owner,
-/// or the durable write sequence for a cold Thread), so a repeated submission returns a receipt
-/// without re-admission.
+/// The caller supplies the identity and its acceptance watermark; this helper performs no lookup
+/// and does not admit or execute an input.
 pub fn input_receipt(
     identity: &InputIdentity,
     input: ThreadInput,
@@ -569,7 +565,7 @@ impl Owner {
                 .find(|record| record.input.id == id)
             else {
                 // The input already reached a terminal state and left the bounded resident queue
-                // when an earlier step of this Turn consumed it. Its durable receipt stays the
+                // when an earlier step of this Turn consumed it. Its resident receipt stays the
                 // authority: a consumption attributed to this Turn completes normally, while any
                 // other terminal state stays an input conflict.
                 if active_input_already_consumed(&self.state, &id, turn_id) {
@@ -639,7 +635,7 @@ fn steering_record_id(turn_id: &str, input_id: &str) -> String {
 ///
 /// A still-pending input keeps its full record; a terminal input is answered from the bounded
 /// identity window by comparing the immutable content digest. An identity older than that window
-/// is answered by the host's durable identity index, so core never accumulates history.
+/// is unknown to admission; the owner never asks a host or History to recover it.
 /// A repeated id with a different body stays an identity conflict.
 pub(super) fn duplicate_input_receipt(
     state: &ThreadSnapshot,
@@ -668,10 +664,10 @@ pub(super) fn duplicate_input_receipt(
     Ok(Some(identity.receipt(input.clone(), state.commit_sequence)))
 }
 
-/// Reports whether bounded durable state already records `id` as consumed by `turn_id`.
+/// Reports whether bounded owner state already records `id` as consumed by `turn_id`.
 ///
 /// A consumed input leaves the resident queue as soon as its commit publishes, so a later step of
-/// the same Turn sees only its durable receipt. An identity that already left the bounded window is
+/// the same Turn sees only its resident receipt. An identity that already left the bounded window is
 /// accepted as this Turn's own admission receipt: the owner lists only inputs it admitted into the
 /// active batch, discarding an in-use input is refused, and Turns are serial, so a listed input that
 /// is no longer resident can only have been consumed by this Turn.

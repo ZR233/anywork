@@ -2,8 +2,8 @@
 use super::*;
 
 /// Upper bound on how many terminal input identities stay resident for same-incarnation
-/// idempotency. History keeps the authoritative identity; the host answers older repeats from its
-/// durable identity index, so this ledger is a fixed window and never grows with history.
+/// idempotency. Older identities are unknown to live admission, which never queries History to
+/// recover them. Saving Current preserves at most this same bounded window.
 pub(super) const TERMINAL_INPUT_LEDGER_CAPACITY: usize = 64;
 
 /// Upper bound on how many consumed message identities stay resident for same-incarnation
@@ -43,8 +43,8 @@ pub struct HistoryExport {
 ///
 /// The owner and its handles read the newest committed interaction, permission or tool delivery
 /// from this window instead of keeping a checkpoint-visible payload ledger. It is the same buffer
-/// live observers consume, it is never serialized into checkpoints, and its released entries are
-/// answered by the host's durable identity index and history reader.
+/// live observers consume and is never serialized into checkpoints. Once an entry is released,
+/// only an explicit historical query may read its archive; live commands do not recover it.
 ///
 /// # Bound and release semantics
 /// The window retains exactly the write batches that are neither admitted-and-persisted nor
@@ -52,7 +52,7 @@ pub struct HistoryExport {
 /// when a Thread accumulates too many not-yet-durable bytes the owner pauses further admission
 /// (see `refresh_storage_pressure`) instead of dropping an accepted fact here. As soon as a fixed
 /// durable watermark is confirmed the covered batches are released immediately, and a consumer that
-/// still needs them reads the durable history store through the documented host contract.
+/// explicitly requesting historical data reads it through the separate History API.
 ///
 /// The window therefore performs no serialization and no byte accounting of its own: a commit only
 /// clones an `Arc` into the deque, so publishing never blocks on encoding a full body.
@@ -233,9 +233,8 @@ impl EffectWindowState {
 ///
 /// Terminal interaction, permission and delivery bodies are committed history: they must not be
 /// cached inside the serialized snapshot. An identical repeated command or a read-only task
-/// inspection returns the exact committed body while that commit is still not durable; once the
-/// durable handoff has released it, the host answers from the durable identity index and
-/// history store.
+/// inspection can return the exact committed body while the window retains it. After handoff,
+/// this lookup returns no body; normal commands do not fall back to persisted history.
 pub(crate) fn recent_effect_fact<T>(
     window: &EffectWindow,
     mut select: impl FnMut(&ThreadEffectBatch) -> Option<T>,
@@ -302,8 +301,8 @@ pub struct ActiveContextCompaction {
 /// bounded ledgers keep the minimal identity of facts that an identical repeated command, a
 /// finished task's read-only inspection or a retry still has to answer. Finished interaction,
 /// permission and tool-result bodies are never kept here: while their commit is still inside the
-/// bounded live [`EffectWindow`] a repeat reads the exact body from there, and older identities are
-/// answered by the host's durable identity index (see the W6-1 handoff contract).
+/// bounded live [`EffectWindow`] a repeat can read the exact body from there. Older bodies require
+/// an explicit historical query and are never fetched to decide live admission.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadSnapshot {
@@ -359,8 +358,8 @@ pub struct ThreadSnapshot {
     /// Content is not retained: a repeated submission matches the stored digest and is answered
     /// from the receipt, while a conflicting body remains an identity conflict. Only the newest
     /// [`TERMINAL_INPUT_LEDGER_CAPACITY`] entries stay resident so the ledger cannot grow with
-    /// history; older identities are answered by the host's durable identity index in
-    /// `history.sqlite`, never by moving history entities back into core.
+    /// history. Older identities are unknown to admission; neither core nor its host fetches a
+    /// permanent identity index to recover them.
     #[serde(default)]
     pub terminal_inputs: Arc<[input::InputIdentity]>,
     /// Commit-export buffer for input changes; drained by the commit that exports it.
