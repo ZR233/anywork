@@ -48,6 +48,7 @@ pub(super) struct ConversationReadWorkScenario<'a> {
     pub output: &'a Path,
     pub interrupt: &'a mpsc::Receiver<()>,
     pub profile_read_samples: bool,
+    pub profile_read_seed: Option<&'a Path>,
 }
 
 #[derive(Serialize)]

@@ -5,25 +5,22 @@ use std::path::{Path, PathBuf};
 
 pub use anyhow::Result;
 
-/// Returns the Pure-Lang workspace root that contains this crate.
+/// Returns the Pure-Lang workspace root containing the current working directory.
 ///
-/// The crate lives at `<workspace>/code/pl-dev-support`, so the root is two
-/// levels above `CARGO_MANIFEST_DIR`. The discovered root is validated by
-/// [`ensure_workspace_shape`] before being returned, so a moved or vendored
-/// checkout fails fast instead of silently pointing at `code/`.
+/// Cached engineering binaries may have been compiled in another checkout.
+/// Resolve the caller's checkout instead of embedding the compilation directory.
 ///
 /// # Errors
-/// Returns an error when the manifest directory is not nested two levels
-/// below a workspace root that passes [`ensure_workspace_shape`].
+/// Returns an error outside a workspace that passes [`ensure_workspace_shape`].
 pub fn workspace_root() -> Result<PathBuf> {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .context("pl-dev-support manifest directory has no workspace root parent")?
-        .to_path_buf();
-    ensure_workspace_shape(&root)?;
-    Ok(root)
+    let working = std::env::current_dir().context("read engineering tool working directory")?;
+    for root in working.ancestors() {
+        if studio_app_dir(root).join("pubspec.yaml").is_file() {
+            ensure_workspace_shape(root)?;
+            return Ok(root.to_path_buf());
+        }
+    }
+    bail!("no Pure-Lang workspace contains {}", working.display())
 }
 
 /// Returns the Studio (Flutter app) directory under [workspace_root].

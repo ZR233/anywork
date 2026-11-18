@@ -11,7 +11,7 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future;
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Inventory {
     pub project_id: Option<String>,
@@ -28,7 +28,7 @@ struct MainInventory {
     normal_input_turns: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BatchReceipt {
     input_id: String,
@@ -48,21 +48,39 @@ pub(super) fn run(
         .enable_all()
         .build()?;
     executor.block_on(Box::pin(async {
-        let project = context.working.join("conversation-read-profile-project");
-        init_git_project(&project)?;
-        for index in 0..2 {
-            checkpoint(context.interrupt)?;
-            let mut inventory = Inventory {
-                project_id: None,
-                thread_id: None,
-                main_items: None,
-                model_text_items: None,
-                normal_input_turns: None,
-                batches: Vec::with_capacity(GUI_TIMELINE_READ_PROFILE_SEED_BATCHES),
-            };
-            let result = Box::pin(write_one(context, &project, index, &mut inventory)).await;
-            inventories.push(inventory);
-            result?;
+        if let Some(source) = context.profile_read_seed {
+            let report = super::read_json(&source.join("profile-read-report.json"))?;
+            *inventories = serde_json::from_value(report["seed"].clone())?;
+            ensure!(inventories.len() == 2, "Profile seed requires two Threads");
+            for inventory in inventories.iter() {
+                ensure!(
+                    inventory.batches.len() == GUI_TIMELINE_READ_PROFILE_SEED_BATCHES
+                        && inventory.batches.iter().all(|batch| batch.completed),
+                    "Profile seed has incomplete normal input turns"
+                );
+            }
+            let retained = super::read_json(&source.join("retained-environment.json"))?;
+            let home = retained["home"]
+                .as_str()
+                .context("Profile seed home missing")?;
+            copy_closed_home(Path::new(home), context.home)?;
+        } else {
+            let project = context.working.join("conversation-read-profile-project");
+            init_git_project(&project)?;
+            for index in 0..2 {
+                checkpoint(context.interrupt)?;
+                let mut inventory = Inventory {
+                    project_id: None,
+                    thread_id: None,
+                    main_items: None,
+                    model_text_items: None,
+                    normal_input_turns: None,
+                    batches: Vec::with_capacity(GUI_TIMELINE_READ_PROFILE_SEED_BATCHES),
+                };
+                let result = Box::pin(write_one(context, &project, index, &mut inventory)).await;
+                inventories.push(inventory);
+                result?;
+            }
         }
         // Both real writers and both fixture listeners are closed before the
         // preparation/read audit opens a fresh runtime on the saved home.
