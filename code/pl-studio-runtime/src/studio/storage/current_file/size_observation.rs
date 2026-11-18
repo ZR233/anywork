@@ -1,15 +1,24 @@
-//! Explicit observations use the real private file owner, without widening a production API.
+//! Explicit observations of a complete paused Current through its Core and file owners.
 
 use super::*;
 use pl_core::{
     context::{ContextRecord, ContextSource, OpaquePayload},
     model::ToolCallMode,
-    thread::current::{CurrentModelCall, SavedModelPhase},
+    thread::{
+        ThreadHandle, ThreadLifecycle,
+        current::{CurrentModelCall, SavedModelPhase},
+        input::InputExecution,
+    },
 };
 use pl_model::completion::{
     ModelStreamCurrent, ModelStreamCurrentState, ModelStreamReplay, ModelStreamToolInput,
     ModelStreamToolInputPhase,
 };
+
+use crate::studio::storage::{
+    coordinator::ThreadPersistenceCoordinator, current_writer::CurrentSource, state::StateStore,
+};
+use crate::thread_assembler::ClosePurpose;
 
 /// One size per process; collect the OS peak separately so other sizes cannot inflate it.
 /// The samples include confirmed context, private material and a complete partial stream.
@@ -32,9 +41,9 @@ async fn current_size_observation() -> Result<()> {
         directory.path().join("history.sqlite"),
         b"unreadable history",
     )?;
-    let file = CurrentFile::new(directory.path().into(), "size-observation".into());
+    let thread_id = "size-observation";
     let epoch = RuntimeEpoch::new();
-    let mut current = ThreadCurrent::new("size-observation".into(), epoch);
+    let mut current = ThreadCurrent::new(thread_id.into(), epoch);
     current.state.context.records = vec![ContextRecord {
         id: "confirmed-context".into(),
         turn_id: None,
@@ -96,26 +105,63 @@ async fn current_size_observation() -> Result<()> {
         },
     });
     drop(stream);
-    let current = Arc::new(current);
-    let started = Instant::now();
-    file.save(current.clone()).await?;
-    let save = started.elapsed();
-    let started = Instant::now();
-    let restored = file.load().await?.context("saved sample is missing")?;
-    let load = started.elapsed();
-    let operation_memory = if cfg!(target_os = "linux") {
-        Some(
-            std::fs::read_to_string("/proc/self/status")?
-                .lines()
-                .filter(|line| line.starts_with("VmHWM:") || line.starts_with("VmRSS:"))
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
-        )
-    } else {
-        None
-    };
-    // Validate after the timers. No full JSON Value mirror is needed to detect truncated fields.
-    let expected = serde_json::to_vec(&current)?;
+    let mut expected = current.clone();
+    let handle = ThreadHandle::restore_current(current, None)?;
+    let runtime_epoch = handle.runtime_epoch();
+    let mut store = StateStore::new(directory.path().into(), thread_id);
+    let sample = async {
+        ensure!(matches!(
+            handle.snapshot().input_execution,
+            InputExecution::Paused
+        ));
+        store
+            .attach_current(
+                ThreadPersistenceCoordinator::default(),
+                None,
+                runtime_epoch,
+                CurrentSource::from_thread(handle.clone()),
+            )
+            .await?;
+        let receipt = store.flush_current(runtime_epoch).await?;
+        let persisted = store.current_save_state()?.persistence_snapshot();
+        let restored = store
+            .load_current()
+            .await?
+            .context("saved sample is missing")?;
+        let operation_memory = if cfg!(target_os = "linux") {
+            Some(
+                std::fs::read_to_string("/proc/self/status")?
+                    .lines()
+                    .filter(|line| line.starts_with("VmHWM:") || line.starts_with("VmRSS:"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        Ok::<_, anyhow::Error>((receipt, persisted, restored, operation_memory))
+    }
+    .await;
+    // Join the real owner even when the sample fails. The fixture directory is disposable.
+    let closed = store
+        .close_current(runtime_epoch, ClosePurpose::Delete)
+        .await;
+    if handle.snapshot().lifecycle != ThreadLifecycle::Closed {
+        handle.close().await?;
+    }
+    let (receipt, persisted, restored, operation_memory) = sample?;
+    closed?;
+    ensure!(runtime_epoch != epoch && restored.saved_runtime_epoch == runtime_epoch);
+    ensure!(receipt.snapshot_revision == restored.snapshot_revision);
+    ensure!(persisted.last_successful_capture_at == Some(restored.saved_at));
+    let age = persisted
+        .snapshot_age_millis
+        .context("missing saved snapshot age")?;
+    // The live owner stamps the new epoch, revision and actual capture time.
+    expected.saved_runtime_epoch = runtime_epoch;
+    expected.snapshot_revision = receipt.snapshot_revision;
+    expected.saved_at = restored.saved_at;
+    let expected = serde_json::to_vec(&expected)?;
     ensure!(
         serde_json::to_vec(&restored)? == expected,
         "Current sample changed on disk"
@@ -125,10 +171,10 @@ async fn current_size_observation() -> Result<()> {
         "current_size_sample {}",
         serde_json::json!({
             "sampleMiB": mib, "currentJsonBytes": expected.len(),
-            "encodeAndWriteMs": save.as_secs_f64() * 1000.0,
-            "loadMs": load.as_secs_f64() * 1000.0,
+            "snapshotAgeAfterFlushMs": age,
             "operationMemory": operation_memory,
-            "memoryScope": "process including fixture, save and load with original retained; before round-trip comparison",
+            "memoryScope": "process including fixture, owner capture, save and load with original retained; before round-trip comparison",
+            "captureScope": "paused Core owner with complete retained producer observation",
             "writeGuarantee": "direct overwrite plus Tokio flush; no fsync or atomic replacement",
             "roundTrip": "all serialized logical fields equal", "history": "unreadable and unchanged"
         })
