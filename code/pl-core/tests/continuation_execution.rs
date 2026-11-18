@@ -1,6 +1,8 @@
 //! Production control, recovery, input delivery and physical cancellation contracts.
 #[path = "support/legacy_usage.rs"]
 mod legacy_usage;
+#[path = "support/preparation.rs"]
+mod preparation;
 mod support;
 #[path = "support/tool.rs"]
 mod tool_support;
@@ -16,9 +18,8 @@ use pl_core::model::{
     PreparedModelCall,
 };
 use pl_core::thread::{
-    ContinuationReason, ExecutionPhase, ModelStepLimit, StepInput, ThreadCheckpoint, ThreadError,
-    ThreadHandle, ThreadLifecycle, ToolOutcome, TurnOutcome, TurnState,
-    admission::TurnAdmissionGate,
+    ContinuationReason, ModelStepLimit, StepInput, ThreadCheckpoint, ThreadError, ThreadHandle,
+    ThreadLifecycle, ToolOutcome, TurnOutcome, TurnState,
     cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
     inbox::ThreadMessage,
     input::{InputDriverOptions, InputExecution, InputPurpose, InputState, ThreadInput},
@@ -313,16 +314,9 @@ async fn idle_close_requires_durable_facts_and_only_reclaims_proven_residents() 
 
 #[tokio::test]
 async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops_nothing() {
-    let gate = TurnAdmissionGate::new();
     let (model, requests) = support::ScriptedModel::new(&[]);
-    let thread = ThreadHandle::resume_with_turn_admission_gate(
-        "preparing".into(),
-        Some(DynModelSession::new(model)),
-        None,
-        gate.clone(),
-    )
-    .unwrap();
-    let hold = gate.close();
+    let thread = ThreadHandle::start("preparing".into(), DynModelSession::new(model)).unwrap();
+    let hold = preparation::HoldPreparation::install(&thread).await;
     thread
         .submit_input_and_run(
             message_input("asked", "Please handle this request"),
@@ -330,18 +324,8 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
         )
         .await
         .unwrap();
-    wait_until(|| {
-        thread
-            .snapshot()
-            .execution
-            .as_ref()
-            .is_some_and(|execution| execution.phase == ExecutionPhase::AwaitingAdmission)
-    })
-    .await;
+    hold.entered().await;
     let preparing = thread.snapshot().execution.clone().unwrap();
-    // No Turn exists yet, so the identity is the only way to name this work at all.
-    assert!(preparing.turn_id.is_none());
-    assert!(thread.snapshot().turns.is_empty());
 
     assert!(
         thread
@@ -355,12 +339,11 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
         .clone()
         .expect("the stop leaves a point");
     assert_eq!(point.reason, Some(ContinuationReason::UserStop));
-    assert_eq!(point.source_turn_id, None);
+    assert_eq!(point.source_turn_id, preparing.turn_id);
     wait_until(|| thread.snapshot().execution.is_none() && paused(&thread)).await;
     assert!(requests.lock().unwrap().is_empty());
     // The stop never consumed the input it interrupted.
     assert_eq!(input_state(&thread, "asked"), Some(InputState::Pending));
-    assert!(thread.snapshot().turns.is_empty());
 
     // The outdated identity cannot stop a later execution, and it is refused instead of silently
     // stopping whatever runs now.
@@ -370,7 +353,6 @@ async fn stopping_a_preparing_execution_forms_a_point_and_a_stale_identity_stops
     ));
 
     // Only an explicit continuation starts the input that was never consumed.
-    drop(hold);
     thread.resume_inputs(options()).await.unwrap();
     wait_until(|| {
         matches!(
@@ -749,36 +731,25 @@ async fn closing_with_live_work_keeps_it_as_a_host_shutdown_point() {
 
 #[tokio::test]
 async fn a_stopped_preparing_execution_never_hands_its_identity_to_a_later_turn() {
-    let gate = TurnAdmissionGate::new();
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let (entered, _observed) = oneshot::channel();
+    let (entered, observed) = oneshot::channel();
     let (release, held) = oneshot::channel();
-    let thread = ThreadHandle::resume_with_turn_admission_gate(
+    let thread = ThreadHandle::start(
         "identity".into(),
-        Some(DynModelSession::new(HeldModel {
+        DynModelSession::new(HeldModel {
             requests: requests.clone(),
             entered: Some(entered),
             release: Some(held),
-        })),
-        None,
-        gate.clone(),
+        }),
     )
     .unwrap();
-    let hold = gate.close();
+    let hold = preparation::HoldPreparation::install(&thread).await;
     let first = tokio::spawn({
         let thread = thread.clone();
         async move { thread.run_turn(turn("repeated")).await }
     });
-    wait_until(|| {
-        thread
-            .snapshot()
-            .execution
-            .as_ref()
-            .is_some_and(|execution| execution.phase == ExecutionPhase::AwaitingAdmission)
-    })
-    .await;
+    hold.entered().await;
     let stopped = thread.snapshot().execution.clone().unwrap();
-    assert!(stopped.turn_id.is_none());
     assert!(
         thread
             .interrupt_execution(stopped.id.clone())
@@ -787,22 +758,13 @@ async fn a_stopped_preparing_execution_never_hands_its_identity_to_a_later_turn(
     );
     assert!(matches!(first.await.unwrap(), Err(ThreadError::Cancelled)));
     wait_until(|| thread.snapshot().execution.is_none()).await;
-    assert!(thread.snapshot().turns.is_empty());
+    assert!(requests.lock().unwrap().is_empty());
 
-    // The very same Turn identity is requested again, which is legitimate: it never got a record.
-    drop(hold);
     let second = tokio::spawn({
         let thread = thread.clone();
-        async move { thread.run_turn(turn("repeated")).await }
+        async move { thread.run_turn(turn("second")).await }
     });
-    wait_until(|| {
-        thread
-            .snapshot()
-            .execution
-            .as_ref()
-            .is_some_and(|execution| execution.turn_id.as_deref() == Some("repeated"))
-    })
-    .await;
+    observed.await.unwrap();
     let running = thread.snapshot().execution.clone().unwrap();
     assert_ne!(
         running.id, stopped.id,

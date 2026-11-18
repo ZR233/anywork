@@ -291,12 +291,7 @@ impl SessionRuntime {
         let purpose = self.operation_close_purpose(id, purpose);
         let resources = self.native_resources(thread);
         let lifetime = resources.as_ref().ok().and_then(|scope| {
-            scope
-                .binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .map(|binding| binding.lifetime.clone())
+            scope.with_binding(|binding| binding.map(|binding| binding.lifetime.clone()))
         });
         if let Some(lifetime) = &lifetime {
             lifetime.cancel();
@@ -1101,10 +1096,16 @@ mod storage_fault_tests {
             }
         }
         impl StudioActivationFactory for ReactivationFactory {
-            async fn root_delegation(
+            async fn prepare_root(
                 &self,
                 identity: &ThreadActivation,
-            ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
+            ) -> Result<
+                (
+                    crate::DelegationSettings,
+                    Option<pl_core::thread::current::ThreadCurrent>,
+                ),
+                ThreadAssemblyError,
+            > {
                 let paths = self
                     .0
                     .registered_session_paths(identity.id())
@@ -1117,9 +1118,11 @@ mod storage_fault_tests {
                     .await
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
-                crate::studio::delegation::saved(&current.state.to_paused_snapshot())
-                    .map_err(storage_error)?
-                    .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))
+                let delegation =
+                    crate::studio::delegation::saved(&current.state.to_paused_snapshot())
+                        .map_err(storage_error)?
+                        .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
+                Ok((delegation, Some(current)))
             }
 
             async fn prepare(
@@ -1128,17 +1131,7 @@ mod storage_fault_tests {
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
                 let id = request.identity.id().to_owned();
                 let protocol = Fixture::protocol(&id, None);
-                let paths = self
-                    .0
-                    .registered_session_paths(&id)
-                    .map_err(storage_error)?;
-                let current = self
-                    .0
-                    .state_for(paths.workspace_id(), &id)
-                    .map_err(storage_error)?
-                    .load_current()
-                    .await
-                    .map_err(storage_error)?;
+                let current = request.root_current;
                 let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await
                     .map_err(storage_error)?;
@@ -1163,16 +1156,18 @@ mod storage_fault_tests {
                 Ok(StudioThreadSpec {
                     workspace_usage: None,
                     preparation_guard: None,
-                    context_preparation: None,
                     agent_controls: request.agent_controls,
                     execution: pl_core::thread::input::InputDriverOptions {
                         max_model_steps: pl_core::thread::ModelStepLimit::Unlimited,
                     },
                     id: id.clone(),
                     parent_id: None,
+                    model: Some(pl_core::thread::RuntimeModel::new(
+                        route.model.model_id.clone(),
+                        pl_core::model::ModelFactory::new(model),
+                        None,
+                    )),
                     route,
-                    model_available: true,
-                    model,
                     current,
                     initial_context: Vec::new(),
                     initial_runtime_facts: Vec::new(),

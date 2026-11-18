@@ -62,7 +62,7 @@ impl StudioRuntime {
             .lsp_lease
             .as_ref()
             .filter(|lease| !lease.is_closed());
-        if binding.target_invalidated
+        if binding.lifetime.target_invalidated()
             || binding.lifetime.cancellation.is_cancelled()
             || binding.lsp_binding_id.as_deref() != Some(&request.binding_id)
             || lease.is_none()
@@ -86,7 +86,7 @@ impl StudioRuntime {
                 .is_none_or(|current| {
                     !std::sync::Arc::ptr_eq(&current.incarnation, &binding.incarnation)
                         || current.lsp_binding_id.as_deref() != Some(&request.binding_id)
-                        || current.target_invalidated
+                        || current.lifetime.target_invalidated()
                         || current.lifetime.cancellation.is_cancelled()
                         || current
                             .lsp_lease

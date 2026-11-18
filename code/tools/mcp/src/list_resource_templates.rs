@@ -50,6 +50,7 @@ impl<L: FrozenMcpLease> TypedTool for ListMcpResourceTemplates<L> {
                 ResourceOperation::ListResourceTemplates {
                     cursor: input.cursor,
                 },
+                context.cancellation,
             )
             .await
             .map_err(McpError::new)?;

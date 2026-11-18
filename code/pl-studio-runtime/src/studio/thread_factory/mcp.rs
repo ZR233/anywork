@@ -951,6 +951,9 @@ impl StudioThreadFactory {
             .filter(|owner| include_all || scopes.contains(&owner.scope))
             .collect::<Vec<_>>();
         for owner in owners {
+            if let Some(scope) = self.resource_scope(&owner.thread_id) {
+                scope.authorization_changed();
+            }
             // Coalesced, owner-managed work: saving configuration never waits on another
             // Thread's command lock, handshake or tools/list.
             owner.reconcile_requested.notify_one();
@@ -2243,16 +2246,15 @@ pub(crate) mod tests {
             .services
             .worktrees
             .reserve_workspace(&owner.thread_id, WorkspaceEndpoint::Local)?;
-        *scope.binding.lock().unwrap() = Some(ToolBinding {
+        scope.prepare_binding(ToolBinding {
             assignment: None,
-            workspace_usage: usage.clone(),
+            workspace_usage: usage.downgrade(),
             lifetime: lifetime.clone(),
             incarnation: incarnation.clone(),
-            target_invalidated: false,
+            authorization: pl_core::tool::opaque::ToolAuthorization::unique(),
             catalog: None,
             initial_skill_prompt: String::new(),
             policy_key: String::new(),
-            permission_mode: crate::approval::PermissionMode::default(),
             policies: BTreeMap::new(),
             project: WorkspaceRecord {
                 id: "early-close-project".into(),
@@ -2268,7 +2270,7 @@ pub(crate) mod tests {
             ssh_profile: None,
             lsp_lease: None,
             lsp_binding_id: None,
-        });
+        })?;
         *scope.mcp.lock().unwrap() = Some(owner.clone());
         factory.bind_resource_scope(&owner.thread_id, &scope)?;
         if fail_watcher {
@@ -2319,7 +2321,7 @@ pub(crate) mod tests {
                 scope.mcp.lock().unwrap().as_ref().unwrap(),
                 &owner
             ));
-            assert!(scope.binding.lock().unwrap().is_some());
+            assert!(scope.binding().is_some());
             assert!(session.observed_thread(&owner.thread_id).is_some());
             assert_eq!(session.phase(), crate::session::SessionPhase::Closing);
             // Explicit retry after the error has been observed uses the retained owner.
@@ -2353,7 +2355,7 @@ pub(crate) mod tests {
             assert!(matches!(first.peek(), Some(Ok(()))));
         }
         assert!(scope.mcp.lock().unwrap().is_none());
-        assert!(scope.binding.lock().unwrap().is_none());
+        assert!(scope.binding().is_none());
         assert!(!scope.has_obligations());
         assert_eq!(session.phase(), crate::session::SessionPhase::Closed);
         assert!(session.observed_thread(&owner.thread_id).is_none());

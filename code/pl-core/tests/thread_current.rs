@@ -771,16 +771,11 @@ async fn capture_rechecks_terminal_state_even_when_producer_closed_its_pending_r
 }
 
 #[tokio::test]
-async fn run_turn_saves_direct_input_before_its_first_admission_wait() {
+async fn run_turn_saves_direct_input_while_preparing_the_request() {
     let session = ProducerSession::new();
-    let gate = pl_core::thread::admission::TurnAdmissionGate::new();
-    let hold = gate.close();
-    let thread = ThreadHandle::start_current_with_turn_admission_gate(
-        "thread".into(),
-        DynModelSession::new(session),
-        gate,
-    )
-    .unwrap();
+    let thread =
+        ThreadHandle::start_current("thread".into(), Some(DynModelSession::new(session.clone())))
+            .unwrap();
     let cancellation = CancellationToken::new();
     let run = tokio::spawn({
         let thread = thread.clone();
@@ -797,17 +792,7 @@ async fn run_turn_saves_direct_input_before_its_first_admission_wait() {
                 .await
         }
     });
-    let mut snapshots = thread.subscribe();
-    while thread
-        .snapshot()
-        .execution
-        .as_ref()
-        .is_none_or(|execution| {
-            execution.phase != pl_core::thread::ExecutionPhase::AwaitingAdmission
-        })
-    {
-        snapshots.next().await.unwrap();
-    }
+    session.prepare_entered.notified().await;
     let saved = thread
         .capture_current(CancellationToken::new())
         .await
@@ -821,7 +806,6 @@ async fn run_turn_saves_direct_input_before_its_first_admission_wait() {
     ));
     cancellation.cancel();
     assert!(run.await.unwrap().is_err());
-    drop(hold);
     thread.close().await.unwrap();
 }
 

@@ -282,21 +282,20 @@ impl StudioThreadFactory {
         .await
         .map_err(|error| resource_error("open restored child persistence", error))?;
         let initial_extensions = BTreeMap::new();
-        let model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&route)?,
-            route.reasoning_config(),
-        )
-        .with_hosted_tools(prepared.hosted);
+        let model = model_available
+            .then(|| {
+                crate::studio::model_binding::configured_model(
+                    &route,
+                    &config,
+                    self.services.thread_modes.clone(),
+                    prepared.hosted,
+                )
+            })
+            .transpose()
+            .map_err(|error| resource_error("prepare Native model binding", error))?;
         let spec = StudioThreadSpec {
             workspace_usage: Some(workspace_usage),
             preparation_guard: prepared.binding_guard.take(),
-            context_preparation: crate::compaction::preparer(
-                &route,
-                model.clone(),
-                config.runtime.openai_compaction_mode,
-                self.services.thread_modes.clone(),
-                &config.models,
-            )?,
             agent_controls: Vec::new(),
             execution: pl_core::thread::input::InputDriverOptions {
                 max_model_steps: Self::CHILD_MODEL_STEP_LIMIT,
@@ -304,7 +303,6 @@ impl StudioThreadFactory {
             id: id.to_owned(),
             parent_id: thread.parent_thread_id,
             route,
-            model_available,
             model,
             current: Some(current),
             initial_context: Vec::new(),

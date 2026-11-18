@@ -7,6 +7,7 @@ use pl_protocol::{PureError, Result};
 use rmcp::model::CallToolResult;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 use crate::approval::ToolEffect;
 use crate::mcp::McpToolRefreshReport;
@@ -309,6 +310,7 @@ impl McpRuntimeHandle {
         server_id: String,
         raw_name: String,
         arguments: Value,
+        cancellation: CancellationToken,
     ) -> Result<CallToolResult> {
         let (reply, response) = oneshot::channel();
         self.send(RuntimeCommand::CallTool {
@@ -316,6 +318,7 @@ impl McpRuntimeHandle {
             server_id,
             raw_name,
             arguments,
+            cancellation,
             reply,
         })?;
         response.await.map_err(runtime_stopped)?
@@ -326,12 +329,14 @@ impl McpRuntimeHandle {
         generation: McpGeneration,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
     ) -> Result<Value> {
         let (reply, response) = oneshot::channel();
         self.send(RuntimeCommand::ResourceQuery {
             generation,
             server_id,
             operation,
+            cancellation,
             reply,
         })?;
         response.await.map_err(runtime_stopped)?
@@ -386,18 +391,6 @@ impl McpTurnLease {
         self.server_ids.as_slice()
     }
 
-    pub(super) async fn call_tool(
-        &self,
-        server_id: String,
-        raw_name: String,
-        arguments: Value,
-    ) -> Result<CallToolResult> {
-        self.guard
-            .handle
-            .call_tool(self.generation, server_id, raw_name, arguments)
-            .await
-    }
-
     /// Reports whether this lease includes a resource-capable service.
     pub fn has_resources(&self) -> bool {
         !self.resource_server_ids.is_empty()
@@ -407,6 +400,7 @@ impl McpTurnLease {
         &self,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
     ) -> Result<Value> {
         if !self.authorization.is_active() {
             return Err(worker::expired_authority_error());
@@ -421,14 +415,19 @@ impl McpTurnLease {
             return self
                 .guard
                 .handle
-                .resource_query(self.generation, Some(server), operation)
+                .resource_query(self.generation, Some(server), operation, cancellation)
                 .await;
         }
         if let [server] = self.resource_server_ids.as_slice() {
             return self
                 .guard
                 .handle
-                .resource_query(self.generation, Some(server.clone()), operation)
+                .resource_query(
+                    self.generation,
+                    Some(server.clone()),
+                    operation,
+                    cancellation,
+                )
                 .await;
         }
         let mut values = serde_json::Map::new();
@@ -436,7 +435,12 @@ impl McpTurnLease {
             let value = self
                 .guard
                 .handle
-                .resource_query(self.generation, Some(server.clone()), operation.clone())
+                .resource_query(
+                    self.generation,
+                    Some(server.clone()),
+                    operation.clone(),
+                    cancellation.clone(),
+                )
                 .await?;
             values.insert(server.clone(), value);
         }
@@ -487,16 +491,28 @@ impl FrozenMcpLease for McpTurnLease {
         server_id: String,
         raw_name: String,
         arguments: Value,
+        cancellation: CancellationToken,
     ) -> Result<CallToolResult> {
-        self.call_tool(server_id, raw_name, arguments).await
+        self.guard
+            .handle
+            .call_tool(
+                self.generation,
+                server_id,
+                raw_name,
+                arguments,
+                cancellation,
+            )
+            .await
     }
 
     async fn resource_query(
         &self,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
     ) -> Result<Value> {
-        self.resource_query(server_id, operation).await
+        self.resource_query(server_id, operation, cancellation)
+            .await
     }
 }
 
@@ -565,12 +581,14 @@ pub(super) enum RuntimeCommand {
         server_id: String,
         raw_name: String,
         arguments: Value,
+        cancellation: CancellationToken,
         reply: oneshot::Sender<Result<CallToolResult>>,
     },
     ResourceQuery {
         generation: McpGeneration,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
         reply: oneshot::Sender<Result<Value>>,
     },
     MarkUnavailable {

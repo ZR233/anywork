@@ -16,7 +16,7 @@ pub struct TaskWaitSnapshot {
 pub struct TaskAccess {
     executor: crate::tool::opaque::ExecutionAuthority,
     authorization: Option<crate::tool::opaque::ToolAuthorization>,
-    snapshots: watch::Receiver<ThreadSnapshot>,
+    snapshots: watch::Receiver<super::subscription::OwnerPublication>,
     effect_window: Arc<EffectWindow>,
     thread_id: String,
     /// Durable store handle, if this Thread is persisted. Reads only; it never keeps the owner alive.

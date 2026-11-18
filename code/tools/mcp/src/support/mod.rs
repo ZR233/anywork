@@ -53,11 +53,13 @@ pub trait FrozenMcpLease: Clone + Send + Sync + 'static {
         server_id: String,
         raw_name: String,
         arguments: Value,
+        cancellation: CancellationToken,
     ) -> impl Future<Output = Result<CallToolResult, Self::Error>> + Send;
     fn resource_query(
         &self,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
     ) -> impl Future<Output = Result<Value, Self::Error>> + Send;
 }
 

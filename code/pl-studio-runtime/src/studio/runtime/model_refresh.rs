@@ -1,224 +1,24 @@
-//! Current product bindings are queued without disturbing an in-flight Turn.
+//! Model catalog changes feed the existing product directory and resource revision stream.
 use super::{
     StudioRuntime,
     background_task::{self, BackgroundTask},
 };
-use anyhow::{Context, Result};
-use pl_core::{
-    model::{DynModelSession, Model, ModelError, ModelFactory, ModelFailureKind},
-    thread::{DeferredModelUpdate, DeferredModelUpdatePrecondition, ThreadHandle},
-};
-use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
-use std::sync::Arc;
+use anyhow::Result;
 
 impl StudioRuntime {
-    pub(super) fn validate_model_media(
-        state: &pl_core::thread::ThreadSnapshot,
-        model: &pl_model::model::ModelInfo,
-        additional: &[pl_core::context::ContextContent],
-    ) -> Result<()> {
-        let history = state
-            .context
-            .records
-            .iter()
-            .flat_map(|record| &record.content);
-        let pending = state
-            .inputs
-            .iter()
-            .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
-            .flat_map(|record| &record.input.context);
-        pl_model::runtime::validate_attachment_content(
-            history.chain(pending).chain(additional),
-            model,
-        )
-        .map_err(|error| {
-            crate::PureError::ConfigError(format!(
-                "所选模型无法读取当前会话的附件，请选择支持这些附件的模型：{error}"
-            ))
-            .into()
-        })
-    }
-
-    pub(super) async fn model_binding(
-        &self,
-        thread_id: &str,
-        thread: &ThreadHandle,
-    ) -> (
-        DeferredModelUpdatePrecondition,
-        Result<(ResolvedModelRoute, crate::config::StudioConfig)>,
-    ) {
-        let state = thread.snapshot();
-        let extension_id = if state
-            .extensions
-            .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
-        {
-            crate::studio::model_route::AGENT_PROFILE_EXTENSION
-        } else {
-            crate::studio::model_route::MODEL_ROUTE_EXTENSION
-        };
-        let precondition = DeferredModelUpdatePrecondition::extension(
-            extension_id,
-            state
-                .extensions
-                .get(extension_id)
-                .map(|record| record.revision),
-        );
-        let binding = async {
-            let record = self.read_owned_thread(thread_id).await?;
-            let is_child = record.parent_thread_id.is_some();
-            let config = self.config_runtime.read()?.config;
-            let (_, selector) = crate::studio::model_route::route_record(&state, is_child)?
-                .context("Thread has no saved model route")?;
-            let role = if is_child {
-                crate::AgentRoleId::new(record.role)?
-            } else {
-                crate::config::root_agent_route_id()
-            };
-            let route = config.models.resolve_route(role, &selector)?;
-            crate::studio::delegation::validate_credential(&route)?;
-            Self::validate_model_media(&state, &route.model, &[])?;
-            ThreadModel::new(
-                pl_model::runtime::from_route(&route)?,
-                route.reasoning_config(),
-            )
-            .validate_context_origin(&state.context)?;
-            if !is_child {
-                let directory_mode = record.mode.context("Native root has no saved Mode")?;
-                let mode_id =
-                    crate::studio::thread_projection::saved_mode(&state)?.unwrap_or(directory_mode);
-                crate::mode::saved_registered_mode(&state)?
-                    .or_else(|| self.thread_modes.snapshot().mode(&mode_id))
-                    .context("current Thread Mode is unavailable")?;
-            }
-            Ok((route, config))
-        }
-        .await;
-        (precondition, binding)
-    }
-
-    pub(super) async fn queue_thread_model(
-        &self,
-        thread: &ThreadHandle,
-        route: &ResolvedModelRoute,
-        config: &crate::config::StudioConfig,
-        precondition: DeferredModelUpdatePrecondition,
-    ) -> Result<()> {
-        ThreadModel::new(
-            pl_model::runtime::from_route(route)?,
-            route.reasoning_config(),
-        )
-        .validate_context_origin(&thread.snapshot().context)?;
-        thread
-            .queue_deferred_model_update_if_current(
-                self.deferred_model_update(route, config)?,
-                precondition,
-                Vec::new(),
-            )
-            .await?;
-        Ok(())
-    }
-
-    pub(super) fn deferred_model_update(
-        &self,
-        route: &ResolvedModelRoute,
-        config: &crate::config::StudioConfig,
-    ) -> Result<DeferredModelUpdate> {
-        crate::studio::model_binding::deferred_update(route, config, self.thread_modes.clone())
-    }
-
     pub(in crate::studio::runtime) async fn start_model_refresh(&self) {
         let mut slot = self.settings_refresh.lock().await;
         if slot.as_ref().is_some_and(|task| !task.is_finished()) {
             return;
         }
-        let mut updates = self.settings_updates.subscribe();
         let mut catalogs = self.config_runtime.subscribe_model_catalogs();
         let runtime = self.clone();
         *slot = Some(BackgroundTask::new(tokio::spawn(async move {
-            loop {
-                let affected = tokio::select! {
-                    result = updates.changed() => {
-                        if result.is_err() { break; }
-                        updates.borrow_and_update();
-                        None
-                    }
-                    change = catalogs.recv() => {
-                        match change {
-                            Ok(change) => {
-                                if let Err(error) = runtime.publish_model_catalog_state() { tracing::error!(%error, "could not publish model catalog snapshot"); }
-                                Some(change.affected)
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                let Ok((snapshot, _)) = runtime.config_runtime.read_with_catalog() else { continue; };
-                                let ids = snapshot.config.models.accounts.keys().cloned().collect();
-                                if let Err(error) = runtime.publish_model_catalog_state() { tracing::error!(%error, "could not publish lagged model catalog snapshot"); }
-                                Some(ids)
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                };
-                let Ok((settings, catalog)) = runtime.config_runtime.read_with_catalog() else {
-                    continue;
-                };
-                let revision = format!("{}:{}", settings.revision, catalog.revision);
-                for (id, thread) in runtime.sessions.observed_threads() {
-                    let Some(session) = runtime.session_of(&id) else {
-                        continue;
-                    };
-                    let _operation = session.agent_operation(&id).await;
-                    if session.ensure_agent_admission_open(&id).is_err() {
-                        continue;
-                    }
-                    if let Some(affected) = &affected {
-                        let state = thread.snapshot();
-                        let selector = crate::studio::model_route::route_record(
-                            &state,
-                            state
-                                .extensions
-                                .contains_key(crate::studio::model_route::AGENT_PROFILE_EXTENSION),
-                        );
-                        if !matches!(selector, Ok(Some((_, ref selector))) if affected.contains(&selector.account_id))
-                        {
-                            continue;
-                        }
-                    }
-                    let (precondition, binding) = runtime.model_binding(&id, &thread).await;
-                    let result = match binding {
-                        Ok((route, config)) => {
-                            runtime
-                                .queue_thread_model(&thread, &route, &config, precondition.clone())
-                                .await
-                        }
-                        Err(error) => Err(error),
-                    };
-                    if let Err(error) = result {
-                        if error
-                            .downcast_ref::<pl_core::model::ModelError>()
-                            .is_some_and(|error| {
-                                error.kind == ModelFailureKind::IncompatibleContext
-                            })
-                        {
-                            tracing::error!(thread_id = %id, %error, "incompatible model refresh rejected; original session retained");
-                            continue;
-                        }
-                        // Invalid current bindings become an explicit failure on the next Turn,
-                        // never silent reuse of an old provider or disabled Profile.
-                        let update = DeferredModelUpdate::new(
-                            format!("unavailable:{revision}"),
-                            ModelFactory::new(UnavailableBinding(Arc::from(
-                                error.into_boxed_dyn_error(),
-                            ))),
-                            None,
-                        );
-                        let _ = thread
-                            .queue_deferred_model_update_if_current(
-                                update,
-                                precondition,
-                                Vec::new(),
-                            )
-                            .await;
-                    }
+            while let Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) =
+                catalogs.recv().await
+            {
+                if let Err(error) = runtime.publish_model_catalog_state() {
+                    tracing::error!(%error, "could not publish model catalog snapshot");
                 }
             }
         })));
@@ -230,19 +30,3 @@ impl StudioRuntime {
             .map_err(anyhow::Error::new)
     }
 }
-
-#[derive(Debug)]
-struct UnavailableBinding(Arc<dyn std::error::Error + Send + Sync>);
-impl Model for UnavailableBinding {
-    async fn open_session(&self) -> Result<DynModelSession, ModelError> {
-        Err(ModelError {
-            kind: ModelFailureKind::Unavailable,
-            details: None,
-            usage: Default::default(),
-            source: Some(Box::new(BindingFailure(self.0.clone()))),
-        })
-    }
-}
-#[derive(Debug, thiserror::Error)]
-#[error("current model binding is unavailable: {0}")]
-struct BindingFailure(#[source] Arc<dyn std::error::Error + Send + Sync>);

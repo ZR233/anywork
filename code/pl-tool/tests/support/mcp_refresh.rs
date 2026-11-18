@@ -3,6 +3,7 @@ use super::*;
 use pl_tool::mcp::{McpResetScope, McpRuntimeHandle, McpToolRefreshStatus};
 use pl_tool_mcp::support::FrozenMcpLease;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
 struct RefreshPeer {
     state: MockMcpHttpState,
@@ -135,7 +136,15 @@ async fn request_errors_and_sdk_timeout_preserve_the_session_without_replay() ->
     let handle = runtime.handle();
     handle.reconcile(peer.servers()).await?;
     let lease = handle.acquire_turn_lease().await?;
-    let call = || FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({}));
+    let call = || {
+        FrozenMcpLease::call_tool(
+            &lease,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new(),
+        )
+    };
 
     *peer.state.call_reply.lock().unwrap() = Some(json!({
         "error": {"code": -32602, "message": "invalid refresh-secret-token"}
@@ -207,6 +216,7 @@ async fn retiring_one_session_does_not_stall_sibling_deadlines_or_admission() ->
         "b".into(),
         "echo".into(),
         json!({}),
+        CancellationToken::new(),
     ));
     let started = Instant::now();
     assert!(futures::poll!(call.as_mut()).is_pending());
@@ -227,7 +237,13 @@ async fn retiring_one_session_does_not_stall_sibling_deadlines_or_admission() ->
     // Admission and the next response must also progress while A's close is still pending.
     let next = tokio::time::timeout(
         Duration::from_millis(500),
-        FrozenMcpLease::call_tool(&current, "b".into(), "echo".into(), json!({})),
+        FrozenMcpLease::call_tool(
+            &current,
+            "b".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new(),
+        ),
     )
     .await;
     let completed_while_blocked = first.state.delete_completed.load(Ordering::SeqCst);
@@ -272,6 +288,7 @@ async fn blocked_cancel_confirmation_cannot_extend_request_deadline_or_kill_the_
         "peer".into(),
         "echo".into(),
         json!({}),
+        CancellationToken::new(),
     ));
     assert!(futures::poll!(call.as_mut()).is_pending());
     tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
@@ -283,15 +300,27 @@ async fn blocked_cancel_confirmation_cannot_extend_request_deadline_or_kill_the_
         tokio::time::timeout(Duration::from_secs(2), peer.state.cancelled.notified()).await;
     let completed_while_blocked = peer.state.cancel_completed.load(Ordering::SeqCst);
     let available = handle.available_server_names().await;
-    let sibling_result =
-        FrozenMcpLease::call_tool(&lease, "sibling".into(), "echo".into(), json!({})).await;
+    let sibling_result = FrozenMcpLease::call_tool(
+        &lease,
+        "sibling".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await;
 
     // Release both SDK-owned exchanges even when the assertions below expose a regression.
     *peer.state.cancel_gate.lock().unwrap() = None;
     call_gate.add_permits(1);
     cancel_gate.add_permits(1);
-    let next_result =
-        FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({})).await;
+    let next_result = FrozenMcpLease::call_tool(
+        &lease,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await;
     handle.shutdown().await?;
 
     let error = result
@@ -327,15 +356,28 @@ async fn discovery_transport_failure_withdraws_tools_until_explicit_reset() -> a
     );
     assert!(handle.available_server_names().await.is_empty());
     assert!(
-        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({}))
-            .await
-            .is_err()
+        FrozenMcpLease::call_tool(
+            &old,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new()
+        )
+        .await
+        .is_err()
     );
     handle.reconcile(peer.servers()).await?;
     assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 1);
     handle.reset(McpResetScope::All, peer.servers()).await?;
     let next = handle.acquire_turn_lease().await?;
-    FrozenMcpLease::call_tool(&next, "peer".into(), "echo".into(), json!({})).await?;
+    FrozenMcpLease::call_tool(
+        &next,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(peer.state.call_requests.load(Ordering::SeqCst), 1);
     assert_eq!(peer.state.list_requests.load(Ordering::SeqCst), 3);
     assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
@@ -361,6 +403,7 @@ async fn failed_reset_seals_old_target_leases_but_preserves_accepted_calls_and_s
         "peer".into(),
         "echo".into(),
         json!({}),
+        CancellationToken::new(),
     ));
     assert!(futures::poll!(accepted.as_mut()).is_pending());
     tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
@@ -383,11 +426,24 @@ async fn failed_reset_seals_old_target_leases_but_preserves_accepted_calls_and_s
     assert_eq!(handle.available_server_names().await, vec!["sibling"]);
     for lease in [&old, &next] {
         assert!(
-            FrozenMcpLease::call_tool(lease, "peer".into(), "echo".into(), json!({}))
-                .await
-                .is_err()
+            FrozenMcpLease::call_tool(
+                lease,
+                "peer".into(),
+                "echo".into(),
+                json!({}),
+                CancellationToken::new()
+            )
+            .await
+            .is_err()
         );
-        FrozenMcpLease::call_tool(lease, "sibling".into(), "echo".into(), json!({})).await?;
+        FrozenMcpLease::call_tool(
+            lease,
+            "sibling".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new(),
+        )
+        .await?;
     }
     gate.add_permits(1);
     let result = accepted.await?;
@@ -440,9 +496,15 @@ async fn idle_stdio_exit_is_published_and_explicit_reset_recovers() -> anyhow::R
     assert!(handle.available_server_names().await.is_empty());
     assert!(handle.acquire_turn_lease().await?.tools().is_empty());
     assert!(
-        FrozenMcpLease::call_tool(&old, "stdio".into(), "inspect_env".into(), json!({}))
-            .await
-            .is_err()
+        FrozenMcpLease::call_tool(
+            &old,
+            "stdio".into(),
+            "inspect_env".into(),
+            json!({}),
+            CancellationToken::new()
+        )
+        .await
+        .is_err()
     );
     // An unchanged configuration is not an implicit retry path.
     handle.reconcile(servers.clone()).await?;
@@ -457,7 +519,14 @@ async fn idle_stdio_exit_is_published_and_explicit_reset_recovers() -> anyhow::R
         .await?;
     let next = handle.acquire_turn_lease().await?;
     assert_ne!(std::fs::read_to_string(&pid_file)?.parse::<i32>()?, pid);
-    FrozenMcpLease::call_tool(&next, "stdio".into(), "inspect_env".into(), json!({})).await?;
+    FrozenMcpLease::call_tool(
+        &next,
+        "stdio".into(),
+        "inspect_env".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     handle.shutdown().await?;
     handle.shutdown().await?;
     Ok(())
@@ -495,6 +564,7 @@ async fn old_stdio_notifications_and_failure_cannot_invalidate_a_reset_session()
         "stdio".into(),
         "inspect_env".into(),
         json!({"mode": "late_disconnect"}),
+        CancellationToken::new(),
     ));
     assert!(futures::poll!(accepted.as_mut()).is_pending());
     assert_eq!(handle.available_server_names().await, vec!["stdio"]);
@@ -503,7 +573,14 @@ async fn old_stdio_notifications_and_failure_cannot_invalidate_a_reset_session()
     assert_ne!(old.generation(), next.generation());
     std::fs::write(&release, b"ready")?;
     assert!(accepted.await.is_err());
-    FrozenMcpLease::call_tool(&next, "stdio".into(), "inspect_env".into(), json!({})).await?;
+    FrozenMcpLease::call_tool(
+        &next,
+        "stdio".into(),
+        "inspect_env".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     // An explicit discovery is a serial barrier after the old failure; the late notification
     // must not add a redundant tools/list on the newly installed session.
     refresh(&handle).await?;
@@ -545,7 +622,14 @@ async fn dropped_call_keeps_its_generation_and_shutdown_joins_the_original_reque
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     *peer.state.call_gate.lock().unwrap() = Some(gate.clone());
     let caller = tokio::spawn(async move {
-        FrozenMcpLease::call_tool(&lease, "peer".into(), "echo".into(), json!({})).await
+        FrozenMcpLease::call_tool(
+            &lease,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new(),
+        )
+        .await
     });
     tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
     caller.abort();
@@ -620,11 +704,19 @@ async fn replace_equal_config_guard(reset: bool) -> anyhow::Result<()> {
             .same_instance(&first_lease.authorization()),
         "independent revocation must not reuse an earlier guard's execution authority"
     );
-    FrozenMcpLease::call_tool(&replacement_lease, "peer".into(), "echo".into(), json!({})).await?;
+    FrozenMcpLease::call_tool(
+        &replacement_lease,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     FrozenMcpLease::resource_query(
         &replacement_lease,
         None,
         ResourceOperation::ListResources { cursor: None },
+        CancellationToken::new(),
     )
     .await?;
 
@@ -643,15 +735,21 @@ async fn replace_equal_config_guard(reset: bool) -> anyhow::Result<()> {
             .to_string()
             .contains("authorization was revoked")
     );
-    let call_error =
-        FrozenMcpLease::call_tool(&replacement_lease, "peer".into(), "echo".into(), json!({}))
-            .await
-            .unwrap_err();
+    let call_error = FrozenMcpLease::call_tool(
+        &replacement_lease,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
     assert!(call_error.to_string().contains("authorization was revoked"));
     let resource_error = FrozenMcpLease::resource_query(
         &replacement_lease,
         None,
         ResourceOperation::ListResources { cursor: None },
+        CancellationToken::new(),
     )
     .await
     .unwrap_err();
@@ -703,6 +801,7 @@ async fn revoked_config_blocks_discovery_publication_leases_and_new_requests() -
         &old,
         None,
         pl_tool_mcp::support::ResourceOperation::ListResources { cursor: None },
+        CancellationToken::new(),
     )
     .await?;
 
@@ -711,7 +810,14 @@ async fn revoked_config_blocks_discovery_publication_leases_and_new_requests() -
     let accepted = {
         let old = old.clone();
         tokio::spawn(async move {
-            FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({})).await
+            FrozenMcpLease::call_tool(
+                &old,
+                "peer".into(),
+                "echo".into(),
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
         })
     };
     tokio::time::timeout(Duration::from_secs(5), peer.state.call_entered.notified()).await?;
@@ -732,14 +838,21 @@ async fn revoked_config_blocks_discovery_publication_leases_and_new_requests() -
     assert!(!old.authorization().is_active());
     assert!(handle.acquire_turn_lease().await.is_err());
     assert!(
-        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({}))
-            .await
-            .is_err()
+        FrozenMcpLease::call_tool(
+            &old,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new()
+        )
+        .await
+        .is_err()
     );
     let resource_error = FrozenMcpLease::resource_query(
         &old,
         None,
         pl_tool_mcp::support::ResourceOperation::ListResources { cursor: None },
+        CancellationToken::new(),
     )
     .await
     .unwrap_err();
@@ -918,8 +1031,14 @@ async fn refresh_tools_updates_complete_definitions_and_reuses_connection() -> a
     assert!(!new.tools().iter().any(|t| t.raw_name == "removed"));
     assert!(old.tools().iter().any(|t| t.raw_name == "removed"));
     assert_ne!(old.tools()[0].input_schema, descriptor.input_schema);
-    let result =
-        FrozenMcpLease::call_tool(&old, "peer".into(), "removed".into(), json!({})).await?;
+    let result = FrozenMcpLease::call_tool(
+        &old,
+        "peer".into(),
+        "removed".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     let payload: Value = serde_json::from_str(result.content[0].as_text().unwrap().text.as_str())?;
     assert_eq!(payload["session"], "session-1");
     assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 1);
@@ -990,7 +1109,13 @@ async fn refresh_tools_serializes_reset_and_does_not_block_calls_or_leases() -> 
     assert_eq!(lease.generation(), old.generation());
     tokio::time::timeout(
         Duration::from_secs(1),
-        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({})),
+        FrozenMcpLease::call_tool(
+            &old,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new(),
+        ),
     )
     .await??;
     let servers = peer.servers();
@@ -1009,11 +1134,24 @@ async fn refresh_tools_serializes_reset_and_does_not_block_calls_or_leases() -> 
     assert_eq!(peer.state.session_generation.load(Ordering::SeqCst), 2);
     // Reset stops admission through the old lease; it must not silently use the replacement.
     assert!(
-        FrozenMcpLease::call_tool(&old, "peer".into(), "echo".into(), json!({}))
-            .await
-            .is_err()
+        FrozenMcpLease::call_tool(
+            &old,
+            "peer".into(),
+            "echo".into(),
+            json!({}),
+            CancellationToken::new()
+        )
+        .await
+        .is_err()
     );
-    FrozenMcpLease::call_tool(&replacement, "peer".into(), "echo".into(), json!({})).await?;
+    FrozenMcpLease::call_tool(
+        &replacement,
+        "peer".into(),
+        "echo".into(),
+        json!({}),
+        CancellationToken::new(),
+    )
+    .await?;
     assert_eq!(
         refresh(&handle).await?.generation,
         replacement.generation().0

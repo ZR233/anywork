@@ -9,6 +9,7 @@ use rmcp::model::*;
 use rmcp::service::ServiceError;
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::super::{McpGeneration, ResourceOperation, RuntimeCommand};
 use super::RuntimeWorker;
@@ -28,6 +29,7 @@ impl RuntimeWorker {
         server_id: String,
         raw_name: String,
         arguments: Value,
+        cancellation: CancellationToken,
         reply: tokio::sync::oneshot::Sender<Result<CallToolResult>>,
     ) {
         let session = self.session(generation, &server_id);
@@ -39,7 +41,7 @@ impl RuntimeWorker {
             async move {
                 let result = match session {
                     Ok((session, request_timeout, redactor)) => session
-                        .call_tool_timed(raw_name, arguments, request_timeout)
+                        .call_tool_timed(raw_name, arguments, request_timeout, &cancellation)
                         .await
                         .map_err(|error| {
                             request_error(error, &server_id, &session, &redactor, &commands)
@@ -58,6 +60,7 @@ impl RuntimeWorker {
         generation: McpGeneration,
         server_id: Option<String>,
         operation: ResourceOperation,
+        cancellation: CancellationToken,
         reply: tokio::sync::oneshot::Sender<Result<Value>>,
     ) {
         let sessions = self.sessions(generation, server_id.as_deref());
@@ -67,7 +70,7 @@ impl RuntimeWorker {
         }
         self.requests.push(
             async move {
-                let result = resource_query(sessions, operation, commands).await;
+                let result = resource_query(sessions, operation, commands, cancellation).await;
                 let _ = reply.send(result);
                 generation
             }
@@ -188,6 +191,7 @@ async fn resource_query(
     sessions: Result<Vec<ResourceSession>>,
     operation: ResourceOperation,
     commands: mpsc::UnboundedSender<RuntimeCommand>,
+    cancellation: CancellationToken,
 ) -> Result<Value> {
     let sessions = sessions?;
     let explicit = sessions.len() == 1;
@@ -211,7 +215,7 @@ async fn resource_query(
             ),
         };
         let result = session
-            .request(request, request_timeout)
+            .request(request, request_timeout, &cancellation)
             .await
             .map_err(|error| request_error(error, &server_id, &session, &redactor, &commands))?;
         let value = match (&operation, result) {

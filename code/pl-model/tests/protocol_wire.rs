@@ -877,8 +877,16 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
     let restored =
         ThreadHandle::restore_current(saved, Some(source_factory.open_session().await.unwrap()))
             .unwrap();
+    let update = pl_core::thread::RuntimeBundle::model_only(
+        &restored,
+        &restored.snapshot(),
+        pl_core::thread::RuntimeModel::new("new-provider".into(), target_factory, None),
+    );
     restored
-        .queue_model_update("new-provider".into(), target_factory, None)
+        .install_runtime_bundle(update)
+        .await
+        .unwrap()
+        .installed()
         .await
         .unwrap();
     let before = restored.capture_current(Default::default()).await.unwrap();

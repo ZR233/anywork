@@ -691,24 +691,13 @@ impl StudioRuntime {
             .models
             .resolve_route(crate::config::root_agent_route_id(), &selector)?;
 
-        Self::validate_model_media(&state, &route.model, &[])?;
-        pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&route)?,
-            route.reasoning_config(),
-        )
-        .validate_context_origin(&state.context)?;
+        crate::studio::model_binding::validate_context(&state, &route)?;
         let committed = match thread
-            .queue_deferred_model_update_if_current(
-                self.deferred_model_update(&route, &settings.config)?,
-                pl_core::thread::DeferredModelUpdatePrecondition::commit_sequence(
-                    state.commit_sequence,
-                ),
-                vec![pl_core::thread::extensions::ExtensionMutation::Put {
-                    id: route_extension_id.into(),
-                    expected_revision: Some(request.expected_model_route_revision),
-                    payload: crate::studio::model_route::encode(&selector)?,
-                }],
-            )
+            .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                id: route_extension_id.into(),
+                expected_revision: Some(request.expected_model_route_revision),
+                payload: crate::studio::model_route::encode(&selector)?,
+            }])
             .await
         {
             Ok(committed) => committed,
@@ -723,12 +712,10 @@ impl StudioRuntime {
         };
         let route_changed = previous.payload
             != committed
-                .extensions
                 .get(route_extension_id)
                 .context("committed route missing")?
                 .payload;
         let route_revision = committed
-            .extensions
             .get(route_extension_id)
             .context("committed route missing")?
             .revision;

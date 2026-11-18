@@ -237,14 +237,17 @@ mod s2_delete_recovery_tests {
     }
 
     impl crate::thread_assembler::StudioActivationFactory for FailedRestoreFactory {
-        async fn root_delegation(
+        async fn prepare_root(
             &self,
             identity: &crate::thread_assembler::ThreadActivation,
         ) -> std::result::Result<
-            crate::DelegationSettings,
+            (
+                crate::DelegationSettings,
+                Option<pl_core::thread::current::ThreadCurrent>,
+            ),
             crate::thread_assembler::ThreadAssemblyError,
         > {
-            self.native.root_delegation(identity).await
+            self.native.prepare_root(identity).await
         }
 
         async fn prepare(

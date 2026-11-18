@@ -18,11 +18,6 @@ pub(in crate::thread) enum Command {
         Option<context_preparation::ContextPreparer>,
         oneshot::Sender<Result<(), ThreadError>>,
     ),
-    ReplaceModel(
-        crate::model::ModelFactory,
-        Option<context_preparation::ContextPreparer>,
-        oneshot::Sender<Result<(), ThreadError>>,
-    ),
     Reveal(Vec<String>, oneshot::Sender<Result<(), ThreadError>>),
     RequestInteraction(
         interactions::InteractionRequest,
@@ -105,7 +100,6 @@ impl Command {
             Self::CurrentResume { reply, .. } => {
                 let _ = reply.send(Err(current::CurrentError::Closed));
             }
-            Self::ReplaceModel(_, _, reply) => closed(reply),
             Self::ContextPreparation(_, reply) => closed(reply),
             Self::Reveal(_, reply) => closed(reply),
             Self::RequestInteraction(_, reply) => closed(reply),

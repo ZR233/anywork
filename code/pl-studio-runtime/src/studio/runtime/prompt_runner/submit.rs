@@ -206,8 +206,10 @@ impl StudioRuntime {
                 .attachment_drafts
                 .resolve(&attachment_draft_ids)
                 .await?;
-            let (binding_precondition, binding) = self.model_binding(&thread_id, &thread).await;
-            let (route, config) = binding?;
+            let route = self
+                .require_session(&thread_id)?
+                .prepare_native_input(&thread_id, &thread)
+                .await?;
             self.attachment_drafts
                 .validate_for_model(&route.model, &drafts)?;
             ensure_submission_not_cancelled(cancel)?;
@@ -253,9 +255,11 @@ impl StudioRuntime {
                     attachments: &attachments,
                 })?,
             )?;
-            Self::validate_model_media(&thread.snapshot(), &route.model, &context)?;
-            self.queue_thread_model(&thread, &route, &config, binding_precondition)
-                .await?;
+            crate::studio::model_binding::validate_media(
+                &thread.snapshot(),
+                &route.model,
+                &context,
+            )?;
             if let Some(suggestions) =
                 self.thread_factory
                     .skill_suggestions(&thread_id, &prompt, &thread.snapshot())

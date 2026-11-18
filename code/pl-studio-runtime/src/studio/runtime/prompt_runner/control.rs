@@ -223,6 +223,9 @@ impl StudioRuntime {
             return Ok(self.continue_response(thread_id, operation));
         }
         check_route_revision(&thread.snapshot(), request.expected_model_route_revision)?;
+        self.require_session(&thread_id)?
+            .prepare_native_input(&thread_id, &thread)
+            .await?;
         let operation = thread
             .resume_execution(
                 core_request,

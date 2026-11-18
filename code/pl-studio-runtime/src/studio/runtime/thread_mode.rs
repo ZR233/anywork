@@ -1,26 +1,16 @@
 //! Product Mode changes are a single idle core transaction followed by directory projection.
 use super::StudioRuntime;
 use crate::mode::ThreadModeId;
+use crate::studio::model_binding::{self, NativeBundleOwner, NativeModelConfiguration};
 use anyhow::{Context, Result};
 use pl_core::thread::{
-    ContextReplacementReason, IdleReconfiguration, ReplaceContext, RuntimeFact,
+    ContextReplacementReason, ReplaceContext, RuntimeApplication, RuntimeFact,
     extensions::{ApplicationUpdate, ExtensionMutation},
 };
-
-#[derive(Debug, thiserror::Error)]
-#[error(
-    "Mode tool catalog preparation failed ({operation:#}); candidate cleanup failed ({cleanup:#})"
-)]
-struct ModeCandidateCleanupFailure {
-    #[source]
-    operation: anyhow::Error,
-    cleanup: anyhow::Error,
-}
 
 struct ModeCompletion {
     operation_id: String,
     directory: crate::Thread,
-    binding: crate::studio::thread_factory::RefreshedToolBinding,
     _lifecycle: tokio::sync::OwnedMutexGuard<()>,
     _installation: tokio::sync::OwnedMutexGuard<()>,
 }
@@ -79,12 +69,7 @@ impl StudioRuntime {
             guard = gate.lock_owned() => guard,
         };
         let state = thread.snapshot();
-        Self::validate_model_media(&state, &route.model, &[])?;
-        let instruction_model = pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::from_route(&route)?,
-            route.reasoning_config(),
-        );
-        instruction_model.validate_context_origin(&state.context)?;
+        let instruction_model = model_binding::validate_context(&state, &route)?;
         let previous = state
             .extensions
             .get("studio.instructions")
@@ -247,10 +232,6 @@ impl StudioRuntime {
                 });
             }
         }
-        if let Some(fact) = self.thread_factory.session_files_fact(thread_id, &state) {
-            facts.retain(|current| current.source_id != "studio.session-files");
-            facts.push(fact);
-        }
         let facts_changed = facts.len() != state.runtime_facts.len()
             || facts.iter().any(|fact| {
                 !state
@@ -284,48 +265,29 @@ impl StudioRuntime {
                 payload: route_payload,
             },
         );
-        // Every fallible side-effect-free input is prepared before physical tool candidates.
-        let model_update = self.deferred_model_update(&route, &config)?;
-        let (tools, exposure, binding) = self
-            .thread_factory
-            .refresh_thread_tools(thread_id, &candidate, cancellation.clone())
+        let configuration = NativeModelConfiguration::resolve(&self.config_runtime, &candidate)?;
+        let desired = format!("mode:{mode_id}:{}", configuration.desired()).into();
+        let session = self.require_session(thread_id)?;
+        let mut update = configuration
+            .prepare_bundle(
+                NativeBundleOwner {
+                    id: thread_id,
+                    session: &session,
+                    factory: &self.thread_factory,
+                    config: &self.config_runtime,
+                    thread: &thread,
+                    snapshot: &candidate,
+                },
+                cancellation,
+                desired,
+                || true,
+            )
             .await?;
-        let mut registrations = tools.into_registrations();
-        let controls = (|| -> Result<()> {
-            if exposure == crate::thread_assembler::AgentControlExposure::Enabled {
-                let profiles = self.config_runtime.agent_profiles_snapshot()?;
-                let selection = crate::studio::delegation::saved(&state)?
-                    .context("Thread has no frozen delegation selection")?;
-                registrations.extend(
-                    self.require_session(thread_id)?
-                        .agent_control_tools_for_thread(thread_id, &thread, &profiles, selection)?,
-                );
-                if self.config_runtime.agent_profiles_snapshot()?.revision != profiles.revision {
-                    return Err(pl_core::thread::ThreadError::Cancelled.into());
-                }
-            }
-            if cancellation.is_cancelled() {
-                return Err(pl_core::thread::ThreadError::Cancelled.into());
-            }
-            Ok(())
-        })();
-        if let Err(error) = controls {
-            return match self
-                .rejected_tools
-                .retire(thread.clone(), registrations, format!("{error:#}"))
-                .await
-            {
-                Ok(()) => Err(error),
-                Err(cleanup) => {
-                    self.tool_catalog_updates.notify_one();
-                    Err(ModeCandidateCleanupFailure {
-                        operation: error,
-                        cleanup,
-                    }
-                    .into())
-                }
-            };
-        }
+        update.application = Some(RuntimeApplication {
+            expected_sequence: state.commit_sequence,
+            update: ApplicationUpdate { mutations, facts },
+            context: context_update,
+        });
         let operation = format!("reconfigure Mode {mode_id} for Thread {thread_id}");
         let mut directory = crate::Thread::from(record);
         directory.mode = Some(mode_id);
@@ -333,30 +295,18 @@ impl StudioRuntime {
         let completion = ModeCompletion {
             operation_id,
             directory,
-            binding,
             _lifecycle: lifecycle,
             _installation,
         };
         let runtime = self.clone();
-        let completion_thread = thread.clone();
         let result = self
             .rejected_tools
             .reconfigure(
                 thread.clone(),
-                IdleReconfiguration {
-                    expected_sequence: state.commit_sequence,
-                    application: ApplicationUpdate { mutations, facts },
-                    context: context_update,
-                    model_update: Some(model_update),
-                    replace_tools: true,
-                    remove_tools: Vec::new(),
-                    tools: registrations,
-                },
+                update,
                 operation,
                 move |committed| async move {
-                    runtime
-                        .complete_thread_mode(completion_thread, committed, completion)
-                        .await
+                    runtime.complete_thread_mode(committed, completion).await
                 },
             )
             .await;
@@ -368,31 +318,18 @@ impl StudioRuntime {
 
     async fn complete_thread_mode(
         &self,
-        thread: pl_core::thread::ThreadHandle,
-        committed: pl_core::thread::ThreadSnapshot,
+        committed: std::sync::Arc<pl_core::thread::ThreadSnapshot>,
         completion: ModeCompletion,
     ) -> Result<crate::ThreadModeCommandReply> {
         let ModeCompletion {
             operation_id,
             directory,
-            binding,
             _lifecycle,
             _installation,
         } = completion;
         let thread_id = directory.id.clone();
-        let binding_error = self
-            .thread_factory
-            .commit_refreshed_binding(&thread_id, binding)
-            .err()
-            .map(anyhow::Error::from);
-        if let Some(error) = &binding_error {
-            // Core has committed the new Mode. Repair only its tool binding using the existing
-            // catalog refresh owner, never by replaying this Mode transaction.
-            self.publish_tool_refresh_result(&thread_id, &thread, Some(error));
-            self.tool_catalog_updates.notify_one();
-        }
-        // Even a binding failure cannot discard the already committed directory Mode fact.
-        // The projection owner records it before awaiting IO and owns failed persistence retries.
+        self.thread_factory.notify_lsp_binding_changed();
+        // The projection owner records this committed Mode before awaiting persistence.
         let directory_commit = self
             .agent_facility
             .product_events
@@ -402,32 +339,21 @@ impl StudioRuntime {
                 directory.updated_at,
             )
             .await;
-        let result = match (binding_error, directory_commit) {
-            (None, Ok(directory_commit)) => self
-                .thread_directory_stamp(&directory_commit)
-                .map(|directory_stamp| crate::ThreadModeCommandReply {
-                    receipt: self.command_receipt(
-                        operation_id,
-                        true,
-                        vec![
-                            self.resource_stamp(
-                                format!("thread-state:{thread_id}"),
-                                committed.commit_sequence,
-                            ),
-                            directory_stamp,
-                        ],
-                        crate::CommandEffectPoint::Immediate,
-                        false,
-                    ),
-                }),
-            (Some(binding), Ok(_)) => Err(binding.context("Mode binding repair was requested")),
-            (None, Err(storage)) => Err(storage.context(
-                "directory Mode fact is retained by write-behind for persistence retry",
-            )),
-            (Some(binding), Err(storage)) => Err(storage.context(format!(
-                "directory Mode fact is retained by write-behind; binding repair requested: {binding:#}"
-            ))),
-        }
+        let result = directory_commit
+            .context("directory Mode fact is retained by write-behind for persistence retry")
+            .and_then(|directory_commit| self.thread_directory_stamp(&directory_commit))
+            .map(|directory_stamp| crate::ThreadModeCommandReply {
+                receipt: self.command_receipt(
+                    operation_id,
+                    true,
+                    vec![
+                        self.resource_stamp(format!("thread-state:{thread_id}"), committed.commit_sequence),
+                        directory_stamp,
+                    ],
+                    crate::CommandEffectPoint::Immediate,
+                    false,
+                ),
+            })
         .with_context(|| {
             format!(
                 "Thread {thread_id} core Mode commit {} has been applied; product completion failed without replaying core",

@@ -310,6 +310,9 @@ pub struct ThreadSnapshot {
     /// Independent of committed effects and never persisted or compared across owners.
     #[serde(skip)]
     pub observation_revision: u64,
+    /// Resource installation state for this live incarnation only.
+    #[serde(skip)]
+    pub runtime_bundle: super::RuntimeBundleState,
     /// Live executor retirement owned by this Thread; never part of a checkpoint.
     #[serde(skip)]
     pub tool_cleanup: ToolCleanupState,
@@ -984,7 +987,7 @@ pub enum ExecutionPhase {
     Preparing,
     /// Waiting for actual storage or output capacity.
     AwaitingStorage,
-    /// Waiting for the Turn admission gate.
+    /// Historical preparation phase retained for decoding saved execution state.
     AwaitingAdmission,
     /// The Turn is executing inside the owner.
     Running,
@@ -1449,6 +1452,10 @@ pub enum ThreadError {
         expected: Option<u64>,
         actual: Option<u64>,
     },
+    #[error("runtime resource candidate no longer matches its owner or desired revision")]
+    StaleRuntimeBundle,
+    #[error("runtime resource installation failed: {0}")]
+    RuntimeInstallation(#[source] Arc<ThreadError>),
     #[error("extension sequence conflict: expected {expected}, actual {actual}")]
     ExtensionSequenceConflict { expected: u64, actual: u64 },
     #[error("model output does not match the admitted request")]

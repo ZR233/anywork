@@ -21,7 +21,6 @@ pub mod mcp_resource;
 pub use execution::RuntimeConfig;
 pub(crate) mod model_catalog;
 mod runtime;
-pub(crate) use runtime::CatalogChange;
 mod schema_migration;
 mod store;
 

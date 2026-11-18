@@ -485,11 +485,9 @@ async fn changed_facts_append_without_mutating_observed_history_and_clear_explic
         .update_facts(vec![fact("executing version two")])
         .await
         .unwrap();
-    assert_eq!(
-        thread.snapshot().context,
-        before,
-        "identical facts must not append"
-    );
+    let unchanged = thread.snapshot().context;
+    assert_eq!(unchanged.revision, before.revision);
+    assert!(Arc::ptr_eq(&unchanged.records, &before.records));
     thread.update_facts(vec![]).await.unwrap();
     let cleared = thread.snapshot().context;
     assert_eq!(cleared.records[0], first);

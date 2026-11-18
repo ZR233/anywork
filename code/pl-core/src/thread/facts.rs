@@ -3,7 +3,10 @@
 //! Current facts retain one value per source. Model-visible snapshots append on change so an
 //! already observed prefix stays immutable until explicit context replacement.
 use super::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 impl Owner {
     pub(super) fn queue_runtime_facts(
@@ -39,20 +42,12 @@ impl Owner {
         &mut self,
         facts: Vec<RuntimeFact>,
     ) -> Result<ContextSnapshot, ThreadError> {
-        let mut sources = BTreeSet::new();
-        let mut merged = self
-            .state
-            .runtime_facts
-            .iter()
-            .map(|fact| (fact.source_id.clone(), fact.clone()))
-            .collect::<BTreeMap<_, _>>();
-        for fact in facts {
-            if fact.source_id.is_empty() || !sources.insert(fact.source_id.clone()) {
-                return Err(ThreadError::InvalidContext);
-            }
-            merged.insert(fact.source_id.clone(), fact);
+        if !self.pending.is_empty() {
+            return Err(ThreadError::PendingTools);
         }
-        self.update_facts(merged.into_values().collect())
+        let context = stage_fact_changes(&mut self.state, facts)?;
+        self.publish()?;
+        Ok(context)
     }
 
     pub(super) fn update_facts(
@@ -66,6 +61,25 @@ impl Owner {
         self.publish()?;
         Ok(context)
     }
+}
+
+pub(super) fn stage_fact_changes(
+    state: &mut ThreadSnapshot,
+    changes: Vec<RuntimeFact>,
+) -> Result<ContextSnapshot, ThreadError> {
+    let mut sources = BTreeSet::new();
+    let mut merged = state
+        .runtime_facts
+        .iter()
+        .map(|fact| (fact.source_id.clone(), fact.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for fact in changes {
+        if fact.source_id.is_empty() || !sources.insert(fact.source_id.clone()) {
+            return Err(ThreadError::InvalidContext);
+        }
+        merged.insert(fact.source_id.clone(), fact);
+    }
+    stage_facts(state, merged.into_values().collect())
 }
 
 pub(super) fn stage_facts(
@@ -89,23 +103,24 @@ pub(super) fn stage_facts(
                 content: Vec::new(),
             });
     }
-    let mut records = state.context.records.to_vec();
+    let mut records = Cow::Borrowed(state.context.records.as_ref());
     let revision = state
         .context
         .revision
         .checked_add(1)
         .ok_or(ThreadError::RevisionExhausted)?;
     for fact in next.values() {
-        write_fact(&mut records, fact, revision);
+        if let Some(record) = changed_fact(&records, fact, revision) {
+            records.to_mut().push(record);
+        }
     }
-    let facts = next.into_values().collect::<Vec<_>>();
-    if records.as_slice() != state.context.records.as_ref() {
+    if let Cow::Owned(records) = records {
         state.context = ContextSnapshot {
             revision,
             records: records.into(),
         };
     }
-    state.runtime_facts = facts.into();
+    state.runtime_facts = next.into_values().collect();
     Ok(state.context.clone())
 }
 
@@ -115,7 +130,9 @@ pub(super) fn restore_facts(
     revision: u64,
 ) {
     for fact in facts {
-        write_fact(records, fact, revision);
+        if let Some(record) = changed_fact(records, fact, revision) {
+            records.push(record);
+        }
     }
 }
 
@@ -123,7 +140,11 @@ pub(super) fn restore_facts(
 ///
 /// A changed value appends a full snapshot; unchanged values do not change the prefix.
 /// An absent source appends an explicit invalidation.
-fn write_fact(records: &mut Vec<ContextRecord>, fact: &RuntimeFact, revision: u64) {
+fn changed_fact(
+    records: &[ContextRecord],
+    fact: &RuntimeFact,
+    revision: u64,
+) -> Option<ContextRecord> {
     let content = if fact.content.is_empty() {
         vec![ContextContent::Text {
             text: Arc::from(
@@ -136,10 +157,10 @@ fn write_fact(records: &mut Vec<ContextRecord>, fact: &RuntimeFact, revision: u6
     let source = ContextSource::RuntimeFact {
         source_id: fact.source_id.clone(),
     };
-    if let Some(index) = records.iter().rposition(|record| record.source == source)
-        && records[index].content == content
+    if let Some(previous) = records.iter().rfind(|record| record.source == source)
+        && previous.content == content
     {
-        return;
+        return None;
     }
     let mut identities = records
         .iter()
@@ -153,11 +174,11 @@ fn write_fact(records: &mut Vec<ContextRecord>, fact: &RuntimeFact, revision: u6
         }
         suffix += 1;
     };
-    records.push(ContextRecord {
+    Some(ContextRecord {
         tool_calls: Vec::new(),
         id,
         turn_id: None,
         source,
         content,
-    });
+    })
 }

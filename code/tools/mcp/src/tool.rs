@@ -63,12 +63,12 @@ impl<L: FrozenMcpLease, H: MediaHost> Tool for McpTool<L, H> {
             return Err(McpError::invalid("MCP call cancelled before dispatch"));
         }
         let lease = self.lease.acquire()?;
-        // Once accepted, wait for the received outcome even if local cancellation arrives.
         let result = lease
             .call_tool(
                 self.descriptor.server_id.clone(),
                 self.descriptor.raw_name.clone(),
                 arguments,
+                context.cancellation,
             )
             .await
             .map_err(McpError::new)?;

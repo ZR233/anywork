@@ -224,6 +224,10 @@ impl Owner {
                 }
             })
             .map_err(|_| ThreadError::Closed)?;
+        self.executing_authorities.insert(
+            format!("task:{}", failed_call.call.call_id),
+            failed_call.executor.authority(),
+        );
         Ok(Box::pin(async move {
             match execution.wait().await {
                 Ok(completion) => (*completion).clone(),
@@ -265,6 +269,7 @@ impl Owner {
             let published = self.publish();
             self.permission_leases.remove(&format!("permission:{id}"));
             self.executions.forget(&format!("task:{id}"));
+            self.executing_authorities.remove(&format!("task:{id}"));
             self.nested_plans.remove(&format!("task:{id}"));
             if published.is_ok() {
                 self.settle_operation_output(&operation);
@@ -482,7 +487,9 @@ impl Owner {
         // failure through the tool boundary. Latch the exact category it named before the failure is
         // delivered, so the Thread pauses further admission instead of continuing as if the capture
         // had succeeded; the accepted output still rides along with the failed result.
-        if let ToolOutcome::Failed(error) = &outcome
+        let authorized = call.executor.remains_authorized(&self.tools);
+        if authorized
+            && let ToolOutcome::Failed(error) = &outcome
             && let Some(fault) = error
                 .source
                 .downcast_ref::<crate::thread::cold::OutputStorageFault>()
@@ -495,10 +502,7 @@ impl Owner {
         let controls = output.control() != crate::tool::ToolControl::Continue
             || !output.extension_mutations().is_empty()
             || !output.revealed_tools().is_empty();
-        if matches!(outcome, ToolOutcome::Succeeded)
-            && controls
-            && !call.executor.remains_authorized(&self.tools)
-        {
+        if matches!(outcome, ToolOutcome::Succeeded) && controls && !authorized {
             outcome = ToolOutcome::Failed(Arc::new(crate::tool::opaque::ToolError::new(
                 ThreadError::ToolPermissionRevoked,
             )));

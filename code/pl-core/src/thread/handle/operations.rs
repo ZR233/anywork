@@ -61,89 +61,6 @@ impl ThreadHandle {
         response.await.map_err(|_| current::CurrentError::Closed)?
     }
 
-    /// Queues the latest configuration for the next Turn without waiting for current execution.
-    /// # Errors
-    /// Rejects empty configuration identities and closed owners.
-    pub async fn queue_model_update(
-        &self,
-        identity: String,
-        factory: crate::model::ModelFactory,
-        preparation: Option<context_preparation::ContextPreparer>,
-    ) -> Result<(), ThreadError> {
-        self.queue_model_update_with_extensions(identity, factory, preparation, Vec::new())
-            .await
-            .map(|_| ())
-    }
-
-    /// Atomically records host-owned application state and queues its matching model binding.
-    /// The admitted Turn keeps its existing binding; the queued binding applies at the next Turn.
-    ///
-    /// # Errors
-    /// Rejects stale extension revisions, empty configuration identities and closed owners without
-    /// applying either the extension mutations or the pending model update.
-    pub async fn queue_model_update_with_extensions(
-        &self,
-        identity: String,
-        factory: crate::model::ModelFactory,
-        preparation: Option<context_preparation::ContextPreparer>,
-        mutations: Vec<extensions::ExtensionMutation>,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        self.queue_deferred_model_update(
-            super::model_update::DeferredModelUpdate::new(identity, factory, preparation),
-            mutations,
-        )
-        .await
-    }
-
-    /// Atomically records host-owned application state and queues an already frozen model update.
-    ///
-    /// # Errors
-    /// Rejects stale extension revisions, invalid updates and closed owners without partial writes.
-    pub async fn queue_deferred_model_update(
-        &self,
-        update: DeferredModelUpdate,
-        mutations: Vec<extensions::ExtensionMutation>,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        self.send_deferred_model_update(update, Default::default(), mutations)
-            .await
-    }
-
-    /// Queues one frozen model update only when its host-owned preconditions still match.
-    ///
-    /// # Errors
-    /// Rejects stale journal or extension revisions before applying extension or pending-model
-    /// state.
-    pub async fn queue_deferred_model_update_if_current(
-        &self,
-        update: DeferredModelUpdate,
-        precondition: DeferredModelUpdatePrecondition,
-        mutations: Vec<extensions::ExtensionMutation>,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        self.send_deferred_model_update(update, precondition, mutations)
-            .await
-    }
-
-    async fn send_deferred_model_update(
-        &self,
-        update: DeferredModelUpdate,
-        precondition: DeferredModelUpdatePrecondition,
-        mutations: Vec<extensions::ExtensionMutation>,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::Control(
-                super::mailbox::MailboxCommand::QueueModelUpdate(
-                    update,
-                    precondition,
-                    mutations,
-                    reply,
-                ),
-            ))
-            .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
-    }
-
     /// Starts one owner with a fresh, exclusively owned model session.
     ///
     /// # Errors
@@ -159,13 +76,8 @@ impl ThreadHandle {
         model: Option<DynModelSession>,
     ) -> Result<Self, current::CurrentError> {
         let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::FreshCurrent(Box::new(current)),
-            None,
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+        Self::spawn_owner(id, model, InitialState::FreshCurrent(Box::new(current)))
+            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     /// Installs only logical current data under a fresh paused owner. No history is read, no old
@@ -176,46 +88,8 @@ impl ThreadHandle {
     ) -> Result<Self, current::CurrentError> {
         let id = current.thread_id.clone();
         let current = current.activate_paused(&id)?;
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::RestoredCurrent(Box::new(current)),
-            None,
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
-    }
-
-    /// Starts a fresh current owner with its admission gate installed before any direct input.
-    pub fn start_current_with_turn_admission_gate(
-        id: String,
-        model: DynModelSession,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, current::CurrentError> {
-        let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
-        Self::spawn_owner(
-            id,
-            Some(model),
-            InitialState::FreshCurrent(Box::new(current)),
-            Some(gate),
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
-    }
-
-    /// Restores paused logical data with a gate installed before user-authorized continuation.
-    pub fn restore_current_with_turn_admission_gate(
-        current: current::ThreadCurrent,
-        model: Option<DynModelSession>,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, current::CurrentError> {
-        let id = current.thread_id.clone();
-        let current = current.activate_paused(&id)?;
-        Self::spawn_owner(
-            id,
-            model,
-            InitialState::RestoredCurrent(Box::new(current)),
-            Some(gate),
-        )
-        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+        Self::spawn_owner(id, model, InitialState::RestoredCurrent(Box::new(current)))
+            .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
     }
 
     /// Starts or resumes one owner from a direct current-state checkpoint.
@@ -224,7 +98,7 @@ impl ThreadHandle {
         model: DynModelSession,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, Some(model), checkpoint, None)
+        Self::resume_with_model(id, Some(model), checkpoint)
     }
 
     /// Starts or resumes one owner without opening a physical model session.
@@ -232,41 +106,18 @@ impl ThreadHandle {
         id: String,
         checkpoint: Option<ThreadCheckpoint>,
     ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, None, checkpoint, None)
-    }
-
-    /// Starts or resumes one owner with a Turn admission gate installed before any Turn can run.
-    ///
-    /// The gate is part of the incarnation instead of something installed later, which is what makes
-    /// it hold back the very Turn recovery would resume: no input can be admitted while the owner is
-    /// assembled, so the gate exists before any Turn can reach it. Passing `None` for `model` opens
-    /// no physical model session, exactly like [`Self::resume_without_model`].
-    ///
-    /// The gate starts open, and an owner assembled without one admits Turns unconditionally, so
-    /// this entry point only changes the behavior of consumers that ask for it.
-    ///
-    /// # Errors
-    /// Rejects an empty Thread identity or an unusable checkpoint before spawning the owner.
-    pub fn resume_with_turn_admission_gate(
-        id: String,
-        model: Option<DynModelSession>,
-        checkpoint: Option<ThreadCheckpoint>,
-        gate: admission::TurnAdmissionGate,
-    ) -> Result<Self, ThreadError> {
-        Self::resume_with_model(id, model, checkpoint, Some(gate))
+        Self::resume_with_model(id, None, checkpoint)
     }
 
     fn resume_with_model(
         id: String,
         model: Option<DynModelSession>,
         checkpoint: Option<ThreadCheckpoint>,
-        turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
         Self::spawn_owner(
             id,
             model,
             InitialState::Checkpoint(checkpoint.map(Box::new)),
-            turn_admission,
         )
     }
 
@@ -274,7 +125,6 @@ impl ThreadHandle {
         id: String,
         model: Option<DynModelSession>,
         initial: InitialState,
-        turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
         if id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
@@ -304,7 +154,10 @@ impl ThreadHandle {
         let (commands, receiver) = mpsc::channel(64);
         let (mailbox, mailbox_receiver) = mpsc::channel(64);
         let interrupt = cancellation::InterruptHandle::default();
-        let (publish, snapshots) = watch::channel(published.clone());
+        let (publish, snapshots) = watch::channel(super::super::subscription::OwnerPublication {
+            snapshot: published.clone(),
+            binding: None,
+        });
         let (output_refusals, output_refusal_rx) =
             watch::channel::<Option<crate::model::OutputRefusal>>(None);
         let tools = crate::tool::opaque::ToolManager::with_discovery(&state.discovered_tools);
@@ -317,6 +170,7 @@ impl ThreadHandle {
             });
         let (final_current, final_current_rx) = watch::channel(None);
         let (current_dirty, current_dirty_rx) = watch::channel(0);
+        let authorization_dirty = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut owner = Owner {
             active: None,
             primary: None,
@@ -343,8 +197,14 @@ impl ThreadHandle {
                 .map(|current| current.state.tool_previews.clone())
                 .unwrap_or_default(),
             final_current,
-            model_identity: None,
-            pending_model_update: None,
+            runtime_binding: None,
+            pending_bundle: None,
+            bundle_generation: 0,
+            runtime_model_jobs: 0,
+            retired_runtime_models: Vec::new(),
+            revoked_runtime_tools: false,
+            authorization_dirty: authorization_dirty.clone(),
+            executing_authorities: Default::default(),
             pending_runtime_facts: Default::default(),
             context_preparation: None,
             compaction_call: None,
@@ -361,8 +221,6 @@ impl ThreadHandle {
             } else {
                 input::ExecutionPolicy::Paused(input::PauseReason::Initial)
             },
-            turn_admission,
-            turn_admission_waiting: false,
             interrupt: interrupt.clone(),
             mailbox: mailbox_receiver,
             task_commands: mailbox.downgrade(),
@@ -423,6 +281,7 @@ impl ThreadHandle {
             _producer_facts: mailbox,
             interrupt,
             snapshots,
+            authorization_dirty,
             effect_window,
         })
     }
@@ -449,34 +308,8 @@ impl ThreadHandle {
         Ok(true)
     }
 
-    /// Atomically replaces host state, instructions and selected tools at an idle boundary.
-    ///
-    /// # Errors
-    /// Rejects stale snapshots, active work, invalid context and invalid tool registrations.
-    pub async fn reconfigure(
-        &self,
-        mut update: IdleReconfiguration,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        let batch = crate::tool::opaque::RegistrationBatch::new(std::mem::take(&mut update.tools));
-        let (reply, response) = oneshot::channel();
-        let result = match self
-            .commands
-            .send(Command::Control(
-                super::mailbox::MailboxCommand::Reconfigure(update, batch.clone(), reply),
-            ))
-            .await
-        {
-            Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
-            Err(_) => Err(ThreadError::Closed),
-        };
-        finish_tool_transfer(batch, result).await
-    }
-
     /// Stops the current Turn after atomically checking its expected identity and pauses queued execution.
     /// Passing no identity stops whichever Turn the owner is currently executing.
-    /// A Turn still waiting at the admission gate has not started and has no Turn record, so it can
-    /// never be the Turn an expected identity names: such a stop cancels the pending admission and
-    /// answers `true`, and the queue stays paused, so the held Turn cannot start once the gate opens.
     ///
     /// # Errors
     /// Returns `InvalidIdentity` when another Turn is active, or `Closed` when the owner has exited.
@@ -552,33 +385,34 @@ impl ThreadHandle {
         self.interrupt.request_shutdown();
     }
 
-    /// Replaces the model session at a serial execution boundary while preserving historical context.
-    /// The supplied factory is invoked only after the old session closes successfully.
-    ///
-    /// # Errors
-    /// Returns resource cleanup or factory failure. Failed construction leaves model execution unavailable
-    /// until a later successful replacement; tool tasks and saved history remain owned by this Thread.
+    /// Replaces the model of an idle standalone Thread through its package installation.
     pub async fn replace_model(
         &self,
         factory: crate::model::ModelFactory,
     ) -> Result<(), ThreadError> {
-        self.replace_model_with_preparation(factory, None).await
-    }
-
-    /// Atomically replaces the model binding and its optional context policy.
-    /// # Errors
-    /// Retains existing model cleanup failure and rejects replacement during pending execution.
-    pub async fn replace_model_with_preparation(
-        &self,
-        factory: crate::model::ModelFactory,
-        preparation: Option<context_preparation::ContextPreparer>,
-    ) -> Result<(), ThreadError> {
-        let (reply, response) = oneshot::channel();
-        self.commands
-            .send(Command::ReplaceModel(factory, preparation, reply))
+        let snapshot = self.snapshot();
+        let model = RuntimeModel::new(uuid::Uuid::new_v4().to_string(), factory, None);
+        let mut update = RuntimeBundle::model_only(self, &snapshot, model);
+        update.application = Some(RuntimeApplication {
+            expected_sequence: snapshot.commit_sequence,
+            update: extensions::ApplicationUpdate {
+                mutations: Vec::new(),
+                facts: Vec::new(),
+            },
+            context: None,
+        });
+        self.install_runtime_bundle(update)
+            .await?
+            .installed()
             .await
-            .map_err(|_| ThreadError::Closed)?;
-        response.await.map_err(|_| ThreadError::Closed)?
+            .map(|_| ())
+            .map_err(|error| match &*error {
+                ThreadError::Model(error) => ThreadError::Model(error.clone()),
+                ThreadError::Closed => ThreadError::Closed,
+                ThreadError::InputRequiresIdle => ThreadError::InputRequiresIdle,
+                ThreadError::StaleRuntimeBundle => ThreadError::StaleRuntimeBundle,
+                _ => ThreadError::RuntimeInstallation(error),
+            })
     }
 
     /// Installs a policy before admitting new work; running requests keep their frozen policy.
@@ -988,6 +822,54 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Captures the owner generation, installed revision and producing extension sequence.
+    pub fn runtime_bundle_base(&self, snapshot: &ThreadSnapshot) -> RuntimeBundleBase {
+        RuntimeBundleBase {
+            epoch: self.runtime_epoch,
+            revision: snapshot.runtime_bundle.revision,
+            extension_sequence: snapshot.extension_sequence,
+        }
+    }
+
+    /// Reads the active execution binding from Core's own snapshot publication.
+    pub fn runtime_binding(&self) -> RuntimeBindingReader {
+        RuntimeBindingReader {
+            snapshots: self.snapshots.clone(),
+            commands: self.commands.downgrade(),
+            authorization_dirty: self.authorization_dirty.clone(),
+        }
+    }
+
+    /// Transfers a candidate and its cleanup obligations to this owner. The receipt resolves
+    /// at installation. An admitted request can keep using the currently installed package.
+    pub async fn install_runtime_bundle(
+        &self,
+        mut update: RuntimeBundle,
+    ) -> Result<RuntimeBundleReceipt, ThreadError> {
+        let registrations = update
+            .tools
+            .as_mut()
+            .map(|tools| std::mem::take(&mut tools.registrations))
+            .unwrap_or_default();
+        let batch = crate::tool::opaque::RegistrationBatch::new(registrations);
+        let (reply, response) = oneshot::channel();
+        let result = match self
+            .commands
+            .send(Command::Control(
+                super::mailbox::MailboxCommand::InstallRuntimeBundle(
+                    Box::new(update),
+                    batch.clone(),
+                    reply,
+                ),
+            ))
+            .await
+        {
+            Ok(()) => response.await.unwrap_or(Err(ThreadError::Closed)),
+            Err(_) => Err(ThreadError::Closed),
+        };
+        finish_tool_transfer(batch, result).await
+    }
+
     /// Replaces this Thread's registry atomically. Pending calls keep their frozen executors.
     ///
     /// # Errors
@@ -1386,12 +1268,10 @@ impl ThreadHandle {
 
     /// Returns the last atomic commit without waiting for an in-flight model operation.
     pub fn snapshot(&self) -> ThreadSnapshot {
-        self.snapshots.borrow().clone()
+        self.snapshots.borrow().snapshot.clone()
     }
 
     /// Runs a bounded model/tool loop without interleaving another submitted Turn.
-    /// The loop starts only once the Turn admission gate admits this Turn; while a gate reason is
-    /// held, this call stays pending without consuming input or creating a Turn record.
     ///
     /// # Errors
     /// Returns model/admission/cancellation errors; committed tool failures remain available to the next step.

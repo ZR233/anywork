@@ -1,20 +1,8 @@
-//! One idle transaction for host-owned state, instruction and tool changes.
+//! Idle qualification and staging for host-owned application changes.
 use super::*;
 
-/// A host-selected transaction. Content meanings and tool group membership remain outside core.
-#[derive(Debug)]
-pub struct IdleReconfiguration {
-    pub expected_sequence: u64,
-    pub application: extensions::ApplicationUpdate,
-    pub context: Option<ReplaceContext>,
-    pub model_update: Option<DeferredModelUpdate>,
-    pub replace_tools: bool,
-    pub remove_tools: Vec<String>,
-    pub tools: Vec<crate::tool::opaque::Registration>,
-}
-
 impl Owner {
-    pub(super) fn ensure_idle(&self, allow_admission_boundary: bool) -> Result<(), ThreadError> {
+    pub(super) fn ensure_idle(&self) -> Result<(), ThreadError> {
         if self.current_task_start_ordinal.is_some() && self.current_model_running {
             return Err(ThreadError::InputRequiresIdle);
         }
@@ -23,25 +11,17 @@ impl Owner {
         if self.current_saved_lifecycle.is_some() && !self.interrupt.is_closing() {
             return Ok(());
         }
-        // A closed admission boundary has no executing Turn. Its queued input identities
-        // remain owned by this Thread while the host replaces generation-bound services.
-        let admission_boundary = allow_admission_boundary
-            && self
-                .turn_admission
-                .as_ref()
-                .is_some_and(|gate| !gate.is_open() && gate.admitted_turns() == 0);
-        if (!self.active_inputs.is_empty() && !(admission_boundary && self.turn_admission_waiting))
+        if !self.active_inputs.is_empty()
             || self
                 .state
                 .turns
                 .iter()
                 .any(|turn| turn.state == TurnState::Running)
-            || (!admission_boundary
-                && self
-                    .state
-                    .inputs
-                    .iter()
-                    .any(|input| input.state == input::InputState::Pending))
+            || self
+                .state
+                .inputs
+                .iter()
+                .any(|input| input.state == input::InputState::Pending)
             || self
                 .state
                 .tasks
@@ -67,51 +47,22 @@ impl Owner {
         Ok(())
     }
 
-    pub(super) fn reconfigure(
-        &mut self,
-        update: IdleReconfiguration,
-    ) -> Result<ThreadSnapshot, ThreadError> {
-        self.tools.retain_candidates(&update.tools);
-        if self.interrupt.is_closing() || self.state.lifecycle != ThreadLifecycle::Open {
-            return Err(ThreadError::Closed);
+    pub(super) fn stage_reconfiguration(
+        &self,
+        candidate: &mut ThreadSnapshot,
+        update: extensions::ApplicationUpdate,
+        context: Option<ReplaceContext>,
+        fact_changes: Vec<RuntimeFact>,
+    ) -> Result<(), ThreadError> {
+        extensions::stage_extensions(candidate, update.mutations)?;
+        facts::stage_facts(candidate, update.facts)?;
+        if !fact_changes.is_empty() {
+            facts::stage_fact_changes(candidate, fact_changes)?;
         }
-        if self.state.commit_sequence != update.expected_sequence {
-            return Err(ThreadError::ContextConflict {
-                expected: update.expected_sequence,
-                actual: self.state.commit_sequence,
-            });
-        }
-        self.ensure_idle(true)?;
-        let mut candidate = self.state.clone();
-        let pending_model_update = update
-            .model_update
-            .map(|update| self.pending_model_update(update))
-            .transpose()?;
-        extensions::stage_extensions(&mut candidate, update.application.mutations)?;
-        facts::stage_facts(&mut candidate, update.application.facts)?;
-        if let Some(mut replacement) = update.context {
-            if replacement.expected_revision != self.state.context.revision {
-                return Err(ThreadError::ContextConflict {
-                    expected: replacement.expected_revision,
-                    actual: self.state.context.revision,
-                });
-            }
+        if let Some(replacement) = context {
             candidate.context = self.state.context.clone();
-            replacement.expected_revision = candidate.context.revision;
-            replacement::stage_replacement(&mut candidate, replacement)?;
+            replacement::stage_replacement(candidate, replacement)?;
         }
-        if update.replace_tools {
-            self.tools.replace(update.tools)?;
-        } else {
-            self.tools.patch(&update.remove_tools, update.tools)?;
-        }
-        candidate.discovered_tools = self.tools.discovery();
-        self.state = candidate;
-        if let Some(pending_model_update) = pending_model_update {
-            self.pending_model_update = pending_model_update;
-        }
-        self.retry_plan = None;
-        self.publish()?;
-        Ok(self.state.clone())
+        Ok(())
     }
 }

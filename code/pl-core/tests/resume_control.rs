@@ -1,3 +1,5 @@
+#[path = "support/preparation.rs"]
+mod preparation;
 mod support;
 
 use pl_core::{
@@ -44,18 +46,15 @@ async fn paused() -> (
     ThreadHandle,
     Arc<AtomicUsize>,
     Arc<Mutex<Vec<ContextSnapshot>>>,
-    pl_core::thread::admission::TurnAdmissionGate,
 ) {
     let calls = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(vec![]));
-    let gate = pl_core::thread::admission::TurnAdmissionGate::new();
-    let thread = ThreadHandle::start_current_with_turn_admission_gate(
+    let thread = ThreadHandle::start_current(
         "resume-control".into(),
-        DynModelSession::new(ContinuingModel {
+        Some(DynModelSession::new(ContinuingModel {
             requests: requests.clone(),
             calls: calls.clone(),
-        }),
-        gate.clone(),
+        })),
     )
     .unwrap();
     let mut input = support::turn("first");
@@ -63,7 +62,7 @@ async fn paused() -> (
     let result = thread.run_turn(input).await.unwrap();
     assert_eq!(result.outcome, TurnOutcome::StepLimit);
     assert!(thread.snapshot().continuation.is_some());
-    (thread, calls, requests, gate)
+    (thread, calls, requests)
 }
 
 fn request(thread: &ThreadHandle, id: &str) -> ResumeRequest {
@@ -87,7 +86,7 @@ async fn settled(thread: &ThreadHandle) {
 
 #[tokio::test]
 async fn empty_pending_resume_uses_confirmed_context_and_replays_only_the_receipt() {
-    let (thread, calls, requests, _) = paused().await;
+    let (thread, calls, requests) = paused().await;
     let request = request(&thread, "resume");
     assert_eq!(
         thread.read_resume(request.clone()).await.unwrap(),
@@ -133,7 +132,7 @@ async fn empty_pending_resume_uses_confirmed_context_and_replays_only_the_receip
 
 #[tokio::test]
 async fn cache_eviction_makes_an_old_token_stale_instead_of_not_accepted() {
-    let (thread, calls, _, _) = paused().await;
+    let (thread, calls, _) = paused().await;
     let first = request(&thread, "operation-0");
     for index in 0..65 {
         let request = request(&thread, &format!("operation-{index}"));
@@ -155,13 +154,14 @@ async fn cache_eviction_makes_an_old_token_stale_instead_of_not_accepted() {
 
 #[tokio::test]
 async fn stop_before_admission_settles_scheduled_resume_without_calling_the_model() {
-    let (thread, calls, _, gate) = paused().await;
-    let hold = gate.close();
+    let (thread, calls, _) = paused().await;
+    let hold = preparation::HoldPreparation::install(&thread).await;
     let original = request(&thread, "scheduled");
     let accepted = thread
         .resume_execution(original.clone(), options())
         .await
         .unwrap();
+    hold.entered().await;
     thread
         .interrupt_execution(accepted.execution_id.clone())
         .await
@@ -180,7 +180,6 @@ async fn stop_before_admission_settles_scheduled_resume_without_calling_the_mode
         thread.resume_execution(original, options()).await.unwrap(),
         stopped
     );
-    drop(hold);
     let fresh = request(&thread, "fresh");
     let next = thread.resume_execution(fresh, options()).await.unwrap();
     assert_ne!(next.execution_id, stopped.execution_id);
@@ -191,13 +190,14 @@ async fn stop_before_admission_settles_scheduled_resume_without_calling_the_mode
 
 #[tokio::test]
 async fn restart_issues_a_fresh_token_and_retains_scheduled_feedback_without_execution() {
-    let (thread, calls, _, gate) = paused().await;
-    let hold = gate.close();
+    let (thread, calls, _) = paused().await;
+    let hold = preparation::HoldPreparation::install(&thread).await;
     let original = request(&thread, "before-restart");
     let scheduled = thread
         .resume_execution(original.clone(), options())
         .await
         .unwrap();
+    hold.entered().await;
     let current = thread
         .capture_current(tokio_util::sync::CancellationToken::new())
         .await
@@ -208,7 +208,6 @@ async fn restart_issues_a_fresh_token_and_retains_scheduled_feedback_without_exe
         .unwrap();
     settled(&thread).await;
     thread.close().await.unwrap();
-    drop(hold);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     let (model, requests) = support::ScriptedModel::new(&[]);

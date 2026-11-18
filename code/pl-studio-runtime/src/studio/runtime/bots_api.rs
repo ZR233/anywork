@@ -103,7 +103,7 @@ impl StudioRuntime {
             .config
             .models
             .resolve_route(crate::config::root_agent_route_id(), &selector)?;
-        Self::validate_model_media(&state, &route.model, &[])?;
+        crate::studio::model_binding::validate_context(&state, &route)?;
         let mut mutations = vec![pl_core::thread::extensions::ExtensionMutation::Put {
             id: crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
             expected_revision: Some(previous.revision),
@@ -119,16 +119,7 @@ impl StudioRuntime {
                 payload: crate::studio::model_route::encode_bot_owner(&bot.id)?,
             });
         }
-        thread
-            .queue_deferred_model_update_if_current(
-                self.deferred_model_update(&route, &settings.config)?,
-                pl_core::thread::DeferredModelUpdatePrecondition::extension(
-                    crate::studio::model_route::MODEL_ROUTE_EXTENSION,
-                    Some(previous.revision),
-                ),
-                mutations,
-            )
-            .await?;
+        thread.mutate_extensions(mutations).await?;
         self.tool_catalog_updates.notify_one();
         Ok(())
     }

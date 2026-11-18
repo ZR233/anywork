@@ -21,7 +21,6 @@ impl PrimaryWork {
 }
 
 pub(super) enum PrimaryCompletion {
-    Admission(Result<admission::TurnAdmissionPermit, ThreadError>),
     Preparation {
         step: StepWork,
         completion: context_preparation::PreparationCompletion,
@@ -36,12 +35,6 @@ pub(super) enum PrimaryCompletion {
         model: DynModelSession,
         step: StepWork,
         exit: crate::model::ModelCallExit,
-    },
-    Replaced {
-        model: Option<DynModelSession>,
-        result: Result<(), ThreadError>,
-        update: Option<DeferredModelUpdate>,
-        reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
     },
     ExecutionsJoined(
         crate::tool::task::ExecutionTasks<super::tool_execution::ToolExecutionCompletion>,
@@ -93,7 +86,6 @@ impl RunReply {
 }
 
 pub(super) enum RunPhase {
-    Admission,
     Starting,
     NextStep {
         content: Vec<ContextContent>,
@@ -116,7 +108,6 @@ pub(super) struct ActiveRun {
     pub(super) operation_id: Option<String>,
     pub(super) start_stops: u64,
     pub(super) restored: bool,
-    pub(super) permit: Option<admission::TurnAdmissionPermit>,
     // Own the cancellation installation until all primary work really returns.
     pub(super) _cancellation: cancellation::ActiveExecution,
 }
@@ -153,6 +144,14 @@ pub(super) enum CloseStage {
 }
 
 pub(super) enum MaintenanceCompletion {
+    RuntimeModelOpened {
+        generation: u64,
+        result: Result<DynModelSession, ThreadError>,
+    },
+    RetiredRuntimeModel {
+        model: DynModelSession,
+        result: Result<(), ModelError>,
+    },
     Flush {
         through: Option<u64>,
         result: Result<(), ThreadError>,
@@ -172,6 +171,12 @@ pub(super) enum MaintenanceCompletion {
 impl Owner {
     pub(super) fn finish_maintenance(&mut self, completion: MaintenanceCompletion) {
         match completion {
+            MaintenanceCompletion::RuntimeModelOpened { generation, result } => {
+                self.finish_runtime_model_open(generation, result);
+            }
+            MaintenanceCompletion::RetiredRuntimeModel { model, result } => {
+                self.finish_retired_runtime_model(model, result);
+            }
             MaintenanceCompletion::Flush {
                 through,
                 result,
@@ -314,7 +319,7 @@ impl Owner {
         cancellation: CancellationToken,
         reply: oneshot::Sender<Result<ContextSnapshot, ThreadError>>,
     ) {
-        let validation = self.ensure_idle(false).and_then(|()| {
+        let validation = self.ensure_idle().and_then(|()| {
             if revision == self.state.context.revision {
                 Ok(())
             } else {
@@ -581,6 +586,8 @@ impl Owner {
             return;
         }
         self.state.lifecycle = ThreadLifecycle::Closing;
+        self.reject_pending_bundle(ThreadError::Closed);
+        self.retry_retired_runtime_models();
         if purpose == owner::ClosePurpose::Preserve && !self.interrupt.is_deleting() {
             self.form_host_shutdown();
         }
@@ -622,6 +629,12 @@ impl Owner {
                 }));
             }
             CloseStage::Model => {
+                if self.runtime_model_jobs != 0 {
+                    return Ok(false);
+                }
+                if let Some((_, error)) = self.retired_runtime_models.first() {
+                    return Err(ThreadError::Model(error.clone()));
+                }
                 self.closing.as_mut().unwrap().stage = CloseStage::Tools;
                 if let Some(mut model) = self.model.take() {
                     self.primary = Some(PrimaryWork::new(false, async move {
@@ -730,7 +743,7 @@ impl Owner {
         self.active = Some(ActiveRun {
             input,
             reply,
-            phase: RunPhase::Admission,
+            phase: RunPhase::Starting,
             started: tokio::time::Instant::now(),
             steps: 0,
             operation_id: None,
@@ -738,7 +751,6 @@ impl Owner {
             restored: false,
             next_attempt: Some(first.attempt_id),
             recovery_used: false,
-            permit: None,
             _cancellation: cancellation,
         });
         Ok(())
@@ -747,6 +759,8 @@ impl Owner {
     /// Only bounded, local transitions run here. Returning true requests another fair loop tick.
     pub(super) fn start_ready_work(&mut self) -> Result<bool, ThreadError> {
         self.expire_tool_waiters()?;
+        self.retire_revoked_runtime_tools()?;
+        self.install_ready_bundle();
         if self.primary.is_some() {
             return Ok(false);
         }
@@ -771,46 +785,7 @@ impl Owner {
         };
         let phase = std::mem::replace(&mut run.phase, RunPhase::Preparing);
         match phase {
-            RunPhase::Admission => {
-                let gate = self.turn_admission.clone();
-                let cancellation = run.input.cancellation.clone();
-                run.phase = RunPhase::Starting;
-                if let Some(gate) = gate {
-                    if let Some(permit) = gate.try_admit() {
-                        run.permit = Some(permit);
-                    } else {
-                        self.turn_admission_waiting = true;
-                        self.note_execution_phase(ExecutionPhase::AwaitingAdmission);
-                        self.primary = Some(PrimaryWork::new(false, async move {
-                            let mut transitions = gate.subscribe();
-                            let result = loop {
-                                if cancellation.is_cancelled() {
-                                    break Err(ThreadError::Cancelled);
-                                }
-                                if let Some(permit) = gate.try_admit() {
-                                    break Ok(permit);
-                                }
-                                tokio::select! {
-                                    () = cancellation.cancelled() => break Err(ThreadError::Cancelled),
-                                    changed = transitions.changed() => if !changed { break Err(ThreadError::Closed); },
-                                }
-                            };
-                            PrimaryCompletion::Admission(result)
-                        }));
-                    }
-                } else {
-                    run.permit = Some(admission::TurnAdmissionPermit::ungated());
-                }
-                self.active = Some(run);
-                Ok(self.primary.is_none())
-            }
             RunPhase::Starting => {
-                if let Some(update) = self.pending_model_update.take() {
-                    run.phase = RunPhase::Starting;
-                    self.active = Some(run);
-                    self.start_model_replacement(update.factory.clone(), Some(update), None)?;
-                    return Ok(false);
-                }
                 if !matches!(run.reply, RunReply::Step(_) | RunReply::Compact(_)) {
                     let mut turns = self.state.turns.to_vec();
                     turns.push(TurnRecord {
@@ -980,13 +955,6 @@ impl Owner {
         completion: PrimaryCompletion,
     ) -> Result<(), ThreadError> {
         match completion {
-            PrimaryCompletion::Admission(result) => {
-                self.turn_admission_waiting = false;
-                self.active
-                    .as_mut()
-                    .ok_or(ThreadError::InvalidIdentity)?
-                    .permit = Some(result?);
-            }
             PrimaryCompletion::Preparation {
                 mut step,
                 completion,
@@ -1061,27 +1029,6 @@ impl Owner {
                 let result = self.reduce_model_result(&step, exit);
                 self.finish_step(&step.input.attempt_id);
                 self.accept_step_result(step, result)?;
-            }
-            PrimaryCompletion::Replaced {
-                model,
-                result,
-                update,
-                reply,
-            } => {
-                self.model = model;
-                if let Some(update) = update {
-                    if result.is_ok() {
-                        self.model_identity = Some(update.identity);
-                        self.context_preparation = update.preparation;
-                    } else if self.pending_model_update.is_none() {
-                        self.pending_model_update = Some(update);
-                    }
-                }
-                if let Some(reply) = reply {
-                    let _ = reply.send(result);
-                } else {
-                    result?;
-                }
             }
             PrimaryCompletion::ExecutionsJoined(executions) => self.executions = executions,
             PrimaryCompletion::ClosedModel { model, result } => {
@@ -1298,43 +1245,6 @@ impl Owner {
                 let _ = reply.send(result.map(|_| self.state.context.clone()));
             }
         }
-        Ok(())
-    }
-
-    pub(super) fn start_model_replacement(
-        &mut self,
-        factory: crate::model::ModelFactory,
-        update: Option<DeferredModelUpdate>,
-        reply: Option<oneshot::Sender<Result<(), ThreadError>>>,
-    ) -> Result<(), ThreadError> {
-        let previous = self.model.take();
-        self.retry_plan = None;
-        self.primary = Some(PrimaryWork::new(false, async move {
-            let mut model = previous;
-            let result = async {
-                if let Some(previous) = model.as_mut() {
-                    previous
-                        .close()
-                        .await
-                        .map_err(|e| ThreadError::Model(Arc::new(e)))?;
-                }
-                model = None;
-                model = Some(
-                    factory
-                        .open_session()
-                        .await
-                        .map_err(|e| ThreadError::Model(Arc::new(e)))?,
-                );
-                Ok(())
-            }
-            .await;
-            PrimaryCompletion::Replaced {
-                model,
-                result,
-                update,
-                reply,
-            }
-        }));
         Ok(())
     }
 }

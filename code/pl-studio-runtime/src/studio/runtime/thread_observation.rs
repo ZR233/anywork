@@ -2063,7 +2063,7 @@ async fn run(
     state: Arc<WorkerState>,
     recovered_through: u64,
     feed: Arc<ThreadLiveFeed>,
-    mut catalogs: broadcast::Receiver<crate::config::CatalogChange>,
+    mut catalogs: broadcast::Receiver<()>,
 ) {
     use futures::FutureExt;
     let mut updates = thread.subscribe();
@@ -2101,24 +2101,31 @@ async fn run(
     let mut projected = None;
     loop {
         let issue_id = format!("tool-cleanup:{}", worker.id);
-        let issue = (!current.tool_cleanup.failures.is_empty()).then(|| {
-            crate::studio::StudioRecoveryIssue {
-                id: issue_id.clone(),
-                scope: crate::studio::StudioRecoveryIssueScope::Thread,
-                category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
-                impact: crate::studio::StudioRecoveryImpact::Advisory,
-                action: crate::studio::StudioRecoveryIssueAction::Retry,
-                workspace_id: None,
-                thread_id: Some(worker.id.clone()),
-                worktree: None,
-                message: current
-                    .tool_cleanup
-                    .failures
-                    .iter()
-                    .map(|failure| format!("{}: {}", failure.tool_id, failure.error))
-                    .collect::<Vec<_>>()
-                    .join("; "),
-            }
+        let issue = (!current.tool_cleanup.failures.is_empty()
+            || current.runtime_bundle.model_cleanup_failure.is_some())
+        .then(|| crate::studio::StudioRecoveryIssue {
+            id: issue_id.clone(),
+            scope: crate::studio::StudioRecoveryIssueScope::Thread,
+            category: crate::studio::StudioRecoveryIssueCategory::ToolCatalog,
+            impact: crate::studio::StudioRecoveryImpact::Advisory,
+            action: crate::studio::StudioRecoveryIssueAction::Retry,
+            workspace_id: None,
+            thread_id: Some(worker.id.clone()),
+            worktree: None,
+            message: current
+                .tool_cleanup
+                .failures
+                .iter()
+                .map(|failure| format!("{}: {}", failure.tool_id, failure.error))
+                .chain(
+                    current
+                        .runtime_bundle
+                        .model_cleanup_failure
+                        .iter()
+                        .map(|error| format!("Model session: {error}")),
+                )
+                .collect::<Vec<_>>()
+                .join("; "),
         });
         worker.services.recovery.update_if_current(
             &issue_id,

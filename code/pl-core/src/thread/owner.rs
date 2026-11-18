@@ -66,8 +66,15 @@ pub(super) struct Owner {
         std::collections::BTreeMap<String, current::SavedToolProgress>,
     pub(super) final_current:
         watch::Sender<Option<Result<current::ThreadCurrent, Arc<current::CurrentError>>>>,
-    pub(super) model_identity: Option<String>,
-    pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
+    pub(super) runtime_binding: Option<RuntimeBinding>,
+    pub(super) pending_bundle: Option<super::runtime_bundle::PendingBundle>,
+    pub(super) bundle_generation: u64,
+    pub(super) runtime_model_jobs: usize,
+    pub(super) retired_runtime_models: Vec<(DynModelSession, Arc<ModelError>)>,
+    pub(super) revoked_runtime_tools: bool,
+    pub(super) authorization_dirty: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) executing_authorities:
+        std::collections::BTreeMap<String, crate::tool::opaque::ExecutionAuthority>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
     pub(super) context_preparation: Option<context_preparation::ContextPreparer>,
     pub(super) compaction_call: Option<context_preparation::CompactionCall>,
@@ -89,18 +96,6 @@ pub(super) struct Owner {
     pub(super) frozen_turn: Option<String>,
     pub(super) interrupted_turn: Option<String>,
     pub(super) policy: input::ExecutionPolicy,
-    /// Turn admission gate installed for this incarnation, if the host supplied one.
-    ///
-    /// It is read at every Turn admission and never persisted, so a resumed Thread gets the gate its
-    /// assembly named and recovery cannot run a Turn before the gate exists. `None` leaves admission
-    /// ungated, which is what keeps every existing consumer's behavior unchanged.
-    pub(super) turn_admission: Option<admission::TurnAdmissionGate>,
-    /// Whether this owner is currently held at the admission gate.
-    ///
-    /// Live state only: it is what the published snapshot reports as
-    /// [`input::InputExecution::Blocked`], and what keeps an interrupt from treating a
-    /// not-yet-admitted Turn as "nothing to stop".
-    pub(super) turn_admission_waiting: bool,
     pub(super) task_commands: mpsc::WeakSender<mailbox::MailboxCommand>,
     pub(super) background:
         futures::stream::FuturesUnordered<super::tool_execution::ToolExecutionFuture>,
@@ -227,7 +222,7 @@ pub(super) struct Owner {
     pub(super) retry_plan: Option<(String, crate::tool::opaque::ToolPlan)>,
     pub(super) published: ThreadSnapshot,
     pub(super) state: ThreadSnapshot,
-    pub(super) publish: watch::Sender<ThreadSnapshot>,
+    pub(super) publish: watch::Sender<super::subscription::OwnerPublication>,
     pub(super) tools: crate::tool::opaque::ToolManager,
     pub(super) pending: std::collections::BTreeMap<String, PendingCall>,
 }
@@ -509,16 +504,6 @@ impl Owner {
                     let _ = reply.send(Err(error));
                 }
             },
-            Command::ReplaceModel(factory, preparation, reply) => {
-                if self.active.is_some() || self.primary.is_some() {
-                    let _ = reply.send(Err(ThreadError::InputRequiresIdle));
-                } else {
-                    self.model_identity = None;
-                    self.pending_model_update = None;
-                    self.context_preparation = preparation;
-                    let _ = self.start_model_replacement(factory, None, Some(reply));
-                }
-            }
             Command::ContextPreparation(preparation, reply) => {
                 self.context_preparation = preparation;
                 let _ = reply.send(Ok(()));
@@ -729,11 +714,6 @@ impl Owner {
             input::InputExecution::Failed {
                 error: error.clone(),
             }
-        } else if self.turn_admission_waiting {
-            // A Turn that is being held at the admission gate is not running and has consumed
-            // nothing, so it is neither `Running` nor `Ready`: the queue is intact and the next
-            // Turn starts as soon as the gate admits it.
-            input::InputExecution::Blocked
         } else if let Some(turn_id) = &self.interrupted_turn {
             input::InputExecution::Interrupting {
                 turn_id: turn_id.clone(),
@@ -773,7 +753,11 @@ impl Owner {
             .observation_revision
             .checked_add(1)
             .expect("Thread observation revision exhausted");
-        self.publish.send_replace(snapshot);
+        self.publish
+            .send_replace(super::subscription::OwnerPublication {
+                snapshot,
+                binding: self.runtime_binding.clone(),
+            });
         if self.current_task_start_ordinal.is_some() {
             self.current_dirty.send_modify(|revision| {
                 *revision = revision

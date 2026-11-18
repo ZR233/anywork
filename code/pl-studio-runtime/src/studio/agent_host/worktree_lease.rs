@@ -8,6 +8,7 @@ mod usage;
 pub(in crate::studio) use identity::migrate_bot_identities;
 pub(in crate::studio) use identity::resolve_physical_workspace;
 pub(crate) use identity::{WorkspaceEndpoint, WorkspaceIdentity};
+pub(crate) use usage::WeakWorkspaceUsageLease;
 pub use usage::WorkspaceUsageLease;
 
 mod migration;
