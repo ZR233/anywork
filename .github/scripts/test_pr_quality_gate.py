@@ -118,6 +118,7 @@ class GateEvaluateTest(unittest.TestCase):
     def test_desktop_and_native_required_jobs_reject_skip_or_cancel(self):
         for path, job in (
             ("code/anywork/integration_test/smoke_test.dart", "linux-desktop"),
+            ("code/pl-model/src/lib.rs", "linux-desktop"),
             ("code/anywork/lib/src/app/studio_host_lifecycle.dart", "linux-native"),
         ):
             plan = plan_from_paths([path], event_name="push")

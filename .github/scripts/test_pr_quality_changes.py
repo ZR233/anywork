@@ -81,10 +81,8 @@ class PlanFromPathsTest(unittest.TestCase):
 
     def test_rust_production_keeps_platform_builds(self):
         for path in (
-            "code/pl-core/src/lib.rs",
             "code/tools/filesystem/src/lib.rs",
-            "code/pl-studio-runtime/assets/skills/office/SKILL.md",
-            "code/pl-studio-runtime/assets/README.md",
+            "code/pl-patch/src/lib.rs",
         ):
             with self.subTest(path=path):
                 plan = self.plan(path)
@@ -95,11 +93,30 @@ class PlanFromPathsTest(unittest.TestCase):
                 })
                 self.assertIn("linux-inputs", plan["required_jobs"])
 
+    def test_rust_desktop_dependencies_require_the_replacement_suite(self):
+        for path in (
+            "code/pl-core/src/thread/runner.rs",
+            "code/pl-model/Cargo.toml",
+            "code/pl-studio-runtime/assets/skills/office/SKILL.md",
+            "code/pl-studio-runtime/assets/README.md",
+        ):
+            for event in ("pull_request", "push", "merge_group"):
+                with self.subTest(path=path, event=event):
+                    plan = self.plan(path, event=event)
+                    self.assertTrue(plan["linux_desktop"])
+                    self.assertFalse(plan["linux_native"])
+                    self.assertIn("linux-desktop", plan["required_jobs"])
+                    self.assertIn("linux-test-inputs", plan["required_jobs"])
+                    self.assertTrue(plan["windows_gui_build"])
+                    self.assertTrue(plan["macos_gui_build"])
+
     def test_rust_tests_and_their_support_need_no_gui_or_bundled_helpers(self):
         for path in (
             "code/pl-core/tests/chat_page.rs",
             "code/pl-core/tests/support/mod.rs",
             "code/pl-core/tests/fixtures/history.json",
+            "code/pl-model/tests/protocol_wire.rs",
+            "code/pl-studio-runtime/tests/runtime_live_tool_skill.rs",
             "code/tools/filesystem/tests/mutation.rs",
             "code/tools/fixtures/downstream/tests/media_execution.rs",
             "code/anywork/rust/tests/chat.rs",
@@ -120,6 +137,7 @@ class PlanFromPathsTest(unittest.TestCase):
             "code/anywork/rust/src/api/studio/handlers/chat.rs",
         ):
             self.assertTrue(self.plan(path)["windows_gui_build"])
+            self.assertTrue(self.plan(path)["linux_desktop"])
 
     def test_ui_tests_and_adapter_tests_only_need_the_app_suite(self):
         for path in (
@@ -251,6 +269,8 @@ class PlanFromPathsTest(unittest.TestCase):
         plan = self.plan(*paths)
         self.assertEqual(self.enabled(plan), expected)
         self.assertEqual(len(plan["required_jobs"]), len(set(plan["required_jobs"])))
+        self.assertTrue(plan["linux_desktop"])
+        self.assertFalse(plan["linux_native"])
 
     def test_shared_ci_fixtures_and_unknown_inputs_remain_full(self):
         for paths in (
@@ -282,6 +302,17 @@ class PlanFromPathsTest(unittest.TestCase):
 
 
 class ChangedPathsTest(unittest.TestCase):
+    def test_rust_production_moves_keep_the_replacement_suite(self):
+        source = "code/pl-model/src/removed_session.rs"
+        test = "code/pl-model/tests/session.rs"
+        for before, after in ((source, test), (test, source)):
+            with self.subTest(before=before, after=after):
+                paths = parse_name_status(["R100", before, after])
+                plan = plan_from_paths(paths, event_name="pull_request")
+                self.assertTrue(plan["linux_desktop"])
+                self.assertFalse(plan["linux_native"])
+                self.assertIn("linux-desktop", plan["required_jobs"])
+
     def test_deleted_or_moved_app_source_still_requires_generation(self):
         source = "code/anywork/lib/src/features/removed_view_model.dart"
         for diff in (

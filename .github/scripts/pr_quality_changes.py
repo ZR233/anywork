@@ -109,6 +109,13 @@ _RUST_PREFIXES = (
     "code/anywork/lib/src/rust/",
 )
 
+# Desktop journeys own the normal flows removed from these crates' Rust tests.
+_DESKTOP_RUST_PREFIXES = (
+    "code/pl-core/",
+    "code/pl-model/",
+    "code/pl-studio-runtime/",
+)
+
 _BRIDGE_EXACT = frozenset(
     {
         "code/anywork/lib/src/app/app_composition.dart",
@@ -202,6 +209,8 @@ def classify_path(path: str) -> frozenset[str]:
             tags.add("pure_test")
         else:
             tags.add("rust_production")
+            if _has_prefix(path, _DESKTOP_RUST_PREFIXES):
+                tags.add("desktop")
     if not pure_test and (path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES)):
         tags.add("bridge")
     if _has_prefix(path, ("code/anywork/", "code/anywork_previews/")) and not path.startswith(
@@ -295,6 +304,8 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         if "rust_production" in tags:
             flags["windows_gui_build"] = True
             flags["macos_gui_build"] = True
+    if "desktop" in tags:
+        flags["linux_desktop"] = True
     if "flutter" in tags:
         flags["flutter_checks"] = True
     if "client" in tags:

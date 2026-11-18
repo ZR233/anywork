@@ -448,7 +448,7 @@ async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes()
 }
 
 #[tokio::test]
-async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
+async fn provider_reported_usage_is_committed_to_core_effects() {
     let mut events = responses_text("cross-crate answer", "thread-response", "core-fixture");
     events.last_mut().unwrap()["response"]["usage"]["total_tokens"] = json!(16);
     let fixture = FixtureServer::start(vec![Step::prompt(
@@ -470,7 +470,7 @@ async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
         .await
         .unwrap();
     let thread = ThreadHandle::start("fixture-thread".into(), session).unwrap();
-    let completion = thread
+    thread
         .run_turn(TurnInput {
             turn_id: "wire-turn".into(),
             attempt_prefix: "wire-attempt".into(),
@@ -482,20 +482,7 @@ async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
         })
         .await
         .unwrap();
-    assert_eq!(completion.outcome, TurnOutcome::Completed);
-    assert_eq!(completion.model_steps, 1);
-    assert!(thread.snapshot().context.records.iter().any(|record| {
-        record.source == ContextSource::Assistant
-            && record.content.contains(&ContextContent::Text {
-                text: Arc::from("cross-crate answer"),
-            })
-    }));
     let effects = thread.effects().await.unwrap();
-    assert!(effects.iter().any(|effect| {
-        effect.turn.as_ref().is_some_and(|turn| {
-            turn.turn_id == "wire-turn" && turn.state == TurnState::Finished(TurnOutcome::Completed)
-        })
-    }));
     assert!(effects.iter().any(|effect| {
         matches!(
             effect.attempt.as_ref().map(|attempt| &attempt.outcome),
@@ -503,9 +490,7 @@ async fn core_thread_runs_provider_backed_turn_and_commits_effects() {
         )
     }));
     thread.close().await.unwrap();
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].path, "/v1/responses");
+    fixture.finish().await.unwrap();
 }
 
 #[tokio::test]

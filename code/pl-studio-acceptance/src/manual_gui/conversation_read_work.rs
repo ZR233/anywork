@@ -630,28 +630,3 @@ fn current_demand() -> ReadDemand {
         max_bytes: CHAT_BATCH_MAX_BYTES.min(64 * 1024),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn closed_seed_reuses_one_state_baseline_across_turns_and_counts_display_blocks() -> Result<()>
-    {
-        let temp = tempfile::tempdir()?;
-        let home = temp.path().join("home");
-        let working = temp.path().join("working");
-        fs::create_dir_all(&working)?;
-        let cases = seed_closed_home(&home, &working)?;
-        ensure!(cases.len() == THREAD_COUNT, "missing seeded read cases");
-        ensure!(
-            cases.iter().all(|case| case.main_items > 40),
-            "closed display history must require bounded pagination"
-        );
-        ensure!(
-            cases[0].switch_thread_id.as_deref() == Some(cases[1].thread_id.as_str()),
-            "cold switch case must retain the other real Thread identity"
-        );
-        Ok(())
-    }
-}
