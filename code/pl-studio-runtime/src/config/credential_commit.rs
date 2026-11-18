@@ -3,7 +3,7 @@
 use super::{ConfigStore, StudioConfig};
 use crate::{AccountAuthenticationIntent, AccountAuthenticationMethod, ChatGptAccountInfo};
 use crate::{PureError, Result};
-use pl_model::protocol::chatgpt::ChatGptCredentialRecord;
+use pl_model_auth::chatgpt::ChatGptCredentialRecord;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1117,7 +1117,7 @@ mod tests {
         }
         store.save(&baseline)?;
         let mut record = record("windows-codex-registration");
-        record.account.client_id = pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into();
+        record.account.client_id = pl_model_auth::chatgpt::CODEX_CLIENT_ID.into();
         record.account.codex = Some(crate::CodexAccountInfo {
             account_id: "verified-workspace".into(),
             plan_type: Some("plus".into()),
@@ -1135,7 +1135,7 @@ mod tests {
             .unwrap()
             .account;
         account.authentication = AccountAuthenticationMethod::ChatGpt;
-        account.base_url = pl_model::protocol::chatgpt::CODEX_RESOURCE.into();
+        account.base_url = pl_model_auth::chatgpt::CODEX_RESOURCE.into();
         account.bearer_token_env = None;
         account.chatgpt_account = Some(record.account.clone());
         account.chatgpt_credentials = Some(record.clone());
@@ -1225,7 +1225,7 @@ mod tests {
         assert_eq!(current(&fixture).registration_id, "R1");
         assert_eq!(
             old_session.access_token().await,
-            Err(pl_model::protocol::chatgpt::ChatGptAuthError::Revoked)
+            Err(pl_model_auth::chatgpt::ChatGptAuthError::Revoked)
         );
     }
 
@@ -1358,7 +1358,7 @@ mod tests {
         );
         assert_eq!(
             old_session.access_token().await,
-            Err(pl_model::protocol::chatgpt::ChatGptAuthError::RecoveryRequired)
+            Err(pl_model_auth::chatgpt::ChatGptAuthError::RecoveryRequired)
         );
         let reopened = ConfigStore::with_shared_credentials(
             fixture.a.paths().clone(),
@@ -1721,7 +1721,7 @@ mod tests {
 
     #[tokio::test]
     async fn visible_terminal_requires_durable_reconfirmation_before_any_marker_release() {
-        use pl_model::protocol::chatgpt::ChatGptAuthError;
+        use pl_model_auth::chatgpt::ChatGptAuthError;
         for phase in [Phase::Committed, Phase::RolledBack] {
             let fixture = fixture_with_owner_root(true);
             let old_b = fixture.b.load().unwrap();
@@ -1914,7 +1914,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_release_directory_must_be_confirmed_before_any_recovery_material_is_destroyed() {
-        use pl_model::protocol::chatgpt::ChatGptAuthError;
+        use pl_model_auth::chatgpt::ChatGptAuthError;
         for phase in [Phase::Staged, Phase::Committed, Phase::RolledBack] {
             for home_local in [false, true] {
                 let fixture = multi_entry_fixture();

@@ -653,12 +653,11 @@ mod chatgpt_tests {
             .post(url)
             .headers(headers(Some(SYNTHETIC_BEARER), None, &HashMap::new()).unwrap())
             .json(&json!({"input":[],"store":false,"stream":true}));
-        let (events, _receiver) = tokio::sync::broadcast::channel(16);
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let raw = sse(request, policy).await.map_err(|source| {
                 crate::completion::CompletionFailure::new(source, Box::default())
             })?;
-            let decoded = crate::runtime::openai::OpenAiBase.decode_stream(
+            let decoded = crate::runtime::openai::decode_stream(
                 crate::protocol::WireApi::Responses,
                 raw,
                 None,
@@ -666,9 +665,8 @@ mod chatgpt_tests {
             collect_completion_event_stream_with_idle_timeout(
                 decoded,
                 StreamCollectContext {
-                    event_tx: &events,
                     trace: None,
-                    trace_sink: None,
+
                     cancellation: None,
                     model_observation: None,
                     on_stream_end: &|| {},

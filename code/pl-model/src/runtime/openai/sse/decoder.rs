@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::trace::TraceTextChannel;
+use crate::completion::ModelTextChannel;
 
 use crate::completion::stream::event::{ModelBlockKind, ModelStreamEvent, ProviderBlockIdentity};
 use crate::runtime::openai::VisibleOutputProtocol;
@@ -25,7 +25,7 @@ pub(crate) struct OpenAiStreamDecoder {
     chat_finished: bool,
     chat_response_id: Option<String>,
     terminal_received: bool,
-    text_channels: HashMap<String, TraceTextChannel>,
+    text_channels: HashMap<String, ModelTextChannel>,
     open_text_blocks: HashMap<(String, u32), OpenTextBlock>,
     open_reasoning_blocks: HashMap<String, String>,
     next_text_block_ordinal: HashMap<(String, u32), u64>,
@@ -43,7 +43,7 @@ pub(crate) struct OpenAiStreamDecoder {
 #[derive(Debug, Clone)]
 struct OpenTextBlock {
     id: String,
-    channel: TraceTextChannel,
+    channel: ModelTextChannel,
     provider: Option<ProviderBlockIdentity>,
 }
 
@@ -215,7 +215,7 @@ impl OpenAiStreamDecoder {
                     .text_channels
                     .get(&item_id)
                     .copied()
-                    .unwrap_or(TraceTextChannel::Final);
+                    .unwrap_or(ModelTextChannel::Final);
                 let identity = ProviderBlockIdentity {
                     item_id: item_id.clone(),
                     content_index,
@@ -237,7 +237,7 @@ impl OpenAiStreamDecoder {
                     .text_channels
                     .get(&item_id)
                     .copied()
-                    .unwrap_or(TraceTextChannel::Final);
+                    .unwrap_or(ModelTextChannel::Final);
                 let identity = ProviderBlockIdentity {
                     item_id: item_id.clone(),
                     content_index: event.content_index.unwrap_or(0).max(0) as u32,
@@ -619,7 +619,7 @@ impl OpenAiStreamDecoder {
         &mut self,
         item_id: &str,
         content_index: u32,
-        channel: TraceTextChannel,
+        channel: ModelTextChannel,
         provider: Option<ProviderBlockIdentity>,
     ) -> (String, Vec<ModelStreamEvent>) {
         let key = (item_id.to_owned(), content_index);
@@ -776,8 +776,8 @@ mod member_tests {
     #[test]
     fn native_content_part_added_opens_once_before_delta_and_done() {
         for (phase, channel) in [
-            ("commentary", TraceTextChannel::Commentary),
-            ("final_answer", TraceTextChannel::Final),
+            ("commentary", ModelTextChannel::Commentary),
+            ("final_answer", ModelTextChannel::Final),
         ] {
             for initial_text in ["", "answer"] {
                 for item_id in [Some("message"), None, Some("")] {

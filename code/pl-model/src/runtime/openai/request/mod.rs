@@ -3,10 +3,10 @@ use pl_protocol::{PureError, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::OpenAiEndpoint;
 use crate::completion::CompletionRequest;
 use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
 use crate::protocol::InstructionWireRole;
+use crate::protocol::WireApi;
 
 mod body;
 mod chat;
@@ -28,7 +28,7 @@ pub(crate) enum OpenAiRequestBody {
 }
 
 impl OpenAiRequestBody {
-    /// Model and native overlays cannot replace the host's resolved cache affinity.
+    /// Model overrides and compaction material cannot replace the host's resolved cache affinity.
     pub(crate) fn validate_prompt_cache_key(&self, expected: Option<&str>) -> Result<()> {
         let body = match self {
             Self::Responses(body) | Self::Chat(body) => body,
@@ -36,22 +36,12 @@ impl OpenAiRequestBody {
         let expected = expected.map(|key| Value::String(key.to_owned()));
         if body.get("prompt_cache_key") != expected.as_ref() {
             return Err(protocol_error(
-                "prompt_cache_key must match the runtime-resolved PromptCacheScope; model body, parameter wire and native options cannot override it",
+                "prompt_cache_key must match the runtime-resolved PromptCacheScope; model body and parameter wire cannot override it",
             ));
         }
         Ok(())
     }
 
-    pub(crate) fn validate_chatgpt(&self, original: &Self) -> Result<()> {
-        match (self, original) {
-            (Self::Responses(body), Self::Responses(original)) => {
-                chatgpt::validate_body(body, original)
-            }
-            _ => Err(PureError::ConfigError(
-                "ChatGPT requires Responses HTTP".into(),
-            )),
-        }
-    }
     pub(crate) fn sent_model(&self) -> Result<String> {
         let body = match self {
             Self::Responses(body) | Self::Chat(body) => body,
@@ -68,7 +58,7 @@ impl OpenAiRequestBody {
             }
         }
     }
-    pub(crate) fn apply_native_options(&mut self, options: &Map<String, Value>) {
+    pub(crate) fn apply_compaction_body(&mut self, options: &Map<String, Value>) {
         match self {
             Self::Responses(body) | Self::Chat(body) => body::merge_base_body(body, options),
         }
@@ -77,7 +67,7 @@ impl OpenAiRequestBody {
     /// Rejects any attempt to re-open the removed top-level `instructions` channel.
     ///
     /// The trusted instruction body now travels exclusively through the typed `SystemPrompt`
-    /// interface; model fixed bodies, parameter wire and native options must not inject the
+    /// interface; model fixed bodies and parameter wire must not inject the
     /// reserved `instructions` field back into the wire body. The caller's configuration is kept
     /// and the conflict is surfaced as a protocol error before any network I/O.
     pub(crate) fn reject_reserved_instruction_channel(&self) -> Result<()> {
@@ -86,7 +76,7 @@ impl OpenAiRequestBody {
         };
         if body.contains_key("instructions") {
             return Err(protocol_error(
-                "model body, parameter wire or native options must not inject the reserved top-level `instructions` field; use the typed SystemPrompt interface",
+                "model body or parameter wire must not inject the reserved top-level `instructions` field; use the typed SystemPrompt interface",
             ));
         }
         Ok(())
@@ -103,7 +93,7 @@ pub(crate) fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<Str
 }
 
 pub(crate) fn build_openai_request_body(
-    endpoint: OpenAiEndpoint,
+    endpoint: WireApi,
     instruction_role: InstructionWireRole,
     request: &CompletionRequest,
     model: &ModelInfo,
@@ -114,7 +104,7 @@ pub(crate) fn build_openai_request_body(
     let messages = messages_after_last_compaction(&request.input);
     validate_tool_history(&messages)?;
     match endpoint {
-        OpenAiEndpoint::Responses => {
+        WireApi::Responses => {
             let crate::model::ModelProtocolOptions::Responses(options) =
                 &model.binding.request.protocol
             else {
@@ -144,7 +134,7 @@ pub(crate) fn build_openai_request_body(
             }
             Ok(OpenAiRequestBody::Responses(body))
         }
-        OpenAiEndpoint::ChatCompletions => {
+        WireApi::ChatCompletions => {
             let mut body = to_object_map(&ChatRequestBody::from_request(
                 request,
                 model,

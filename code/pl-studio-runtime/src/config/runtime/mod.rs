@@ -690,8 +690,8 @@ impl ConfigRuntime {
     pub(crate) fn chatgpt_session(
         &self,
         id: &str,
-        record: &pl_model::protocol::chatgpt::ChatGptCredentialRecord,
-    ) -> Result<pl_model::protocol::chatgpt::ChatGptSession> {
+        record: &pl_model_auth::chatgpt::ChatGptCredentialRecord,
+    ) -> Result<pl_model_auth::chatgpt::ChatGptSession> {
         self.store.chatgpt_session(id, record)
     }
 

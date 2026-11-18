@@ -414,7 +414,7 @@ impl ConfigStore {
                     .ok_or_else(|| {
                         PureError::ConfigError("ChatGPT credential is missing".into())
                     })?;
-                let record: pl_model::protocol::chatgpt::ChatGptCredentialRecord =
+                let record: pl_model_auth::chatgpt::ChatGptCredentialRecord =
                     serde_json::from_str(&payload).map_err(|_| {
                         PureError::ConfigError("ChatGPT credential is invalid".into())
                     })?;
@@ -431,10 +431,8 @@ impl ConfigStore {
             } else {
                 let secret = self.credentials.load(account_id.as_str())?;
                 if secret.as_deref().is_some_and(|payload| {
-                    serde_json::from_str::<pl_model::protocol::chatgpt::ChatGptCredentialRecord>(
-                        payload,
-                    )
-                    .is_ok()
+                    serde_json::from_str::<pl_model_auth::chatgpt::ChatGptCredentialRecord>(payload)
+                        .is_ok()
                 }) {
                     // A crash or external inconsistency between config and keyring must fail
                     // closed, never reinterpret an OAuth record as an API Authorization value.
@@ -695,7 +693,7 @@ mod tests {
     #[test]
     fn chatgpt_save_rolls_back_original_credentials_and_preserves_refresh_markers() {
         use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
-        use pl_model::protocol::chatgpt::ChatGptCredentialRecord;
+        use pl_model_auth::chatgpt::ChatGptCredentialRecord;
         let (_directory, store) = isolated_store();
         let mut initial = StudioConfig::default_config().unwrap();
         let id = pl_model::config::AccountId::new("transaction-fixture").unwrap();

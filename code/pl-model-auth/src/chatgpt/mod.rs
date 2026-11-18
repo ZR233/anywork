@@ -1,5 +1,7 @@
 //! Codex ChatGPT authentication and existing SIWC sessions. Secrets stay in Rust.
 mod authorization;
+mod identity;
+pub use identity::{ChatGptAccountInfo, CodexAccountInfo};
 mod http;
 mod session;
 mod usage;

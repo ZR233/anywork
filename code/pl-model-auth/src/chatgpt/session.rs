@@ -2,7 +2,7 @@ use super::{
     CHATGPT_ISSUER, CHATGPT_RESOURCE, CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError,
     DIRECT_SCOPE, TokenResponse, exchange, now, oauth_client,
 };
-use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
+use super::{ChatGptAccountInfo, CodexAccountInfo};
 use oauth2::TokenResponse as _;
 use std::path::PathBuf;
 use std::sync::{
@@ -443,65 +443,6 @@ mod tests {
         })
     }
 
-    #[test]
-    fn chatgpt_endpoint_restricts_resource_transport_capabilities_and_authorization_owner() {
-        let directory = tempfile::tempdir().unwrap();
-        let session =
-            ChatGptSession::new(&record(), storage(0), directory.path().join("account.lock"))
-                .unwrap();
-        let mut account = crate::config::builtin_account_catalog()
-            .unwrap()
-            .templates
-            .into_iter()
-            .find(|template| template.id.as_str() == "openai")
-            .unwrap()
-            .account;
-        account.authentication = crate::config::AccountAuthenticationMethod::ChatGpt;
-        account.chatgpt_account = Some(record().account);
-        account.chatgpt_session = Some(session);
-        account.bearer_token_env = None;
-        account.http_headers = Some(
-            [("authorization".into(), "Bearer legacy-api-key".into())]
-                .into_iter()
-                .collect(),
-        );
-        let endpoint = account.to_endpoint().unwrap();
-        let headers = endpoint
-            .request_headers(
-                Some("selected-oauth-token"),
-                &[("Authorization".into(), "Bearer model-override".into())]
-                    .into_iter()
-                    .collect(),
-            )
-            .unwrap();
-        assert_eq!(
-            headers[reqwest::header::AUTHORIZATION],
-            "Bearer selected-oauth-token"
-        );
-        let capabilities = account.service_capabilities().unwrap();
-        assert!(capabilities.image_generation.is_none());
-        assert!(capabilities.web_search.standalone.is_none());
-        assert!(!capabilities.remote_compaction);
-        assert_eq!(capabilities.files, Default::default());
-        let models = account.effective_catalog(None).unwrap();
-        assert!(!models.is_empty());
-        for entry in models {
-            assert_eq!(
-                entry.model.binding.transport.protocol,
-                crate::protocol::WireApi::Responses
-            );
-            assert_eq!(
-                entry.model.binding.transport.supported_connection_modes,
-                [crate::protocol::ConnectionMode::Http]
-            );
-            assert_eq!(
-                entry.model.binding.transport.default_connection_mode,
-                crate::protocol::ConnectionMode::Http
-            );
-        }
-        account.base_url = "https://custom.example/v1".into();
-        assert!(account.to_endpoint().is_err());
-    }
     fn refresh_http(calls: &AtomicUsize, request: oauth2::HttpRequest) -> oauth2::HttpResponse {
         calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(request.uri().to_string(), super::super::TOKEN);

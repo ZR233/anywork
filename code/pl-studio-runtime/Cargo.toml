@@ -18,6 +18,7 @@ pl-provider-fixture = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dependencies]
+pl-model-auth = { workspace = true }
 pl-studio-update = { workspace = true }
 pl-studio-statistics = { workspace = true }
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }

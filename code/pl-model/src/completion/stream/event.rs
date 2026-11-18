@@ -1,7 +1,7 @@
 use crate::completion::CompletionPresentationItem;
+use crate::completion::ModelTextChannel;
 use crate::completion::{ResponsesContextItem, ToolCallCaller};
 use crate::model::UsageReport;
-use crate::trace::TraceTextChannel;
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral Web Search 活动。
@@ -140,7 +140,7 @@ pub enum ModelStreamEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelBlockKind {
-    Text { channel: TraceTextChannel },
+    Text { channel: ModelTextChannel },
     ReasoningSummary,
 }
 
@@ -230,7 +230,7 @@ impl ModelStreamEvent {
 
     pub fn text_started(
         id: String,
-        channel: TraceTextChannel,
+        channel: ModelTextChannel,
         provider: Option<ProviderBlockIdentity>,
     ) -> Self {
         Self::BlockOpened {
@@ -243,7 +243,7 @@ impl ModelStreamEvent {
 
     pub fn text_delta(
         id: String,
-        channel: TraceTextChannel,
+        channel: ModelTextChannel,
         delta: String,
         provider: Option<ProviderBlockIdentity>,
     ) -> Self {
@@ -259,7 +259,7 @@ impl ModelStreamEvent {
 
     pub fn text_completed(
         id: String,
-        channel: TraceTextChannel,
+        channel: ModelTextChannel,
         authoritative_text: Option<String>,
         provider: Option<ProviderBlockIdentity>,
     ) -> Self {

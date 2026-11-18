@@ -118,11 +118,11 @@ pub use pl_model::completion::{
 pub use pl_model::config::{
     ACCOUNT_CATALOG_SCHEMA_VERSION, AccountAuthenticationMethod, AccountCatalogSnapshot,
     AccountServiceCapabilitiesDescriptor, AccountTemplateDescriptor, AgentRoleId, BillingKind,
-    ChatGptAccountInfo, CodexAccountInfo, ConnectionModeDescriptor, CredentialDescriptorDto,
-    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor, ModelInputCapabilityDto,
-    ModelInputSourceDto, ModelModalityDto, ModelOriginDto, ModelReasoningDescriptor,
-    ModelSelectionGuideDto, ModelSelectionMeasurementDto, ModelSelectionSourceDto,
-    ModelSelectionSourceKindDto, ModelTransportDescriptor, WebSearchServiceCapabilitiesDescriptor,
+    ConnectionModeDescriptor, CredentialDescriptorDto, ModelCapabilitiesDto,
+    ModelCatalogDescriptor, ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
+    ModelModalityDto, ModelOriginDto, ModelReasoningDescriptor, ModelSelectionGuideDto,
+    ModelSelectionMeasurementDto, ModelSelectionSourceDto, ModelSelectionSourceKindDto,
+    ModelTransportDescriptor, WebSearchServiceCapabilitiesDescriptor,
 };
 pub use pl_model::model::{
     AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextResolution,
@@ -134,6 +134,7 @@ pub use pl_model::protocol::HostedWebSearchDialect;
 pub use pl_model::runtime::{
     PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPromptSnapshot,
 };
+pub use pl_model_auth::chatgpt::{ChatGptAccountInfo, CodexAccountInfo};
 pub use pl_protocol::{
     AgentBackendKind, AgentId, AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
     AgentThreadIdentity, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,

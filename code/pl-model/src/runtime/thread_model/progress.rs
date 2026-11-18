@@ -27,11 +27,10 @@ use crate::completion::stream::ToolStream;
 use crate::completion::stream::event::{
     ModelBlockContent, ModelBlockKind, ModelStreamEvent, ProviderBlockIdentity,
 };
-use crate::trace::TraceTextChannel;
 use pl_core::chat::PresentationPart;
 use pl_core::model::{
-    AggregateChannel, ModelParts, ModelProgressSender, ModelTextChannel, ObservedItemKind,
-    ObservedPart, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
+    AggregateChannel, ModelParts, ModelProgressSender, ObservedItemKind, ObservedPart,
+    ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
 };
 use pl_core::usage::UsageStatus;
 use pl_protocol::PureError;
@@ -480,7 +479,7 @@ impl Edit<'_> {
     ) -> Result<(), PureError> {
         let item_kind = match item.kind {
             crate::completion::CompletionPresentationItemKind::Text(channel) => {
-                ObservedItemKind::Text(text_channel(channel))
+                ObservedItemKind::Text(channel)
             }
             crate::completion::CompletionPresentationItemKind::Reasoning => {
                 ObservedItemKind::Reasoning
@@ -643,7 +642,7 @@ pub(crate) fn part_key(identity: &ObservedPartIdentity) -> PartKey {
 
 fn item_kind(kind: ModelBlockKind) -> ObservedItemKind {
     match kind {
-        ModelBlockKind::Text { channel } => ObservedItemKind::Text(text_channel(channel)),
+        ModelBlockKind::Text { channel } => ObservedItemKind::Text(channel),
         ModelBlockKind::ReasoningSummary => ObservedItemKind::Reasoning,
     }
 }
@@ -682,13 +681,5 @@ fn presentation_part(kind: CompletionPresentationPartKind, content_index: u32) -
             PresentationPart::ReasoningText(content_index)
         }
         CompletionPresentationPartKind::SummaryText => PresentationPart::SummaryText(content_index),
-    }
-}
-
-pub(crate) fn text_channel(channel: TraceTextChannel) -> ModelTextChannel {
-    match channel {
-        TraceTextChannel::User => ModelTextChannel::User,
-        TraceTextChannel::Commentary => ModelTextChannel::Commentary,
-        TraceTextChannel::Final => ModelTextChannel::Final,
     }
 }

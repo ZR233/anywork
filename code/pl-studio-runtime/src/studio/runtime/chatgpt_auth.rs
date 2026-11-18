@@ -3,9 +3,7 @@ use super::StudioRuntime;
 use crate::protocol::*;
 use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
 use anyhow::Result;
-use pl_model::protocol::chatgpt::{
-    ChatGptAuthError, ChatGptAuthorization, ChatGptCredentialRecord,
-};
+use pl_model_auth::chatgpt::{ChatGptAuthError, ChatGptAuthorization, ChatGptCredentialRecord};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -610,7 +608,7 @@ mod tests {
         let account = ChatGptAccountInfo {
             issuer: "https://auth.openai.com".into(),
             subject: "fixture-subject".into(),
-            client_id: pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into(),
+            client_id: pl_model_auth::chatgpt::CODEX_CLIENT_ID.into(),
             email: Some("fixture@example.test".into()),
             plan_usage_enabled: true,
             codex: Some(crate::CodexAccountInfo {
@@ -749,7 +747,7 @@ mod tests {
             template_id: Some("openai".into()),
             protocol: pl_model::protocol::ProtocolKind::OpenAi.as_str().into(),
             name: "ChatGPT Fixture".into(),
-            base_url: pl_model::protocol::chatgpt::CODEX_RESOURCE.into(),
+            base_url: pl_model_auth::chatgpt::CODEX_RESOURCE.into(),
             secret: AccountSecretUpdate::Preserve,
             initial_billing_kind: Some(crate::BillingKind::NoCharge),
             custom_models: Vec::new(),
@@ -799,7 +797,7 @@ mod tests {
                     .unwrap()
                     .account;
                 account.authentication = AccountAuthenticationMethod::ChatGpt;
-                account.base_url = pl_model::protocol::chatgpt::CODEX_RESOURCE.into();
+                account.base_url = pl_model_auth::chatgpt::CODEX_RESOURCE.into();
                 account.bearer_token_env = None;
                 account.chatgpt_account = Some(record.account.clone());
                 account.chatgpt_session = Some(
@@ -940,10 +938,7 @@ mod tests {
         .await??;
         let url = url::Url::parse(&authorization_url)?;
         let params: BTreeMap<_, _> = url.query_pairs().into_owned().collect();
-        assert_eq!(
-            params["client_id"],
-            pl_model::protocol::chatgpt::CODEX_CLIENT_ID
-        );
+        assert_eq!(params["client_id"], pl_model_auth::chatgpt::CODEX_CLIENT_ID);
         assert_eq!(params["codex_cli_simplified_flow"], "true");
         assert_eq!(params["originator"], "anywork");
         assert!(!params.contains_key("ext_agent_host_id"));

@@ -1,6 +1,6 @@
 //! Canonical completion 响应与 trace 上下文。
 
-use crate::trace::TraceTextChannel;
+use crate::completion::ModelTextChannel;
 use serde::{Deserialize, Serialize};
 
 use crate::completion::InferenceModelObservation;
@@ -53,7 +53,7 @@ pub struct CompletionPresentationItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "channel", rename_all = "camelCase")]
 pub enum CompletionPresentationItemKind {
-    Text(TraceTextChannel),
+    Text(ModelTextChannel),
     Reasoning,
 }
 

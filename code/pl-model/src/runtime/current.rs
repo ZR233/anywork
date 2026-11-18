@@ -22,8 +22,7 @@ struct Exchange {
 impl CurrentInvocation {
     pub(crate) fn channel(attempt_id: &str) -> (CurrentCaptureHandle, Self) {
         let (handle, receiver) = CurrentCaptureHandle::channel();
-        let empty = StreamCompletionAccumulator::with_model_observation(None, None, None)
-            .current(attempt_id, 0);
+        let empty = StreamCompletionAccumulator::new(None).current(attempt_id, 0);
         (
             handle,
             Self(Arc::new(Mutex::new(Exchange {
@@ -81,8 +80,8 @@ pub(crate) struct CurrentProducer {
 impl CurrentProducer {
     pub(crate) fn begin_generation(&mut self, generation: u32) {
         if self.started {
-            let empty = StreamCompletionAccumulator::with_model_observation(None, None, None)
-                .current(&self.last.attempt_id, generation);
+            let empty =
+                StreamCompletionAccumulator::new(None).current(&self.last.attempt_id, generation);
             self.previous.push(std::mem::replace(&mut self.last, empty));
         } else {
             self.last.generation = generation;

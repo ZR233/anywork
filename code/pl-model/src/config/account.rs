@@ -4,7 +4,7 @@ use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AccountAuthenticationMethod, AccountId, AccountTemplateId, ChatGptAccountInfo, ModelCatalogId,
+    AccountAuthenticationMethod, AccountId, AccountTemplateId, ModelCatalogId,
     builtin_model_catalog,
 };
 use crate::model::ModelInfo;
@@ -12,6 +12,7 @@ use crate::protocol::{
     ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
     ProtocolServiceCapabilities, StandaloneWebSearchDialect, ToolWirePolicy, WireApi,
 };
+use pl_model_auth::chatgpt::ChatGptAccountInfo;
 
 /// Account 模型目录来源。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -149,9 +150,9 @@ pub struct AccountConfig {
     pub chatgpt_account: Option<ChatGptAccountInfo>,
     /// Rust-only pending/loaded protected record. Never serialized into configuration.
     #[serde(skip)]
-    pub chatgpt_credentials: Option<crate::protocol::chatgpt::ChatGptCredentialRecord>,
+    pub chatgpt_credentials: Option<pl_model_auth::chatgpt::ChatGptCredentialRecord>,
     #[serde(skip)]
-    pub chatgpt_session: Option<crate::protocol::chatgpt::ChatGptSession>,
+    pub chatgpt_session: Option<pl_model_auth::chatgpt::ChatGptSession>,
     #[serde(default)]
     pub protocol: crate::protocol::ProtocolKind,
     /// 显式设置的计费类别；`None` 表示未显式配置，由 [`Self::billing_kind`] 按明确模板与
@@ -918,7 +919,7 @@ impl AccountConfig {
     /// 解析不包含模型与 transport 事实的 runtime endpoint。
     pub fn to_endpoint(&self) -> Result<ProtocolEndpoint> {
         if self.authentication == AccountAuthenticationMethod::ChatGpt {
-            crate::protocol::chatgpt::ChatGptSession::validate_account_resource(
+            pl_model_auth::chatgpt::ChatGptSession::validate_account_resource(
                 self.chatgpt_account
                     .as_ref()
                     .ok_or_else(|| PureError::ConfigError("ChatGPT identity is missing".into()))?,
@@ -972,7 +973,7 @@ impl AccountConfig {
                     "invalid ChatGPT account configuration".into(),
                 ));
             }
-            crate::protocol::chatgpt::ChatGptSession::validate_account_resource(
+            pl_model_auth::chatgpt::ChatGptSession::validate_account_resource(
                 self.chatgpt_account
                     .as_ref()
                     .ok_or_else(|| PureError::ConfigError("ChatGPT identity is missing".into()))?,

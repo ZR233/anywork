@@ -1442,7 +1442,7 @@ enabled = false
     #[test]
     fn codex_identity_round_trips_and_schema_29_preserves_siwc_and_api_choices() {
         use crate::{AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo};
-        use pl_model::protocol::chatgpt::{CODEX_CLIENT_ID, CODEX_RESOURCE};
+        use pl_model_auth::chatgpt::{CODEX_CLIENT_ID, CODEX_RESOURCE};
         let mut config = crate::config::StudioConfig::default_config().unwrap();
         let routes = config.mode_model_routes.clone();
         let mut account = pl_model::config::builtin_account_catalog()

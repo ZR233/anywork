@@ -83,9 +83,9 @@ pub(super) fn account_configuration(
             .expect("account edit inserted target");
         account.authentication = AccountAuthenticationMethod::ChatGpt;
         account.base_url = if record.account.codex.is_some() {
-            pl_model::protocol::chatgpt::CODEX_RESOURCE
+            pl_model_auth::chatgpt::CODEX_RESOURCE
         } else {
-            pl_model::protocol::chatgpt::CHATGPT_RESOURCE
+            pl_model_auth::chatgpt::CHATGPT_RESOURCE
         }
         .into();
         account.chatgpt_account = Some(record.account.clone());

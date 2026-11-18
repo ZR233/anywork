@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn chatgpt_cache_follows_the_saved_registration_without_reading_or_hashing_tokens() {
         use crate::{AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo};
-        use pl_model::protocol::chatgpt::{
+        use pl_model_auth::chatgpt::{
             CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError, ChatGptCredentialRecord,
             ChatGptCredentialStorage, ChatGptSession,
         };

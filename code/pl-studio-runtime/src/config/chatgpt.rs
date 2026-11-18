@@ -2,7 +2,7 @@
 use super::ConfigStore;
 use super::credential::CredentialStore;
 use crate::{PureError, Result};
-use pl_model::protocol::chatgpt::{
+use pl_model_auth::chatgpt::{
     ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
 };
 use std::path::PathBuf;

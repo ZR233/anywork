@@ -1,11 +1,11 @@
 //! Completed Chat display segments, derived with the same decoder as live text.
 use super::event::{ModelBlockKind, ModelStreamEvent};
 use super::tagged_output::TaggedVisibleOutputAdapter;
+use crate::completion::ModelTextChannel;
 use crate::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind,
 };
-use crate::trace::TraceTextChannel;
 use pl_protocol::{PureError, Result};
 
 pub(crate) fn completed_chat_presentation(
@@ -24,7 +24,7 @@ pub(crate) fn completed_chat_presentation(
     let mut decoder = TaggedVisibleOutputAdapter::new();
     let events = decoder.adapt(ModelStreamEvent::text_delta(
         "chat-content".into(),
-        TraceTextChannel::Final,
+        ModelTextChannel::Final,
         content.to_owned(),
         None,
     ));

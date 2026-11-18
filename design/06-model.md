@@ -28,9 +28,9 @@
 ### 工具调用身份
 
 完成模块内部的流状态机负责生成稳定的工具调用身份。工具调用一经解码即具备必填的双重标识（条目标识 `item_id` 与调用标识 `call_id`）：
-- **Responses 协议**：直接使用事件携带的 `item_id` 与 `call_id`，两者同时缺失视为协议错误。由于 Responses 可能先下发仅含上游 `item_id` 的 `output_item.added` 事件，在后续增量或完成事件中才补齐独立的 `call_id`，因此同一工具调用一旦通过任一非空标识进入累积器，后续迟到的元数据必须原地升级该累积器并归并至同一未闭合的工具调用中，严禁拆分为第二个工具调用或第二个追踪片段（trace part）。
+- **Responses 协议**：直接使用事件携带的 `item_id` 与 `call_id`，两者同时缺失视为协议错误。由于 Responses 可能先下发仅含上游 `item_id` 的 `output_item.added` 事件，在后续增量或完成事件中才补齐独立的 `call_id`，因此同一工具调用一旦通过任一非空标识进入累积器，后续迟到的元数据必须原地升级该累积器并归并至同一未闭合的工具调用中，严禁拆分为第二个工具调用或第二个模型成员。
 - **Chat Completions 协议**：按分块索引（chunk index）确定性构造流内标识与 `item_id`，并令 `call_id = item_id`。系统不存在可选的 `call_id` 或将两个标识互作回退的归一化路径。
-- **追踪锚点**：追踪记录的工具片段标识以最早稳定的上游条目或运行时工具 ID 为锚点，`call_id` 仅作为元数据写入工具快照，用于后续协议回放与上游工具结果匹配。
+- **观察锚点**：模型成员与 Current 中的工具输入保留最早稳定的上游条目标识及实际接纳的身份升级；原始 `item_id` 与 `call_id` 继续进入回执，用于协议回放和工具结果匹配。
 
 上述是 provider 或单次流内部的身份规则；传给 Core 的调用身份还必须限定在其 attempt 内。模型层保存内部身份与原始 `item_id`、`call_id` 的映射，以内部身份关联 Current 上下文和工具结果，出站 Responses、Chat 等协议仍使用各自要求的原始身份。不同 attempt 的同名 provider 调用不能冲突，也不得改写原生 replay、签名或未知字段。完整 Current、effect original cut 与 schema 25 History 的边界见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。
 
@@ -40,7 +40,7 @@
 
 `pl-model` 实现并依赖 `pl-core` 的模型会话与模型请求契约，而 `pl-core` 不依赖 `pl-model`。模型消息与配置定义在 `pl-model` 的对应领域模块，Studio 产品 DTO 定义在 `pl-studio-runtime`；仅共享基础原语依赖 `pl-protocol`；`pl-trace` 仅只读消费内核观察接口，不充当模型执行门面。厂商协议适配层内部可使用 `reqwest`、`eventsource-stream`、`tokio-tungstenite` 与 `serde` 处理底层网络传输、类型化协议请求及流事件解析，但不得将这些第三方依赖类型暴露给 `pl-core`。
 
-公开 API 按六个稳定领域模块组织：`completion`、`config`、`model`、`protocol`、`runtime`、`trace`。消费方统一通过领域模块前缀访问类型；crate 根模块仅重导出基础错误类型与 `Result`，确保同一公开接口仅有一条规范导入路径。各领域模块精确重导出其公共签名中直接引用的 `pl-protocol` 类型，使消费方仅依赖 `pl-model` 即可完整命名公开签名，同时禁止与公共签名无关的成套镜像转发。
+公开 API 按五个稳定领域模块组织：`completion`、`config`、`model`、`protocol`、`runtime`。认证协议和身份类型由独立的 `pl-model-auth::chatgpt` 提供。消费方统一通过领域模块前缀访问类型；crate 根模块仅重导出基础错误类型与 `Result`，确保同一公开接口仅有一条规范导入路径。各领域模块精确重导出其公共签名中直接引用的 `pl-protocol` 类型，使消费方仅依赖 `pl-model` 即可完整命名公开签名，同时禁止与公共签名无关的成套镜像转发。
 
 工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 显式声明 Direct 与 Programmatic 两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
 
@@ -79,17 +79,18 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 - **流式响应媒体类型**：已验证的官方 ChatGPT 会话路由允许成功 HTTP 响应缺少 `Content-Type`，以兼容官方端点已观察到的无媒体类型 SSE 流；这是该路由的窄传输适配，不是对其他 API 或 Compatible 端点的通用回退。响应头明确存在时仍必须是 `text/event-stream`，空值、非法值或其他媒体类型均按原有有界错误路径处理。缺失头时直接复用现有 SSE framing、事件解码与终态校验，不嗅探正文选择新解析器，不把 JSON、空正文或无完整终态的流当成功，也不新增自动重试。推理成功仍须取得 `response.completed`；`response.failed`、`response.incomplete` 和断流保持原失败语义。
 - **本地工具声明**：采用官方 [`additional_tools` 输入项](https://developers.openai.com/api/docs/guides/tools-tool-search#add-tools-at-a-specific-point-in-the-input)，以 `role: developer` 提供当前步骤冻结的 function/custom `ToolSpec`。该项位于受信指令之后、已有对话输入之前；相同工具计划保持声明顺序与前缀位置稳定。复用现有工具名称、参数 schema、自由格式 grammar、调用身份和调用者限制，不为订阅账号建立新工具目录、重命名工具或补造 namespace 身份。该项只是本次请求投影，不改写 canonical 历史；既有用户、助手、工具结果及不透明回放项的顺序与配对身份不变。
 - **能力准入**：账号服务能力不授予此路由不支持的 hosted coordinator、Responses `tool_search`、图像生成、文件检索、Code Interpreter、原生 computer use 或 hosted MCP/connectors。自动装配只选择该账号实际支持的能力；显式请求不支持的工具、仅能由 programmatic 调用的声明或无法安全回放的原生工具项时，在网络前明确拒绝，不静默删除工具、降为 direct、切换账号或改走 API Key。普通本地工具和子代理仍由原有工具计划与调度器执行；受支持的 hosted web search 仍受模型与账号权限约束。
-- **自动派生值与显式意图**：普通 Thread 不把模型目录中的输出上限自动编码成此路由不接受的 `max_output_tokens`，该元数据仍可用于本地容量判断。调用者显式提供的温度、输出上限及固定请求体、参数映射或 native options 中的禁用字段不得被静默丢弃或改写，须返回指向字段路径的配置／协议错误。既有受支持的推理强度等参数继续按声明编码。
-- **最终校验**：在模型固定 body、参数 wire 与 native options 全部合并之后、请求捕获及网络之前检查最终形状。禁止字段包括 `background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`multi_agent`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user` 和 HTTP `previous_response_id`；字段存在但为 `null` 也不视为省略。错误的 `store`／`stream`、非数组 `input`、显式 `system` 消息、未采用本实现工具投影的声明及不支持的原生工具同样拒绝，不通过删改历史或后置覆盖掩盖冲突。
+- **自动派生值与显式意图**：普通 Thread 不把模型目录中的输出上限自动编码成此路由不接受的 `max_output_tokens`，该元数据仍可用于本地容量判断。调用者显式提供的温度、输出上限及固定请求体、参数映射或 调用级原生压缩材料 中的禁用字段不得被静默丢弃或改写，须返回指向字段路径的配置／协议错误。既有受支持的推理强度等参数继续按声明编码。
+- **最终校验**：在模型固定 body、参数 wire 与 调用级原生压缩材料 全部合并之后、请求捕获及网络之前检查最终形状。禁止字段包括 `background`、`conversation`、`max_output_tokens`、`max_tool_calls`、`metadata`、`moderation`、`multi_agent`、`prompt`、`prompt_cache_retention`、`safety_identifier`、`temperature`、`top_logprobs`、`top_p`、`truncation`、`user` 和 HTTP `previous_response_id`；字段存在但为 `null` 也不视为省略。错误的 `store`／`stream`、非数组 `input`、显式 `system` 消息、未采用本实现工具投影的声明及不支持的原生工具同样拒绝，不通过删改历史或后置覆盖掩盖冲突。
 - **失败诊断**：复用现有错误读取边界与类型化失败，兼容官方直接准入的字符串 `detail` 形状；该文本只是诊断，不从文案推导稳定错误码。保持实际 HTTP 状态、请求 ID、阶段和既有重试分类，缺失值保持未知；400 不因缺少标准 `error` 对象而变成可重试错误。只允许有界且完成统一脱敏的诊断摘要进入错误消息，当前请求可知的凭据值须先剔除，不能仅依赖 API Key 前缀规则保护 OAuth token；未知形状保留安全提示，不回显原始响应体或把未捕获的历史响应补写成已知原因。
 
 ### 协议栈分工与执行器单点所有权
 
-协议栈按「调用编排 → 厂商协议适配 → OpenAI 基础编解码（`OpenAiBase`） → 网络传输」四层分工：
-- **同级封闭厂商变体**：OpenAI、DeepSeek、智谱（Zhipu）、xAI、MiMo 与自定义 OpenAI 兼容协议为同级的封闭枚举变体。各适配器通过组合方式复用 `OpenAiBase` 的 Chat Completions 与 Responses 编解码能力，同时保留各自的请求选项、目录解析规则、原生扩展能力与错误分类边界。所有请求准备、流事件解析与目录同步必须经由所选厂商适配器处理，而非仅给同一执行器套上不同名称的薄包装。
-- **执行器与传输复用**：`ModelRuntime` 独占持有底层执行器与已解析的模型绑定，具体厂商客户端仅借用该执行器。同步窄协议能力使用 `enum_dispatch` 静态分派，异步生命周期仍由唯一执行器管理，不通过宏隐藏 `Future` 的 `Send` 约束。Responses 的 HTTP 与 WebSocket 模式共享请求组装与事件归一化逻辑，Chat Completions 则保留独立的线协议编解码器。HTTP JSON、SSE 与 `multipart` 上传由共享的 `reqwest` 传输层执行，重试预算、取消令牌、连接池、续接状态与最终计量均由单一所有者管理。
+协议栈按调用编排、协议编解码和网络传输分工：
+- **按协议选择真实差异**：`ProtocolKind` 决定受信指令角色和目录方言；`WireApi` 决定 Responses 或 Chat Completions 编解码。目录沿用各厂商的 typed parser，能力与参数由已解析的模型绑定声明。共同请求和事件处理直接调用共享函数，不为厂商建立只做转发的客户端或适配器。
+- **执行与传输复用**：`ModelRuntime` 持有唯一模型绑定及共享 HTTP 客户端，请求准备、单次执行、恢复决策和计时按职责组织。普通完成与原生压缩使用调用级用途材料，共享重试预算、取消收束、续接及计量流程。Responses HTTP 与 WebSocket 共享请求组装和事件归一化，Chat Completions 保留独立 wire codec；HTTP JSON、SSE 与 multipart 继续复用现有传输组件。
+- **流事实与观测**：唯一累积器拥有规范流事实；Core 的实时 progress、可靠成员交付和完整 Current 捕获分别消费其对应边界。模型层不再维护另一份 trace part 账本或广播流。请求 trace 元数据仍用于诊断关联；正文频道复用 Core 的 `ModelTextChannel`，其保存形状不变。
 - **SSE 增量行扫描**：SSE 传输层按完整行向事件解析器交付数据，流式读取时仅增量扫描新到达的网络字节，避免超长 `data:` 行在每个网络分块到达时重复扫描已知前缀。LF、CRLF 与 CR 行尾语义一致，允许 UTF-8 多字节字符跨网络分块；当下游提前停止或取消时，读取器与未完成行缓冲区立即一并释放，不残留后台读取任务。
-- **窄接口与类型化客户端**：统一推理入口仅负责模型生成；各厂商拥有独立的类型化客户端，动态路由返回借用共享执行器的封闭客户端视图。单模型运行时与辅助请求客户端显式提供类型化的厂商访问入口，不使用 `Any` 动态向下转型或包含所有可选操作的大而全 trait。余额查询、套餐配额与远程上下文压缩均为独立能力对象，仅在端点实际支持时暴露；使用 Responses 协议本身不代表支持远程压缩。
+- **统一推理与独立服务**：模型生成通过 `ModelRuntime::complete` 执行；目录发现、文件和图像使用各自的协议 API。认证与套餐配额由选定账号的认证会话提供；原生压缩只在 endpoint 和模型共同声明支持时提供能力对象，Responses 兼容本身不授予压缩能力。
 
 ### 附件准备与文件输入协议
 
@@ -269,7 +270,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 - **稳定指令前缀**：由统一组装的基础指令、智能体角色指令、工作模式指令、平台与全局受信规则以及稳定的技能目录共同构成。工作区与项目文档（如 `AGENTS.md`）保持捕获时的用户/运行时事实归属，不会因为参与前缀复用而提升为系统级受信指令；每轮激活的技能与推荐信息写入当轮规范上下文，不插入历史记录之前的固定前缀。
 - **隐藏工作上下文快照**：模型可见的工作上下文（working context）在内容发生变化时，以隐藏的用户角色（`user-role`）运行事实快照形式追加到对话历史末尾；内容未变化时不重复追加，内容清空时追加显式失效声明。同一轮次内的多次状态更新同样采用只追加（append-only）策略，不原地篡改模型此前已观察到的历史记录，从而保护服务端前缀缓存命中率。上下文压缩时先移除旧的工作上下文快照，再将最新状态注入压缩后的新窗口。证据账本（Evidence Ledger）与会话笔记的完整正文不进入模型上下文。
-- **工具计划线协议指纹**：工具定义由每步冻结的工具计划提供，其与缓存的关联仅通过工具计划的线协议指纹（wire fingerprint）表达——即将实际发送的全部工具规格按模型可见名称排序，并对 JSON Schema 递归采用确定性字段顺序后计算的规范散列值；注册表修订号、分组标识或内部执行器代次均不参与散列。DeepSeek 依赖服务端隐式共同前缀匹配，不发送 `prompt_cache_key` 或断点标记。支持缓存键的 Responses 端点由 `pl-model` 统一消费宿主的 `PromptCacheScope`：每个智能体使用自身稳定 Thread ID，主调用与压缩共用该 Thread 作用域，标题和工具审核使用 Thread 内独立用途。键同时绑定账号、连接隔离、模型与 Wire API；重试、冷恢复、工具或指令修订不主动轮换键。调用方不直接指定线协议键，模型固定 body、参数 wire 和 native options 合并后的字段必须与运行时解析结果一致，否则在请求捕获和网络之前报错。缓存作用域不改变真实 Thread、权限或历史来源；对外缓存键采用 64 字符散列；历史绑定身份保留已有计算和表示，不随对外键格式改变。升级后现有会话的首次缓存访问可能冷启动一次，不迁移或改写历史。
+- **工具计划线协议指纹**：工具定义由每步冻结的工具计划提供，其与缓存的关联仅通过工具计划的线协议指纹（wire fingerprint）表达——即将实际发送的全部工具规格按模型可见名称排序，并对 JSON Schema 递归采用确定性字段顺序后计算的规范散列值；注册表修订号、分组标识或内部执行器代次均不参与散列。DeepSeek 依赖服务端隐式共同前缀匹配，不发送 `prompt_cache_key` 或断点标记。支持缓存键的 Responses 端点由 `pl-model` 统一消费宿主的 `PromptCacheScope`：每个智能体使用自身稳定 Thread ID，主调用与压缩共用该 Thread 作用域，标题和工具审核使用 Thread 内独立用途。键同时绑定账号、连接隔离、模型与 Wire API；重试、冷恢复、工具或指令修订不主动轮换键。调用方不直接指定线协议键，模型固定 body、参数 wire 和调用级原生压缩材料合并后的字段必须与运行时解析结果一致，否则在请求捕获和网络之前报错。缓存作用域不改变真实 Thread、权限或历史来源；对外缓存键采用 64 字符散列；历史绑定身份保留已有计算和表示，不随对外键格式改变。升级后现有会话的首次缓存访问可能冷启动一次，不迁移或改写历史。
 
 缓存能力声明仅控制客户端是否发送显式提示，`none` 不表示关闭服务端自动缓存。通用兼容端点必须显式声明已确认的缓存方言，不从 URL、模型名或账号显示名推断。共同前缀仍须匹配；缓存键不能保证命中率，也不是会话历史或权限隔离机制。OpenAI 的不同模型代际对键的路由及计量语义不同，真实对照应记录完整缓存读写和实际费用，不把发送字段当作收益证明。
 

@@ -1,18 +1,24 @@
-//! The routed facade holds concrete provider clients, without an erased mega-interface.
-use super::{InvocationRunner, ModelInvocationContext};
+//! Frozen model route, client construction and capability access.
+use super::ModelInvocationContext;
 use crate::completion::{
-    CompletionFailure, CompletionRequest, CompletionResponse, ModelCompactionRequest,
-    ModelCompactionResponse,
+    CompletionFailure, CompletionRequest, ModelCompactionRequest, ModelCompactionResponse,
 };
 use crate::model::PricingMode;
 use crate::model::{ModelCapabilities, ModelInfo};
-use crate::protocol::{ProtocolClient, ProtocolEndpoint, WireApi};
+use crate::protocol::{ProtocolEndpoint, WireApi};
+use pl_protocol::PureError;
 use pl_protocol::Result;
+use std::sync::Arc;
 
-/// One resolved model route. Native capabilities remain available through `protocol_client()`.
-#[derive(Debug, Clone)]
+/// One frozen account/model route and its shared HTTP client.
+#[derive(Clone)]
 pub struct ModelRuntime {
-    runner: InvocationRunner,
+    pub(super) account_id: String,
+    pub(super) endpoint: ProtocolEndpoint,
+    pub(super) http_client: reqwest::Client,
+    pub(super) model: ModelInfo,
+    pub(super) clock: Arc<dyn super::InferenceClock>,
+    pub(super) pricing_mode: PricingMode,
     context: crate::model::ModelContextResolution,
 }
 
@@ -38,38 +44,85 @@ impl ModelRuntime {
     /// # Errors
     /// Returns invalid model or endpoint configuration.
     pub fn new_with_account_id(
-        id: impl Into<String>,
+        account_id: impl Into<String>,
         endpoint: ProtocolEndpoint,
         model: ModelInfo,
     ) -> Result<Self> {
+        model
+            .validate()
+            .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        let account_id = account_id.into();
+        if account_id.trim().is_empty() {
+            return Err(PureError::ConfigError(
+                "account id cannot be empty".to_string(),
+            ));
+        }
+        let http_client = reqwest::Client::builder()
+            .retry(reqwest::retry::never())
+            .connect_timeout(super::transport_policy::HTTP_CONNECT_TIMEOUT)
+            .read_timeout(super::transport_policy::HTTP_READ_IDLE_TIMEOUT)
+            .build()
+            .map_err(|e| PureError::HttpError(e.to_string()))?;
+
+        let mut context = model.resolve_context(None);
+        context.auto_compact_limit = None;
         Ok(Self {
-            context: {
-                let mut context = model.resolve_context(None);
-                context.auto_compact_limit = None;
-                context
-            },
-            runner: InvocationRunner::new_with_account_id(id, endpoint, model)?,
+            context,
+            account_id,
+            endpoint,
+            http_client,
+            model,
+            clock: Arc::new(super::clock::SystemInferenceClock),
+            pricing_mode: crate::model::PricingMode::Catalog,
         })
     }
 
-    /// Explicit native access, preserving the concrete vendor types.
-    pub fn protocol_client(&self) -> ProtocolClient<'_> {
-        ProtocolClient::new(self.runner.endpoint(), &self.runner)
-    }
     pub fn model(&self) -> &ModelInfo {
-        self.runner.model()
+        &self.model
     }
     pub fn endpoint(&self) -> &ProtocolEndpoint {
-        self.runner.endpoint()
+        &self.endpoint
     }
     pub fn account_id(&self) -> &str {
-        self.runner.account_id()
+        &self.account_id
     }
     pub fn effective_model_capabilities(&self) -> ModelCapabilities {
-        self.runner.effective_model_capabilities()
+        self.model
+            .capabilities
+            .clone()
+            .with_native_custom_tools(self.endpoint.uses_native_custom_tools())
     }
     pub fn connection_fingerprint(&self) -> u64 {
-        self.runner.connection_fingerprint()
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        let model_info = &self.model;
+        let mut hasher = DefaultHasher::new();
+        self.endpoint.connection_fingerprint().hash(&mut hasher);
+        model_info.model_id.hash(&mut hasher);
+        model_info.binding.transport.protocol.hash(&mut hasher);
+        model_info
+            .binding
+            .transport
+            .default_connection_mode
+            .hash(&mut hasher);
+        model_info
+            .binding
+            .transport
+            .supported_connection_modes
+            .hash(&mut hasher);
+        let mut headers = model_info
+            .binding
+            .request
+            .headers
+            .iter()
+            .collect::<Vec<_>>();
+        headers.sort_by(|left, right| left.0.cmp(right.0));
+        for (name, value) in headers {
+            name.hash(&mut hasher);
+            value.hash(&mut hasher);
+        }
+        let fingerprint = hasher.finish();
+        if fingerprint == 0 { 1 } else { fingerprint }
     }
 
     pub fn context(&self) -> &crate::model::ModelContextResolution {
@@ -78,40 +131,29 @@ impl ModelRuntime {
 
     /// Freezes this account route's monetary accounting choice for subsequent invocations.
     pub fn with_pricing_mode(mut self, mode: PricingMode) -> Self {
-        self.runner.pricing_mode = mode;
+        self.pricing_mode = mode;
         self
     }
 
     /// Uses an explicit clock for reproducible tariff selection and replay simulations.
     pub fn with_clock(mut self, clock: std::sync::Arc<dyn super::InferenceClock>) -> Self {
-        self.runner.clock = clock;
+        self.clock = clock;
         self
-    }
-
-    /// Executes a provider-neutral request.
-    /// # Errors
-    /// Returns a typed failure with any usage observed before termination.
-    pub async fn complete(
-        &self,
-        request: CompletionRequest,
-        context: ModelInvocationContext,
-    ) -> std::result::Result<CompletionResponse, CompletionFailure> {
-        self.runner.complete(request, context).await
     }
 
     /// Returns a real remote compaction capability only when the endpoint declares support.
     pub fn compaction(&self) -> Option<RemoteCompaction<'_>> {
-        let runner = &self.runner;
-        (runner.endpoint().service_capabilities.remote_compaction
-            && runner.model().binding.transport.protocol == WireApi::Responses)
-            .then_some(RemoteCompaction { runner })
+        let runtime = self;
+        (runtime.endpoint().service_capabilities.remote_compaction
+            && runtime.model().binding.transport.protocol == WireApi::Responses)
+            .then_some(RemoteCompaction { runtime })
     }
 }
 
-/// An available remote compaction operation; unsupported adapters never implement it.
+/// Native compaction capability exposed only by endpoints that declare support.
 #[derive(Debug, Clone, Copy)]
 pub struct RemoteCompaction<'a> {
-    runner: &'a InvocationRunner,
+    runtime: &'a ModelRuntime,
 }
 
 /// A validated native replacement and its observed service accounting.
@@ -183,6 +225,6 @@ impl RemoteCompaction<'_> {
         request: ModelCompactionRequest,
         context: ModelInvocationContext,
     ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
-        super::compaction::compact_context(self.runner, request, context).await
+        super::compaction::compact_context(self.runtime, request, context).await
     }
 }

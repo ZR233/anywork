@@ -1,4 +1,4 @@
-use crate::trace::TraceTextChannel;
+use crate::completion::ModelTextChannel;
 
 use crate::completion::visible_text::{VisibleTextEvent, VisibleTextKind, VisibleTextParser};
 
@@ -58,7 +58,7 @@ impl TaggedVisibleOutputAdapter {
                 provider_metadata,
                 provider,
             } => {
-                if channel == TraceTextChannel::Final {
+                if channel == ModelTextChannel::Final {
                     Vec::new()
                 } else {
                     vec![ModelStreamEvent::BlockOpened {
@@ -77,7 +77,7 @@ impl TaggedVisibleOutputAdapter {
                 section_index,
                 provider,
             } => {
-                if channel == TraceTextChannel::Final {
+                if channel == ModelTextChannel::Final {
                     Self::parse_visible_events(
                         &mut self.text_parser,
                         &mut self.active_text_block,
@@ -104,7 +104,7 @@ impl TaggedVisibleOutputAdapter {
                 provider_metadata,
                 provider,
             } => {
-                if channel == TraceTextChannel::Final {
+                if channel == ModelTextChannel::Final {
                     let mut events = Self::finish_visible_events(
                         &mut self.text_parser,
                         &mut self.active_text_block,
@@ -429,10 +429,10 @@ impl TaggedVisibleOutputAdapter {
         format!("tagged-{label}-{next_segment_ordinal}")
     }
 
-    fn text_channel(kind: VisibleTextKind) -> TraceTextChannel {
+    fn text_channel(kind: VisibleTextKind) -> ModelTextChannel {
         match kind {
-            VisibleTextKind::Commentary => TraceTextChannel::Commentary,
-            VisibleTextKind::Final => TraceTextChannel::Final,
+            VisibleTextKind::Commentary => ModelTextChannel::Commentary,
+            VisibleTextKind::Final => ModelTextChannel::Final,
         }
     }
 }

@@ -5,6 +5,7 @@ members = [
     "code/pl-protocol",
     "code/pl-trace",
     "code/pl-model",
+    "code/pl-model-auth",
     "code/pl-acp",
     "code/pl-provider-fixture",
     "code/pl-lsp",
@@ -104,7 +105,6 @@ sse-stream = "0.3.0"
 # rmcp exposes 0.2 event/error types; decoding uses the current parser.
 sse-stream-rmcp = { package = "sse-stream", version = "0.2.6" }
 eventsource-stream = "0.2.3"
-enum_dispatch = "0.3.13"
 secrecy = "0.10"
 axum = "0.8"
 fs4 = "1.1.0"
@@ -185,6 +185,7 @@ pl-studio-update = { path = "code/pl-studio-update" }
 pl-studio-statistics = { path = "code/pl-studio-statistics" }
 pl-studio-mcp = { path = "code/pl-studio-mcp" }
 pl-model = { path = "code/pl-model" }
+pl-model-auth = { path = "code/pl-model-auth" }
 pl-acp = { path = "code/pl-acp" }
 pl-provider-fixture = { path = "code/pl-provider-fixture" }
 

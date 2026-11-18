@@ -18,11 +18,13 @@ metadata:
 文档、组件 API、目标平台及错误/取消契约。不能复用时先调研并取得用户对自研范围的明确选择，
 不默认新增框架、wrapper、fallback 或 SDK。
 
-模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。OpenAI、DeepSeek、Zhipu、xAI、
-MiMo 和自定义兼容适配是同级封闭变体，通过组合复用 OpenAiBase 的 Chat/Responses 能力。
-实际请求准备、事件解释和目录解析经过所选适配；仅给同一 runner 套不同名字不构成协议扩展。
-同步窄能力可用 enum_dispatch，异步重试、取消、连接、continuation、流和计量继续由唯一执行器
-拥有；不使用 async_trait，不为宏引入 boxed future 或隐藏 Send，也不新增厂商执行器。
+模型执行只有 `ResolvedModelRoute -> ModelRuntime` 一条路径。`ProtocolKind` 决定受信指令角色和
+目录方言，`WireApi` 选择共享 Chat/Responses 编解码，真实厂商差异落在 typed parser、模型绑定
+及服务能力。不要新增仅转发的厂商客户端、适配器 trait 或分派宏。
+异步重试、取消、连接、continuation、流和计量由唯一执行流程拥有；不使用 async_trait 或
+隐藏 Future 的 Send。普通完成与原生压缩仅携带各自的调用级用途材料。
+账号 OAuth/OIDC、身份类型、凭据会话和配额查询位于独立的 `pl-model-auth::chatgpt`；
+Studio 拥有登录操作与受保护存储，模型执行在发送前向已绑定的认证会话解析凭据。
 
 原生 thinking、tool_stream、Files、搜索、缓存、余额、配额与远程压缩保留类型化能力边界。
 Responses 兼容不自动意味着支持这些能力；自定义地址的服务能力撤销规则遵循权威设计。

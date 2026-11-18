@@ -256,7 +256,7 @@ fn request_properties_hash(
 }
 fn canonical_json_hash(value: &serde_json::Value) -> String {
     let mut value = value.clone();
-    crate::completion::canonicalize_json(&mut value);
+    value.sort_all_objects();
     let digest = Sha256::digest(value.to_string().as_bytes());
     format!("sha256:{}", hex::encode(digest))
 }

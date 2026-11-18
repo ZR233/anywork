@@ -2,7 +2,7 @@ use super::{
     CHATGPT_ISSUER, CODEX_CLIENT_ID, ChatGptAuthError, exchange, now, oauth_client,
     session::ChatGptCredentialRecord,
 };
-use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
+use super::{ChatGptAccountInfo, CodexAccountInfo};
 use oauth2::TokenResponse as _;
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,

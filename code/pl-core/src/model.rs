@@ -153,6 +153,17 @@ pub enum ModelTextChannel {
     Final,
 }
 
+impl ModelTextChannel {
+    /// Stable channel label shared by observation and model-wire diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Commentary => "commentary",
+            Self::Final => "final",
+        }
+    }
+}
+
 /// Request-scoped aggregate channel used when an adapter reports no provider item boundaries.
 ///
 /// The channel stands in for the whole assistant output of its kind, so it is the stable identity a

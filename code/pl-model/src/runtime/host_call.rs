@@ -131,11 +131,6 @@ impl ModelTurnClient {
         })
     }
 
-    /// Explicit access to the bound native client; ordinary completion stays protocol-neutral.
-    pub fn protocol_client(&self) -> crate::protocol::ProtocolClient<'_> {
-        self.runtime.protocol_client()
-    }
-
     /// 执行一次模型调用，并返回不暴露 provider/wire 类型的宿主快照。
     pub async fn complete(
         &self,
@@ -173,11 +168,9 @@ impl ModelTurnClient {
             .maybe_max_tokens(request.max_tokens)
             .reasoning(request.reasoning)
             .build();
-        let (event_tx, _event_rx) = tokio::sync::broadcast::channel(16);
         let owns_session = options.session.is_none();
         let session = options.session.unwrap_or_default();
         let mut invocation = ModelInvocationContext::new(session.clone())
-            .with_events(event_tx)
             .with_cancellation(options.cancellation_token);
         if let Some(scope) = options.prompt_cache_scope {
             invocation = invocation.with_prompt_cache_scope(scope);

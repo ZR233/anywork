@@ -1,27 +1,21 @@
-//! 流事件累积器：把 canonical `ModelStreamEvent` 序列累积为 `CompletionResponse`。
-//!
-//! 累积器同时驱动 trace 投影（`TraceProjection`）并把投影事件发布到宿主
-//! `AgentEventSender`；生命周期合法性与工具调用增量分别由 `lifecycle` 与
-//! `tool_stream` 子状态机保证。
+//! 规范流事实、可靠成员边界与完整 Current 捕获的唯一累积器。
 
 use crate::runtime::model_part_identity::{
-    PartKey, observation, observed_part_kind, part_key, provider_observation, text_channel,
+    PartKey, observation, observed_part_kind, part_key, provider_observation,
 };
 use pl_core::model::{AggregateChannel, ObservedItemKind, ObservedPartIdentity, ObservedPartKind};
 use std::collections::HashMap;
-use std::sync::Arc;
 
+use crate::completion::ModelTextChannel;
 use crate::completion::{
     InferenceModelObservation, InferenceOrchestrationMetrics, ResponsesContextItem,
     ResponsesContextItemKind, ToolCallCaller,
 };
 use crate::model::UsageReport;
-use crate::trace::{AgentEvent, AgentEventSender, TraceEventSink, TraceTextChannel};
 use pl_protocol::{PureError, Result};
 
 use crate::completion::{
-    CompletionPresentationItem, CompletionPresentationPart, CompletionResponse,
-    CompletionTraceContext, ToolCall,
+    CompletionPresentationItem, CompletionPresentationPart, CompletionResponse, ToolCall,
 };
 
 use super::current::{
@@ -30,12 +24,9 @@ use super::current::{
 };
 use super::event::{
     ModelBlockContent, ModelBlockField, ModelBlockKind, ModelStreamEvent, ToolInputDeltaPayload,
-    WebSearchAction,
 };
 use super::lifecycle::{self, StreamLifecycle};
-use super::state::{CompletedStream, FailedStream, StreamAccumulatorState};
-use super::tool_stream::{self, ToolStream};
-use super::trace_projection::TraceProjection;
+use super::tool_stream::ToolStream;
 use crate::completion::CompletionPresentationPartKind;
 
 use super::MAX_COMPLETION_OUTPUT_BYTES as MAX_OUTPUT_BYTES;
@@ -78,8 +69,7 @@ pub(crate) struct StreamCompletionAccumulator {
     response_id: Option<String>,
     model_observation: Option<InferenceModelObservation>,
     reported_model_is_terminal: bool,
-    state: StreamAccumulatorState,
-    trace: Option<TraceProjection>,
+    state: ModelStreamCurrentState,
 }
 
 struct StartedPart {
@@ -111,13 +101,7 @@ impl StreamCompletionAccumulator {
             attempt_id: attempt_id.into(),
             generation,
             previous_generations: Vec::new(),
-            state: match &self.state {
-                StreamAccumulatorState::Open(_) => ModelStreamCurrentState::Open,
-                StreamAccumulatorState::Completed(_) => ModelStreamCurrentState::Completed,
-                StreamAccumulatorState::Failed(failed) => ModelStreamCurrentState::Failed {
-                    message: failed.message().into(),
-                },
-            },
+            state: self.state.clone(),
             response_id: self.response_id.clone(),
             model_observation: self.model_observation.clone(),
             reported_model_is_terminal: self.reported_model_is_terminal,
@@ -166,15 +150,11 @@ impl StreamCompletionAccumulator {
                 .map(|(id, state)| (id.clone(), *state))
                 .collect(),
             final_usage: self.final_usage.clone(),
-            usage_is_terminal: matches!(self.state, StreamAccumulatorState::Completed(_)),
+            usage_is_terminal: matches!(self.state, ModelStreamCurrentState::Completed),
         }
     }
 
-    pub(crate) fn with_model_observation(
-        trace: Option<CompletionTraceContext>,
-        trace_sink: Option<Arc<dyn TraceEventSink>>,
-        model_observation: Option<InferenceModelObservation>,
-    ) -> Self {
+    pub(crate) fn new(model_observation: Option<InferenceModelObservation>) -> Self {
         Self {
             content_parts: Vec::new(),
             content_indexes: HashMap::new(),
@@ -202,8 +182,7 @@ impl StreamCompletionAccumulator {
             response_id: None,
             model_observation,
             reported_model_is_terminal: false,
-            state: StreamAccumulatorState::open(),
-            trace: trace.map(|trace| TraceProjection::with_sink(trace, trace_sink)),
+            state: ModelStreamCurrentState::Open,
         }
     }
 
@@ -212,13 +191,9 @@ impl StreamCompletionAccumulator {
     }
 
     #[cfg(test)]
-    pub(crate) fn apply(
-        &mut self,
-        stream_event: ModelStreamEvent,
-        event_tx: &AgentEventSender,
-    ) -> Result<()> {
+    pub(crate) fn apply(&mut self, stream_event: ModelStreamEvent) -> Result<()> {
         for event in self.normalize(stream_event)? {
-            self.apply_normalized(event, event_tx)?;
+            self.apply_normalized(event)?;
         }
         Ok(())
     }
@@ -228,45 +203,28 @@ impl StreamCompletionAccumulator {
         stream_event: ModelStreamEvent,
     ) -> Result<Vec<ModelStreamEvent>> {
         match &self.state {
-            StreamAccumulatorState::Open(_) => {}
-            StreamAccumulatorState::Completed(_) => {
+            ModelStreamCurrentState::Open => {}
+            ModelStreamCurrentState::Completed => {
                 return Err(PureError::LlmError(
                     "provider stream emitted event after completion".to_string(),
                 ));
             }
-            StreamAccumulatorState::Failed(failed) => {
+            ModelStreamCurrentState::Failed { message } => {
                 return Err(PureError::LlmError(format!(
                     "provider stream emitted event after failure: {}",
-                    failed.message()
+                    message
                 )));
             }
         }
         self.lifecycle.normalize(stream_event)
     }
 
-    pub(crate) fn apply_normalized(
-        &mut self,
-        stream_event: ModelStreamEvent,
-        event_tx: &AgentEventSender,
-    ) -> Result<()> {
+    pub(crate) fn apply_normalized(&mut self, stream_event: ModelStreamEvent) -> Result<()> {
         let starts = self.started_identities(&stream_event)?;
         let content_available = self.content_available_identities(&stream_event)?;
         self.record_block_state(&stream_event)?;
         match stream_event {
-            ModelStreamEvent::BlockOpened {
-                id,
-                kind: ModelBlockKind::Text { channel },
-                ..
-            } => {
-                self.record_text_started(&id, channel, event_tx);
-            }
-            ModelStreamEvent::BlockOpened {
-                id,
-                kind: ModelBlockKind::ReasoningSummary,
-                ..
-            } => {
-                let _ = id;
-            }
+            ModelStreamEvent::BlockOpened { .. } => {}
             ModelStreamEvent::BlockDelta {
                 id,
                 kind: ModelBlockKind::Text { channel },
@@ -284,7 +242,6 @@ impl StreamCompletionAccumulator {
                     provider.as_ref().map_or(0, |part| part.content_index),
                     &delta,
                 )?;
-                self.record_text_delta(&id, delta, event_tx, channel);
             }
             ModelStreamEvent::BlockDelta {
                 id,
@@ -309,7 +266,6 @@ impl StreamCompletionAccumulator {
                     index,
                     &delta,
                 )?;
-                self.record_thinking_delta(&id, section_index.unwrap_or_default(), delta, event_tx);
             }
             ModelStreamEvent::BlockDelta {
                 kind: ModelBlockKind::Text { .. },
@@ -342,7 +298,6 @@ impl StreamCompletionAccumulator {
                         text,
                     )?;
                 }
-                self.record_text_completed(&id, channel, authoritative_text, event_tx);
             }
             ModelStreamEvent::BlockClosed {
                 id,
@@ -351,44 +306,37 @@ impl StreamCompletionAccumulator {
                 provider,
                 ..
             } => {
-                let authoritative_summary =
-                    if let Some(ModelBlockContent::ReasoningSummary(summary)) =
-                        authoritative_content
-                    {
-                        let old = self
-                            .content_parts
-                            .iter()
-                            .filter(|part| {
-                                part.block_id == id
-                                    && part.kind == CompletionPresentationPartKind::SummaryText
-                            })
-                            .map(|part| part.text.len())
-                            .sum();
-                        let new = summary.iter().map(String::len).sum();
-                        self.charge_text_output(old, new)?;
-                        // Replace only this reasoning member, never a previously completed member.
-                        self.remove_summary_parts(&id);
-                        for (index, text) in summary.iter().enumerate() {
-                            let mut identity =
-                                observation(ModelBlockKind::ReasoningSummary, provider.as_ref())?.1;
-                            if let ObservedPartIdentity::Provider(part) = &mut identity {
-                                part.content_index = index as u32;
-                            }
-                            let key = format!("summary:{id}:{index}");
-                            let slot = self.content_part_slot(
-                                &key,
-                                &id,
-                                CompletionPresentationPartKind::SummaryText,
-                                identity,
-                                index as u32,
-                            );
-                            self.content_parts[slot].text = text.clone();
+                if let Some(ModelBlockContent::ReasoningSummary(summary)) = authoritative_content {
+                    let old = self
+                        .content_parts
+                        .iter()
+                        .filter(|part| {
+                            part.block_id == id
+                                && part.kind == CompletionPresentationPartKind::SummaryText
+                        })
+                        .map(|part| part.text.len())
+                        .sum();
+                    let new = summary.iter().map(String::len).sum();
+                    self.charge_text_output(old, new)?;
+                    // Replace only this reasoning member, never a previously completed member.
+                    self.remove_summary_parts(&id);
+                    for (index, text) in summary.iter().enumerate() {
+                        let mut identity =
+                            observation(ModelBlockKind::ReasoningSummary, provider.as_ref())?.1;
+                        if let ObservedPartIdentity::Provider(part) = &mut identity {
+                            part.content_index = index as u32;
                         }
-                        Some(summary)
-                    } else {
-                        None
-                    };
-                self.record_thinking_completed(&id, authoritative_summary, event_tx);
+                        let key = format!("summary:{id}:{index}");
+                        let slot = self.content_part_slot(
+                            &key,
+                            &id,
+                            CompletionPresentationPartKind::SummaryText,
+                            identity,
+                            index as u32,
+                        );
+                        self.content_parts[slot].text = text.clone();
+                    }
+                }
             }
             ModelStreamEvent::ReasoningRawDelta {
                 id,
@@ -418,7 +366,6 @@ impl StreamCompletionAccumulator {
                     content_index,
                     &delta,
                 )?;
-                self.record_reasoning_content_delta(&id, content_index, delta, event_tx);
             }
             ModelStreamEvent::ToolInputStarted {
                 stream_id,
@@ -429,14 +376,13 @@ impl StreamCompletionAccumulator {
             } => {
                 // A start carries no argument bytes (its payload kind only names the shape), so it
                 // reserves the identity but nothing is charged until the first real delta arrives.
-                let snapshot = self.tool_stream.start_input(
+                self.tool_stream.start_input(
                     stream_id.as_ref(),
                     item_id,
                     call_id.as_ref(),
                     name,
                     lifecycle::tool_start_payload(payload_kind),
                 );
-                self.record_tool_started(&snapshot.tool, event_tx);
             }
             ModelStreamEvent::ToolInputDelta {
                 stream_id,
@@ -460,14 +406,13 @@ impl StreamCompletionAccumulator {
                     .unwrap_or_default()
                     .saturating_add(payload_delta.text().len());
                 self.charge_tool_output(&key, next)?;
-                let snapshot = self.tool_stream.append_delta(
+                self.tool_stream.append_delta(
                     stream_id.as_ref(),
                     item_id,
                     call_id.as_ref(),
                     name,
                     payload_delta,
                 );
-                self.record_tool_delta(&snapshot.tool, snapshot.delta, event_tx);
             }
             ModelStreamEvent::ToolInputCompleted {
                 stream_id,
@@ -501,7 +446,7 @@ impl StreamCompletionAccumulator {
                     payload,
                 )? {
                     self.attach_tool_caller(&mut call);
-                    self.update_tool_trace(&call, event_tx);
+
                     self.tool_calls.push(call);
                 }
             }
@@ -552,23 +497,15 @@ impl StreamCompletionAccumulator {
                 }
             }
             ModelStreamEvent::Replay(update) => self.replay.apply(update)?,
-            ModelStreamEvent::WebSearchStarted { item_id, action } => {
-                self.record_web_search_started(&item_id, action, event_tx);
-            }
-            ModelStreamEvent::WebSearchCompleted {
-                item_id,
-                action,
-                results,
-            } => {
-                self.record_web_search_completed(&item_id, action, results, event_tx);
-            }
+            ModelStreamEvent::WebSearchStarted { .. } => {}
+            ModelStreamEvent::WebSearchCompleted { .. } => {}
             ModelStreamEvent::Usage(usage) => {
                 self.final_usage = Some(usage);
             }
             ModelStreamEvent::Completed { response_id } => {
                 for mut call in self.tool_stream.finish_all(&self.tool_calls)? {
                     self.attach_tool_caller(&mut call);
-                    self.update_tool_trace(&call, event_tx);
+
                     self.tool_calls.push(call);
                 }
                 if response_id.is_some() {
@@ -577,7 +514,7 @@ impl StreamCompletionAccumulator {
                 for block in &mut self.blocks {
                     block.closed = true;
                 }
-                self.state = StreamAccumulatorState::Completed(CompletedStream::new());
+                self.state = ModelStreamCurrentState::Completed;
             }
             ModelStreamEvent::Failed {
                 request_id,
@@ -595,7 +532,9 @@ impl StreamCompletionAccumulator {
                 if let PureError::Provider(failure) = &mut error {
                     failure.context.request_id = request_id;
                 }
-                self.state = StreamAccumulatorState::Failed(FailedStream::new(error.to_string()));
+                self.state = ModelStreamCurrentState::Failed {
+                    message: error.to_string(),
+                };
                 return Err(error);
             }
             ModelStreamEvent::ResponseStarted { response_id } => {
@@ -608,7 +547,6 @@ impl StreamCompletionAccumulator {
             }
         }
 
-        self.ensure_trace_sink()?;
         // Only validated events may create reliable beginnings. The collector drains these before
         // applying the next normalized event, including multiple events from one provider input.
         for identity in starts {
@@ -662,7 +600,7 @@ impl StreamCompletionAccumulator {
             ModelStreamEvent::PresentationItem { item, .. } => {
                 let kind = match item.kind {
                     crate::completion::CompletionPresentationItemKind::Text(channel) => {
-                        ObservedItemKind::Text(text_channel(channel))
+                        ObservedItemKind::Text(channel)
                     }
                     crate::completion::CompletionPresentationItemKind::Reasoning => {
                         ObservedItemKind::Reasoning
@@ -944,36 +882,30 @@ impl StreamCompletionAccumulator {
             .map(|(index, state)| (&self.presentation_items[index], state))
     }
 
-    pub(crate) fn finish(&mut self, event_tx: &AgentEventSender) -> Result<CompletionResponse> {
-        self.finish_inner(event_tx)
+    pub(crate) fn finish(&mut self) -> Result<CompletionResponse> {
+        self.finish_inner()
     }
 
-    fn finish_inner(&mut self, event_tx: &AgentEventSender) -> Result<CompletionResponse> {
+    fn finish_inner(&mut self) -> Result<CompletionResponse> {
         let terminal_error = match &self.state {
-            StreamAccumulatorState::Open(_) => Some(PureError::transient_model_transport(
+            ModelStreamCurrentState::Open => Some(PureError::transient_model_transport(
                 "provider stream ended before completion",
             )),
-            StreamAccumulatorState::Completed(_) => None,
-            StreamAccumulatorState::Failed(failed) => {
-                Some(PureError::LlmError(failed.message().to_string()))
+            ModelStreamCurrentState::Completed => None,
+            ModelStreamCurrentState::Failed { message } => {
+                Some(PureError::LlmError(message.to_string()))
             }
         };
         if let Some(error) = terminal_error {
-            self.fail_attempt(&error, event_tx);
+            self.fail_attempt(&error);
             return Err(error);
         }
 
         for mut call in self.tool_stream.finish_all(&self.tool_calls)? {
             self.attach_tool_caller(&mut call);
-            self.update_tool_trace(&call, event_tx);
+
             self.tool_calls.push(call);
         }
-        if let Some(trace) = self.trace.as_mut() {
-            for event in trace.complete_streaming_items() {
-                let _ = event_tx.send(event);
-            }
-        }
-        self.ensure_trace_sink()?;
 
         let final_parts = self
             .content_parts
@@ -987,7 +919,7 @@ impl StreamCompletionAccumulator {
                             indexes.iter().any(|&index| {
                                 let block = &self.blocks[index];
                                 block.id == part.block_id
-                                    && block.channel == Some(TraceTextChannel::Final)
+                                    && block.channel == Some(ModelTextChannel::Final)
                             })
                         })
             })
@@ -1107,80 +1039,16 @@ impl StreamCompletionAccumulator {
         }
     }
 
-    pub(crate) fn fail_attempt(&mut self, error: &PureError, event_tx: &AgentEventSender) {
-        self.state = StreamAccumulatorState::Failed(FailedStream::new(error.to_string()));
-        self.publish_trace(event_tx, |trace| trace.fail_attempt(&error.to_string()));
-    }
-
-    pub(super) fn cancel_attempt(&mut self, reason: &str, event_tx: &AgentEventSender) {
-        self.state = StreamAccumulatorState::Failed(FailedStream::new(reason));
-        self.publish_trace(event_tx, |trace| trace.cancel_attempt(reason));
-    }
-
-    fn ensure_trace_sink(&mut self) -> Result<()> {
-        let Some(trace) = self.trace.as_mut() else {
-            return Ok(());
+    pub(crate) fn fail_attempt(&mut self, error: &PureError) {
+        self.state = ModelStreamCurrentState::Failed {
+            message: error.to_string(),
         };
-        match trace.take_trace_error() {
-            Some(error) => Err(PureError::Protocol(format!(
-                "canonical trace publication failed: {error}"
-            ))),
-            None => Ok(()),
-        }
     }
 
-    fn record_text_started(
-        &mut self,
-        item_id: &str,
-        text_channel: TraceTextChannel,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| trace.start_text(item_id, text_channel));
-    }
-
-    fn record_web_search_started(
-        &mut self,
-        item_id: &str,
-        action: WebSearchAction,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| trace.start_web_search(item_id, action));
-    }
-
-    fn record_web_search_completed(
-        &mut self,
-        item_id: &str,
-        action: WebSearchAction,
-        results: Option<Vec<serde_json::Value>>,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.complete_web_search(item_id, action, results)
-        });
-    }
-
-    fn record_text_delta(
-        &mut self,
-        item_id: &str,
-        delta: String,
-        event_tx: &AgentEventSender,
-        text_channel: TraceTextChannel,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.append_text_delta(item_id, text_channel, delta)
-        });
-    }
-
-    fn record_text_completed(
-        &mut self,
-        item_id: &str,
-        text_channel: TraceTextChannel,
-        authoritative_text: Option<String>,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.complete_text(item_id, text_channel, authoritative_text)
-        });
+    pub(super) fn cancel_attempt(&mut self, reason: &str) {
+        self.state = ModelStreamCurrentState::Failed {
+            message: reason.to_string(),
+        };
     }
 
     fn append_content_part(
@@ -1382,78 +1250,6 @@ impl StreamCompletionAccumulator {
         self.block_bytes = next;
         Ok(())
     }
-
-    fn record_thinking_delta(
-        &mut self,
-        item_id: &str,
-        chunk_index: u32,
-        delta: String,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.append_thinking_delta(item_id, chunk_index, delta)
-        });
-    }
-
-    fn record_reasoning_content_delta(
-        &mut self,
-        item_id: &str,
-        chunk_index: u32,
-        delta: String,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.append_reasoning_content_delta(item_id, chunk_index, delta)
-        });
-    }
-
-    fn record_thinking_completed(
-        &mut self,
-        item_id: &str,
-        authoritative_summary: Option<Vec<String>>,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.complete_thinking(item_id, authoritative_summary)
-        });
-    }
-
-    fn record_tool_delta(
-        &mut self,
-        snapshot: &tool_stream::ToolCallAccumulatorSnapshot,
-        delta: String,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| {
-            trace.append_tool_arguments_delta(snapshot, delta)
-        });
-    }
-
-    fn record_tool_started(
-        &mut self,
-        snapshot: &tool_stream::ToolCallAccumulatorSnapshot,
-        event_tx: &AgentEventSender,
-    ) {
-        self.publish_trace(event_tx, |trace| trace.start_tool(snapshot));
-    }
-
-    fn update_tool_trace(&mut self, call: &ToolCall, event_tx: &AgentEventSender) {
-        self.publish_trace(event_tx, |trace| trace.update_tool_trace(call));
-    }
-
-    /// 投影 trace 事件并发布到宿主事件通道；未挂载 trace 时静默跳过。
-    fn publish_trace(
-        &mut self,
-        event_tx: &AgentEventSender,
-        project: impl FnOnce(&mut TraceProjection) -> Vec<AgentEvent>,
-    ) {
-        let Some(trace) = self.trace.as_mut() else {
-            return;
-        };
-        for event in project(trace) {
-            let _ = event_tx.send(event);
-        }
-    }
 }
 
 fn presentation_item_bytes(item: &CompletionPresentationItem) -> Option<usize> {
@@ -1512,9 +1308,8 @@ mod current_tests {
         decoder: &mut OpenAiStreamDecoder,
         wire: serde_json::Value,
     ) {
-        let (events, _) = tokio::sync::broadcast::channel(16);
         for event in decoder.decode(&serde_json::from_value(wire).unwrap()) {
-            acc.apply(event, &events).unwrap();
+            acc.apply(event).unwrap();
         }
     }
 
@@ -1528,27 +1323,25 @@ mod current_tests {
     #[test]
     fn current_summary_uses_provider_part_index_not_trace_section_number() {
         use super::super::event::ProviderBlockIdentity;
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
-        let (events, _) = tokio::sync::broadcast::channel(16);
+        let mut acc = StreamCompletionAccumulator::new(None);
+
         let provider = Some(ProviderBlockIdentity {
             item_id: "reasoning".into(),
             content_index: 7,
         });
-        acc.apply(
-            ModelStreamEvent::reasoning_summary_started("block".into(), None, provider.clone()),
-            &events,
-        )
+        acc.apply(ModelStreamEvent::reasoning_summary_started(
+            "block".into(),
+            None,
+            provider.clone(),
+        ))
         .unwrap();
         for (section, text) in [(0, "first"), (1, " second")] {
-            acc.apply(
-                ModelStreamEvent::reasoning_summary_delta(
-                    "block".into(),
-                    section,
-                    text.into(),
-                    provider.clone(),
-                ),
-                &events,
-            )
+            acc.apply(ModelStreamEvent::reasoning_summary_delta(
+                "block".into(),
+                section,
+                text.into(),
+                provider.clone(),
+            ))
             .unwrap();
         }
         let saved = round_trip(&acc);
@@ -1569,7 +1362,7 @@ mod current_tests {
 
     #[test]
     fn native_block_metadata_does_not_spend_presentation_budget_twice() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut acc = StreamCompletionAccumulator::new(None);
         let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
         // Native replay and completed presentation each already have their own 16 MiB ceiling.
         // Charging this raw item again as block metadata used to reject this valid response.
@@ -1615,9 +1408,9 @@ mod current_tests {
             },
             state: Some(crate::runtime::ModelMemberState::Completed),
         };
-        let (events, _) = tokio::sync::broadcast::channel(16);
+
         assert!(
-            acc.apply(oversized, &events).is_err(),
+            acc.apply(oversized).is_err(),
             "the existing presentation ceiling must still reject oversized output"
         );
         assert_eq!(acc.presentation_items.len(), 1);
@@ -1626,41 +1419,32 @@ mod current_tests {
     #[test]
     fn current_tool_aliases_retain_only_actual_local_identity_upgrades() {
         use super::super::event::ToolInputPayloadKind;
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::ToolInputStarted {
-                stream_id: Some("stream".into()),
-                item_id: "real-item".into(),
-                call_id: Some("real-item".into()),
-                name: Some("lookup".into()),
-                payload_kind: ToolInputPayloadKind::FunctionArguments,
-            },
-            &events,
-        )
+        let mut acc = StreamCompletionAccumulator::new(None);
+
+        acc.apply(ModelStreamEvent::ToolInputStarted {
+            stream_id: Some("stream".into()),
+            item_id: "real-item".into(),
+            call_id: Some("real-item".into()),
+            name: Some("lookup".into()),
+            payload_kind: ToolInputPayloadKind::FunctionArguments,
+        })
         .unwrap();
-        acc.apply(
-            ModelStreamEvent::ToolInputDelta {
-                stream_id: Some("stream".into()),
-                item_id: "real-item".into(),
-                call_id: Some("real-call".into()),
-                name: None,
-                payload_delta: ToolInputDeltaPayload::FunctionArguments("{\"q\":".into()),
-            },
-            &events,
-        )
+        acc.apply(ModelStreamEvent::ToolInputDelta {
+            stream_id: Some("stream".into()),
+            item_id: "real-item".into(),
+            call_id: Some("real-call".into()),
+            name: None,
+            payload_delta: ToolInputDeltaPayload::FunctionArguments("{\"q\":".into()),
+        })
         .unwrap();
         for index in 0..2048 {
-            acc.apply(
-                ModelStreamEvent::ToolInputDelta {
-                    stream_id: Some("stream".into()),
-                    item_id: format!("unused-item-{index}"),
-                    call_id: Some(format!("unused-call-{index}")),
-                    name: None,
-                    payload_delta: ToolInputDeltaPayload::FunctionArguments(String::new()),
-                },
-                &events,
-            )
+            acc.apply(ModelStreamEvent::ToolInputDelta {
+                stream_id: Some("stream".into()),
+                item_id: format!("unused-item-{index}"),
+                call_id: Some(format!("unused-call-{index}")),
+                name: None,
+                payload_delta: ToolInputDeltaPayload::FunctionArguments(String::new()),
+            })
             .unwrap();
         }
         let saved = round_trip(&acc);
@@ -1675,7 +1459,7 @@ mod current_tests {
 
     #[test]
     fn producer_current_keeps_open_commentary_reasoning_and_inert_partial_input() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut acc = StreamCompletionAccumulator::new(None);
         let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
         let commentary = "untrimmed commentary ".repeat(1024);
         feed(
@@ -1700,7 +1484,7 @@ mod current_tests {
         assert!(
             open.blocks
                 .iter()
-                .any(|block| block.channel == Some(TraceTextChannel::Commentary) && !block.closed)
+                .any(|block| block.channel == Some(ModelTextChannel::Commentary) && !block.closed)
         );
         assert!(
             open.presentation_items.is_empty(),
@@ -1749,14 +1533,11 @@ mod current_tests {
             &mut decoder,
             json!({"type":"response.function_call_arguments.delta","item_id":"tool-item","call_id":"call_0","delta":partial}),
         );
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::Usage(UsageReport {
-                output_tokens: Some(17),
-                ..Default::default()
-            }),
-            &events,
-        )
+
+        acc.apply(ModelStreamEvent::Usage(UsageReport {
+            output_tokens: Some(17),
+            ..Default::default()
+        }))
         .unwrap();
 
         let saved = round_trip(&acc);
@@ -1806,7 +1587,7 @@ mod current_tests {
         );
         assert_eq!(saved.final_usage.as_ref().unwrap().output_tokens, Some(17));
         assert!(!saved.usage_is_terminal);
-        acc.cancel_attempt("cancelled while input incomplete", &events);
+        acc.cancel_attempt("cancelled while input incomplete");
         let cancelled = round_trip(&acc);
         assert!(matches!(
             cancelled.state,
@@ -1816,7 +1597,7 @@ mod current_tests {
         assert!(cancelled.tool_calls.is_empty());
 
         // Retry transport generations and new attempts each start with a fresh producer.
-        let fresh = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let fresh = StreamCompletionAccumulator::new(None);
         for (attempt, generation) in [("source-attempt", 3), ("next-attempt", 0)] {
             let view = fresh.current(attempt, generation);
             assert!(view.content_parts.is_empty());
@@ -1830,7 +1611,7 @@ mod current_tests {
 
     #[test]
     fn producer_current_preserves_late_tool_aliases_and_completed_native_replay() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut acc = StreamCompletionAccumulator::new(None);
         let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
         feed(
             &mut acc,
@@ -1912,28 +1693,22 @@ mod member_tests {
 
     #[test]
     fn rejected_member_status_does_not_close_an_accepted_open_block() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::reasoning_summary_started(
-                "open-reasoning".into(),
-                None,
-                Some(super::super::event::ProviderBlockIdentity {
-                    item_id: member().provider_item_id,
-                    content_index: 2,
-                }),
-            ),
-            &events,
-        )
+        let mut acc = StreamCompletionAccumulator::new(None);
+
+        acc.apply(ModelStreamEvent::reasoning_summary_started(
+            "open-reasoning".into(),
+            None,
+            Some(super::super::event::ProviderBlockIdentity {
+                item_id: member().provider_item_id,
+                content_index: 2,
+            }),
+        ))
         .unwrap();
         assert!(
-            acc.apply(
-                ModelStreamEvent::PresentationItem {
-                    item: member(),
-                    state: None
-                },
-                &events
-            )
+            acc.apply(ModelStreamEvent::PresentationItem {
+                item: member(),
+                state: None
+            })
             .is_err()
         );
         let saved = acc.current("source", 0);
@@ -1946,37 +1721,31 @@ mod member_tests {
         acc: &mut StreamCompletionAccumulator,
         item: CompletionPresentationItem,
     ) -> Result<()> {
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::PresentationItem {
-                item,
-                state: Some(ModelMemberState::Interrupted),
-            },
-            &events,
-        )
+        acc.apply(ModelStreamEvent::PresentationItem {
+            item,
+            state: Some(ModelMemberState::Interrupted),
+        })
     }
 
     #[test]
     fn authoritative_close_exposes_content_before_any_terminal_presentation_item() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::text_started("text".into(), TraceTextChannel::Final, None),
-            &events,
-        )
+        let mut acc = StreamCompletionAccumulator::new(None);
+
+        acc.apply(ModelStreamEvent::text_started(
+            "text".into(),
+            ModelTextChannel::Final,
+            None,
+        ))
         .unwrap();
         let starts = acc.take_started_members();
         assert_eq!(starts.len(), 1);
         assert!(acc.take_content_available_members().is_empty());
-        acc.apply(
-            ModelStreamEvent::text_completed(
-                "text".into(),
-                TraceTextChannel::Final,
-                Some(" \n".into()),
-                None,
-            ),
-            &events,
-        )
+        acc.apply(ModelStreamEvent::text_completed(
+            "text".into(),
+            ModelTextChannel::Final,
+            Some(" \n".into()),
+            None,
+        ))
         .unwrap();
         assert_eq!(acc.take_content_available_members(), starts);
         assert!(acc.take_content_available_members().is_empty());
@@ -1988,7 +1757,7 @@ mod member_tests {
 
     #[test]
     fn complete_presentation_admits_content_once_per_nonempty_part() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut acc = StreamCompletionAccumulator::new(None);
         let mut item = member();
         item.parts = ["", " ", "summary"]
             .into_iter()
@@ -2020,21 +1789,18 @@ mod member_tests {
     #[test]
     fn summary_delta_identity_and_budget_are_checked_before_start() {
         use super::super::event::ProviderBlockIdentity;
-        let (events, _) = tokio::sync::broadcast::channel(16);
+
         for exhausted in [false, true] {
-            let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+            let mut acc = StreamCompletionAccumulator::new(None);
             let provider = ProviderBlockIdentity {
                 item_id: "real-reasoning".into(),
                 content_index: 3,
             };
-            acc.apply(
-                ModelStreamEvent::reasoning_summary_started(
-                    "block".into(),
-                    None,
-                    Some(provider.clone()),
-                ),
-                &events,
-            )
+            acc.apply(ModelStreamEvent::reasoning_summary_started(
+                "block".into(),
+                None,
+                Some(provider.clone()),
+            ))
             .unwrap();
             assert!(
                 acc.take_started_members().is_empty(),
@@ -2047,15 +1813,12 @@ mod member_tests {
                 None
             };
             let error = acc
-                .apply(
-                    ModelStreamEvent::reasoning_summary_delta(
-                        "block".into(),
-                        3,
-                        "x".into(),
-                        provider,
-                    ),
-                    &events,
-                )
+                .apply(ModelStreamEvent::reasoning_summary_delta(
+                    "block".into(),
+                    3,
+                    "x".into(),
+                    provider,
+                ))
                 .unwrap_err();
             if exhausted {
                 assert!(matches!(error, PureError::MemoryError(_)));
@@ -2075,7 +1838,7 @@ mod member_tests {
 
     #[test]
     fn validated_member_is_frozen_before_handoff_and_final_reuses_it() {
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut acc = StreamCompletionAccumulator::new(None);
         let item = member();
         apply(&mut acc, item.clone()).unwrap();
         let starts = acc.take_started_members();
@@ -2109,15 +1872,12 @@ mod member_tests {
                 .contains("conflicting")
         );
         assert_eq!(acc.presentation_items, vec![item.clone()]);
-        let (events, _) = tokio::sync::broadcast::channel(16);
-        acc.apply(
-            ModelStreamEvent::Completed {
-                response_id: Some("response".into()),
-            },
-            &events,
-        )
+
+        acc.apply(ModelStreamEvent::Completed {
+            response_id: Some("response".into()),
+        })
         .unwrap();
-        assert_eq!(acc.finish(&events).unwrap().presentation_items, vec![item]);
+        assert_eq!(acc.finish().unwrap().presentation_items, vec![item]);
     }
 
     #[test]
@@ -2141,29 +1901,26 @@ mod member_tests {
         item.parts.push(duplicate_id);
         invalid.push(item);
         let mut item = base.clone();
-        item.kind = CompletionPresentationItemKind::Text(TraceTextChannel::Final);
+        item.kind = CompletionPresentationItemKind::Text(ModelTextChannel::Final);
         invalid.push(item);
         let mut item = base;
         item.parts[0].text = "x".repeat(MAX_OUTPUT_BYTES);
         invalid.push(item);
         for item in invalid {
-            let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+            let mut acc = StreamCompletionAccumulator::new(None);
             assert!(apply(&mut acc, item).is_err());
             assert!(acc.take_started_members().is_empty());
             assert!(acc.take_content_available_members().is_empty());
             assert!(acc.take_completed_member().is_none());
             assert!(acc.presentation_items.is_empty());
         }
-        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
-        let (events, _) = tokio::sync::broadcast::channel(16);
+        let mut acc = StreamCompletionAccumulator::new(None);
+
         assert!(
-            acc.apply(
-                ModelStreamEvent::PresentationItem {
-                    item: member(),
-                    state: None
-                },
-                &events
-            )
+            acc.apply(ModelStreamEvent::PresentationItem {
+                item: member(),
+                state: None
+            })
             .is_err()
         );
         assert!(acc.take_completed_member().is_none());
