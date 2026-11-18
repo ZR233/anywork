@@ -180,11 +180,14 @@ impl CurrentReader {
         let runtime = &self.inner.runtime;
         let thread = runtime.read_protocol_thread(self.thread_id()).await?;
         runtime.check_thread_read_access(&thread)?;
-        let saved = runtime
-            .store
-            .state_for(&thread.workspace_id, self.thread_id())?
-            .load_current()
-            .await?;
+        // A cold reader may be the first entry after an upgrade. Reuse the explicit
+        // maintenance boundary before declaring the old checkpoint unrecoverable.
+        // An existing current file still loads independently of History.
+        let saved = crate::studio::thread_factory::recovery::load_current_for_recovery(
+            &runtime.store,
+            &thread,
+        )
+        .await?;
         self.check_open()?;
         saved.map(Arc::new).ok_or_else(|| {
             StudioError::new(

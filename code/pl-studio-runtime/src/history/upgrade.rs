@@ -375,7 +375,9 @@ async fn make_backup(
     let db = schema::connect(history_path, false, false).await?;
     db.execute_raw(statement("PRAGMA synchronous=FULL", Vec::new()))
         .await?;
-    let temporary = operation_dir.join(format!(
+    // Match sqlite_file_options: keep the native canonical prefix for deep Windows
+    // session paths, including when SQLite opens the VACUUM target itself.
+    let temporary = std::fs::canonicalize(operation_dir)?.join(format!(
         ".history-v24-{}.sqlite",
         uuid::Uuid::new_v4().simple()
     ));
@@ -399,7 +401,8 @@ async fn make_backup(
     quick_check(&backup_read).await?;
     let counts = database_table_rows(&backup_read).await?;
     backup_read.close().await?;
-    File::open(&temporary)?.sync_all()?;
+    // Windows FlushFileBuffers requires a writable handle; opening does not truncate.
+    File::options().write(true).open(&temporary)?.sync_all()?;
     fail_backup_publish_once(thread_id)?;
     let target = operation_dir.join("history.v24.sqlite");
     pl_tool::workspace::move_owned_path(&temporary, &target)?;
@@ -466,7 +469,10 @@ async fn prepare_current(
     let current_path = session_dir.join("current.json");
     if current_path.is_file() {
         let (_, bytes) = crate::studio::storage::read_for_upgrade(session_dir, thread_id).await?;
-        File::open(&current_path)?.sync_all()?;
+        File::options()
+            .write(true)
+            .open(&current_path)?
+            .sync_all()?;
         sync_parent(&current_path)?;
         let backup = operation_dir.join("current.original.json");
         backup_exact_bytes(&backup, &bytes)?;
@@ -682,9 +688,10 @@ fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
     let parent = target
         .parent()
         .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup has no parent")))?;
+    let parent = std::fs::canonicalize(parent)?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".upgrade-copy-")
-        .tempfile_in(parent)?;
+        .tempfile_in(&parent)?;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     let (file, temporary_path) = temporary.keep().map_err(|error| error.error)?;
@@ -5027,6 +5034,50 @@ mod migration_tests {
             backup.close().await?;
         }
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn cold_current_reader_prepares_schema24_before_history_is_opened() -> anyhow::Result<()>
+    {
+        use crate::runtime_test_support::{Environment, current_demand};
+        let mut env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let thread = env
+                .runtime
+                .create_thread(&env.project.id, "legacy current")
+                .await?;
+            let paths = crate::studio::paths::StudioPaths::from_home(env.home.clone())
+                .session_paths(&thread.workspace_id, &thread.id)?;
+            env.runtime.shutdown_runtime().await?;
+            // create_thread seeds current-format storage. Replace only this isolated
+            // test session after its owners have joined, then install the frozen v24 input.
+            for path in [paths.history_database(), paths.current_file()] {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+            }
+            std::fs::create_dir_all(paths.root())?;
+            write_v24_fixture(&paths.history_database(), &thread.id, true).await?;
+            assert!(!paths.current_file().exists());
+            env.restart().await?;
+            assert!(!paths.current_file().exists());
+            let reader = env
+                .runtime
+                .open_current_reader(
+                    &thread.id,
+                    crate::CURRENT_PROTOCOL_VERSION,
+                    current_demand(),
+                )
+                .await?;
+            let view = reader.snapshot(current_demand()).await?;
+            assert!(!view.projection.execution_present);
+            assert!(paths.current_file().is_file());
+            reader.close().await?;
+            assert!(env.root_provider.recorded().is_empty());
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
     }
 
     #[tokio::test]

@@ -5,7 +5,8 @@
 //! Which entries may touch storage:
 //!
 //! - **May prepare storage** (one-shot schema upgrade or legacy current materialization):
-//!   [`load_current_for_recovery`] and explicit activation/recovery entries that call it.
+//!   [`load_current_for_recovery`] and explicit activation/recovery entries that call it,
+//!   including a cold Current reader preparing its first saved baseline.
 //! - **Must never prepare storage**: [`load_current_read_only`] and every projection — directory
 //!   listing, Thread snapshot and interaction reads. They report only an already-complete
 //!   `current.json`; missing and invalid current stay distinct at their normal error boundaries.
