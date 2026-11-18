@@ -5,6 +5,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -22,30 +23,40 @@ void main() {
         '{"tasks":[{"taskId":"task","status":"succeeded"}],"timedOut":false}',
       ),
     };
+    final member = DisplayRecord(
+      historyEventId: 'event',
+      contentSource: const CompletedOriginal(completionId: 'event'),
+      atom: ChatAtom(
+        id: 'tool',
+        sourceOrder: null,
+        source: const ForegroundTurnChatSource(turnId: 'turn'),
+        kind: ChatAtomKind.toolCall,
+        delivery: ChatDeliveryKind.foreground,
+        lifecycle: const TerminalChatAtom(
+          started: null,
+          ended: null,
+          outcome: ChatTerminalOutcome.completed,
+        ),
+        tool: const ChatToolIdentity(callId: 'call', name: 'wait'),
+        contents: const [],
+      ),
+    );
     final unit = TimelineDisplayUnit(
-      block: DisplayBlock(
-        id: 'wait-row',
+      block: const DisplayBlock(
+        id: 'work-row',
         blockOrder: 1,
-        body: SingleDisplayBlock(
-          visibility: HistorySingleVisibility.content,
-          record: DisplayRecord(
-            historyEventId: 'event',
-            contentSource: const CompletedOriginal(completionId: 'event'),
-            atom: ChatAtom(
-              id: 'tool',
-              sourceOrder: null,
-              source: const ForegroundTurnChatSource(turnId: 'turn'),
-              kind: ChatAtomKind.toolCall,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const TerminalChatAtom(
-                started: null,
-                ended: null,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              tool: const ChatToolIdentity(callId: 'call', name: 'wait'),
-              contents: const [],
-            ),
+        body: WorkDisplayBlock(
+          timing: WorkTiming(startedAt: null),
+          members: DisplayBlockRef(
+            blockId: 'work',
+            cut: HistoryCut('fixed-cut'),
+            anchorSeq: 1,
+            headSeq: 1,
           ),
+          executionPresent: false,
+          memberCount: 1,
+          unfinishedCount: 0,
+          groupClosed: true,
         ),
       ),
     );
@@ -65,59 +76,60 @@ void main() {
         sealed: true,
       );
     };
-    final item = ChatItemPresentation.forUnit(unit).resolvePayload(
-      InlinePayload(
-        bytes: utf8.encode(
-          jsonEncode({
-            'contract': 'anywork.chat/1',
-            'type': 'tool',
-            'data': {
-              'invocation': {
-                'toolCallId': 'call',
-                'name': 'wait',
-                'presentationContract': 'builtin.wait@1',
-              },
-              'state': {
-                'kind': 'succeeded',
-                'output': {'attachments': []},
-              },
-              'wait': {
-                'state': 'ready',
-                'messagesReady': true,
-                'intent': {
-                  'kind': 'events',
-                  'data': {
-                    'targets': [
-                      {
-                        'taskId': 'task',
-                        'toolName': 'exec',
-                        'status': 'succeeded',
+    final item = ChatItemPresentation.forRecord(member, id: 'wait-row')
+        .resolvePayload(
+          InlinePayload(
+            bytes: utf8.encode(
+              jsonEncode({
+                'contract': 'anywork.chat/1',
+                'type': 'tool',
+                'data': {
+                  'invocation': {
+                    'toolCallId': 'call',
+                    'name': 'wait',
+                    'presentationContract': 'builtin.wait@1',
+                  },
+                  'state': {
+                    'kind': 'succeeded',
+                    'output': {'attachments': []},
+                  },
+                  'wait': {
+                    'state': 'ready',
+                    'messagesReady': true,
+                    'intent': {
+                      'kind': 'events',
+                      'data': {
+                        'targets': [
+                          {
+                            'taskId': 'task',
+                            'toolName': 'exec',
+                            'status': 'succeeded',
+                          },
+                        ],
+                        'timeoutMs': 60000,
                       },
-                    ],
-                    'timeoutMs': 60000,
+                    },
                   },
                 },
-              },
-            },
-            'bodies': [
-              for (final entry in bodies.entries)
-                {
-                  'key': entry.key,
-                  'byteLength': entry.value.length,
-                  'reference': {
-                    'databaseId': 'db',
-                    'ownerEventId': 'event',
-                    'bodyKey': entry.key,
-                    'bodyId': entry.key,
-                    'byteStart': 0,
-                    'byteLength': entry.value.length,
-                  },
-                },
-            ],
-          }),
-        ),
-      ),
-    );
+                'bodies': [
+                  for (final entry in bodies.entries)
+                    {
+                      'key': entry.key,
+                      'byteLength': entry.value.length,
+                      'reference': {
+                        'databaseId': 'db',
+                        'ownerEventId': 'event',
+                        'bodyKey': entry.key,
+                        'bodyId': entry.key,
+                        'byteStart': 0,
+                        'byteLength': entry.value.length,
+                      },
+                    },
+                ],
+              }),
+            ),
+          ),
+        );
     await tester.pumpWidget(
       MaterialApp(
         theme: pureStudioTheme(),
@@ -128,9 +140,19 @@ void main() {
         ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
-          body: SingleChildScrollView(child: ChatItemView(item: item)),
+          body: SingleChildScrollView(
+            child: TimelineDisplayUnitView(
+              unit: unit,
+              childBuilder: (_) => ChatItemView(item: item),
+            ),
+          ),
         ),
       ),
+    );
+    await tester.pumpAndSettle();
+    expect(reads, isEmpty);
+    await tester.tap(
+      find.byKey(const ValueKey('completion-run-header:work-row')),
     );
     await tester.pumpAndSettle();
     expect(find.byType(TimelineWaitPanel), findsOneWidget);
@@ -150,6 +172,12 @@ void main() {
         .singleWhere((view) => view.contentKey == 'tool.result');
     expect(output.window?.bytes, bodies['tool.result']);
     expect(find.textContaining('"timedOut"'), findsNothing);
+    await tester.tap(
+      find.byKey(const ValueKey('completion-run-header:work-row')),
+    );
+    expect(unit.expansion.bodyActive, isFalse);
+    await tester.pumpAndSettle();
+    expect(find.byType(TimelineWaitPanel), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(unit.expansion.bodyActive, isFalse);
     expect(tester.takeException(), isNull);

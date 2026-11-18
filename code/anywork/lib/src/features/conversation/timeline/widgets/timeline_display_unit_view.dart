@@ -93,7 +93,10 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
           ? const SizedBox.shrink()
           : KeyedSubtree(
               key: ValueKey((unit.expansion, unit.expansion.bodyGeneration)),
-              child: Builder(builder: widget.childBuilder),
+              child: TimelineGroupBodyIntent(
+                intent: unit.expansion,
+                child: Builder(builder: widget.childBuilder),
+              ),
             ),
     );
   }

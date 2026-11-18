@@ -83,7 +83,7 @@ Plan、交互详情和文件内容通过引用自己的 owner/generation 读取�
 
 Current 正文按 `CurrentContentRef` 的有界窗口读取；History 正文按 `HistoryEventBodyRef` 的有界范围读取。两者都保留 offset、返回 bytes、可用长度和真实 sealed 资格，不能用一个所有者的窗口扩展另一个所有者。
 
-折叠 Work 只读取 Work head；展开后才请求该组的 member page，并按实际可见行读取详情。成员 head 的 `detail_event_id`、`input_manifest_event_id` 与 `body_manifest_event_id` 是导航元数据，不等于正文已加载。稳定性来自 entity/member/row identity，不来自当前 tool 名、URL、Markdown 外观或 MIME。
+折叠 Work 只读取 Work head；展开组件把该组同一份可撤销正文读取资格传给成员，展开后才请求该组的 member page，并按实际可见行读取详情。成员 head 的 `detail_event_id`、`input_manifest_event_id` 与 `body_manifest_event_id` 是导航元数据，不等于正文已加载。稳定性来自 entity/member/row identity，不来自当前 tool 名、URL、Markdown 外观或 MIME。
 
 历史 metadata 单次读取沿用 64 KiB 小头预算。业务卡片需要完整 envelope 时，按精确 event、content role 和 range 分块读取后解码；超预算、截断、身份冲突或解码失败明确呈现，不自动扩大预算、累计无限正文或把原始 JSON 冒充业务卡。
 
