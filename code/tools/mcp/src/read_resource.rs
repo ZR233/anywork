@@ -54,6 +54,7 @@ impl<L: FrozenMcpLease, H: MediaHost> TypedTool for ReadMcpResource<L, H> {
             .resource_query(
                 Some(input.server),
                 ResourceOperation::ReadResource { uri: input.uri },
+                context.cancellation,
             )
             .await
             .map_err(McpError::new)?;

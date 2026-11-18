@@ -353,6 +353,7 @@ impl RuntimeWorker {
                     server_id,
                     raw_name,
                     arguments,
+                    cancellation,
                     reply,
                 } => {
                     if self.shutting_down {
@@ -362,12 +363,13 @@ impl RuntimeWorker {
                     if reply.is_closed() {
                         continue;
                     }
-                    self.spawn_tool_call(generation, server_id, raw_name, arguments, reply);
+                    self.spawn_tool_call(generation, server_id, raw_name, arguments, cancellation, reply);
                 }
                 RuntimeCommand::ResourceQuery {
                     generation,
                     server_id,
                     operation,
+                    cancellation,
                     reply,
                 } => {
                     if self.shutting_down {
@@ -377,7 +379,7 @@ impl RuntimeWorker {
                     if reply.is_closed() {
                         continue;
                     }
-                    self.spawn_resource_query(generation, server_id, operation, reply);
+                    self.spawn_resource_query(generation, server_id, operation, cancellation, reply);
                 }
                 RuntimeCommand::MarkUnavailable {
                     identity,

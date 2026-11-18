@@ -359,35 +359,37 @@ impl ConnectedMcp {
         &self,
         request: ClientRequest,
         timeout: Duration,
+        cancellation: &CancellationToken,
     ) -> std::result::Result<ServerResult, ServiceError> {
         if self.closing.load(Ordering::Acquire) {
             return Err(ServiceError::TransportClosed);
         }
         let deadline = tokio::time::Instant::now() + timeout;
-        // RMCP's option starts at await_response, not at its bounded channel send.
-        // Tokio mpsc::Sender::send is cancellation-safe: an elapsed enqueue has not
-        // submitted a request. Once it returns a handle, use only the remaining budget
-        // and let RMCP send the request-specific cancellation on response timeout.
-        let mut handle = tokio::time::timeout_at(
+        let cancelled = || ServiceError::Cancelled {
+            reason: Some("tool execution cancelled by owner".into()),
+        };
+        // Both admission and the accepted RPC share the configured deadline.
+        let enqueue = tokio::time::timeout_at(
             deadline,
             self.peer
-                .send_request_with_option(request, PeerRequestOptions::with_timeout(timeout)),
-        )
-        .await
-        .map_err(|_| ServiceError::Timeout { timeout })??;
-        handle.options.timeout =
-            Some(deadline.saturating_duration_since(tokio::time::Instant::now()));
-        // Poll RMCP's response timeout/cancellation first, but do not let waiting for
-        // cancellation delivery or confirmation extend this request's original deadline.
-        // An already queued notification remains owned by the service; dropping this
-        // waiter neither resends it nor confirms remote cancellation or rollback.
-        tokio::time::timeout_at(deadline, handle.await_response())
-            .await
-            .map_err(|_| ServiceError::Timeout { timeout })?
-            .map_err(|error| match error {
-                ServiceError::Timeout { .. } => ServiceError::Timeout { timeout },
-                error => error,
-            })
+                .send_cancellable_request(request, PeerRequestOptions::no_options()),
+        );
+        let mut handle = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => return Err(cancelled()),
+            result = enqueue => result.map_err(|_| ServiceError::Timeout { timeout })??,
+        };
+        // A result already in the SDK's response channel remains observable. Otherwise
+        // the SDK cancels this exact RPC without closing a shared transport.
+        let (error, reason) = tokio::select! {
+            biased;
+            result = &mut handle.rx => return result.map_err(|_| ServiceError::TransportClosed)?,
+            () = cancellation.cancelled() => (cancelled(), "tool execution cancelled by owner"),
+            () = tokio::time::sleep_until(deadline) => (ServiceError::Timeout { timeout }, "request timeout"),
+        };
+        // Keep the original deadline even if the peer stops reading the transport.
+        let _ = tokio::time::timeout_at(deadline, handle.cancel(Some(reason.into()))).await;
+        Err(error)
     }
 
     pub(crate) async fn call_tool_timed(
@@ -395,6 +397,7 @@ impl ConnectedMcp {
         name: String,
         arguments: serde_json::Value,
         timeout: Duration,
+        cancellation: &CancellationToken,
     ) -> std::result::Result<CallToolResult, ServiceError> {
         let mut params = CallToolRequestParams::new(name);
         match arguments {
@@ -411,6 +414,7 @@ impl ConnectedMcp {
             .request(
                 ClientRequest::CallToolRequest(CallToolRequest::new(params)),
                 timeout,
+                cancellation,
             )
             .await?
         {
@@ -996,6 +1000,47 @@ pub(crate) mod tests {
         source.downcast_ref::<std::io::Error>().is_some()
     }
 
+    #[tokio::test]
+    async fn cancellation_notifies_the_exact_accepted_request_before_its_deadline() {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
+        let (client, server) = tokio::io::duplex(8192);
+        let (read, write) = tokio::io::split(client);
+        let handler = client_handler("cancelled-peer", ProtocolVersion::V_2025_11_25, None);
+        let transport = observed_transport::ObservedTransport::new(
+            AsyncRwTransport::new(read, write),
+            handler.identity.clone(),
+        );
+        let service = rmcp::service::serve_directly(handler, transport, None);
+        let session = ConnectedMcp::from_running(service, Duration::from_secs(2)).await;
+        let mut lines = BufReader::new(server).lines();
+        let cancellation = CancellationToken::new();
+        let call = session.call_tool_timed(
+            "held".into(),
+            serde_json::json!({}),
+            Duration::from_secs(60),
+            &cancellation,
+        );
+        let observe = async {
+            let request: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(request["method"], "tools/call");
+            cancellation.cancel();
+            let notification: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(notification["method"], "notifications/cancelled");
+            assert_eq!(notification["params"]["requestId"], request["id"]);
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(call, observe)
+        })
+        .await
+        .expect("cancellation must not wait for the request deadline");
+        assert!(matches!(result, Err(ServiceError::Cancelled { .. })));
+        assert!(!session.has_ended());
+        session.close().await.unwrap();
+    }
+
     // Deliberately park the SDK consumer on a dedicated worker thread: pending send
     // futures alone do not stop RMCP, which spawns them concurrently. This fixture
     // reproduces consumer starvation without changing the real bounded SDK channel.
@@ -1102,7 +1147,12 @@ pub(crate) mod tests {
         let budget = Duration::from_millis(40);
         let result = tokio::time::timeout(
             Duration::from_secs(1),
-            session.call_tool_timed("never-sent".into(), serde_json::json!({}), budget),
+            session.call_tool_timed(
+                "never-sent".into(),
+                serde_json::json!({}),
+                budget,
+                &CancellationToken::new(),
+            ),
         )
         .await;
         // Always release the fixture before reporting an assertion failure.
@@ -1115,6 +1165,7 @@ pub(crate) mod tests {
             .request(
                 ClientRequest::PingRequest(Default::default()),
                 Duration::from_secs(2),
+                &CancellationToken::new(),
             )
             .await
             .unwrap();
