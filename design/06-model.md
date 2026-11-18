@@ -44,7 +44,7 @@
 
 工具作者声明来自 `pl-agent-tool`，唯一模型投影为 `completion::tool_definition_to_spec`：完整 `ToolDefinition` 与宿主显式的 `ToolCallPolicy` 转成现有 `ToolSpec`，再经原运行时声明编码进入 core。`ToolSpec` 是模型投影 DTO，保留 Function、Custom、programmatic 与 provider-hosted 线协议形状，不再承担另一套作者构造入口。`DirectOnly` 保持空 `allowed_callers`；`DirectAndProgrammatic` 显式声明 Direct 与 Programmatic 两类 caller，并仅在未提供输出 schema 时使用原有开放对象输出。两种策略对 Function 与 Custom 一致，不授予执行权限；托管工具不经过作者投影，也不生成本地占位执行器。
 
-作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
+Responses Function 声明显式发送 `strict: false`，保留可选参数与角色分支约束，避免服务端自动严格化改变参数语义；HTTP 与 WebSocket 使用同一编码。作者 schema 与 Grammar 字节保持完整；供应商所需的根标题/方言修剪、对象联合投影及 strict 限制只作用于实际请求，不改写冻结声明或统一强制拒绝额外字段。模型继续拥有 Custom 原生/Function 回退与原始参数恢复。此次 Rust 接口抽取沿用 `pl.model.tool-spec`、工具结果、checkpoint 与历史 codec，不增加存储版本或重放当前工具的兼容分支。
 
 所有厂商的出站工具输入声明共用精简投影，ChatGPT 会话路由也复用同一规则：只保留参数形状、说明、引用与必要约束，删除生成器标题、方言声明、默认值、示例与内部扩展字段，并裁掉未引用的本地定义。闭合对象联合的分支引用父级公共参数定义，只发送允许的参数名、不同限制与额外必填项；禁止的参数从可用参数表移除，仍由分支对象闭合拒绝，不再重复整份参数 schema 或发送布尔属性 schema。其他布尔 schema 在必要处转为对象形式。枚举/常量中的 JSON 实例不递归当成 schema 改写。完整作者声明、冻结上下文与宿主 Profile / 权限校验保持原状；Custom/Grammar 原生表示及必要的 Function 回退沿用原协议适配。子智能体创建的内部 metadata 不进入模型参数声明。直接工具调用不携带输出 schema，托管编程式调用所需的输出声明遵循下一段契约。此设计对照本地 Codex 的独立 API 工具表示与 schema 清理边界；xAI 对布尔属性 schema 的拒绝见 [JSON Schema support](https://docs.x.ai/developers/model-capabilities/text/structured-outputs#json-schema-support)。
 

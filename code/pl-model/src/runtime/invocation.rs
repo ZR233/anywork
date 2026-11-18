@@ -1503,6 +1503,7 @@ mod chatgpt_tests {
         // Retain the existing canonical tool-schema ordering, not a new SIWC registry.
         assert_eq!(declarations["tools"][1]["name"], "lookup");
         assert_eq!(declarations["tools"][1]["parameters"], schema);
+        assert_eq!(declarations["tools"][1]["strict"], false);
         assert!(declarations["tools"][1].get("output_schema").is_none());
         assert_eq!(declarations["tools"][0]["name"], "edit");
         assert_eq!(
