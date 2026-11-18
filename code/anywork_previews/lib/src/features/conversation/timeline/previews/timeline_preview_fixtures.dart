@@ -777,6 +777,101 @@ abstract final class TimelinePreviewFixtures {
       ),
   ];
 
+  static List<Message> copyActionMessages() => [
+    _copyActionMessage(
+      'preview-copy-input',
+      1,
+      ThreadTextChannel.user,
+      '排查连接池获取超时后未及时释放句柄的问题，并补齐取消安全测试。',
+    ),
+    _copyActionMessage(
+      'preview-copy-commentary',
+      2,
+      ThreadTextChannel.commentary,
+      '已定位到忙碌重试循环没有及时响应取消信号，正在验证超时后的资源释放。',
+    ),
+    _message(
+      ChatItemPresentation.forUnit(runUnit(runEntry('copy-work', 3, count: 3))),
+    ),
+    _copyActionMessage(
+      'completion:12:preview-copy',
+      4,
+      ThreadTextChannel.finalAnswer,
+      '已修复连接池取消后未及时释放句柄的问题。超时和取消两条路径均已通过回归测试。',
+    ),
+  ];
+
+  static Message _copyActionMessage(
+    String id,
+    int order,
+    ThreadTextChannel channel,
+    String text,
+  ) {
+    final bytes = utf8.encode(text);
+    final isInput = channel == ThreadTextChannel.user;
+    final eventId = 'preview-copy-event-$order';
+    final unit = TimelineDisplayUnit(
+      block: DisplayBlock(
+        id: eventId,
+        blockOrder: order,
+        body: SingleDisplayBlock(
+          visibility: HistorySingleVisibility.content,
+          record: DisplayRecord(
+            historyEventId: eventId,
+            contentSource: CompletedOriginal(completionId: eventId),
+            atom: ChatAtom(
+              id: id,
+              source: isInput
+                  ? InputChatSource(inputId: id)
+                  : const ForegroundTurnChatSource(turnId: 'preview-copy-turn'),
+              sourceOrder: order,
+              kind: isInput ? ChatAtomKind.input : ChatAtomKind.text,
+              delivery: ChatDeliveryKind.independent,
+              textChannel: channel,
+              lifecycle: const TerminalChatAtom(
+                started: null,
+                ended: null,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              contents: const [],
+              payload: _payload(
+                'text',
+                {
+                  'channel': channel == ThreadTextChannel.finalAnswer
+                      ? 'final'
+                      : channel.name,
+                },
+                bodies: [
+                  {
+                    'key': 'body',
+                    'byteLength': bytes.length,
+                    'reference': {
+                      'databaseId': 'preview',
+                      'ownerEventId': eventId,
+                      'bodyKey': 'body',
+                      'bodyId': eventId,
+                      'byteStart': 0,
+                      'byteLength': bytes.length,
+                    },
+                  },
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    unit.expansion.current = unit;
+    unit.expansion.readHistoryBody = (_, _, _) async => ContentWindow(
+      offset: 0,
+      bytes: bytes,
+      generation: eventId,
+      availableThrough: bytes.length,
+      sealed: true,
+    );
+    return _message(ChatItemPresentation.forUnit(unit));
+  }
+
   /// 同作者相邻消息、跨时间消息和工作组使用同一个生产时间线。
   static List<Message> spacingMessages() => [
     _message(
