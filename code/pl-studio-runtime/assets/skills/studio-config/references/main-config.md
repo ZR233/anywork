@@ -62,7 +62,7 @@ Use explicit model catalogs and existing capability settings for an isolated
 evaluation profile. Keep unrelated MCP/model-discovery activity disabled and do
 not put enabled bots in the evaluation home. CLI diagnostics use stderr; stdout
 contains only the final assistant text after shutdown. Optional `--output-dir`
-writes a version-2 native run archive (`run.json`, `events.jsonl`, `result.json`
+writes a version-3 native run archive (`run.json`, `events.jsonl`, `result.json`
 and content-addressed originals). Use a fresh or empty non-symlink directory;
 failed export is an explicit failure. Unknown usage/cost stay null.
 
@@ -216,9 +216,12 @@ not settings to copy from another account. An explicit empty catalog can exist,
 but cannot satisfy an executable model route.
 
 `[models.accounts.<id>.model_enabled_overrides]` maps exact model IDs to booleans.
-An absent key means automatic; explicit `true` cannot create an unknown model or
-bypass capability/credential validation. Removing an override restores automatic
-selection. Model IDs and metadata are account-local.
+An absent key means enabled for bundled, online and manual models. An incomplete
+or empty online inventory does not automatically disable declared bundled models.
+Explicit `false` remains disabled across refreshes and restarts; removing an
+override restores enabled. There is no need to write `true` for every model.
+Enablement cannot create an unknown model or bypass capability/credential
+validation. Model IDs and metadata are account-local.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
 integer thresholds. Omission uses the model layer's effective automatic threshold;

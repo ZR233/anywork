@@ -99,7 +99,7 @@ Antigravity 是普通定义的内置启动模板，其受管安装、固定发�
 
 ### 20.2.1 模型启用、计费类别与分发默认设置
 
-- **模型启用覆盖（`model_enabled_overrides`）**：保存精确 `model_id` 到布尔值的映射，缺省为空；条目为明确开启或关闭，缺项表示按 [06](./06-model.md) 的目录规则自动解析。线上未列出的内置项仍在配置列表展示，用户可显式开启；来源变化或重启不清除已保存意图。模型启用状态切换复用独立类型化变更命令（携带 `operationId`、`expectedSettingsRevision`、`accountId`、`modelId` 与 `enabled`），只更新指定成员的覆盖，提交后同时推进设置水位与目录资格水位。模型配置快照以 `modelEnabledOverrides` 发布期望配置，目录快照发布已解析的 `enabled`；两者不是两份独立启用设置。禁用导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
+- **模型启用覆盖（`model_enabled_overrides`）**：保存精确 `model_id` 到布尔值的映射，缺省为空；条目为明确开启或关闭，缺项默认启用。线上未列出的内置项仍使用内置声明并保持默认启用；来源变化、成功空名单或重启不清除已保存意图。默认规则由 [06](./06-model.md) 的模型层统一解析，不给用户文件批量补写 `true`，已有显式 `false` 原样保留。模型启用状态切换复用独立类型化变更命令（携带 `operationId`、`expectedSettingsRevision`、`accountId`、`modelId` 与 `enabled`），只更新指定成员的覆盖，提交后同时推进设置水位与目录资格水位。模型配置快照以 `modelEnabledOverrides` 发布期望配置，目录快照发布已解析的 `enabled`；两者不是两份独立启用设置。禁用导致既有路由不可用时仅标记路由 `unavailable`，不自动篡改用户已选路由。
 - **账号计费类别（`billing_kind`）**：可选值为 `metered | subscription | noCharge | unknown`，作为账号计费意图的唯一持久化事实源。省略时按明确模板与权威端点地址自动推导生效类别，无法匹配时为 `unknown`；显式配置值优先且不被端点地址修改静默覆盖，自动推导结果亦不回写为显式配置。权威设置快照同时投影生效值 `billingKind`（用于展示与筛选）与可空覆盖值 `billingKindOverride`（表达用户显式意图）。账号页的「不计费」开关即该类别的布尔投影：开启时写入显式 `noCharge`，关闭时清除覆盖并恢复自动推导。
 - **子智能体分发默认设置（`[delegation]`）**：保存 `mode = profile | automatic`（默认 `profile`）与 `preference = economy | balanced | fast`（默认 `balanced`）。两个字段各自使用独立的类型化设置命令，仅改变未来新建会话的默认值；已建会话在创建准入时冻结解析后的非空枚举，后续不再回读全局默认设置（见 [12](./12-collaboration.md) §12.7）。
 

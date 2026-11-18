@@ -3425,32 +3425,39 @@ impl ThreadStorageSink {
         let store = self.0.store.clone();
         let owner = self.0.thread.id.clone();
         let task_id = task_id.to_owned();
+        // Before flush the original reliable queue still owns these exact producer facts.
+        // Cloning under its lock bridges reclamation into the immutable History read below.
+        let pending = lock_progress(&self.0)
+            .effects
+            .iter()
+            .rev()
+            .find_map(|queued| {
+                let effect = &queued.write.effect;
+                let task = effect.tasks.iter().find(|task| task.id == task_id)?;
+                let delivery = effect
+                    .deliveries
+                    .iter()
+                    .find(|delivery| delivery.call_id == task.call_id)?;
+                Some(pl_core::thread::cold::DurableToolTask {
+                    task: task.clone(),
+                    delivery: Some(delivery.clone()),
+                })
+            });
         async move {
             if thread_id != owner {
                 return Err(cold_error("Thread persistence owner mismatch"));
             }
-            let paths = store
-                .registered_session_paths(&owner)
-                .map_err(|error| cold_error(&error.to_string()))?;
-            let state = store
-                .state_for(paths.workspace_id(), &owner)
-                .map_err(|error| cold_error(&error.to_string()))?;
-            let current = state
-                .load_current()
+            if let Some(pending) = pending {
+                return Ok(Some(pending));
+            }
+            let history = store
+                .history(&owner)
                 .await
-                .map_err(|error| cold_error(&error.to_string()))?
-                .ok_or_else(|| cold_error("complete current is missing"))?;
-            Ok(current.state.tasks.get(&task_id).cloned().map(|task| {
-                pl_core::thread::cold::DurableToolTask {
-                    delivery: current
-                        .state
-                        .deliveries
-                        .iter()
-                        .find(|delivery| delivery.call_id == task.call_id)
-                        .cloned(),
-                    task,
-                }
-            }))
+                .map_err(|error| cold_error(&error.to_string()))?;
+            let reader = history.reader();
+            let result = super::tool_task::read(&reader, &task_id).await;
+            reader.close().await;
+            result.map_err(|error| cold_error(&error.to_string()))
         }
     }
 }
@@ -3989,6 +3996,100 @@ mod writer_tests {
             batch::Selection::Ready(effects) => effects,
             _ => panic!("expected a frozen prepared prefix"),
         }
+    }
+
+    #[tokio::test]
+    async fn completed_tool_payload_remains_queryable_after_current_releases_delivery() -> Result<()>
+    {
+        use pl_core::{
+            context::{ContextContent, OpaquePayload},
+            model::ModelToolCall,
+            thread::{
+                ToolDelivery, ToolOutcome,
+                task::{TaskRecord, TaskStatus},
+            },
+            tool::ToolOutput,
+        };
+
+        let mut fixture = Fixture::new("retained-tool-result").await?;
+        let id = fixture.sink.0.thread.id.clone();
+        let expected = serde_json::json!({
+            "output": "完整原始结果🧭".repeat(2048),
+            "modelOutputBytes": 128,
+            "error": null,
+            "nestedCallIds": [],
+        })
+        .to_string();
+        let task = TaskRecord {
+            id: "task:original-tool".into(),
+            call_id: "original-tool".into(),
+            tool_id: "exec".into(),
+            turn_id: "original-turn".into(),
+            parent_call_id: None,
+            invocation: Some(ModelToolCall {
+                call_id: "original-tool".into(),
+                tool_id: "exec".into(),
+                arguments: OpaquePayload::new("application/json", 1, "{}")?,
+                rejection: None,
+                presentation_contract: None,
+            }),
+            revision: 2,
+            status: TaskStatus::Succeeded,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        let delivery = ToolDelivery {
+            target: Default::default(),
+            call_id: task.call_id.clone(),
+            tool_id: task.tool_id.clone(),
+            output: ToolOutput::new(
+                OpaquePayload::new("pl.tool.lua", 1, expected.clone())?,
+                vec![ContextContent::Text {
+                    text: "short presentation".into(),
+                }],
+            ),
+            delivered_context: vec![ContextContent::Text {
+                text: "short presentation".into(),
+            }],
+            outcome: ToolOutcome::Succeeded,
+        };
+        let mut write = ticket(&id, 1);
+        Arc::make_mut(&mut write).state.terminal_tasks = Arc::from([task.clone()]);
+        Arc::make_mut(&mut write).state.deliveries = Arc::from([delivery.clone()]);
+        Arc::make_mut(&mut Arc::make_mut(&mut write).effect).tasks = Arc::from([task.clone()]);
+        Arc::make_mut(&mut Arc::make_mut(&mut write).effect).deliveries = Arc::from([delivery]);
+        fixture.handoff(&write).await?;
+        fixture.finish(1).await?;
+
+        let mut current = pl_core::thread::current::ThreadCurrent::new(
+            id.clone(),
+            pl_core::thread::current::RuntimeEpoch::new(),
+        );
+        current.state.tasks.insert(task.id.clone(), task.clone());
+        let paths = fixture.store.registered_session_paths(&id)?;
+        crate::studio::storage::current_file::CurrentFile::new(paths.root().to_owned(), id.clone())
+            .save(current)
+            .await?;
+
+        let saved = fixture
+            .sink
+            .read_tool_task(&id, &task.id)
+            .await?
+            .context("completed task must be read from its original History fact")?;
+        assert_eq!(saved.task.id, task.id);
+        assert_eq!(saved.task.status, TaskStatus::Succeeded);
+        let result = saved.delivery.context("complete original tool delivery")?;
+        assert_eq!(result.output.payload().format(), "pl.tool.lua");
+        assert_eq!(result.output.payload().content(), expected);
+        assert!(
+            fixture
+                .sink
+                .read_tool_task(&id, "task:unknown")
+                .await?
+                .is_none()
+        );
+        Ok(())
     }
 
     fn sqlite_literal(value: &str) -> String {

@@ -68,6 +68,8 @@ History writer 先在数据库事务外固定 RAM pending 根，再开始 SQLite
 
 投影交给 History 的 `PreparedEffect` 使用 `retained_resources` 表达本 effect 的真实交付与 repair 资源；`turn_id` 可以为空，只有能由原任务证明时才填写。该计划不复制 `latestTask`，也不创建 `history_tool_tasks`。资源身份、摘要和引用冲突使事件接纳失败，不能先发布完成 head 再补资源。
 
+Native 完成工具的 canonical 原件同时保留 `native.tool-task.v1` 正文，记录该 effect 中真实的 `TaskRecord` 与完整 `ToolDelivery`，包括原始 opaque 载荷及结果状态。`get_tool_task` 在原可靠队列尚未 flush 时读取同一在途事实，交接后按工具身份读取 History 原件；不依赖已经消费结果的 Current，也不从展示摘要拼造原始载荷。该正文复用 History 的身份、预算、分块、读者和关闭机制，不另建任务表或结果缓存。既有历史中未保存的原始字节保持不可用，不重执行工具补造。
+
 Native 通过 `ThreadHandle::attach_history(HistorySinkHandle)` 安装独立 History 端口，不附加 legacy checkpoint store。
 Core 交付 `HistoryExport { effect, original ThreadSnapshot observation cut, output_claim }`，不创建 checkpoint；
 原可靠预算、类型化压力和执行安全点继续约束接纳，输出预留随同一原件转移。Native 单观察者投影后交给原 History writer。

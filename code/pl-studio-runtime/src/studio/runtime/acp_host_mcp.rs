@@ -3,8 +3,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-#[cfg(all(test, target_os = "linux"))]
-use crate::thread_assembler::agent_wait::WaitAgentRequest;
 use anyhow::{Context, Result};
 use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
@@ -15,8 +13,6 @@ use pl_studio_mcp::{
     ipc::IpcServer,
 };
 use pl_tool::collaboration::control::{AgentCallContext, ControlError};
-#[cfg(all(test, target_os = "linux"))]
-use pl_tool::collaboration::thread::{AgentCloseOptions, AgentControlHost, AgentSpawn};
 use rmcp::transport::streamable_http_server::{
     SessionManager, StreamableHttpServerConfig, StreamableHttpService,
     session::local::LocalSessionManager,
@@ -730,6 +726,7 @@ mod tests {
 
     use anyhow::{Context, Result, ensure};
     use pl_acp::session::schema;
+    use pl_tool::collaboration::{control::AgentCallContext, thread::AgentControlHost};
     use reqwest::{Client, StatusCode, header};
     use serde_json::{Value, json};
     use tokio_util::sync::CancellationToken;
@@ -1130,7 +1127,11 @@ mod tests {
             let task = command["taskId"].as_str().context("running exec receipt")?.to_owned();
             let foreign = files_peer.request("tools/call", json!({"name":"anywork_get_tool_task","arguments":{"taskId":task,"resultCursor":0}})).await?;
             ensure!(foreign["result"]["isError"] == true, "another task owner accepted an original receipt from this instance");
-            let input = peer.tool("anywork_write_stdin", json!({"taskId":task,"chars":"input\n","closeStdin":true})).await?;
+            let mut input = peer.tool("anywork_write_stdin", json!({"taskId":task,"chars":"input\n","closeStdin":true})).await?;
+            if input["status"] == "running" {
+                let input_task = input["taskId"].as_str().context("stdin operation receipt")?.to_owned();
+                input = peer.task_result(&input_task).await?;
+            }
             ensure!(input["targetTaskId"] == task && input["inputReceipt"]["acceptedBytes"] == 6, "stdin did not use the real exec receipt: {input}");
             let result = peer.task_result(&task).await?;
             ensure!(result["stdout"]["content"].as_str().context("stdout")?.contains("readyinput\ndone"));
@@ -1557,6 +1558,7 @@ mod tests {
         let mut target = None;
         let mut services = Vec::new();
         let result = async {
+            save_acp_child_profile(&fixture)?;
             let mut open = fixture.open().await?;
             Fixture::ready(&mut open).await?;
             target = Some(open.target.clone());
@@ -1590,9 +1592,45 @@ mod tests {
             )
             .await?;
             services.push(first_service);
+            let spawned = host
+                .spawn(
+                    AgentCallContext {
+                        caller: identity.agent_id.clone(),
+                        call_id: "catalog-child".into(),
+                        cancellation: CancellationToken::new(),
+                    },
+                    serde_json::from_value(json!({
+                        "profileId": "acp-child",
+                        "taskSummary": "Inspect the child tool catalog",
+                        "message": "Complete this isolated catalog check"
+                    }))?,
+                )
+                .await?;
+            ensure!(
+                spawned.message_error.is_none(),
+                "child message was not accepted"
+            );
+            let child_identity = fixture
+                .runtime
+                .agent_facility
+                .product_events
+                .member_identity(
+                    &identity.session_id,
+                    &crate::AgentId::new(spawned.receipt.agent_id)?,
+                )
+                .context("published child identity")?;
+            let child_resources = owner
+                .resident_acp(child_identity.thread_id.as_str())?
+                .context("published child resources")?;
+            let child_host = owner.acp_agent_host(
+                &child_identity,
+                &child_resources,
+                &profile_snapshot,
+                selection,
+            )?;
             let (second_service, second_definition) = HostMcp::start(
-                host,
-                identity.agent_id.clone(),
+                child_host,
+                child_identity.agent_id,
                 CancellationToken::new(),
                 false,
                 None,
@@ -1905,7 +1943,7 @@ mod tests {
                 spawned["result"]["isError"] != true,
                 "the real ACP child spawn failed"
             );
-            let child_id = spawned["result"]["structuredContent"]["receipt"]["agentId"]
+            let child_id = spawned["result"]["structuredContent"]["agentId"]
                 .as_str()
                 .context("spawn result agent id")?
                 .to_owned();
@@ -2162,6 +2200,8 @@ mod tests {
 #[cfg(test)]
 mod future_sizes {
     use super::*;
+    use crate::thread_assembler::agent_wait::WaitAgentRequest;
+    use pl_tool::collaboration::thread::{AgentCloseOptions, AgentControlHost, AgentSpawn};
     use rmcp::{RoleServer, ServerHandler, model::CallToolRequestParams, service::RequestContext};
 
     fn bounded<Input, F: std::future::Future + std::marker::Send>(

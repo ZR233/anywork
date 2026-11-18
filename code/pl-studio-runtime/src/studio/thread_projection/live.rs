@@ -459,6 +459,21 @@ fn history_entity_change(
             database_id,
         )
         .map_err(|error| ProjectionError::History(error.to_string()))?;
+        if let Some(tool) = &atom.tool
+            && let Some(task) = effect
+                .tasks
+                .iter()
+                .find(|task| task.call_id == tool.call_id)
+            && let Some(delivery) = effect
+                .deliveries
+                .iter()
+                .find(|delivery| delivery.call_id == tool.call_id)
+        {
+            change.event.bodies.push(
+                crate::studio::storage::tool_task::body(task, delivery)
+                    .map_err(|error| ProjectionError::History(error.to_string()))?,
+            );
+        }
     }
     Ok(change)
 }
