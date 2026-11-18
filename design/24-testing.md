@@ -28,6 +28,13 @@
 
 Linux CI 的桌面与原生作业在每次独立运行编号下创建隔离输出目录，避免复用旧缓存或旧证据；失败时保留脱敏日志、模拟对端请求记录、场景报告与进程退出诊断。除纯版本发布外，`ci-gate` 汇总全部分片和必需作业状态，只有确认计划允许跳过的非必需作业才不阻塞合入。
 
+若门禁报告作业状态为 `abandoned`，先查看该作业的注解。确认 GitHub 未分配托管运行器，且上游构件仍可用时，在本次运行中重跑该作业。GitHub 会重跑依赖它的 `ci-gate`，并保留其他作业的结果。`JOB_ID` 取自对应作业的 `databaseId`。若重跑时所需构件已过期，需重跑整个工作流。[GitHub 单作业重跑说明](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs#re-running-a-specific-job-in-a-workflow)
+
+```sh
+gh run view RUN_ID --json jobs --jq '.jobs[] | {name, databaseId, conclusion}'
+gh run rerun RUN_ID --job JOB_ID
+```
+
 ## 24.1 现有测试基础设施
 
 桌面与运行时集成入口按跨层边界组织，不同入口的观察结论互不替代：

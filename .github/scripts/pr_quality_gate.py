@@ -92,6 +92,14 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
+        if "abandoned" in results.values():
+            print(
+                "Check the abandoned job's annotations. If GitHub could not acquire a "
+                "hosted runner, re-run that job and its dependents with "
+                "`gh run rerun RUN_ID --job JOB_ID`. Use the job's databaseId from "
+                "`gh run view RUN_ID --json jobs`.",
+                file=sys.stderr,
+            )
         print(
             "Suggested required check name: ci-gate. "
             "Editing this workflow does not configure repository required checks.",

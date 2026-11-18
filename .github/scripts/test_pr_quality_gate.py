@@ -136,14 +136,15 @@ class GateEvaluateTest(unittest.TestCase):
                     errors = evaluate(required, {**results, "linux-test-inputs": status})
                     self.assertTrue(any("linux-test-inputs" in error for error in errors))
 
-    def test_rust_plan_cannot_skip_either_native_platform(self):
+    def test_rust_plan_requires_both_native_platforms_to_finish(self):
         plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="push")
         results = _results(**{job: "success" for job in plan["required_jobs"]})
         self.assertEqual(evaluate(plan["required_jobs"], results), [])
         for job in ("windows-build", "macos-build"):
-            with self.subTest(job=job):
-                errors = evaluate(plan["required_jobs"], {**results, job: "skipped"})
-                self.assertTrue(any(job in error for error in errors))
+            for status in ("skipped", "abandoned"):
+                with self.subTest(job=job, status=status):
+                    errors = evaluate(plan["required_jobs"], {**results, job: status})
+                    self.assertTrue(any(job in error for error in errors))
 
 if __name__ == "__main__":
     unittest.main()
