@@ -311,7 +311,9 @@ fn selected_text(result: &pl_tool_lua::ExecOutput, task_id: &str) -> String {
         text.len(),
         serde_json::to_string(task_id).expect("task identity encodes as JSON")
     );
-    let mut selected = pl_output::bounded_text(&notice, maximum, 0).text;
+    // The original cannot be recovered if its identity or paging arguments are cut off.
+    // A budget smaller than this control receipt leaves no room for a content preview.
+    let mut selected = notice;
     let preview = pl_output::OutputExcerpt::from_parts(text.into_bytes(), Vec::new(), 0)
         .project(maximum.saturating_sub(selected.len()));
     selected.push_str(&preview.content);
@@ -534,7 +536,7 @@ mod tests {
 
     #[test]
     fn selected_output_including_diagnostics_respects_utf8_byte_budget() {
-        for maximum in [1, 8, 64, 8192] {
+        for maximum in [256, 8192] {
             for error in [None, Some("错误".repeat(4096))] {
                 let result = pl_tool_lua::ExecOutput {
                     output: "中间".repeat(8192),
@@ -546,6 +548,33 @@ mod tests {
                 assert!(text.len() <= maximum);
                 assert_eq!(result.output.len(), 49152);
             }
+        }
+    }
+
+    #[test]
+    fn truncated_output_keeps_complete_recovery_receipt_with_a_tiny_budget() {
+        let task_id = format!(
+            "task:model-call:36:{}:37:call_{}",
+            "a".repeat(36),
+            "b".repeat(32)
+        );
+        for (maximum, error) in [1, 8, 64, 128].into_iter().flat_map(|maximum| {
+            [None, Some("EXPECTED_FAILURE".into())].map(|error| (maximum, error))
+        }) {
+            let result = pl_tool_lua::ExecOutput {
+                output: "中文🧭".repeat(4096),
+                model_output_bytes: maximum,
+                error,
+            };
+            let text = super::selected_text(&result, &task_id);
+            assert!(
+                text.contains(&format!("taskId=\"{task_id}\",resultCursor=0}})]\n")),
+                "incomplete recovery receipt: {text}"
+            );
+            assert!(
+                !text.contains("中文🧭"),
+                "a tiny budget must not include an output preview"
+            );
         }
     }
 }

@@ -951,6 +951,36 @@ mod tests {
         }
 
         async fn task_result(&mut self, task: &str) -> Result<Value> {
+            Ok(self.task_reply(task).await?["value"].clone())
+        }
+
+        async fn completed_tool(
+            &mut self,
+            name: &str,
+            arguments: Value,
+        ) -> Result<pl_studio_mcp::HostResult> {
+            let response = self
+                .request("tools/call", json!({"name":name,"arguments":arguments}))
+                .await?;
+            ensure!(
+                response["error"].is_null(),
+                "MCP protocol failure: {response}"
+            );
+            let result = &response["result"];
+            if result["structuredContent"]["status"] == "running" {
+                let task = result["structuredContent"]["taskId"]
+                    .as_str()
+                    .context("pending tool receipt")?;
+                Ok(serde_json::from_value(self.task_reply(task).await?)?)
+            } else {
+                Ok(pl_studio_mcp::HostResult {
+                    value: result["structuredContent"].clone(),
+                    is_error: result["isError"] == true,
+                })
+            }
+        }
+
+        async fn task_reply(&mut self, task: &str) -> Result<Value> {
             self.tool("anywork_wait", json!({"taskIds":[task],"timeoutMs":30000}))
                 .await?;
             let mut content = String::new();
@@ -972,7 +1002,7 @@ mod tests {
                     None => break,
                 }
             }
-            Ok(serde_json::from_str::<Value>(&content)?["value"].clone())
+            Ok(serde_json::from_str(&content)?)
         }
 
         async fn cancel_request(&self, request_id: u64) -> Result<()> {
@@ -1103,8 +1133,8 @@ mod tests {
             ensure!(!std::path::Path::new(&fixture.workspace.path).join("src/file.txt").exists(), "file tool used ACP host cwd");
             tokio::fs::create_dir(fixture.home.path().join("outside")).await?;
             std::os::unix::fs::symlink(fixture.home.path().join("outside"), root.join("escape"))?;
-            let denied = peer.request("tools/call", json!({"name":"anywork_write_file","arguments":{"path":"escape/forbidden","content":"bad","mode":"create"}})).await?;
-            ensure!(denied["result"]["isError"] == true && !fixture.home.path().join("outside/forbidden").exists());
+            let denied = peer.completed_tool("anywork_write_file", json!({"path":"escape/forbidden","content":"bad","mode":"create"})).await?;
+            ensure!(denied.is_error && !fixture.home.path().join("outside/forbidden").exists());
             let git = peer.tool("anywork_git_workspace_info", json!({})).await?;
             ensure!(git["worktree"] == root.to_str().context("Git root")?);
 
@@ -1121,8 +1151,8 @@ mod tests {
             files_peer.initialize().await?;
             let denied = files_peer.request("tools/call", json!({"name":"anywork_exec_command","arguments":{"command":"false"}})).await?;
             ensure!(denied["error"]["code"] == -32602);
-            let denied = files_peer.request("tools/call", json!({"name":"anywork_write_file","arguments":{"path":fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"}})).await?;
-            ensure!(denied["result"]["isError"] == true && !fixture.home.path().join("outside/full-access-forbidden").exists());
+            let denied = files_peer.completed_tool("anywork_write_file", json!({"path":fixture.home.path().join("outside/full-access-forbidden"),"content":"bad","mode":"create"})).await?;
+            ensure!(denied.is_error && !fixture.home.path().join("outside/full-access-forbidden").exists());
             let command = peer.tool("anywork_exec_command", json!({"command":"printf ready; cat; printf done","interactive":true})).await?;
             let task = command["taskId"].as_str().context("running exec receipt")?.to_owned();
             let foreign = files_peer.request("tools/call", json!({"name":"anywork_get_tool_task","arguments":{"taskId":task,"resultCursor":0}})).await?;
@@ -1135,8 +1165,8 @@ mod tests {
             ensure!(input["targetTaskId"] == task && input["inputReceipt"]["acceptedBytes"] == 6, "stdin did not use the real exec receipt: {input}");
             let result = peer.task_result(&task).await?;
             ensure!(result["stdout"]["content"].as_str().context("stdout")?.contains("readyinput\ndone"));
-            let wrong = peer.request("tools/call", json!({"name":"anywork_write_stdin","arguments":{"taskId":"task:foreign-instance","chars":"do-not-send"}})).await?;
-            ensure!(wrong["result"]["isError"] == true);
+            let wrong = peer.completed_tool("anywork_write_stdin", json!({"taskId":"task:foreign-instance","chars":"do-not-send"})).await?;
+            ensure!(wrong.is_error, "foreign task stdin succeeded");
 
             let mut output = peer.tool("anywork_exec_command", json!({"command":"head -c 70000 /dev/zero | tr '\\0' x","maxOutputChars":64})).await?;
             if output["status"] == "running" {
@@ -1197,8 +1227,8 @@ mod tests {
             ensure!(tokio::fs::read_to_string(root.join("mutation-count")).await? == "once", "archive repair reexecuted a mutation");
 
             executor.close().await?;
-            let stale = peer.request("tools/call", json!({"name":"anywork_stat_path","arguments":{"path":"src/file.txt"}})).await?;
-            ensure!(stale["result"]["isError"] == true, "stale execution binding silently rebound");
+            let stale = peer.completed_tool("anywork_stat_path", json!({"path":"src/file.txt"})).await?;
+            ensure!(stale.is_error, "stale execution binding silently rebound");
             tools.close().await?;
             Ok::<_, anyhow::Error>(())
         }.await;

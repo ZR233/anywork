@@ -238,6 +238,7 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
         a.selectable_catalog(Some(ModelType::Text))
             .unwrap()
             .iter()
+            .filter(|entry| entry.origin == pl_model::config::AccountModelOrigin::Online)
             .map(|entry| entry.model.model_id.as_str())
             .collect::<Vec<_>>(),
         ["max-only", "without-tools-or-prices"]
@@ -246,7 +247,9 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
         config.accounts[&b_id]
             .selectable_catalog(Some(ModelType::Text))
             .unwrap()
-            .len(),
+            .iter()
+            .filter(|entry| entry.origin == pl_model::config::AccountModelOrigin::Online)
+            .count(),
         1
     );
     let shared = all
@@ -2041,7 +2044,7 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
 }
 
 #[tokio::test]
-async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact_ids() {
+async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_ids() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
     let model_id = known.model_id.clone();
@@ -2090,6 +2093,9 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
     let reread: AccountConfig = serde_json::from_value(persisted).unwrap();
     assert!(!reread.has_model_catalog_overlay());
     config.set_model_catalog_overlay(Vec::new()).unwrap();
+    let mut expected = definition.models.clone();
+    expected.push(manual);
+    expected.sort_by(|a, b| a.model_id.cmp(&b.model_id));
     assert_eq!(
         config
             .selectable_catalog(None)
@@ -2097,7 +2103,7 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
             .into_iter()
             .map(|entry| entry.model)
             .collect::<Vec<_>>(),
-        vec![manual]
+        expected
     );
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
@@ -2119,7 +2125,17 @@ async fn overlay_replaces_inventory_manual_wins_and_prices_join_only_local_exact
     let mut fresh = provider("http://127.0.0.1:1", ProtocolKind::DeepSeek);
     fresh.set_model_catalog_overlay(empty).unwrap();
     assert!(!fresh.effective_catalog(None).unwrap().is_empty());
-    assert!(fresh.selectable_catalog(None).unwrap().is_empty());
+    let mut expected = bundled_model_definition("deepseek").unwrap().models;
+    expected.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+    assert_eq!(
+        fresh
+            .selectable_catalog(None)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.model)
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 #[tokio::test]

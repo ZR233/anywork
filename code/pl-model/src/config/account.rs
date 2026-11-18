@@ -182,7 +182,7 @@ pub struct AccountConfig {
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
     model_catalog_overlay: Option<Vec<ModelInfo>>,
-    /// 精确 model_id 的显式启用覆盖；缺项按当前目录自动决定，撤下成员仍保留意图。
+    /// 精确 model_id 的显式启用覆盖；缺项默认启用，撤下成员仍保留意图。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_enabled_overrides: BTreeMap<String, bool>,
     #[serde(skip)]
