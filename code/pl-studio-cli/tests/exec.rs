@@ -2,7 +2,6 @@ use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use pl_studio_runtime::{ConfigPaths, ConfigStore, StudioConfig};
@@ -33,7 +32,7 @@ impl Environment {
         config.models.accounts.insert(
             AccountId::new("fixture")?,
             AccountConfig::from_explicit_models(
-                ProtocolEndpoint::compatible("fixture", endpoint),
+                pl_model::protocol::providers::openai::compatible_endpoint("fixture", endpoint),
                 vec![model],
             ),
         );
@@ -371,7 +370,7 @@ async fn environment_credentials_follow_native_protocol_requirements_without_key
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let mut account = AccountConfig::from_explicit_models(
-        ProtocolEndpoint::deepseek(Some(server.base_url())),
+        pl_model::protocol::providers::deepseek::endpoint(Some(server.base_url())),
         vec![model],
     );
     account.bearer_token_env = Some("ANYWK_REQUIRED_TEST_TOKEN".into());

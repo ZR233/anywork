@@ -9,7 +9,7 @@ use pl_model::config::{
     AccountConfig, AccountModelCatalogConfig, AccountTemplateId, builtin_account_catalog,
 };
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::protocol::{ConnectionMode, ProtocolEndpoint, ProtocolKind, WireApi};
+use pl_model::protocol::{ConnectionMode, ProtocolEndpoint, ProtocolId, WireApi};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountModelEdit {
@@ -27,7 +27,7 @@ pub struct AccountEdit {
     /// 可选的内置账号模板引用；模板是创建默认值与创建协议的唯一来源。
     pub template: Option<AccountTemplateId>,
     /// 明确的厂商协议选择；模板账号由模板决定，自定义账号使用该显式值。
-    pub protocol: ProtocolKind,
+    pub protocol: ProtocolId,
     pub name: String,
     pub base_url: Option<String>,
     pub bearer_token: Option<String>,
@@ -148,7 +148,9 @@ impl AccountEdit {
             None => None,
         };
         // 模板是模板账号创建协议的来源；自定义账号使用显式选择。
-        let template_protocol = template.as_ref().map(|template| template.account.protocol);
+        let template_protocol = template
+            .as_ref()
+            .map(|template| template.account.protocol.clone());
         let mut config = match &self.template {
             Some(template_id) => {
                 let template = template.expect("resolved template for this account edit");
@@ -185,8 +187,11 @@ impl AccountEdit {
             None => {
                 let current_custom = current.filter(|account| account.template_id().is_none());
                 let info = ProtocolEndpoint {
-                    chatgpt_session: None,
-                    protocol: self.protocol,
+                    authorization: None,
+                    responses_instruction_role: pl_model::protocol::builtin_protocols()
+                        .resolve(&self.protocol)?
+                        .responses_instruction_role,
+                    protocol: self.protocol.clone(),
                     name: name.clone(),
                     base_url: base_url.clone(),
                     bearer_token: bearer_token.clone(),

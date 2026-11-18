@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig};
 use pl_model::model::ModelInfo;
-use pl_model::protocol::ProtocolEndpoint;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 
@@ -18,7 +17,10 @@ fn model(model_id: &str, capacity: Option<u64>) -> ModelInfo {
 
 fn provider(models: Vec<ModelInfo>) -> AccountConfig {
     AccountConfig::from_explicit_models(
-        ProtocolEndpoint::compatible("Fixture", "https://example.test/v1"),
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "Fixture",
+            "https://example.test/v1",
+        ),
         models,
     )
 }

@@ -1,0 +1,27 @@
+[package]
+name = "pl-model-openai-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-agent-tool = { workspace = true }
+pl-core = { workspace = true }
+base64 = { workspace = true }
+schemars = { workspace = true }
+utoipa = { workspace = true }
+thiserror = { workspace = true }
+hyper = { workspace = true }
+tokio = { workspace = true }
+pl-model-types = { workspace = true }
+pl-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+sse-stream = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+pretty_assertions = { workspace = true }

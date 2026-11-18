@@ -27,7 +27,6 @@ use pl_model::model::{
     MediaRepresentation, MediaWireFormat, ModelInfo, ModelInputCapability, ModelInputSource,
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
-use pl_model::protocol::ProtocolEndpoint;
 use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpFileV1, McpServerTransport, StudioConfig,
     StudioMcpServerEntry, canonical_mcp_filename,
@@ -2504,7 +2503,10 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             })
             .collect();
         *account = AccountConfig::from_explicit_models(
-            ProtocolEndpoint::compatible("Local migration fixture", &ready.base_url),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "Local migration fixture",
+                &ready.base_url,
+            ),
             models,
         );
     }
@@ -2772,7 +2774,7 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     let mut config = StudioConfig::default_config()?;
     let mut model = ModelInfo::compatible("fixture-model");
     model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
-        field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
+        field: pl_model::model::reasoning_fields::REASONING_CONTENT,
     });
     model.display_name = "Local GUI fixture".into();
     if ready.scenario == "timeline-history-20k" {
@@ -2803,7 +2805,10 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
         });
     }
     let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
-    let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
+    let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Local GUI fixture",
+        &ready.base_url,
+    );
     endpoint.service_capabilities.remote_compaction =
         matches!(ready.scenario.as_str(), "call-lifecycle-recovery");
     let mut models = vec![model];

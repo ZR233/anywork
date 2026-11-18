@@ -337,18 +337,17 @@ pub(crate) fn account_settings(
         usage_query_revision: state
             .usage_query_revision(id)
             .context("account usage query identity is missing")?,
-        credential_required: account.protocol != pl_model::protocol::ProtocolKind::OpenAiCompatible,
+        credential_required: account.protocol
+            != pl_model::protocol::providers::openai::COMPATIBLE_ID,
         capability_source: match &account.capabilities {
             AccountCapabilitySelection::TemplateDefaults => "template_defaults",
             AccountCapabilitySelection::Explicit(_) => "explicit",
         }
         .to_string(),
         hosted_web_search: service_capabilities.web_search.hosted_responses,
-        hosted_web_search_dialect: service_capabilities
-            .web_search
-            .hosted_dialect
-            .as_str()
-            .to_string(),
+        hosted_web_search_dialect: pl_model::protocol::builtin_protocols()
+            .hosted_search_label(&service_capabilities.web_search.hosted_dialect)
+            .to_owned(),
         standalone_web_search: service_capabilities
             .web_search
             .standalone

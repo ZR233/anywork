@@ -1292,7 +1292,7 @@ mod storage_fault_tests {
                     role: crate::config::root_agent_route_id(),
                     account_id: pl_model::config::AccountId::new("reactivation-account")
                         .map_err(storage_error)?,
-                    endpoint: pl_model::protocol::ProtocolEndpoint::compatible(
+                    endpoint: pl_model::protocol::providers::openai::compatible_endpoint(
                         "storage fixture",
                         "http://127.0.0.1:0",
                     ),
@@ -1301,7 +1301,7 @@ mod storage_fault_tests {
                     effort: None,
                 };
                 let model = pl_model::runtime::ThreadModel::new(
-                    pl_model::runtime::ModelRuntime::from_route(&route)?,
+                    pl_model::runtime::from_route(&route)?,
                     None,
                 );
                 Ok(StudioThreadSpec {

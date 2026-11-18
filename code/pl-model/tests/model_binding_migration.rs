@@ -3,8 +3,8 @@ use pl_core::context::OpaquePayload;
 use pl_model::model::ModelInfo;
 use pl_model::runtime::migration::migrate_payload;
 use pl_model::{
-    protocol::{ProtocolEndpoint, ProtocolKind, WireApi},
-    runtime::{ModelRuntime, model_failure_receipt, model_request_receipt, model_response_receipt},
+    protocol::WireApi,
+    runtime::{model_failure_receipt, model_request_receipt, model_response_receipt},
 };
 use serde_json::json;
 
@@ -180,7 +180,10 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
         .expect("legacy record with its real non-empty prompt migrates");
     assert_eq!(receipt.binding.account_id, "deepseek");
     assert_eq!(receipt.binding.model_id, "deepseek-v4-pro");
-    assert_eq!(receipt.binding.protocol, ProtocolKind::DeepSeek);
+    assert_eq!(
+        receipt.binding.protocol,
+        pl_model::protocol::providers::deepseek::ID
+    );
     assert_eq!(receipt.binding.wire_api, WireApi::Responses);
     // The stored isolation namespace is a frozen fact and must survive the field rename.
     assert_eq!(receipt.binding.isolation, "binding:stable-namespace");
@@ -281,7 +284,10 @@ fn current_prepared_request_is_read_without_legacy_fields() {
     let receipt = model_request_receipt(&current).expect("current record decodes");
     assert_eq!(receipt.binding.account_id, migrated.binding.account_id);
     assert_eq!(receipt.binding.model_id, migrated.binding.model_id);
-    assert_eq!(receipt.binding.protocol, ProtocolKind::DeepSeek);
+    assert_eq!(
+        receipt.binding.protocol,
+        pl_model::protocol::providers::deepseek::ID
+    );
     assert_eq!(receipt.binding.wire_api, WireApi::Responses);
 }
 
@@ -320,7 +326,10 @@ fn legacy_assistant_frame_migrates_its_binding() {
         .expect("frame exists");
     assert_eq!(receipt.binding.account_id, "deepseek");
     assert_eq!(receipt.binding.model_id, "deepseek-v4-pro");
-    assert_eq!(receipt.binding.protocol, ProtocolKind::DeepSeek);
+    assert_eq!(
+        receipt.binding.protocol,
+        pl_model::protocol::providers::deepseek::ID
+    );
     assert_eq!(receipt.binding.wire_api, WireApi::Responses);
     assert_eq!(receipt.binding.isolation, "binding:stable-namespace");
     assert_eq!(receipt.response.model, "deepseek-v4-pro");
@@ -502,11 +511,13 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
 
 #[test]
 fn runtime_requires_an_explicit_stable_account_id() {
-    let endpoint =
-        ProtocolEndpoint::compatible("Display name is not an identity", "http://127.0.0.1:1");
+    let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Display name is not an identity",
+        "http://127.0.0.1:1",
+    );
     let model = ModelInfo::compatible("model");
-    assert!(ModelRuntime::new_with_account_id("  ", endpoint.clone(), model.clone()).is_err());
-    let runtime = ModelRuntime::new_with_account_id("account-stable", endpoint, model)
+    assert!(pl_model::runtime::new_with_account_id("  ", endpoint.clone(), model.clone()).is_err());
+    let runtime = pl_model::runtime::new_with_account_id("account-stable", endpoint, model)
         .expect("explicit account id is valid");
     assert_eq!(runtime.account_id(), "account-stable");
 }
@@ -641,9 +652,9 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
         context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
         model::{ModelRequest, ToolCallMode},
     };
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "deepseek",
-        ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1"),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", "http://127.0.0.1:1"),
         ModelInfo::compatible("deepseek-v4-pro"),
     )
     .unwrap();

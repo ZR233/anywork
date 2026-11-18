@@ -2365,7 +2365,7 @@ workspace_mode = "directory"
         config.models.accounts.insert(
             account_id.clone(),
             pl_model::config::AccountConfig::from_explicit_models(
-                pl_model::protocol::ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "Unfinished account",
                     "http://127.0.0.1:1",
                 ),

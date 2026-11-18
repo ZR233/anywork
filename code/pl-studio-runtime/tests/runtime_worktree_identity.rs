@@ -301,7 +301,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
         config.models.accounts.insert(
             pl_model::config::AccountId::new("root-fixture")?,
             pl_model::config::AccountConfig::from_explicit_models(
-                pl_model::protocol::ProtocolEndpoint::compatible(
+                pl_model::protocol::providers::openai::compatible_endpoint(
                     "root-fixture",
                     env.root_provider.base_url(),
                 ),

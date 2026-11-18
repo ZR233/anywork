@@ -1,0 +1,13 @@
+[package]
+name = "pl-model-openai-mimo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-model-openai-wire = { workspace = true }
+
+[dev-dependencies]
+pl-model-runtime = { workspace = true, features = ["live-examples"] }
+clap = { workspace = true }
+tokio = { workspace = true }

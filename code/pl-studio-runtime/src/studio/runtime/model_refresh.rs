@@ -8,10 +8,7 @@ use pl_core::{
     model::{DynModelSession, Model, ModelError, ModelFactory, ModelFailureKind},
     thread::{DeferredModelUpdate, DeferredModelUpdatePrecondition, ThreadHandle},
 };
-use pl_model::{
-    config::ResolvedModelRoute,
-    runtime::{ModelRuntime, ThreadModel},
-};
+use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
 use std::sync::Arc;
 
 impl StudioRuntime {
@@ -80,8 +77,11 @@ impl StudioRuntime {
             let route = config.models.resolve_route(role, &selector)?;
             crate::studio::delegation::validate_credential(&route)?;
             Self::validate_model_media(&state, &route.model, &[])?;
-            ThreadModel::new(ModelRuntime::from_route(&route)?, route.reasoning_config())
-                .validate_context_origin(&state.context)?;
+            ThreadModel::new(
+                pl_model::runtime::from_route(&route)?,
+                route.reasoning_config(),
+            )
+            .validate_context_origin(&state.context)?;
             if !is_child {
                 let directory_mode = record.mode.context("Native root has no saved Mode")?;
                 let mode_id =
@@ -103,8 +103,11 @@ impl StudioRuntime {
         config: &crate::config::StudioConfig,
         precondition: DeferredModelUpdatePrecondition,
     ) -> Result<()> {
-        ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())
-            .validate_context_origin(&thread.snapshot().context)?;
+        ThreadModel::new(
+            pl_model::runtime::from_route(route)?,
+            route.reasoning_config(),
+        )
+        .validate_context_origin(&thread.snapshot().context)?;
         thread
             .queue_deferred_model_update_if_current(
                 self.deferred_model_update(route, config)?,

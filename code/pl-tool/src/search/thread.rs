@@ -1,6 +1,5 @@
 //! Host bindings for independent search tools; routing and core context stay here.
 use super::WebSearchClient;
-use super::standalone::{SearchRequest, SearchSettings};
 use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, ContextSnapshot, ContextSource, OpaquePayload},
@@ -9,7 +8,8 @@ use pl_core::{
         opaque::{CallContext, ToolError},
     },
 };
-use pl_model::protocol::deepseek::tools::{self, Observed, ToolsClient, ToolsError};
+use pl_model_openai::search::{SearchRequest, SearchSettings};
+use pl_model_openai_deepseek::tools::{self, Observed, ToolsClient, ToolsError};
 use pl_tool_search::support::{
     FetchResponse, FetchService, SearchResponse, SearchService, SearchSource, ServiceFailure,
 };

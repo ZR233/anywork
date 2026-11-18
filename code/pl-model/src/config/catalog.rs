@@ -1,3 +1,9 @@
+use super::ModelCatalogDiscovery;
+use pl_model_openai_glm::models::{
+    models as zhipu_models, responses_models as zhipu_responses_models, zhipu_default_model_ids,
+    zhipu_responses_default_model_ids,
+};
+use pl_model_openai_mimo::models::{mimo_default_model_ids, models as mimo_models};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::config::{
@@ -11,10 +17,7 @@ use pl_protocol::{PureError, Result};
 
 use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
 use super::{AccountModelEntry, AccountModelOrigin};
-use crate::model::{
-    ModelInfo, ModelModality, bundled_model_definition, default_models, mimo_default_model_ids,
-    zhipu_default_model_ids, zhipu_responses_default_model_ids, zhipu_responses_models,
-};
+use crate::model::{ModelInfo, ModelModality};
 use crate::protocol::{
     ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, WireApi,
     wire_transport_profile_revision,
@@ -22,12 +25,6 @@ use crate::protocol::{
 
 const MIMO_API_BASE_URL: &str = "https://api.xiaomimimo.com/v1";
 const MIMO_TOKEN_PLAN_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1";
-
-/// 目录声明的在线探测能力；未声明时该 catalog 保持静态或显式语义。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModelCatalogDiscovery {
-    pub transport: crate::model::ModelTransportProfile,
-}
 
 /// 一组由 PL 维护且对产品只读的模型定义。
 #[derive(Debug, Clone, PartialEq)]
@@ -62,9 +59,9 @@ pub struct AccountCatalogRegistry {
 impl AccountCatalogRegistry {
     /// 构造当前二进制内置的完整目录。
     pub fn builtin() -> Result<Self> {
-        let openai = bundled_model_definition("openai")?;
-        let deepseek = bundled_model_definition("deepseek")?;
-        let xai = bundled_model_definition("xai")?;
+        let openai = pl_model_openai::bundled_definition()?;
+        let deepseek = pl_model_openai_deepseek::bundled_definition()?;
+        let xai = pl_model_openai_xai::bundled_definition()?;
         let model_catalogs = [
             ModelCatalog {
                 id: ModelCatalogId::new("openai")?,
@@ -87,10 +84,10 @@ impl AccountCatalogRegistry {
                     transport: crate::model::ModelTransportProfile::responses_http(),
                 }),
             },
-            model_catalog("zhipu", zhipu_default_model_ids())?,
+            model_catalog("zhipu", zhipu_models(), zhipu_default_model_ids())?,
             zhipu_responses_catalog(),
             mimo_catalog()?,
-            model_catalog("openai-compatible", &[])?,
+            model_catalog("openai-compatible", Vec::new(), &[])?,
         ]
         .into_iter()
         .map(|catalog| (catalog.id.clone(), catalog))
@@ -99,7 +96,7 @@ impl AccountCatalogRegistry {
         let mut templates = vec![
             template(
                 "openai",
-                ProtocolEndpoint::openai(None),
+                crate::protocol::providers::openai::endpoint(None),
                 &openai.suggested_model,
                 "openai",
                 "OPENAI_API_KEY",
@@ -108,7 +105,7 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "deepseek",
-                ProtocolEndpoint::deepseek(None),
+                crate::protocol::providers::deepseek::endpoint(None),
                 &deepseek.suggested_model,
                 "deepseek",
                 "DEEPSEEK_API_KEY",
@@ -117,7 +114,7 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "xai",
-                ProtocolEndpoint::xai(None),
+                crate::protocol::providers::xai::endpoint(None),
                 &xai.suggested_model,
                 "xai",
                 "XAI_API_KEY",
@@ -126,7 +123,7 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "zhipu",
-                ProtocolEndpoint::zhipu(None),
+                crate::protocol::providers::glm::endpoint(None),
                 "glm-5.3",
                 "zhipu",
                 "ZAI_API_KEY",
@@ -135,7 +132,7 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "zhipu-coding-plan",
-                ProtocolEndpoint::zhipu_coding_plan(None),
+                crate::protocol::providers::glm::coding_plan_endpoint(None),
                 "glm-5.3",
                 "zhipu-responses",
                 "ZAI_API_KEY",
@@ -144,8 +141,7 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "mimo-api",
-                ProtocolEndpoint::compatible("MiMo API", MIMO_API_BASE_URL)
-                    .with_protocol(crate::protocol::ProtocolKind::MiMo),
+                crate::protocol::providers::mimo::endpoint("MiMo API", MIMO_API_BASE_URL),
                 "mimo-v2.5-pro",
                 "mimo",
                 "MIMO_API_KEY",
@@ -154,8 +150,10 @@ impl AccountCatalogRegistry {
             ),
             template(
                 "mimo-token-plan",
-                ProtocolEndpoint::compatible("MiMo Token Plan", MIMO_TOKEN_PLAN_BASE_URL)
-                    .with_protocol(crate::protocol::ProtocolKind::MiMo),
+                crate::protocol::providers::mimo::endpoint(
+                    "MiMo Token Plan",
+                    MIMO_TOKEN_PLAN_BASE_URL,
+                ),
                 "mimo-v2.5-pro",
                 "mimo",
                 "MIMO_TOKEN_PLAN_API_KEY",
@@ -166,7 +164,10 @@ impl AccountCatalogRegistry {
 
         let mut compatible = template(
             "openai-compatible",
-            ProtocolEndpoint::compatible("OpenAI API 兼容", "http://localhost:11434/v1"),
+            crate::protocol::providers::openai::compatible_endpoint(
+                "OpenAI API 兼容",
+                "http://localhost:11434/v1",
+            ),
             "",
             "openai-compatible",
             "",
@@ -350,8 +351,8 @@ pub fn builtin_model_catalog(id: &ModelCatalogId) -> Result<ModelCatalog> {
         .ok_or_else(|| PureError::ConfigError(format!("unknown model catalog: {id}")))
 }
 
-fn model_catalog(id: &str, model_ids: &[&str]) -> Result<ModelCatalog> {
-    let models = default_models()?
+fn model_catalog(id: &str, models: Vec<ModelInfo>, model_ids: &[&str]) -> Result<ModelCatalog> {
+    let models = models
         .into_iter()
         .filter(|model| model_ids.contains(&model.model_id.as_str()))
         .collect();
@@ -363,7 +364,7 @@ fn model_catalog(id: &str, model_ids: &[&str]) -> Result<ModelCatalog> {
 }
 
 fn mimo_catalog() -> Result<ModelCatalog> {
-    let mut catalog = model_catalog("mimo", mimo_default_model_ids())?;
+    let mut catalog = model_catalog("mimo", mimo_models(), mimo_default_model_ids())?;
     catalog.discovery = Some(ModelCatalogDiscovery {
         transport: crate::model::ModelTransportProfile::chat_completions_http(),
     });
@@ -447,10 +448,13 @@ pub fn account_service_capabilities_descriptor(
     AccountServiceCapabilitiesDescriptor {
         web_search: WebSearchServiceCapabilitiesDescriptor {
             hosted_responses: capabilities.web_search.hosted_responses,
-            hosted_dialect: capabilities.web_search.hosted_dialect.as_str().to_string(),
+            hosted_dialect: crate::protocol::builtin_protocols()
+                .hosted_search_label(&capabilities.web_search.hosted_dialect)
+                .to_owned(),
             standalone: capabilities
                 .web_search
                 .standalone
+                .as_ref()
                 .map(|dialect| dialect.as_str().to_string()),
         },
         prompt_cache_dialect: capabilities.prompt_cache.dialect.as_str().to_string(),

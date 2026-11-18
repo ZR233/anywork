@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::protocol::ProtocolEndpoint;
 use pl_studio_runtime::config::StudioConfig;
 use serde::Serialize;
 use std::fs;
@@ -124,7 +123,10 @@ pub(crate) fn write_model_config(home: &Path, model_base_url: &str) -> Result<()
         .set_transport(ModelTransportProfile::responses_http());
     model.binding.request.api_model = None;
     let account_id = AccountId::new(format!("bots-observe-{}", std::process::id()))?;
-    let endpoint = ProtocolEndpoint::compatible("Bots protocol fixture", model_base_url);
+    let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
+        "Bots protocol fixture",
+        model_base_url,
+    );
     let account = AccountConfig::from_explicit_models(endpoint, vec![model]);
     config.models.accounts.clear();
     config.models.accounts.insert(account_id.clone(), account);

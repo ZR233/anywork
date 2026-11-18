@@ -372,7 +372,7 @@ Studio home 的 `lsp/host/<server-id>.toml` 是本地默认配置，格式相同
 
 ### 授权操作与生命周期
 
-- Studio 持有登录操作、保存资格和关闭责任；独立的 `pl-model-auth` 持有 OAuth/OIDC 交换、身份校验、凭据会话与配额查询。模型层仅绑定并消费该认证会话。类型化命令开始和取消，按 `loginId` 定位的领域观察发布权威状态，Flutter 不建立第二份认证事实源。
+- Studio 持有登录操作、保存资格和关闭责任；独立的 `pl-model-auth` 持有 OAuth/OIDC 交换、身份校验与凭据刷新会话。`pl-model-openai` 通过已绑定的凭据读取当前令牌，负责 Codex 请求与配额查询。类型化命令开始和取消，按 `loginId` 定位的领域观察发布权威状态，Flutter 不建立第二份认证事实源。
 - 登录依次为准备、等待浏览器、交换和成功；拒绝、失败、取消为明确终态。每个编辑意图至多一个活跃登录，总计最多 16 个。等待浏览器没有人为固定期限，回调、取消、配置撤代和应用关闭驱动收束；成功结果的保存资格受实际 access token 到期时间约束。取消等待自身 listener 和网络请求汇合，不宣称撤销远端授权。关闭拒绝新登录并汇合所有操作；取消等待者不会丢失 worker 的汇合责任。
 - 新登录使用 Codex 的公开 native client ID、`/oauth/authorize` 和 `/oauth/token`，请求 `openid profile email offline_access`、`id_token_add_organizations=true`、`codex_cli_simplified_flow=true`、`originator=anywork`。本地稳定 `urn:uuid:…` host ID 仍作为凭据归属元数据保存，Codex 授权不发送它。
 - 先绑定 `127.0.0.1:1455`，不可用时绑定 `1457`，再生成官方 HTTPS 授权链接；回调为 `http://localhost:<实际端口>/auth/callback`，与交换参数完全一致。每次生成全新 state、OIDC nonce 和 S256 PKCE。无效或不匹配的回调不得触发交换或完成另一操作。

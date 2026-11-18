@@ -9,29 +9,32 @@ default = []
 live-tests = []
 
 [dependencies]
+pl-model-openai-wire = { workspace = true }
+pl-model-openai-mimo = { workspace = true }
+pl-model-openai-xai = { workspace = true }
+pl-model-openai-deepseek = { workspace = true }
+pl-model-openai-glm = { workspace = true }
+pl-model-openai = { workspace = true }
+pl-model-runtime = { workspace = true }
 pl-model-auth = { workspace = true }
-pl-agent-tool = { workspace = true }
-base64 = { workspace = true }
-image = { workspace = true }
-pl-core = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 pl-protocol = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json = { workspace = true }
 schemars = { workspace = true }
 utoipa = { workspace = true }
-tracing = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-tokio-tungstenite = { workspace = true }
-futures = { workspace = true }
-reqwest = { workspace = true, features = ["multipart"] }
-hyper = { workspace = true }
-sse-stream = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
+tokio-tungstenite = { workspace = true }
+tokio-util = { workspace = true }
+pl-core = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
+pl-agent-tool = { workspace = true }
 tempfile = { workspace = true }
 pl-provider-fixture = { workspace = true }
 pretty_assertions = { workspace = true }

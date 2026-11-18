@@ -27,10 +27,8 @@ use pl_model::completion::{
     CompletionPresentationPartKind, CompletionRequest, Message, MessageContent, MessageRole,
 };
 use pl_model::model::{ModelInfo, ModelTransportProfile};
-use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{
-    ModelInvocationContext, ModelRuntime, ModelSession, model_failure_receipt,
-    thread_tool_declaration,
+    ModelInvocationContext, ModelSession, model_failure_receipt, thread_tool_declaration,
 };
 use pl_protocol::PureError;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
@@ -95,9 +93,9 @@ async fn normalized_part_starts_precede_completion_without_ending_prior_reasonin
             ],
         },
     )]).await.unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -254,9 +252,9 @@ async fn exercise_summary_starts(with_summary: bool) {
             ],
         },
     )]).await.unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -387,9 +385,12 @@ async fn late_commentary_phase_corrects_text_metadata_without_final_authorizatio
                     json!({"type":"response.completed","response":{"id":"phase-response","model":"live-fixture","output":[done]}}),
                 ]),
             )]).await.unwrap();
-            let runtime = ModelRuntime::new_with_account_id(
+            let runtime = pl_model::runtime::new_with_account_id(
                 "fixture",
-                ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+                pl_model::protocol::providers::openai::compatible_endpoint(
+                    "fixture",
+                    fixture.base_url(),
+                ),
                 model("live-fixture", ModelTransportProfile::responses_http()),
             )
             .unwrap();
@@ -476,9 +477,12 @@ async fn authoritative_member_is_reliable_while_provider_stream_is_still_open() 
                 done.clone(), done,
             ]),
         )]).await.unwrap();
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "fixture",
+                fixture.base_url(),
+            ),
             model("live-fixture", ModelTransportProfile::responses_http()),
         )
         .unwrap();
@@ -618,9 +622,9 @@ async fn admitted_member_survives_safe_recovery_after_clean_eof() {
     ])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -906,9 +910,9 @@ async fn admitted_member_survives_early_eof_and_retry_failure() {
     ])
     .await
     .unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -1004,9 +1008,9 @@ async fn reasoning_raw_and_summary_zero_indices_match_reliable_member_and_final_
                 "id":"both-response","model":"live-fixture","output":[item]}}),
         ]),
     )]).await.unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -1103,9 +1107,9 @@ async fn observed_progress(
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", profile),
     )
     .expect("fixture endpoint is valid");
@@ -1270,9 +1274,9 @@ async fn a_held_snapshot_stays_immutable_while_the_same_part_keeps_growing() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -1374,9 +1378,9 @@ async fn a_held_snapshot_survives_the_growth_of_a_chunk_it_shared() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -1645,9 +1649,12 @@ async fn reasoning_delta_without_any_identity_fails_instead_of_inventing_an_item
     )])
     .await
     .expect("fixture starts");
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "fixture",
+                fixture.base_url(),
+            ),
             model("live-fixture", ModelTransportProfile::responses_http()),
         )
         .expect("fixture endpoint is valid");
@@ -1697,9 +1704,9 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model(
             "live-fixture",
             ModelTransportProfile::chat_completions_http(),
@@ -2025,9 +2032,9 @@ impl CoreModelSession for MeteredSession {
 
 async fn quota_thread(steps: Vec<Step>, limit: u64) -> QuotaRun {
     let fixture = FixtureServer::start(steps).await.unwrap();
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .unwrap();
@@ -2360,9 +2367,9 @@ async fn fixture_stream_past_the_reliable_output_quota_cancels_with_a_partial_re
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -2463,9 +2470,9 @@ async fn fixture_stream_past_the_reliable_output_quota_on_tool_arguments_is_refu
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -2609,9 +2616,9 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");
@@ -2712,9 +2719,9 @@ async fn a_stream_without_a_thread_progress_channel_is_still_bounded() {
     )])
     .await
     .expect("fixture starts");
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model("live-fixture", ModelTransportProfile::responses_http()),
     )
     .expect("fixture endpoint is valid");

@@ -1,0 +1,15 @@
+[package]
+name = "pl-model-openai-xai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+pl-model-openai-wire = { workspace = true }
+
+[dev-dependencies]
+pl-model-runtime = { workspace = true, features = ["live-examples"] }
+clap = { workspace = true }
+tokio = { workspace = true }

@@ -11,7 +11,6 @@ use pl_core::{
 use pl_model::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
     model::{ModelInfo, ModelTransportProfile},
-    protocol::ProtocolEndpoint,
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, WebSocketAction, responses_text};
@@ -42,9 +41,9 @@ fn runtime(fixture: &FixtureServer) -> ModelRuntime {
 fn runtime_with_profile(fixture: &FixtureServer, profile: ModelTransportProfile) -> ModelRuntime {
     let mut model = ModelInfo::compatible("recovery-model");
     model.binding.set_transport(profile);
-    ModelRuntime::new_with_account_id(
+    pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+        pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model,
     )
     .unwrap()
@@ -103,9 +102,12 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
             .set_transport(ModelTransportProfile::responses_websocket());
         model.capabilities.web_search = true;
         model.capabilities.tools.programmatic_tool_calling = true;
-        let runtime = ModelRuntime::new_with_account_id(
+        let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
-            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            pl_model::protocol::providers::openai::compatible_endpoint(
+                "fixture",
+                fixture.base_url(),
+            ),
             model,
         )
         .unwrap();
@@ -185,9 +187,12 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
     model
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
-    let runtime = ModelRuntime::new_with_account_id(
+    let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
-        ProtocolEndpoint::compatible("fixture", format!("http://{address}/v1")),
+        pl_model::protocol::providers::openai::compatible_endpoint(
+            "fixture",
+            format!("http://{address}/v1"),
+        ),
         model,
     )
     .unwrap();

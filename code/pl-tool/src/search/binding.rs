@@ -7,17 +7,16 @@ use crate::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
 use crate::search::WebSearchConfig;
 use pl_core::tool::opaque::Registration;
 use pl_model::protocol::HostedWebSearchDialect;
-use pl_model::protocol::StandaloneWebSearchDialect;
-use pl_model::protocol::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_model::runtime::HostedTool;
+use pl_model_openai_deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 
-use super::client::{SearchEndpoint, WebSearchClient};
 use super::hosted_options;
 use super::plan::{WebSearchPath, WebSearchPlans};
 use super::thread::{
     ThreadDeepSeekWebFetchTool, ThreadDeepSeekWebSearchTool, ThreadSearchOptions,
     ThreadWebSearchTool,
 };
+use pl_model_openai::search::{SearchEndpoint, WebSearchClient};
 
 /// 公共搜索装配错误；产品调用方负责映射到自身错误域。
 ///
@@ -49,8 +48,8 @@ impl WebSearchPlans {
             if plan.resolution.path != Some(WebSearchPath::Hosted) {
                 continue;
             }
-            match plan.hosted_dialect {
-                Some(HostedWebSearchDialect::OpenAiResponses) => {
+            match plan.hosted_dialect.as_ref() {
+                Some(id) if *id == HostedWebSearchDialect::RESPONSES => {
                     let options = hosted_options::openai_options(config).ok_or_else(|| {
                         pl_protocol::PureError::ConfigError(
                             "hosted search requires an enabled effective mode".into(),
@@ -60,7 +59,7 @@ impl WebSearchPlans {
                 }
                 // Only OpenAI Responses hosted is planned; DeepSeek search is native standalone.
                 // Any other dialect on a hosted path is an assembly bug, not a silent skip.
-                Some(HostedWebSearchDialect::DeepSeekResponses) | None => {
+                _ => {
                     return Err(pl_protocol::PureError::ConfigError(
                         "planned hosted web search has an unsupported dialect".into(),
                     ));
@@ -88,8 +87,8 @@ impl WebSearchPlans {
                     .backend
                     .as_ref()
                     .ok_or(SearchBindingError::MissingBackend)?;
-                match backend.dialect {
-                    StandaloneWebSearchDialect::OpenAiSearchApi => {
+                match &backend.dialect {
+                    id if *id == pl_model_openai::endpoint::SEARCH_DIALECT => {
                         let native = prepare_native_tool::<ThreadWebSearchTool>()
                             .map_err(crate::binding::BindingError::from)?;
                         let prepared = prepare_registration(
@@ -112,7 +111,7 @@ impl WebSearchPlans {
                             client,
                             ThreadSearchOptions {
                                 model,
-                                settings: super::SearchSettings::from_config(config),
+                                settings: super::standalone::settings_from_config(config),
                                 max_output_tokens: backend.max_output_tokens,
                             },
                         );
@@ -126,7 +125,7 @@ impl WebSearchPlans {
                                 ),
                         );
                     }
-                    StandaloneWebSearchDialect::DeepSeekToolsApi => {
+                    id if *id == pl_model_openai_deepseek::endpoint::SEARCH_DIALECT => {
                         let search = self
                             .deepseek_options
                             .enabled
@@ -179,6 +178,7 @@ impl WebSearchPlans {
                             );
                         }
                     }
+                    _ => return Err(SearchBindingError::MissingBackend),
                 }
             }
         }

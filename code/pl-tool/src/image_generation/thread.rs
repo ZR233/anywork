@@ -9,7 +9,7 @@ use pl_core::{
         opaque::{CallContext, ToolError},
     },
 };
-use pl_model::protocol::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
+use pl_model_openai::images::{ImageGenerationBackground, ImageGenerationRequest, ImagesClient};
 pub use pl_tool_media::generate_image::Input as ImageGenerationInput;
 use std::sync::Arc;
 
@@ -35,7 +35,7 @@ struct SelectedGenerator {
 }
 
 impl pl_tool_media::generate_image::ImageGenerator for SelectedGenerator {
-    type Error = pl_model::protocol::images::ImagesError;
+    type Error = pl_model_openai::images::ImagesError;
 
     async fn generate(
         &self,

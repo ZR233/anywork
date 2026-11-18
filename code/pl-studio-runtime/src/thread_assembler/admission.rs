@@ -82,7 +82,7 @@ impl AgentServices {
             );
         pl_model::runtime::validate_attachment_content(content, &route.model)?;
         pl_model::runtime::ThreadModel::new(
-            pl_model::runtime::ModelRuntime::from_route(&route)?,
+            pl_model::runtime::from_route(&route)?,
             route.reasoning_config(),
         )
         .validate_context_origin(&snapshot.context)?;
