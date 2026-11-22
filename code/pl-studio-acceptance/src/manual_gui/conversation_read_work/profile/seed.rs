@@ -5,7 +5,10 @@ use pl_provider_fixture::{
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
-use pl_studio_runtime::history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead};
+use pl_studio_runtime::history::{
+    HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryEventMeta, HistoryTimelineItem,
+    decode_event_envelope,
+};
 use pl_studio_runtime::{ChatAtomKind, ChatSourceId, mode::ThreadModeId};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -439,8 +442,8 @@ async fn count(
             let page = reader
                 .timeline_page(cut.clone(), cursor.clone(), demand)
                 .await?;
-            for entry in &page.entries {
-                count_head(&reader, &page.cut, entry, demand, &mut inventory, interrupt).await?;
+            for item in &page.items {
+                count_head(&reader, &page.cut, item, demand, &mut inventory, interrupt).await?;
             }
             let Some(next) = page.next else {
                 break;
@@ -477,24 +480,27 @@ struct InventoryScan {
 async fn count_head(
     reader: &pl_studio_runtime::history::HistoryReader,
     cut: &pl_studio_runtime::history::HistoryCut,
-    entry: &pl_studio_runtime::history::HistoryTimelineEntry,
+    item: &HistoryTimelineItem,
     demand: HistoryDemand,
     inventory: &mut InventoryScan,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
-    match &entry.head {
-        HistoryRowHead::Single(head) => {
+    match item {
+        HistoryTimelineItem::Divider(record) => {
             inventory.main_items = inventory
                 .main_items
                 .checked_add(1)
                 .context("Main count overflow")?;
-            count_entity(head, inventory);
+            if record.payload_schema == "anywork.event/1" {
+                let envelope = decode_event_envelope(record)?;
+                count_entity(record, &envelope.meta, inventory);
+            }
         }
-        HistoryRowHead::Work(head) => {
+        HistoryTimelineItem::WorkRange(range) => {
             ensure!(
-                inventory.groups.insert(head.group_id.clone()),
-                "Main inventory repeated Work {}",
-                head.group_id
+                inventory.groups.insert(range.range_id.clone()),
+                "Main inventory repeated WorkRange {}",
+                range.range_id
             );
             inventory.main_items = inventory
                 .main_items
@@ -505,18 +511,19 @@ async fn count_head(
             loop {
                 checkpoint(interrupt)?;
                 let page = reader
-                    .group_page(
-                        head.group_id.clone(),
+                    .work_range_page(
+                        range.after_seq,
+                        range.before_seq,
                         group_cut.clone(),
                         cursor.clone(),
                         demand,
                     )
                     .await?;
-                for member in &page.members {
-                    let HistoryRowHead::Member(head) = &member.head else {
-                        bail!("group page contained a non-member head");
-                    };
-                    count_entity(head, inventory);
+                for event in &page.events {
+                    if event.payload_schema == "anywork.event/1" {
+                        let envelope = decode_event_envelope(event)?;
+                        count_entity(event, &envelope.meta, inventory);
+                    }
                 }
                 let Some(next) = page.next else {
                     break;
@@ -529,22 +536,20 @@ async fn count_head(
                 cursor = Some(next);
             }
         }
-        _ => {
-            bail!("timeline page contained a non-Main head");
-        }
     }
     Ok(())
 }
 
 fn count_entity(
-    head: &pl_studio_runtime::history::HistoryEntityHead,
+    record: &pl_studio_runtime::history::HistoryEventRecord,
+    head: &HistoryEventMeta,
     inventory: &mut InventoryScan,
 ) {
-    match (&head.kind, &head.source) {
-        (ChatAtomKind::Text, ChatSourceId::ForegroundTurn { .. }) => {
+    match (&head.entity_kind, record.source.as_ref()) {
+        (ChatAtomKind::Text, Some(ChatSourceId::ForegroundTurn { .. })) => {
             inventory.model_text_items += 1;
         }
-        (ChatAtomKind::Input, ChatSourceId::Input { input_id }) => {
+        (ChatAtomKind::Input, Some(ChatSourceId::Input { input_id })) => {
             inventory.inputs.insert(input_id.clone());
         }
         _ => {}

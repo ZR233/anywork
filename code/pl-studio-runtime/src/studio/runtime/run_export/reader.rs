@@ -1,22 +1,23 @@
 //! Read-only HistoryReader exporter for canonical originals, lifecycle facts, and opaque bodies.
 //!
-//! Every original is selected by its fixed History cut and original-event index. Payload and body
-//! bytes are streamed directly from `HistoryEventBodyRef` in bounded 64 KiB windows. No Core chat
-//! Session, completion append sequence, router, or second timeline projection is involved.
+//! Every original is selected by its fixed History cut and original-event index. Inline (`<= 16 KiB`)
+//! and chunked BLOB bodies are exported to content-addressed files without involving Core Session or
+//! a second timeline projection.
+
+use std::collections::HashSet;
 
 use crate::{ChatClassFilter, ChatContentRole, ChatScope};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
 use crate::history::{
-    HEAD_MAX_BYTES, HistoryBodyEntry, HistoryBodyPage, HistoryBodyRole, HistoryDemand,
-    HistoryEntityHead, HistoryEventBodyRef, HistoryEventDetail, HistoryEventHeader,
-    HistoryEventsQuery, HistoryReader, HistoryRowHead,
+    HistoryBodyPage, HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventMeta,
+    HistoryEventRecord, HistoryEventsQuery, HistoryReader, decode_event_envelope,
 };
 
 use super::types::{
     CONTENT_EXPORT_CHUNK_BYTES, ChatItemHeaderExportV3, EventSourceV3, ExportedBlobV3,
-    ExportedContentV3,
+    ExportedContentV3, ExportedHistoryEventHeaderV3,
 };
 use super::writer::{BlobChunkWriter, ContentBlobSink};
 
@@ -35,7 +36,7 @@ pub struct ExportedCompletionRecord {
     pub source: EventSourceV3,
     pub header: ChatItemHeaderExportV3,
     pub header_payload_fingerprint: String,
-    pub atom: HistoryEntityHead,
+    pub atom: HistoryEventMeta,
     pub payload: ExportedBlobV3,
     pub contents_manifest: ExportedBlobV3,
 }
@@ -72,10 +73,7 @@ pub async fn export_history_originals_window<S: ContentBlobSink>(
             demand(),
         )
         .await?;
-    let next_pivot = entries
-        .last()
-        .map(|detail| detail.header.seq)
-        .unwrap_or(pivot);
+    let next_pivot = entries.last().map(|detail| detail.seq).unwrap_or(pivot);
     let mut records = Vec::with_capacity(entries.len());
     for detail in entries {
         records.push(export_single_original(history, detail, sink).await?);
@@ -90,99 +88,38 @@ pub async fn export_history_originals_window<S: ContentBlobSink>(
 
 async fn export_single_original<S: ContentBlobSink>(
     history: &HistoryReader,
-    detail: HistoryEventDetail,
+    detail: HistoryEventRecord,
     sink: &mut S,
 ) -> Result<ExportedCompletionRecord> {
     ensure!(
-        detail.header.original.is_some(),
+        detail.original.is_some(),
         "History event {} is not a canonical original",
-        detail.header.event_id
+        detail.event_id
     );
-    let metadata = find_body_entry(history, &detail.header.event_id, |body| {
-        body.role == HistoryBodyRole::CanonicalMetadata
-    })
-    .await?
-    .with_context(|| {
-        format!(
-            "canonical original {} omitted its HistoryEntityHead metadata",
-            detail.header.event_id
-        )
-    })?;
-    ensure!(
-        metadata.reference.byte_length <= HEAD_MAX_BYTES as u64,
-        "canonical metadata for {} exceeds {HEAD_MAX_BYTES} bytes",
-        detail.header.event_id
-    );
-    let metadata_bytes = read_body_bytes(
-        history,
-        &metadata.reference,
+    let envelope = decode_event_envelope(&detail)
+        .with_context(|| format!("decode EventPayloadEnvelope for {}", detail.event_id))?;
+    let atom = envelope.meta.clone();
+
+    let payload = write_static_blob(
         sink,
-        false,
-        true,
-        metadata.media_type.clone(),
+        detail.payload_json.as_bytes(),
+        Some("application/json".into()),
+        "utf-8".into(),
     )
-    .await?
-    .0
-    .context("canonical metadata was not materialized")?;
-    let metadata_head: HistoryEntityHead = serde_json::from_slice(&metadata_bytes)
-        .with_context(|| format!("decode HistoryEntityHead for {}", detail.header.event_id))?;
-    let payload_ref = detail
-        .payload_ref
-        .clone()
-        .context("canonical History original omitted its opaque payload")?;
-    let payload_entry = find_body_entry(history, &detail.header.event_id, |body| {
-        body.reference == payload_ref
-    })
-    .await?
-    .context("History payload reference is absent from its body directory")?;
-    ensure!(
-        payload_entry.role == HistoryBodyRole::CanonicalPayload,
-        "History payload body is not typed canonicalPayload"
-    );
-    let mut indexed_fact = match detail.head {
-        Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
-        None => metadata_head.clone(),
-        Some(_) => {
-            anyhow::bail!(
-                "canonical original {} has a non-entity row head",
-                detail.header.event_id
-            )
-        }
-    };
-    // Visibility belongs to a Timeline row. Canonical metadata was frozen by the producer before
-    // that display classification and retains the original business facts and opaque bytes.
-    indexed_fact.single_visibility = None;
-    let mut original_fact = metadata_head.clone();
-    original_fact.single_visibility = None;
-    ensure!(
-        indexed_fact == original_fact,
-        "canonical metadata and indexed History head disagree for {}",
-        detail.header.event_id
-    );
-    let atom = metadata_head;
+    .await?;
 
-    let payload = read_body_bytes(
-        history,
-        &payload_ref,
-        sink,
-        true,
-        false,
-        payload_entry.media_type.clone(),
-    )
-    .await?
-    .1;
+    let contents_manifest =
+        stream_body_manifest(history, &detail.event_id, &envelope.bodies, sink).await?;
 
-    let contents_manifest = stream_body_manifest(history, &detail.header.event_id, sink).await?;
-
-    let header = ChatItemHeaderExportV3::from_history(&detail.header);
+    let header = ChatItemHeaderExportV3::from_history(&detail);
     let header_payload_fingerprint =
-        original_fingerprint(&detail.header, &payload, &contents_manifest)?;
+        original_fingerprint(&header.event, &payload, &contents_manifest)?;
     let source = EventSourceV3 {
-        history_event_id: Some(detail.header.event_id.clone()),
-        history_event_seq: Some(detail.header.seq),
-        turn_id: detail.header.turn_id.clone(),
-        attempt_id: detail.header.attempt_id.clone(),
-        tool_call_id: detail.header.call_id.clone(),
+        history_event_id: Some(detail.event_id.clone()),
+        history_event_seq: Some(detail.seq),
+        turn_id: detail.turn_id.clone(),
+        attempt_id: detail.attempt_id.clone(),
+        tool_call_id: detail.call_id.clone(),
         ..EventSourceV3::default()
     };
     Ok(ExportedCompletionRecord {
@@ -195,52 +132,72 @@ async fn export_single_original<S: ContentBlobSink>(
     })
 }
 
-async fn find_body_entry(
-    history: &HistoryReader,
-    event_id: &str,
-    predicate: impl Fn(&HistoryBodyEntry) -> bool,
-) -> Result<Option<HistoryBodyEntry>> {
-    let mut cursor = None;
-    let mut found = None;
-    loop {
-        let page = history
-            .list_bodies(event_id.to_owned(), cursor.clone(), demand())
-            .await?;
-        let HistoryBodyPage {
-            owner_event_id,
-            entries: page_entries,
-            next,
-        } = page;
-        ensure!(
-            owner_event_id == event_id,
-            "History body directory belonged to another event"
-        );
-        for entry in page_entries {
-            if predicate(&entry) {
-                ensure!(
-                    found.is_none(),
-                    "History body directory contains duplicate selected roles"
-                );
-                found = Some(entry);
-            }
-        }
-        let Some(next) = next else {
-            return Ok(found);
-        };
-        ensure!(
-            cursor.as_deref() != Some(next.as_str()),
-            "History body directory exceeded its bounded cursor traversal"
-        );
-        cursor = Some(next);
-    }
-}
-
 async fn stream_body_manifest<S: ContentBlobSink>(
     history: &HistoryReader,
     event_id: &str,
+    declared_bodies: &[crate::history::HistoryBodyManifestEntry],
     sink: &mut S,
 ) -> Result<ExportedBlobV3> {
     let mut writer = sink.begin_blob().await?;
+    let mut exported_body_ids = HashSet::new();
+
+    for entry in declared_bodies {
+        let history_role = HistoryBodyRole::from_string(entry.role.clone());
+        let role = content_role_from_parts(&history_role, &entry.key);
+        let (native_ref, blob) = if let Some(text) = &entry.inline_text {
+            ensure!(
+                text.len() as u64 == entry.byte_length,
+                "inline body {} declared {} bytes but decoded to {}",
+                entry.key,
+                entry.byte_length,
+                text.len()
+            );
+            let blob = write_static_blob(
+                sink,
+                text.as_bytes(),
+                entry.media_type.clone(),
+                "utf-8".into(),
+            )
+            .await?;
+            (None, blob)
+        } else if let Some(reference) = &entry.reference {
+            exported_body_ids.insert(reference.body_id.clone());
+            let blob = read_body_bytes(
+                history,
+                reference,
+                sink,
+                false,
+                false,
+                entry.media_type.clone(),
+            )
+            .await?
+            .1;
+            (Some(reference.clone()), blob)
+        } else if entry.byte_length == 0 {
+            let blob = write_static_blob(sink, &[], entry.media_type.clone(), "utf-8".into()).await?;
+            (None, blob)
+        } else {
+            anyhow::bail!(
+                "body entry {} for event {} has neither inlineText nor reference",
+                entry.key,
+                event_id
+            );
+        };
+        let line = serde_json::to_vec(&ExportedContentV3 {
+            body_key: entry.key.clone(),
+            native_ref,
+            role,
+            history_role,
+            path: blob.path,
+            byte_length: blob.byte_length,
+            sha256: blob.sha256,
+            media_type: blob.media_type,
+            encoding: blob.encoding,
+        })?;
+        writer.write_chunk(&line).await?;
+        writer.write_chunk(b"\n").await?;
+    }
+
     let mut cursor = None;
     let mut last_ordinal = None;
     loop {
@@ -262,7 +219,10 @@ async fn stream_body_manifest<S: ContentBlobSink>(
                 "History body ordinals did not advance"
             );
             last_ordinal = Some(body.ordinal);
-            let role = content_role(&body);
+            if exported_body_ids.contains(&body.reference.body_id) {
+                continue;
+            }
+            let role = content_role_from_parts(&body.role, &body.body_key);
             let blob = read_body_bytes(
                 history,
                 &body.reference,
@@ -274,7 +234,8 @@ async fn stream_body_manifest<S: ContentBlobSink>(
             .await?
             .1;
             let line = serde_json::to_vec(&ExportedContentV3 {
-                native_ref: body.reference,
+                body_key: body.body_key,
+                native_ref: Some(body.reference),
                 role,
                 history_role: body.role,
                 path: blob.path,
@@ -300,12 +261,15 @@ async fn stream_body_manifest<S: ContentBlobSink>(
         .await
 }
 
-fn content_role(body: &HistoryBodyEntry) -> Option<ChatContentRole> {
-    match &body.role {
+fn content_role_from_parts(
+    history_role: &HistoryBodyRole,
+    body_key: &str,
+) -> Option<ChatContentRole> {
+    match history_role {
         HistoryBodyRole::ReasoningSummary => Some(ChatContentRole::ReasoningSummary),
         HistoryBodyRole::ToolArguments => Some(ChatContentRole::ToolArguments),
         HistoryBodyRole::ToolOutput => Some(ChatContentRole::ToolOutput),
-        HistoryBodyRole::Body => content_role_from_key(&body.body_key),
+        HistoryBodyRole::Body => content_role_from_key(body_key),
         _ => None,
     }
 }
@@ -328,8 +292,21 @@ fn content_role_from_key(key: &str) -> Option<ChatContentRole> {
     }
 }
 
+async fn write_static_blob<S: ContentBlobSink>(
+    sink: &mut S,
+    bytes: &[u8],
+    media_type: Option<String>,
+    encoding: String,
+) -> Result<ExportedBlobV3> {
+    let mut writer = sink.begin_blob().await?;
+    for chunk in bytes.chunks(CONTENT_EXPORT_CHUNK_BYTES as usize) {
+        writer.write_chunk(chunk).await?;
+    }
+    writer.finish(media_type, encoding).await
+}
+
 fn original_fingerprint(
-    header: &HistoryEventHeader,
+    header: &ExportedHistoryEventHeaderV3,
     payload: &ExportedBlobV3,
     contents_manifest: &ExportedBlobV3,
 ) -> Result<String> {

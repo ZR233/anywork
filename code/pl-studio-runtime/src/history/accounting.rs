@@ -1,5 +1,9 @@
-use super::types::milliseconds_from_seconds;
-use super::*;
+use super::{
+    body::{BusinessEnvelope, PendingBody, decode_business_head_from_record, pack_bodies, read_event_body_bytes},
+    db::{self, Record},
+    types::milliseconds_from_seconds,
+    *,
+};
 use pl_core::{
     model::ModelUsage,
     thread::{UsageSummary, current::RuntimeEpoch},
@@ -19,13 +23,9 @@ pub struct HistoryUsageFact {
 }
 
 /// Immutable usage/accounting candidates for one admission unit.
-///
-/// Body IDs are allocated exactly once by preparation. A capacity failure or task cancellation
-/// retries the same vector instead of folding the usage facts a second time.
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedHistoryUsage {
     pub(crate) events: Vec<HistoryEvent>,
-    /// Set only by the single-fact public idempotency path.
     pub(crate) accepted_sequence: Option<u64>,
 }
 
@@ -41,7 +41,7 @@ struct UsageFold {
 }
 
 impl UsageFold {
-    fn record(&mut self, fact: &HistoryUsageFact) -> Result<()> {
+    fn record(&mut self, fact: &HistoryUsageFact, database_id: &str) -> Result<()> {
         let recorded_at = milliseconds_from_seconds(fact.record.recorded_at)?;
         let payload = serde_json::to_vec(&fact.record)?;
         self.summary.add_usage(
@@ -91,16 +91,31 @@ impl UsageFold {
             updated_at: recorded_at,
             detail_event_id: Some(fact.event_id.clone()),
         };
-        let mut event =
-            HistoryEvent::new(&fact.event_id, HistoryEventKind::UsageRecorded, recorded_at);
-        event.header.run_id = Some(fact.runtime_epoch.to_string());
-        event.header.turn_id = fact.turn_id.clone();
-        event.header.row_key = Some("accounting:session".into());
+        let mut event = HistoryEvent::new(
+            &fact.event_id,
+            HistoryEventKind::UsageRecorded,
+            HistoryTimelineRole::Hidden,
+            recorded_at,
+        );
+        event.run_id = Some(fact.runtime_epoch.to_string());
+        event.turn_id = fact.turn_id.clone();
+        event.row_scope = Some(HistoryBusinessRowScope::Accounting);
+        event.row_key = Some("accounting:session".into());
         event.is_anchor = !self.accounting_anchor;
-        event.head = Some(HistoryRowHead::Accounting(head));
-        let body = HistoryBody::new("accounting", HistoryBodyRole::CanonicalPayload, payload);
-        event.payload_body_id = Some(body.body_id.clone());
-        event.bodies.push(body);
+        let bodies = pack_bodies(
+            &mut event,
+            vec![PendingBody::new(
+                "accounting",
+                HistoryBodyRole::Other {
+                    name: "accounting".into(),
+                },
+                Some("application/json".into()),
+                payload,
+            )],
+            database_id,
+        )?;
+        event.payload_schema = "anywork.accounting/1".into();
+        event.payload_json = serde_json::to_string(&BusinessEnvelope { head, bodies })?;
         self.accounting_anchor = true;
         self.events.push(event);
         let costs = self.cost_events(fact, recorded_at)?;
@@ -122,7 +137,7 @@ impl UsageFold {
             .collect::<BTreeMap<_, _>>();
         let mut events = Vec::new();
         for cost in fact.record.accounting.estimated_costs() {
-            let head = HistoryCostHead {
+            let mut head = HistoryCostHead {
                 purpose: fact.record.purpose.clone(),
                 currency: cost.currency.clone(),
                 cost_delta: Some(cost.amount),
@@ -135,7 +150,6 @@ impl UsageFold {
             let key = head.row_key()?;
             let savings = savings_by_currency.get(&cost.currency).copied();
             let previous = self.costs.get(&key).cloned();
-            let mut head = head;
             head.cache_savings_delta = savings;
             let anchor = previous.is_none();
             if let Some(previous) = previous {
@@ -150,13 +164,19 @@ impl UsageFold {
             let mut event = HistoryEvent::new(
                 format!("usage_cost:{}:{key}", fact.event_id),
                 HistoryEventKind::UsageRecorded,
+                HistoryTimelineRole::Hidden,
                 recorded_at,
             );
-            event.header.run_id = Some(fact.runtime_epoch.to_string());
-            event.header.turn_id = fact.turn_id.clone();
-            event.header.row_key = Some(key.clone());
+            event.run_id = Some(fact.runtime_epoch.to_string());
+            event.turn_id = fact.turn_id.clone();
+            event.row_scope = Some(HistoryBusinessRowScope::Cost);
+            event.row_key = Some(key.clone());
             event.is_anchor = anchor;
-            event.head = Some(HistoryRowHead::Cost(head.clone()));
+            event.payload_schema = "anywork.cost/1".into();
+            event.payload_json = serde_json::to_string(&BusinessEnvelope {
+                head: head.clone(),
+                bodies: Vec::new(),
+            })?;
             self.costs.insert(key, head);
             events.push(event);
         }
@@ -165,8 +185,6 @@ impl UsageFold {
 }
 
 impl HistoryStore {
-    /// Folds the existing Core usage reducer into one fixed history summary. Costs are loaded by
-    /// their exact purpose/currency key; committed calls and purpose lists are never replayed.
     pub async fn record_usage(&self, fact: &HistoryUsageFact) -> Result<u64> {
         let admission = self.admission_guard().await;
         let prepared = self
@@ -184,11 +202,6 @@ impl HistoryStore {
         Ok(sequences[0])
     }
 
-    /// Prepares all usage/accounting events for one effect against the same admission snapshot.
-    ///
-    /// The caller must hold the admission guard. Facts later in the slice therefore fold on heads
-    /// prepared by earlier facts in the same effect rather than repeatedly reading an older
-    /// database row and overwriting its totals.
     pub(crate) async fn prepare_usage(
         &self,
         _admission: &tokio::sync::MutexGuard<'_, ()>,
@@ -235,18 +248,16 @@ impl HistoryStore {
             });
         }
 
-        let previous = self
-            .latest_record("accounting:session")
-            .await?
-            .and_then(|record| record.head);
-        let previous = match previous {
+        let previous = match self.latest_record("accounting:session").await? {
             None => HistoryAccountingHead::default(),
-            Some(HistoryRowHead::Accounting(head)) => head,
-            Some(_) => {
-                return Err(HistoryError::Integrity(
-                    "accounting row has another head type".into(),
-                ));
-            }
+            Some(record) => match decode_business_head_from_record(&record.record)? {
+                HistoryBusinessRowHead::Accounting(head) => head,
+                _ => {
+                    return Err(HistoryError::Integrity(
+                        "accounting row has another head type".into(),
+                    ));
+                }
+            },
         };
 
         let mut cost_rows = BTreeSet::new();
@@ -269,16 +280,15 @@ impl HistoryStore {
         let mut costs = BTreeMap::new();
         for key in cost_rows {
             if let Some(record) = self.latest_record(&key).await? {
-                match record.head {
-                    Some(HistoryRowHead::Cost(head)) => {
+                match decode_business_head_from_record(&record.record)? {
+                    HistoryBusinessRowHead::Cost(head) => {
                         costs.insert(key, head);
                     }
-                    Some(_) => {
+                    _ => {
                         return Err(HistoryError::Integrity(
                             "cost row has another head type".into(),
                         ));
                     }
-                    None => {}
                 }
             }
         }
@@ -310,7 +320,7 @@ impl HistoryStore {
             costs,
         };
         for fact in facts {
-            fold.record(fact)?;
+            fold.record(fact, self.database_id())?;
         }
         Ok(PreparedHistoryUsage {
             events: fold.events,
@@ -328,44 +338,27 @@ impl HistoryStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.pending.clone()
         };
-        if let Some(accepted) = pending.event(&fact.event_id) {
-            let same = accepted
-                .event
-                .bodies
-                .iter()
-                .find(|body| body.role == HistoryBodyRole::CanonicalPayload)
-                .is_some_and(|body| body.bytes.as_ref() == payload);
-            return if same {
-                Ok(Some(accepted.event.header.seq))
-            } else {
-                Err(HistoryError::Conflict(fact.event_id.clone()))
-            };
-        }
-        let Some(old) = db::event(&self.inner.reader, &fact.event_id).await? else {
+        let record = if let Some(accepted) = pending.event(&fact.event_id) {
+            Record::from_event(&accepted.event).record
+        } else if let Some(old) = db::event(&self.inner.reader, &fact.event_id).await? {
+            old.record
+        } else {
             return Ok(None);
         };
-        let body_id = old
-            .payload_body_id
-            .ok_or_else(|| HistoryError::Conflict(fact.event_id.clone()))?;
-        let body = db::body(&self.inner.reader, &body_id)
-            .await?
-            .ok_or_else(|| HistoryError::Integrity("usage payload is missing".into()))?;
-        if body.length != payload.len() as u64 {
-            return Err(HistoryError::Conflict(fact.event_id.clone()));
-        }
-        for (chunk, bytes) in payload.chunks(BODY_CHUNK_BYTES).enumerate() {
-            if db::window(
-                &self.inner.reader,
-                &body,
-                (chunk * BODY_CHUNK_BYTES) as u64,
-                bytes.len(),
-            )
-            .await?
-                != bytes
-            {
-                return Err(HistoryError::Conflict(fact.event_id.clone()));
+        let reader = self.reader();
+        let existing = match read_event_body_bytes(&reader, &record, "accounting", None).await? {
+            Some(bytes) => bytes,
+            None => {
+                // Legacy v25 migrated usage row may hold key "canonical_payload" in history_bodies
+                read_event_body_bytes(&reader, &record, "canonical_payload", None)
+                    .await?
+                    .ok_or_else(|| HistoryError::Conflict(fact.event_id.clone()))?
             }
+        };
+        if existing == payload {
+            Ok(Some(record.seq))
+        } else {
+            Err(HistoryError::Conflict(fact.event_id.clone()))
         }
-        Ok(Some(old.header.seq))
     }
 }

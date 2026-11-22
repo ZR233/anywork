@@ -1,6 +1,6 @@
 CREATE TABLE history_store_meta (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-    schema_version INTEGER NOT NULL CHECK(schema_version = 25),
+    schema_version INTEGER NOT NULL CHECK(schema_version = 26),
     database_id TEXT NOT NULL UNIQUE,
     thread_id TEXT NOT NULL
 );
@@ -29,87 +29,69 @@ CREATE TABLE history_body_chunks (
 CREATE TABLE history_events (
     seq INTEGER PRIMARY KEY CHECK(seq > 0),
     event_id TEXT NOT NULL UNIQUE CHECK(length(event_id) > 0),
-    kind TEXT NOT NULL CHECK(kind IN (
-        'run_started','run_ended',
-        'turn_started','turn_changed','turn_ended','turn_rolled_back',
-        'source_started','source_ended',
-        'input_accepted','input_consumed','input_discarded',
-        'entity_started','entity_state_changed','entity_ended',
-        'content_became_visible',
-        'group_opened','group_head_changed','group_closed',
-        'boundary_observed',
-        'usage_recorded','usage_adjusted',
-        'background_delivery_recorded','business_changed','legacy_observed'
-    )),
+    kind TEXT NOT NULL CHECK(length(kind) > 0),
+    timeline_role TEXT NOT NULL CHECK(timeline_role IN ('divider', 'work', 'hidden')),
+    occurred_at INTEGER,
+    recorded_at INTEGER NOT NULL,
     run_id TEXT,
-    attempt_id TEXT,
-    entity_id TEXT,
     turn_id TEXT,
+    attempt_id TEXT,
+    call_id TEXT,
+    entity_id TEXT,
+    message_id TEXT,
+    tool_name TEXT,
     source_kind TEXT,
     source_id TEXT,
-    call_id TEXT,
-    message_id TEXT,
     query_class TEXT,
     parent_id TEXT,
     original_kind TEXT,
-    tool_name TEXT,
-    group_id TEXT,
-    row_scope TEXT CHECK(row_scope IN ('work','single','member','turn','source','cost','accounting')),
+    row_scope TEXT CHECK(row_scope IN ('turn', 'source', 'cost', 'accounting')),
     row_key TEXT,
-    is_anchor INTEGER NOT NULL DEFAULT 0 CHECK(is_anchor IN (0,1)),
-    occurred_at INTEGER,
-    recorded_at INTEGER NOT NULL,
-    head_json TEXT CHECK(head_json IS NULL OR
-        (json_valid(head_json) AND length(CAST(head_json AS BLOB)) <= 16384)),
-    payload_body_id TEXT REFERENCES history_bodies(body_id)
-        DEFERRABLE INITIALLY DEFERRED,
+    is_anchor INTEGER NOT NULL DEFAULT 0 CHECK(is_anchor IN (0, 1)),
+    payload_schema TEXT NOT NULL CHECK(length(payload_schema) > 0),
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
     CHECK((source_kind IS NULL) = (source_id IS NULL)),
     CHECK((query_class IS NULL) = (original_kind IS NULL)),
-    CHECK(query_class IS NOT NULL OR (parent_id IS NULL AND tool_name IS NULL)),
-    CHECK(query_class IS NULL OR payload_body_id IS NOT NULL),
+    CHECK(query_class IS NOT NULL OR parent_id IS NULL),
     CHECK((row_scope IS NULL) = (row_key IS NULL)),
-    CHECK((row_key IS NULL) = (head_json IS NULL)),
     CHECK(is_anchor = 0 OR row_key IS NOT NULL),
-    CHECK(row_scope != 'member' OR (group_id IS NOT NULL AND entity_id IS NOT NULL)),
-    CHECK(row_scope != 'work' OR group_id IS NOT NULL)
+    CHECK(row_scope IS NULL OR timeline_role = 'hidden')
 );
 
+CREATE INDEX idx_events_dividers
+    ON history_events(seq DESC) WHERE timeline_role = 'divider';
+CREATE INDEX idx_events_work
+    ON history_events(seq DESC, occurred_at, run_id) WHERE timeline_role = 'work';
 CREATE UNIQUE INDEX history_one_anchor
     ON history_events(row_key) WHERE is_anchor = 1;
 CREATE INDEX history_row_head
     ON history_events(row_key, seq DESC) WHERE row_key IS NOT NULL;
-CREATE INDEX history_main_anchors
-    ON history_events(seq DESC, row_key)
-    WHERE is_anchor = 1 AND row_scope IN ('work','single');
-CREATE INDEX history_member_anchors
-    ON history_events(group_id, seq DESC, row_key)
-    WHERE is_anchor = 1 AND row_scope = 'member';
 CREATE INDEX history_business_anchors
     ON history_events(row_scope, seq DESC, row_key) WHERE is_anchor = 1;
-CREATE INDEX history_entity_events
+CREATE INDEX idx_events_entity
     ON history_events(entity_id, seq DESC) WHERE entity_id IS NOT NULL;
-CREATE INDEX history_turn_events
+CREATE INDEX idx_events_turn
     ON history_events(turn_id, seq DESC) WHERE turn_id IS NOT NULL;
-CREATE INDEX history_source_events
+CREATE INDEX idx_events_source
     ON history_events(source_kind, source_id, seq DESC) WHERE source_id IS NOT NULL;
-CREATE INDEX history_call_events
+CREATE INDEX idx_events_call
     ON history_events(call_id, seq DESC) WHERE call_id IS NOT NULL;
-CREATE INDEX history_message_events
+CREATE INDEX idx_events_message
     ON history_events(message_id, seq DESC) WHERE message_id IS NOT NULL;
-CREATE INDEX history_attempt_events
+CREATE INDEX idx_events_attempt
     ON history_events(run_id, attempt_id, seq DESC) WHERE attempt_id IS NOT NULL;
-CREATE INDEX history_originals_class
+CREATE INDEX idx_events_originals_class
     ON history_events(query_class, seq DESC) WHERE query_class IS NOT NULL;
-CREATE INDEX history_originals_all
+CREATE INDEX idx_events_originals_all
     ON history_events(seq DESC) WHERE query_class IS NOT NULL;
-CREATE INDEX history_originals_parent
+CREATE INDEX idx_events_originals_parent
     ON history_events(parent_id, seq DESC) WHERE query_class IS NOT NULL;
-CREATE INDEX history_originals_parent_class
+CREATE INDEX idx_events_originals_parent_class
     ON history_events(parent_id, query_class, seq DESC) WHERE query_class IS NOT NULL;
-CREATE INDEX history_originals_text
+CREATE INDEX idx_events_originals_text
     ON history_events(seq DESC)
-    WHERE query_class IS NOT NULL AND original_kind IN ('text','input');
-CREATE INDEX history_originals_tool
+    WHERE query_class IS NOT NULL AND original_kind IN ('text', 'input');
+CREATE INDEX idx_events_originals_tool
     ON history_events(turn_id, tool_name, seq DESC)
     WHERE query_class IS NOT NULL AND tool_name IS NOT NULL;
 

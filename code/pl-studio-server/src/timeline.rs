@@ -26,8 +26,8 @@ use pl_studio_runtime::{
     ReadDemand, StudioError, StudioErrorCode, StudioErrorReason,
     history::{
         HistoryAccountingHead, HistoryBodyPage, HistoryBodyWindow, HistoryCut, HistoryDemand,
-        HistoryEventBodyRef, HistoryEventDetail, HistoryEventsPage, HistoryEventsQuery,
-        HistoryGroupPage, HistoryTimelinePage,
+        HistoryBusinessPage, HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage,
+        HistoryEventsQuery, HistoryTimelinePage, HistoryWorkRangePage,
     },
 };
 use pl_studio_runtime::{CurrentReader, CurrentWatch, history::HistoryReader};
@@ -670,8 +670,9 @@ pub(crate) struct HistoryPageRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct HistoryGroupRequest {
-    group_id: String,
+pub(crate) struct HistoryWorkRangeRequest {
+    after_seq: Option<u64>,
+    before_seq: Option<u64>,
     #[schema(value_type = Object)]
     cut: Option<HistoryCut>,
     cursor: Option<String>,
@@ -768,25 +769,26 @@ pub(crate) async fn timeline(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/history/group",
-    operation_id = "thread.readHistoryGroup",
+#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/history/work-range",
+    operation_id = "thread.readHistoryWorkRange",
     params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = HistoryGroupRequest,
+    request_body = HistoryWorkRangeRequest,
     responses(StudioApiErrors, (status = 200, body = Object)))]
-pub(crate) async fn group(
+pub(crate) async fn work_range(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
-    ApiJson(request): ApiJson<HistoryGroupRequest>,
-) -> Result<Json<HistoryGroupPage>, ApiError> {
+    ApiJson(request): ApiJson<HistoryWorkRangeRequest>,
+) -> Result<Json<HistoryWorkRangePage>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;
     Ok(Json(
         lease
             .history()?
-            .group_page(
-                request.group_id,
+            .work_range_page(
+                request.after_seq,
+                request.before_seq,
                 request.cut,
                 request.cursor,
                 request.demand,
@@ -805,7 +807,7 @@ pub(crate) async fn turns(
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<HistoryPageRequest>,
-) -> Result<Json<HistoryTimelinePage>, ApiError> {
+) -> Result<Json<HistoryBusinessPage>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;
@@ -849,7 +851,7 @@ pub(crate) async fn event(
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<HistoryEventRequest>,
-) -> Result<Json<HistoryEventDetail>, ApiError> {
+) -> Result<Json<HistoryEventRecord>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;
@@ -915,7 +917,7 @@ pub(crate) async fn costs(
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<HistoryPageRequest>,
-) -> Result<Json<HistoryTimelinePage>, ApiError> {
+) -> Result<Json<HistoryBusinessPage>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;
@@ -1286,7 +1288,9 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
-    use pl_studio_runtime::history::{HistoryEvent, HistoryEventKind, HistoryLimits, HistoryStore};
+    use pl_studio_runtime::history::{
+        HistoryEvent, HistoryEventKind, HistoryLimits, HistoryStore, HistoryTimelineRole,
+    };
     use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
     use std::path::{Path as FsPath, PathBuf};
     use tokio_util::sync::CancellationToken;
@@ -1329,7 +1333,12 @@ mod tests {
         )
         .await?;
         store
-            .accept_batch(&[HistoryEvent::new("first", HistoryEventKind::RunStarted, 1)])
+            .accept_batch(&[HistoryEvent::new(
+                "first",
+                HistoryEventKind::RunStarted,
+                HistoryTimelineRole::Hidden,
+                1,
+            )])
             .await?;
         store.flush().await?;
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
@@ -1369,7 +1378,7 @@ mod tests {
 
         let Json(page) = read.map_err(|error| error.0)?;
         assert_eq!(page.entries.len(), 1);
-        assert_eq!(page.entries[0].header.event_id, "first");
+        assert_eq!(page.entries[0].event_id, "first");
         assert_eq!(close.map_err(|error| error.0)?, StatusCode::NO_CONTENT);
         tokio::fs::write(directory.join("read-complete"), b"").await?;
         Ok(())

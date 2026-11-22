@@ -68,30 +68,33 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
       expectSync(cursor, isNull);
       return HistoryTimelinePage(
         cut: _cut,
-        entries: [
-          HistoryTimelineEntry(
-            rowKey: 'row:$_atomId',
-            anchorSeq: 4,
-            headSeq: 4,
-            head: SingleHistoryRow(
-              HistoryEntityHead(
-                entityId: _atomId,
-                runId: runId,
-                source: const ForegroundTurnChatSource(turnId: _turnId),
-                kind: ChatAtomKind.text,
-                delivery: ChatDeliveryKind.foreground,
-                state: const HistoryEntityState(
-                  kind: HistoryEntityStateKind.knownActive,
-                  activeStatus: ChatActiveStatus.running,
-                ),
-                // This row anchors the Current overlay. It intentionally has no
-                // canonical body identity, so the test cannot depend on an
-                // unscripted History readEvent fallback.
-                contentPresent: false,
-                observation: const HistoryObservation(
-                  kind: HistoryObservationKind.original,
-                ),
-              ),
+        items: [
+          DividerTimelineItem(
+            HistoryEventRecord(
+              seq: 4,
+              eventId: 'event:$_atomId',
+              kind: 'text_updated',
+              timelineRole: HistoryTimelineRole.divider,
+              recordedAt: 4,
+              runId: runId,
+              turnId: _turnId,
+              entityId: _atomId,
+              rowKey: 'row:$_atomId',
+              source: const ForegroundTurnChatSource(turnId: _turnId),
+              payloadSchema: 'anywork.event/1',
+              payloadJson: jsonEncode({
+                'contract': 'anywork.event/1',
+                'type': 'text',
+                'meta': {
+                  'entityId': _atomId,
+                  'entityKind': 'text',
+                  'delivery': 'foreground',
+                  'state': {'kind': 'knownActive', 'status': 'running'},
+                  'contentPresent': false,
+                },
+                'data': {'channel': 'final'},
+                'bodies': <Object?>[],
+              }),
             ),
           ),
         ],

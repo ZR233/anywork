@@ -219,8 +219,8 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       );
     }
     final blocks = [
-      for (final detail in page.entries)
-        ?TimelineHistoryProjection.eventDetail(detail, cut: cut),
+      for (final record in page.entries)
+        TimelineHistoryProjection.eventRecord(record, cut: cut),
     ];
     final ids = <String>{};
     if (blocks.any((block) => block.id.isEmpty || !ids.add(block.id))) {

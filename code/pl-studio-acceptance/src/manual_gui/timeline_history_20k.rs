@@ -675,7 +675,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
                     (SELECT COUNT(DISTINCT entity_id) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
                     (SELECT COUNT(*) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
                     (SELECT COUNT(DISTINCT entity_id) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
-                    (SELECT COUNT(*) FROM history_events WHERE kind IN ('entity_started','entity_ended','run_started','run_ended')),
+                    (SELECT COUNT(*) FROM history_events WHERE kind IN ('text_completed','reasoning_started','reasoning_completed','tool_called','tool_waiting_approval','tool_backgrounded','tool_cancel_requested','tool_completed','run_started','run_ended','item_recorded')),
                     (SELECT COUNT(*) FROM history_events WHERE row_scope='turn' AND is_anchor=1),
                     (SELECT COALESCE(MAX(seq),0) FROM history_events)",
         )
@@ -687,7 +687,7 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         .await
         .with_context(|| format!("failed to audit {}", display.display()))?;
         let canonical_events = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,source_kind,source_id,call_id,message_id,query_class,parent_id,original_kind,tool_name,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+            "SELECT json_array(seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_kind,source_id,query_class,parent_id,original_kind,row_scope,row_key,is_anchor,payload_schema,payload_json)
              FROM history_events WHERE query_class IS NOT NULL ORDER BY seq",
         )
         .fetch_all(&mut connection)
@@ -705,11 +705,11 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         ).fetch_all(&mut connection).await
             .context("failed to audit immutable body chunks")?;
         let lifecycle_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,source_kind,source_id,call_id,message_id,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+            "SELECT json_array(seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_kind,source_id,row_scope,row_key,is_anchor,payload_schema,payload_json)
              FROM history_events WHERE query_class IS NULL AND row_scope IS NOT 'turn' ORDER BY seq",
         ).fetch_all(&mut connection).await.context("failed to audit lifecycle and observation events")?;
         let history_turn_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(seq,event_id,kind,run_id,turn_id,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+            "SELECT json_array(seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,row_key,is_anchor,payload_schema,payload_json)
              FROM history_events WHERE row_scope='turn' ORDER BY seq",
         ).fetch_all(&mut connection).await.context("failed to audit Turn events")?;
         Ok::<_, anyhow::Error>(HistoryAudit {

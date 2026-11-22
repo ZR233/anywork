@@ -1,92 +1,116 @@
+use std::{collections::BTreeSet, sync::Arc};
+
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, Value};
 use sha2::{Digest, Sha256};
 
-use super::{token::Query, types::source_key, *};
+use super::{
+    pending::WorkRangeSummary,
+    types::source_key,
+    *,
+};
 
 pub(super) fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
 }
+
 pub(super) fn number(value: u64) -> Result<i64> {
     i64::try_from(value)
         .map_err(|_| HistoryError::InvalidEvent("history integer exceeds SQLite range".into()))
 }
 
-const COLUMNS: &str = "seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,source_kind,source_id,call_id,message_id,query_class,parent_id,original_kind,tool_name,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id";
+const COLUMNS: &str = "seq,event_id,kind,timeline_role,occurred_at,recorded_at,run_id,turn_id,attempt_id,call_id,entity_id,message_id,tool_name,source_kind,source_id,query_class,parent_id,original_kind,row_scope,row_key,is_anchor,payload_schema,payload_json";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Record {
-    pub header: HistoryEventHeader,
-    pub head: Option<HistoryRowHead>,
+    pub record: HistoryEventRecord,
     pub is_anchor: bool,
-    pub payload_body_id: Option<String>,
 }
+
 impl Record {
     pub fn from_event(event: &HistoryEvent) -> Self {
         Self {
-            header: event.header.clone(),
-            head: event.head.clone(),
+            record: event.to_record(),
             is_anchor: event.is_anchor,
-            payload_body_id: event.payload_body_id.clone(),
         }
     }
 }
 
-fn decode(row: QueryResult) -> Result<Record> {
+pub(super) fn decode_row(row: QueryResult) -> Result<Record> {
+    let seq = u64::try_from(row.try_get::<i64>("", "seq")?)
+        .map_err(|_| HistoryError::Integrity("negative event sequence".into()))?;
+    let event_id: String = row.try_get("", "event_id")?;
     let kind: String = row.try_get("", "kind")?;
-    let source: Option<String> = row.try_get("", "source_id")?;
-    let class: Option<String> = row.try_get("", "query_class")?;
-    let head: Option<String> = row.try_get("", "head_json")?;
-    let original = if let Some(query_class) = class {
-        let kind: String = row.try_get("", "original_kind")?;
-        Some(HistoryOriginalInfo {
-            query_class,
-            parent_id: row.try_get("", "parent_id")?,
-            original_kind: serde_json::from_value(serde_json::Value::String(kind))?,
-            tool_name: row.try_get("", "tool_name")?,
-        })
-    } else {
-        None
-    };
-    let record = Record {
-        header: HistoryEventHeader {
-            seq: u64::try_from(row.try_get::<i64>("", "seq")?)
-                .map_err(|_| HistoryError::Integrity("negative event sequence".into()))?,
-            event_id: row.try_get("", "event_id")?,
-            kind: kind.into(),
-            run_id: row.try_get("", "run_id")?,
-            attempt_id: row.try_get("", "attempt_id")?,
-            entity_id: row.try_get("", "entity_id")?,
-            turn_id: row.try_get("", "turn_id")?,
-            source: source
-                .map(|source| serde_json::from_str(&source))
-                .transpose()?,
-            call_id: row.try_get("", "call_id")?,
-            message_id: row.try_get("", "message_id")?,
-            group_id: row.try_get("", "group_id")?,
-            row_key: row.try_get("", "row_key")?,
-            original,
-            occurred_at: row.try_get("", "occurred_at")?,
-            recorded_at: row.try_get("", "recorded_at")?,
-        },
-        head: head.map(|head| serde_json::from_str(&head)).transpose()?,
-        is_anchor: row.try_get::<i64>("", "is_anchor")? == 1,
-        payload_body_id: row.try_get("", "payload_body_id")?,
-    };
-    if record.head.as_ref().map(|head| head.scope())
-        != row.try_get::<Option<String>>("", "row_scope")?.as_deref()
-    {
-        return Err(HistoryError::Integrity(
-            "row head and indexed scope differ".into(),
-        ));
-    }
-    if let Some(source) = &record.header.source
-        && Some(source_key(source)?.0) != row.try_get::<Option<String>>("", "source_kind")?
+    let timeline_role_str: String = row.try_get("", "timeline_role")?;
+    let timeline_role = HistoryTimelineRole::from_db(&timeline_role_str).ok_or_else(|| {
+        HistoryError::Integrity(format!("unknown timeline_role {timeline_role_str}"))
+    })?;
+    let source_kind: Option<String> = row.try_get("", "source_kind")?;
+    let source_id: Option<String> = row.try_get("", "source_id")?;
+    let source = source_id
+        .map(|raw| serde_json::from_str::<HistorySource>(&raw))
+        .transpose()?;
+    if let Some(src) = &source
+        && Some(source_key(src)?.0) != source_kind
     {
         return Err(HistoryError::Integrity(
             "source identity differs from its indexed kind".into(),
         ));
     }
-    Ok(record)
+    let tool_name: Option<String> = row.try_get("", "tool_name")?;
+    let query_class: Option<String> = row.try_get("", "query_class")?;
+    let original = if let Some(query_class) = query_class {
+        let orig_kind_str: String = row.try_get("", "original_kind")?;
+        let original_kind: HistoryEntityKind =
+            serde_json::from_value(serde_json::Value::String(orig_kind_str))
+                .unwrap_or(HistoryEntityKind::Unknown);
+        Some(HistoryOriginalInfo {
+            query_class,
+            parent_id: row.try_get("", "parent_id")?,
+            original_kind,
+            tool_name: tool_name.clone(),
+        })
+    } else {
+        None
+    };
+    let row_scope_str: Option<String> = row.try_get("", "row_scope")?;
+    let row_scope = row_scope_str
+        .as_deref()
+        .map(|s| {
+            HistoryBusinessRowScope::from_db(s)
+                .ok_or_else(|| HistoryError::Integrity(format!("unknown row_scope {s}")))
+        })
+        .transpose()?;
+    let row_key: Option<String> = row.try_get("", "row_key")?;
+    if row_scope.is_some() != row_key.is_some() {
+        return Err(HistoryError::Integrity(
+            "indexed row_scope and row_key presence differ".into(),
+        ));
+    }
+
+    Ok(Record {
+        record: HistoryEventRecord {
+            seq,
+            event_id,
+            kind: kind.into(),
+            timeline_role,
+            occurred_at: row.try_get("", "occurred_at")?,
+            recorded_at: row.try_get("", "recorded_at")?,
+            run_id: row.try_get("", "run_id")?,
+            turn_id: row.try_get("", "turn_id")?,
+            attempt_id: row.try_get("", "attempt_id")?,
+            call_id: row.try_get("", "call_id")?,
+            entity_id: row.try_get("", "entity_id")?,
+            message_id: row.try_get("", "message_id")?,
+            tool_name,
+            source,
+            original,
+            row_scope,
+            row_key,
+            payload_schema: row.try_get("", "payload_schema")?,
+            payload_json: row.try_get("", "payload_json")?,
+        },
+        is_anchor: row.try_get::<i64>("", "is_anchor")? == 1,
+    })
 }
 
 pub(super) async fn event(db: &impl ConnectionTrait, id: &str) -> Result<Option<Record>> {
@@ -94,10 +118,11 @@ pub(super) async fn event(db: &impl ConnectionTrait, id: &str) -> Result<Option<
         &format!("SELECT {COLUMNS} FROM history_events WHERE event_id=?"),
         vec![id.into()],
     ))
-    .await.inspect(|_| {
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
-    .map(decode)
+    .map(decode_row)
     .transpose()
 }
 
@@ -107,12 +132,128 @@ pub(super) async fn event_head(db: &impl ConnectionTrait) -> Result<u64> {
             "SELECT COALESCE(MAX(seq),0) AS seq FROM history_events",
             vec![],
         ))
-        .await.inspect(|_| {
+        .await
+        .inspect(|_| {
             tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
         })?
         .ok_or_else(|| HistoryError::Integrity("history head query returned no row".into()))?;
     u64::try_from(row.try_get::<i64>("", "seq")?)
         .map_err(|_| HistoryError::Integrity("negative history head".into()))
+}
+
+pub(super) async fn latest_divider_at_or_before(
+    db: &impl ConnectionTrait,
+    upper_seq: u64,
+) -> Result<Option<Record>> {
+    if upper_seq == 0 {
+        return Ok(None);
+    }
+    db.query_one_raw(statement(
+        &format!(
+            "SELECT {COLUMNS} FROM history_events \
+             WHERE timeline_role='divider' AND seq<=? ORDER BY seq DESC LIMIT 1"
+        ),
+        vec![number(upper_seq)?.into()],
+    ))
+    .await
+    .inspect(|_| {
+        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+    })?
+    .map(decode_row)
+    .transpose()
+}
+
+pub(super) async fn work_range_summary(
+    db: &impl ConnectionTrait,
+    lower_excl: u64,
+    upper_incl: u64,
+) -> Result<Option<WorkRangeSummary>> {
+    if lower_excl >= upper_incl {
+        return Ok(None);
+    }
+    let row = db
+        .query_one_raw(statement(
+            "SELECT MIN(seq) AS first_seq, MAX(seq) AS last_seq, \
+                    MIN(occurred_at) AS min_occurred_at, MAX(occurred_at) AS max_occurred_at, \
+                    COUNT(*) AS event_count \
+             FROM history_events \
+             WHERE timeline_role='work' AND seq>? AND seq<=?",
+            vec![number(lower_excl)?.into(), number(upper_incl)?.into()],
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?
+        .ok_or_else(|| HistoryError::Integrity("work range aggregate missing row".into()))?;
+    let event_count = u64::try_from(row.try_get::<i64>("", "event_count")?)
+        .map_err(|_| HistoryError::Integrity("negative work event count".into()))?;
+    if event_count == 0 {
+        return Ok(None);
+    }
+    let first_seq = u64::try_from(
+        row.try_get::<Option<i64>>("", "first_seq")?
+            .ok_or_else(|| HistoryError::Integrity("work range missing first_seq".into()))?,
+    )
+    .map_err(|_| HistoryError::Integrity("negative work first_seq".into()))?;
+    let last_seq = u64::try_from(
+        row.try_get::<Option<i64>>("", "last_seq")?
+            .ok_or_else(|| HistoryError::Integrity("work range missing last_seq".into()))?,
+    )
+    .map_err(|_| HistoryError::Integrity("negative work last_seq".into()))?;
+    let started_at: Option<i64> = row.try_get("", "min_occurred_at")?;
+    let ended_at: Option<i64> = row.try_get("", "max_occurred_at")?;
+    let run_row = db
+        .query_one_raw(statement(
+            "SELECT run_id FROM history_events \
+             WHERE timeline_role='work' AND seq>? AND seq<=? AND run_id IS NOT NULL \
+             ORDER BY seq DESC LIMIT 1",
+            vec![number(lower_excl)?.into(), number(upper_incl)?.into()],
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    let run_id: Option<String> = match run_row {
+        Some(row) => row.try_get("", "run_id")?,
+        None => None,
+    };
+    Ok(Some(WorkRangeSummary {
+        first_seq,
+        last_seq,
+        started_at,
+        ended_at,
+        run_id,
+        event_count,
+    }))
+}
+
+pub(super) async fn work_range_events(
+    db: &impl ConnectionTrait,
+    after_excl: u64,
+    upper_incl: u64,
+    limit: usize,
+) -> Result<Vec<Record>> {
+    if after_excl >= upper_incl || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT {COLUMNS} FROM history_events \
+                 WHERE timeline_role='work' AND seq>? AND seq<=? \
+                 ORDER BY seq ASC LIMIT ?"
+            ),
+            vec![
+                number(after_excl)?.into(),
+                number(upper_incl)?.into(),
+                number(limit as u64)?.into(),
+            ],
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    rows.into_iter().map(decode_row).collect()
 }
 
 pub(super) async fn original_by_entity(
@@ -127,10 +268,11 @@ pub(super) async fn original_by_entity(
         ),
         vec![entity.into(), number(through)?.into()],
     ))
-    .await.inspect(|_| {
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
-    .map(decode)
+    .map(decode_row)
     .transpose()
 }
 
@@ -145,208 +287,174 @@ pub(super) async fn latest_original(
         ),
         vec![number(through)?.into()],
     ))
-    .await.inspect(|_| {
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
-    .map(decode)
+    .map(decode_row)
     .transpose()
 }
+
 pub(super) async fn head(db: &impl ConnectionTrait, row: &str, cut: u64) -> Result<Option<Record>> {
-    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![row.into(), number(cut)?.into()])).await.inspect(|_| {
+    db.query_one_raw(statement(
+        &format!(
+            "SELECT {COLUMNS} FROM history_events WHERE row_key=? AND seq<=? ORDER BY seq DESC LIMIT 1"
+        ),
+        vec![row.into(), number(cut)?.into()],
+    ))
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?.map(decode).transpose()
+    })?
+    .map(decode_row)
+    .transpose()
 }
+
 pub(super) async fn anchor(db: &impl ConnectionTrait, row: &str) -> Result<Option<Record>> {
     db.query_one_raw(statement(
         &format!("SELECT {COLUMNS} FROM history_events WHERE row_key=? AND is_anchor=1"),
         vec![row.into()],
     ))
-    .await.inspect(|_| {
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
-    .map(decode)
+    .map(decode_row)
     .transpose()
 }
 
-pub(super) fn selection(query: &Query) -> Result<(String, Vec<Value>)> {
+pub(super) async fn business_anchors(
+    db: &impl ConnectionTrait,
+    scope: HistoryBusinessRowScope,
+    through: u64,
+    before: Option<u64>,
+    limit: usize,
+) -> Result<Vec<(String, u64)>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let upper = before.map_or(through, |b| b.saturating_sub(1).min(through));
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT row_key, seq FROM history_events \
+             WHERE is_anchor=1 AND row_scope=? AND seq<=? \
+             ORDER BY seq DESC LIMIT ?",
+            vec![
+                scope.as_str().into(),
+                number(upper)?.into(),
+                number(limit as u64)?.into(),
+            ],
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    let mut anchors = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key: String = row.try_get("", "row_key")?;
+        let seq = u64::try_from(row.try_get::<i64>("", "seq")?)
+            .map_err(|_| HistoryError::Integrity("negative anchor sequence".into()))?;
+        anchors.push((key, seq));
+    }
+    Ok(anchors)
+}
+
+pub(super) fn event_filter(query: &HistoryEventsQuery) -> Result<(String, Vec<Value>)> {
     Ok(match query {
-        Query::Main => (
-            "is_anchor=1 AND row_scope IN ('work','single')".into(),
+        HistoryEventsQuery::AllEvents => ("1=1".into(), vec![]),
+        HistoryEventsQuery::Entity { entity_id } => {
+            ("entity_id=?".into(), vec![entity_id.clone().into()])
+        }
+        HistoryEventsQuery::Turn { turn_id } => {
+            ("turn_id=?".into(), vec![turn_id.clone().into()])
+        }
+        HistoryEventsQuery::Source { source } => {
+            let (kind, id) = source_key(source)?;
+            ("source_kind=? AND source_id=?".into(), vec![kind.into(), id.into()])
+        }
+        HistoryEventsQuery::Call { call_id } => {
+            ("call_id=?".into(), vec![call_id.clone().into()])
+        }
+        HistoryEventsQuery::Message { message_id } => {
+            ("message_id=?".into(), vec![message_id.clone().into()])
+        }
+        HistoryEventsQuery::Attempt { run_id, attempt_id } => (
+            "run_id=? AND attempt_id=?".into(),
+            vec![run_id.clone().into(), attempt_id.clone().into()],
+        ),
+        HistoryEventsQuery::Originals { scope } => {
+            let mut clauses = vec!["query_class IS NOT NULL".to_owned()];
+            let mut values = Vec::new();
+            match &scope.query_class {
+                crate::ChatClassFilter::All {} => {}
+                crate::ChatClassFilter::Class { value: query_class } => {
+                    clauses.push("query_class=?".into());
+                    values.push(query_class.clone().into());
+                }
+            }
+            if let Some(parent) = &scope.parent_id {
+                clauses.push("parent_id=?".into());
+                values.push(parent.as_str().to_owned().into());
+            }
+            (clauses.join(" AND "), values)
+        }
+        HistoryEventsQuery::TextOriginals => (
+            "query_class IS NOT NULL AND original_kind IN ('text','input')".into(),
             vec![],
         ),
-        Query::Group(id) => (
-            "is_anchor=1 AND row_scope='member' AND group_id=?".into(),
-            vec![id.clone().into()],
-        ),
-        Query::Rows(scope) => (
-            "is_anchor=1 AND row_scope=?".into(),
-            vec![scope.clone().into()],
-        ),
-        Query::Events(query) => match query {
-            HistoryEventsQuery::AllEvents => ("1=1".into(), vec![]),
-            HistoryEventsQuery::Entity { entity_id } => {
-                ("entity_id=?".into(), vec![entity_id.clone().into()])
-            }
-            HistoryEventsQuery::Turn { turn_id } => {
-                ("turn_id=?".into(), vec![turn_id.clone().into()])
-            }
-            HistoryEventsQuery::Call { call_id } => {
-                ("call_id=?".into(), vec![call_id.clone().into()])
-            }
-            HistoryEventsQuery::Message { message_id } => {
-                ("message_id=?".into(), vec![message_id.clone().into()])
-            }
-            HistoryEventsQuery::Source { source } => {
-                let (kind, id) = source_key(source)?;
-                (
-                    "source_kind=? AND source_id=?".into(),
-                    vec![kind.into(), id.into()],
-                )
-            }
-            HistoryEventsQuery::Attempt { run_id, attempt_id } => (
-                "run_id=? AND attempt_id=?".into(),
-                vec![run_id.clone().into(), attempt_id.clone().into()],
-            ),
-            HistoryEventsQuery::TextOriginals => (
-                "query_class IS NOT NULL AND original_kind IN ('text','input')".into(),
-                vec![],
-            ),
-            HistoryEventsQuery::Originals { scope } => {
-                if !scope.is_valid() {
-                    return Err(HistoryError::InvalidDemand(
-                        "invalid canonical scope".into(),
-                    ));
-                }
-                match (scope.query_class(), scope.parent_id()) {
-                    (None, None) => ("query_class IS NOT NULL".into(), vec![]),
-                    (Some(class), None) => ("query_class=?".into(), vec![class.into()]),
-                    (None, Some(parent)) => (
-                        "query_class IS NOT NULL AND parent_id=?".into(),
-                        vec![parent.into()],
-                    ),
-                    (Some(class), Some(parent)) => (
-                        "query_class=? AND parent_id=?".into(),
-                        vec![class.into(), parent.into()],
-                    ),
-                }
-            }
-        },
     })
 }
 
-pub(super) async fn candidates(
+pub(super) async fn events_filtered(
     db: &impl ConnectionTrait,
-    query: &Query,
-    cut: u64,
-    before: Option<u64>,
+    query: &HistoryEventsQuery,
+    min_excl: u64,
+    max_incl: u64,
+    ascending: bool,
     limit: usize,
 ) -> Result<Vec<Record>> {
-    let (sql, values) = candidate_sql(query, cut, before, limit, COLUMNS)?;
-    db.query_all_raw(statement(&sql, values))
-        .await.inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-        .into_iter()
-        .map(decode)
-        .collect()
-}
-
-pub(super) async fn candidates_in_order(
-    db: &impl ConnectionTrait,
-    query: &Query,
-    cut: u64,
-    pivot: Option<u64>,
-    limit: usize,
-    ascending: bool,
-) -> Result<Vec<Record>> {
-    let (sql, values) = candidate_sql_order(query, cut, pivot, limit, COLUMNS, ascending)?;
-    db.query_all_raw(statement(&sql, values))
-        .await.inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-        .into_iter()
-        .map(decode)
-        .collect()
-}
-
-fn candidate_sql(
-    query: &Query,
-    cut: u64,
-    before: Option<u64>,
-    limit: usize,
-    columns: &str,
-) -> Result<(String, Vec<Value>)> {
-    candidate_sql_order(query, cut, before, limit, columns, false)
-}
-fn candidate_sql_order(
-    query: &Query,
-    cut: u64,
-    before: Option<u64>,
-    limit: usize,
-    columns: &str,
-    ascending: bool,
-) -> Result<(String, Vec<Value>)> {
-    let (condition, mut values) = selection(query)?;
-    // These are fixed protocol queries over named partial indexes. SQLite otherwise may prefer
-    // a competing index and sort or filter the complete matching prefix. INDEXED BY makes
-    // the required access path executable and fails if the format no longer provides it.
-    let table = match query {
-        Query::Main => "history_events INDEXED BY history_main_anchors",
-        Query::Group(_) => "history_events INDEXED BY history_member_anchors",
-        Query::Rows(_) => "history_events INDEXED BY history_business_anchors",
-        Query::Events(HistoryEventsQuery::Originals { scope }) => {
-            match (scope.query_class(), scope.parent_id()) {
-                (None, None) => "history_events INDEXED BY history_originals_all",
-                (Some(_), None) => "history_events INDEXED BY history_originals_class",
-                (None, Some(_)) => "history_events INDEXED BY history_originals_parent",
-                (Some(_), Some(_)) => "history_events INDEXED BY history_originals_parent_class",
-            }
-        }
-        Query::Events(HistoryEventsQuery::TextOriginals) => {
-            "history_events INDEXED BY history_originals_text"
-        }
-        Query::Events(_) => "history_events",
-    };
-    let mut sql = format!("SELECT {columns} FROM {table} WHERE {condition} AND seq<=?");
-    values.push(number(cut)?.into());
-    if let Some(before) = before {
-        sql.push_str(if ascending {
-            " AND seq>?"
-        } else {
-            " AND seq<?"
-        });
-        values.push(number(before)?.into());
+    if min_excl >= max_incl || limit == 0 {
+        return Ok(Vec::new());
     }
-    sql.push_str(if ascending {
-        " ORDER BY seq ASC LIMIT ?"
-    } else {
-        " ORDER BY seq DESC LIMIT ?"
-    });
-    values.push((limit as i64).into());
-    Ok((sql, values))
+    let (predicate, mut values) = event_filter(query)?;
+    values.push(number(min_excl)?.into());
+    values.push(number(max_incl)?.into());
+    values.push(number(limit as u64)?.into());
+    let order = if ascending { "ASC" } else { "DESC" };
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT {COLUMNS} FROM history_events \
+                 WHERE {predicate} AND seq>? AND seq<=? \
+                 ORDER BY seq {order} LIMIT ?"
+            ),
+            values,
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    rows.into_iter().map(decode_row).collect()
 }
 
-pub(super) async fn anchors(
+pub(super) async fn review_finish(
     db: &impl ConnectionTrait,
-    query: &Query,
+    turn_id: &str,
     cut: u64,
-    before: Option<u64>,
-    limit: usize,
-) -> Result<Vec<(u64, String)>> {
-    let (sql, values) = candidate_sql(query, cut, before, limit, "seq,row_key")?;
-    db.query_all_raw(statement(&sql, values))
-        .await.inspect(|_| {
+) -> Result<Option<Record>> {
+    db.query_one_raw(statement(
+        &format!(
+            "SELECT {COLUMNS} FROM history_events \
+             WHERE turn_id=? AND tool_name='finish_turn' AND seq<=? ORDER BY seq DESC LIMIT 1"
+        ),
+        vec![turn_id.into(), number(cut)?.into()],
+    ))
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
-        .into_iter()
-        .map(|row| {
-            Ok((
-                u64::try_from(row.try_get::<i64>("", "seq")?)
-                    .map_err(|_| HistoryError::Integrity("negative anchor sequence".into()))?,
-                row.try_get("", "row_key")?,
-            ))
-        })
-        .collect()
+    .map(decode_row)
+    .transpose()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,12 +468,13 @@ pub(super) struct Body {
     pub media_type: Option<String>,
     pub digest: Vec<u8>,
 }
+
 impl Body {
     pub fn from_event(event: &HistoryEvent, ordinal: usize) -> Self {
         let body = &event.bodies[ordinal];
         Self {
             id: body.body_id.clone(),
-            owner: event.header.event_id.clone(),
+            owner: event.event_id.clone(),
             ordinal: ordinal as u64,
             key: body.body_key.clone(),
             role: body.role.clone(),
@@ -374,6 +483,7 @@ impl Body {
             digest: body.digest(),
         }
     }
+
     pub fn reference(&self, database: &str) -> HistoryEventBodyRef {
         HistoryEventBodyRef {
             database_id: database.into(),
@@ -384,6 +494,7 @@ impl Body {
             byte_length: self.length,
         }
     }
+
     pub fn entry(&self, database: &str) -> HistoryBodyEntry {
         HistoryBodyEntry {
             ordinal: self.ordinal,
@@ -394,323 +505,300 @@ impl Body {
         }
     }
 }
+
 fn decode_body(row: QueryResult) -> Result<Body> {
-    let body = Body {
+    let role: String = row.try_get("", "role")?;
+    let ordinal = u64::try_from(row.try_get::<i64>("", "ordinal")?)
+        .map_err(|_| HistoryError::Integrity("negative body ordinal".into()))?;
+    let length = u64::try_from(row.try_get::<i64>("", "byte_length")?)
+        .map_err(|_| HistoryError::Integrity("negative body byte_length".into()))?;
+    let digest: Vec<u8> = row.try_get("", "digest")?;
+    if digest.len() != 32 {
+        return Err(HistoryError::Integrity("invalid body digest length".into()));
+    }
+    Ok(Body {
         id: row.try_get("", "body_id")?,
         owner: row.try_get("", "owner_event_id")?,
-        ordinal: u64::try_from(row.try_get::<i64>("", "ordinal")?)
-            .map_err(|_| HistoryError::Integrity("negative body ordinal".into()))?,
+        ordinal,
         key: row.try_get("", "body_key")?,
-        role: HistoryBodyRole::from_string(row.try_get("", "role")?),
-        length: u64::try_from(row.try_get::<i64>("", "byte_length")?)
-            .map_err(|_| HistoryError::Integrity("negative body length".into()))?,
+        role: HistoryBodyRole::from_string(role),
+        length,
         media_type: row.try_get("", "media_type")?,
-        digest: row.try_get("", "digest")?,
-    };
-    if body.digest.len() != 32 {
-        return Err(HistoryError::Integrity("invalid body digest".into()));
-    }
-    Ok(body)
+        digest,
+    })
 }
+
 pub(super) async fn body(db: &impl ConnectionTrait, id: &str) -> Result<Option<Body>> {
     db.query_one_raw(statement(
-        "SELECT * FROM history_bodies WHERE body_id=?",
+        "SELECT body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest \
+         FROM history_bodies WHERE body_id=?",
         vec![id.into()],
     ))
-    .await.inspect(|_| {
+    .await
+    .inspect(|_| {
         tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
     })?
     .map(decode_body)
     .transpose()
 }
+
 pub(super) async fn bodies(
     db: &impl ConnectionTrait,
     owner: &str,
     after: Option<u64>,
     limit: usize,
 ) -> Result<Vec<Body>> {
-    let mut values = vec![owner.into()];
-    let mut sql = "SELECT * FROM history_bodies WHERE owner_event_id=?".to_owned();
-    if let Some(after) = after {
-        sql.push_str(" AND ordinal>?");
-        values.push(number(after)?.into());
+    if limit == 0 {
+        return Ok(Vec::new());
     }
-    sql.push_str(" ORDER BY ordinal LIMIT ?");
-    values.push((limit as i64).into());
-    db.query_all_raw(statement(&sql, values))
-        .await.inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-        .into_iter()
-        .map(decode_body)
-        .collect()
+    let (filter, mut values) = if let Some(after) = after {
+        (
+            "owner_event_id=? AND ordinal>?",
+            vec![owner.into(), number(after)?.into()],
+        )
+    } else {
+        ("owner_event_id=?", vec![owner.into()])
+    };
+    values.push(number(limit as u64)?.into());
+    let rows = db
+        .query_all_raw(statement(
+            &format!(
+                "SELECT body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest \
+                 FROM history_bodies WHERE {filter} ORDER BY ordinal ASC LIMIT ?"
+            ),
+            values,
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    rows.into_iter().map(decode_body).collect()
 }
 
 pub(super) async fn window(
     db: &impl ConnectionTrait,
     body: &Body,
-    start: u64,
-    length: usize,
+    offset: u64,
+    length: u32,
 ) -> Result<Vec<u8>> {
-    let end = start
-        .checked_add(length as u64)
-        .filter(|end| *end <= body.length)
-        .ok_or_else(|| {
-            HistoryError::InvalidDemand("body range exceeds its immutable slice".into())
-        })?;
-    if length == 0 {
+    if offset > body.length {
+        return Err(HistoryError::InvalidDemand(
+            "body read offset exceeds body length".into(),
+        ));
+    }
+    let want = (body.length - offset).min(length.min(BODY_CHUNK_BYTES as u32) as u64) as usize;
+    if want == 0 {
         return Ok(Vec::new());
     }
-    let first = start / BODY_CHUNK_BYTES as u64;
-    let last = (end - 1) / BODY_CHUNK_BYTES as u64;
-    let rows = db.query_all_raw(statement("SELECT chunk_no,data FROM history_body_chunks WHERE body_id=? AND chunk_no BETWEEN ? AND ? ORDER BY chunk_no", vec![body.id.clone().into(), number(first)?.into(), number(last)?.into()])).await.inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?;
-    if rows.len() as u64 != last - first + 1 {
-        return Err(HistoryError::Integrity("body chunk is missing".into()));
-    }
-    let mut bytes = Vec::with_capacity(length);
-    let mut loaded_bytes = 0usize;
-    for (index, row) in rows.into_iter().enumerate() {
-        let chunk = first + index as u64;
-        let data: Vec<u8> = row.try_get("", "data")?;
-        loaded_bytes += data.len();
-        let offset = chunk * BODY_CHUNK_BYTES as u64;
-        let expected = (body.length - offset).min(BODY_CHUNK_BYTES as u64) as usize;
-        if number(chunk)? != row.try_get::<i64>("", "chunk_no")? || data.len() != expected {
-            return Err(HistoryError::Integrity(
-                "invalid body chunk length or order".into(),
-            ));
+    let first_chunk = offset / BODY_CHUNK_BYTES as u64;
+    let last_chunk = (offset + want as u64 - 1) / BODY_CHUNK_BYTES as u64;
+    let rows = db
+        .query_all_raw(statement(
+            "SELECT chunk_no, data FROM history_body_chunks \
+             WHERE body_id=? AND chunk_no>=? AND chunk_no<=? ORDER BY chunk_no ASC",
+            vec![
+                body.id.clone().into(),
+                number(first_chunk)?.into(),
+                number(last_chunk)?.into(),
+            ],
+        ))
+        .await
+        .inspect(|_| {
+            tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
+        })?;
+    let mut expected_chunk = first_chunk;
+    let mut assembled = Vec::with_capacity(want);
+    let mut loaded_bytes: u64 = 0;
+    let mut chunk_start = (offset % BODY_CHUNK_BYTES as u64) as usize;
+    for row in rows {
+        let chunk_no = u64::try_from(row.try_get::<i64>("", "chunk_no")?)
+            .map_err(|_| HistoryError::Integrity("negative chunk index".into()))?;
+        if chunk_no != expected_chunk {
+            return Err(HistoryError::Integrity(format!(
+                "body {} has chunk gap before {}",
+                body.id, expected_chunk
+            )));
         }
-        let lower = start.saturating_sub(offset) as usize;
-        let upper = (end - offset).min(data.len() as u64) as usize;
-        bytes.extend_from_slice(&data[lower..upper]);
+        let data: Vec<u8> = row.try_get("", "data")?;
+        loaded_bytes = loaded_bytes.saturating_add(data.len() as u64);
+        if chunk_start >= data.len() {
+            return Err(HistoryError::Integrity(format!(
+                "body {} chunk {} truncated before offset",
+                body.id, chunk_no
+            )));
+        }
+        let remaining = want - assembled.len();
+        let end = (chunk_start + remaining).min(data.len());
+        assembled.extend_from_slice(&data[chunk_start..end]);
+        chunk_start = 0;
+        expected_chunk += 1;
     }
-    tracing::debug!(target: "conversation_work",
+    if expected_chunk <= last_chunk || assembled.len() != want {
+        return Err(HistoryError::Integrity(format!(
+            "body {} truncated while reading window",
+            body.id
+        )));
+    }
+    tracing::debug!(
+        target: "conversation_work",
         history_body_bytes_read = loaded_bytes,
-        history_body_chunks_read = last - first + 1,
-        source = "sqlite",
-        "history body chunks loaded"
+        history_body_returned_bytes = assembled.len() as u64,
+        "history body window read"
     );
-    if start == 0 && end == body.length && Sha256::digest(&bytes).as_slice() != body.digest {
-        return Err(HistoryError::Integrity("body digest differs".into()));
-    }
-    Ok(bytes)
+    Ok(assembled)
 }
 
-pub(super) async fn insert(
-    db: &impl ConnectionTrait,
-    event: &HistoryEvent,
-    headers: &[Body],
-) -> Result<()> {
+pub(super) async fn insert(db: &impl ConnectionTrait, event: &HistoryEvent) -> Result<()> {
     insert_event(db, event).await?;
-    for (ordinal, body) in event.bodies.iter().enumerate() {
-        insert_body_header(db, &headers[ordinal]).await?;
-        for (chunk, data) in body.bytes.chunks(BODY_CHUNK_BYTES).enumerate() {
+    for ordinal in 0..event.bodies.len() {
+        let header = Body::from_event(event, ordinal);
+        insert_body_header(db, &header).await?;
+        let raw = &event.bodies[ordinal].bytes;
+        let expected_digest = Sha256::digest(raw);
+        if expected_digest.as_slice() != header.digest.as_slice() {
+            return Err(HistoryError::Integrity(
+                "history body digest mismatch on insert".into(),
+            ));
+        }
+        for (chunk_no, chunk) in raw.chunks(BODY_CHUNK_BYTES).enumerate() {
             db.execute_raw(statement(
                 "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
                 vec![
-                    body.body_id.clone().into(),
-                    (chunk as i64).into(),
-                    data.to_vec().into(),
+                    header.id.clone().into(),
+                    number(chunk_no as u64)?.into(),
+                    chunk.to_vec().into(),
                 ],
             ))
             .await?;
-            tracing::debug!(target: "conversation_work",
-                history_sql_write = 1u64, table = "history_body_chunks",
-                "history SQL write completed"
-            );
+            tracing::debug!(target: "conversation_work", history_sql_write = 1u64, "history SQL chunk write completed");
         }
     }
     Ok(())
 }
+
 pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent) -> Result<()> {
-    let h = &event.header;
-    let source = h.source.as_ref().map(source_key).transpose()?;
-    let original = h.original.as_ref();
-    let kind = original
-        .map(|original| serde_json::to_value(original.original_kind))
-        .transpose()?
-        .and_then(|value| value.as_str().map(str::to_owned));
+    let (source_kind, source_id) = match &event.source {
+        Some(source) => {
+            let (kind, id) = source_key(source)?;
+            (Some(kind), Some(id))
+        }
+        None => (None, None),
+    };
+    let (query_class, parent_id, original_kind) = match &event.original {
+        Some(original) => {
+            let kind = match serde_json::to_value(original.original_kind)? {
+                serde_json::Value::String(text) => text,
+                _ => {
+                    return Err(HistoryError::InvalidEvent(
+                        "original kind did not serialize as string".into(),
+                    ))
+                }
+            };
+            (
+                Some(original.query_class.clone()),
+                original.parent_id.clone(),
+                Some(kind),
+            )
+        }
+        None => (None, None, None),
+    };
+    let row_scope = event.row_scope.map(|scope| scope.as_str().to_owned());
     db.execute_raw(statement(
         &format!(
-            "INSERT INTO history_events({COLUMNS}) VALUES({})",
-            vec!["?"; 23].join(",")
+            "INSERT INTO history_events({COLUMNS}) \
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         ),
         vec![
-            number(h.seq)?.into(),
-            h.event_id.clone().into(),
-            h.kind.as_str().into(),
-            h.run_id.clone().into(),
-            h.attempt_id.clone().into(),
-            h.entity_id.clone().into(),
-            h.turn_id.clone().into(),
-            source.as_ref().map(|s| s.0.clone()).into(),
-            source.map(|s| s.1).into(),
-            h.call_id.clone().into(),
-            h.message_id.clone().into(),
-            original.map(|o| o.query_class.clone()).into(),
-            original.and_then(|o| o.parent_id.clone()).into(),
-            kind.into(),
-            original.and_then(|o| o.tool_name.clone()).into(),
-            h.group_id.clone().into(),
-            event
-                .head
-                .as_ref()
-                .map(|head| head.scope().to_owned())
-                .into(),
-            h.row_key.clone().into(),
+            number(event.seq)?.into(),
+            event.event_id.clone().into(),
+            event.kind.as_str().to_owned().into(),
+            event.timeline_role.as_str().to_owned().into(),
+            event.occurred_at.into(),
+            event.recorded_at.into(),
+            event.run_id.clone().into(),
+            event.turn_id.clone().into(),
+            event.attempt_id.clone().into(),
+            event.call_id.clone().into(),
+            event.entity_id.clone().into(),
+            event.message_id.clone().into(),
+            event.tool_name.clone().into(),
+            source_kind.into(),
+            source_id.into(),
+            query_class.into(),
+            parent_id.into(),
+            original_kind.into(),
+            row_scope.into(),
+            event.row_key.clone().into(),
             i64::from(event.is_anchor).into(),
-            h.occurred_at.into(),
-            h.recorded_at.into(),
-            event
-                .head
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()?
-                .into(),
-            event.payload_body_id.clone().into(),
+            event.payload_schema.clone().into(),
+            event.payload_json.clone().into(),
         ],
     ))
     .await?;
-    tracing::debug!(target: "conversation_work",
-        history_sql_write = 1u64, table = "history_events",
-        "history SQL write completed"
-    );
+    tracing::debug!(target: "conversation_work", history_sql_write = 1u64, "history SQL event write completed");
     Ok(())
 }
+
 pub(super) async fn insert_body_header(db: &impl ConnectionTrait, body: &Body) -> Result<()> {
-    db.execute_raw(statement("INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) VALUES(?,?,?,?,?,?,?,?)", vec![body.id.clone().into(), body.owner.clone().into(), number(body.ordinal)?.into(), body.key.clone().into(), body.role.as_str().into(), number(body.length)?.into(), body.media_type.clone().into(), body.digest.clone().into()])).await?;
-    tracing::debug!(target: "conversation_work",
-        history_sql_write = 1u64, table = "history_bodies",
-        "history SQL write completed"
-    );
+    db.execute_raw(statement(
+        "INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) \
+         VALUES(?,?,?,?,?,?,?,?)",
+        vec![
+            body.id.clone().into(),
+            body.owner.clone().into(),
+            number(body.ordinal)?.into(),
+            body.key.clone().into(),
+            body.role.as_str().to_owned().into(),
+            number(body.length)?.into(),
+            body.media_type.clone().into(),
+            body.digest.clone().into(),
+        ],
+    ))
+    .await?;
+    tracing::debug!(target: "conversation_work", history_sql_write = 1u64, "history SQL body header write completed");
     Ok(())
 }
 
-pub(super) async fn review_finish(
-    db: &impl ConnectionTrait,
-    turn: &str,
-    cut: u64,
-) -> Result<Option<Record>> {
-    db.query_one_raw(statement(&format!("SELECT {COLUMNS} FROM history_events WHERE query_class IS NOT NULL AND tool_name=? AND turn_id=? AND seq<=? ORDER BY seq DESC LIMIT 1"), vec![pl_tool::finish_turn::TOOL_FINISH_TURN.into(), turn.into(), number(cut)?.into()])).await.inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?.map(decode).transpose()
+pub(super) fn dedup_records_desc(
+    database: Vec<Record>,
+    pending: Vec<&Arc<pending::Accepted>>,
+    limit: usize,
+) -> Vec<Record> {
+    let mut seen_seq = BTreeSet::new();
+    let mut merged: Vec<Record> = Vec::with_capacity(database.len() + pending.len());
+    for accepted in pending {
+        if seen_seq.insert(accepted.event.seq) {
+            merged.push(Record::from_event(&accepted.event));
+        }
+    }
+    for row in database {
+        if seen_seq.insert(row.record.seq) {
+            merged.push(row);
+        }
+    }
+    merged.sort_by_key(|a| std::cmp::Reverse(a.record.seq));
+    merged.truncate(limit);
+    merged
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn actual_page_sql_seeks_anchors_and_business_indexes_at_deep_cursors() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let store = HistoryStore::open(
-            directory.path().join("h.sqlite"),
-            "plans",
-            HistoryLimits::default(),
-        )
-        .await?;
-        let cases = [
-            (Query::Main, "history_main_anchors"),
-            (Query::Group("group".into()), "history_member_anchors"),
-            (Query::Rows("cost".into()), "history_business_anchors"),
-            (
-                Query::Events(HistoryEventsQuery::Entity {
-                    entity_id: "entity".into(),
-                }),
-                "history_entity_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Turn {
-                    turn_id: "turn".into(),
-                }),
-                "history_turn_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Call {
-                    call_id: "call".into(),
-                }),
-                "history_call_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Message {
-                    message_id: "message".into(),
-                }),
-                "history_message_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Attempt {
-                    run_id: "run".into(),
-                    attempt_id: "attempt".into(),
-                }),
-                "history_attempt_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Source {
-                    source: HistorySource::Input {
-                        input_id: "input".into(),
-                    },
-                }),
-                "history_source_events",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Originals {
-                    scope: ChatScope::conversation(None),
-                }),
-                "history_originals_class",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Originals {
-                    scope: ChatScope {
-                        query_class: crate::ChatClassFilter::All {},
-                        parent_id: None,
-                    },
-                }),
-                "history_originals_all",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Originals {
-                    scope: ChatScope {
-                        query_class: crate::ChatClassFilter::All {},
-                        parent_id: Some("parent".into()),
-                    },
-                }),
-                "history_originals_parent",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::Originals {
-                    scope: ChatScope::conversation(Some("parent".into())),
-                }),
-                "history_originals_parent_class",
-            ),
-            (
-                Query::Events(HistoryEventsQuery::TextOriginals),
-                "history_originals_text",
-            ),
-        ];
-        for (query, index) in cases {
-            for before in [None, Some(100)] {
-                let columns = if matches!(query, Query::Events(_)) {
-                    COLUMNS
-                } else {
-                    "seq,row_key"
-                };
-                let (sql, values) = candidate_sql(&query, 10_000, before, 64, columns)?;
-                let plan = store
-                    .inner
-                    .reader
-                    .query_all_raw(statement(&format!("EXPLAIN QUERY PLAN {sql}"), values))
-                    .await?;
-                let plan = plan
-                    .into_iter()
-                    .map(|row| row.try_get::<String>("", "detail"))
-                    .collect::<std::result::Result<Vec<_>, _>>()?
-                    .join("\n");
-                assert!(plan.contains(index), "{query:?}: {plan}");
-                assert!(!plan.contains("USE TEMP B-TREE"), "{query:?}: {plan}");
-            }
+pub(super) fn dedup_records_asc(
+    database: Vec<Record>,
+    pending: Vec<&Arc<pending::Accepted>>,
+    limit: usize,
+) -> Vec<Record> {
+    let mut seen_seq = BTreeSet::new();
+    let mut merged: Vec<Record> = Vec::with_capacity(database.len() + pending.len());
+    for row in database {
+        if seen_seq.insert(row.record.seq) {
+            merged.push(row);
         }
-        store.close().await?;
-        Ok(())
     }
+    for accepted in pending {
+        if seen_seq.insert(accepted.event.seq) {
+            merged.push(Record::from_event(&accepted.event));
+        }
+    }
+    merged.sort_by_key(|a| a.record.seq);
+    merged.truncate(limit);
+    merged
 }

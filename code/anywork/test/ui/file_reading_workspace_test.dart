@@ -47,28 +47,57 @@ class _AttachmentTransport extends RecordingDemoTransport {
     );
     reader.onTimeline = (_, _, _) async => HistoryTimelinePage(
       cut: reader.cut,
-      entries: [
-        HistoryTimelineEntry(
-          rowKey: 'files-call',
-          anchorSeq: 5,
-          headSeq: 5,
-          head: SingleHistoryRow(
-            HistoryEntityHead(
-              entityId: 'files-call',
-              source: const ReceiptChatSource(receiptId: 'files-call'),
-              kind: ChatAtomKind.receipt,
-              delivery: ChatDeliveryKind.independent,
-              state: const HistoryEntityState(
-                kind: HistoryEntityStateKind.knownTerminal,
-                outcome: ChatTerminalOutcome.completed,
-              ),
-              observation: const HistoryObservation(
-                kind: HistoryObservationKind.original,
-              ),
-              contentPresent: true,
-              detailEventId: 'files-call',
-              bodyManifestEventId: 'files-call',
-            ),
+      items: [
+        DividerTimelineItem(
+          HistoryEventRecord(
+            seq: 5,
+            eventId: 'files-call',
+            kind: 'tool_completed',
+            timelineRole: HistoryTimelineRole.divider,
+            recordedAt: 5,
+            entityId: 'files-call',
+            callId: 'files-call',
+            toolName: 'show_files',
+            rowKey: 'files-call',
+            source: const ReceiptChatSource(receiptId: 'files-call'),
+            payloadSchema: 'anywork.event/1',
+            payloadJson: jsonEncode({
+              'contract': 'anywork.event/1',
+              'type': 'tool',
+              'meta': {
+                'entityId': 'files-call',
+                'entityKind': 'receipt',
+                'delivery': 'independent',
+                'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
+                'presentationContract': 'builtin.show_files@1',
+                'contentPresent': true,
+              },
+              'data': {
+                'invocation': {
+                  'toolCallId': 'files-call',
+                  'name': 'show_files',
+                  'presentationContract': 'builtin.show_files@1',
+                },
+                'state': {
+                  'kind': 'succeeded',
+                  'output': {'attachments': <Object?>[]},
+                },
+              },
+              'bodies': [
+                {
+                  'key': 'tool.arguments',
+                  'role': 'toolArguments',
+                  'byteLength': 12,
+                  'inlineText': '{"files":[]}',
+                },
+                {
+                  'key': 'tool.output-artifacts',
+                  'role': 'attachment',
+                  'byteLength': _FileHistoryReader._artifactsJson.length,
+                  'inlineText': _FileHistoryReader._artifactsJson,
+                },
+              ],
+            }),
           ),
         ),
       ],
@@ -81,111 +110,42 @@ class _AttachmentTransport extends RecordingDemoTransport {
 final class _FileHistoryReader extends TestHistoryReader {
   _FileHistoryReader({required super.threadId, required super.cut});
 
-  static final List<int> _payload = switch (_markdownFile().payload) {
-    InlinePayload(:final bytes) => List.unmodifiable(bytes),
-    _ => throw StateError('The file fixture payload must stay inline'),
-  };
-
-  static final HistoryEventBodyRef _payloadReference = HistoryEventBodyRef(
-    databaseId: 'file-db',
-    ownerEventId: 'files-call',
-    bodyKey: 'canonical_payload',
-    bodyId: 'files-call:canonical_payload',
-    byteStart: 0,
-    byteLength: _payload.length,
-  );
+  static final String _artifactsJson = jsonEncode([
+    {
+      'kind': 'opaque',
+      'payload': {
+        'format': 'pl.tool.files',
+        'version': 1,
+        'content': jsonEncode({
+          'files': [
+            {
+              'status': 'ready',
+              'filename': 'notes.md',
+              'modality': 'file',
+              'resource': {
+                'id': 'notes',
+                'contentDigest': 'sha256:${'0' * 64}',
+                'byteLen': 8,
+                'mediaType': 'text/markdown',
+              },
+              'origin': {'kind': 'archive'},
+            },
+          ],
+        }),
+      },
+    },
+  ]);
 
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
-  }) async {
-    return HistoryEventDetail(
-      header: HistoryEventHeader(
-        seq: 5,
-        eventId: eventId,
-        kind: 'original',
-        entityId: 'files-call',
-        callId: 'files-call',
-        recordedAt: 5,
-      ),
-      payloadRef: _payloadReference,
-    );
-  }
-
-  @override
-  Future<HistoryBodyWindow> readBody({
-    required HistoryEventBodyRef reference,
-    required int offset,
-    required int maxBytes,
-  }) async {
-    if (reference.databaseId != _payloadReference.databaseId ||
-        reference.ownerEventId != _payloadReference.ownerEventId ||
-        reference.bodyKey != _payloadReference.bodyKey ||
-        reference.bodyId != _payloadReference.bodyId ||
-        reference.byteStart != _payloadReference.byteStart ||
-        reference.byteLength != _payload.length) {
-      throw StateError('Unexpected canonical History body reference');
-    }
-    if (offset < 0 || offset > _payload.length || maxBytes < 0) {
-      throw RangeError('Invalid canonical History body range');
-    }
-    final end = (offset + maxBytes).clamp(0, _payload.length).toInt();
-    return HistoryBodyWindow(
-      offset: offset,
-      bytes: _payload.sublist(offset, end),
-      totalLength: _payload.length,
-      mediaType: 'application/json',
-    );
-  }
+  }) async => (await onTimeline!(
+    cut,
+    null,
+    demand,
+  )).items.whereType<DividerTimelineItem>().single.event;
 }
-
-ChatAtom _markdownFile() => chatEnvelope(
-  'files-call',
-  type: 'tool',
-  data: {
-    'invocation': {
-      'toolCallId': 'files-call',
-      'name': 'show_files',
-      'presentationContract': 'builtin.show_files@1',
-    },
-    'state': {
-      'kind': 'succeeded',
-      'output': {'attachments': <Object?>[]},
-    },
-  },
-  bodies: [
-    inlineBody('tool.arguments', '{"files":[]}'),
-    inlineBody(
-      'tool.output-artifacts',
-      jsonEncode([
-        {
-          'kind': 'opaque',
-          'payload': {
-            'format': 'pl.tool.files',
-            'version': 1,
-            'content': jsonEncode({
-              'files': [
-                {
-                  'status': 'ready',
-                  'filename': 'notes.md',
-                  'modality': 'file',
-                  'resource': {
-                    'id': 'notes',
-                    'contentDigest': 'sha256:${'0' * 64}',
-                    'byteLen': 8,
-                    'mediaType': 'text/markdown',
-                  },
-                  'origin': {'kind': 'archive'},
-                },
-              ],
-            }),
-          },
-        },
-      ]),
-    ),
-  ],
-);
 
 void main() {
   for (final revokeDuringRead in [false, true]) {

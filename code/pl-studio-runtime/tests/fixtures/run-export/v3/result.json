@@ -25,7 +25,7 @@
   "costComplete": true,
   "trace": {
     "eventsPath": "events.jsonl",
-    "eventsSha256": "14e977dd1626cb6b64fc3dd1867b2780b4a4d8c367702fe8d5d73106bf3f3a57",
+    "eventsSha256": "6a91a9601f9de1b24be30221f48c8b23cc1e0c90a81c2c14fa6a95362e129318",
     "eventCount": 2,
     "lastEventSeq": 2,
     "sealed": true,

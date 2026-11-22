@@ -2,9 +2,6 @@
 
 本文描述 Native 会话的 Current、History 与产品主题传输边界。Current/History 的存储与恢复权威见 [15](./15-session-storage.md)，时间线呈现见 [26](./26-timeline-content.md)，客户端资源所有权见 [25](./25-frontend-state.md)，产品状态查询见 [18](./18-studio-state.md)。ACP 继续遵循 [28](./28-acp.md)，不套用 Native Current 或 History 保证。
 
-> [!NOTE]
-> 本文中的 schema 26 / History Protocol v2 原子事件、`WorkRange` 与 `/history/work-range` 为目标契约（重构实施中），待代码与测试全量落地并验证后解除标注。
-
 ## 7.1 三类独立观察
 
 | 观察 | 内容 | 生命周期 |

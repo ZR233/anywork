@@ -1,12 +1,15 @@
-//! Independent append-only History query and immutable body protocol.
+//! Independent append-only atomic History query and hybrid body protocol (Schema 26 / v2).
 pub use crate::{
     CacheUsageSummary, ChatAtomKind as HistoryEntityKind, ChatDeliveryKind as HistoryDelivery,
     ChatScope, ChatSourceId as HistorySource, ChatToolIdentity as HistoryToolIdentity,
     ThreadTextChannel,
 };
 use serde::{Deserialize, Serialize};
-pub const HISTORY_SCHEMA_VERSION: u32 = 25;
-pub const HISTORY_PROTOCOL_VERSION: u32 = 1;
+
+pub const HISTORY_SCHEMA_VERSION: u32 = 26;
+pub const HISTORY_PROTOCOL_VERSION: u32 = 2;
+pub const INLINE_BODY_MAX_BYTES: usize = 16 * 1024;
+pub const INLINE_EVENT_MAX_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,20 +34,45 @@ macro_rules! event_kinds {
         }
     };
 }
+
 event_kinds! {
-    RunStarted => "run_started", RunEnded => "run_ended",
-    TurnStarted => "turn_started", TurnChanged => "turn_changed",
-    TurnEnded => "turn_ended", TurnRolledBack => "turn_rolled_back",
-    SourceStarted => "source_started", SourceEnded => "source_ended",
-    InputAccepted => "input_accepted", InputConsumed => "input_consumed",
-    InputDiscarded => "input_discarded", EntityStarted => "entity_started",
-    EntityStateChanged => "entity_state_changed", EntityEnded => "entity_ended",
-    ContentBecameVisible => "content_became_visible", GroupOpened => "group_opened",
-    GroupHeadChanged => "group_head_changed", GroupClosed => "group_closed",
-    BoundaryObserved => "boundary_observed", UsageRecorded => "usage_recorded",
-    UsageAdjusted => "usage_adjusted", BackgroundDeliveryRecorded => "background_delivery_recorded",
-    BusinessChanged => "business_changed", LegacyObserved => "legacy_observed",
+    RunStarted => "run_started",
+    RunEnded => "run_ended",
+    TurnStarted => "turn_started",
+    TurnChanged => "turn_changed",
+    TurnEnded => "turn_ended",
+    TurnRolledBack => "turn_rolled_back",
+    SourceStarted => "source_started",
+    SourceEnded => "source_ended",
+    UsageRecorded => "usage_recorded",
+    UsageAdjusted => "usage_adjusted",
+    ParentReportRecorded => "parent_report_recorded",
+    ReviewDeliveryRecorded => "review_delivery_recorded",
+    RetainedResourceRecorded => "retained_resource_recorded",
+    BackgroundDeliveryRecorded => "background_delivery_recorded",
+    BusinessChanged => "business_changed",
+    InputAccepted => "input_accepted",
+    InputConsumed => "input_consumed",
+    InputDiscarded => "input_discarded",
+    TextCompleted => "text_completed",
+    PlanResolved => "plan_resolved",
+    TurnReceiptRecorded => "turn_receipt_recorded",
+    InboxMessageReceived => "inbox_message_received",
+    ToolCalled => "tool_called",
+    ToolWaitingApproval => "tool_waiting_approval",
+    ToolBackgrounded => "tool_backgrounded",
+    ToolCancelRequested => "tool_cancel_requested",
+    ToolCompleted => "tool_completed",
+    ReasoningStarted => "reasoning_started",
+    ReasoningCompleted => "reasoning_completed",
+    CompactionStarted => "compaction_started",
+    CompactionCompleted => "compaction_completed",
+    AgentSpawned => "agent_spawned",
+    AgentCompleted => "agent_completed",
+    ItemRecorded => "item_recorded",
+    LegacyObserved => "legacy_observed",
 }
+
 impl Serialize for HistoryEventKind {
     fn serialize<S: serde::Serializer>(
         &self,
@@ -53,6 +81,7 @@ impl Serialize for HistoryEventKind {
         serializer.serialize_str(self.as_str())
     }
 }
+
 impl<'de> Deserialize<'de> for HistoryEventKind {
     fn deserialize<D: serde::Deserializer<'de>>(
         deserializer: D,
@@ -61,83 +90,70 @@ impl<'de> Deserialize<'de> for HistoryEventKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryEventHeader {
-    pub seq: u64,
-    pub event_id: String,
-    pub kind: HistoryEventKind,
-    pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub entity_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub source: Option<HistorySource>,
-    pub call_id: Option<String>,
-    pub message_id: Option<String>,
-    pub group_id: Option<String>,
-    pub row_key: Option<String>,
-    pub original: Option<HistoryOriginalInfo>,
-    pub occurred_at: Option<i64>,
-    pub recorded_at: i64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryTimelineRole {
+    Divider,
+    Work,
+    Hidden,
+}
+
+impl HistoryTimelineRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Divider => "divider",
+            Self::Work => "work",
+            Self::Hidden => "hidden",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "divider" => Some(Self::Divider),
+            "work" => Some(Self::Work),
+            "hidden" => Some(Self::Hidden),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryBusinessRowScope {
+    Turn,
+    Source,
+    Cost,
+    Accounting,
+}
+
+impl HistoryBusinessRowScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Turn => "turn",
+            Self::Source => "source",
+            Self::Cost => "cost",
+            Self::Accounting => "accounting",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "turn" => Some(Self::Turn),
+            "source" => Some(Self::Source),
+            "cost" => Some(Self::Cost),
+            "accounting" => Some(Self::Accounting),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryOriginalInfo {
     pub query_class: String,
     pub parent_id: Option<String>,
     pub original_kind: HistoryEntityKind,
     pub tool_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
-pub enum HistoryRowHead {
-    Work(HistoryWorkHead),
-    Single(HistoryEntityHead),
-    Member(HistoryEntityHead),
-    Turn(HistoryTurnHead),
-    Source(HistorySourceHead),
-    Cost(HistoryCostHead),
-    Accounting(HistoryAccountingHead),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryWorkHead {
-    pub group_id: String,
-    pub run_id: Option<String>,
-    pub started_at: Option<i64>,
-    pub boundary_at: Option<i64>,
-    pub closed: bool,
-    pub member_count: u64,
-    pub unfinished_count: u64,
-    pub execution_present: bool,
-    pub summary: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryEntityHead {
-    pub entity_id: String,
-    pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub source: HistorySource,
-    pub kind: HistoryEntityKind,
-    pub delivery: HistoryDelivery,
-    pub state: HistoryEntityState,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub text_channel: Option<ThreadTextChannel>,
-    pub tool: Option<HistoryToolIdentity>,
-    pub wait: Option<HistoryWaitHead>,
-    pub content_present: Option<bool>,
-    pub single_visibility: Option<HistorySingleVisibility>,
-    pub observation: HistoryObservation,
-    pub presentation_contract: Option<String>,
-    pub detail_event_id: Option<String>,
-    pub input_manifest_event_id: Option<String>,
-    pub body_manifest_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,18 +166,6 @@ pub enum HistoryEntityState {
     Unknown,
     KnownActive { status: crate::ChatActiveStatus },
     KnownTerminal { outcome: crate::ChatTerminalOutcome },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum HistoryObservation {
-    Original,
-    Boundary { captured_at: Option<i64> },
-    UnavailableLegacy { captured_at: Option<i64> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -194,7 +198,103 @@ pub enum HistoryWaitIntentHead {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEventMeta {
+    pub entity_id: String,
+    pub entity_kind: HistoryEntityKind,
+    pub delivery: HistoryDelivery,
+    pub state: HistoryEntityState,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub text_channel: Option<ThreadTextChannel>,
+    pub single_visibility: Option<HistorySingleVisibility>,
+    pub presentation_contract: Option<String>,
+    pub source_order: Option<u64>,
+    pub content_present: Option<bool>,
+    pub wait: Option<HistoryWaitHead>,
+    pub tool: Option<HistoryToolIdentity>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBodyManifestEntry {
+    pub key: String,
+    pub role: String,
+    pub byte_length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<HistoryEventBodyRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEventRecord {
+    pub seq: u64,
+    pub event_id: String,
+    pub kind: HistoryEventKind,
+    pub timeline_role: HistoryTimelineRole,
+    pub occurred_at: Option<i64>,
+    pub recorded_at: i64,
+    pub run_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub call_id: Option<String>,
+    pub entity_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub source: Option<HistorySource>,
+    pub original: Option<HistoryOriginalInfo>,
+    pub row_scope: Option<HistoryBusinessRowScope>,
+    pub row_key: Option<String>,
+    pub payload_schema: String,
+    pub payload_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWorkRange {
+    pub range_id: String,
+    pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
+    pub first_seq: u64,
+    pub last_seq: u64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub run_id: Option<String>,
+    pub event_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+#[allow(clippy::large_enum_variant)]
+pub enum HistoryTimelineItem {
+    Divider(HistoryEventRecord),
+    WorkRange(HistoryWorkRange),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTimelinePage {
+    pub cut: HistoryCut,
+    pub items: Vec<HistoryTimelineItem>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryWorkRangePage {
+    pub cut: HistoryCut,
+    pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
+    pub events: Vec<HistoryEventRecord>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryTurnHead {
     pub turn_id: String,
     pub input_id: Option<String>,
@@ -222,7 +322,7 @@ pub enum HistoryTurnState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct HistorySourceHead {
     pub source: HistorySource,
     pub lifecycle: crate::ChatSourceLifecycle,
@@ -233,7 +333,7 @@ pub struct HistorySourceHead {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryCostHead {
     pub purpose: Option<String>,
     pub currency: String,
@@ -244,6 +344,7 @@ pub struct HistoryCostHead {
     pub updated_at: i64,
     pub detail_event_id: Option<String>,
 }
+
 impl HistoryCostHead {
     pub fn row_key(&self) -> serde_json::Result<String> {
         Ok(format!(
@@ -254,7 +355,7 @@ impl HistoryCostHead {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryAccountingHead {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -270,6 +371,43 @@ pub struct HistoryAccountingHead {
     pub detail_event_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum HistoryBusinessRowHead {
+    Turn(HistoryTurnHead),
+    Source(HistorySourceHead),
+    Cost(HistoryCostHead),
+    Accounting(HistoryAccountingHead),
+}
+
+impl HistoryBusinessRowHead {
+    pub fn scope(&self) -> HistoryBusinessRowScope {
+        match self {
+            Self::Turn(_) => HistoryBusinessRowScope::Turn,
+            Self::Source(_) => HistoryBusinessRowScope::Source,
+            Self::Cost(_) => HistoryBusinessRowScope::Cost,
+            Self::Accounting(_) => HistoryBusinessRowScope::Accounting,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBusinessRowEntry {
+    pub row_key: String,
+    pub anchor_seq: u64,
+    pub head_seq: u64,
+    pub head: HistoryBusinessRowHead,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryBusinessPage {
+    pub cut: HistoryCut,
+    pub entries: Vec<HistoryBusinessRowEntry>,
+    pub next: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryCut {
@@ -282,11 +420,12 @@ pub struct HistoryDemand {
     pub max_rows: u32,
     pub max_bytes: u32,
 }
+
 impl Default for HistoryDemand {
     fn default() -> Self {
         Self {
             max_rows: 64,
-            max_bytes: 64 * 1024,
+            max_bytes: 128 * 1024,
         }
     }
 }
@@ -309,32 +448,6 @@ pub enum HistoryEventsQuery {
     TextOriginals,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryTimelineEntry {
-    pub row_key: String,
-    pub anchor_seq: u64,
-    pub head_seq: u64,
-    pub head: HistoryRowHead,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryTimelinePage {
-    pub cut: HistoryCut,
-    pub entries: Vec<HistoryTimelineEntry>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryGroupPage {
-    pub cut: HistoryCut,
-    pub group_id: String,
-    pub members: Vec<HistoryTimelineEntry>,
-    pub next: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryEventBodyRef {
@@ -345,7 +458,6 @@ pub struct HistoryEventBodyRef {
     pub byte_start: u64,
     pub byte_length: u64,
 }
-pub type HistoryPayloadRef = HistoryEventBodyRef;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -357,19 +469,10 @@ pub struct HistoryBodyWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HistoryEventDetail {
-    pub header: HistoryEventHeader,
-    pub head: Option<HistoryRowHead>,
-    pub payload_ref: Option<HistoryPayloadRef>,
-    pub owned_manifest_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryEventsPage {
     pub cut: HistoryCut,
-    pub entries: Vec<HistoryEventDetail>,
+    pub entries: Vec<HistoryEventRecord>,
     pub next: Option<String>,
 }
 
@@ -386,6 +489,7 @@ pub enum HistoryBodyRole {
     WaitPresentation,
     Other { name: String },
 }
+
 impl HistoryBodyRole {
     pub fn as_str(&self) -> &str {
         match self {
@@ -400,6 +504,7 @@ impl HistoryBodyRole {
             Self::Other { name } => name,
         }
     }
+
     pub fn from_string(name: String) -> Self {
         match name.as_str() {
             "canonical_payload" => Self::CanonicalPayload,

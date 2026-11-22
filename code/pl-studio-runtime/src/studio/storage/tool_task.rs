@@ -4,8 +4,8 @@ use std::sync::Arc;
 use pl_core::thread::{ToolDelivery, cold::DurableToolTask, task::TaskRecord};
 
 use crate::history::{
-    BODY_CHUNK_BYTES, HistoryBody, HistoryBodyRole, HistoryDemand, HistoryError, HistoryReader,
-    Result,
+    HistoryBody, HistoryBodyRole, HistoryDemand, HistoryError, HistoryReader, Result,
+    read_event_body_bytes,
 };
 
 const BODY_KEY: &str = "native.tool-task.v1";
@@ -78,47 +78,18 @@ pub(in crate::studio) async fn read(
         Err(HistoryError::NotFound(_)) => return Ok(None),
         Err(error) => return Err(error),
     };
-    if event.header.call_id.as_deref() != Some(call_id) {
+    if event.call_id.as_deref() != Some(call_id) {
         return Err(HistoryError::Integrity(
             "tool original call identity mismatch".into(),
         ));
     }
-    let mut cursor = None;
-    loop {
-        let page = reader
-            .list_bodies(event.header.event_id.clone(), cursor, demand)
-            .await?;
-        for entry in page.entries {
-            if entry.reference.body_key != BODY_KEY {
-                continue;
-            }
-            let reference = entry.reference;
-            let mut bytes = Vec::new();
-            while (bytes.len() as u64) < reference.byte_length {
-                let window = reader
-                    .read_body(
-                        reference.clone(),
-                        bytes.len() as u64,
-                        BODY_CHUNK_BYTES as u32,
-                    )
-                    .await?;
-                if window.bytes.is_empty() || window.total_length != reference.byte_length {
-                    return Err(HistoryError::Integrity(
-                        "native tool receipt body did not advance".into(),
-                    ));
-                }
-                bytes.extend(window.bytes);
-            }
-            let saved: StoredToolTask = serde_json::from_slice(&bytes)?;
-            saved.validate(task_id, call_id)?;
-            return Ok(Some(DurableToolTask {
-                task: saved.task,
-                delivery: Some(saved.delivery),
-            }));
-        }
-        cursor = page.next;
-        if cursor.is_none() {
-            return Ok(None);
-        }
-    }
+    let Some(bytes) = read_event_body_bytes(reader, &event, BODY_KEY, None).await? else {
+        return Ok(None);
+    };
+    let saved: StoredToolTask = serde_json::from_slice(&bytes)?;
+    saved.validate(task_id, call_id)?;
+    Ok(Some(DurableToolTask {
+        task: saved.task,
+        delivery: Some(saved.delivery),
+    }))
 }

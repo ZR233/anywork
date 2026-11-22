@@ -1066,7 +1066,7 @@ impl Observation<'_> {
                         .await?;
                 let mut found_tool = false;
                 for entry in entries {
-                    if entry.head.kind != pl_studio_runtime::ChatAtomKind::ToolCall
+                    if entry.head.entity_kind != pl_studio_runtime::ChatAtomKind::ToolCall
                         || entry.payload["type"] != "tool"
                     {
                         continue;
@@ -1152,11 +1152,11 @@ async fn cold_main_chat(
                 "cold Main cut exposed no visible top-level row"
             );
             let mut originals = Vec::new();
-            for head in main.entities {
-                if head.kind != pl_studio_runtime::ChatAtomKind::Text {
+            for (ev, head) in main.entities {
+                if head.entity_kind != pl_studio_runtime::ChatAtomKind::Text {
                     continue;
                 }
-                let original = read_original(&read, &head, remaining, deadline).await?;
+                let original = read_original(&read, &ev.event_id, remaining, deadline).await?;
                 ensure!(
                     original.head.text_channel.is_some() && original.payload["type"] == "text",
                     "cold text completion identity/channel disagreed with original payload"

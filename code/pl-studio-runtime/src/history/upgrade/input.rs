@@ -1,5 +1,6 @@
 //! Frozen encoding of imported schema-24 admission metadata. Execution never reads it.
 use super::super::*;
+use super::{HistoryEventV25 as HistoryEvent, HistoryEventKindV25 as HistoryEventKind};
 use crate::studio::storage::state::LegacyInputContinuation;
 use pl_core::thread::input::{InputDelivery, InputPurpose, InputState};
 use std::sync::Arc;

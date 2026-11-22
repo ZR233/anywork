@@ -19,19 +19,21 @@ final class FrbHistoryReader extends _FrbPortProxy<_FrbRawHistoryReader>
     required HistoryDemand demand,
   }) => _raw.timelinePage(cut: cut, cursor: cursor, demand: demand);
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => _raw.groupPage(
-    groupId: groupId,
+  }) => _raw.workRangePage(
+    afterSeq: afterSeq,
+    beforeSeq: beforeSeq,
     cut: cut,
     cursor: cursor,
     demand: demand,
   );
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -44,7 +46,7 @@ final class FrbHistoryReader extends _FrbPortProxy<_FrbRawHistoryReader>
     required HistoryDemand demand,
   }) => _raw.eventsPage(query: query, cut: cut, cursor: cursor, demand: demand);
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) => _raw.readEvent(eventId: eventId, demand: demand);
@@ -64,7 +66,7 @@ final class FrbHistoryReader extends _FrbPortProxy<_FrbRawHistoryReader>
   Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
       _raw.accounting(cut: cut);
   @override
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -109,24 +111,26 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
     return _historyTimelinePageFromFrb(value);
   });
 
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) => FrbStudioTransport._bridgeCall(() async {
     _checkOpen();
-    final value = await history.groupPage(
-      groupId: groupId,
+    final value = await history.workRangePage(
+      afterSeq: afterSeq == null ? null : BigInt.from(afterSeq),
+      beforeSeq: beforeSeq == null ? null : BigInt.from(beforeSeq),
       cut: cut == null ? null : _historyCutToFrb(cut),
       cursor: cursor,
       demand: _historyDemandToFrb(demand),
     );
     _checkOpen();
-    return _historyGroupPageFromFrb(value);
+    return _historyWorkRangePageFromFrb(value);
   });
 
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -138,7 +142,7 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
       demand: _historyDemandToFrb(demand),
     );
     _checkOpen();
-    return _historyTimelinePageFromFrb(value);
+    return _historyBusinessPageFromFrb(value);
   });
 
   Future<HistoryEventsPage> eventsPage({
@@ -158,7 +162,7 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
     return _historyEventsPageFromFrb(value);
   });
 
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) => FrbStudioTransport._bridgeCall(() async {
@@ -168,7 +172,7 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
       demand: _historyDemandToFrb(demand),
     );
     _checkOpen();
-    return _historyEventDetailFromFrb(value);
+    return _historyEventRecordFromFrb(value);
   });
 
   Future<HistoryBodyPage> listBodies({
@@ -211,7 +215,7 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
         return _historyAccountingFromFrb(value);
       });
 
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -223,7 +227,7 @@ final class _FrbRawHistoryReader extends _FrbRawResource {
       demand: _historyDemandToFrb(demand),
     );
     _checkOpen();
-    return _historyTimelinePageFromFrb(value);
+    return _historyBusinessPageFromFrb(value);
   });
 
   Future<HistoryCut> waitChanged(HistoryCut after) =>

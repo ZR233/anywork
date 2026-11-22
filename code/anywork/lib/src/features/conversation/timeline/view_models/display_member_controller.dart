@@ -319,8 +319,11 @@ Object _recordValue(DisplayRecord record) {
     record.historyEventId,
     record.historyDetailEventId,
     record.runId,
-    record.historyState,
-    record.historyObservation,
+    record.isTerminalHistory,
+    record.isFrozenHistory,
+    record.callId,
+    record.predecodedPresentation?.raw,
+    record.predecodedPresentation?.compatibility,
     Object.hashAll(
       record.currentContents.map(
         (content) => (content.role, content.reference),

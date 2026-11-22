@@ -58,42 +58,12 @@ pub(crate) async fn history_turn(
         )
         .await
         .map_err(anyhow::Error::from)?;
-    let mut cursor = None;
-    loop {
-        let bodies = reader
-            .list_bodies(
-                detail.header.event_id.clone(),
-                cursor,
-                crate::history::HistoryDemand {
-                    max_rows: 128,
-                    max_bytes: 64 * 1024,
-                },
-            )
+    let Some(bytes) =
+        crate::history::read_event_body_bytes(reader, &detail, "turn_detail", None)
             .await
-            .map_err(anyhow::Error::from)?;
-        for body in bodies.entries {
-            if body.body_key != "turn_detail" {
-                continue;
-            }
-            let mut bytes = Vec::new();
-            let mut offset = 0;
-            while offset < body.reference.byte_length {
-                let window = reader
-                    .read_body(body.reference.clone(), offset, 64 * 1024)
-                    .await
-                    .map_err(anyhow::Error::from)?;
-                anyhow::ensure!(!window.bytes.is_empty(), "turn detail body did not advance");
-                offset = offset
-                    .checked_add(window.bytes.len() as u64)
-                    .context("turn detail length overflow")?;
-                bytes.extend(window.bytes);
-            }
-            return serde_json::from_slice(&bytes).context("decode immutable Turn detail");
-        }
-        let Some(next) = bodies.next else {
-            break;
-        };
-        cursor = Some(next);
-    }
-    anyhow::bail!("history Turn {} detail body is missing", head.turn_id)
+            .map_err(anyhow::Error::from)?
+    else {
+        anyhow::bail!("history Turn {} detail body is missing", head.turn_id);
+    };
+    serde_json::from_slice(&bytes).context("decode immutable Turn detail")
 }

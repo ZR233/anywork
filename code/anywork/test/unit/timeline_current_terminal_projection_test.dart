@@ -32,8 +32,8 @@ CurrentAtom _atom() => CurrentAtom(
 );
 
 DisplayBlock _history({
-  HistoryEntityStateKind state = HistoryEntityStateKind.knownActive,
-  HistoryObservationKind observation = HistoryObservationKind.original,
+  bool isTerminalHistory = false,
+  bool isFrozenHistory = false,
 }) => DisplayBlock(
   id: 'single:entity-1',
   blockOrder: 7,
@@ -59,8 +59,8 @@ DisplayBlock _history({
       historyEventId: 'event-1',
       historyDetailEventId: 'detail-1',
       runId: 'run-1',
-      historyState: state,
-      historyObservation: observation,
+      isTerminalHistory: isTerminalHistory,
+      isFrozenHistory: isFrozenHistory,
     ),
   ),
 );
@@ -116,8 +116,8 @@ void main() {
     () {
       final history = _history();
       for (final protected in [
-        _history(state: HistoryEntityStateKind.knownTerminal),
-        _history(observation: HistoryObservationKind.boundary),
+        _history(isTerminalHistory: true),
+        _history(isFrozenHistory: true),
       ]) {
         final result = TimelineCurrentProjection.overlayHistory(
           [protected],

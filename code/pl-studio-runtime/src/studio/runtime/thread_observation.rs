@@ -1558,7 +1558,7 @@ impl LiveOwner {
             Box::pin(exporter.admit_live_handoff(
                 &self.thread.id,
                 &pending.prepared.accounting,
-                &pending.prepared.history_changes,
+                &pending.prepared.history_events,
                 &self.retained.usage,
                 export_current.as_ref(),
                 &self.history_reader,

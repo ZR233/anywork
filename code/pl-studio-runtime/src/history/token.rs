@@ -3,18 +3,17 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
-use super::{HistoryCut, HistoryError, HistoryEventsQuery, Result};
+use super::{
+    HistoryBusinessRowScope, HistoryCut, HistoryError, HistoryEventsQuery, Result,
+};
 
-// A legal 16 KiB indexed header can be repeated in a query identity, then base64 encoded.
-// Leave room for that identity and the signed cut without issuing an unreadable cursor.
 const MAX_TOKEN_BYTES: usize = 64 * 1024;
+const TOKEN_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Query {
-    Main,
-    Group(String),
     Events(HistoryEventsQuery),
-    Rows(String),
+    BusinessRows(HistoryBusinessRowScope),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -32,6 +31,17 @@ pub(super) enum Token {
     Cut {
         through: u64,
     },
+    TimelinePage {
+        cut: HistoryCut,
+        upper_seq: u64,
+        upper_divider_seq: Option<u64>,
+    },
+    WorkRangePage {
+        cut: HistoryCut,
+        after_seq: Option<u64>,
+        before_seq: Option<u64>,
+        after: u64,
+    },
     Page {
         cut: HistoryCut,
         query: Query,
@@ -48,6 +58,7 @@ pub(super) struct Codec {
     reader: String,
     secret: [u8; 32],
 }
+
 impl Codec {
     pub fn new(database: &str) -> Self {
         let mut secret = [0; 32];
@@ -59,12 +70,14 @@ impl Codec {
             secret,
         }
     }
+
     fn mac(&self) -> Hmac<Sha256> {
         Hmac::<Sha256>::new_from_slice(&self.secret).expect("HMAC accepts a 32 byte key")
     }
+
     pub fn encode<T: Serialize>(&self, value: T) -> Result<String> {
         let data = serde_json::to_vec(&Claims {
-            version: 1,
+            version: TOKEN_VERSION,
             database: self.database.clone(),
             reader: self.reader.clone(),
             value,
@@ -83,6 +96,7 @@ impl Codec {
         }
         Ok(token)
     }
+
     pub fn decode<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(HistoryError::InvalidCursor);
@@ -100,16 +114,21 @@ impl Codec {
             .map_err(|_| HistoryError::InvalidCursor)?;
         let claims: Claims<T> =
             serde_json::from_slice(&data).map_err(|_| HistoryError::InvalidCursor)?;
-        if claims.version != 1 || claims.database != self.database || claims.reader != self.reader {
+        if claims.version != TOKEN_VERSION
+            || claims.database != self.database
+            || claims.reader != self.reader
+        {
             return Err(HistoryError::InvalidCursor);
         }
         Ok(claims.value)
     }
+
     pub fn cut(&self, through: u64) -> Result<HistoryCut> {
         Ok(HistoryCut {
             token: self.encode(Token::Cut { through })?,
         })
     }
+
     pub fn through(&self, cut: &HistoryCut) -> Result<u64> {
         match self.decode(&cut.token)? {
             Token::Cut { through } => Ok(through),

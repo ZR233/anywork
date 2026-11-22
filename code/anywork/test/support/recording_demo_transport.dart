@@ -138,15 +138,17 @@ final class RecordingHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) {
     groupCalls++;
-    return inner.groupPage(
-      groupId: groupId,
+    return inner.workRangePage(
+      afterSeq: afterSeq,
+      beforeSeq: beforeSeq,
       cut: cut,
       cursor: cursor,
       demand: demand,
@@ -154,7 +156,7 @@ final class RecordingHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -172,7 +174,7 @@ final class RecordingHistoryReader implements HistoryReader {
   }) =>
       inner.eventsPage(query: query, cut: cut, cursor: cursor, demand: demand);
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) {
@@ -204,7 +206,7 @@ final class RecordingHistoryReader implements HistoryReader {
   Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
       inner.accounting(cut: cut);
   @override
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,

@@ -199,26 +199,19 @@ void main() {
       (tester) async {
         const startedAt = 1_785_000_000_800;
         final block = TimelineHistoryProjection.block(
-          HistoryTimelineEntry(
-            rowKey: 'work:history',
-            anchorSeq: 1,
-            headSeq: 2,
-            head: WorkHistoryRow(
-              HistoryWorkHead(
-                groupId: 'history',
-                startedAt: startedAt,
-                boundaryAt: elapsedMillis == null
-                    ? null
-                    : startedAt + elapsedMillis,
-                closed: true,
-                memberCount: 1,
-                unfinishedCount: 0,
-                executionPresent: true,
-              ),
+          WorkRangeTimelineItem(
+            HistoryWorkRange(
+              rangeId: 'work:history',
+              beforeSeq: 3,
+              firstSeq: 1,
+              lastSeq: 2,
+              startedAt: startedAt,
+              endedAt: elapsedMillis == null ? null : startedAt + elapsedMillis,
+              eventCount: 1,
             ),
           ),
           cut: const HistoryCut('work-history-cut'),
-        )!;
+        );
         await tester.pumpWidget(
           _host(
             TimelineDisplayUnitView(

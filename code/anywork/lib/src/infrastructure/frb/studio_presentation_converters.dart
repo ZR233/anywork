@@ -50,142 +50,58 @@ frb_presentation.BridgeHistoryEventsQuery _historyEventsQueryToFrb(
     const frb_presentation.BridgeHistoryEventsQuery.textOriginals(),
 };
 
-HistoryRowHead _historyRowHeadFromFrb(
-  frb_presentation.BridgeHistoryRowHead value,
+HistoryTimelineRole _historyTimelineRoleFromFrb(
+  frb_presentation.BridgeHistoryTimelineRole value,
 ) => switch (value) {
-  frb_presentation.BridgeHistoryRowHead_Work(:final field0) => WorkHistoryRow(
-    _historyWorkHeadFromFrb(field0),
-  ),
-  frb_presentation.BridgeHistoryRowHead_Single(:final field0) =>
-    SingleHistoryRow(_historyEntityHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryRowHead_Member(:final field0) =>
-    MemberHistoryRow(_historyEntityHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryRowHead_Turn(:final field0) => TurnHistoryRow(
-    _historyTurnHeadFromFrb(field0),
-  ),
-  frb_presentation.BridgeHistoryRowHead_Source(:final field0) =>
-    SourceHistoryRow(_historySourceHeadFromFrb(field0)),
-  frb_presentation.BridgeHistoryRowHead_Cost(:final field0) => CostHistoryRow(
-    _historyCostHeadFromFrb(field0),
-  ),
-  frb_presentation.BridgeHistoryRowHead_Accounting(:final field0) =>
-    AccountingHistoryRow(_historyAccountingHeadFromFrb(field0)),
+  frb_presentation.BridgeHistoryTimelineRole.divider =>
+    HistoryTimelineRole.divider,
+  frb_presentation.BridgeHistoryTimelineRole.work => HistoryTimelineRole.work,
+  frb_presentation.BridgeHistoryTimelineRole.hidden =>
+    HistoryTimelineRole.hidden,
 };
 
-HistoryWorkHead _historyWorkHeadFromFrb(
-  frb_presentation.BridgeHistoryWorkHead value,
-) => HistoryWorkHead(
-  groupId: value.groupId,
-  runId: value.runId,
-  startedAt: _timelineTimestampFromFrb(value.startedAt),
-  boundaryAt: _timelineTimestampFromFrb(value.boundaryAt),
-  closed: value.closed,
-  memberCount: _exactTimelineInt(value.memberCount, 'history member count'),
-  unfinishedCount: _exactTimelineInt(
-    value.unfinishedCount,
-    'history unfinished count',
-  ),
-  executionPresent: value.executionPresent,
-  summary: value.summary,
-);
-
-HistoryEntityHead _historyEntityHeadFromFrb(
-  frb_presentation.BridgeHistoryEntityHead value,
-) => HistoryEntityHead(
-  entityId: value.entityId,
-  runId: value.runId,
-  attemptId: value.attemptId,
-  source: _chatSourceFromFrb(value.source),
-  kind: ChatAtomKind.values.byName(value.kind.name),
-  delivery: ChatDeliveryKind.values.byName(value.delivery.name),
-  state: switch (value.state) {
-    frb_presentation.BridgeHistoryEntityState_Unknown() =>
-      const HistoryEntityState(kind: HistoryEntityStateKind.unknown),
-    frb_presentation.BridgeHistoryEntityState_KnownActive(:final status) =>
-      HistoryEntityState(
-        kind: HistoryEntityStateKind.knownActive,
-        activeStatus: ChatActiveStatus.values.byName(status.name),
-      ),
-    frb_presentation.BridgeHistoryEntityState_KnownTerminal(:final outcome) =>
-      HistoryEntityState(
-        kind: HistoryEntityStateKind.knownTerminal,
-        outcome: ChatTerminalOutcome.values.byName(outcome.name),
-      ),
-  },
-  startedAt: _timelineTimestampFromFrb(value.startedAt),
-  finishedAt: _timelineTimestampFromFrb(value.finishedAt),
-  textChannel: value.textChannel == null
-      ? null
-      : ThreadTextChannel.values.byName(value.textChannel!.name),
-  tool: value.tool == null
-      ? null
-      : ChatToolIdentity(callId: value.tool!.callId, name: value.tool!.name),
-  wait: value.wait == null ? null : _historyWaitFromFrb(value.wait!),
-  contentPresent: value.contentPresent,
-  singleVisibility: value.singleVisibility == null
-      ? null
-      : switch (value.singleVisibility!) {
-          frb_presentation.BridgeSingleVisibility.content =>
-            HistorySingleVisibility.content,
-          frb_presentation.BridgeSingleVisibility.finalEmptyAfterContent =>
-            HistorySingleVisibility.finalEmptyAfterContent,
-        },
-  observation: switch (value.observation) {
-    frb_presentation.BridgeHistoryObservation_Original() =>
-      const HistoryObservation(kind: HistoryObservationKind.original),
-    frb_presentation.BridgeHistoryObservation_Boundary(:final capturedAt) =>
-      HistoryObservation(
-        kind: HistoryObservationKind.boundary,
-        capturedAt: _timelineTimestampFromFrb(capturedAt),
-      ),
-    frb_presentation.BridgeHistoryObservation_UnavailableLegacy(
-      :final capturedAt,
-    ) =>
-      HistoryObservation(
-        kind: HistoryObservationKind.unavailableLegacy,
-        capturedAt: _timelineTimestampFromFrb(capturedAt),
-      ),
-  },
-  presentationContract: value.presentationContract,
-  detailEventId: value.detailEventId,
-  inputManifestEventId: value.inputManifestEventId,
-  bodyManifestEventId: value.bodyManifestEventId,
-);
-
-HistoryWaitHead _historyWaitFromFrb(
-  frb_presentation.BridgeHistoryWaitHead value,
+HistoryBusinessRowScope _historyBusinessRowScopeFromFrb(
+  frb_presentation.BridgeHistoryBusinessRowScope value,
 ) => switch (value) {
-  frb_presentation.BridgeHistoryWaitHead_Inline(:final presentation) =>
-    InlineHistoryWait(_waitFromFrb(presentation)),
-  frb_presentation.BridgeHistoryWaitHead_Deferred(
-    :final intent,
-    :final state,
-    :final messagesReady,
-    :final presentation,
-  ) =>
-    DeferredHistoryWait(
-      intent: switch (intent) {
-        frb_presentation.BridgeHistoryWaitIntent_Events(
-          :final targetCount,
-          :final timeoutMs,
-        ) =>
-          EventsHistoryWaitIntent(
-            targetCount: _exactTimelineInt(
-              targetCount,
-              'history wait target count',
-            ),
-            timeoutMs: _exactTimelineInt(timeoutMs, 'history wait timeout'),
-          ),
-        frb_presentation.BridgeHistoryWaitIntent_Timer(:final durationMs) =>
-          TimerHistoryWaitIntent(
-            _exactTimelineInt(durationMs, 'history wait duration'),
-          ),
-      },
-      state: HistoryWaitState.values.byName(state.name),
-      messagesReady: messagesReady,
-      presentation: _historyBodyRefFromFrb(presentation),
-    ),
+  frb_presentation.BridgeHistoryBusinessRowScope.turn =>
+    HistoryBusinessRowScope.turn,
+  frb_presentation.BridgeHistoryBusinessRowScope.source =>
+    HistoryBusinessRowScope.source,
+  frb_presentation.BridgeHistoryBusinessRowScope.cost =>
+    HistoryBusinessRowScope.cost,
+  frb_presentation.BridgeHistoryBusinessRowScope.accounting =>
+    HistoryBusinessRowScope.accounting,
 };
+
+HistoryBusinessRowHead _historyBusinessRowHeadFromFrb(
+  frb_presentation.BridgeHistoryBusinessRowHead value,
+) => switch (value) {
+  frb_presentation.BridgeHistoryBusinessRowHead_Turn(:final field0) =>
+    TurnHistoryBusinessRow(_historyTurnHeadFromFrb(field0)),
+  frb_presentation.BridgeHistoryBusinessRowHead_Source(:final field0) =>
+    SourceHistoryBusinessRow(_historySourceHeadFromFrb(field0)),
+  frb_presentation.BridgeHistoryBusinessRowHead_Cost(:final field0) =>
+    CostHistoryBusinessRow(_historyCostHeadFromFrb(field0)),
+  frb_presentation.BridgeHistoryBusinessRowHead_Accounting(:final field0) =>
+    AccountingHistoryBusinessRow(_historyAccountingHeadFromFrb(field0)),
+};
+
+HistoryBusinessRowEntry _historyBusinessRowEntryFromFrb(
+  frb_presentation.BridgeHistoryBusinessRowEntry value,
+) => HistoryBusinessRowEntry(
+  rowKey: value.rowKey,
+  anchorSeq: _exactTimelineInt(value.anchorSeq, 'history anchor'),
+  headSeq: _exactTimelineInt(value.headSeq, 'history head'),
+  head: _historyBusinessRowHeadFromFrb(value.head),
+);
+
+HistoryBusinessPage _historyBusinessPageFromFrb(
+  frb_presentation.BridgeHistoryBusinessPage value,
+) => HistoryBusinessPage(
+  cut: _historyCutFromFrb(value.cut),
+  entries: value.entries.map(_historyBusinessRowEntryFromFrb).toList(),
+  next: value.next,
+);
 
 HistoryTurnHead _historyTurnHeadFromFrb(
   frb_presentation.BridgeHistoryTurnHead value,
@@ -270,47 +186,23 @@ HistoryAccountingHead _historyAccountingHeadFromFrb(
   detailEventId: value.detailEventId,
 );
 
-HistoryTimelineEntry _historyTimelineEntryFromFrb(
-  frb_presentation.BridgeHistoryTimelineEntry value,
-) => HistoryTimelineEntry(
-  rowKey: value.rowKey,
-  anchorSeq: _exactTimelineInt(value.anchorSeq, 'history anchor'),
-  headSeq: _exactTimelineInt(value.headSeq, 'history head'),
-  head: _historyRowHeadFromFrb(value.head),
-);
-
-HistoryTimelinePage _historyTimelinePageFromFrb(
-  frb_presentation.BridgeHistoryTimelinePage value,
-) => HistoryTimelinePage(
-  cut: _historyCutFromFrb(value.cut),
-  entries: value.entries.map(_historyTimelineEntryFromFrb).toList(),
-  next: value.next,
-);
-
-HistoryGroupPage _historyGroupPageFromFrb(
-  frb_presentation.BridgeHistoryGroupPage value,
-) => HistoryGroupPage(
-  cut: _historyCutFromFrb(value.cut),
-  groupId: value.groupId,
-  members: value.members.map(_historyTimelineEntryFromFrb).toList(),
-  next: value.next,
-);
-
-HistoryEventHeader _historyEventHeaderFromFrb(
-  frb_presentation.BridgeHistoryEventHeader value,
-) => HistoryEventHeader(
+HistoryEventRecord _historyEventRecordFromFrb(
+  frb_presentation.BridgeHistoryEventRecord value,
+) => HistoryEventRecord(
   seq: _exactTimelineInt(value.seq, 'history event sequence'),
   eventId: value.eventId,
   kind: value.kind,
+  timelineRole: _historyTimelineRoleFromFrb(value.timelineRole),
+  occurredAt: _timelineTimestampFromFrb(value.occurredAt),
+  recordedAt: _timelineTimestampFromFrb(value.recordedAt)!,
   runId: value.runId,
-  attemptId: value.attemptId,
-  entityId: value.entityId,
   turnId: value.turnId,
-  source: value.source == null ? null : _chatSourceFromFrb(value.source!),
+  attemptId: value.attemptId,
   callId: value.callId,
+  entityId: value.entityId,
   messageId: value.messageId,
-  groupId: value.groupId,
-  rowKey: value.rowKey,
+  toolName: value.toolName,
+  source: value.source == null ? null : _chatSourceFromFrb(value.source!),
   original: value.original == null
       ? null
       : HistoryOriginalInfo(
@@ -321,26 +213,68 @@ HistoryEventHeader _historyEventHeaderFromFrb(
           ),
           toolName: value.original!.toolName,
         ),
-  occurredAt: _timelineTimestampFromFrb(value.occurredAt),
-  recordedAt: _timelineTimestampFromFrb(value.recordedAt)!,
+  rowScope: value.rowScope == null
+      ? null
+      : _historyBusinessRowScopeFromFrb(value.rowScope!),
+  rowKey: value.rowKey,
+  payloadSchema: value.payloadSchema,
+  payloadJson: value.payloadJson,
 );
 
-HistoryEventDetail _historyEventDetailFromFrb(
-  frb_presentation.BridgeHistoryEventDetail value,
-) => HistoryEventDetail(
-  header: _historyEventHeaderFromFrb(value.header),
-  head: value.head == null ? null : _historyRowHeadFromFrb(value.head!),
-  payloadRef: value.payloadRef == null
+HistoryWorkRange _historyWorkRangeFromFrb(
+  frb_presentation.BridgeHistoryWorkRange value,
+) => HistoryWorkRange(
+  rangeId: value.rangeId,
+  afterSeq: value.afterSeq == null
       ? null
-      : _historyBodyRefFromFrb(value.payloadRef!),
-  ownedManifestEventId: value.ownedManifestEventId,
+      : _exactTimelineInt(value.afterSeq!, 'history range afterSeq'),
+  beforeSeq: value.beforeSeq == null
+      ? null
+      : _exactTimelineInt(value.beforeSeq!, 'history range beforeSeq'),
+  firstSeq: _exactTimelineInt(value.firstSeq, 'history range firstSeq'),
+  lastSeq: _exactTimelineInt(value.lastSeq, 'history range lastSeq'),
+  startedAt: _timelineTimestampFromFrb(value.startedAt),
+  endedAt: _timelineTimestampFromFrb(value.endedAt),
+  runId: value.runId,
+  eventCount: _exactTimelineInt(value.eventCount, 'history range eventCount'),
+);
+
+HistoryTimelineItem _historyTimelineItemFromFrb(
+  frb_presentation.BridgeHistoryTimelineItem value,
+) => switch (value) {
+  frb_presentation.BridgeHistoryTimelineItem_Divider(:final field0) =>
+    DividerTimelineItem(_historyEventRecordFromFrb(field0)),
+  frb_presentation.BridgeHistoryTimelineItem_WorkRange(:final field0) =>
+    WorkRangeTimelineItem(_historyWorkRangeFromFrb(field0)),
+};
+
+HistoryTimelinePage _historyTimelinePageFromFrb(
+  frb_presentation.BridgeHistoryTimelinePage value,
+) => HistoryTimelinePage(
+  cut: _historyCutFromFrb(value.cut),
+  items: value.items.map(_historyTimelineItemFromFrb).toList(),
+  next: value.next,
+);
+
+HistoryWorkRangePage _historyWorkRangePageFromFrb(
+  frb_presentation.BridgeHistoryWorkRangePage value,
+) => HistoryWorkRangePage(
+  cut: _historyCutFromFrb(value.cut),
+  afterSeq: value.afterSeq == null
+      ? null
+      : _exactTimelineInt(value.afterSeq!, 'history work range afterSeq'),
+  beforeSeq: value.beforeSeq == null
+      ? null
+      : _exactTimelineInt(value.beforeSeq!, 'history work range beforeSeq'),
+  events: value.events.map(_historyEventRecordFromFrb).toList(),
+  next: value.next,
 );
 
 HistoryEventsPage _historyEventsPageFromFrb(
   frb_presentation.BridgeHistoryEventsPage value,
 ) => HistoryEventsPage(
   cut: _historyCutFromFrb(value.cut),
-  entries: value.entries.map(_historyEventDetailFromFrb).toList(),
+  entries: value.entries.map(_historyEventRecordFromFrb).toList(),
   next: value.next,
 );
 

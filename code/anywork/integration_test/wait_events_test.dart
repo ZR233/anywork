@@ -147,21 +147,17 @@ void main() {
       if (body is! WorkDisplayBlock) continue;
       String? cursor;
       do {
-        final page = await lease.history.groupPage(
-          groupId: body.members.blockId,
+        final page = await lease.history.workRangePage(
+          afterSeq: body.members.afterSeq,
+          beforeSeq: body.members.beforeSeq,
           cut: body.members.cut,
           cursor: cursor,
           demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
         );
-        if (page.members.any((member) {
-          final head = member.head;
-          if (head is! MemberHistoryRow ||
-              head.head.tool?.name != 'wait' ||
-              head.head.source !=
-                  ForegroundTurnChatSource(turnId: completed.turnId)) {
-            return false;
-          }
-          return true;
+        if (page.events.any((event) {
+          return event.toolName == 'wait' &&
+              event.source ==
+                  ForegroundTurnChatSource(turnId: completed.turnId);
         })) {
           matchingWork = candidate;
           break;

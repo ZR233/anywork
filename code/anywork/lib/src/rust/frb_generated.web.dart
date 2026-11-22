@@ -1002,6 +1002,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_history_accounting_head(dynamic raw);
 
   @protected
+  BridgeHistoryBusinessRowScope
+  dco_decode_box_autoadd_bridge_history_business_row_scope(dynamic raw);
+
+  @protected
   BridgeHistoryCostHead dco_decode_box_autoadd_bridge_history_cost_head(
     dynamic raw,
   );
@@ -1013,13 +1017,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryDemand dco_decode_box_autoadd_bridge_history_demand(dynamic raw);
 
   @protected
-  BridgeHistoryEntityHead dco_decode_box_autoadd_bridge_history_entity_head(
-    dynamic raw,
-  );
-
-  @protected
   BridgeHistoryEventBodyRef
   dco_decode_box_autoadd_bridge_history_event_body_ref(dynamic raw);
+
+  @protected
+  BridgeHistoryEventRecord dco_decode_box_autoadd_bridge_history_event_record(
+    dynamic raw,
+  );
 
   @protected
   BridgeHistoryEventsQuery dco_decode_box_autoadd_bridge_history_events_query(
@@ -1035,11 +1039,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryRowHead dco_decode_box_autoadd_bridge_history_row_head(
-    dynamic raw,
-  );
-
-  @protected
   BridgeHistorySourceHead dco_decode_box_autoadd_bridge_history_source_head(
     dynamic raw,
   );
@@ -1050,17 +1049,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryWaitHead dco_decode_box_autoadd_bridge_history_wait_head(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeHistoryWaitIntent dco_decode_box_autoadd_bridge_history_wait_intent(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeHistoryWorkHead dco_decode_box_autoadd_bridge_history_work_head(
+  BridgeHistoryWorkRange dco_decode_box_autoadd_bridge_history_work_range(
     dynamic raw,
   );
 
@@ -1307,11 +1296,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSettingsConfigStateData
   dco_decode_box_autoadd_bridge_settings_config_state_data(dynamic raw);
-
-  @protected
-  BridgeSingleVisibility dco_decode_box_autoadd_bridge_single_visibility(
-    dynamic raw,
-  );
 
   @protected
   BridgeSkillsStateData dco_decode_box_autoadd_bridge_skills_state_data(
@@ -2778,6 +2762,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryBodyWindow dco_decode_bridge_history_body_window(dynamic raw);
 
   @protected
+  BridgeHistoryBusinessPage dco_decode_bridge_history_business_page(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowEntry dco_decode_bridge_history_business_row_entry(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowHead dco_decode_bridge_history_business_row_head(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowScope dco_decode_bridge_history_business_row_scope(
+    dynamic raw,
+  );
+
+  @protected
   BridgeHistoryContextDisposition dco_decode_bridge_history_context_disposition(
     dynamic raw,
   );
@@ -2792,21 +2796,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryDemand dco_decode_bridge_history_demand(dynamic raw);
 
   @protected
-  BridgeHistoryEntityHead dco_decode_bridge_history_entity_head(dynamic raw);
-
-  @protected
-  BridgeHistoryEntityState dco_decode_bridge_history_entity_state(dynamic raw);
-
-  @protected
   BridgeHistoryEventBodyRef dco_decode_bridge_history_event_body_ref(
     dynamic raw,
   );
 
   @protected
-  BridgeHistoryEventDetail dco_decode_bridge_history_event_detail(dynamic raw);
-
-  @protected
-  BridgeHistoryEventHeader dco_decode_bridge_history_event_header(dynamic raw);
+  BridgeHistoryEventRecord dco_decode_bridge_history_event_record(dynamic raw);
 
   @protected
   BridgeHistoryEventsPage dco_decode_bridge_history_events_page(dynamic raw);
@@ -2818,18 +2813,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryFault dco_decode_bridge_history_fault(dynamic raw);
 
   @protected
-  BridgeHistoryGroupPage dco_decode_bridge_history_group_page(dynamic raw);
-
-  @protected
-  BridgeHistoryObservation dco_decode_bridge_history_observation(dynamic raw);
-
-  @protected
   BridgeHistoryOriginalInfo dco_decode_bridge_history_original_info(
     dynamic raw,
   );
-
-  @protected
-  BridgeHistoryRowHead dco_decode_bridge_history_row_head(dynamic raw);
 
   @protected
   BridgeHistorySourceHead dco_decode_bridge_history_source_head(dynamic raw);
@@ -2840,12 +2826,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineEntry dco_decode_bridge_history_timeline_entry(
+  BridgeHistoryTimelineItem dco_decode_bridge_history_timeline_item(
     dynamic raw,
   );
 
   @protected
   BridgeHistoryTimelinePage dco_decode_bridge_history_timeline_page(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeHistoryTimelineRole dco_decode_bridge_history_timeline_role(
     dynamic raw,
   );
 
@@ -2856,16 +2847,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeHistoryTurnState dco_decode_bridge_history_turn_state(dynamic raw);
 
   @protected
-  BridgeHistoryWaitHead dco_decode_bridge_history_wait_head(dynamic raw);
+  BridgeHistoryWorkRange dco_decode_bridge_history_work_range(dynamic raw);
 
   @protected
-  BridgeHistoryWaitIntent dco_decode_bridge_history_wait_intent(dynamic raw);
-
-  @protected
-  BridgeHistoryWaitState dco_decode_bridge_history_wait_state(dynamic raw);
-
-  @protected
-  BridgeHistoryWorkHead dco_decode_bridge_history_work_head(dynamic raw);
+  BridgeHistoryWorkRangePage dco_decode_bridge_history_work_range_page(
+    dynamic raw,
+  );
 
   @protected
   BridgeIdleAgent dco_decode_bridge_idle_agent(dynamic raw);
@@ -3367,9 +3354,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeShutdownReport dco_decode_bridge_shutdown_report(dynamic raw);
-
-  @protected
-  BridgeSingleVisibility dco_decode_bridge_single_visibility(dynamic raw);
 
   @protected
   BridgeSkillSearchResult dco_decode_bridge_skill_search_result(dynamic raw);
@@ -4230,13 +4214,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryEventDetail> dco_decode_list_bridge_history_event_detail(
+  List<BridgeHistoryBusinessRowEntry>
+  dco_decode_list_bridge_history_business_row_entry(dynamic raw);
+
+  @protected
+  List<BridgeHistoryEventRecord> dco_decode_list_bridge_history_event_record(
     dynamic raw,
   );
 
   @protected
-  List<BridgeHistoryTimelineEntry>
-  dco_decode_list_bridge_history_timeline_entry(dynamic raw);
+  List<BridgeHistoryTimelineItem> dco_decode_list_bridge_history_timeline_item(
+    dynamic raw,
+  );
 
   @protected
   List<BridgeInteractionRequest> dco_decode_list_bridge_interaction_request(
@@ -4756,11 +4745,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryCut? dco_decode_opt_box_autoadd_bridge_history_cut(dynamic raw);
+  BridgeHistoryBusinessRowScope?
+  dco_decode_opt_box_autoadd_bridge_history_business_row_scope(dynamic raw);
 
   @protected
-  BridgeHistoryEventBodyRef?
-  dco_decode_opt_box_autoadd_bridge_history_event_body_ref(dynamic raw);
+  BridgeHistoryCut? dco_decode_opt_box_autoadd_bridge_history_cut(dynamic raw);
 
   @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
@@ -4770,16 +4759,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeHistoryOriginalInfo?
   dco_decode_opt_box_autoadd_bridge_history_original_info(dynamic raw);
-
-  @protected
-  BridgeHistoryRowHead? dco_decode_opt_box_autoadd_bridge_history_row_head(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeHistoryWaitHead? dco_decode_opt_box_autoadd_bridge_history_wait_head(
-    dynamic raw,
-  );
 
   @protected
   BridgeMcpDocumentDiagnostic?
@@ -4865,11 +4844,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSessionDirectoryRow?
   dco_decode_opt_box_autoadd_bridge_session_directory_row(dynamic raw);
-
-  @protected
-  BridgeSingleVisibility? dco_decode_opt_box_autoadd_bridge_single_visibility(
-    dynamic raw,
-  );
 
   @protected
   BridgeStartupRecovery? dco_decode_opt_box_autoadd_bridge_startup_recovery(
@@ -6133,6 +6107,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeHistoryBusinessRowScope
+  sse_decode_box_autoadd_bridge_history_business_row_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryCostHead sse_decode_box_autoadd_bridge_history_cost_head(
     SseDeserializer deserializer,
   );
@@ -6148,13 +6128,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryEntityHead sse_decode_box_autoadd_bridge_history_entity_head(
+  BridgeHistoryEventBodyRef
+  sse_decode_box_autoadd_bridge_history_event_body_ref(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeHistoryEventBodyRef
-  sse_decode_box_autoadd_bridge_history_event_body_ref(
+  BridgeHistoryEventRecord sse_decode_box_autoadd_bridge_history_event_record(
     SseDeserializer deserializer,
   );
 
@@ -6174,11 +6154,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryRowHead sse_decode_box_autoadd_bridge_history_row_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeHistorySourceHead sse_decode_box_autoadd_bridge_history_source_head(
     SseDeserializer deserializer,
   );
@@ -6189,17 +6164,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryWaitHead sse_decode_box_autoadd_bridge_history_wait_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWaitIntent sse_decode_box_autoadd_bridge_history_wait_intent(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkHead sse_decode_box_autoadd_bridge_history_work_head(
+  BridgeHistoryWorkRange sse_decode_box_autoadd_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
@@ -6530,11 +6495,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSettingsConfigStateData
   sse_decode_box_autoadd_bridge_settings_config_state_data(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeSingleVisibility sse_decode_box_autoadd_bridge_single_visibility(
     SseDeserializer deserializer,
   );
 
@@ -8481,6 +8441,26 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeHistoryBusinessPage sse_decode_bridge_history_business_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowEntry sse_decode_bridge_history_business_row_entry(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowHead sse_decode_bridge_history_business_row_head(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeHistoryBusinessRowScope sse_decode_bridge_history_business_row_scope(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryContextDisposition sse_decode_bridge_history_context_disposition(
     SseDeserializer deserializer,
   );
@@ -8499,27 +8479,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryEntityHead sse_decode_bridge_history_entity_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryEntityState sse_decode_bridge_history_entity_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeHistoryEventBodyRef sse_decode_bridge_history_event_body_ref(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeHistoryEventDetail sse_decode_bridge_history_event_detail(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryEventHeader sse_decode_bridge_history_event_header(
+  BridgeHistoryEventRecord sse_decode_bridge_history_event_record(
     SseDeserializer deserializer,
   );
 
@@ -8539,22 +8504,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryGroupPage sse_decode_bridge_history_group_page(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryObservation sse_decode_bridge_history_observation(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeHistoryOriginalInfo sse_decode_bridge_history_original_info(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryRowHead sse_decode_bridge_history_row_head(
     SseDeserializer deserializer,
   );
 
@@ -8569,12 +8519,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryTimelineEntry sse_decode_bridge_history_timeline_entry(
+  BridgeHistoryTimelineItem sse_decode_bridge_history_timeline_item(
     SseDeserializer deserializer,
   );
 
   @protected
   BridgeHistoryTimelinePage sse_decode_bridge_history_timeline_page(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeHistoryTimelineRole sse_decode_bridge_history_timeline_role(
     SseDeserializer deserializer,
   );
 
@@ -8589,22 +8544,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryWaitHead sse_decode_bridge_history_wait_head(
+  BridgeHistoryWorkRange sse_decode_bridge_history_work_range(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeHistoryWaitIntent sse_decode_bridge_history_wait_intent(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWaitState sse_decode_bridge_history_wait_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWorkHead sse_decode_bridge_history_work_head(
+  BridgeHistoryWorkRangePage sse_decode_bridge_history_work_range_page(
     SseDeserializer deserializer,
   );
 
@@ -9236,11 +9181,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeShutdownReport sse_decode_bridge_shutdown_report(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeSingleVisibility sse_decode_bridge_single_visibility(
     SseDeserializer deserializer,
   );
 
@@ -10275,13 +10215,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  List<BridgeHistoryEventDetail> sse_decode_list_bridge_history_event_detail(
+  List<BridgeHistoryBusinessRowEntry>
+  sse_decode_list_bridge_history_business_row_entry(
     SseDeserializer deserializer,
   );
 
   @protected
-  List<BridgeHistoryTimelineEntry>
-  sse_decode_list_bridge_history_timeline_entry(SseDeserializer deserializer);
+  List<BridgeHistoryEventRecord> sse_decode_list_bridge_history_event_record(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<BridgeHistoryTimelineItem> sse_decode_list_bridge_history_timeline_item(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<BridgeInteractionRequest> sse_decode_list_bridge_interaction_request(
@@ -10903,13 +10850,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeHistoryCut? sse_decode_opt_box_autoadd_bridge_history_cut(
+  BridgeHistoryBusinessRowScope?
+  sse_decode_opt_box_autoadd_bridge_history_business_row_scope(
     SseDeserializer deserializer,
   );
 
   @protected
-  BridgeHistoryEventBodyRef?
-  sse_decode_opt_box_autoadd_bridge_history_event_body_ref(
+  BridgeHistoryCut? sse_decode_opt_box_autoadd_bridge_history_cut(
     SseDeserializer deserializer,
   );
 
@@ -10921,16 +10868,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeHistoryOriginalInfo?
   sse_decode_opt_box_autoadd_bridge_history_original_info(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryRowHead? sse_decode_opt_box_autoadd_bridge_history_row_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeHistoryWaitHead? sse_decode_opt_box_autoadd_bridge_history_wait_head(
     SseDeserializer deserializer,
   );
 
@@ -11046,11 +10983,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeSessionDirectoryRow?
   sse_decode_opt_box_autoadd_bridge_session_directory_row(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeSingleVisibility? sse_decode_opt_box_autoadd_bridge_single_visibility(
     SseDeserializer deserializer,
   );
 
@@ -12537,6 +12469,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_history_business_row_scope(
+    BridgeHistoryBusinessRowScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_history_cost_head(
     BridgeHistoryCostHead self,
     SseSerializer serializer,
@@ -12555,14 +12493,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_entity_head(
-    BridgeHistoryEntityHead self,
+  void sse_encode_box_autoadd_bridge_history_event_body_ref(
+    BridgeHistoryEventBodyRef self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_event_body_ref(
-    BridgeHistoryEventBodyRef self,
+  void sse_encode_box_autoadd_bridge_history_event_record(
+    BridgeHistoryEventRecord self,
     SseSerializer serializer,
   );
 
@@ -12585,12 +12523,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_row_head(
-    BridgeHistoryRowHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_bridge_history_source_head(
     BridgeHistorySourceHead self,
     SseSerializer serializer,
@@ -12603,20 +12535,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_history_wait_head(
-    BridgeHistoryWaitHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_history_wait_intent(
-    BridgeHistoryWaitIntent self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_history_work_head(
-    BridgeHistoryWorkHead self,
+  void sse_encode_box_autoadd_bridge_history_work_range(
+    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
@@ -12977,12 +12897,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_settings_config_state_data(
     BridgeSettingsConfigStateData self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_single_visibility(
-    BridgeSingleVisibility self,
     SseSerializer serializer,
   );
 
@@ -15297,6 +15211,30 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_history_business_page(
+    BridgeHistoryBusinessPage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_history_business_row_entry(
+    BridgeHistoryBusinessRowEntry self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_history_business_row_head(
+    BridgeHistoryBusinessRowHead self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_history_business_row_scope(
+    BridgeHistoryBusinessRowScope self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_history_context_disposition(
     BridgeHistoryContextDisposition self,
     SseSerializer serializer,
@@ -15321,32 +15259,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_entity_head(
-    BridgeHistoryEntityHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_entity_state(
-    BridgeHistoryEntityState self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_bridge_history_event_body_ref(
     BridgeHistoryEventBodyRef self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_history_event_detail(
-    BridgeHistoryEventDetail self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_event_header(
-    BridgeHistoryEventHeader self,
+  void sse_encode_bridge_history_event_record(
+    BridgeHistoryEventRecord self,
     SseSerializer serializer,
   );
 
@@ -15369,26 +15289,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_group_page(
-    BridgeHistoryGroupPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_observation(
-    BridgeHistoryObservation self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_bridge_history_original_info(
     BridgeHistoryOriginalInfo self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_row_head(
-    BridgeHistoryRowHead self,
     SseSerializer serializer,
   );
 
@@ -15405,14 +15307,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_timeline_entry(
-    BridgeHistoryTimelineEntry self,
+  void sse_encode_bridge_history_timeline_item(
+    BridgeHistoryTimelineItem self,
     SseSerializer serializer,
   );
 
   @protected
   void sse_encode_bridge_history_timeline_page(
     BridgeHistoryTimelinePage self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_history_timeline_role(
+    BridgeHistoryTimelineRole self,
     SseSerializer serializer,
   );
 
@@ -15429,26 +15337,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_bridge_history_wait_head(
-    BridgeHistoryWaitHead self,
+  void sse_encode_bridge_history_work_range(
+    BridgeHistoryWorkRange self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_bridge_history_wait_intent(
-    BridgeHistoryWaitIntent self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_wait_state(
-    BridgeHistoryWaitState self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_history_work_head(
-    BridgeHistoryWorkHead self,
+  void sse_encode_bridge_history_work_range_page(
+    BridgeHistoryWorkRangePage self,
     SseSerializer serializer,
   );
 
@@ -16217,12 +16113,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_shutdown_report(
     BridgeShutdownReport self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_single_visibility(
-    BridgeSingleVisibility self,
     SseSerializer serializer,
   );
 
@@ -17472,14 +17362,20 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_list_bridge_history_event_detail(
-    List<BridgeHistoryEventDetail> self,
+  void sse_encode_list_bridge_history_business_row_entry(
+    List<BridgeHistoryBusinessRowEntry> self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_list_bridge_history_timeline_entry(
-    List<BridgeHistoryTimelineEntry> self,
+  void sse_encode_list_bridge_history_event_record(
+    List<BridgeHistoryEventRecord> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_bridge_history_timeline_item(
+    List<BridgeHistoryTimelineItem> self,
     SseSerializer serializer,
   );
 
@@ -18195,14 +18091,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_opt_box_autoadd_bridge_history_cut(
-    BridgeHistoryCut? self,
+  void sse_encode_opt_box_autoadd_bridge_history_business_row_scope(
+    BridgeHistoryBusinessRowScope? self,
     SseSerializer serializer,
   );
 
   @protected
-  void sse_encode_opt_box_autoadd_bridge_history_event_body_ref(
-    BridgeHistoryEventBodyRef? self,
+  void sse_encode_opt_box_autoadd_bridge_history_cut(
+    BridgeHistoryCut? self,
     SseSerializer serializer,
   );
 
@@ -18215,18 +18111,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_history_original_info(
     BridgeHistoryOriginalInfo? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_bridge_history_row_head(
-    BridgeHistoryRowHead? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_bridge_history_wait_head(
-    BridgeHistoryWaitHead? self,
     SseSerializer serializer,
   );
 
@@ -18347,12 +18231,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_session_directory_row(
     BridgeSessionDirectoryRow? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_bridge_single_visibility(
-    BridgeSingleVisibility? self,
     SseSerializer serializer,
   );
 

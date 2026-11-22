@@ -5,17 +5,31 @@
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
 mod input;
+mod v25_schema;
+mod v25_to_v26;
+
+pub(in crate::history) use v25_schema::{
+    HistoryEntityHeadV25, HistoryEventKindV25, HistoryEventV25, HistoryRowHeadV25,
+    insert_v25_event, validate_v25_event,
+};
+pub(super) use v25_to_v26::migrate_v25_to_v26;
+
 use super::{
-    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole, HistoryEntityHead,
-    HistoryError, HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation,
-    HistoryRowHead, HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
-    HistoryWaitIntentHead, HistoryWorkHead, Result,
+    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole,
+    HistoryError, HistoryEventBodyRef,
+    HistorySingleVisibility, HistorySource, HistoryTurnState,
+    HistoryWaitHead, HistoryWaitIntentHead, Result,
     db::{self, statement},
     import::{
         HistoryBodySource, HistoryImport, HistoryImportBody, V24Body, V24BodyReader,
         V24HistorySource,
     },
     schema,
+};
+use v25_schema::{
+    HistoryEntityHeadV25 as HistoryEntityHead, HistoryEventKindV25 as HistoryEventKind,
+    HistoryEventV25 as HistoryEvent, HistoryObservationV25 as HistoryObservation,
+    HistoryRowHeadV25 as HistoryRowHead, HistoryWorkHeadV25 as HistoryWorkHead,
 };
 use crate::studio::storage::history::schema::{
     initialize as prepare_schema24,
@@ -54,6 +68,7 @@ use payload::{
 const LEGACY_EVENT_PREFIX: &str = "legacy:v24:";
 const LEGACY_BODY_PREFIX: &str = "legacy:v24:body:";
 const BACKUP_ROOT: &str = "migration-backups/history-24-to-25";
+const BACKUP_ROOT_V25_TO_V26: &str = "migration-backups/history-25-to-26";
 const PENDING_REPORT_FILE: &str = "pending-upgrade-report.json";
 #[cfg(test)]
 static FAIL_NEXT_IMPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
@@ -118,13 +133,14 @@ pub struct UpgradeReport {
 #[serde(rename_all = "camelCase")]
 pub enum UpgradeStatus {
     Upgraded,
-    AlreadySchema25,
+    AlreadySchema26,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum SourceFormat {
     Legacy(i64),
     Schema25,
+    Schema26,
 }
 
 #[derive(PartialEq, Eq)]
@@ -169,6 +185,10 @@ pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Re
             true
         }
         SourceFormat::Schema25 => {
+            schema25_identity(&read, thread_id).await?;
+            true
+        }
+        SourceFormat::Schema26 => {
             schema::identity(&read, thread_id).await?;
             false
         }
@@ -192,23 +212,64 @@ pub async fn upgrade_history(
     if !preserved_file_exists(&history_path)? {
         return Err(HistoryError::NotFound(history_path.display().to_string()));
     }
-    let pending_report = session_dir.join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
+    let pending_v24 = session_dir.join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
+    let pending_v25 = session_dir
+        .join(BACKUP_ROOT_V25_TO_V26)
+        .join(PENDING_REPORT_FILE);
     let read = schema::connect(&history_path, true, false).await?;
-    if classify_source(&read).await? == SourceFormat::Schema25 && !pending_report.try_exists()? {
-        // Normal history readers must coexist with the live writer. Only an unfinished
-        // migration needs maintenance ownership and may publish filesystem artifacts.
+    if classify_source(&read).await? == SourceFormat::Schema26
+        && !pending_v24.try_exists()?
+        && !pending_v25.try_exists()?
+    {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
         read.close().await?;
-        return complete_schema25_entry(&pending_report, thread_id, database_id);
+        return complete_schema26_entry(&pending_v24, thread_id, database_id, "history.v24.sqlite");
     }
     read.close().await?;
     let _lease = acquire_writer_lease(&history_path).await?;
-    // Recheck the source under exclusive maintenance ownership before creating any backup.
     let read = schema::connect(&history_path, true, false).await?;
-    if classify_source(&read).await? == SourceFormat::Schema25 {
-        let (database_id, _) = schema::identity(&read, thread_id).await?;
-        read.close().await?;
-        return complete_schema25_entry(&pending_report, thread_id, database_id);
+    let format = classify_source(&read).await?;
+    match format {
+        SourceFormat::Schema26 => {
+            let (database_id, _) = schema::identity(&read, thread_id).await?;
+            read.close().await?;
+            if pending_v25.try_exists()? {
+                if pending_v24.try_exists()? {
+                    return Err(HistoryError::Conflict(
+                        "conflicting v24 and v25 pending upgrade reports exist".into(),
+                    ));
+                }
+                return complete_schema26_entry(
+                    &pending_v25,
+                    thread_id,
+                    database_id,
+                    "history.v25.sqlite",
+                );
+            }
+            return complete_schema26_entry(
+                &pending_v24,
+                thread_id,
+                database_id,
+                "history.v24.sqlite",
+            );
+        }
+        SourceFormat::Schema25 => {
+            let database_id = schema25_identity(&read, thread_id).await?;
+            read.close().await?;
+            if pending_v24.try_exists()? {
+                return Err(HistoryError::Conflict(
+                    "schema 25 history has a pending schema 24 report".into(),
+                ));
+            }
+            return upgrade_v25_to_v26(&history_path, thread_id, &session_dir, &database_id, &pending_v25)
+                .await;
+        }
+        SourceFormat::Legacy(_) => {}
+    }
+    if pending_v25.try_exists()? {
+        return Err(HistoryError::Conflict(
+            "pre-schema 25 history has a pending schema 25 -> 26 report".into(),
+        ));
     }
     crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
     let original_identity = read_legacy_identity(&read).await?;
@@ -218,11 +279,11 @@ pub async fn upgrade_history(
     let operation_dir = session_dir.join(BACKUP_ROOT).join(&operation_id);
     let identity = if original_identity.version == 24 {
         let identity = original_identity.into_schema24(thread_id)?;
-        discard_rolled_back_pending_report(&pending_report, thread_id, &identity.0)?;
+        discard_rolled_back_pending_report(&pending_v24, thread_id, &identity.0)?;
         prepare_directory(&session_dir, &operation_dir)?;
         identity
     } else {
-        if pending_report.try_exists()? {
+        if pending_v24.try_exists()? {
             return Err(HistoryError::Conflict(
                 "pre-schema 24 history has a pending schema 25 report".into(),
             ));
@@ -249,11 +310,11 @@ pub async fn upgrade_history(
     }
     let current_backup = prepare_current(&source, thread_id, &session_dir, &operation_dir).await?;
 
-    let writer = schema::connect(&history_path, false, false).await?;
+    let writer = schema::connect_for_migration(&history_path).await?;
     crate::studio::storage::history::validate_layout_source(&writer, thread_id).await?;
     let database_id = identity.0.clone();
     let report_thread_id = thread_id.to_owned();
-    let stage_path = pending_report.clone();
+    let stage_path = pending_v24.clone();
     let stage_report: schema::StageUpgradeReport = Box::new(move |imported| {
         let mut backup_only_categories = imported.backup_only;
         let archived_rows = LEGACY_SOURCE_TABLES
@@ -286,7 +347,7 @@ pub async fn upgrade_history(
         };
         stage_pending_report(&stage_path, &report)
     });
-    match schema::run_upgrade(
+    match schema::run_upgrade_v24(
         &writer,
         thread_id,
         &identity.0,
@@ -298,16 +359,119 @@ pub async fn upgrade_history(
     {
         Ok(()) => {}
         Err(error) => {
-            // COMMIT may have succeeded even when its acknowledgement or subsequent read
-            // failed. Retain the staged report until a retry observes the committed schema
-            // under maintenance ownership; schema 24 proves rollback, schema 25 completes it.
             return Err(error);
         }
     }
     let (database_id, _) = schema::identity(&writer, thread_id).await?;
     writer.close().await?;
     source.close().await?;
-    complete_pending_report(&pending_report, thread_id, &database_id)
+    complete_pending_report(&pending_v24, thread_id, &database_id, "history.v24.sqlite")
+}
+
+async fn upgrade_v25_to_v26(
+    history_path: &Path,
+    thread_id: &str,
+    session_dir: &Path,
+    database_id: &str,
+    pending_report: &Path,
+) -> Result<UpgradeReport> {
+    if pending_report.try_exists()? {
+        let bytes = std::fs::read(pending_report)?;
+        let report: UpgradeReport = serde_json::from_slice(&bytes)?;
+        if report.thread_id != thread_id || report.database_id != database_id {
+            return Err(HistoryError::Conflict(
+                "rolled-back schema 25 -> 26 report does not match this history".into(),
+            ));
+        }
+        let op_dir = report_operation_dir(pending_report, &report)?;
+        let uncommitted = op_dir.join("uncommitted-report.json");
+        if !uncommitted.try_exists()? {
+            backup_exact_bytes(&uncommitted, &bytes)?;
+        }
+        std::fs::remove_file(pending_report)?;
+        sync_parent(pending_report)?;
+    }
+
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let operation_dir = session_dir.join(BACKUP_ROOT_V25_TO_V26).join(&operation_id);
+    prepare_directory(session_dir, &operation_dir)?;
+
+    let temporary = vacuum_backup_candidate(history_path, &operation_dir, 25).await?;
+    let backup_read = schema::connect(&temporary, true, false).await?;
+    if schema25_identity(&backup_read, thread_id).await? != database_id {
+        return Err(HistoryError::Integrity(
+            "schema 25 backup identity differs".into(),
+        ));
+    }
+    quick_check(&backup_read).await?;
+    let source_table_rows = v25_table_rows(&backup_read).await?;
+    backup_read.close().await?;
+    let backup_path = operation_dir.join("history.v25.sqlite");
+    publish_backup(&temporary, &backup_path, thread_id)?;
+
+    let writer = schema::connect_for_migration(history_path).await?;
+    let report_thread_id = thread_id.to_owned();
+    let report_db_id = database_id.to_owned();
+    let stage_path = pending_report.to_path_buf();
+    let stage_v25_report: Box<dyn FnOnce(u64) -> Result<()> + Send> = Box::new(move |migrated| {
+        let mut imported_categories = BTreeMap::new();
+        imported_categories.insert("history_events_v26".into(), migrated);
+        let report = UpgradeReport {
+            operation_id,
+            thread_id: report_thread_id,
+            database_id: report_db_id,
+            status: UpgradeStatus::Upgraded,
+            backup: Some(backup_path),
+            current_original_backup: None,
+            source_table_rows,
+            imported_categories,
+            backup_only_categories: BTreeMap::new(),
+        };
+        stage_pending_report(&stage_path, &report)
+    });
+    schema::run_upgrade_v25(&writer, thread_id, stage_v25_report).await?;
+    let (confirmed_db_id, _) = schema::identity(&writer, thread_id).await?;
+    writer.close().await?;
+    complete_pending_report(pending_report, thread_id, &confirmed_db_id, "history.v25.sqlite")
+}
+
+async fn schema25_identity(db: &DatabaseConnection, thread_id: &str) -> Result<String> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT schema_version,database_id,thread_id FROM history_store_meta WHERE singleton=1",
+            vec![],
+        ))
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("schema 25 identity missing".into()))?;
+    if row.try_get::<i64>("", "schema_version")? != 25
+        || row.try_get::<String>("", "thread_id")? != thread_id
+    {
+        return Err(HistoryError::Integrity(
+            "schema 25 database or Thread identity differs".into(),
+        ));
+    }
+    let database_id: String = row.try_get("", "database_id")?;
+    if database_id.is_empty() {
+        return Err(HistoryError::Integrity(
+            "schema 25 database_id is empty".into(),
+        ));
+    }
+    Ok(database_id)
+}
+
+async fn v25_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>> {
+    let mut counts = BTreeMap::new();
+    for table in ["history_events", "history_bodies", "history_body_chunks"] {
+        let row = db
+            .query_one_raw(statement(&format!("SELECT COUNT(*) AS c FROM {table}"), vec![]))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity(format!("failed counting {table}")))?;
+        counts.insert(
+            table.into(),
+            db_u64(row.try_get::<i64>("", "c")?, table)?,
+        );
+    }
+    Ok(counts)
 }
 
 async fn acquire_writer_lease(history_path: &Path) -> Result<WriterLease> {
@@ -348,9 +512,26 @@ async fn classify_source(db: &DatabaseConnection) -> Result<SourceFormat> {
                 })?;
             Ok(SourceFormat::Legacy(row.try_get_by_index(0)?))
         }
-        (false, true) => Ok(SourceFormat::Schema25),
+        (false, true) => {
+            let row = db
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM history_store_meta WHERE singleton=1",
+                    vec![],
+                ))
+                .await?
+                .ok_or_else(|| {
+                    HistoryError::Integrity("history_store_meta identity is missing".into())
+                })?;
+            match row.try_get_by_index::<i64>(0)? {
+                25 => Ok(SourceFormat::Schema25),
+                26 => Ok(SourceFormat::Schema26),
+                other => Err(HistoryError::Integrity(format!(
+                    "unsupported history schema version {other}"
+                ))),
+            }
+        }
         (true, true) => Err(HistoryError::Integrity(
-            "database contains both legacy and schema 25 identity tables".into(),
+            "database contains both legacy and current identity tables".into(),
         )),
         (false, false) => Err(HistoryError::Integrity(
             "database has no recognizable history identity table".into(),
@@ -847,17 +1028,18 @@ fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result
     backup_exact_bytes(pending_report, &bytes)
 }
 
-fn complete_schema25_entry(
+fn complete_schema26_entry(
     pending_report: &Path,
     thread_id: &str,
     database_id: String,
+    expected_backup_name: &str,
 ) -> Result<UpgradeReport> {
     if !pending_report.try_exists()? {
         return Ok(UpgradeReport {
-            operation_id: "already-schema-25".into(),
+            operation_id: "already-schema-26".into(),
             thread_id: thread_id.to_owned(),
             database_id,
-            status: UpgradeStatus::AlreadySchema25,
+            status: UpgradeStatus::AlreadySchema26,
             backup: None,
             current_original_backup: None,
             source_table_rows: BTreeMap::new(),
@@ -865,8 +1047,13 @@ fn complete_schema25_entry(
             backup_only_categories: BTreeMap::new(),
         });
     }
-    let mut report = complete_pending_report(pending_report, thread_id, &database_id)?;
-    report.status = UpgradeStatus::AlreadySchema25;
+    let mut report = complete_pending_report(
+        pending_report,
+        thread_id,
+        &database_id,
+        expected_backup_name,
+    )?;
+    report.status = UpgradeStatus::AlreadySchema26;
     Ok(report)
 }
 
@@ -897,11 +1084,12 @@ fn complete_pending_report(
     pending_report: &Path,
     thread_id: &str,
     database_id: &str,
+    expected_backup_name: &str,
 ) -> Result<UpgradeReport> {
     let bytes = std::fs::read(pending_report)?;
     let report: UpgradeReport = serde_json::from_slice(&bytes)?;
     let operation_dir = report_operation_dir(pending_report, &report)?;
-    let expected_backup = operation_dir.join("history.v24.sqlite");
+    let expected_backup = operation_dir.join(expected_backup_name);
     let expected_current_backup = operation_dir.join("current.original.json");
     let current_backup_matches = match &report.current_original_backup {
         None => true,
@@ -3826,7 +4014,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn schema25_read_coexists_with_its_live_history_writer() -> Result<()> {
+    async fn schema26_read_coexists_with_its_live_history_writer() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("history.sqlite");
         let store = crate::history::HistoryStore::open(
@@ -3836,21 +4024,28 @@ mod tests {
         )
         .await?;
         let report = upgrade_history(&path, "live-writer", directory.path()).await?;
-        assert_eq!(report.status, UpgradeStatus::AlreadySchema25);
+        assert_eq!(report.status, UpgradeStatus::AlreadySchema26);
         assert_eq!(report.database_id, store.database_id());
         assert!(!directory.path().join(BACKUP_ROOT).try_exists()?);
+        assert!(
+            !directory
+                .path()
+                .join(BACKUP_ROOT_V25_TO_V26)
+                .try_exists()?
+        );
         assert!(!directory.path().join("current.json").try_exists()?);
 
         let reader = store.reader();
         let page = reader
             .timeline_page(None, None, crate::history::HistoryDemand::default())
             .await?;
-        assert!(page.entries.is_empty());
+        assert!(page.items.is_empty());
         reader.close().await;
         let accepted = store
-            .accept_batch(&[HistoryEvent::new(
+            .accept_batch(&[crate::history::HistoryEvent::new(
                 "run-still-writable",
-                HistoryEventKind::RunStarted,
+                crate::history::HistoryEventKind::RunStarted,
+                crate::history::HistoryTimelineRole::Hidden,
                 1,
             )])
             .await?;
@@ -3873,6 +4068,11 @@ mod migration_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::history::{
+        HistoryBusinessRowHead, HistoryDelivery, HistoryEntityKind, HistoryEntityState,
+        HistoryEventKind as CurrentHistoryEventKind, HistoryTimelineItem, HistoryToolIdentity,
+        body, decode_event_envelope, read_event_body_bytes,
+    };
     use crate::studio::storage::history::schema::v24_presentation::BlockOrder;
     use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
     use crate::thread_assembler::{
@@ -4833,8 +5033,8 @@ mod migration_tests {
             )
             .await?;
         assert!(matches!(
-            source_event.head,
-            Some(HistoryRowHead::Source(head)) if head.lifecycle == ChatSourceLifecycle::Active
+            body::decode_business_head_from_record(&source_event)?,
+            HistoryBusinessRowHead::Source(head) if head.lifecycle == ChatSourceLifecycle::Active
         ));
         let resources = FileResourceStore::new(directory.path().join("resources"));
         assert_eq!(
@@ -4893,30 +5093,28 @@ mod migration_tests {
             let event = originals
                 .entries
                 .iter()
-                .find(|entry| entry.header.event_id == *item_id)
+                .find(|entry| entry.event_id == *item_id)
                 .ok_or_else(|| HistoryError::NotFound(item_id.clone()))?;
-            let reference = event
-                .payload_ref
-                .clone()
-                .ok_or_else(|| HistoryError::Integrity("canonical payload is missing".into()))?;
-            let bytes = read_all_body(&reader, reference).await?;
-            let actual: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let actual = decode_event_envelope(event)?;
             let expected: serde_json::Value = serde_json::from_slice(expected)?;
-            assert_eq!(actual["contract"], "anywork.chat/1");
-            assert_eq!(actual["type"], expected["type"]);
-            assert_eq!(actual["data"], expected["data"]);
-            assert_eq!(actual["sourceEffectSeq"], expected["sourceEffectSeq"]);
+            assert_eq!(actual.contract, "anywork.event/1");
+            assert_eq!(Some(actual.item_type.as_str()), expected["type"].as_str());
+            assert_eq!(actual.data, expected["data"]);
             assert_eq!(
-                actual["sourceOrder"].as_u64(),
+                actual.source_order,
                 Some(if item_id == "original-large" { 1 } else { 2 })
             );
-            for body in actual["bodies"].as_array().unwrap_or(&Vec::new()) {
-                assert!(body["reference"].is_object());
-                assert!(body["inline"].is_null());
-                assert_eq!(body["reference"]["byteLength"], body["byteLength"]);
-                if body["key"] == "inline-preview" {
-                    let inline_reference = serde_json::from_value(body["reference"].clone())?;
-                    assert_eq!(read_all_body(&reader, inline_reference).await?, INLINE_BODY);
+            for body in &actual.bodies {
+                if let Some(reference) = &body.reference {
+                    assert_eq!(reference.byte_length, body.byte_length);
+                } else {
+                    assert!(body.inline_text.is_some() || body.byte_length == 0);
+                }
+                if body.key == "inline-preview" {
+                    let bytes = read_event_body_bytes(&reader, event, "inline-preview", None)
+                        .await?
+                        .expect("inline preview body readable");
+                    assert_eq!(bytes, INLINE_BODY);
                     inline_body_verified = true;
                 }
             }
@@ -5017,59 +5215,51 @@ mod migration_tests {
         let main = reader
             .timeline_page(None, None, HistoryDemand::default())
             .await?;
-        assert_eq!(
-            main.entries
-                .iter()
-                .filter(|entry| matches!(
-                    &entry.head,
-                    HistoryRowHead::Single(head)
-                        if head.entity_id == "draft-plan"
-                            && head.observation == HistoryObservation::UnavailableLegacy { captured_at: None }
-                            && head.finished_at.is_none()
-                            && head.body_manifest_event_id.is_none()
-                ))
-                .count(),
-            2
-        );
-        let work = main
-            .entries
+        let draft_divs: Vec<_> = main
+            .items
             .iter()
-            .find(|entry| entry.row_key == "work:work-1")
-            .ok_or_else(|| HistoryError::NotFound("work:work-1".into()))?;
-        let HistoryRowHead::Work(work_head) = &work.head else {
-            return Err(HistoryError::Integrity("work head is missing".into()));
-        };
-        assert_eq!((work_head.member_count, work_head.unfinished_count), (2, 0));
-        let members = reader
-            .group_page("work-1".into(), None, None, HistoryDemand::default())
-            .await?;
-        assert_eq!(members.members.len(), 2);
-        let _boundary = members
-            .members
-            .iter()
-            .find(|entry| {
-                matches!(
-                    &entry.head,
-                    HistoryRowHead::Member(head)
-                        if matches!(&head.observation, HistoryObservation::Boundary { .. })
-                )
+            .filter_map(|item| match item {
+                HistoryTimelineItem::Divider(rec) => Some(rec),
+                _ => None,
             })
-            .ok_or_else(|| HistoryError::NotFound("frozen observation".into()))?;
-        let boundary_payload = reader
-            .read_event(
-                display_member_event_id("work-1", "member-1"),
+            .filter_map(|rec| body::decode_event_envelope(rec).ok().map(|env| (rec, env)))
+            .filter(|(_, env)| {
+                env.meta.entity_id == "draft-plan"
+                    && env.data["legacyUnavailable"] == serde_json::Value::Bool(true)
+                    && env.meta.finished_at.is_none()
+                    && env.meta.content_present == Some(false)
+            })
+            .collect();
+        assert_eq!(draft_divs.len(), 2);
+
+        let work_range = main
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HistoryTimelineItem::WorkRange(range) => Some(range.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| HistoryError::NotFound("work range".into()))?;
+        assert_eq!(work_range.event_count, 2);
+        let members = reader
+            .work_range_page(
+                work_range.after_seq,
+                work_range.before_seq,
+                None,
+                None,
                 HistoryDemand::default(),
             )
-            .await?
-            .payload_ref
-            .clone()
-            .ok_or_else(|| HistoryError::Integrity("frozen payload is missing".into()))?;
-        let observation: serde_json::Value =
-            serde_json::from_slice(&read_all_body(&reader, boundary_payload).await?)?;
+            .await?;
+        assert_eq!(members.events.len(), 2);
         let boundary_event = display_member_event_id("work-1", "member-1");
-        assert_eq!(observation["contract"], "anywork.chat/1");
+        let boundary_rec = members
+            .events
+            .iter()
+            .find(|ev| ev.event_id == boundary_event)
+            .ok_or_else(|| HistoryError::NotFound("frozen observation".into()))?;
+        let observation: serde_json::Value = serde_json::from_str(&boundary_rec.payload_json)?;
+        assert_eq!(observation["contract"], "anywork.event/1");
         assert_eq!(observation["capturedAt"], 2);
-        assert!(observation["sourceEffectSeq"].is_null());
         assert_eq!(
             observation["bodies"][0]["reference"]["ownerEventId"],
             boundary_event
@@ -5081,7 +5271,7 @@ mod migration_tests {
         assert_eq!(costs.entries.len(), 1);
         assert!(matches!(
             &costs.entries[0].head,
-            HistoryRowHead::Cost(head) if head.cost_total == 1.25 && head.cost_delta.is_none()
+            HistoryBusinessRowHead::Cost(head) if head.cost_total == 1.25 && head.cost_delta.is_none()
         ));
         let turn = reader
             .events_page(
@@ -5094,20 +5284,17 @@ mod migration_tests {
             )
             .await?;
         assert_eq!(turn.entries.len(), 1);
-        assert_eq!(
-            turn.entries[0].header.kind,
-            HistoryEventKind::TurnRolledBack
-        );
+        assert_eq!(turn.entries[0].kind, CurrentHistoryEventKind::TurnRolledBack);
         assert!(matches!(
-            &turn.entries[0].head,
-            Some(HistoryRowHead::Turn(head))
+            body::decode_business_head_from_record(&turn.entries[0])?,
+            HistoryBusinessRowHead::Turn(head)
                 if head.context_disposition == ThreadContextDisposition::RolledBack
         ));
         reader.close().await;
         store.close().await?;
         let committed_events = event_count(&history_path).await?;
         let observed = upgrade_history(&history_path, thread_id, directory.path()).await?;
-        assert_eq!(observed.status, UpgradeStatus::AlreadySchema25);
+        assert_eq!(observed.status, UpgradeStatus::AlreadySchema26);
         assert_eq!(
             event_count(&history_path).await?,
             committed_events,
@@ -5203,24 +5390,22 @@ mod migration_tests {
                 "one real lifecycle observation for {id}"
             );
             let event = &page.entries[0];
-            assert_eq!(&event.header.kind, expected_kind, "{id}");
-            assert_eq!(event.header.attempt_id.as_deref(), *attempt);
+            assert_eq!(event.kind.as_str(), expected_kind.as_str(), "{id}");
+            assert_eq!(event.attempt_id.as_deref(), *attempt);
             assert!(
-                event.header.run_id.is_none(),
+                event.run_id.is_none(),
                 "{id}: no invented runtime epoch"
             );
             assert_eq!(
-                event.header.occurred_at,
+                event.occurred_at,
                 finished_at.map(|at| at * 1000),
                 "{id}"
             );
-            let payload: serde_json::Value = serde_json::from_slice(
-                &read_all_body(
-                    &reader,
-                    event.payload_ref.clone().expect("lifecycle payload"),
-                )
-                .await?,
-            )?;
+            let payload_bytes =
+                read_event_body_bytes(&reader, event, "canonical_payload", None)
+                    .await?
+                    .expect("lifecycle payload");
+            let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
             assert_eq!(payload["attemptId"], serde_json::to_value(attempt)?, "{id}");
             assert_eq!(payload["started"].is_object(), *started, "{id}");
             assert_eq!(payload["ended"].is_object(), *ended, "{id}");
@@ -5284,14 +5469,15 @@ mod migration_tests {
                         },
                     )
                     .await?;
-                let body = reader
-                    .read_body(
-                        detail.payload_ref.expect("preserved admission body"),
-                        0,
-                        16 * 1024,
-                    )
-                    .await?;
-                let saved: pl_core::context::OpaquePayload = serde_json::from_slice(&body.bytes)?;
+                let body = read_event_body_bytes(
+                    &reader,
+                    &detail,
+                    INPUT_FACT_BODY_KEY,
+                    Some(16 * 1024),
+                )
+                .await?
+                .expect("preserved admission body");
+                let saved: pl_core::context::OpaquePayload = serde_json::from_slice(&body)?;
                 let saved: serde_json::Value = serde_json::from_str(saved.content())?;
                 assert_eq!(saved["kind"], "admission");
                 let value = &saved["value"];
@@ -5653,7 +5839,7 @@ mod migration_tests {
 
             let observed = upgrade_history(&history_path, &thread_id, directory.path()).await?;
             let mut expected = staged;
-            expected.status = UpgradeStatus::AlreadySchema25;
+            expected.status = UpgradeStatus::AlreadySchema26;
             assert_eq!(
                 serde_json::to_value(&observed)?,
                 serde_json::to_value(&expected)?
@@ -5761,6 +5947,232 @@ mod migration_tests {
             .try_get::<i64>("", "count")?;
         assert_eq!(canonical, 2);
         target.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upgrades_schema25_in_place_without_copying_bodies_and_repairs_known_active_rows()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "schema25-to-26-thread";
+        let db_id = uuid::Uuid::new_v4().to_string();
+
+        let db = schema::connect(&history_path, false, true).await?;
+        db.execute_unprepared(include_str!("upgrade/schema_v25.sql"))
+            .await?;
+        db.execute_unprepared(
+            "CREATE TABLE IF NOT EXISTS seaql_migrations (version TEXT PRIMARY KEY NOT NULL, applied_at INTEGER NOT NULL)",
+        )
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO seaql_migrations(version,applied_at) VALUES(?,1)",
+            vec![schema::MIGRATION_V25.into()],
+        ))
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,?)",
+            vec![db_id.clone().into(), thread_id.into()],
+        ))
+        .await?;
+
+        // 1. group_opened (derived group anchor, no bodies -> must be dropped)
+        let group_head = HistoryRowHead::Work(HistoryWorkHead {
+            group_id: "grp-1".into(),
+            run_id: Some("run-1".into()),
+            started_at: Some(1_000),
+            boundary_at: None,
+            closed: false,
+            member_count: 1,
+            unfinished_count: 1,
+            execution_present: true,
+            summary: None,
+        });
+        db.execute_raw(statement(
+            "INSERT INTO history_events(seq,event_id,kind,run_id,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json) \
+             VALUES(1,'grp-open-1','group_opened','run-1','grp-1','work','work:grp-1',1,1000,1000,?)",
+            vec![serde_json::to_string(&group_head)?.into()],
+        ))
+        .await?;
+
+        // 2. KnownActive exec backgroundStarted with NULL payload_body_id (bug case!)
+        let active_exec = HistoryRowHead::Member(HistoryEntityHead {
+            entity_id: "tool-background:call_bg_1".into(),
+            run_id: Some("run-1".into()),
+            attempt_id: None,
+            source: HistorySource::ForegroundTurn {
+                turn_id: "turn-1".into(),
+            },
+            kind: HistoryEntityKind::ToolCall,
+            delivery: HistoryDelivery::BackgroundHandoff,
+            state: HistoryEntityState::KnownActive {
+                status: crate::ChatActiveStatus::Running,
+            },
+            started_at: Some(2_000),
+            finished_at: None,
+            text_channel: None,
+            tool: Some(HistoryToolIdentity {
+                call_id: "call_bg_1".into(),
+                name: "exec".into(),
+            }),
+            wait: None,
+            content_present: Some(false),
+            single_visibility: None,
+            observation: HistoryObservation::Original,
+            presentation_contract: Some("builtin.exec@1".into()),
+            detail_event_id: None,
+            input_manifest_event_id: None,
+            body_manifest_event_id: None,
+        });
+        db.execute_raw(statement(
+            "INSERT INTO history_events(seq,event_id,kind,run_id,entity_id,turn_id,call_id,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json) \
+             VALUES(2,'bg-start-call-1','entity_started','run-1','tool-background:call_bg_1','turn-1','call_bg_1','grp-1','member','member:bg-1',1,2000,2000,?)",
+            vec![serde_json::to_string(&active_exec)?.into()],
+        ))
+        .await?;
+
+        // 3. Divider text event with a > 64 KiB chunked body in history_bodies/chunks (must remain zero-copy)
+        let big_text = "x".repeat(70 * 1024);
+        let big_bytes = big_text.as_bytes().to_vec();
+        let body_id = "existing-big-body-id";
+        let payload_body_id = "existing-payload-body-id";
+        let text_head = HistoryRowHead::Single(HistoryEntityHead {
+            entity_id: "completion:turn-1:final".into(),
+            run_id: Some("run-1".into()),
+            attempt_id: Some("att-1".into()),
+            source: HistorySource::ForegroundTurn {
+                turn_id: "turn-1".into(),
+            },
+            kind: HistoryEntityKind::Text,
+            delivery: HistoryDelivery::Independent,
+            state: HistoryEntityState::KnownTerminal {
+                outcome: crate::ChatTerminalOutcome::Completed,
+            },
+            started_at: Some(3_000),
+            finished_at: Some(3_500),
+            text_channel: Some(crate::ThreadTextChannel::Final),
+            tool: None,
+            wait: None,
+            content_present: Some(true),
+            single_visibility: Some(HistorySingleVisibility::Content),
+            observation: HistoryObservation::Original,
+            presentation_contract: None,
+            detail_event_id: Some("completion:turn-1:final".into()),
+            input_manifest_event_id: Some("completion:turn-1:final".into()),
+            body_manifest_event_id: Some("completion:turn-1:final".into()),
+        });
+        use sea_orm::TransactionTrait as _;
+        let tx = db.begin().await?;
+        tx.execute_raw(statement(
+            "INSERT INTO history_events(seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id) \
+             VALUES(3,'completion:turn-1:final','entity_ended','run-1','att-1','completion:turn-1:final','turn-1','single','single:final-1',1,3500,3500,?,?)",
+            vec![serde_json::to_string(&text_head)?.into(), payload_body_id.into()],
+        ))
+        .await?;
+        let canonical_payload = serde_json::to_vec(&serde_json::json!({
+            "contract": "anywork.chat/1",
+            "type": "text",
+            "data": { "channel": "final", "attachments": [] },
+            "bodies": [{
+                "key": "body",
+                "byteLength": big_bytes.len(),
+                "reference": {
+                    "databaseId": db_id,
+                    "ownerEventId": "completion:turn-1:final",
+                    "bodyKey": "body",
+                    "bodyId": body_id,
+                    "byteStart": 0,
+                    "byteLength": big_bytes.len()
+                }
+            }]
+        }))?;
+        super::v25_schema::insert_v25_body(
+            &tx,
+            "completion:turn-1:final",
+            0,
+            &HistoryBody {
+                body_id: payload_body_id.into(),
+                body_key: "canonical_payload".into(),
+                role: HistoryBodyRole::CanonicalPayload,
+                media_type: Some("application/json".into()),
+                bytes: canonical_payload.into(),
+            },
+        )
+        .await?;
+        super::v25_schema::insert_v25_body(
+            &tx,
+            "completion:turn-1:final",
+            1,
+            &HistoryBody {
+                body_id: body_id.into(),
+                body_key: "body".into(),
+                role: HistoryBodyRole::Body,
+                media_type: Some("text/plain; charset=utf-8".into()),
+                bytes: big_bytes.clone().into(),
+            },
+        )
+        .await?;
+        tx.commit().await?;
+        db.close().await?;
+
+        assert!(super::requires_history_upgrade(&history_path, thread_id).await?);
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(report.database_id, db_id);
+        let backup = report.backup.as_ref().expect("v25 backup path");
+        assert!(backup.starts_with(directory.path().join(BACKUP_ROOT_V25_TO_V26)));
+        assert!(backup.is_file());
+        assert!(!super::requires_history_upgrade(&history_path, thread_id).await?);
+
+        // Second call returns AlreadySchema26 cleanly
+        let second = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(second.status, UpgradeStatus::AlreadySchema26);
+
+        // Open as live Schema 26 store and verify timeline, repaired KnownActive row, and zero-copy blob
+        let store = crate::history::HistoryStore::open(
+            &history_path,
+            thread_id,
+            crate::history::HistoryLimits::default(),
+        )
+        .await?;
+        let reader = store.reader();
+        let timeline = reader
+            .timeline_page(None, None, crate::history::HistoryDemand::default())
+            .await?;
+        assert_eq!(timeline.items.len(), 2);
+        let HistoryTimelineItem::Divider(div) = &timeline.items[0] else {
+            panic!("expected final divider first");
+        };
+        let HistoryTimelineItem::WorkRange(range) = &timeline.items[1] else {
+            panic!("expected work range for background exec");
+        };
+        assert_eq!(range.event_count, 1);
+
+        let work = reader
+            .work_range_page(
+                range.after_seq,
+                range.before_seq,
+                Some(timeline.cut.clone()),
+                None,
+                crate::history::HistoryDemand::default(),
+            )
+            .await?;
+        assert_eq!(work.events.len(), 1);
+        assert_eq!(work.events[0].kind, CurrentHistoryEventKind::ToolBackgrounded);
+        assert_eq!(work.events[0].call_id.as_deref(), Some("call_bg_1"));
+        assert_eq!(work.events[0].tool_name.as_deref(), Some("exec"));
+        assert_eq!(work.events[0].payload_schema, "anywork.event/1");
+        let exec_env = body::decode_event_envelope(&work.events[0])?;
+        assert_eq!(exec_env.item_type, "tool");
+        assert_eq!(exec_env.data["state"]["kind"], "backgroundStarted");
+
+        let read_big = body::read_event_body_bytes(&reader, div, "body", None)
+            .await?
+            .expect("zero-copy big body readable");
+        assert_eq!(read_big, big_bytes);
+
+        reader.close().await;
+        store.close().await?;
         Ok(())
     }
 }

@@ -614,8 +614,8 @@ mod tests {
                         .await?;
                     for entry in page.entries.iter().take(12) {
                         eprintln!(
-                            "reply History entry: seq={} kind={:?} head={:?}",
-                            entry.header.seq, entry.header.kind, entry.head
+                            "reply History entry: seq={} kind={:?} schema={}",
+                            entry.seq, entry.kind, entry.payload_schema
                         );
                     }
                 }

@@ -777,19 +777,19 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             }
             EventBodyV3::InferenceFinished { .. } => seen_inference += 1,
             EventBodyV3::Completion {
+                header,
                 atom,
                 payload,
                 contents_manifest,
-                ..
             } => {
                 let contents = read_contents_manifest(&export_dir, contents_manifest)?;
                 if ev.thread_id.as_ref() == Some(child_thread)
                     && matches!(
-                        atom.source,
-                        pl_studio_runtime::ChatSourceId::InboxMessage { .. }
+                        header.event.source,
+                        Some(pl_studio_runtime::ChatSourceId::InboxMessage { .. })
                     )
                 {
-                    assert_eq!(atom.kind, pl_studio_runtime::ChatAtomKind::Text);
+                    assert_eq!(atom.entity_kind, pl_studio_runtime::ChatAtomKind::Text);
                     assert_eq!(
                         atom.text_channel,
                         Some(pl_studio_runtime::ThreadTextChannel::ParentAgent)

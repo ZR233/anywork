@@ -114,20 +114,22 @@
     "HistoryEventHeader": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seq", "eventId", "kind", "runId", "attemptId", "entityId", "turnId", "source", "callId", "messageId", "groupId", "rowKey", "original", "occurredAt", "recordedAt"],
+      "required": ["seq", "eventId", "kind", "timelineRole", "occurredAt", "recordedAt", "runId", "turnId", "attemptId", "callId", "entityId", "messageId", "toolName", "source", "original", "rowScope", "rowKey", "payloadSchema"],
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
         "eventId": { "type": "string", "minLength": 1 },
         "kind": { "type": "string", "minLength": 1 },
+        "timelineRole": { "enum": ["divider", "work", "hidden"] },
+        "occurredAt": { "type": ["integer", "null"] },
+        "recordedAt": { "type": "integer" },
         "runId": { "type": ["string", "null"] },
-        "attemptId": { "type": ["string", "null"] },
-        "entityId": { "type": ["string", "null"] },
         "turnId": { "type": ["string", "null"] },
-        "source": { "oneOf": [{ "$ref": "native.schema.json#/$defs/ChatSourceId" }, { "type": "null" }] },
+        "attemptId": { "type": ["string", "null"] },
         "callId": { "type": ["string", "null"] },
+        "entityId": { "type": ["string", "null"] },
         "messageId": { "type": ["string", "null"] },
-        "groupId": { "type": ["string", "null"] },
-        "rowKey": { "type": ["string", "null"] },
+        "toolName": { "type": ["string", "null"] },
+        "source": { "oneOf": [{ "$ref": "native.schema.json#/$defs/ChatSourceId" }, { "type": "null" }] },
         "original": {
           "oneOf": [
             {
@@ -144,8 +146,14 @@
             { "type": "null" }
           ]
         },
-        "occurredAt": { "type": ["integer", "null"] },
-        "recordedAt": { "type": "integer" }
+        "rowScope": {
+          "anyOf": [
+            { "enum": ["turn", "source", "cost", "accounting"] },
+            { "type": "null" }
+          ]
+        },
+        "rowKey": { "type": ["string", "null"] },
+        "payloadSchema": { "type": "string", "minLength": 1 }
       }
     },
     "HistoryEventBodyRef": {
@@ -213,36 +221,6 @@
           "properties": {
             "kind": { "const": "knownTerminal" },
             "outcome": { "enum": ["completed", "failed", "cancelled", "transferred"] }
-          }
-        }
-      ]
-    },
-    "HistoryObservation": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": {
-            "kind": { "const": "original" }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "capturedAt"],
-          "properties": {
-            "kind": { "const": "boundary" },
-            "capturedAt": { "type": ["integer", "null"] }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "capturedAt"],
-          "properties": {
-            "kind": { "const": "unavailableLegacy" },
-            "capturedAt": { "type": ["integer", "null"] }
           }
         }
       ]
@@ -375,30 +353,24 @@
         }
       ]
     },
-    "HistoryEntityHead": {
+    "HistoryEventMeta": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["entityId", "runId", "attemptId", "source", "kind", "delivery", "state", "startedAt", "finishedAt", "textChannel", "tool", "wait", "contentPresent", "singleVisibility", "observation", "presentationContract", "detailEventId", "inputManifestEventId", "bodyManifestEventId"],
+      "required": ["entityId", "entityKind", "delivery", "state", "startedAt", "finishedAt", "textChannel", "singleVisibility", "presentationContract", "sourceOrder", "contentPresent", "wait", "tool"],
       "properties": {
         "entityId": { "type": "string", "minLength": 1 },
-        "runId": { "type": ["string", "null"] },
-        "attemptId": { "type": ["string", "null"] },
-        "source": { "$ref": "native.schema.json#/$defs/ChatSourceId" },
-        "kind": { "$ref": "#/$defs/ChatAtomKind" },
+        "entityKind": { "$ref": "#/$defs/ChatAtomKind" },
         "delivery": { "enum": ["foreground", "backgroundHandoff", "independent"] },
         "state": { "$ref": "#/$defs/HistoryEntityState" },
         "startedAt": { "type": ["integer", "null"] },
         "finishedAt": { "type": ["integer", "null"] },
         "textChannel": { "anyOf": [{ "enum": ["user", "parentAgent", "commentary", "final"] }, { "type": "null" }] },
-        "tool": { "anyOf": [{ "$ref": "#/$defs/HistoryToolIdentity" }, { "type": "null" }] },
-        "wait": { "anyOf": [{ "$ref": "#/$defs/HistoryWaitHead" }, { "type": "null" }] },
-        "contentPresent": { "type": ["boolean", "null"] },
         "singleVisibility": { "anyOf": [{ "$ref": "#/$defs/SingleVisibility" }, { "type": "null" }] },
-        "observation": { "$ref": "#/$defs/HistoryObservation" },
         "presentationContract": { "type": ["string", "null"] },
-        "detailEventId": { "type": ["string", "null"] },
-        "inputManifestEventId": { "type": ["string", "null"] },
-        "bodyManifestEventId": { "type": ["string", "null"] }
+        "sourceOrder": { "type": ["integer", "null"], "minimum": 0 },
+        "contentPresent": { "type": ["boolean", "null"] },
+        "wait": { "anyOf": [{ "$ref": "#/$defs/HistoryWaitHead" }, { "type": "null" }] },
+        "tool": { "anyOf": [{ "$ref": "#/$defs/HistoryToolIdentity" }, { "type": "null" }] }
       }
     },
     "BuildInfoV3": {
@@ -631,6 +603,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "bodyKey",
         "nativeRef",
         "role",
         "historyRole",
@@ -641,8 +614,12 @@
         "encoding"
       ],
       "properties": {
+        "bodyKey": { "type": "string", "minLength": 1 },
         "nativeRef": {
-          "$ref": "#/$defs/HistoryEventBodyRef"
+          "oneOf": [
+            { "$ref": "#/$defs/HistoryEventBodyRef" },
+            { "type": "null" }
+          ]
         },
         "role": {
           "oneOf": [
@@ -671,7 +648,7 @@
       "required": ["header", "atom", "payload", "contentsManifest"],
       "properties": {
         "header": { "$ref": "#/$defs/ChatItemHeaderExportV3" },
-        "atom": { "$ref": "#/$defs/HistoryEntityHead" },
+        "atom": { "$ref": "#/$defs/HistoryEventMeta" },
         "payload": { "$ref": "#/$defs/ExportedBlobV3" },
         "contentsManifest": { "$ref": "#/$defs/ExportedBlobV3" }
       }
@@ -757,7 +734,7 @@
         "eventKind": { "type": "string", "minLength": 1 },
         "occurredAt": { "type": ["integer", "null"] },
         "recordedAt": { "type": "integer" },
-        "head": { "$ref": "#/$defs/HistoryEntityHead" }
+        "head": { "$ref": "#/$defs/HistoryEventMeta" }
       }
     },
     "ExecutionLifecycleData": {

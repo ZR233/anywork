@@ -154,12 +154,25 @@ final class ChatItemPresentation {
       bodies.every((body) => body.byteLength == 0) &&
       attachments.isEmpty;
 
+  bool get needsHistoryBodyLoad {
+    if (historyEventId == null) return false;
+    final predecoded = displayRecord?.predecodedPresentation;
+    if (predecoded == null) return true;
+    if (predecoded.compatibility != ChatItemCompatibility.current) {
+      return false;
+    }
+    return (predecoded.type == 'text' || predecoded.type == 'input') &&
+        predecoded.bodies.any(
+          (body) =>
+              body.key == 'body' &&
+              body.historyReference != null &&
+              !body.hasInline,
+        );
+  }
+
   ChatBodyPresentation? body(String key) =>
       bodies.where((body) => body.key == key).firstOrNull;
-  String? inlineText(String key) {
-    final bytes = body(key)?.inline;
-    return bytes == null ? null : utf8.decode(bytes);
-  }
+  String? inlineText(String key) => body(key)?.text;
 
   late final List<ThreadAttachmentView> attachments = chatAttachments(
     type == 'text'
@@ -240,6 +253,26 @@ final class ChatItemPresentation {
         ? DateTime.fromMillisecondsSinceEpoch(finishedAt * 1000, isUtc: true)
         : null;
     if (item.payload == null) {
+      if (record.contentSource is! CurrentAtomSource &&
+          record.predecodedPresentation != null) {
+        final pre = forRecord(record, id: unit.id);
+        return ChatItemPresentation(
+          id: unit.id,
+          compatibility: pre.compatibility,
+          type: pre.type,
+          data: pre.data,
+          bodies: pre.bodies,
+          raw: pre.raw,
+          byteLength: pre.byteLength,
+          createdAt: pre.createdAt ?? time,
+          authorId: author ?? pre.authorId,
+          presentationContract: pre.presentationContract,
+          diagnostic: pre.diagnostic,
+          displayUnit: unit,
+          atom: item,
+          displayRecord: record,
+        );
+      }
       return ChatItemPresentation(
         id: unit.id,
         compatibility: ChatItemCompatibility.current,
@@ -277,22 +310,49 @@ final class ChatItemPresentation {
   static ChatItemPresentation forRecord(
     DisplayRecord record, {
     required String id,
-  }) => ChatItemPresentation(
-    id: id,
-    compatibility: ChatItemCompatibility.current,
-    type: 'displayRecord',
-    data: const {},
-    bodies: const [],
-    displayRecord: record,
-    atom: record.atom,
-    authorId: switch (record.atom.textChannel) {
-      ThreadTextChannel.user => 'user',
-      ThreadTextChannel.parentAgent => 'parentAgent',
-      ThreadTextChannel.commentary ||
-      ThreadTextChannel.finalAnswer => 'assistant',
-      null => 'unknown',
-    },
-  );
+  }) {
+    final predecoded = record.contentSource is CurrentAtomSource
+        ? null
+        : record.predecodedPresentation;
+    final fallbackAuthor =
+        _inboxAuthor(record.atom) ??
+        switch (record.atom.textChannel) {
+          ThreadTextChannel.user => 'user',
+          ThreadTextChannel.parentAgent => 'parentAgent',
+          ThreadTextChannel.commentary ||
+          ThreadTextChannel.finalAnswer => 'assistant',
+          null => 'unknown',
+        };
+    if (predecoded != null) {
+      return ChatItemPresentation(
+        id: id,
+        compatibility: predecoded.compatibility,
+        type: predecoded.type,
+        data: predecoded.data,
+        bodies: predecoded.bodies,
+        raw: predecoded.raw,
+        byteLength: predecoded.byteLength,
+        createdAt: predecoded.createdAt,
+        authorId: predecoded.authorId == 'unknown'
+            ? fallbackAuthor
+            : predecoded.authorId,
+        presentationContract: predecoded.presentationContract,
+        diagnostic: predecoded.diagnostic,
+        displayRecord: record,
+        atom: record.atom,
+      );
+    }
+    return ChatItemPresentation(
+      id: id,
+      compatibility: ChatItemCompatibility.current,
+      type: 'displayRecord',
+      data: const {},
+      bodies: const [],
+      displayRecord: record,
+      atom: record.atom,
+      authorId: fallbackAuthor,
+    );
+  }
 
   // Inbox payloads cannot grant parent identity. Only the runtime's typed
   // channel records admission from the direct parent; sourceId stays opaque.
@@ -327,16 +387,76 @@ final class ChatItemPresentation {
         byteLength: payload.byteLength,
       );
     }
-    String? raw;
     try {
-      raw = utf8.decode((payload as InlinePayload).bytes);
+      final raw = utf8.decode((payload as InlinePayload).bytes);
+      return decodePayloadJson(id, raw);
+    } on FormatException catch (error) {
+      return _malformed(id, null, error.message);
+    }
+  }
+
+  static ChatItemPresentation decodeEventRecord(
+    HistoryEventRecord record, {
+    String? id,
+  }) {
+    final displayId = id ?? record.entityId ?? record.eventId;
+    final decoded = decodePayloadJson(
+      displayId,
+      record.payloadJson,
+      payloadSchema: record.payloadSchema,
+    );
+    final timestamp = record.occurredAt ?? record.recordedAt;
+    final fallbackTime =
+        timestamp >= -8640000000000000 && timestamp <= 8640000000000000
+        ? DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true)
+        : null;
+    final author = switch (record.source) {
+      InboxMessageChatSource(:final sourceId) =>
+        decoded.authorId == 'parentAgent' ? 'parentAgent' : 'inbox:$sourceId',
+      _ => null,
+    };
+    return ChatItemPresentation(
+      id: decoded.id,
+      compatibility: decoded.compatibility,
+      type: decoded.type,
+      data: decoded.data,
+      bodies: decoded.bodies,
+      raw: decoded.raw,
+      byteLength: decoded.byteLength,
+      createdAt: decoded.createdAt ?? fallbackTime,
+      authorId: author ?? decoded.authorId,
+      presentationContract: decoded.presentationContract,
+      diagnostic: decoded.diagnostic,
+    );
+  }
+
+  static ChatItemPresentation decodePayloadJson(
+    String id,
+    String raw, {
+    String? payloadSchema,
+  }) {
+    if (payloadSchema != null &&
+        payloadSchema != 'anywork.event/1' &&
+        payloadSchema != 'anywork.chat/1') {
+      return ChatItemPresentation(
+        id: id,
+        compatibility: ChatItemCompatibility.unknown,
+        type: 'unknown',
+        data: const {},
+        bodies: const [],
+        raw: raw,
+        diagnostic: '不支持的载荷协议: $payloadSchema',
+      );
+    }
+    try {
       final json = jsonDecode(raw);
       if (json is! Map<String, dynamic>) {
         throw const FormatException('Payload envelope must be an object');
       }
+      final contract = json['contract'];
       final type = json['type'];
       final data = json['data'];
-      if (json['contract'] != 'anywork.chat/1') {
+      if (contract != 'anywork.chat/1' && contract != 'anywork.event/1') {
         return ChatItemPresentation(
           id: id,
           compatibility: ChatItemCompatibility.unknown,
@@ -344,11 +464,19 @@ final class ChatItemPresentation {
           data: const {},
           bodies: const [],
           raw: raw,
+          diagnostic: contract is String ? '不支持的载荷契约: $contract' : null,
         );
       }
       if (type is! String || data is! Map<String, dynamic>) {
         throw const FormatException('Payload type/data is invalid');
       }
+      final rawMeta = json['meta'];
+      if (contract == 'anywork.event/1' &&
+          rawMeta != null &&
+          rawMeta is! Map<String, dynamic>) {
+        throw const FormatException('Payload meta must be an object');
+      }
+      final meta = rawMeta is Map<String, dynamic> ? rawMeta : null;
       final encodedBodies = json['bodies'];
       if (encodedBodies != null && encodedBodies is! List<dynamic>) {
         throw const FormatException('Payload bodies must be an ordered list');
@@ -360,11 +488,30 @@ final class ChatItemPresentation {
             body['byteLength'] is! int) {
           throw const FormatException('Invalid body manifest entry');
         }
+        final rawMediaType = body['mediaType'];
+        if (rawMediaType != null && rawMediaType is! String) {
+          throw const FormatException('Invalid body mediaType');
+        }
+        final inlineText = body['inlineText'];
+        if (inlineText != null && inlineText is! String) {
+          throw const FormatException('Invalid inlineText body');
+        }
         final inline = body['inline'];
         if (inline != null &&
             (inline is! List<dynamic> ||
                 inline.any((byte) => byte is! int || byte < 0 || byte > 255))) {
           throw const FormatException('Invalid inline body bytes');
+        }
+        final Uint8List? inlineBytes;
+        if (inline != null) {
+          inlineBytes = Uint8List.fromList(
+            (inline as List<dynamic>).cast<int>(),
+          ).asUnmodifiableView();
+        } else if (inlineText is String) {
+          inlineBytes = Uint8List.fromList(utf8.encode(inlineText))
+              .asUnmodifiableView();
+        } else {
+          inlineBytes = null;
         }
         final rawReference = body['reference'];
         HistoryEventBodyRef? historyReference;
@@ -385,25 +532,35 @@ final class ChatItemPresentation {
           ChatBodyPresentation(
             key: body['key'] as String,
             byteLength: body['byteLength'] as int,
-            inline: inline == null
-                ? null
-                : Uint8List.fromList((inline as List<dynamic>).cast<int>())
-                      .asUnmodifiableView(),
+            mediaType: rawMediaType as String?,
+            inline: inlineBytes,
+            inlineText: inlineText as String?,
             historyReference: historyReference,
             currentReference: currentReference,
           ),
         );
       }
       final invocation = data['invocation'];
-      final marker = invocation is Map<String, dynamic>
-          ? invocation['presentationContract']
-          : null;
+      final marker =
+          (invocation is Map<String, dynamic>
+              ? invocation['presentationContract']
+              : null) ??
+          meta?['presentationContract'];
       if (marker != null && marker is! String) {
         throw const FormatException('Invalid presentation contract');
       }
+      final metaMillis =
+          meta?['finishedAt'] ?? meta?['startedAt'] ?? json['capturedAt'];
       final sealedAt = json['sealedAt'];
       DateTime? createdAt;
-      if (sealedAt is int &&
+      if (metaMillis is int &&
+          metaMillis >= -8640000000000000 &&
+          metaMillis <= 8640000000000000) {
+        createdAt = DateTime.fromMillisecondsSinceEpoch(
+          metaMillis,
+          isUtc: true,
+        );
+      } else if (sealedAt is int &&
           sealedAt >= -8640000000000 &&
           sealedAt <= 8640000000000) {
         createdAt = DateTime.fromMillisecondsSinceEpoch(
@@ -413,12 +570,12 @@ final class ChatItemPresentation {
       }
       // Author comes only from explicit producer facts, never a fallback to
       // assistant, tool name, item id, or this machine's clock.
-      final channel = data['channel'];
+      final channel = data['channel'] ?? meta?['textChannel'];
       final author = type == 'text'
           ? switch (channel) {
               'user' => 'user',
               'parentAgent' => 'parentAgent',
-              'commentary' || 'final' => 'assistant',
+              'commentary' || 'final' || 'finalAnswer' => 'assistant',
               _ => 'unknown',
             }
           : 'unknown';
@@ -459,15 +616,22 @@ final class ChatBodyPresentation {
   const ChatBodyPresentation({
     required this.key,
     required this.byteLength,
+    this.mediaType,
     this.inline,
+    this.inlineText,
     this.historyReference,
     this.currentReference,
   });
   final String key;
   final int byteLength;
+  final String? mediaType;
   final Uint8List? inline;
+  final String? inlineText;
   final HistoryEventBodyRef? historyReference;
   final CurrentContentRef? currentReference;
+  bool get hasInline => inlineText != null || inline != null;
+  String? get text =>
+      inlineText ?? (inline == null ? null : utf8.decode(inline!));
   bool get hasReference => historyReference != null || currentReference != null;
 }
 

@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::StudioShutdownReport;
 use crate::history::{
-    HistoryBodyRole, HistoryCut, HistoryEntityHead, HistoryEventBodyRef, HistoryEventHeader,
+    EventPayloadEnvelope, HistoryBodyRole, HistoryBusinessRowScope, HistoryCut, HistoryEvent,
+    HistoryEventBodyRef, HistoryEventKind, HistoryEventMeta, HistoryEventRecord,
+    HistoryOriginalInfo, HistorySource, HistoryTimelineRole,
 };
 
 /// Schema version for `run.json`.
@@ -365,14 +367,62 @@ pub struct CompletionCursorV3 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExportedHistoryEventHeaderV3 {
+    pub seq: u64,
+    pub event_id: String,
+    pub kind: HistoryEventKind,
+    pub timeline_role: HistoryTimelineRole,
+    pub occurred_at: Option<i64>,
+    pub recorded_at: i64,
+    pub run_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub call_id: Option<String>,
+    pub entity_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub source: Option<HistorySource>,
+    pub original: Option<HistoryOriginalInfo>,
+    pub row_scope: Option<HistoryBusinessRowScope>,
+    pub row_key: Option<String>,
+    pub payload_schema: String,
+}
+
+impl ExportedHistoryEventHeaderV3 {
+    pub fn from_record(record: &HistoryEventRecord) -> Self {
+        Self {
+            seq: record.seq,
+            event_id: record.event_id.clone(),
+            kind: record.kind.clone(),
+            timeline_role: record.timeline_role,
+            occurred_at: record.occurred_at,
+            recorded_at: record.recorded_at,
+            run_id: record.run_id.clone(),
+            turn_id: record.turn_id.clone(),
+            attempt_id: record.attempt_id.clone(),
+            call_id: record.call_id.clone(),
+            entity_id: record.entity_id.clone(),
+            message_id: record.message_id.clone(),
+            tool_name: record.tool_name.clone(),
+            source: record.source.clone(),
+            original: record.original.clone(),
+            row_scope: record.row_scope,
+            row_key: record.row_key.clone(),
+            payload_schema: record.payload_schema.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChatItemHeaderExportV3 {
-    pub event: HistoryEventHeader,
+    pub event: ExportedHistoryEventHeaderV3,
 }
 
 impl ChatItemHeaderExportV3 {
-    pub fn from_history(header: &HistoryEventHeader) -> Self {
+    pub fn from_history(record: &HistoryEventRecord) -> Self {
         Self {
-            event: header.clone(),
+            event: ExportedHistoryEventHeaderV3::from_record(record),
         }
     }
 }
@@ -390,7 +440,8 @@ pub struct ExportedBlobV3 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExportedContentV3 {
-    pub native_ref: HistoryEventBodyRef,
+    pub body_key: String,
+    pub native_ref: Option<HistoryEventBodyRef>,
     pub role: Option<ChatContentRole>,
     pub history_role: HistoryBodyRole,
     pub path: String,
@@ -413,30 +464,36 @@ pub struct SealedMemberCutV3 {
     pub sealed: bool,
 }
 
-/// One canonical History change projected into bounded export metadata.
+/// One canonical History event projected into bounded export metadata.
 ///
 /// The full `HistoryEvent` and its bodies stay in the writer transaction. The export queue retains
-/// only this accepted identity, time, kind, and typed head.
+/// only this accepted identity, time, kind, and decoded metadata.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionLifecycleExportV3 {
     pub event_id: String,
-    pub event_kind: crate::history::HistoryEventKind,
+    pub event_kind: HistoryEventKind,
     pub occurred_at: Option<i64>,
     pub recorded_at: i64,
-    pub head: HistoryEntityHead,
+    pub head: HistoryEventMeta,
 }
-impl From<&crate::history::HistoryEntityChange> for ExecutionLifecycleExportV3 {
-    fn from(value: &crate::history::HistoryEntityChange) -> Self {
-        Self {
-            event_id: value.event.header.event_id.clone(),
-            event_kind: value.event.header.kind.clone(),
-            occurred_at: value.event.header.occurred_at,
-            recorded_at: value.event.header.recorded_at,
-            head: value.entity.clone(),
+
+impl ExecutionLifecycleExportV3 {
+    pub fn from_history_event(event: &HistoryEvent) -> anyhow::Result<Option<Self>> {
+        if event.payload_schema != "anywork.event/1" {
+            return Ok(None);
         }
+        let envelope: EventPayloadEnvelope = serde_json::from_str(&event.payload_json)?;
+        Ok(Some(Self {
+            event_id: event.event_id.clone(),
+            event_kind: event.kind.clone(),
+            occurred_at: event.occurred_at,
+            recorded_at: event.recorded_at,
+            head: envelope.meta,
+        }))
     }
 }
+
 pub(super) fn handoff_fingerprint(
     accounting: &crate::studio::thread_projection::PreparedAccounting,
     lifecycle: &[ExecutionLifecycleExportV3],
@@ -490,7 +547,7 @@ pub enum EventBodyV3 {
     },
     Completion {
         header: Box<ChatItemHeaderExportV3>,
-        atom: Box<HistoryEntityHead>,
+        atom: Box<HistoryEventMeta>,
         payload: ExportedBlobV3,
         contents_manifest: ExportedBlobV3,
     },

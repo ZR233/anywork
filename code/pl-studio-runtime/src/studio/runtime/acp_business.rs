@@ -861,15 +861,16 @@ mod mixed_tests {
             .await?;
         assert!(
             turn_page.entries.iter().any(|entry| {
-                matches!(
-                    &entry.head,
-                    Some(crate::history::HistoryRowHead::Turn(
-                        crate::history::HistoryTurnHead {
-                            state: crate::history::HistoryTurnState::Failed,
-                            ..
-                        }
-                    ))
-                )
+                entry.row_scope == Some(crate::history::HistoryBusinessRowScope::Turn)
+                    && matches!(
+                        crate::history::body::decode_business_head_from_record(entry),
+                        Ok(crate::history::HistoryBusinessRowHead::Turn(
+                            crate::history::HistoryTurnHead {
+                                state: crate::history::HistoryTurnState::Failed,
+                                ..
+                            }
+                        ))
+                    )
             }),
             "the child's original failed Turn remains durable"
         );

@@ -1,14 +1,29 @@
-//! Actual lifecycle folded by the existing projection owner. No display ranges or group state.
+//! Actual lifecycle folded by the existing projection owner, emitting stateless atomic history events.
 use super::*;
+use crate::history::{
+    HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole,
+};
 use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 use crate::{ExecutionItem, ExecutionShape};
 
-// Original immutable phases, source changes, then effect-local display state updates.
-// Updating an admitted active member must not rewrite its original `start` fact.
-type Changes = (Vec<ChatAtom>, Vec<ChatSourceState>, Vec<ChatAtom>);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EmittedToolStage {
+    Called,
+    WaitingApproval,
+    Backgrounded,
+    CancelRequested,
+}
+
+pub(super) type StagedChanges = (Vec<(ChatFactPosition, HistoryEvent)>, Vec<ChatSourceState>);
+pub(super) type ProvenanceChanges = (Vec<HistoryEvent>, Vec<ChatSourceState>);
+
+fn millis(at: i64) -> Result<i64, ProjectionError> {
+    crate::history::milliseconds_from_seconds(at)
+        .map_err(|error| ProjectionError::History(error.to_string()))
+}
 
 fn position(
     effect: &ThreadEffectBatch,
@@ -89,6 +104,78 @@ fn merge_item_contents(
     Ok(())
 }
 
+fn set_event_atom_columns(
+    event: &mut HistoryEvent,
+    atom: &ChatAtom,
+    run: RuntimeEpoch,
+    occurred_at: Option<i64>,
+    matched_message_id: Option<&str>,
+) -> Result<(), ProjectionError> {
+    event.occurred_at = occurred_at.map(millis).transpose()?;
+    event.run_id = Some(run.to_string());
+    event.turn_id = atom.turn_id.clone();
+    event.attempt_id = atom.attempt_id.clone();
+    event.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
+    event.entity_id = Some(atom.id.clone());
+    event.message_id = matched_message_id.map(str::to_owned).or_else(|| match &atom.source {
+        ChatSourceId::InboxMessage { message_id, .. }
+        | ChatSourceId::BackgroundResult { message_id } => Some(message_id.clone()),
+        _ => None,
+    });
+    event.tool_name = atom.tool.as_ref().map(|tool| tool.name.clone());
+    event.source = Some(atom.source.clone());
+    Ok(())
+}
+
+fn event_kind_for_draft(atom: &ChatAtom) -> HistoryEventKind {
+    if matches!(atom.source, ChatSourceId::InboxMessage { .. }) {
+        return HistoryEventKind::InboxMessageReceived;
+    }
+    match atom.kind {
+        ChatAtomKind::Input => HistoryEventKind::InputAccepted,
+        ChatAtomKind::Text => HistoryEventKind::TextCompleted,
+        ChatAtomKind::Reasoning => HistoryEventKind::ReasoningCompleted,
+        ChatAtomKind::Plan => HistoryEventKind::PlanResolved,
+        ChatAtomKind::TurnReceipt => HistoryEventKind::TurnReceiptRecorded,
+        ChatAtomKind::Compaction => HistoryEventKind::CompactionCompleted,
+        ChatAtomKind::Agent => HistoryEventKind::AgentCompleted,
+        ChatAtomKind::ToolCall | ChatAtomKind::Interaction => {
+            if atom.delivery == ChatDeliveryKind::BackgroundHandoff {
+                HistoryEventKind::ToolBackgrounded
+            } else {
+                HistoryEventKind::ToolCompleted
+            }
+        }
+        _ => HistoryEventKind::ItemRecorded,
+    }
+}
+
+fn draft_timeline_role(atom: &ChatAtom) -> HistoryTimelineRole {
+    if crate::studio::thread_projection::hidden(atom) {
+        HistoryTimelineRole::Hidden
+    } else if crate::studio::thread_projection::work(atom) {
+        HistoryTimelineRole::Work
+    } else if atom.kind == ChatAtomKind::Text && atom.content_present == Some(false) {
+        HistoryTimelineRole::Hidden
+    } else {
+        HistoryTimelineRole::Divider
+    }
+}
+
+fn active_item_type(kind: ChatAtomKind) -> &'static str {
+    match kind {
+        ChatAtomKind::Text => "text",
+        ChatAtomKind::Reasoning => "thinking",
+        ChatAtomKind::Compaction => "contextCompaction",
+        ChatAtomKind::Agent => "agent",
+        ChatAtomKind::FileChange => "file",
+        ChatAtomKind::Skill => "skill",
+        ChatAtomKind::Plan => "plan",
+        ChatAtomKind::TurnReceipt => "turn",
+        _ => "raw",
+    }
+}
+
 impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
@@ -101,13 +188,11 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
-        // A new runtime epoch owns a fresh live provenance owner. Replaying append-only history
-        // would recreate durable-display restore and could give R1 callbacks R2 rights. Late
-        // reliable facts retain their producer cut and resolve from the original RAM material.
         let sequence = state.commit_sequence;
         self.provenance_restored = true;
         self.observe_current(thread, state, sequence)
     }
+
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
         self.source_states
             .retain(|_, state| state.ended.is_none_or(|at| at.effect_seq > through));
@@ -119,7 +204,7 @@ impl LiveProjection {
         outcome: Option<ChatTerminalOutcome>,
         actual_start: bool,
         at: ChatFactPosition,
-        changes: &mut Changes,
+        sources: &mut Vec<ChatSourceState>,
     ) -> Result<(), ProjectionError> {
         let old = self.source_states.get(&source);
         let started = old
@@ -137,15 +222,18 @@ impl LiveProjection {
             return Ok(());
         }
         self.source_states.insert(source, state.clone());
-        changes.1.push(state);
+        sources.push(state);
         Ok(())
     }
 
     pub(super) fn begin_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
-    ) -> Result<Changes, ProjectionError> {
-        let mut changes = (Vec::new(), Vec::new(), Vec::new());
+        run: RuntimeEpoch,
+    ) -> Result<StagedChanges, ProjectionError> {
+        let mut staged = Vec::new();
+        let mut sources = Vec::new();
+        let recorded_at = millis(effect.committed_at)?;
         if let Some(turn) = &effect.turn
             && turn_outcome(&turn.state).is_none()
         {
@@ -156,7 +244,7 @@ impl LiveProjection {
                 None,
                 true,
                 position(effect, 0)?,
-                &mut changes,
+                &mut sources,
             )?;
         }
         for (index, change) in effect.inputs.iter().enumerate() {
@@ -168,7 +256,7 @@ impl LiveProjection {
                     Some(ChatTerminalOutcome::Completed),
                     true,
                     position(effect, slots(&[1, index])?)?,
-                    &mut changes,
+                    &mut sources,
                 )?;
             }
         }
@@ -192,7 +280,7 @@ impl LiveProjection {
                     effect,
                     slots(&[1, effect.inputs.len(), effect.inbox.len(), index])?,
                 )?,
-                &mut changes,
+                &mut sources,
             )?;
         }
         for (index, event) in effect.context_compactions.iter().enumerate() {
@@ -228,7 +316,7 @@ impl LiveProjection {
                     index,
                 ])?,
             )?;
-            self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut changes)?;
+            self.source_change(source.clone(), outcome, outcome.is_none(), at, &mut sources)?;
             if let Event::Started {
                 turn_id,
                 attempt_id,
@@ -263,8 +351,31 @@ impl LiveProjection {
                     contents: Vec::new(),
                     payload: None,
                 };
-                self.atom_starts.insert(item_id, atom.clone());
-                changes.0.push(atom);
+                self.atom_starts.insert(item_id.clone(), atom.clone());
+                let mut history_event = HistoryEvent::new(
+                    format!("entity:{run}:{}:{item_id}", effect.sequence),
+                    HistoryEventKind::CompactionStarted,
+                    HistoryTimelineRole::Hidden,
+                    recorded_at,
+                );
+                set_event_atom_columns(
+                    &mut history_event,
+                    &atom,
+                    run,
+                    atom.started_at,
+                    None,
+                )?;
+                crate::studio::runtime::chat_item::build_active_state_event(
+                    &mut history_event,
+                    &atom,
+                    "contextCompaction",
+                    serde_json::json!({
+                        "status": "running",
+                        "operationId": id,
+                    }),
+                )
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                staged.push((at, history_event));
             }
         }
         for (index, start) in effect.model_member_starts.iter().enumerate() {
@@ -295,8 +406,6 @@ impl LiveProjection {
                 shape.clone(),
             );
             self.fact(&item);
-            // Freeze the canonical reference with the reliable start itself.
-            // Later preview synchronization cannot amend the cloned start fact.
             let content = crate::ChatAtomContent {
                 role: crate::studio::runtime::chat_item::atom_content_role(&field).ok_or_else(
                     || {
@@ -323,7 +432,6 @@ impl LiveProjection {
                     },
                 },
             };
-            // An empty canonical part is still an identity, including on failure without progress.
             if !self.previews.contains_key(&id) {
                 self.store_preview(
                     id.clone(),
@@ -336,33 +444,53 @@ impl LiveProjection {
                     },
                 );
             }
+            let at = position(
+                effect,
+                slots(&[
+                    1,
+                    effect.inputs.len(),
+                    effect.inbox.len(),
+                    effect.continuations.len(),
+                    effect.context_compactions.len(),
+                    index,
+                ])?,
+            )?;
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
             atom.contents = vec![content];
             atom.attempt_id = Some(start.attempt_id.clone());
             atom.started_at = Some(effect.committed_at);
             atom.lifecycle = ChatAtomLifecycle::Active {
-                started: Some(position(
-                    effect,
-                    slots(&[
-                        1,
-                        effect.inputs.len(),
-                        effect.inbox.len(),
-                        effect.continuations.len(),
-                        effect.context_compactions.len(),
-                        index,
-                    ])?,
-                )?),
+                started: Some(at),
                 status: ChatActiveStatus::Running,
             };
-            self.atom_starts.insert(id, atom.clone());
-            changes.0.push(atom);
+            self.atom_starts.insert(id.clone(), atom.clone());
+            let kind = if atom.kind == ChatAtomKind::Reasoning {
+                HistoryEventKind::ReasoningStarted
+            } else {
+                HistoryEventKind::ItemRecorded
+            };
+            let mut history_event = HistoryEvent::new(
+                format!("entity:{run}:{}:{id}", effect.sequence),
+                kind,
+                HistoryTimelineRole::Hidden,
+                recorded_at,
+            );
+            set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
+            crate::studio::runtime::chat_item::build_active_state_event(
+                &mut history_event,
+                &atom,
+                active_item_type(atom.kind),
+                serde_json::json!({ "status": "running" }),
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            staged.push((at, history_event));
         }
         if self.atom_starts.len() > LIVE_ITEM_WINDOW {
             return Err(ProjectionError::History(
                 "active member provenance exceeds retained window".into(),
             ));
         }
-        Ok(changes)
+        Ok((staged, sources))
     }
 
     pub(super) async fn complete_provenance(
@@ -370,9 +498,23 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         items: &[ExecutionItem],
-        drafts: &mut [ChatDraft],
-        changes: &mut Changes,
-    ) -> Result<(), ProjectionError> {
+        drafts: &[ChatDraft],
+        staged_changes: StagedChanges,
+        run: RuntimeEpoch,
+    ) -> Result<ProvenanceChanges, ProjectionError> {
+        let (mut staged, mut sources) = staged_changes;
+        let current_owner_id = self
+            .current
+            .owner_id()
+            .ok_or_else(|| ProjectionError::History("missing runtime owner identity".into()))?
+            .to_owned();
+        let history_database_id = self
+            .database_id
+            .as_deref()
+            .ok_or_else(|| ProjectionError::History("missing history database identity".into()))?
+            .to_owned();
+        let recorded_at = millis(effect.committed_at)?;
+
         for (item_index, item) in items.iter().enumerate().filter(|(_, item)| {
             !completion_ready(item)
                 && !matches!(
@@ -380,32 +522,46 @@ impl LiveProjection {
                     ExecutionShape::Inference(_) | ExecutionShape::Turn(_)
                 )
         }) {
+            let mut active_tool_stage: Option<(
+                &crate::ThreadToolItem,
+                EmittedToolStage,
+                bool,
+                bool,
+            )> = None;
             if let ExecutionShape::Tool(tool) = item.state() {
-                if let Some(task_id) = tool.invocation().task_id() {
-                    let task = effect
+                let call_id = tool.invocation().tool_call_id();
+                let task = tool.invocation().task_id().and_then(|task_id| {
+                    effect
                         .tasks
                         .iter()
                         .find(|task| task.id == task_id)
                         .or_else(|| state.tasks.get(task_id))
                         .or_else(|| state.terminal_tasks.iter().find(|task| task.id == task_id))
                         .filter(|task| {
-                            task.call_id == tool.invocation().tool_call_id()
+                            task.call_id == call_id
                                 && task.tool_id == tool.invocation().name()
                                 && task.turn_id == item.turn_id
-                        });
-                    let known_unacknowledged =
-                        task.is_some_and(|task| task.acknowledgement.is_none());
-                    if !known_unacknowledged
-                        && self.completion_exists(
-                            &super::super::order::tool_background_started_id(
-                                tool.invocation().tool_call_id(),
-                            ),
-                        )?
-                    {
-                        continue;
-                    }
-                }
-                if !self.previews.contains_key(&item.id) {
+                        })
+                });
+                let cancel_requested = task.is_some_and(|task| task.cancel_requested);
+                let waiting = matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
+                    || tool.user_input().is_some_and(|input| {
+                        matches!(input.state(), crate::ThreadToolUserInputState::Pending)
+                    });
+                let backgrounded = task.is_some_and(|task| task.acknowledgement.is_some())
+                    || self.completion_exists(
+                        &super::super::order::tool_background_started_id(call_id),
+                    )?;
+                let stage = if cancel_requested {
+                    EmittedToolStage::CancelRequested
+                } else if waiting {
+                    EmittedToolStage::WaitingApproval
+                } else if backgrounded {
+                    EmittedToolStage::Backgrounded
+                } else {
+                    EmittedToolStage::Called
+                };
+                if !backgrounded && !self.previews.contains_key(&item.id) {
                     let mut fields =
                         crate::studio::runtime::chat_item::content_fields(item.state())
                             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -423,19 +579,16 @@ impl LiveProjection {
                         },
                     );
                 }
+                active_tool_stage = Some((tool, stage, cancel_requested, waiting));
             }
-            let old = self.atom_starts.get(&item.id);
+            let old = self.atom_starts.get(&item.id).cloned();
             let mut atom = crate::studio::runtime::chat_item::atom(item);
-            atom.source = old.map_or_else(|| atom.source.clone(), |old| old.source.clone());
-            atom.attempt_id = old.and_then(|old| old.attempt_id.clone());
-            atom.contents = old.map_or_else(Vec::new, |old| old.contents.clone());
-            merge_item_contents(
-                &mut atom,
-                item,
-                self.current.owner_id().ok_or_else(|| {
-                    ProjectionError::History("history atom has no runtime owner".into())
-                })?,
-            )?;
+            atom.source = old
+                .as_ref()
+                .map_or_else(|| atom.source.clone(), |old| old.source.clone());
+            atom.attempt_id = old.as_ref().and_then(|old| old.attempt_id.clone());
+            atom.contents = old.as_ref().map_or_else(Vec::new, |old| old.contents.clone());
+            merge_item_contents(&mut atom, item, &current_owner_id)?;
             let actual_start = match item.state() {
                 ExecutionShape::Tool(tool) => {
                     let call = tool.invocation().tool_call_id();
@@ -459,45 +612,111 @@ impl LiveProjection {
                 }
                 _ => false,
             };
-            let started = match old {
+            let item_pos = position(effect, slots(&[member_base(effect)?, item_index])?)?;
+            let started = match &old {
                 Some(old) => match old.lifecycle {
                     ChatAtomLifecycle::Active { started, .. }
                     | ChatAtomLifecycle::Terminal { started, .. } => started,
                 },
-                None => actual_start
-                    .then(|| position(effect, slots(&[member_base(effect)?, item_index])?))
-                    .transpose()?,
+                None => actual_start.then_some(item_pos),
             };
             atom.lifecycle = ChatAtomLifecycle::Active {
                 started,
-                status: if matches!(item.state(), ExecutionShape::Tool(tool)
-                    if matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
-                    || tool.user_input().is_some_and(|input|
-                        matches!(input.state(), crate::ThreadToolUserInputState::Pending)))
-                {
+                status: if active_tool_stage.is_some_and(|(_, _, _, waiting)| waiting) {
                     ChatActiveStatus::Waiting
                 } else {
                     ChatActiveStatus::Running
                 },
             };
-            atom.started_at = old.map_or(actual_start.then_some(effect.committed_at), |old| {
-                old.started_at
-            });
-            if old == Some(&atom) {
-                // Recovery reloads immutable start evidence, while the display member can
-                // already have a newer saved status. Its owner de-duplicates this reliable
-                // effect-local value against that actual display state.
-                changes.2.push(atom);
-                continue;
-            }
+            atom.started_at = old
+                .as_ref()
+                .map_or(actual_start.then_some(effect.committed_at), |old| {
+                    old.started_at
+                });
             let first_start = old.is_none();
-            self.atom_starts.insert(atom.id.clone(), atom.clone());
-            if first_start {
-                changes.0.push(atom);
-            } else {
-                changes.2.push(atom);
+            if old.as_ref() != Some(&atom) {
+                self.atom_starts.insert(atom.id.clone(), atom.clone());
+            }
+
+            if let Some((tool, stage, cancel_requested, _)) = active_tool_stage {
+                let call_id = tool.invocation().tool_call_id();
+                if self.emitted_tool_stages.get(call_id).copied() != Some(stage) {
+                    self.emitted_tool_stages.insert(call_id.to_owned(), stage);
+                    if self.emitted_tool_stages.len() > LIVE_ITEM_WINDOW {
+                        return Err(ProjectionError::History(
+                            "active tool provenance exceeds retained window".into(),
+                        ));
+                    }
+                    if stage != EmittedToolStage::Backgrounded {
+                        let kind = match stage {
+                            EmittedToolStage::Called => HistoryEventKind::ToolCalled,
+                            EmittedToolStage::WaitingApproval => {
+                                HistoryEventKind::ToolWaitingApproval
+                            }
+                            EmittedToolStage::CancelRequested => {
+                                HistoryEventKind::ToolCancelRequested
+                            }
+                            EmittedToolStage::Backgrounded => unreachable!(),
+                        };
+                        let timeline_role = if crate::studio::thread_projection::work(&atom) {
+                            HistoryTimelineRole::Work
+                        } else {
+                            HistoryTimelineRole::Hidden
+                        };
+                        let mut history_event = HistoryEvent::new(
+                            format!(
+                                "tool-stage:{run}:{}:{}:{}",
+                                effect.sequence,
+                                call_id,
+                                kind.as_str()
+                            ),
+                            kind,
+                            timeline_role,
+                            recorded_at,
+                        );
+                        set_event_atom_columns(
+                            &mut history_event,
+                            &atom,
+                            run,
+                            Some(effect.committed_at),
+                            None,
+                        )?;
+                        crate::studio::runtime::chat_item::build_active_tool_event(
+                            &mut history_event,
+                            &atom,
+                            item,
+                            cancel_requested,
+                            &history_database_id,
+                        )
+                        .map_err(|error| ProjectionError::History(error.to_string()))?;
+                        staged.push((item_pos, history_event));
+                    }
+                }
+            } else if first_start {
+                let kind = match atom.kind {
+                    ChatAtomKind::Reasoning => HistoryEventKind::ReasoningStarted,
+                    ChatAtomKind::Compaction => HistoryEventKind::CompactionStarted,
+                    ChatAtomKind::Agent => HistoryEventKind::AgentSpawned,
+                    _ => HistoryEventKind::ItemRecorded,
+                };
+                let mut history_event = HistoryEvent::new(
+                    format!("entity:{run}:{}:{}", effect.sequence, atom.id),
+                    kind,
+                    HistoryTimelineRole::Hidden,
+                    recorded_at,
+                );
+                set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
+                crate::studio::runtime::chat_item::build_active_state_event(
+                    &mut history_event,
+                    &atom,
+                    active_item_type(atom.kind),
+                    serde_json::json!({ "status": "running" }),
+                )
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                staged.push((item_pos, history_event));
             }
         }
+
         let draft_count = drafts.len();
         let draft_atoms = drafts
             .iter()
@@ -526,7 +745,8 @@ impl LiveProjection {
         let draft_base = slots(&[member_base(effect)?, items.len()])?;
         let interruption_base = slots(&[draft_base, draft_count, effect.inbox.len()])?;
         let receipt_base = slots(&[interruption_base, interrupted_ids.len()])?;
-        for (index, draft) in drafts.iter_mut().enumerate() {
+
+        for (index, draft) in drafts.iter().enumerate() {
             let mut atom = draft_atoms[index].clone();
             let final_turn_receipt = atom.kind == ChatAtomKind::TurnReceipt
                 && effect.turn.as_ref().is_some_and(|turn| {
@@ -566,9 +786,40 @@ impl LiveProjection {
                         } => at,
                         _ => terminal_position,
                     },
-                    changes,
+                    &mut sources,
                 )?;
-                changes.0.push(atom);
+                let kind = event_kind_for_draft(&atom);
+                let timeline_role = draft_timeline_role(&atom);
+                let mut history_event = HistoryEvent::new(
+                    draft.item_id.clone(),
+                    kind,
+                    timeline_role,
+                    recorded_at,
+                );
+                set_event_atom_columns(
+                    &mut history_event,
+                    &atom,
+                    run,
+                    atom.finished_at.or(atom.started_at),
+                    None,
+                )?;
+                history_event.original = Some(HistoryOriginalInfo {
+                    query_class: draft.query_class.clone(),
+                    parent_id: draft
+                        .parent_id
+                        .as_ref()
+                        .map(|parent| parent.as_str().to_owned()),
+                    original_kind: atom.kind,
+                    tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+                });
+                crate::studio::runtime::chat_item::build_event_from_draft(
+                    &mut history_event,
+                    &atom,
+                    draft,
+                    &history_database_id,
+                )
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+                staged.push((terminal_position, history_event));
                 continue;
             }
             let item = items
@@ -578,12 +829,14 @@ impl LiveProjection {
                     ProjectionError::History("completion lost its canonical member".into())
                 })?;
             atom.source_order = Some(item.ordinal);
-            let old = self.atom_starts.remove(&atom.id);
+            let old = if atom.delivery == ChatDeliveryKind::BackgroundHandoff {
+                self.release_preview(&atom.id);
+                self.atom_starts.get(&atom.id).cloned()
+            } else {
+                self.atom_starts.remove(&atom.id)
+            };
             if let Some(old) = &old {
                 atom.source_order = old.source_order;
-            }
-            if atom.delivery == ChatDeliveryKind::BackgroundHandoff {
-                self.release_preview(&atom.id);
             }
             let started = old.as_ref().and_then(|atom| match atom.lifecycle {
                 ChatAtomLifecycle::Active { started, .. } => started,
@@ -616,7 +869,6 @@ impl LiveProjection {
                     outcome,
                 };
             }
-            // Input association is supplemental; it never changes first source identity.
             if effect.inputs.iter().any(|change| match change {
                 pl_core::thread::input::InputChange::Accepted(record) => record.input.id == atom.id,
                 pl_core::thread::input::InputChange::Transition { id, .. } => id == &atom.id,
@@ -626,6 +878,7 @@ impl LiveProjection {
                 };
                 atom.kind = crate::ChatAtomKind::Input;
             }
+            let mut matched_message_id: Option<String> = None;
             for (inbox_index, record) in effect.inbox.iter().enumerate() {
                 let background_tool = matches!(item.state(), ExecutionShape::Tool(tool)
                     if tool.invocation().task_id() == Some(record.message.source_id.as_str()));
@@ -635,11 +888,12 @@ impl LiveProjection {
                         message_id: record.message.id.clone(),
                     };
                     atom.delivery = ChatDeliveryKind::Independent;
-                    // The final inbox result is not a resurrection of the transferred foreground member.
+                    // Keep atom.id as tool_id(call_id) so background completion stays unified with
+                    // tool_called / tool_backgrounded / tool_cancel_requested by call_id and entity_id.
                     if background_tool {
-                        atom.id = super::super::order::message_id(&record.message.id);
                         atom.source_order = Some(record.sequence);
                     }
+                    matched_message_id = Some(record.message.id.clone());
                     let outcome = match atom.lifecycle {
                         ChatAtomLifecycle::Terminal { outcome, .. } => outcome,
                         _ => ChatTerminalOutcome::Completed,
@@ -649,7 +903,7 @@ impl LiveProjection {
                         Some(outcome),
                         true,
                         position(effect, slots(&[draft_base, draft_count, inbox_index])?)?,
-                        changes,
+                        &mut sources,
                     )?;
                 }
             }
@@ -687,14 +941,66 @@ impl LiveProjection {
                     Some(ChatTerminalOutcome::Completed),
                     true,
                     terminal_position,
-                    changes,
+                    &mut sources,
                 )?;
             }
-            changes.0.push(atom.clone());
-            draft.metadata = serde_json::to_vec(&atom)
-                .map_err(|error| ProjectionError::History(error.to_string()))?
-                .into();
+            if let Some(tool) = &atom.tool {
+                if atom.delivery == ChatDeliveryKind::BackgroundHandoff {
+                    self.emitted_tool_stages
+                        .insert(tool.call_id.clone(), EmittedToolStage::Backgrounded);
+                } else {
+                    self.emitted_tool_stages.remove(&tool.call_id);
+                }
+            }
+            let kind = event_kind_for_draft(&atom);
+            let timeline_role = draft_timeline_role(&atom);
+            let mut history_event = HistoryEvent::new(
+                draft.item_id.clone(),
+                kind,
+                timeline_role,
+                recorded_at,
+            );
+            set_event_atom_columns(
+                &mut history_event,
+                &atom,
+                run,
+                atom.finished_at.or(atom.started_at),
+                matched_message_id.as_deref(),
+            )?;
+            history_event.original = Some(HistoryOriginalInfo {
+                query_class: draft.query_class.clone(),
+                parent_id: draft
+                    .parent_id
+                    .as_ref()
+                    .map(|parent| parent.as_str().to_owned()),
+                original_kind: atom.kind,
+                tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+            });
+            crate::studio::runtime::chat_item::build_event_from_draft(
+                &mut history_event,
+                &atom,
+                draft,
+                &history_database_id,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            if let Some(tool) = &atom.tool
+                && let Some(task) = effect
+                    .tasks
+                    .iter()
+                    .find(|task| task.call_id == tool.call_id)
+                && let Some(delivery) = effect
+                    .deliveries
+                    .iter()
+                    .find(|delivery| delivery.call_id == tool.call_id)
+            {
+                history_event.bodies.push(
+                    crate::studio::storage::tool_task::body(task, delivery)
+                        .map_err(|error| ProjectionError::History(error.to_string()))?,
+                );
+            }
+            staged.push((terminal_position, history_event));
         }
+
         for (index, id) in interrupted_ids.into_iter().enumerate() {
             let mut atom = self
                 .atom_starts
@@ -703,16 +1009,37 @@ impl LiveProjection {
             let ChatAtomLifecycle::Active { started, .. } = atom.lifecycle else {
                 continue;
             };
+            let interrupted_pos = position(effect, slots(&[interruption_base, index])?)?;
             atom.lifecycle = ChatAtomLifecycle::Terminal {
                 started,
-                ended: Some(position(effect, slots(&[interruption_base, index])?)?),
+                ended: Some(interrupted_pos),
                 outcome: ChatTerminalOutcome::Cancelled,
             };
             atom.finished_at = Some(effect.committed_at);
             atom.contents.clear();
             self.release_preview(&id);
-            changes.0.push(atom);
+            let kind = if atom.kind == ChatAtomKind::Reasoning {
+                HistoryEventKind::ReasoningCompleted
+            } else {
+                HistoryEventKind::TextCompleted
+            };
+            let mut history_event = HistoryEvent::new(
+                format!("entity:{run}:{}:{}:interrupted", effect.sequence, atom.id),
+                kind,
+                HistoryTimelineRole::Hidden,
+                recorded_at,
+            );
+            set_event_atom_columns(&mut history_event, &atom, run, atom.finished_at, None)?;
+            crate::studio::runtime::chat_item::build_active_state_event(
+                &mut history_event,
+                &atom,
+                active_item_type(atom.kind),
+                serde_json::json!({ "status": "cancelled" }),
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            staged.push((interrupted_pos, history_event));
         }
+
         if let Some(turn) = &effect.turn
             && let Some(outcome) = turn_outcome(&turn.state)
         {
@@ -723,21 +1050,16 @@ impl LiveProjection {
                 Some(outcome),
                 false,
                 position(effect, slots(&[receipt_base, draft_count])?)?,
-                changes,
+                &mut sources,
             )?;
         }
-        // Only the Turn-closing receipt changed its producer slot. Independent receipts
-        // retain their original slots; ordering consumes the producer's evidence, not UI kind.
-        changes.0.sort_by_key(|atom| match atom.lifecycle {
-            ChatAtomLifecycle::Active { started, .. } => started,
-            ChatAtomLifecycle::Terminal { ended, .. } => ended,
-        });
-        // Only the original writer's durable acknowledgement may release unsaved source facts.
+
+        staged.sort_by_key(|(pos, _)| *pos);
         if self.source_states.len() > LIVE_ITEM_WINDOW {
             return Err(ProjectionError::History(
                 "source provenance exceeds retained window".into(),
             ));
         }
-        Ok(())
+        Ok((staged.into_iter().map(|(_, event)| event).collect(), sources))
     }
 }

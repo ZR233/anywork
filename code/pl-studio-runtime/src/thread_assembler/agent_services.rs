@@ -503,7 +503,6 @@ impl AgentServices {
                     let anchor = entries
                         .last()
                         .context("session continuation has no anchor")?
-                        .header
                         .seq;
                     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
                         serde_json::to_vec(&Cursor {

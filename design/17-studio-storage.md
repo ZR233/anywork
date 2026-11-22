@@ -4,9 +4,6 @@
 
 运行时只使用无版本号的 `data/` 当前数据根；`v2/` 与 `studio/v2/` 仅作为显式、可接续的迁移输入。只支持 v2 会话与产品数据迁入当前布局，v2 之前的会话、产品数据库、调用统计与迁移状态**不导入、不激活、不自动归档，也不清空删除**。配置与凭据仍遵循 [20](./20-config.md) 的安全升级边界；用户技能唯一来源见 [10](./10-skills.md#102-目录层级与同名覆盖优先级)，产品数据根不再拥有用户技能目录。
 
-> [!NOTE]
-> 本文中 schema 26 原子事件历史、16 KiB 混合正文与 schema 25 → 26 零拷贝迁移为本分支重构目标契约（重构实施中），待代码与验证全部完成后移除本说明。
-
 Native 会话目录使用独立的 `current.json` 与 `history.sqlite`：前者保存完整可恢复对象，后者保存 schema 26 原子事件历史；附件和工具资源继续位于会话 `resources/`。current 的捕获、写入、读取和恢复不以历史数据库为依赖；覆盖写入的失败边界、代次隔离、附件校验与暂停恢复合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。每 Thread 只允许一个 current writer 和一个 history writer，二者分别保存、关闭及报告错误，不以一方成功推进另一方。
 
 Native 追加历史使用 schema 26，由身份元数据 `history_store_meta` 和 `history_events`、`history_bodies`、`history_body_chunks` 三张业务表组成。`history_events` 仅保存开放式索引标量列与尾部的 `payload_schema`、`payload_json`（无 `kind` 枚举 `CHECK`，无持久化 `Work`/`Member`/`group_*` 行，正文 `<= 16 KiB` 有效 UTF-8 直接内联为 `inlineText`，`> 16 KiB` 与二进制附件存入 `history_bodies` + `history_body_chunks`）；三个业务表均由数据库触发器禁止更新与删除。读取和写入资格校验数据库身份、Thread 身份、schema 与迁移结果，坏库与非 schema 26 文件不在普通打开时自动重建；schema 25 与 24 库经由 §17.22 / §17.21 显式迁移升级至 schema 26。具体接受、查询及关闭边界见 [15](./15-session-storage.md#独立追加历史)。

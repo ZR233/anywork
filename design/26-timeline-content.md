@@ -2,9 +2,6 @@
 
 本文是 Native 时间线呈现的唯一权威源。Current 的恢复与历史存储见 [15](./15-session-storage.md)，Schema 26 的物理结构见 [17](./17-studio-storage.md)，客户端资源归 [25](./25-frontend-state.md)，视觉规范见 [19](./19-studio-ui.md)。ACP 内容仍由其外部协议定义，不转换成这里的 Native 原子事件或 `WorkRange`。
 
-> [!NOTE]
-> 本文中 schema 26 / History 协议版本 2、无状态原子事件、`WorkRange` 索引派生与工作组 ViewModel 按 `call_id` 折叠为本分支重构目标契约（重构实施中），待代码与验证全部完成后移除本说明。
-
 ## 26.1 三类事实与唯一所有者
 
 | 数据 | 所有者 | 交付 |

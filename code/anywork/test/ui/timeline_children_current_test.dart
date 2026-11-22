@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
@@ -13,30 +14,29 @@ import '../../../anywork_client/test/support/timeline_transport.dart'
     show ConversationFixture, TestHistoryReader;
 import '../support/pump_client_future.dart';
 
-HistoryEventDetail _detail(String id, int seq) => HistoryEventDetail(
-  header: HistoryEventHeader(
-    seq: seq,
-    eventId: 'event:$id',
-    kind: 'original',
-    rowKey: 'row:$id',
-    recordedAt: seq,
-  ),
-  head: SingleHistoryRow(
-    HistoryEntityHead(
-      entityId: id,
-      source: const ReceiptChatSource(receiptId: 'receipt'),
-      kind: ChatAtomKind.text,
-      delivery: ChatDeliveryKind.independent,
-      state: const HistoryEntityState(
-        kind: HistoryEntityStateKind.knownTerminal,
-        outcome: ChatTerminalOutcome.completed,
-      ),
-      observation: const HistoryObservation(
-        kind: HistoryObservationKind.original,
-      ),
-      contentPresent: false,
-    ),
-  ),
+HistoryEventRecord _record(String id, int seq) => HistoryEventRecord(
+  seq: seq,
+  eventId: 'event:$id',
+  kind: 'text_completed',
+  timelineRole: HistoryTimelineRole.hidden,
+  recordedAt: seq,
+  entityId: id,
+  rowKey: 'row:$id',
+  source: const ReceiptChatSource(receiptId: 'receipt'),
+  payloadSchema: 'anywork.event/1',
+  payloadJson: jsonEncode({
+    'contract': 'anywork.event/1',
+    'type': 'text',
+    'meta': {
+      'entityId': id,
+      'entityKind': 'text',
+      'delivery': 'independent',
+      'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
+      'contentPresent': false,
+    },
+    'data': {'channel': 'final'},
+    'bodies': <Object?>[],
+  }),
 );
 
 Widget _host(ConversationFixture fixture, {required String parentId}) =>
@@ -92,7 +92,7 @@ void main() {
           if (cursor == null) {
             return HistoryEventsPage(
               cut: reader.cut,
-              entries: [_detail('A-initial', 2)],
+              entries: [_record('A-initial', 2)],
               next: 'older-a',
             );
           }
@@ -102,7 +102,7 @@ void main() {
         expect(cursor, isNull);
         return HistoryEventsPage(
           cut: reader.cut,
-          entries: [_detail('B-initial', 4)],
+          entries: [_record('B-initial', 4)],
         );
       };
       return reader;
@@ -129,7 +129,7 @@ void main() {
     olderA.complete(
       HistoryEventsPage(
         cut: readers.first.cut,
-        entries: [_detail('A-late', 1)],
+        entries: [_record('A-late', 1)],
       ),
     );
     await tester.pumpAndSettle();

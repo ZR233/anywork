@@ -113,6 +113,7 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
 
         for event in sorted(by_thread[thread], key=order):
             data = event["data"]
+            header = data["header"]["event"]
             atom = data["atom"]
             contents = defaultdict(list)
             opaque_contents = []
@@ -132,11 +133,11 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                     continue
                 contents[role].append(artifacts.content(content).decode("utf-8"))
             body = "".join(contents["body"])
-            source = atom["source"]
+            source = header["source"] or {}
             parent_input = (
                 source.get("kind") == "inboxMessage" and atom.get("textChannel") == "parentAgent"
             )
-            if atom["kind"] == "input" or parent_input:
+            if atom["entityKind"] == "input" or parent_input:
                 step_extra = {
                     "nativeSource": source,
                     "nativeEvents": [_native_event(event, data)],
@@ -152,11 +153,11 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                     }
                 )
                 continue
-            inference = atom.get("attemptId")
+            inference = header.get("attemptId")
             payload = decode_json(artifacts.content(data["payload"]))
-            if atom["kind"] == "inference":
+            if atom["entityKind"] == "inference":
                 inference = payload.get("data", {}).get("inferenceId")
-            if atom["kind"] == "turnReceipt":
+            if atom["entityKind"] == "turnReceipt":
                 continue
             step = inference_steps.get(inference) if inference else None
             tool = atom.get("tool")

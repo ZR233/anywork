@@ -46,58 +46,26 @@ Future<TimelineHistoryItemContent> readTimelineHistoryItem(
   HistoryReadScope history,
   ChatItemPresentation item,
 ) async {
-  final detailId = item.historyDetailEventId ?? item.historyEventId!;
-  final event = await history.readEvent(
-    eventId: detailId,
-    demand: const HistoryDemand(maxRows: 1, maxBytes: 64 * 1024),
-  );
-  var reference = event.payloadRef;
-  if (reference == null) {
-    final bodyEventId = item.historyEventId!;
-    final bodyEvent = bodyEventId == detailId
-        ? event
-        : await history.readEvent(
-            eventId: bodyEventId,
-            demand: const HistoryDemand(maxRows: 1, maxBytes: 64 * 1024),
-          );
-    reference = bodyEvent.payloadRef;
-  }
-  if (reference == null) {
-    final bodies = await history.listBodies(
-      eventId: item.historyEventId!,
-      demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
+  ChatItemPresentation resolved;
+  final predecoded = item.displayRecord?.predecodedPresentation;
+  if (predecoded != null) {
+    resolved = item.resolvePresentation(predecoded);
+  } else {
+    final detailId = item.historyDetailEventId ?? item.historyEventId!;
+    final event = await history.readEvent(
+      eventId: detailId,
+      demand: const HistoryDemand(maxRows: 1, maxBytes: 64 * 1024),
     );
-    reference = bodies.entries
-        .where(
-          (entry) =>
-              entry.role.kind == HistoryBodyRoleKind.canonicalPayload ||
-              entry.role.kind == HistoryBodyRoleKind.body,
-        )
-        .firstOrNull
-        ?.reference;
-  }
-  if (reference == null || reference.byteLength > 64 * 1024) {
-    throw const FormatException('完成内容超出单次读取预算或缺失');
-  }
-  final window = await history.readBody(
-    reference: reference,
-    offset: 0,
-    maxBytes: 64 * 1024,
-  );
-  if (window.offset != 0 ||
-      window.totalLength != reference.byteLength ||
-      window.bytes.length != window.totalLength) {
-    throw const FormatException('完成内容窗口不连续');
-  }
-  final resolved = item.resolvePayload(InlinePayload(bytes: window.bytes));
-  if (resolved.compatibility != ChatItemCompatibility.current) {
-    throw const FormatException('完成内容格式无法解析');
+    resolved = item.resolvePresentation(
+      ChatItemPresentation.decodeEventRecord(event, id: item.id),
+    );
   }
   final bodyReads = <Object, AsyncSnapshot<ContentWindow>>{};
-  if (resolved.type == 'text' || resolved.type == 'input') {
+  if (resolved.compatibility == ChatItemCompatibility.current &&
+      (resolved.type == 'text' || resolved.type == 'input')) {
     for (final body in resolved.bodies) {
       final reference = body.historyReference;
-      if (body.key != 'body' || reference == null) continue;
+      if (body.key != 'body' || body.hasInline || reference == null) continue;
       final key = historyBodyIdentity(reference);
       try {
         final window = await history.readBody(

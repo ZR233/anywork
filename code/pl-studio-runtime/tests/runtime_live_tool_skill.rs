@@ -9,9 +9,7 @@ use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatScope, CurrentView, StopThreadRequest, StudioRuntime,
     ThreadWorkspaceMode, TurnState,
-    history::{
-        HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
-    },
+    history::{HistoryDemand, HistoryEventsQuery, read_event_body_bytes},
 };
 use serde_json::Value;
 use support::{Environment, current_demand, held_reply, program_reply, prompt_step, reached};
@@ -55,22 +53,6 @@ async fn visible_skill(
     result
 }
 
-async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while bytes.len() as u64 != reference.byte_length {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                bytes.len() as u64,
-                (reference.byte_length - bytes.len() as u64).min(1024) as u32,
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty(), "tool body did not advance");
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
-
 async fn public_tool(
     runtime: &pl_studio_runtime::StudioRuntime,
     thread: &str,
@@ -99,31 +81,21 @@ async fn public_tool(
                     )
                     .await?;
                 for event in originals.entries {
-                    let Some(payload_ref) = &event.payload_ref else {
+                    if event.payload_schema != "anywork.event/1" {
                         continue;
-                    };
-                    let payload = body(&reader, payload_ref).await?;
-                    let value: Value = serde_json::from_slice(&payload)?;
-                    if event.header.turn_id.as_deref() != Some(turn)
+                    }
+                    let value: Value = serde_json::from_str(&event.payload_json)?;
+                    if event.turn_id.as_deref() != Some(turn)
                         || value["type"] != "tool"
                         || value["data"]["invocation"]["name"] != "skill_view"
                     {
                         continue;
                     }
-                    ensure!(event.header.turn_id.as_deref() == Some(turn));
-                    let bodies = reader
-                        .list_bodies(event.header.event_id.clone(), None, demand)
-                        .await?;
-                    let result = bodies
-                        .entries
-                        .into_iter()
-                        .find(|entry| {
-                            entry.body_key == "tool.result"
-                                && entry.role == HistoryBodyRole::ToolOutput
-                        })
+                    ensure!(event.turn_id.as_deref() == Some(turn));
+                    let bytes = read_event_body_bytes(&reader, &event, "tool.result", None)
+                        .await?
                         .context("original tool result")?;
-                    let bytes = body(&reader, &result.reference).await?;
-                    return Ok((event.header.event_id.clone(), value, bytes));
+                    return Ok((event.event_id.clone(), value, bytes));
                 }
                 let Some(next) = originals.next else { break };
                 ensure!(

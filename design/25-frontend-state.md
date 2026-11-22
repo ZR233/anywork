@@ -2,9 +2,6 @@
 
 Native Current 与追加历史分别沿原所有权提供读取：状态栏和当前观察来自 `CurrentReader`，历史页来自 `HistoryReader`；两种引用与生命周期不得混用，Current 保存错误和暂停恢复状态不得被 History 成功掩盖。客户端只持页面状态、阅读意图及有界窗口，不重建历史或把完整 `current.json` 镜像进 Flutter。具体合同见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)，展示合并见 [26](./26-timeline-content.md)。HTTP、FRB、SDK 与 Flutter 使用同一组 Current/History typed DTO 和协议版本，不保留旧完成流 fallback。
 
-> [!NOTE]
-> 本文中涉及的 schema 26 原子事件、`workRangePage`（History 协议 v2）及 Flutter 工作组 ViewModel 同 `call_id` 折叠与单条回退为本分支重构目标契约（重构实施中），待代码与验证全部完成后移除本说明。
-
 Rust 运行时持有业务权威事实；每个应用实例装配独立的纯 Dart 领域资源；`Riverpod` 组织呈现观察与视图模型，界面组件仅渲染与发出意图。性能统计采用 [§25.13](#2513-独立统计领域与呈现模块) 的独立模块，账号功能采用 [§25.14](#2514-账号分域与可预览呈现) 的分域仓储与纯呈现；其余领域保持现有客户端边界，不因局部演进要求全应用重写，也不为已迁移领域保留旧 Client 兼容入口。本文是客户端所有权、命令回执、输入草稿与页面导航的唯一权威契约。可靠历史与迁移见 [17](./17-studio-storage.md)，流协议见 [07](./07-streaming.md)，运行时与关闭见 [18](./18-studio-state.md)，界面见 [19](./19-studio-ui.md)，验证见 [24](./24-testing.md)。
 
 ## 25.1 分层架构与应用实例隔离
@@ -44,7 +41,7 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| schema 25 历史事件、Work/Single/member anchors 与不可变 body | Rust HistoryStore | SDK 机械转发；Flutter 时间线 controller 持唯一有界窗口与展开意图 | database/owner、历史 cut、row/entity 身份、reader generation |
+| schema 26 原子历史事件、索引派生 `WorkRange` 与 16 KiB 混合正文 | Rust HistoryStore | SDK 机械转发；Flutter 时间线 controller 持唯一有界窗口与展开意图 | database/owner、历史 cut、row/entity 身份、reader generation |
 | Current State、正文、collection 与业务引用 | Rust Current assembler / CurrentReader | Client 会话状态唯一写入口；时间线 Current owner 持一个 run overlay | owner/runtimeEpoch、revision、reference generation、reader generation |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |

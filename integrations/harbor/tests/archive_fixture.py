@@ -58,29 +58,46 @@ def write_archive(root: Path, destination: Path):
         inference = "inference-child" if thread == "thread-child-1" else "inference-root"
         atom.update(
             entityId=entity_id,
-            runId=f"run-{thread}",
-            attemptId=inference,
-            detailEventId=event_id,
-            bodyManifestEventId=event_id,
             tool=tool,
-            kind="toolCall" if tool else "text",
+            entityKind="toolCall" if tool else "text",
+            textChannel=None if tool else "final",
+            singleVisibility=None if tool else "content",
         )
         header.update(
             seq=seq,
             eventId=event_id,
             entityId=entity_id,
-            runId=atom["runId"],
+            runId=f"run-{thread}",
             attemptId=inference,
             callId=tool["callId"] if tool else None,
-            rowKey=f"single:{entity_id}",
+            toolName=tool["name"] if tool else None,
+            timelineRole="work" if tool else "divider",
+            kind="toolCompleted" if tool else "textCompleted",
         )
         header["original"].update(
-            originalKind=atom["kind"], toolName=tool["name"] if tool else None
+            originalKind=atom["entityKind"], toolName=tool["name"] if tool else None
         )
         payload = (
-            {"kind": atom["kind"], "data": {"state": "completed"}}
+            {
+                "contract": "anywork.event/1",
+                "type": "tool",
+                "meta": atom,
+                "data": {
+                    "invocation": {"toolCallId": tool["callId"], "name": tool["name"]},
+                    "state": {"kind": "succeeded"},
+                },
+                "bodies": [],
+                "turnId": header["turnId"],
+            }
             if tool
-            else {"kind": "text", "text": body}
+            else {
+                "contract": "anywork.event/1",
+                "type": "text",
+                "meta": atom,
+                "data": {"channel": "final"},
+                "bodies": [],
+                "turnId": header["turnId"],
+            }
         )
         entries = []
 
@@ -88,6 +105,7 @@ def write_archive(root: Path, destination: Path):
             ref = blob(raw, media)
             entries.append(
                 dict(
+                    bodyKey=key,
                     nativeRef={
                         "databaseId": f"db-{thread}",
                         "ownerEventId": event_id,
@@ -103,14 +121,11 @@ def write_archive(root: Path, destination: Path):
             )
             return ref
 
-        data["payload"] = content(
-            "canonical_payload", "canonicalPayload", json.dumps(payload).encode()
-        )
-        content("canonical_metadata", "canonicalMetadata", b"{}")
+        data["payload"] = blob(json.dumps(payload).encode())
         if tool:
-            content("arguments", "toolArguments", b'{"task":"analyze"}', "toolArguments")
+            content("tool.arguments", "toolArguments", b'{"task":"analyze"}', "toolArguments")
             if body:
-                content("output", "toolOutput", body.encode(), "toolOutput", "text/plain")
+                content("tool.result", "toolOutput", body.encode(), "toolOutput", "text/plain")
         else:
             content("body", "body", body.encode(), "body", "text/plain")
         data["contentsManifest"] = blob(

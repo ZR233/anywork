@@ -2,9 +2,6 @@
 
 本文是 Native 会话当前状态、追加历史、调用诊断与冷恢复的唯一权威契约；Studio 文件布局与迁移边界见 [17](./17-studio-storage.md)，时间线展示见 [26](./26-timeline-content.md)，客户端与资源生命周期见 [25](./25-frontend-state.md)。ACP 内容继续遵循 [28](./28-acp.md) 的对端协议，不使用本文的 Native 当前态或追加历史契约。文档声明表示设计合同，不代表实现、迁移或跨平台验收已经通过。
 
-> [!NOTE]
-> 本文中 schema 26 / History 协议版本 2（无状态原子事件追加、索引派生 `WorkRange` 与 16 KiB 混合正文存储）为本分支重构目标契约，代码与验证正在实施中。
-
 <a id="native-current-与历史解耦的目标合同"></a>
 
 ## 15.1 Native current 与历史解耦的当前合同

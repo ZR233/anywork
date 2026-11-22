@@ -29,13 +29,14 @@ abstract interface class HistoryReader {
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -46,7 +47,7 @@ abstract interface class HistoryReader {
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   });
@@ -61,7 +62,7 @@ abstract interface class HistoryReader {
     required int maxBytes,
   });
   Future<HistoryAccounting?> accounting({HistoryCut? cut});
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,

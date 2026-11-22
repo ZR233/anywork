@@ -326,6 +326,14 @@ class TestHistoryReader implements HistoryReader {
   HistoryCut cut;
   Future<HistoryTimelinePage> Function(HistoryCut?, String?, HistoryDemand)?
   onTimeline;
+  Future<HistoryWorkRangePage> Function(
+    int?,
+    int?,
+    HistoryCut?,
+    String?,
+    HistoryDemand,
+  )?
+  onWorkRange;
   Future<HistoryEventsPage> Function(
     HistoryEventsQuery,
     HistoryCut?,
@@ -370,15 +378,24 @@ class TestHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => throw UnsupportedError('Unscripted history groupPage');
+  }) {
+    final read = onWorkRange;
+    if (read == null) {
+      return Future.error(UnsupportedError('Unscripted history workRangePage'));
+    }
+    return _read(
+      () => read(afterSeq, beforeSeq, cut ?? this.cut, cursor, demand),
+    );
+  }
 
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -399,7 +416,7 @@ class TestHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) => throw UnsupportedError('Unscripted history readEvent');
@@ -422,7 +439,7 @@ class TestHistoryReader implements HistoryReader {
   Future<HistoryAccounting?> accounting({HistoryCut? cut}) async => null;
 
   @override
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,

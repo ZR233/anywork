@@ -2,266 +2,311 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+
 use tokio::sync::OwnedSemaphorePermit;
 
-use super::types::HistoryHeadScope;
-use super::{HistoryEvent, HistoryEventsQuery, Result, token::Query, types::source_key};
+use super::{db::Body, *};
 
 pub(super) struct Reservation {
     pub _events: OwnedSemaphorePermit,
     pub _bytes: OwnedSemaphorePermit,
 }
+
 pub(super) struct Accepted {
     pub event: HistoryEvent,
     pub retained_bytes: usize,
-    pub body_headers: Vec<super::db::Body>,
+    pub body_headers: Vec<Body>,
     pub _reservation: Arc<Reservation>,
 }
 
-/// Capturing a query clones only this Arc. Copy-on-write updates copy bounded index keys and Arcs,
-/// never event bodies. Reservation lifetime includes old roots still held by in-flight queries.
-#[derive(Default, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WorkRangeSummary {
+    pub first_seq: u64,
+    pub last_seq: u64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub run_id: Option<String>,
+    pub event_count: u64,
+}
+
+#[derive(Clone)]
 pub(super) struct Pending {
     pub bytes: usize,
     pub events: BTreeMap<u64, Arc<Accepted>>,
     pub identities: BTreeMap<String, u64>,
     pub bodies: BTreeMap<String, (u64, usize)>,
     pub anchors: BTreeMap<String, u64>,
-    heads: BTreeMap<String, BTreeSet<u64>>,
-    indexes: BTreeMap<Key, BTreeSet<u64>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Key {
-    Main,
-    Members(String),
-    Scope(String),
-    Entity(String),
-    Turn(String),
-    Source(String),
-    Call(String),
-    Message(String),
-    Attempt(String, String),
-    Originals,
-    Class(String),
-    Parent(String),
-    ParentClass(String, String),
-    Text,
-    Finish(String),
 }
 
 impl Pending {
-    fn keys(event: &HistoryEvent) -> Result<Vec<Key>> {
-        let h = &event.header;
-        let mut keys = Vec::new();
-        for (value, key) in [
-            (&h.entity_id, Key::Entity as fn(String) -> Key),
-            (&h.turn_id, Key::Turn),
-            (&h.call_id, Key::Call),
-            (&h.message_id, Key::Message),
-        ] {
-            if let Some(value) = value {
-                keys.push(key(value.clone()));
-            }
+    pub fn new() -> Self {
+        Self {
+            bytes: 0,
+            events: BTreeMap::new(),
+            identities: BTreeMap::new(),
+            bodies: BTreeMap::new(),
+            anchors: BTreeMap::new(),
         }
-        if let Some(source) = &h.source {
-            keys.push(Key::Source(source_key(source)?.1));
-        }
-        if let (Some(run), Some(attempt)) = (&h.run_id, &h.attempt_id) {
-            keys.push(Key::Attempt(run.clone(), attempt.clone()));
-        }
-        if event.is_anchor
-            && let Some(head) = &event.head
-        {
-            keys.push(Key::Scope(head.scope().into()));
-            match head.scope() {
-                "work" | "single" => keys.push(Key::Main),
-                "member" => {
-                    if let Some(group) = &h.group_id {
-                        keys.push(Key::Members(group.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-        if let Some(original) = &h.original {
-            keys.push(Key::Originals);
-            keys.push(Key::Class(original.query_class.clone()));
-            if original.tool_name.as_deref() == Some(pl_tool::finish_turn::TOOL_FINISH_TURN)
-                && let Some(turn) = &h.turn_id
-            {
-                keys.push(Key::Finish(turn.clone()));
-            }
-            if let Some(parent) = &original.parent_id {
-                keys.push(Key::Parent(parent.clone()));
-                keys.push(Key::ParentClass(
-                    parent.clone(),
-                    original.query_class.clone(),
-                ));
-            }
-            if matches!(
-                original.original_kind,
-                super::HistoryEntityKind::Input | super::HistoryEntityKind::Text
-            ) {
-                keys.push(Key::Text);
-            }
-        }
-        Ok(keys)
     }
+
     pub fn insert(&mut self, accepted: Arc<Accepted>) -> Result<()> {
-        let event = &accepted.event;
-        let seq = event.header.seq;
-        for key in Self::keys(event)? {
-            self.indexes.entry(key).or_default().insert(seq);
+        let seq = accepted.event.seq;
+        let event_id = accepted.event.event_id.clone();
+        self.bytes = self
+            .bytes
+            .checked_add(accepted.retained_bytes)
+            .ok_or_else(|| HistoryError::Integrity("pending byte accounting overflow".into()))?;
+        self.identities.insert(event_id, seq);
+        for (index, body) in accepted.body_headers.iter().enumerate() {
+            self.bodies.insert(body.id.clone(), (seq, index));
         }
-        if let Some(row) = &event.header.row_key {
-            self.heads.entry(row.clone()).or_default().insert(seq);
-            if event.is_anchor {
-                self.anchors.insert(row.clone(), seq);
-            }
+        if accepted.event.is_anchor
+            && let Some(row_key) = &accepted.event.row_key
+        {
+            self.anchors.insert(row_key.clone(), seq);
         }
-        for (ordinal, body) in event.bodies.iter().enumerate() {
-            self.bodies.insert(body.body_id.clone(), (seq, ordinal));
-        }
-        self.identities.insert(event.header.event_id.clone(), seq);
-        self.bytes += accepted.retained_bytes;
         self.events.insert(seq, accepted);
         Ok(())
     }
+
     pub fn remove_through(&mut self, through: u64) -> Result<()> {
-        let sequences: Vec<_> = self.events.range(..=through).map(|(seq, _)| *seq).collect();
-        for seq in sequences {
-            let Some(accepted) = self.events.remove(&seq) else {
-                continue;
-            };
-            let event = &accepted.event;
-            self.bytes -= accepted.retained_bytes;
-            for key in Self::keys(event)? {
-                if let Some(index) = self.indexes.get_mut(&key) {
-                    index.remove(&seq);
-                    if index.is_empty() {
-                        self.indexes.remove(&key);
-                    }
+        let split = through.saturating_add(1);
+        let retained = self.events.split_off(&split);
+        let removed = std::mem::replace(&mut self.events, retained);
+        for (seq, accepted) in removed {
+            self.bytes = self.bytes.saturating_sub(accepted.retained_bytes);
+            if self.identities.get(&accepted.event.event_id) == Some(&seq) {
+                self.identities.remove(&accepted.event.event_id);
+            }
+            for body in &accepted.body_headers {
+                if self.bodies.get(&body.id).is_some_and(|(s, _)| *s == seq) {
+                    self.bodies.remove(&body.id);
                 }
             }
-            if let Some(row) = &event.header.row_key {
-                if let Some(index) = self.heads.get_mut(row) {
-                    index.remove(&seq);
-                    if index.is_empty() {
-                        self.heads.remove(row);
-                    }
-                }
-                if event.is_anchor {
-                    self.anchors.remove(row);
-                }
+            if accepted.event.is_anchor
+                && let Some(row_key) = &accepted.event.row_key
+                && self.anchors.get(row_key) == Some(&seq)
+            {
+                self.anchors.remove(row_key);
             }
-            for body in &event.bodies {
-                self.bodies.remove(&body.body_id);
-            }
-            self.identities.remove(&event.header.event_id);
         }
         Ok(())
     }
+
     pub fn event(&self, id: &str) -> Option<&Arc<Accepted>> {
-        self.identities.get(id).and_then(|seq| self.events.get(seq))
-    }
-    pub fn finish(&self, turn: &str, cut: u64) -> Option<&Arc<Accepted>> {
-        self.indexes
-            .get(&Key::Finish(turn.into()))?
-            .range(..=cut)
-            .next_back()
+        self.identities
+            .get(id)
             .and_then(|seq| self.events.get(seq))
     }
-    pub fn head(&self, key: &str, cut: u64) -> Option<&Arc<Accepted>> {
-        self.heads
-            .get(key)?
+
+    pub fn body(&self, id: &str) -> Option<(&Arc<Accepted>, &Body, usize)> {
+        let (seq, index) = self.bodies.get(id)?;
+        let accepted = self.events.get(seq)?;
+        let header = accepted.body_headers.get(*index)?;
+        Some((accepted, header, *index))
+    }
+
+    pub fn head(&self, row_key: &str, cut: u64) -> Option<&Arc<Accepted>> {
+        self.events
             .range(..=cut)
-            .next_back()
-            .and_then(|seq| self.events.get(seq))
+            .rev()
+            .map(|(_, entry)| entry)
+            .find(|entry| entry.event.row_key.as_deref() == Some(row_key))
     }
-    pub fn candidates(
-        &self,
-        query: &Query,
-        cut: u64,
-        before: Option<u64>,
-        limit: usize,
-    ) -> Result<Vec<Arc<Accepted>>> {
-        self.candidates_in_order(query, cut, before, limit, false)
+
+    pub fn latest_divider(&self, upper_seq: u64) -> Option<&Arc<Accepted>> {
+        self.events
+            .range(..=upper_seq)
+            .rev()
+            .map(|(_, entry)| entry)
+            .find(|entry| entry.event.timeline_role == HistoryTimelineRole::Divider)
     }
-    pub fn candidates_in_order(
-        &self,
-        query: &Query,
-        cut: u64,
-        before: Option<u64>,
-        limit: usize,
-        ascending: bool,
-    ) -> Result<Vec<Arc<Accepted>>> {
-        let key = match query {
-            Query::Main => Some(Key::Main),
-            Query::Group(id) => Some(Key::Members(id.clone())),
-            Query::Rows(scope) => Some(Key::Scope(scope.clone())),
-            Query::Events(query) => match query {
-                HistoryEventsQuery::AllEvents => None,
-                HistoryEventsQuery::Entity { entity_id } => Some(Key::Entity(entity_id.clone())),
-                HistoryEventsQuery::Turn { turn_id } => Some(Key::Turn(turn_id.clone())),
-                HistoryEventsQuery::Call { call_id } => Some(Key::Call(call_id.clone())),
-                HistoryEventsQuery::Message { message_id } => {
-                    Some(Key::Message(message_id.clone()))
-                }
-                HistoryEventsQuery::Source { source } => Some(Key::Source(source_key(source)?.1)),
-                HistoryEventsQuery::Attempt { run_id, attempt_id } => {
-                    Some(Key::Attempt(run_id.clone(), attempt_id.clone()))
-                }
-                HistoryEventsQuery::TextOriginals => Some(Key::Text),
-                HistoryEventsQuery::Originals { scope } => {
-                    Some(match (scope.query_class(), scope.parent_id()) {
-                        (None, None) => Key::Originals,
-                        (Some(class), None) => Key::Class(class.into()),
-                        (None, Some(parent)) => Key::Parent(parent.into()),
-                        (Some(class), Some(parent)) => {
-                            Key::ParentClass(parent.into(), class.into())
-                        }
-                    })
-                }
-            },
-        };
-        if ascending {
-            let lower = before.unwrap_or(0).saturating_add(1);
-            if lower > cut {
-                return Ok(Vec::new());
-            }
-            return Ok(match key {
-                None => self
-                    .events
-                    .range(lower..=cut)
-                    .take(limit)
-                    .map(|(_, value)| value.clone())
-                    .collect(),
-                Some(key) => self
-                    .indexes
-                    .get(&key)
-                    .into_iter()
-                    .flat_map(|index| index.range(lower..=cut).take(limit))
-                    .filter_map(|seq| self.events.get(seq).cloned())
-                    .collect(),
-            });
+
+    pub fn work_range_summary(&self, lower_excl: u64, upper_incl: u64) -> Option<WorkRangeSummary> {
+        if lower_excl >= upper_incl {
+            return None;
         }
-        let upper = before.map_or(cut, |before| cut.min(before.saturating_sub(1)));
-        Ok(match key {
-            None => self
-                .events
-                .range(..=upper)
-                .rev()
-                .take(limit)
-                .map(|(_, value)| value.clone())
-                .collect(),
-            Some(key) => self
-                .indexes
-                .get(&key)
-                .into_iter()
-                .flat_map(|index| index.range(..=upper).rev().take(limit))
-                .filter_map(|seq| self.events.get(seq).cloned())
-                .collect(),
+        let mut first_seq: Option<u64> = None;
+        let mut last_seq: Option<u64> = None;
+        let mut started_at: Option<i64> = None;
+        let mut ended_at: Option<i64> = None;
+        let mut run_id: Option<String> = None;
+        let mut event_count: u64 = 0;
+        let start_incl = lower_excl.saturating_add(1);
+        for (&seq, entry) in self.events.range(start_incl..=upper_incl) {
+            if entry.event.timeline_role != HistoryTimelineRole::Work {
+                continue;
+            }
+            if first_seq.is_none() {
+                first_seq = Some(seq);
+            }
+            last_seq = Some(seq);
+            if let Some(at) = entry.event.occurred_at {
+                started_at = Some(started_at.map_or(at, |cur| cur.min(at)));
+                ended_at = Some(ended_at.map_or(at, |cur| cur.max(at)));
+            }
+            if let Some(run) = &entry.event.run_id {
+                run_id = Some(run.clone());
+            }
+            event_count += 1;
+        }
+        Some(WorkRangeSummary {
+            first_seq: first_seq?,
+            last_seq: last_seq?,
+            started_at,
+            ended_at,
+            run_id,
+            event_count,
         })
+    }
+
+    pub fn work_range_events(
+        &self,
+        after_excl: u64,
+        upper_incl: u64,
+        limit: usize,
+    ) -> Vec<&Arc<Accepted>> {
+        if after_excl >= upper_incl || limit == 0 {
+            return Vec::new();
+        }
+        let start_incl = after_excl.saturating_add(1);
+        self.events
+            .range(start_incl..=upper_incl)
+            .map(|(_, entry)| entry)
+            .filter(|entry| entry.event.timeline_role == HistoryTimelineRole::Work)
+            .take(limit)
+            .collect()
+    }
+
+    pub fn finish(&self, turn_id: &str, cut: u64) -> Option<&Arc<Accepted>> {
+        self.events
+            .range(..=cut)
+            .rev()
+            .map(|(_, entry)| entry)
+            .find(|entry| {
+                entry.event.turn_id.as_deref() == Some(turn_id)
+                    && entry.event.tool_name.as_deref() == Some("finish_turn")
+            })
+    }
+
+    pub fn business_anchors(
+        &self,
+        scope: HistoryBusinessRowScope,
+        cut: u64,
+        before: Option<u64>,
+        limit: usize,
+        seen_keys: &mut BTreeSet<String>,
+    ) -> Vec<&Arc<Accepted>> {
+        let upper = before.map_or(cut, |b| b.saturating_sub(1).min(cut));
+        let mut results = Vec::new();
+        for (_, entry) in self.events.range(..=upper).rev() {
+            if !entry.event.is_anchor || entry.event.row_scope != Some(scope) {
+                continue;
+            }
+            let Some(row_key) = &entry.event.row_key else {
+                continue;
+            };
+            if seen_keys.insert(row_key.clone()) {
+                results.push(entry);
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        results
+    }
+
+    pub fn matches_query(event: &HistoryEvent, query: &HistoryEventsQuery) -> bool {
+        match query {
+            HistoryEventsQuery::AllEvents => true,
+            HistoryEventsQuery::Entity { entity_id } => {
+                event.entity_id.as_deref() == Some(entity_id.as_str())
+            }
+            HistoryEventsQuery::Turn { turn_id } => {
+                event.turn_id.as_deref() == Some(turn_id.as_str())
+            }
+            HistoryEventsQuery::Source { source } => event.source.as_ref() == Some(source),
+            HistoryEventsQuery::Call { call_id } => {
+                event.call_id.as_deref() == Some(call_id.as_str())
+            }
+            HistoryEventsQuery::Message { message_id } => {
+                event.message_id.as_deref() == Some(message_id.as_str())
+            }
+            HistoryEventsQuery::Attempt { run_id, attempt_id } => {
+                event.run_id.as_deref() == Some(run_id.as_str())
+                    && event.attempt_id.as_deref() == Some(attempt_id.as_str())
+            }
+            HistoryEventsQuery::Originals { scope } => {
+                let Some(original) = &event.original else {
+                    return false;
+                };
+                if let Some(parent) = &scope.parent_id
+                    && original.parent_id.as_deref() != Some(parent.as_str())
+                {
+                    return false;
+                }
+                match &scope.query_class {
+                    crate::ChatClassFilter::All {} => true,
+                    crate::ChatClassFilter::Class { value: query_class } => {
+                        original.query_class == *query_class
+                    }
+                }
+            }
+            HistoryEventsQuery::TextOriginals => event.original.as_ref().is_some_and(|original| {
+                matches!(
+                    original.original_kind,
+                    HistoryEntityKind::Text | HistoryEntityKind::Input
+                )
+            }),
+        }
+    }
+
+    pub fn events_matching(
+        &self,
+        query: &HistoryEventsQuery,
+        min_excl: u64,
+        max_incl: u64,
+        ascending: bool,
+        limit: usize,
+    ) -> Vec<&Arc<Accepted>> {
+        if min_excl >= max_incl || limit == 0 {
+            return Vec::new();
+        }
+        let start_incl = min_excl.saturating_add(1);
+        if ascending {
+            self.events
+                .range(start_incl..=max_incl)
+                .map(|(_, entry)| entry)
+                .filter(|entry| Self::matches_query(&entry.event, query))
+                .take(limit)
+                .collect()
+        } else {
+            self.events
+                .range(start_incl..=max_incl)
+                .rev()
+                .map(|(_, entry)| entry)
+                .filter(|entry| Self::matches_query(&entry.event, query))
+                .take(limit)
+                .collect()
+        }
+    }
+
+    pub fn original_by_entity(&self, entity_id: &str, cut: u64) -> Option<&Arc<Accepted>> {
+        self.events
+            .range(..=cut)
+            .rev()
+            .map(|(_, entry)| entry)
+            .find(|entry| {
+                entry.event.original.is_some()
+                    && entry.event.entity_id.as_deref() == Some(entity_id)
+            })
+    }
+
+    pub fn latest_original(&self, cut: u64) -> Option<&Arc<Accepted>> {
+        self.events
+            .range(..=cut)
+            .rev()
+            .map(|(_, entry)| entry)
+            .find(|entry| entry.event.original.is_some())
     }
 }

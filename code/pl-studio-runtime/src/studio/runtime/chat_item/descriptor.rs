@@ -127,7 +127,7 @@ pub(super) fn item_descriptor(item: &ExecutionItem) -> Result<ItemDescriptor> {
     validate_counts(item.state())?;
     match plan_completion(item)? {
         Some(plan) => Ok(ItemDescriptor::Plan(plan.descriptor)),
-        None => descriptor(item.state(), &item.thread_id),
+        None => descriptor(item.state(), &item.thread_id, false),
     }
 }
 
@@ -135,11 +135,17 @@ pub(super) fn observation_descriptor(
     state: &ExecutionShape,
     thread_id: &str,
 ) -> Result<ItemDescriptor> {
-    if state.is_terminal() {
+    let has_pending_user_input = matches!(
+        state,
+        ExecutionShape::Tool(tool) if tool.user_input().is_some_and(|input| {
+            matches!(input.state(), ThreadToolUserInputState::Pending)
+        })
+    );
+    if state.is_terminal() && !has_pending_user_input {
         return Err(ChatError::Conflict("observation state is terminal".into()).into());
     }
     validate_counts(state)?;
-    descriptor(state, thread_id)
+    descriptor(state, thread_id, true)
 }
 
 pub(super) fn count(value: usize) -> Result<u32> {
@@ -186,7 +192,11 @@ pub(super) fn validate_counts(state: &ExecutionShape) -> Result<()> {
     Ok(())
 }
 
-fn descriptor(state: &ExecutionShape, thread_id: &str) -> Result<ItemDescriptor> {
+fn descriptor(
+    state: &ExecutionShape,
+    thread_id: &str,
+    allow_pending_user_input: bool,
+) -> Result<ItemDescriptor> {
     Ok(match state {
         ExecutionShape::Text(text) => ItemDescriptor::Text(TextDescriptor {
             channel: text.channel(),
@@ -223,7 +233,7 @@ fn descriptor(state: &ExecutionShape, thread_id: &str) -> Result<ItemDescriptor>
                 state: tool_state(tool.state())?,
                 user_input: tool
                     .user_input()
-                    .map(|input| user_input(input, thread_id))
+                    .map(|input| user_input(input, thread_id, allow_pending_user_input))
                     .transpose()?,
                 wait: tool.wait().cloned().map(Box::new),
             })
@@ -321,7 +331,11 @@ fn output(value: &ThreadToolOutput) -> ToolOutputDescriptor {
     }
 }
 
-fn user_input(input: &ThreadToolUserInput, thread_id: &str) -> Result<UserInputDescriptor> {
+fn user_input(
+    input: &ThreadToolUserInput,
+    thread_id: &str,
+    allow_pending: bool,
+) -> Result<UserInputDescriptor> {
     Ok(UserInputDescriptor {
         interaction_id: encode_interaction_key(thread_id, input.interaction_id()),
         questions: input
@@ -341,6 +355,7 @@ fn user_input(input: &ThreadToolUserInput, thread_id: &str) -> Result<UserInputD
             })
             .collect::<Result<_>>()?,
         state: match input.state() {
+            ThreadToolUserInputState::Pending if allow_pending => UserInputState::Pending,
             ThreadToolUserInputState::Pending => return Err(nonterminal()),
             ThreadToolUserInputState::Cancelled => UserInputState::Cancelled,
             ThreadToolUserInputState::Resolved(resolved) => UserInputState::Resolved {

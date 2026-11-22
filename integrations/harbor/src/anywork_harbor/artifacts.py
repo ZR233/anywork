@@ -113,10 +113,9 @@ class RunArtifacts:
         yield from iter_manifest(self.directory, reference)
 
 
-def _validate_manifest(
-    root: Path, reference: dict, event_id: str, payload: dict
-) -> None:
+def _validate_manifest(root: Path, reference: dict, event_id: str) -> None:
     required = {
+        "bodyKey",
         "nativeRef",
         "role",
         "historyRole",
@@ -128,44 +127,48 @@ def _validate_manifest(
     }
     body_ids = set()
     database_id = None
-    canonical_payload = 0
-    canonical_metadata = 0
     for entry in iter_manifest(root, reference):
         if set(entry) != required:
             raise ValueError("内容 manifest 字段集合无效")
-        native = entry["nativeRef"]
-        if not isinstance(native, dict) or set(native) != {
-            "databaseId",
-            "ownerEventId",
-            "bodyKey",
-            "bodyId",
-            "byteStart",
-            "byteLength",
-        }:
-            raise ValueError("内容 manifest nativeRef 格式无效")
         if (
-            native["ownerEventId"] != event_id
-            or not native["databaseId"]
-            or not native["bodyKey"]
-            or not native["bodyId"]
-            or native["bodyId"] in body_ids
-            or not isinstance(native["byteStart"], int)
-            or isinstance(native["byteStart"], bool)
-            or native["byteStart"] < 0
-            or not isinstance(native["byteLength"], int)
-            or isinstance(native["byteLength"], bool)
-            or native["byteLength"] < 0
+            not isinstance(entry["bodyKey"], str)
+            or not entry["bodyKey"]
             or not isinstance(entry["byteLength"], int)
             or isinstance(entry["byteLength"], bool)
             or entry["byteLength"] < 0
-            or native["byteLength"] != entry["byteLength"]
         ):
-            raise ValueError("内容 manifest 原件身份或长度无效")
-        body_ids.add(native["bodyId"])
-        if database_id is None:
-            database_id = native["databaseId"]
-        elif native["databaseId"] != database_id:
-            raise ValueError("内容 manifest 跨 History 数据库")
+            raise ValueError("内容 manifest 标识或长度无效")
+        native = entry["nativeRef"]
+        if native is not None:
+            if not isinstance(native, dict) or set(native) != {
+                "databaseId",
+                "ownerEventId",
+                "bodyKey",
+                "bodyId",
+                "byteStart",
+                "byteLength",
+            }:
+                raise ValueError("内容 manifest nativeRef 格式无效")
+            if (
+                native["ownerEventId"] != event_id
+                or not native["databaseId"]
+                or native["bodyKey"] != entry["bodyKey"]
+                or not native["bodyId"]
+                or native["bodyId"] in body_ids
+                or not isinstance(native["byteStart"], int)
+                or isinstance(native["byteStart"], bool)
+                or native["byteStart"] < 0
+                or not isinstance(native["byteLength"], int)
+                or isinstance(native["byteLength"], bool)
+                or native["byteLength"] < 0
+                or native["byteLength"] != entry["byteLength"]
+            ):
+                raise ValueError("内容 manifest 原件身份或长度无效")
+            body_ids.add(native["bodyId"])
+            if database_id is None:
+                database_id = native["databaseId"]
+            elif native["databaseId"] != database_id:
+                raise ValueError("内容 manifest 跨 History 数据库")
         history_role = entry["historyRole"]
         if (
             not isinstance(history_role, dict)
@@ -216,14 +219,6 @@ def _validate_manifest(
         ):
             raise TypeError("内容 manifest 媒体类型或编码无效")
         verified_blob(root, entry)
-        if history_role["kind"] == "canonicalPayload":
-            canonical_payload += 1
-            if any(entry[key] != payload[key] for key in payload):
-                raise ValueError("canonical payload manifest 与完成 payload 不一致")
-        elif history_role["kind"] == "canonicalMetadata":
-            canonical_metadata += 1
-    if canonical_payload != 1 or canonical_metadata != 1:
-        raise ValueError("内容 manifest 必须各有一个 canonical payload 与 metadata")
 
 
 def read_and_validate_run_artifacts(
@@ -329,12 +324,10 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
                     raise ValueError("完成原件身份矛盾")
                 if (
                     header["entityId"] != atom["entityId"]
-                    or header["runId"] != atom["runId"]
-                    or header["attemptId"] != atom["attemptId"]
-                    or header["source"] != atom["source"]
                     or header["callId"]
                     != (atom["tool"]["callId"] if atom["tool"] is not None else None)
-                    or atom["bodyManifestEventId"] != event_id
+                    or header["toolName"]
+                    != (atom["tool"]["name"] if atom["tool"] is not None else None)
                     or source["turnId"] != header["turnId"]
                     or source["attemptId"] != header["attemptId"]
                     or source["toolCallId"] != header["callId"]
@@ -346,9 +339,7 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
                 if not re.fullmatch(r"contents/[0-9a-f]{64}\.bin", data["payload"]["path"]):
                     raise ValueError("内容寻址路径无效")
                 verified_blob(root, data["payload"])
-                _validate_manifest(
-                    root, data["contentsManifest"], event_id, data["payload"]
-                )
+                _validate_manifest(root, data["contentsManifest"], event_id)
             elif kind == "threadSealed":
                 if (
                     data["threadId"] != thread

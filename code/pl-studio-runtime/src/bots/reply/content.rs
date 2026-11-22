@@ -2,11 +2,12 @@
 
 use super::projection::{ReplyProjection, gap};
 use crate::history::{
-    HistoryDemand, HistoryEntityHead, HistoryEventBodyRef, HistoryEventDetail, HistoryEventsQuery,
-    HistoryReader, HistoryRowHead, HistoryTurnState,
+    EventPayloadEnvelope, HistoryBodyManifestEntry, HistoryBusinessRowHead,
+    HistoryBusinessRowScope, HistoryDemand, HistoryEventBodyRef, HistoryEventMeta,
+    HistoryEventRecord, HistoryEventsQuery, HistoryReader, HistoryTurnState,
+    body::decode_business_head_from_record, decode_event_envelope,
 };
 use crate::{ChatAtomKind, ChatSourceId, ReadDemand, ThreadTextChannel, TurnState};
-use serde::Deserialize;
 
 pub(super) const MAX_TURN_CONTENT_ITEMS: usize = 16_384;
 pub(super) const MAX_TURN_BODY_BYTES: usize = 800_000;
@@ -64,24 +65,23 @@ impl ReplyItem {
     }
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone)]
 pub(super) struct Body {
     key: String,
     pub(super) byte_length: u64,
-    inline: Option<Vec<u8>>,
+    inline_text: Option<String>,
     reference: Option<HistoryEventBodyRef>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Envelope {
-    contract: String,
-    #[serde(rename = "type")]
-    kind: String,
-    data: serde_json::Value,
-    turn_id: Option<String>,
-    bodies: Vec<Body>,
+impl From<HistoryBodyManifestEntry> for Body {
+    fn from(entry: HistoryBodyManifestEntry) -> Self {
+        Self {
+            key: entry.key,
+            byte_length: entry.byte_length,
+            inline_text: entry.inline_text,
+            reference: entry.reference,
+        }
+    }
 }
 
 pub(super) async fn history_turn_items(
@@ -107,10 +107,10 @@ pub(super) async fn history_turn_items(
             .await
             .map_err(|error| read_failure("reply Turn originals failed", error))?;
         for detail in page.entries {
-            if detail.header.original.is_some()
+            if detail.original.is_some()
                 && let Some(item) = decode_original(reader, &detail, turn_id).await?
             {
-                items.push((detail.header.seq, item));
+                items.push((detail.seq, item));
                 if items.len() > MAX_TURN_CONTENT_ITEMS {
                     return Err(FinalError::Attention(
                         "reply Turn exceeded its completion-record budget".into(),
@@ -161,31 +161,34 @@ pub(super) async fn history_turn_terminal(
             .await
             .map_err(|error| read_failure("reply Turn head failed", error))?;
         for entry in page.entries {
-            match entry.head {
-                Some(HistoryRowHead::Turn(head))
-                    if matches!(
-                        head.state,
-                        HistoryTurnState::Completed
-                            | HistoryTurnState::Cancelled
-                            | HistoryTurnState::Failed
-                            | HistoryTurnState::BudgetLimited
-                    ) =>
-                {
-                    let turn = crate::studio::runtime::history_turn(reader, head)
-                        .await
-                        .map_err(|error| {
-                            read_failure("reply immutable Turn detail failed", error)
-                        })?;
-                    if turn.id != turn_id || turn.state.completed_at().is_none() {
-                        return Err(gap("reply Turn detail does not prove its terminal outcome"));
-                    }
-                    return Ok(Some(ReplyItem {
-                        member_id: format!("turn:{turn_id}"),
-                        id: entry.header.event_id,
-                        kind: ReplyItemKind::Terminal(turn.state),
-                    }));
+            if entry.row_scope != Some(HistoryBusinessRowScope::Turn) {
+                continue;
+            }
+            let HistoryBusinessRowHead::Turn(head) = decode_business_head_from_record(&entry)
+                .map_err(|error| gap(&format!("malformed reply Turn head: {error}")))?
+            else {
+                continue;
+            };
+            if matches!(
+                head.state,
+                HistoryTurnState::Completed
+                    | HistoryTurnState::Cancelled
+                    | HistoryTurnState::Failed
+                    | HistoryTurnState::BudgetLimited
+            ) {
+                let turn = crate::studio::runtime::history_turn(reader, head)
+                    .await
+                    .map_err(|error| {
+                        read_failure("reply immutable Turn detail failed", error)
+                    })?;
+                if turn.id != turn_id || turn.state.completed_at().is_none() {
+                    return Err(gap("reply Turn detail does not prove its terminal outcome"));
                 }
-                _ => {}
+                return Ok(Some(ReplyItem {
+                    member_id: format!("turn:{turn_id}"),
+                    id: entry.event_id,
+                    kind: ReplyItemKind::Terminal(turn.state),
+                }));
             }
         }
         let Some(next) = page.next else {
@@ -197,26 +200,29 @@ pub(super) async fn history_turn_terminal(
 
 async fn decode_original(
     reader: &HistoryReader,
-    detail: &HistoryEventDetail,
+    detail: &HistoryEventRecord,
     target_turn: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    let head = match detail.head.as_ref() {
-        Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
-        _ => return Ok(None),
-    };
+    if detail.payload_schema != "anywork.event/1"
+        || detail.timeline_role == crate::history::HistoryTimelineRole::Hidden
+    {
+        return Ok(None);
+    }
     let id = detail
-        .header
         .entity_id
         .as_deref()
         .filter(|id| !id.is_empty())
         .ok_or_else(|| gap("reply original has no entity identity"))?;
-    if detail.header.turn_id.as_deref() != Some(target_turn) {
+    if detail.turn_id.as_deref() != Some(target_turn) {
         return Ok(None);
     }
-    if matches!(&head.source, ChatSourceId::InboxMessage { .. }) {
+    if matches!(&detail.source, Some(ChatSourceId::InboxMessage { .. })) {
         return Ok(None);
     }
-    if head.kind == ChatAtomKind::ToolCall
+    let envelope = decode_event_envelope(detail)
+        .map_err(|error| gap(&format!("malformed reply envelope: {error}")))?;
+    let head = &envelope.meta;
+    if head.entity_kind == ChatAtomKind::ToolCall
         && head
             .tool
             .as_ref()
@@ -225,7 +231,7 @@ async fn decode_original(
         return Ok(None);
     }
     if !matches!(
-        &head.kind,
+        &head.entity_kind,
         ChatAtomKind::Text
             | ChatAtomKind::ToolCall
             | ChatAtomKind::Interaction
@@ -235,31 +241,24 @@ async fn decode_original(
     ) {
         return Ok(None);
     }
-    let payload = detail
-        .payload_ref
-        .as_ref()
-        .ok_or_else(|| gap("reply original has no canonical payload"))?;
-    let bytes = read_bytes(reader, payload, true).await?;
-    decode_envelope(reader, head, detail, id, &bytes, target_turn).await
+    decode_envelope(reader, head, detail, id, &envelope, target_turn).await
 }
 
 async fn decode_envelope(
     reader: &HistoryReader,
-    head: &HistoryEntityHead,
-    detail: &HistoryEventDetail,
+    head: &HistoryEventMeta,
+    detail: &HistoryEventRecord,
     id: &str,
-    bytes: &[u8],
+    envelope: &EventPayloadEnvelope,
     target: &str,
 ) -> Result<Option<ReplyItem>, FinalError> {
-    let envelope: Envelope = serde_json::from_slice(bytes)
-        .map_err(|error| gap(&format!("malformed reply envelope: {error}")))?;
-    if envelope.contract != "anywork.chat/1" {
+    if envelope.contract != "anywork.event/1" {
         return Err(gap("unsupported reply envelope contract"));
     }
-    if envelope.turn_id.as_deref() != Some(target) {
+    if envelope.turn_id.as_deref().or(detail.turn_id.as_deref()) != Some(target) {
         return Ok(None);
     }
-    let expected = match &head.kind {
+    let expected = match &head.entity_kind {
         ChatAtomKind::Text => Some("text"),
         ChatAtomKind::Interaction | ChatAtomKind::ToolCall => Some("tool"),
         ChatAtomKind::Plan => Some("plan"),
@@ -267,7 +266,7 @@ async fn decode_envelope(
         ChatAtomKind::Unknown => None,
         _ => return Ok(None),
     };
-    if expected.is_some_and(|kind| kind != envelope.kind) {
+    if expected.is_some_and(|kind| kind != envelope.item_type) {
         return Err(gap("reply metadata and frozen payload domain conflict"));
     }
     if let Some(tool) = &head.tool
@@ -278,7 +277,8 @@ async fn decode_envelope(
             "reply metadata and frozen payload tool identity conflict",
         ));
     }
-    let kind = match envelope.kind.as_str() {
+    let bodies: Vec<Body> = envelope.bodies.iter().cloned().map(Body::from).collect();
+    let kind = match envelope.item_type.as_str() {
         "text" => {
             let channel: ThreadTextChannel = serde_json::from_value(
                 envelope
@@ -294,7 +294,7 @@ async fn decode_envelope(
             if channel != ThreadTextChannel::Final {
                 return Ok(None);
             }
-            let body = unique_body(&envelope.bodies, "body", detail, id)?;
+            let body = unique_body(&bodies, "body", detail, id)?;
             let bytes = body.read(reader, true).await?;
             let preview = match String::from_utf8(bytes) {
                 Ok(text) => text,
@@ -321,7 +321,7 @@ async fn decode_envelope(
             ReplyItemKind::Terminal(state)
         }
         "tool" => {
-            if head.kind == ChatAtomKind::ToolCall
+            if head.entity_kind == ChatAtomKind::ToolCall
                 && envelope.data["invocation"]["presentationContract"].as_str()
                     == Some(pl_tool::file_display::FILE_DISPLAY_PRESENTATION)
                 && envelope.data["state"]["kind"].as_str() == Some("succeeded")
@@ -330,7 +330,7 @@ async fn decode_envelope(
                     .as_str()
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| gap("file display lacks frozen tool call identity"))?;
-                let body = unique_body(&envelope.bodies, "tool.output-artifacts", detail, id)?;
+                let body = unique_body(&bodies, "tool.output-artifacts", detail, id)?;
                 let bytes = body.read(reader, true).await?;
                 let artifacts: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
                     .map_err(|error| gap(&format!("malformed display artifacts: {error}")))?;
@@ -366,7 +366,7 @@ async fn decode_envelope(
                 .get("userInput")
                 .filter(|value| !value.is_null())
             else {
-                if head.kind == ChatAtomKind::Interaction {
+                if head.entity_kind == ChatAtomKind::Interaction {
                     return Err(gap("reply Interaction original lacks frozen user input"));
                 }
                 return Ok(None);
@@ -397,7 +397,7 @@ async fn decode_envelope(
 fn unique_body(
     bodies: &[Body],
     key: &str,
-    detail: &HistoryEventDetail,
+    detail: &HistoryEventRecord,
     _id: &str,
 ) -> Result<Body, FinalError> {
     let mut matching = bodies.iter().filter(|body| body.key == key);
@@ -413,12 +413,12 @@ fn unique_body(
 }
 
 impl Body {
-    fn validate(&self, detail: &HistoryEventDetail, _item: &str) -> Result<(), FinalError> {
+    fn validate(&self, detail: &HistoryEventRecord, _item: &str) -> Result<(), FinalError> {
         check_length(self.byte_length)?;
-        match (&self.inline, &self.reference) {
-            (Some(bytes), None) if bytes.len() as u64 == self.byte_length => Ok(()),
+        match (&self.inline_text, &self.reference) {
+            (Some(text), None) if text.len() as u64 == self.byte_length => Ok(()),
             (None, Some(reference))
-                if reference.owner_event_id == detail.header.event_id
+                if reference.owner_event_id == detail.event_id
                     && reference.body_key == self.key
                     && reference.byte_length == self.byte_length
                     && reference.byte_start == 0 =>
@@ -432,8 +432,8 @@ impl Body {
     }
 
     async fn read(&self, reader: &HistoryReader, complete: bool) -> Result<Vec<u8>, FinalError> {
-        match (&self.inline, &self.reference) {
-            (Some(bytes), None) => Ok(bytes.clone()),
+        match (&self.inline_text, &self.reference) {
+            (Some(text), None) => Ok(text.as_bytes().to_vec()),
             (None, Some(reference)) => read_bytes(reader, reference, complete).await,
             _ => Err(gap("canonical reply body has no unique source")),
         }

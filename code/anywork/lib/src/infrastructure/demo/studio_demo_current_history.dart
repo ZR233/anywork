@@ -64,42 +64,59 @@ final class _DemoHistoryReader implements HistoryReader {
     );
     return HistoryTimelinePage(
       cut: cut ?? _cut(),
-      entries: _historyEntries(page.blocks),
+      items: _historyItems(page.blocks),
       next: page.before,
     );
   }
 
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) async {
     _checkOpen();
-    final block = _history.displayBlocks
-        .where((value) => value.id == groupId)
-        .firstOrNull;
-    if (block == null) throw _demoMissing();
-    final body = block.body;
-    if (body is! WorkDisplayBlock) throw _demoMissing();
+    WorkDisplayBlock? work;
+    int? blockOrder;
+    for (final candidate in _history.displayBlocks) {
+      final body = candidate.body;
+      if (body is! WorkDisplayBlock) continue;
+      final candidateBefore =
+          body.members.beforeSeq ??
+          (body.groupClosed ? candidate.blockOrder + 1 : null);
+      if (body.members.afterSeq == afterSeq && candidateBefore == beforeSeq) {
+        work = body;
+        blockOrder = candidate.blockOrder;
+        break;
+      }
+      if (afterSeq == null && beforeSeq == null && candidate.blockOrder >= 0) {
+        work ??= body;
+        blockOrder ??= candidate.blockOrder;
+      }
+    }
+    if (work == null || blockOrder == null) {
+      throw _demoMissing();
+    }
     final heads =
-        _history.displayHeads[body.members] ?? const <DisplayMemberHead>[];
+        _history.displayHeads[work.members] ?? const <DisplayMemberHead>[];
     final start = cursor == null ? 0 : int.tryParse(cursor) ?? 0;
     final selected = heads.skip(start).take(demand.maxRows).toList();
     final next = start + selected.length < heads.length
         ? '${start + selected.length}'
         : null;
-    return HistoryGroupPage(
-      cut: cut ?? body.members.cut,
-      groupId: groupId,
-      members: [
+    return HistoryWorkRangePage(
+      cut: cut ?? work.members.cut,
+      afterSeq: afterSeq,
+      beforeSeq: beforeSeq,
+      events: [
         for (final head in selected)
-          HistoryTimelineEntry(
+          _eventRecordFromRecord(
+            head.record,
+            seq: head.memberOrder,
             rowKey: head.memberKey,
-            anchorSeq: head.memberOrder,
-            headSeq: head.memberOrder,
-            head: MemberHistoryRow(_historyEntityHead(head.record)),
+            timelineRole: HistoryTimelineRole.work,
           ),
       ],
       next: next,
@@ -107,22 +124,22 @@ final class _DemoHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) async {
     _checkOpen();
     final turn = _api._demoWorkspace(threadId).lastTurn;
-    return HistoryTimelinePage(
+    return HistoryBusinessPage(
       cut: cut ?? _cut(),
       entries: [
         if (turn != null)
-          HistoryTimelineEntry(
+          HistoryBusinessRowEntry(
             rowKey: 'turn:${turn.turnId}',
             anchorSeq: turn.revision,
             headSeq: turn.revision,
-            head: TurnHistoryRow(
+            head: TurnHistoryBusinessRow(
               HistoryTurnHead(
                 turnId: turn.turnId,
                 inputId: turn.inputId,
@@ -180,52 +197,31 @@ final class _DemoHistoryReader implements HistoryReader {
     _checkOpen();
     final all = [
       for (final item in _history.items)
-        HistoryEventDetail(
-          header: HistoryEventHeader(
-            seq: item.order,
-            eventId: item.message.id,
-            kind: 'entity_ended',
-            runId: null,
-            attemptId: item.message.attemptId,
-            entityId: item.message.id,
-            turnId: item.message.turnId,
-            source: item.message.source,
-            recordedAt: 0,
+        _eventRecordFromRecord(
+          DisplayRecord(
+            atom: item.message,
+            contentSource: CompletedOriginal(completionId: item.message.id),
           ),
-          head: SingleHistoryRow(
-            _historyEntityHead(
-              DisplayRecord(
-                atom: item.message,
-                contentSource: CompletedOriginal(completionId: item.message.id),
-              ),
-            ),
-          ),
+          seq: item.order,
+          rowKey: 'single:${item.message.id}',
+          timelineRole: HistoryTimelineRole.divider,
         ),
     ];
     final filtered = switch (query) {
       EntityHistoryEvents(:final entityId) =>
-        all.where((event) => event.header.entityId == entityId).toList(),
+        all.where((event) => event.entityId == entityId).toList(),
       TurnHistoryEvents(:final turnId) =>
-        all.where((event) => event.header.turnId == turnId).toList(),
+        all.where((event) => event.turnId == turnId).toList(),
       SourceHistoryEvents(:final source) =>
-        all.where((event) => event.header.source == source).toList(),
+        all.where((event) => event.source == source).toList(),
       CallHistoryEvents(:final callId) =>
-        all
-            .where(
-              (event) => switch (event.head) {
-                SingleHistoryRow(:final head) => head.tool?.callId == callId,
-                _ => false,
-              },
-            )
-            .toList(),
+        all.where((event) => event.callId == callId).toList(),
       MessageHistoryEvents(:final messageId) =>
-        all.where((event) => event.header.messageId == messageId).toList(),
+        all.where((event) => event.messageId == messageId).toList(),
       AttemptHistoryEvents(:final runId, :final attemptId) =>
         all
             .where(
-              (event) =>
-                  event.header.runId == runId &&
-                  event.header.attemptId == attemptId,
+              (event) => event.runId == runId && event.attemptId == attemptId,
             )
             .toList(),
       AllHistoryEvents() ||
@@ -244,7 +240,7 @@ final class _DemoHistoryReader implements HistoryReader {
   }
 
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) async {
@@ -326,11 +322,11 @@ final class _DemoHistoryReader implements HistoryReader {
   Future<HistoryAccounting?> accounting({HistoryCut? cut}) async => null;
 
   @override
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) async => HistoryTimelinePage(cut: cut ?? _cut(), entries: const []);
+  }) async => HistoryBusinessPage(cut: cut ?? _cut(), entries: const []);
 
   @override
   Future<HistoryCut> waitChanged(HistoryCut after) async {
@@ -383,88 +379,187 @@ final class _DemoHistoryReader implements HistoryReader {
         byteLength: length,
       );
 
-  List<HistoryTimelineEntry> _historyEntries(List<DisplayBlock> blocks) => [
+  List<HistoryTimelineItem> _historyItems(List<DisplayBlock> blocks) => [
     for (final block in blocks)
-      HistoryTimelineEntry(
-        rowKey: block.id,
-        anchorSeq: block.blockOrder,
-        headSeq: block.blockOrder,
-        head: switch (block.body) {
-          WorkDisplayBlock(
-            :final timing,
-            :final members,
-            :final executionPresent,
-            :final memberCount,
-            :final unfinishedCount,
-            :final groupClosed,
-            :final summary,
-          ) =>
-            WorkHistoryRow(
-              HistoryWorkHead(
-                groupId: members.blockId,
-                runId: null,
-                startedAt: timing.startedAtMillis,
-                boundaryAt: timing.finishedAtMillis,
-                closed: groupClosed,
-                memberCount: memberCount,
-                unfinishedCount: unfinishedCount,
-                executionPresent: executionPresent,
-                summary: summary,
-              ),
+      switch (block.body) {
+        WorkDisplayBlock(
+          :final timing,
+          :final members,
+          :final memberCount,
+          :final groupClosed,
+        ) =>
+          WorkRangeTimelineItem(
+            HistoryWorkRange(
+              rangeId: members.blockId,
+              afterSeq: members.afterSeq,
+              beforeSeq:
+                  members.beforeSeq ??
+                  (groupClosed ? block.blockOrder + 1 : null),
+              firstSeq: block.blockOrder,
+              lastSeq: members.headSeq,
+              startedAt: timing.startedAtMillis,
+              endedAt: timing.finishedAtMillis,
+              runId: members.runId,
+              eventCount: memberCount > 0 ? memberCount : 1,
             ),
-          SingleDisplayBlock(:final record, :final visibility) =>
-            SingleHistoryRow(
-              _historyEntityHead(record, visibility: visibility),
+          ),
+        SingleDisplayBlock(:final record, :final visibility) =>
+          DividerTimelineItem(
+            _eventRecordFromRecord(
+              record,
+              seq: block.blockOrder,
+              rowKey: block.id,
+              timelineRole: HistoryTimelineRole.divider,
+              visibility: visibility,
             ),
-        },
-      ),
+          ),
+      },
   ];
 
-  HistoryEntityHead _historyEntityHead(
+  HistoryEventRecord _eventRecordFromRecord(
     DisplayRecord record, {
+    required int seq,
+    required String rowKey,
+    required HistoryTimelineRole timelineRole,
     HistorySingleVisibility? visibility,
   }) {
     final atom = record.atom;
     final startedAt = atom.startedAt;
     final finishedAt = atom.finishedAt;
-    return HistoryEntityHead(
-      entityId: atom.id,
-      runId: null,
-      attemptId: atom.attemptId,
-      source: atom.source,
-      kind: atom.kind,
-      delivery: atom.delivery,
-      state: switch (atom.lifecycle) {
-        ActiveChatAtom(:final status) => HistoryEntityState(
-          kind: HistoryEntityStateKind.knownActive,
-          activeStatus: status,
-        ),
-        TerminalChatAtom(:final outcome) => HistoryEntityState(
-          kind: HistoryEntityStateKind.knownTerminal,
-          outcome: outcome,
-        ),
+    final payloadBody = _history.payloads[atom.id];
+    Map<String, Object?>? payloadMap;
+    if (payloadBody != null) {
+      try {
+        final decoded = jsonDecode(
+          utf8.decode(payloadBody.range(0, payloadBody.length)),
+        );
+        if (decoded is Map<String, Object?>) payloadMap = decoded;
+      } on FormatException {
+        // Non-UTF-8 or non-JSON demo payload falls back to atom metadata below.
+        payloadMap = null;
+      }
+    }
+
+    final itemBodies = _history.bodies[atom.id];
+    final bodiesJson = <Map<String, Object?>>[];
+    if (itemBodies != null && itemBodies.isNotEmpty) {
+      for (final entry in itemBodies.entries) {
+        final bytes = entry.value.range(0, entry.value.length);
+        final ref = _historyBodyRef(atom.id, entry.key, bytes.length);
+        String? inlineText;
+        if (bytes.length <= 16384) {
+          try {
+            inlineText = utf8.decode(bytes);
+          } on FormatException {
+            inlineText = null;
+          }
+        }
+        bodiesJson.add({
+          'key': entry.key,
+          'role': switch (entry.key) {
+            'tool.arguments' => 'toolArguments',
+            'tool.result' => 'toolOutput',
+            _ when entry.key.startsWith('part.summaryText.') =>
+              'reasoningSummary',
+            'tool.output-artifacts' => 'attachment',
+            _ => 'body',
+          },
+          'byteLength': bytes.length,
+          'inlineText': ?inlineText,
+          if (inlineText == null)
+            'reference': {
+              'databaseId': ref.databaseId,
+              'ownerEventId': ref.ownerEventId,
+              'bodyKey': ref.bodyKey,
+              'bodyId': ref.bodyId,
+              'byteStart': ref.byteStart,
+              'byteLength': ref.byteLength,
+            },
+        });
+      }
+    } else if (payloadMap?['bodies'] case final List<Object?> declared) {
+      for (final item in declared) {
+        if (item is Map<String, Object?>) bodiesJson.add(item);
+      }
+    }
+
+    final itemType =
+        payloadMap?['type'] as String? ??
+        switch (atom.kind) {
+          ChatAtomKind.input || ChatAtomKind.text => 'text',
+          ChatAtomKind.reasoning => 'thinking',
+          ChatAtomKind.toolCall => 'tool',
+          ChatAtomKind.plan => 'plan',
+          ChatAtomKind.turnReceipt => 'turn',
+          ChatAtomKind.skill => 'skill',
+          ChatAtomKind.fileChange => 'file',
+          ChatAtomKind.agent => 'agent',
+          ChatAtomKind.inference => 'inference',
+          ChatAtomKind.compaction => 'contextCompaction',
+          _ => 'raw',
+        };
+    final kind = switch (atom.kind) {
+      ChatAtomKind.input => 'input_accepted',
+      ChatAtomKind.toolCall => switch (atom.lifecycle) {
+        ActiveChatAtom() => 'tool_called',
+        TerminalChatAtom() => 'tool_completed',
       },
-      startedAt: startedAt == null
+      ChatAtomKind.reasoning => 'thinking_completed',
+      _ => 'text_completed',
+    };
+    final envelope = <String, Object?>{
+      'contract': 'anywork.event/1',
+      'type': itemType,
+      'meta': {
+        'entityId': atom.id,
+        'entityKind': atom.kind.name,
+        'delivery': atom.delivery.name,
+        'state': switch (atom.lifecycle) {
+          ActiveChatAtom(:final status) => {
+            'kind': 'knownActive',
+            'status': status.name,
+          },
+          TerminalChatAtom(:final outcome) => {
+            'kind': 'knownTerminal',
+            'outcome': outcome.name,
+          },
+        },
+        if (startedAt != null)
+          'startedAt': startedAt * Duration.millisecondsPerSecond,
+        if (finishedAt != null)
+          'finishedAt': finishedAt * Duration.millisecondsPerSecond,
+        if (atom.textChannel != null) 'textChannel': atom.textChannel!.name,
+        if (visibility != null) 'singleVisibility': visibility.name,
+        if (atom.contentPresent != null) 'contentPresent': atom.contentPresent,
+        if (atom.tool != null)
+          'tool': {'callId': atom.tool!.callId, 'name': atom.tool!.name},
+      },
+      'data': payloadMap?['data'] ?? <String, Object?>{},
+      'bodies': bodiesJson,
+      if (record.contentSource case FrozenObservation(:final capturedAt)
+          when capturedAt != null)
+        'capturedAt': capturedAt,
+    };
+
+    return HistoryEventRecord(
+      seq: seq,
+      eventId: atom.id,
+      kind: kind,
+      timelineRole: timelineRole,
+      occurredAt: startedAt == null
           ? null
           : startedAt * Duration.millisecondsPerSecond,
-      finishedAt: finishedAt == null
-          ? null
-          : finishedAt * Duration.millisecondsPerSecond,
-      textChannel: atom.textChannel,
-      tool: atom.tool,
-      wait: null,
-      contentPresent: atom.contentPresent,
-      singleVisibility: visibility,
-      observation: switch (record.contentSource) {
-        FrozenObservation(:final capturedAt) => HistoryObservation(
-          kind: HistoryObservationKind.boundary,
-          capturedAt: capturedAt,
-        ),
-        CompletedOriginal() || CurrentAtomSource() => const HistoryObservation(
-          kind: HistoryObservationKind.original,
-        ),
-      },
-      detailEventId: atom.id,
+      recordedAt: seq,
+      runId: record.runId,
+      turnId: atom.turnId,
+      attemptId: atom.attemptId,
+      callId: record.callId ?? atom.tool?.callId,
+      entityId: atom.id,
+      toolName: atom.tool?.name,
+      source: atom.source,
+      rowKey: rowKey,
+      payloadSchema: 'anywork.event/1',
+      payloadJson: jsonEncode(envelope),
     );
   }
 }

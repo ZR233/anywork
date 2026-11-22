@@ -12,33 +12,14 @@ use pl_studio_runtime::{
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, SubmitPromptRequest,
     ThreadWorkspaceMode,
-    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
+    history::{
+        HistoryDemand, HistoryEventsQuery, decode_event_envelope, read_event_body_bytes,
+    },
 };
 use std::{path::Path, time::Duration};
 use support::{
     Environment, completed_prompt, current_demand, git, held_reply, prompt_step, reached,
 };
-
-// Read only the public frozen payload and explicit body references. Checkpoint
-// decoding below verifies workspace identity, never supplies chat text.
-async fn public_bytes(
-    reader: &pl_studio_runtime::history::HistoryReader,
-    reference: &HistoryEventBodyRef,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while bytes.len() as u64 != reference.byte_length {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                bytes.len() as u64,
-                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty(), "history body did not advance");
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
 
 #[derive(Debug, PartialEq)]
 struct PublicHistoryItem {
@@ -74,33 +55,28 @@ async fn public_history(
         let identities: std::collections::HashSet<_> = page
             .entries
             .iter()
-            .map(|event| event.header.event_id.as_str())
+            .map(|event| event.event_id.as_str())
             .collect();
         ensure!(identities.len() == page.entries.len());
         let mut items = Vec::new();
         for event in page.entries {
-            let original = event.header.original.clone();
-            let payload_ref = event.payload_ref.clone();
-            let mut envelope = None;
-            if let Some(reference) = payload_ref {
-                let bytes = public_bytes(&reader, &reference).await?;
-                let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-                ensure!(value["contract"] == "anywork.chat/1");
-                envelope = Some(value);
-            }
+            let original = event.original.clone();
+            let envelope_typed = decode_event_envelope(&event)?;
+            ensure!(envelope_typed.contract == "anywork.event/1");
+            let envelope = Some(serde_json::from_str(&event.payload_json)?);
             let mut bodies = Vec::new();
-            let body_page = reader
-                .list_bodies(event.header.event_id.clone(), None, demand)
-                .await?;
-            for body in body_page.entries {
-                bodies.push(public_bytes(&reader, &body.reference).await?);
+            for entry in &envelope_typed.bodies {
+                let bytes = read_event_body_bytes(&reader, &event, &entry.key, None)
+                    .await?
+                    .with_context(|| format!("missing body {} for {}", entry.key, event.event_id))?;
+                bodies.push(bytes);
             }
             items.push(PublicHistoryItem {
-                event_id: event.header.event_id,
+                event_id: event.event_id,
                 kind: original
                     .context("history original has no kind")?
                     .original_kind,
-                turn_id: event.header.turn_id,
+                turn_id: event.turn_id,
                 envelope,
                 bodies,
             });

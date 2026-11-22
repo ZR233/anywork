@@ -132,7 +132,10 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
     }
     /// Header and body insertion are separate solely for bounded migration. All body ownership
     /// and payload links close inside the caller's deferred-FK transaction.
-    pub async fn insert_event(&mut self, mut event: HistoryEvent) -> Result<u64> {
+    pub(in crate::history) async fn insert_event(
+        &mut self,
+        mut event: super::upgrade::HistoryEventV25,
+    ) -> Result<u64> {
         if !event.bodies.is_empty() || event.header.seq != 0 {
             return Err(HistoryError::InvalidEvent(
                 "streamed import accepts unnumbered metadata only".into(),
@@ -141,8 +144,13 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
         let mut header_check = event.clone();
         header_check.payload_body_id = None;
         header_check.header.original = None;
-        validate::event(&header_check)?;
-        if db::event(self.connection, &event.header.event_id)
+        super::upgrade::validate_v25_event(&header_check)?;
+        if self
+            .connection
+            .query_one_raw(statement(
+                "SELECT 1 FROM history_events WHERE event_id=? LIMIT 1",
+                vec![event.header.event_id.clone().into()],
+            ))
             .await?
             .is_some()
         {
@@ -166,7 +174,10 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
                 ));
             }
             let head = match &event.head {
-                Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head.clone(),
+                Some(
+                    super::upgrade::HistoryRowHeadV25::Single(head)
+                    | super::upgrade::HistoryRowHeadV25::Member(head),
+                ) => head.clone(),
                 _ => {
                     let bodies =
                         db::bodies(self.connection, &event.header.event_id, None, 512).await?;
@@ -183,8 +194,11 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
                             "canonical import metadata is not bounded".into(),
                         ));
                     }
-                    serde_json::from_slice::<HistoryEntityHead>(
-                        &db::window(self.connection, &metadata, 0, metadata.length as usize)
+                    let read_len = u32::try_from(metadata.length).map_err(|_| {
+                        HistoryError::InvalidEvent("canonical import metadata length overflow".into())
+                    })?;
+                    serde_json::from_slice::<super::upgrade::HistoryEntityHeadV25>(
+                        &db::window(self.connection, &metadata, 0, read_len)
                             .await?,
                     )?
                 }
@@ -204,7 +218,7 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
             .filter(|seq| *seq <= i64::MAX as u64)
             .ok_or_else(|| HistoryError::InvalidEvent("import sequence exhausted".into()))?;
         event.header.seq = self.sequence;
-        db::insert_event(self.connection, &event).await?;
+        super::upgrade::insert_v25_event(self.connection, &event).await?;
         Ok(self.sequence)
     }
     pub async fn validate_body_reference(&self, reference: &HistoryEventBodyRef) -> Result<()> {
@@ -267,8 +281,6 @@ pub struct V24Original {
     pub item_id: String,
     pub query_class: String,
     pub parent_id: Option<String>,
-    pub payload_bytes: u64,
-    pub metadata_bytes: u64,
 }
 #[derive(Debug, Clone)]
 pub enum V24Body {
@@ -325,7 +337,7 @@ impl V24HistorySource {
                 "legacy page must contain 1..128 rows".into(),
             ));
         }
-        let rows = self.inner.tx.query_all_raw(statement("SELECT seq,item_id,query_class,parent_id,length(payload) AS payload_bytes,length(metadata) AS metadata_bytes FROM conversation_items WHERE seq>? ORDER BY seq LIMIT ?", vec![db::number(after)?.into(), i64::from(max_rows).into()])).await?;
+        let rows = self.inner.tx.query_all_raw(statement("SELECT seq,item_id,query_class,parent_id FROM conversation_items WHERE seq>? ORDER BY seq LIMIT ?", vec![db::number(after)?.into(), i64::from(max_rows).into()])).await?;
         rows.into_iter()
             .map(|row| {
                 Ok(V24Original {
@@ -334,14 +346,6 @@ impl V24HistorySource {
                     item_id: row.try_get("", "item_id")?,
                     query_class: row.try_get("", "query_class")?,
                     parent_id: row.try_get("", "parent_id")?,
-                    payload_bytes: u64::try_from(row.try_get::<i64>("", "payload_bytes")?)
-                        .map_err(|_| {
-                            HistoryError::Integrity("negative legacy payload length".into())
-                        })?,
-                    metadata_bytes: u64::try_from(row.try_get::<i64>("", "metadata_bytes")?)
-                        .map_err(|_| {
-                            HistoryError::Integrity("negative legacy metadata length".into())
-                        })?,
                 })
             })
             .collect()
@@ -665,5 +669,142 @@ impl HistoryBodySource for V24BodyReader {
                 Ok(result)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sea_orm::{Database, DatabaseBackend, Statement, TransactionTrait};
+
+    async fn test_sqlite(path: &std::path::Path) -> Result<sea_orm::DatabaseConnection> {
+        let mut options = sea_orm::ConnectOptions::new("sqlite:");
+        let buf = path.to_path_buf();
+        options.map_sqlx_sqlite_opts(move |opts| {
+            opts.filename(&buf).foreign_keys(true).create_if_missing(true)
+        });
+        Ok(Database::connect(options).await?)
+    }
+
+    #[tokio::test]
+    async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mutating_source()
+    -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source_path = temp.path().join("v24.sqlite");
+        let target_path = temp.path().join("v25.sqlite");
+
+        let source_db = test_sqlite(&source_path).await?;
+        source_db
+            .execute_unprepared(
+                "CREATE TABLE history_meta(id INTEGER PRIMARY KEY,schema_version INTEGER,thread_id TEXT);\
+                 INSERT INTO history_meta VALUES(1,24,'import');\
+                 CREATE TABLE conversation_items(seq INTEGER PRIMARY KEY,item_id TEXT UNIQUE,query_class TEXT,parent_id TEXT,payload BLOB,metadata BLOB);",
+            )
+            .await?;
+        let payload = b"preserved binary original".repeat(7000);
+        source_db
+            .execute_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "INSERT INTO conversation_items VALUES(7,'original','conversation',NULL,?,?)",
+                vec![
+                    payload.clone().into(),
+                    b"typed legacy metadata".to_vec().into(),
+                ],
+            ))
+            .await?;
+        source_db.close().await?;
+        let source_before = std::fs::read(&source_path)?;
+
+        let database_id = uuid::Uuid::new_v4().to_string();
+        let target_db = test_sqlite(&target_path).await?;
+        target_db
+            .execute_unprepared(include_str!("upgrade/schema_v25.sql"))
+            .await?;
+        target_db
+            .execute_unprepared(
+                "CREATE TABLE IF NOT EXISTS seaql_migrations (version TEXT PRIMARY KEY NOT NULL, applied_at INTEGER NOT NULL);",
+            )
+            .await?;
+        target_db
+            .execute_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "INSERT INTO seaql_migrations(version, applied_at) VALUES(?, 1)",
+                vec![super::super::schema::MIGRATION_V25.into()],
+            ))
+            .await?;
+        target_db
+            .execute_raw(Statement::from_sql_and_values(
+                DatabaseBackend::Sqlite,
+                "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,'import')",
+                vec![database_id.clone().into()],
+            ))
+            .await?;
+
+        let tx = target_db.begin().await?;
+        let mut importer = HistoryImport::new(&tx, database_id).await?;
+        let source = V24HistorySource::open(&source_path, "import").await?;
+        let originals = source.originals_page(0, 128).await?;
+        assert_eq!(originals.len(), 1);
+        let body = source
+            .body(V24Body::Payload {
+                item_id: "original".into(),
+            })
+            .await?;
+        let reference = importer
+            .copy_body(
+                HistoryImportBody {
+                    body_id: uuid::Uuid::new_v4().to_string(),
+                    owner_event_id: "original".into(),
+                    ordinal: 0,
+                    body_key: "body".into(),
+                    role: HistoryBodyRole::Body,
+                    media_type: None,
+                },
+                &body,
+            )
+            .await?;
+        let event = super::super::upgrade::HistoryEventV25::new(
+            "original",
+            super::super::upgrade::HistoryEventKindV25::LegacyObserved,
+            0,
+        );
+        importer.insert_event(event).await?;
+        importer.finish().await?;
+        tx.commit().await?;
+        target_db.close().await?;
+        drop(body);
+        source.close().await?;
+        assert_eq!(std::fs::read(&source_path)?, source_before);
+
+        let report = super::super::upgrade::upgrade_history(&target_path, "import", temp.path()).await?;
+        assert_eq!(report.status, super::super::upgrade::UpgradeStatus::Upgraded);
+        let reopened = HistoryStore::open(&target_path, "import", HistoryLimits::default()).await?;
+        let reader = reopened.reader();
+        let event_rec = reader
+            .read_event("original".into(), HistoryDemand::default())
+            .await?;
+        assert_eq!(event_rec.payload_schema, "anywork.business/1");
+        let env: super::body::BusinessFactEnvelope =
+            serde_json::from_str(&event_rec.payload_json)?;
+        assert_eq!(env.bodies.len(), 1);
+        let upgraded_ref = env.bodies[0]
+            .reference
+            .clone()
+            .expect("large streamed v24 body remains external BLOB");
+        assert_eq!(upgraded_ref.body_id, reference.body_id);
+        reader.verify_body(upgraded_ref.clone()).await?;
+        let mut actual = Vec::new();
+        while actual.len() < payload.len() {
+            actual.extend(
+                reader
+                    .read_body(upgraded_ref.clone(), actual.len() as u64, 65_536)
+                    .await?
+                    .bytes,
+            );
+        }
+        assert_eq!(actual, payload);
+        reader.close().await;
+        reopened.close().await?;
+        Ok(())
     }
 }

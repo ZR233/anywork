@@ -122,7 +122,7 @@ Future<HistoryTurnHead> _waitForCompletedSetupTurn(
             )
             .timeout(remaining());
         for (final entry in page.entries) {
-          if (entry.head case TurnHistoryRow(:final head)
+          if (entry.head case TurnHistoryBusinessRow(:final head)
               when head.inputId == inputId) {
             switch (head.state) {
               case HistoryTurnState.completed:

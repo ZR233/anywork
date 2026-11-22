@@ -178,8 +178,12 @@ void main() {
           ),
         );
         expect(reads, 0);
+        expect(
+          find.byKey(StudioDriverKeys.viewImageTool('unknown')),
+          findsNothing,
+        );
         await tester.tap(
-          find.byKey(const ValueKey(('item-disclosure', 'unknown'))),
+          find.byKey(const ValueKey('timeline-tool-details:unknown')),
         );
         await tester.pump(const Duration(milliseconds: 300));
         await pumpClientUntil(
@@ -187,15 +191,7 @@ void main() {
           () => find.byType(Image).evaluate().isNotEmpty,
           'unknown-tool attachment',
         );
-        expect(find.textContaining('未知展示格式'), findsOneWidget);
-        expect(
-          find.text(
-            marker == null
-                ? '未提供 presentationContract'
-                : '不支持的 presentationContract：$marker',
-          ),
-          findsOneWidget,
-        );
+        expect(find.textContaining('show_image'), findsOneWidget);
         expect(reads, 1);
         expect(find.text('not a guessed card'), findsNothing);
         await tester.pumpWidget(const SizedBox.shrink());
