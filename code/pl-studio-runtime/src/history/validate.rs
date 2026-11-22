@@ -77,9 +77,7 @@ pub(super) fn validate_common(event: &HistoryEvent) -> Result<usize> {
                 }
                 (HistoryBusinessRowHead::Source(src), HistoryBusinessRowScope::Source) => {
                     let expected = format!("source:{}", serde_json::to_string(&src.source)?);
-                    if row_key != &expected
-                        || event.source.as_ref() != Some(&src.source)
-                    {
+                    if row_key != &expected || event.source.as_ref() != Some(&src.source) {
                         return Err(HistoryError::InvalidEvent(
                             "source business row identity differs from source or row_key".into(),
                         ));

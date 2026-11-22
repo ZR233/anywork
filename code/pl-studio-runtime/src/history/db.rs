@@ -3,11 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, Value};
 use sha2::{Digest, Sha256};
 
-use super::{
-    pending::WorkRangeSummary,
-    types::source_key,
-    *,
-};
+use super::{pending::WorkRangeSummary, types::source_key, *};
 
 pub(super) fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
@@ -365,16 +361,15 @@ pub(super) fn event_filter(query: &HistoryEventsQuery) -> Result<(String, Vec<Va
         HistoryEventsQuery::Entity { entity_id } => {
             ("entity_id=?".into(), vec![entity_id.clone().into()])
         }
-        HistoryEventsQuery::Turn { turn_id } => {
-            ("turn_id=?".into(), vec![turn_id.clone().into()])
-        }
+        HistoryEventsQuery::Turn { turn_id } => ("turn_id=?".into(), vec![turn_id.clone().into()]),
         HistoryEventsQuery::Source { source } => {
             let (kind, id) = source_key(source)?;
-            ("source_kind=? AND source_id=?".into(), vec![kind.into(), id.into()])
+            (
+                "source_kind=? AND source_id=?".into(),
+                vec![kind.into(), id.into()],
+            )
         }
-        HistoryEventsQuery::Call { call_id } => {
-            ("call_id=?".into(), vec![call_id.clone().into()])
-        }
+        HistoryEventsQuery::Call { call_id } => ("call_id=?".into(), vec![call_id.clone().into()]),
         HistoryEventsQuery::Message { message_id } => {
             ("message_id=?".into(), vec![message_id.clone().into()])
         }
@@ -691,7 +686,7 @@ pub(super) async fn insert_event(db: &impl ConnectionTrait, event: &HistoryEvent
                 _ => {
                     return Err(HistoryError::InvalidEvent(
                         "original kind did not serialize as string".into(),
-                    ))
+                    ));
                 }
             };
             (

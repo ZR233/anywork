@@ -280,7 +280,8 @@ impl MigrationName for AlreadyAppliedV25Placeholder {
 impl MigrationTrait for AlreadyAppliedV25Placeholder {
     async fn up(&self, _manager: &SchemaManager) -> std::result::Result<(), DbErr> {
         Err(DbErr::Migration(
-            "expected m20261116_000001_append_only_history to already be applied in Schema 25".into(),
+            "expected m20261116_000001_append_only_history to already be applied in Schema 25"
+                .into(),
         ))
     }
 }

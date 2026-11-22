@@ -15,6 +15,45 @@ abstract final class TimelineHistoryProjection {
     required HistoryCut cut,
   }) => [for (final item in items) block(item, cut: cut)];
 
+  /// Builds an open, live-updating Work block for [LiveStatusBar] only while
+  /// execution is active and the tail range has not been sealed into Timeline.
+  static DisplayBlock liveOpenWorkBlock(
+    HistoryWorkRange range, {
+    required HistoryCut cut,
+    int unfinishedCount = 1,
+    String? summary,
+  }) {
+    if (range.rangeId.isEmpty) {
+      throw const ConversationContinuityError(
+        'History WorkRange has no stable range identity',
+      );
+    }
+    return DisplayBlock(
+      id: range.rangeId,
+      blockOrder: range.firstSeq,
+      body: WorkDisplayBlock(
+        timing: WorkTiming(
+          startedAtMillis: range.startedAt,
+          finishedAtMillis: null,
+        ),
+        members: DisplayBlockRef(
+          blockId: range.rangeId,
+          cut: cut,
+          anchorSeq: range.firstSeq,
+          headSeq: range.lastSeq,
+          afterSeq: range.afterSeq,
+          beforeSeq: range.beforeSeq,
+          runId: range.runId,
+        ),
+        executionPresent: true,
+        memberCount: range.eventCount,
+        unfinishedCount: unfinishedCount > 0 ? unfinishedCount : 1,
+        groupClosed: false,
+        summary: summary,
+      ),
+    );
+  }
+
   static DisplayBlock block(
     HistoryTimelineItem item, {
     required HistoryCut cut,
@@ -26,7 +65,6 @@ abstract final class TimelineHistoryProjection {
             'History WorkRange has no stable range identity',
           );
         }
-        final closed = range.beforeSeq != null || range.endedAt != null;
         return DisplayBlock(
           id: range.rangeId,
           blockOrder: range.firstSeq,
@@ -46,8 +84,8 @@ abstract final class TimelineHistoryProjection {
             ),
             executionPresent: false,
             memberCount: range.eventCount,
-            unfinishedCount: closed ? 0 : 1,
-            groupClosed: closed,
+            unfinishedCount: 0,
+            groupClosed: true,
           ),
         );
       case DividerTimelineItem(:final event):
@@ -146,10 +184,14 @@ abstract final class TimelineHistoryProjection {
             started: null,
             status: _activeStatus(event.kind, meta?['state'], data?['state']),
           );
-    final availableObservation =
-        contentPresent ??
-        (predecoded.compatibility == ChatItemCompatibility.current &&
-            (predecoded.bodies.isNotEmpty || predecoded.type == 'tool'));
+    final legacyUnavailable = data?['legacyUnavailable'] == true;
+    final availableObservation = legacyUnavailable
+        ? false
+        : (contentPresent ??
+              (predecoded.compatibility == ChatItemCompatibility.current &&
+                  (event.kind == 'boundary_observed' ||
+                      predecoded.bodies.isNotEmpty ||
+                      predecoded.type == 'tool')));
     final contentSource = isFrozen
         ? FrozenObservation(
             capturedAt: capturedAt ?? event.occurredAt,

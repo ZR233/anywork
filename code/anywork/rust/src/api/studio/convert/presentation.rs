@@ -137,9 +137,7 @@ fn original_info(value: runtime_history::HistoryOriginalInfo) -> BridgeHistoryOr
     }
 }
 
-pub(crate) fn event_record(
-    value: runtime_history::HistoryEventRecord,
-) -> BridgeHistoryEventRecord {
+pub(crate) fn event_record(value: runtime_history::HistoryEventRecord) -> BridgeHistoryEventRecord {
     BridgeHistoryEventRecord {
         seq: value.seq,
         event_id: value.event_id,

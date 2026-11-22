@@ -244,11 +244,7 @@ pub(crate) async fn originals_for_turn(
                 entries,
                 next,
             } = page;
-            details.extend(
-                entries
-                    .into_iter()
-                    .filter(|entry| entry.original.is_some()),
-            );
+            details.extend(entries.into_iter().filter(|entry| entry.original.is_some()));
             let Some(next) = next else {
                 details.sort_by_key(|detail| detail.seq);
                 let mut originals = Vec::with_capacity(details.len());
@@ -310,11 +306,7 @@ async fn originals_for_query(
                 entries,
                 next,
             } = page;
-            details.extend(
-                entries
-                    .into_iter()
-                    .filter(|entry| entry.original.is_some()),
-            );
+            details.extend(entries.into_iter().filter(|entry| entry.original.is_some()));
             let Some(next) = next else {
                 details.sort_by_key(|detail| detail.seq);
                 let mut originals = Vec::with_capacity(details.len());
@@ -688,9 +680,7 @@ fn is_text_body_key(key: &str) -> bool {
 }
 
 fn is_tool_output_body(body: &HistoryBodyManifestEntry) -> bool {
-    body.role == "tool_output"
-        || body.key == "tool.result"
-        || body.key.ends_with(":tool.result")
+    body.role == "tool_output" || body.key == "tool.result" || body.key.ends_with(":tool.result")
 }
 
 fn is_tool_arguments_body(body: &HistoryBodyManifestEntry) -> bool {

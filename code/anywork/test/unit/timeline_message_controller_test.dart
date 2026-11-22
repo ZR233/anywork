@@ -241,6 +241,71 @@ void main() {
       stock.dispose();
     },
   );
+
+  test('sealed WorkDisplayBlock stays immutable when HistoryCut or tail beforeSeq advances', () async {
+    final stock = InMemoryChatController();
+    var updates = 0;
+    final sub = stock.operationsStream.listen((op) {
+      if (op.type == ChatOperationType.update) updates++;
+    });
+    addTearDown(sub.cancel);
+
+    final expansion = TimelineExpansionIntent()..expanded = true;
+    final adapter = TimelineMessageController(
+      stock,
+      generation: 16,
+      expansionForBlock: (_) => expansion,
+    );
+
+    DisplayBlock workBlock({
+      required HistoryCut cut,
+      required int? beforeSeq,
+    }) => DisplayBlock(
+      id: 'work:2',
+      blockOrder: 2,
+      body: WorkDisplayBlock(
+        timing: const WorkTiming(startedAtMillis: 1000, finishedAtMillis: 2500),
+        members: DisplayBlockRef(
+          blockId: 'work:2',
+          cut: cut,
+          anchorSeq: 2,
+          headSeq: 4,
+          afterSeq: 1,
+          beforeSeq: beforeSeq,
+          runId: 'run-1',
+        ),
+        executionPresent: false,
+        memberCount: 3,
+        unfinishedCount: 0,
+        groupClosed: true,
+      ),
+    );
+
+    await adapter.applyBlocks([
+      workBlock(cut: const HistoryCut('cut-1'), beforeSeq: null),
+    ], TimelineApplyPlacement.set);
+    final initialMessage = stock.messages.single;
+    final initialUnit =
+        initialMessage.metadata![timelineDisplayUnitKey] as TimelineDisplayUnit;
+
+    await adapter.reconcileBlocks([
+      workBlock(cut: const HistoryCut('cut-2'), beforeSeq: 5),
+    ]);
+
+    expect(updates, 0);
+    expect(identical(stock.messages.single, initialMessage), isTrue);
+    expect(
+      identical(
+        stock.messages.single.metadata![timelineDisplayUnitKey],
+        initialUnit,
+      ),
+      isTrue,
+    );
+    expect(expansion.expanded, isTrue);
+
+    adapter.dispose();
+    stock.dispose();
+  });
 }
 
 final class _CommitThenFailController extends InMemoryChatController {

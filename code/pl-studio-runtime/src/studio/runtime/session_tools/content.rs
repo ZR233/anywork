@@ -613,13 +613,8 @@ async fn search_text(
     if envelope.item_type != "text" {
         return Ok(None);
     }
-    let Some(bytes) = crate::history::read_event_body_bytes(
-        reader,
-        detail,
-        "body",
-        Some(800_000),
-    )
-    .await?
+    let Some(bytes) =
+        crate::history::read_event_body_bytes(reader, detail, "body", Some(800_000)).await?
     else {
         return Ok(None);
     };

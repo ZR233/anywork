@@ -1439,7 +1439,8 @@ impl LiveProjection {
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
-                (self.emitted_tool_stages.len() as u64).saturating_mul(RETAINED_ENTRY_OVERHEAD)
+                (self.emitted_tool_stages.len() as u64)
+                    .saturating_mul(RETAINED_ENTRY_OVERHEAD)
                     .saturating_add(
                         self.emitted_tool_stages
                             .keys()
@@ -1517,14 +1518,7 @@ impl LiveProjection {
             ));
         }
         let (history_events, history_sources_raw) = self
-            .complete_provenance(
-                effect,
-                state,
-                &items,
-                &completion_drafts,
-                provenance,
-                run,
-            )
+            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
             .await?;
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
@@ -1589,14 +1583,7 @@ impl LiveProjection {
             completion_drafts,
         } = self.project(thread, effect, state)?;
         let (history_events, history_sources_raw) = self
-            .complete_provenance(
-                effect,
-                state,
-                &items,
-                &completion_drafts,
-                provenance,
-                run,
-            )
+            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
             .await?;
         self.retire_effect_source(effect)?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
@@ -3527,9 +3514,12 @@ mod append_only_history_tests {
         let (_, prepared) = projection
             .prepare(&thread, &terminal, &state, false)
             .await?;
-        assert!(prepared.history_events.iter().all(|event| {
-            event.kind != crate::history::HistoryEventKind::LegacyObserved
-        }));
+        assert!(
+            prepared
+                .history_events
+                .iter()
+                .all(|event| { event.kind != crate::history::HistoryEventKind::LegacyObserved })
+        );
         let text_start = prepared
             .history_events
             .iter()
@@ -3619,11 +3609,10 @@ mod append_only_history_tests {
         use pl_core::context::{ContextContent, ContextRecord, ContextSource, OpaquePayload};
         use pl_core::model::ModelToolCall;
         use pl_core::thread::{
-            TurnRecord,
+            ToolDelivery, ToolDeliveryTarget, ToolOutcome, TurnRecord,
             inbox::{InboxRecord, ThreadMessage},
             journal::ContextChange,
             task::{TaskAcknowledgement, TaskRecord, TaskStatus},
-            ToolDelivery, ToolDeliveryTarget, ToolOutcome,
         };
         use pl_core::tool::ToolOutput;
 
@@ -3653,7 +3642,9 @@ mod append_only_history_tests {
                 1,
                 r#"{"command":"git fetch origin"}"#,
             )?,
-            presentation_contract: Some(pl_core::model::ToolPresentationContract::new("terminal@1")),
+            presentation_contract: Some(pl_core::model::ToolPresentationContract::new(
+                "terminal@1",
+            )),
             rejection: None,
         };
         let turn_running = TurnRecord {
@@ -3795,7 +3786,10 @@ mod append_only_history_tests {
             .find(|ev| ev.kind == crate::history::HistoryEventKind::ToolCancelRequested)
             .context("ToolCancelRequested must be emitted when Stop is clicked")?;
         assert_eq!(cancel_ev.call_id.as_deref(), Some(call_id.as_str()));
-        assert_eq!(cancel_ev.entity_id.as_deref(), Some(expected_entity_id.as_str()));
+        assert_eq!(
+            cancel_ev.entity_id.as_deref(),
+            Some(expected_entity_id.as_str())
+        );
         assert_eq!(
             cancel_ev.timeline_role,
             crate::history::HistoryTimelineRole::Work
@@ -3860,10 +3854,7 @@ mod append_only_history_tests {
             Some(expected_entity_id.as_str()),
             "background completion must NOT rename entity_id to message:..."
         );
-        assert_eq!(
-            completed_ev.message_id.as_deref(),
-            Some("msg-bg-finish-1")
-        );
+        assert_eq!(completed_ev.message_id.as_deref(), Some("msg-bg-finish-1"));
         assert_eq!(
             completed_ev.timeline_role,
             crate::history::HistoryTimelineRole::Work
@@ -4084,14 +4075,10 @@ mod append_only_history_tests {
                 },
             )
             .await?;
-        let body = crate::history::read_event_body_bytes(
-            &reader,
-            &original,
-            "canonical",
-            Some(64 * 1024),
-        )
-        .await?
-        .context("canonical large body")?;
+        let body =
+            crate::history::read_event_body_bytes(&reader, &original, "canonical", Some(64 * 1024))
+                .await?
+                .context("canonical large body")?;
         assert_eq!(body.len(), 65_536);
         assert_eq!(body, payload);
         reader.close().await;

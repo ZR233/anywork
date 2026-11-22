@@ -275,7 +275,8 @@ impl HistoryStore {
         let pending_bytes = state.pending.bytes;
         let max_events = self.inner.limits.pending_events as usize;
         let max_bytes = self.inner.limits.pending_bytes as usize;
-        let retained_events = max_events.saturating_sub(self.inner.event_permits.available_permits());
+        let retained_events =
+            max_events.saturating_sub(self.inner.event_permits.available_permits());
         let retained_bytes = max_bytes.saturating_sub(self.inner.byte_permits.available_permits());
         HistoryStatus {
             pending_events,
@@ -619,7 +620,14 @@ async fn ensure_same_event(
             accepted
                 .body_headers
                 .iter()
-                .map(|b| (b.key.clone(), b.role.as_str().to_owned(), b.length, b.digest.clone()))
+                .map(|b| {
+                    (
+                        b.key.clone(),
+                        b.role.as_str().to_owned(),
+                        b.length,
+                        b.digest.clone(),
+                    )
+                })
                 .collect()
         } else {
             db::bodies(db, &existing.record.event_id, None, i64::MAX as usize)

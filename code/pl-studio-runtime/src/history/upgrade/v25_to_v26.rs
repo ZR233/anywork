@@ -181,8 +181,8 @@ pub(in crate::history) async fn migrate_v25_to_v26(
         ));
     }
 
-    let (entities_with_terminal, single_latest_seq) = prescan_events(db).await?;
-    let mut bodies_by_owner = load_body_metadata(db).await?;
+    let (entities_with_terminal, single_latest_seq, payload_body_ids) = prescan_events(db).await?;
+    let bodies_by_owner = load_body_metadata(db).await?;
 
     db.execute_raw(statement("DROP TABLE IF EXISTS history_events_v26", vec![]))
         .await?;
@@ -207,14 +207,12 @@ pub(in crate::history) async fn migrate_v25_to_v26(
         for query_row in rows {
             let row = decode_v25_row(query_row)?;
             after_seq = number(row.seq)?;
-            let owner_bodies = bodies_by_owner
-                .remove(&row.event_id)
-                .unwrap_or_default();
             if let Some(converted) = convert_row(
                 db,
                 &database_id,
                 &row,
-                &owner_bodies,
+                &bodies_by_owner,
+                &payload_body_ids,
                 &entities_with_terminal,
                 &single_latest_seq,
             )
@@ -277,14 +275,19 @@ pub(in crate::history) async fn migrate_v25_to_v26(
 
 async fn prescan_events(
     db: &impl ConnectionTrait,
-) -> Result<(BTreeSet<String>, BTreeMap<String, u64>)> {
+) -> Result<(
+    BTreeSet<String>,
+    BTreeMap<String, u64>,
+    BTreeMap<String, String>,
+)> {
     let mut entities_with_terminal = BTreeSet::new();
     let mut single_latest_seq = BTreeMap::new();
+    let mut payload_body_ids = BTreeMap::new();
     let mut after_seq: i64 = 0;
     loop {
         let rows = db
             .query_all_raw(statement(
-                "SELECT seq,kind,entity_id,row_scope,row_key \
+                "SELECT seq,event_id,kind,entity_id,row_scope,row_key,payload_body_id \
                  FROM history_events WHERE seq>? ORDER BY seq ASC LIMIT 512",
                 vec![after_seq.into()],
             ))
@@ -297,10 +300,15 @@ async fn prescan_events(
             let seq = u64::try_from(seq_i64)
                 .map_err(|_| HistoryError::Integrity("negative v25 event seq".into()))?;
             after_seq = seq_i64;
+            let event_id: String = row.try_get("", "event_id")?;
             let kind: String = row.try_get("", "kind")?;
             let entity_id: Option<String> = row.try_get("", "entity_id")?;
             let row_scope: Option<String> = row.try_get("", "row_scope")?;
             let row_key: Option<String> = row.try_get("", "row_key")?;
+            let payload_body_id: Option<String> = row.try_get("", "payload_body_id")?;
+            if let Some(body_id) = payload_body_id {
+                payload_body_ids.insert(event_id, body_id);
+            }
             if kind == "entity_ended"
                 && matches!(row_scope.as_deref(), Some("single" | "member"))
                 && let Some(entity_id) = entity_id
@@ -314,7 +322,7 @@ async fn prescan_events(
             }
         }
     }
-    Ok((entities_with_terminal, single_latest_seq))
+    Ok((entities_with_terminal, single_latest_seq, payload_body_ids))
 }
 
 async fn load_body_metadata(
@@ -409,10 +417,15 @@ async fn convert_row(
     db: &impl ConnectionTrait,
     database_id: &str,
     row: &V25EventRow,
-    owner_bodies: &[V25BodyMeta],
+    bodies_by_owner: &BTreeMap<String, Vec<V25BodyMeta>>,
+    payload_body_ids: &BTreeMap<String, String>,
     entities_with_terminal: &BTreeSet<String>,
     single_latest_seq: &BTreeMap<String, u64>,
 ) -> Result<Option<ConvertedV26Row>> {
+    let owner_bodies = bodies_by_owner
+        .get(&row.event_id)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     // 1. Derived work-group rows: drop when unreferenced by any body; preserve as hidden if a body FK exists.
     if matches!(
         row.kind,
@@ -470,7 +483,11 @@ async fn convert_row(
         }
         let manifest: Vec<HistoryBodyManifestEntry> = owner_bodies
             .iter()
-            .filter(|b| b.role != "canonical_payload" && b.role != "canonical_metadata")
+            .filter(|b| {
+                b.role != "canonical_payload"
+                    && b.role != "canonical_metadata"
+                    && b.role != "legacy_metadata"
+            })
             .map(|b| b.manifest_entry(database_id))
             .collect();
         return Ok(Some(ConvertedV26Row {
@@ -596,10 +613,7 @@ async fn convert_row(
 
     // 4. Entity rows (Single / Member / Observation / UnavailableLegacy / CanonicalOriginal without row_scope)
     let entity_from_body = if parsed_head.is_none() && row.query_class.is_some() {
-        if let Some(meta_body) = owner_bodies
-            .iter()
-            .find(|b| b.role == "canonical_metadata")
-        {
+        if let Some(meta_body) = owner_bodies.iter().find(|b| b.role == "canonical_metadata") {
             let bytes = read_v25_body_bytes(db, meta_body).await?;
             serde_json::from_slice::<HistoryEntityHeadV25>(&bytes).ok()
         } else {
@@ -612,8 +626,7 @@ async fn convert_row(
         Some(HistoryRowHeadV25::Single(entity) | HistoryRowHeadV25::Member(entity)) => Some(entity),
         _ => entity_from_body.as_ref(),
     };
-    if let Some(entity) = entity_opt
-    {
+    if let Some(entity) = entity_opt {
         let timeline_role = if row.row_scope.as_deref() == Some("single") {
             let is_latest = row
                 .row_key
@@ -643,14 +656,35 @@ async fn convert_row(
             .clone()
             .or_else(|| entity.tool.as_ref().map(|t| t.name.clone()));
 
-        let mut payload_envelope = if let Some(payload_body_id) = &row.payload_body_id {
+        let (payload_body_id, payload_source_bodies): (Option<&str>, &[V25BodyMeta]) =
+            if let Some(pbid) = row.payload_body_id.as_deref() {
+                (Some(pbid), owner_bodies)
+            } else if let Some(detail_id) = entity.detail_event_id.as_deref()
+                && detail_id != row.event_id
+            {
+                (
+                    payload_body_ids.get(detail_id).map(String::as_str),
+                    bodies_by_owner
+                        .get(detail_id)
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]),
+                )
+            } else {
+                (None, owner_bodies)
+            };
+
+        let mut payload_envelope = if let Some(payload_body_id) = payload_body_id {
             load_and_lift_canonical_payload(
                 db,
-                database_id,
-                &row.event_id,
-                payload_body_id,
-                owner_bodies,
-                &meta,
+                CanonicalLiftInput {
+                    database_id,
+                    row_event_id: &row.event_id,
+                    row_own_bodies: owner_bodies,
+                    payload_body_id,
+                    payload_source_bodies,
+                    observation: &entity.observation,
+                    meta: &meta,
+                },
             )
             .await?
         } else {
@@ -660,6 +694,7 @@ async fn convert_row(
         if payload_envelope.is_none() {
             payload_envelope = Some(synthesize_envelope_from_head(
                 database_id,
+                payload_source_bodies,
                 owner_bodies,
                 entity,
                 &meta,
@@ -762,15 +797,30 @@ fn entity_meta_from_v25(head: &HistoryEntityHeadV25) -> HistoryEventMeta {
     }
 }
 
+struct CanonicalLiftInput<'a> {
+    database_id: &'a str,
+    row_event_id: &'a str,
+    row_own_bodies: &'a [V25BodyMeta],
+    payload_body_id: &'a str,
+    payload_source_bodies: &'a [V25BodyMeta],
+    observation: &'a HistoryObservationV25,
+    meta: &'a HistoryEventMeta,
+}
+
 async fn load_and_lift_canonical_payload(
     db: &impl ConnectionTrait,
-    database_id: &str,
-    event_id: &str,
-    payload_body_id: &str,
-    owner_bodies: &[V25BodyMeta],
-    meta: &HistoryEventMeta,
+    input: CanonicalLiftInput<'_>,
 ) -> Result<Option<EventPayloadEnvelope>> {
-    let Some(body_meta) = owner_bodies
+    let CanonicalLiftInput {
+        database_id,
+        row_event_id,
+        row_own_bodies,
+        payload_body_id,
+        payload_source_bodies,
+        observation,
+        meta,
+    } = input;
+    let Some(body_meta) = payload_source_bodies
         .iter()
         .find(|b| b.body_id == payload_body_id)
     else {
@@ -806,12 +856,19 @@ async fn load_and_lift_canonical_payload(
         .get("turnId")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let captured_at = obj.get("capturedAt").and_then(serde_json::Value::as_i64);
+    let captured_at = obj
+        .get("capturedAt")
+        .and_then(serde_json::Value::as_i64)
+        .or(match observation {
+            HistoryObservationV25::Boundary { captured_at }
+            | HistoryObservationV25::UnavailableLegacy { captured_at } => *captured_at,
+            HistoryObservationV25::Original => None,
+        });
 
     let mut lifted_meta = meta.clone();
     lifted_meta.source_order = source_order;
 
-    let mut next_ordinal = owner_bodies
+    let mut next_ordinal = row_own_bodies
         .iter()
         .map(|b| b.ordinal)
         .max()
@@ -819,6 +876,7 @@ async fn load_and_lift_canonical_payload(
     let mut inline_used: usize = 0;
     let mut manifest = Vec::new();
     let mut listed_keys = BTreeSet::new();
+    let mut listed_body_ids = BTreeSet::new();
 
     if let Some(entries) = obj.get("bodies").and_then(serde_json::Value::as_array) {
         for item in entries {
@@ -834,7 +892,17 @@ async fn load_and_lift_canonical_payload(
                 .unwrap_or(0);
             listed_keys.insert(key.to_owned());
 
-            let matching_meta = owner_bodies.iter().find(|b| b.body_key == key);
+            let mut reference: Option<HistoryEventBodyRef> = item_obj
+                .get("reference")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
+            let matching_meta = reference
+                .as_ref()
+                .and_then(|r| {
+                    payload_source_bodies
+                        .iter()
+                        .find(|b| b.body_id == r.body_id)
+                })
+                .or_else(|| payload_source_bodies.iter().find(|b| b.body_key == key));
             let role = matching_meta
                 .map(|m| m.role.clone())
                 .unwrap_or_else(|| default_role_for_key(key).to_owned());
@@ -844,9 +912,6 @@ async fn load_and_lift_canonical_payload(
                 .get("inlineText")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned);
-            let mut reference: Option<HistoryEventBodyRef> = item_obj
-                .get("reference")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
 
             let resolved_inline = if let Some(text) = inline_text {
                 inline_used = inline_used.saturating_add(text.len());
@@ -867,7 +932,7 @@ async fn load_and_lift_canonical_payload(
                 } else if reference.is_none() {
                     let body_id = insert_migrated_inline_blob(
                         db,
-                        event_id,
+                        row_event_id,
                         next_ordinal,
                         key,
                         &role,
@@ -878,7 +943,7 @@ async fn load_and_lift_canonical_payload(
                     next_ordinal += 1;
                     reference = Some(HistoryEventBodyRef {
                         database_id: database_id.to_owned(),
-                        owner_event_id: event_id.to_owned(),
+                        owner_event_id: row_event_id.to_owned(),
                         body_key: key.to_owned(),
                         body_id,
                         byte_start: 0,
@@ -894,6 +959,12 @@ async fn load_and_lift_canonical_payload(
             if resolved_inline.is_none() && reference.is_none() {
                 reference = matching_meta.and_then(|m| m.manifest_entry(database_id).reference);
             }
+            if let Some(r) = &reference {
+                listed_body_ids.insert(r.body_id.clone());
+            }
+            if let Some(m) = matching_meta {
+                listed_body_ids.insert(m.body_id.clone());
+            }
 
             manifest.push(HistoryBodyManifestEntry {
                 key: key.to_owned(),
@@ -906,10 +977,12 @@ async fn load_and_lift_canonical_payload(
         }
     }
 
-    for extra in owner_bodies {
+    for extra in payload_source_bodies.iter().chain(row_own_bodies.iter()) {
         if extra.role != "canonical_payload"
             && extra.role != "canonical_metadata"
+            && extra.role != "legacy_metadata"
             && !listed_keys.contains(&extra.body_key)
+            && listed_body_ids.insert(extra.body_id.clone())
         {
             manifest.push(extra.manifest_entry(database_id));
         }
@@ -929,18 +1002,28 @@ async fn load_and_lift_canonical_payload(
 
 fn synthesize_envelope_from_head(
     database_id: &str,
-    owner_bodies: &[V25BodyMeta],
+    payload_source_bodies: &[V25BodyMeta],
+    row_own_bodies: &[V25BodyMeta],
     head: &HistoryEntityHeadV25,
     meta: &HistoryEventMeta,
     turn_id: Option<&str>,
 ) -> EventPayloadEnvelope {
-    let manifest: Vec<HistoryBodyManifestEntry> = owner_bodies
+    let mut seen_body_ids = BTreeSet::new();
+    let manifest: Vec<HistoryBodyManifestEntry> = payload_source_bodies
         .iter()
-        .filter(|b| b.role != "canonical_payload" && b.role != "canonical_metadata")
+        .chain(row_own_bodies.iter())
+        .filter(|b| {
+            b.role != "canonical_payload"
+                && b.role != "canonical_metadata"
+                && b.role != "legacy_metadata"
+                && seen_body_ids.insert(b.body_id.clone())
+        })
         .map(|b| b.manifest_entry(database_id))
         .collect();
 
-    let (item_type, data) = if let Some(tool) = &head.tool {
+    let (item_type, data) = if head.kind == HistoryEntityKind::ToolCall
+        && let Some(tool) = &head.tool
+    {
         let state = match &head.state {
             HistoryEntityState::KnownActive { status } => match status {
                 crate::ChatActiveStatus::Waiting => serde_json::json!({
@@ -988,7 +1071,7 @@ fn synthesize_envelope_from_head(
         )
     } else {
         let kind_name = match head.kind {
-            HistoryEntityKind::Text => "text",
+            HistoryEntityKind::Input | HistoryEntityKind::Text => "text",
             HistoryEntityKind::Reasoning => "thinking",
             HistoryEntityKind::Plan => "plan",
             HistoryEntityKind::TurnReceipt => "turn",
@@ -1035,13 +1118,25 @@ fn map_entity_kind(
     head: &HistoryEntityHeadV25,
     envelope: &EventPayloadEnvelope,
 ) -> HistoryEventKind {
+    match &head.observation {
+        HistoryObservationV25::Boundary { .. } => {
+            return HistoryEventKind::Other("boundary_observed".into());
+        }
+        HistoryObservationV25::UnavailableLegacy { .. } => {
+            return HistoryEventKind::LegacyObserved;
+        }
+        HistoryObservationV25::Original => {}
+    }
+    if row.kind == HistoryEventKindV25::BoundaryObserved {
+        return HistoryEventKind::Other("boundary_observed".into());
+    }
+    if row.row_scope.is_none() && row.kind == HistoryEventKindV25::LegacyObserved {
+        return HistoryEventKind::LegacyObserved;
+    }
     if row.kind == HistoryEventKindV25::InputAccepted || head.kind == HistoryEntityKind::Input {
         return HistoryEventKind::InputAccepted;
     }
-    if row.kind == HistoryEventKindV25::LegacyObserved {
-        return HistoryEventKind::LegacyObserved;
-    }
-    if head.tool.is_some() || head.kind == HistoryEntityKind::ToolCall {
+    if head.kind == HistoryEntityKind::ToolCall {
         let state_kind = envelope
             .data
             .get("state")
@@ -1110,10 +1205,7 @@ fn default_role_for_key(key: &str) -> &'static str {
     }
 }
 
-async fn read_v25_body_bytes(
-    db: &impl ConnectionTrait,
-    body: &V25BodyMeta,
-) -> Result<Vec<u8>> {
+async fn read_v25_body_bytes(db: &impl ConnectionTrait, body: &V25BodyMeta) -> Result<Vec<u8>> {
     let chunks = body.byte_length.div_ceil(BODY_CHUNK_BYTES as u64);
     let mut bytes = Vec::with_capacity(body.byte_length as usize);
     for chunk_no in 0..chunks {
@@ -1186,11 +1278,10 @@ async fn insert_v26_row(db: &impl ConnectionTrait, row: &ConvertedV26Row) -> Res
         (Some(k), Some(id)) => (Some(k.clone()), Some(id.clone())),
         _ => (None, None),
     };
-    let (query_class, parent_id, original_kind) =
-        match (&row.query_class, &row.original_kind) {
-            (Some(qc), Some(ok)) => (Some(qc.clone()), row.parent_id.clone(), Some(ok.clone())),
-            _ => (None, None, None),
-        };
+    let (query_class, parent_id, original_kind) = match (&row.query_class, &row.original_kind) {
+        (Some(qc), Some(ok)) => (Some(qc.clone()), row.parent_id.clone(), Some(ok.clone())),
+        _ => (None, None, None),
+    };
     db.execute_raw(statement(
         "INSERT INTO history_events_v26(\
             seq,event_id,kind,timeline_role,occurred_at,recorded_at,\

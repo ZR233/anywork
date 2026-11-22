@@ -12,9 +12,7 @@ use pl_studio_runtime::{
     StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, SubmitPromptRequest,
     ThreadWorkspaceMode,
-    history::{
-        HistoryDemand, HistoryEventsQuery, decode_event_envelope, read_event_body_bytes,
-    },
+    history::{HistoryDemand, HistoryEventsQuery, decode_event_envelope, read_event_body_bytes},
 };
 use std::{path::Path, time::Duration};
 use support::{
@@ -68,7 +66,9 @@ async fn public_history(
             for entry in &envelope_typed.bodies {
                 let bytes = read_event_body_bytes(&reader, &event, &entry.key, None)
                     .await?
-                    .with_context(|| format!("missing body {} for {}", entry.key, event.event_id))?;
+                    .with_context(|| {
+                        format!("missing body {} for {}", entry.key, event.event_id)
+                    })?;
                 bodies.push(bytes);
             }
             items.push(PublicHistoryItem {

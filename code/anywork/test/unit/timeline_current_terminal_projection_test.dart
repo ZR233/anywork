@@ -1,4 +1,5 @@
 import 'package:anywork/src/features/conversation/timeline/state/timeline_current_projection.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_models.dart';
@@ -14,127 +15,115 @@ const _currentRef = CurrentContentRef(
   generation: '3',
 );
 
-CurrentAtom _atom() => CurrentAtom(
-  id: 'entity-1',
+CurrentAtom _atom({
+  String id = 'entity-1',
+  ChatAtomKind kind = ChatAtomKind.toolCall,
+  ChatToolIdentity? tool = const ChatToolIdentity(
+    callId: 'call-1',
+    name: 'read_file',
+  ),
+}) => CurrentAtom(
+  id: id,
   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
   sourceOrder: 1,
-  kind: ChatAtomKind.text,
+  kind: kind,
   delivery: ChatDeliveryKind.foreground,
   lifecycle: const ActiveChatAtom(
     started: null,
     status: ChatActiveStatus.running,
   ),
   turnId: 'turn-1',
+  tool: tool,
   contentPresent: true,
   contents: const [
     CurrentAtomContent(role: ChatContentRole.body, reference: _currentRef),
   ],
 );
 
-DisplayBlock _history({
+DisplayRecord _record({
   bool isTerminalHistory = false,
   bool isFrozenHistory = false,
-}) => DisplayBlock(
-  id: 'single:entity-1',
-  blockOrder: 7,
-  body: SingleDisplayBlock(
-    visibility: HistorySingleVisibility.content,
-    record: DisplayRecord(
-      atom: ChatAtom(
-        id: 'entity-1',
-        source: const ForegroundTurnChatSource(turnId: 'turn-1'),
-        sourceOrder: 1,
-        kind: ChatAtomKind.text,
-        delivery: ChatDeliveryKind.foreground,
-        lifecycle: const TerminalChatAtom(
-          started: null,
-          ended: null,
-          outcome: ChatTerminalOutcome.completed,
-        ),
-        turnId: 'turn-1',
-        contentPresent: true,
-        contents: const [],
-      ),
-      contentSource: const CompletedOriginal(completionId: 'event-1'),
-      historyEventId: 'event-1',
-      historyDetailEventId: 'detail-1',
-      runId: 'run-1',
-      isTerminalHistory: isTerminalHistory,
-      isFrozenHistory: isFrozenHistory,
-    ),
+  String? callId,
+  String? runId = 'run-1',
+}) => DisplayRecord(
+  atom: ChatAtom(
+    id: 'entity-1',
+    source: const ForegroundTurnChatSource(turnId: 'turn-1'),
+    sourceOrder: 1,
+    kind: ChatAtomKind.toolCall,
+    delivery: ChatDeliveryKind.foreground,
+    lifecycle: isTerminalHistory
+        ? const TerminalChatAtom(
+            started: null,
+            ended: null,
+            outcome: ChatTerminalOutcome.completed,
+          )
+        : const ActiveChatAtom(started: null, status: ChatActiveStatus.running),
+    turnId: 'turn-1',
+    contentPresent: true,
+    contents: const [],
   ),
+  contentSource: const CompletedOriginal(completionId: 'event-1'),
+  historyEventId: 'event-1',
+  historyDetailEventId: 'detail-1',
+  runId: runId,
+  callId: callId,
+  isTerminalHistory: isTerminalHistory,
+  isFrozenHistory: isFrozenHistory,
 );
 
 void main() {
-  test(
-    'Current enriches an existing stable History row without a parallel row',
-    () {
-      final history = _history();
-      final result = TimelineCurrentProjection.overlayHistory(
-        [history],
-        atoms: [_atom()],
+  test('LiveStatusBar overlayRecord overlays matching entity or callId and retains immutableRecord', () {
+    final byId = TimelineCurrentProjection.overlayRecord(
+      _record(),
+      current: {'entity-1': _atom()},
+      ownerId: 'run-1',
+    );
+    expect(byId.contentSource, isA<CurrentAtomSource>());
+    expect(byId.currentContents.single.reference, _currentRef);
+    expect(byId.historyEventId, isNull);
+    expect(byId.historyDetailEventId, isNull);
+    expect(byId.immutableRecord?.historyEventId, 'event-1');
+
+    final byCallId = TimelineCurrentProjection.overlayRecord(
+      _record(callId: 'call-1'),
+      current: {'different-atom-id': _atom(id: 'different-atom-id')},
+      ownerId: 'run-1',
+    );
+    expect(byCallId.contentSource, isA<CurrentAtomSource>());
+    expect(byCallId.currentContents.single.reference, _currentRef);
+
+    final restored = TimelineCurrentProjection.overlayRecord(
+      byId,
+      current: const {},
+      ownerId: 'run-1',
+    );
+    expect(restored.historyEventId, 'event-1');
+    expect(restored.currentContents, isEmpty);
+    expect(restored.contentSource, isA<CompletedOriginal>());
+  });
+
+  test('terminal, frozen, and foreign-owner records never accept late Current overlay', () {
+    final active = _record();
+    for (final protected in [
+      _record(isTerminalHistory: true),
+      _record(isFrozenHistory: true),
+    ]) {
+      final result = TimelineCurrentProjection.overlayRecord(
+        protected,
+        current: {'entity-1': _atom()},
         ownerId: 'run-1',
       );
+      expect(result, same(protected));
+    }
 
-      expect(result, hasLength(1));
-      expect(result.single.id, history.id);
-      final body = result.single.body as SingleDisplayBlock;
-      expect(body.record.contentSource, isA<CurrentAtomSource>());
-      expect(body.record.currentContents.single.reference, _currentRef);
-      expect(body.record.historyEventId, isNull);
-      expect(body.record.historyDetailEventId, isNull);
-      expect(body.record.immutableRecord?.historyEventId, 'event-1');
-
-      final restored = TimelineCurrentProjection.overlayHistory(
-        result,
-        atoms: const [],
-        ownerId: 'run-1',
-      ).single;
-      final restoredBody = restored.body as SingleDisplayBlock;
-      expect(restoredBody.record.historyEventId, 'event-1');
-      expect(restoredBody.record.currentContents, isEmpty);
-      expect(restoredBody.record.contentSource, isA<CompletedOriginal>());
-    },
-  );
-
-  test(
-    'Current without a loaded History anchor creates no guessed timeline row',
-    () {
-      expect(
-        TimelineCurrentProjection.overlayHistory(
-          const [],
-          atoms: [_atom()],
-          ownerId: 'run-1',
-        ),
-        isEmpty,
-      );
-    },
-  );
-
-  test(
-    'terminal and BoundaryObserved History rows never accept late Current',
-    () {
-      final history = _history();
-      for (final protected in [
-        _history(isTerminalHistory: true),
-        _history(isFrozenHistory: true),
-      ]) {
-        final result = TimelineCurrentProjection.overlayHistory(
-          [protected],
-          atoms: [_atom()],
-          ownerId: 'run-1',
-        );
-        expect(result.single, same(protected));
-      }
-
-      final olderRun = TimelineCurrentProjection.overlayHistory(
-        [history],
-        atoms: [_atom()],
-        ownerId: 'run-2',
-      );
-      expect(olderRun.single, same(history));
-    },
-  );
+    final olderRun = TimelineCurrentProjection.overlayRecord(
+      active,
+      current: {'entity-1': _atom()},
+      ownerId: 'run-2',
+    );
+    expect(olderRun, same(active));
+  });
 
   testWidgets(
     'Current raw body is rendered by its body owner, not JSON decode',
@@ -170,6 +159,72 @@ void main() {
       expect(find.textContaining('正在读取'), findsNothing);
     },
   );
+  test('TimelineHistoryProjection distinguishes migrated original, boundary empty, and unavailable legacy events', () {
+    const cut = HistoryCut('cut-1');
+    HistoryEventRecord record({
+      required String id,
+      required String kind,
+      required HistoryTimelineRole timelineRole,
+      required String payloadJson,
+      String? callId,
+      String? toolName,
+    }) => HistoryEventRecord(
+      seq: 1,
+      eventId: id,
+      kind: kind,
+      timelineRole: timelineRole,
+      recordedAt: 1000,
+      callId: callId,
+      toolName: toolName,
+      payloadSchema: 'anywork.event/1',
+      payloadJson: payloadJson,
+    );
+
+    final inputBlock = TimelineHistoryProjection.block(
+      DividerTimelineItem(
+        record(
+          id: 'legacy:v24:input',
+          kind: 'input_accepted',
+          timelineRole: HistoryTimelineRole.divider,
+          payloadJson: '{"contract":"anywork.event/1","type":"text","meta":{"entityId":"app-1","entityKind":"input","delivery":"independent","state":{"kind":"knownTerminal","outcome":"completed"},"textChannel":"user","singleVisibility":"content"},"data":{"channel":"user","attachments":[]},"bodies":[]}',
+        ),
+      ),
+      cut: cut,
+    );
+    final inputSingle = inputBlock.body as SingleDisplayBlock;
+    expect(inputSingle.record.contentSource, isA<CompletedOriginal>());
+    expect(inputSingle.record.isFrozenHistory, isFalse);
+
+    final emptyBoundary = TimelineHistoryProjection.recordFromEvent(
+      record(
+        id: 'legacy:v24:boundary',
+        kind: 'boundary_observed',
+        timelineRole: HistoryTimelineRole.work,
+        payloadJson: '{"contract":"anywork.event/1","type":"thinking","capturedAt":5000,"meta":{"entityId":"think-1","entityKind":"reasoning","delivery":"foreground","state":{"kind":"knownTerminal","outcome":"completed"}},"data":{"channel":"final","attachments":[],"legacyUnavailable":false},"bodies":[]}',
+      ),
+    );
+    expect(
+      emptyBoundary.contentSource,
+      isA<FrozenObservation>()
+          .having((s) => s.capturedAt, 'capturedAt', 5000)
+          .having((s) => s.available, 'available', isTrue),
+    );
+
+    final unavailable = TimelineHistoryProjection.recordFromEvent(
+      record(
+        id: 'legacy:v24:unavailable',
+        kind: 'legacy_observed',
+        timelineRole: HistoryTimelineRole.work,
+        payloadJson: '{"contract":"anywork.event/1","type":"thinking","capturedAt":6000,"meta":{"entityId":"think-2","entityKind":"reasoning","delivery":"foreground","state":{"kind":"knownTerminal","outcome":"completed"},"contentPresent":false},"data":{"channel":"final","attachments":[],"legacyUnavailable":true},"bodies":[]}',
+      ),
+    );
+    expect(
+      unavailable.contentSource,
+      isA<FrozenObservation>()
+          .having((s) => s.capturedAt, 'capturedAt', 6000)
+          .having((s) => s.available, 'available', isFalse),
+    );
+  });
 }
 
 ChatAtom _atomAsChatAtom() => ChatAtom(

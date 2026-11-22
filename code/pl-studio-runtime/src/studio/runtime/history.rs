@@ -58,10 +58,9 @@ pub(crate) async fn history_turn(
         )
         .await
         .map_err(anyhow::Error::from)?;
-    let Some(bytes) =
-        crate::history::read_event_body_bytes(reader, &detail, "turn_detail", None)
-            .await
-            .map_err(anyhow::Error::from)?
+    let Some(bytes) = crate::history::read_event_body_bytes(reader, &detail, "turn_detail", None)
+        .await
+        .map_err(anyhow::Error::from)?
     else {
         anyhow::bail!("history Turn {} detail body is missing", head.turn_id);
     };

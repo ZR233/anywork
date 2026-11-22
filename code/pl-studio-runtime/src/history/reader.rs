@@ -266,11 +266,12 @@ impl HistoryReader {
                         }
                         if items.len() >= demand.max_rows as usize {
                             if has_visible_timeline_items(&snapshot, lower_excl).await? {
-                                next_cursor = Some(reader.inner.codec.encode(Token::TimelinePage {
-                                    cut: cut.clone(),
-                                    upper_seq: lower_excl,
-                                    upper_divider_seq,
-                                })?);
+                                next_cursor =
+                                    Some(reader.inner.codec.encode(Token::TimelinePage {
+                                        cut: cut.clone(),
+                                        upper_seq: lower_excl,
+                                        upper_divider_seq,
+                                    })?);
                             }
                             break;
                         }
@@ -372,8 +373,8 @@ impl HistoryReader {
                     {
                         let through = reader.inner.codec.through(&saved)?;
                         let min_excl = after_seq.unwrap_or(0);
-                        let max_incl = before_seq
-                            .map_or(through, |b| b.saturating_sub(1).min(through));
+                        let max_incl =
+                            before_seq.map_or(through, |b| b.saturating_sub(1).min(through));
                         if through > snapshot.head || after < min_excl || after > max_incl {
                             return Err(HistoryError::InvalidCursor);
                         }
@@ -511,7 +512,8 @@ impl HistoryReader {
         let (cut, through, before) = self.page_cut(&query, cut, cursor, snapshot.head)?;
         let fetch_limit = (demand.max_rows as usize) + 1;
 
-        let db_anchors = db::business_anchors(&snapshot.tx, scope, through, before, fetch_limit).await?;
+        let db_anchors =
+            db::business_anchors(&snapshot.tx, scope, through, before, fetch_limit).await?;
         let mut seen_keys: BTreeSet<String> = db_anchors.iter().map(|(k, _)| k.clone()).collect();
         let pending_anchors =
             snapshot
@@ -538,9 +540,11 @@ impl HistoryReader {
                 break;
             }
             examined += 1;
-            let head_rec = resolve_row_head(&snapshot, row_key, through).await?.ok_or_else(|| {
-                HistoryError::Integrity(format!("anchor row_key {row_key} has no head"))
-            })?;
+            let head_rec = resolve_row_head(&snapshot, row_key, through)
+                .await?
+                .ok_or_else(|| {
+                    HistoryError::Integrity(format!("anchor row_key {row_key} has no head"))
+                })?;
             let head = decode_business_head_from_record(&head_rec)?;
             let might_have_more = idx + 1 < anchors.len();
             let candidate_next = if might_have_more {
@@ -574,15 +578,13 @@ impl HistoryReader {
         snapshot.tx.commit().await?;
 
         let next = if has_more {
-            last_anchor_seq.map(|seq| self.next(&cut, &query, seq)).transpose()?
+            last_anchor_seq
+                .map(|seq| self.next(&cut, &query, seq))
+                .transpose()?
         } else {
             None
         };
-        let page = HistoryBusinessPage {
-            cut,
-            entries,
-            next,
-        };
+        let page = HistoryBusinessPage { cut, entries, next };
         let returned_bytes = serde_json::to_vec(&page)?.len() as u64;
         tracing::debug!(
             target: "conversation_work",
@@ -650,10 +652,9 @@ impl HistoryReader {
             let fetch_limit = (demand.max_rows as usize) + 1;
             let database =
                 db::events_filtered(&snapshot.tx, &query, 0, max_incl, false, fetch_limit).await?;
-            let pending =
-                snapshot
-                    .pending
-                    .events_matching(&query, 0, max_incl, false, fetch_limit);
+            let pending = snapshot
+                .pending
+                .events_matching(&query, 0, max_incl, false, fetch_limit);
             let merged = db::dedup_records_desc(database, pending, fetch_limit);
             snapshot.tx.commit().await?;
 
@@ -696,11 +697,7 @@ impl HistoryReader {
             } else {
                 None
             };
-            Ok(HistoryEventsPage {
-                cut,
-                entries,
-                next,
-            })
+            Ok(HistoryEventsPage { cut, entries, next })
         })
         .await
     }
@@ -1084,7 +1081,9 @@ impl HistoryReader {
                 }
                 let raw = &accepted.event.bodies[index].bytes;
                 if Sha256::digest(raw).as_slice() != header.digest.as_slice() {
-                    return Err(HistoryError::Integrity("pending body digest mismatch".into()));
+                    return Err(HistoryError::Integrity(
+                        "pending body digest mismatch".into(),
+                    ));
                 }
                 let end = offset
                     .saturating_add(length.min(BODY_CHUNK_BYTES as u32) as u64)
@@ -1132,7 +1131,9 @@ impl HistoryReader {
                 if raw.len() as u64 != header.length
                     || Sha256::digest(raw).as_slice() != header.digest.as_slice()
                 {
-                    return Err(HistoryError::Integrity("pending body verification failed".into()));
+                    return Err(HistoryError::Integrity(
+                        "pending body verification failed".into(),
+                    ));
                 }
                 snapshot.tx.commit().await?;
                 return Ok(());
@@ -1154,7 +1155,9 @@ impl HistoryReader {
             }
             snapshot.tx.commit().await?;
             if hasher.finalize().as_slice() != body.digest.as_slice() {
-                return Err(HistoryError::Integrity("stored body digest mismatch".into()));
+                return Err(HistoryError::Integrity(
+                    "stored body digest mismatch".into(),
+                ));
             }
             Ok(())
         })
@@ -1213,7 +1216,11 @@ impl HistoryReader {
         .await
     }
 
-    pub async fn review_finish_call(&self, turn_id: String, cut: Option<HistoryCut>) -> Result<bool> {
+    pub async fn review_finish_call(
+        &self,
+        turn_id: String,
+        cut: Option<HistoryCut>,
+    ) -> Result<bool> {
         if turn_id.is_empty() {
             return Err(HistoryError::InvalidDemand("empty turn identity".into()));
         }

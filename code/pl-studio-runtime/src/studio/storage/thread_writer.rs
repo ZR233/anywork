@@ -4174,14 +4174,10 @@ mod writer_tests {
                     },
                 )
                 .await?;
-            let bytes = crate::history::read_event_body_bytes(
-                &reader,
-                &detail,
-                "payload",
-                Some(64 * 1024),
-            )
-            .await?
-            .context("immutable resume payload")?;
+            let bytes =
+                crate::history::read_event_body_bytes(&reader, &detail, "payload", Some(64 * 1024))
+                    .await?
+                    .context("immutable resume payload")?;
             let payload: pl_core::context::OpaquePayload = serde_json::from_slice(&bytes)?;
             assert_eq!(payload.format(), "pl.core.resume-operation");
             let saved: ContinuationOperation = serde_json::from_str(payload.content())?;
@@ -4318,7 +4314,11 @@ mod writer_tests {
             .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
             .await?;
         assert_eq!(first.history_events.len(), second.history_events.len());
-        for (first, second) in first.history_events.iter().zip(second.history_events.iter()) {
+        for (first, second) in first
+            .history_events
+            .iter()
+            .zip(second.history_events.iter())
+        {
             // Body UUIDs are minted at admission. Fresh projection passes must retain the same
             // event semantics, while the SQL retry regression below protects the frozen identity.
             assert_eq!(first.event_id, second.event_id);
@@ -4497,8 +4497,7 @@ mod writer_tests {
                 )
                 .await?;
             assert_eq!(
-                event.payload_json,
-                payload_json,
+                event.payload_json, payload_json,
                 "retry must commit the accepted immutable payload"
             );
         }

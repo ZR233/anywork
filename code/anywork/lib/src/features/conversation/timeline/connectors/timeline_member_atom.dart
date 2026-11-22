@@ -343,7 +343,12 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         initiallyExpanded: _expanded,
         onExpansionChanged: _expand,
         body:
-            atom.contents.any((content) => content.role == ChatContentRole.body)
+            atom.contents.any(
+                  (content) => content.role == ChatContentRole.body,
+                ) ||
+                widget.record.currentContents.any(
+                  (content) => content.role == ChatContentRole.body,
+                )
             ? _windows(role: ChatContentRole.body)
             : null,
       );
@@ -499,7 +504,43 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         children: [_windows()],
       );
     }
+    if (_isLiveStreamingText) return _liveStreamingText();
     return _response(_windows());
+  }
+
+  bool get _isLiveStreamingText =>
+      widget.record.contentSource is CurrentAtomSource &&
+      widget.executionPresent &&
+      widget.atom.kind == ChatAtomKind.text &&
+      widget.atom.lifecycle is ActiveChatAtom;
+
+  Widget _liveStreamingText() {
+    final owner = _owner;
+    if (owner == null) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: owner,
+      builder: (_, _) {
+        final ready =
+            owner.cleanupError != null ||
+            owner.windows.any(
+              (observation) =>
+                  observation.error != null ||
+                  (observation.window != null &&
+                      utf8
+                          .decode(
+                            observation.window!.bytes,
+                            allowMalformed: true,
+                          )
+                          .trim()
+                          .isNotEmpty),
+            );
+        if (!ready) return const SizedBox.shrink();
+        return ConversationResponseView(
+          startedAt: widget.atom.startedAt,
+          child: _windows(),
+        );
+      },
+    );
   }
 
   Widget _response(Widget body) {
@@ -532,11 +573,11 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       onContentLayout: (itemId, micros) {
         onLayout?.call(itemId, micros);
         if (widget.record.contentSource is CurrentAtomSource) {
-          onCurrentLayout?.call(itemId, micros);
+          onCurrentLayout?.call(widget.record.atom.id, micros);
         }
       },
       onContentUnmounted: widget.record.contentSource is CurrentAtomSource
-          ? widget.onCurrentContentUnmounted
+          ? (_) => widget.onCurrentContentUnmounted?.call(widget.record.atom.id)
           : null,
       isDisplayActive: () => _active,
       child: child,

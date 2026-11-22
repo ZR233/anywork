@@ -15,21 +15,15 @@ pub(in crate::history) use v25_schema::{
 pub(super) use v25_to_v26::migrate_v25_to_v26;
 
 use super::{
-    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole,
-    HistoryError, HistoryEventBodyRef,
-    HistorySingleVisibility, HistorySource, HistoryTurnState,
-    HistoryWaitHead, HistoryWaitIntentHead, Result,
+    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole, HistoryError,
+    HistoryEventBodyRef, HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
+    HistoryWaitIntentHead, Result,
     db::{self, statement},
     import::{
         HistoryBodySource, HistoryImport, HistoryImportBody, V24Body, V24BodyReader,
         V24HistorySource,
     },
     schema,
-};
-use v25_schema::{
-    HistoryEntityHeadV25 as HistoryEntityHead, HistoryEventKindV25 as HistoryEventKind,
-    HistoryEventV25 as HistoryEvent, HistoryObservationV25 as HistoryObservation,
-    HistoryRowHeadV25 as HistoryRowHead, HistoryWorkHeadV25 as HistoryWorkHead,
 };
 use crate::studio::storage::history::schema::{
     initialize as prepare_schema24,
@@ -56,6 +50,11 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
+};
+use v25_schema::{
+    HistoryEntityHeadV25 as HistoryEntityHead, HistoryEventKindV25 as HistoryEventKind,
+    HistoryEventV25 as HistoryEvent, HistoryObservationV25 as HistoryObservation,
+    HistoryRowHeadV25 as HistoryRowHead, HistoryWorkHeadV25 as HistoryWorkHead,
 };
 
 mod payload;
@@ -261,8 +260,14 @@ pub async fn upgrade_history(
                     "schema 25 history has a pending schema 24 report".into(),
                 ));
             }
-            return upgrade_v25_to_v26(&history_path, thread_id, &session_dir, &database_id, &pending_v25)
-                .await;
+            return upgrade_v25_to_v26(
+                &history_path,
+                thread_id,
+                &session_dir,
+                &database_id,
+                &pending_v25,
+            )
+            .await;
         }
         SourceFormat::Legacy(_) => {}
     }
@@ -432,7 +437,12 @@ async fn upgrade_v25_to_v26(
     schema::run_upgrade_v25(&writer, thread_id, stage_v25_report).await?;
     let (confirmed_db_id, _) = schema::identity(&writer, thread_id).await?;
     writer.close().await?;
-    complete_pending_report(pending_report, thread_id, &confirmed_db_id, "history.v25.sqlite")
+    complete_pending_report(
+        pending_report,
+        thread_id,
+        &confirmed_db_id,
+        "history.v25.sqlite",
+    )
 }
 
 async fn schema25_identity(db: &DatabaseConnection, thread_id: &str) -> Result<String> {
@@ -463,13 +473,13 @@ async fn v25_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>
     let mut counts = BTreeMap::new();
     for table in ["history_events", "history_bodies", "history_body_chunks"] {
         let row = db
-            .query_one_raw(statement(&format!("SELECT COUNT(*) AS c FROM {table}"), vec![]))
+            .query_one_raw(statement(
+                &format!("SELECT COUNT(*) AS c FROM {table}"),
+                vec![],
+            ))
             .await?
             .ok_or_else(|| HistoryError::Integrity(format!("failed counting {table}")))?;
-        counts.insert(
-            table.into(),
-            db_u64(row.try_get::<i64>("", "c")?, table)?,
-        );
+        counts.insert(table.into(), db_u64(row.try_get::<i64>("", "c")?, table)?);
     }
     Ok(counts)
 }
@@ -4027,12 +4037,7 @@ mod tests {
         assert_eq!(report.status, UpgradeStatus::AlreadySchema26);
         assert_eq!(report.database_id, store.database_id());
         assert!(!directory.path().join(BACKUP_ROOT).try_exists()?);
-        assert!(
-            !directory
-                .path()
-                .join(BACKUP_ROOT_V25_TO_V26)
-                .try_exists()?
-        );
+        assert!(!directory.path().join(BACKUP_ROOT_V25_TO_V26).try_exists()?);
         assert!(!directory.path().join("current.json").try_exists()?);
 
         let reader = store.reader();
@@ -5264,6 +5269,34 @@ mod migration_tests {
             observation["bodies"][0]["reference"]["ownerEventId"],
             boundary_event
         );
+        let original_member_event = display_member_event_id("work-1", "member-2");
+        let original_member_rec = members
+            .events
+            .iter()
+            .find(|ev| ev.event_id == original_member_event)
+            .ok_or_else(|| HistoryError::NotFound("completed original member".into()))?;
+        assert_ne!(
+            original_member_rec.kind,
+            CurrentHistoryEventKind::LegacyObserved
+        );
+        assert_eq!(original_member_rec.payload_schema, "anywork.event/1");
+        let m2_env = body::decode_event_envelope(original_member_rec)?;
+        assert!(m2_env.captured_at.is_none());
+        assert!(m2_env.bodies.iter().all(|b| b.role != "legacy_metadata"));
+        let mut seen_m2_keys = std::collections::BTreeSet::new();
+        for entry in &m2_env.bodies {
+            assert!(
+                seen_m2_keys.insert(entry.key.clone()),
+                "duplicate lifted body key {} on migrated member",
+                entry.key
+            );
+        }
+        assert_eq!(
+            body::read_event_body_bytes(&reader, original_member_rec, "body", None)
+                .await?
+                .as_deref(),
+            Some(fixture.empty_body.as_slice())
+        );
 
         let costs = reader
             .costs_page(None, None, HistoryDemand::default())
@@ -5284,7 +5317,10 @@ mod migration_tests {
             )
             .await?;
         assert_eq!(turn.entries.len(), 1);
-        assert_eq!(turn.entries[0].kind, CurrentHistoryEventKind::TurnRolledBack);
+        assert_eq!(
+            turn.entries[0].kind,
+            CurrentHistoryEventKind::TurnRolledBack
+        );
         assert!(matches!(
             body::decode_business_head_from_record(&turn.entries[0])?,
             HistoryBusinessRowHead::Turn(head)
@@ -5392,19 +5428,11 @@ mod migration_tests {
             let event = &page.entries[0];
             assert_eq!(event.kind.as_str(), expected_kind.as_str(), "{id}");
             assert_eq!(event.attempt_id.as_deref(), *attempt);
-            assert!(
-                event.run_id.is_none(),
-                "{id}: no invented runtime epoch"
-            );
-            assert_eq!(
-                event.occurred_at,
-                finished_at.map(|at| at * 1000),
-                "{id}"
-            );
-            let payload_bytes =
-                read_event_body_bytes(&reader, event, "canonical_payload", None)
-                    .await?
-                    .expect("lifecycle payload");
+            assert!(event.run_id.is_none(), "{id}: no invented runtime epoch");
+            assert_eq!(event.occurred_at, finished_at.map(|at| at * 1000), "{id}");
+            let payload_bytes = read_event_body_bytes(&reader, event, "canonical_payload", None)
+                .await?
+                .expect("lifecycle payload");
             let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
             assert_eq!(payload["attemptId"], serde_json::to_value(attempt)?, "{id}");
             assert_eq!(payload["started"].is_object(), *started, "{id}");
@@ -5469,14 +5497,10 @@ mod migration_tests {
                         },
                     )
                     .await?;
-                let body = read_event_body_bytes(
-                    &reader,
-                    &detail,
-                    INPUT_FACT_BODY_KEY,
-                    Some(16 * 1024),
-                )
-                .await?
-                .expect("preserved admission body");
+                let body =
+                    read_event_body_bytes(&reader, &detail, INPUT_FACT_BODY_KEY, Some(16 * 1024))
+                        .await?
+                        .expect("preserved admission body");
                 let saved: pl_core::context::OpaquePayload = serde_json::from_slice(&body)?;
                 let saved: serde_json::Value = serde_json::from_str(saved.content())?;
                 assert_eq!(saved["kind"], "admission");
@@ -6158,7 +6182,10 @@ mod migration_tests {
             )
             .await?;
         assert_eq!(work.events.len(), 1);
-        assert_eq!(work.events[0].kind, CurrentHistoryEventKind::ToolBackgrounded);
+        assert_eq!(
+            work.events[0].kind,
+            CurrentHistoryEventKind::ToolBackgrounded
+        );
         assert_eq!(work.events[0].call_id.as_deref(), Some("call_bg_1"));
         assert_eq!(work.events[0].tool_name.as_deref(), Some("exec"));
         assert_eq!(work.events[0].payload_schema, "anywork.event/1");
@@ -6170,6 +6197,619 @@ mod migration_tests {
             .await?
             .expect("zero-copy big body readable");
         assert_eq!(read_big, big_bytes);
+
+        reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn v25_to_v26_lifts_legacy_display_detail_event_payloads_and_kinds() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "v25-legacy-detail-lift";
+        let db_id = "db-v25-legacy-lift";
+
+        let db = schema::connect(&history_path, false, true).await?;
+        db.execute_unprepared(include_str!("upgrade/schema_v25.sql"))
+            .await?;
+        db.execute_unprepared(
+            "CREATE TABLE IF NOT EXISTS seaql_migrations (version TEXT PRIMARY KEY NOT NULL, applied_at INTEGER NOT NULL)",
+        )
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO seaql_migrations(version,applied_at) VALUES(?,1)",
+            vec![schema::MIGRATION_V25.into()],
+        ))
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,?)",
+            vec![db_id.into(), thread_id.into()],
+        ))
+        .await?;
+
+        use sea_orm::TransactionTrait as _;
+        let tx = db.begin().await?;
+        let mut next_seq: i64 = 1;
+
+        struct CanonicalFixture<'a> {
+            event_id: &'a str,
+            row_kind: &'a str,
+            original_kind: &'a str,
+            tool_name: Option<&'a str>,
+            call_id: Option<&'a str>,
+            entity_id: &'a str,
+            head: HistoryEntityHead,
+            payload: serde_json::Value,
+            bodies: Vec<(&'a str, &'a str, HistoryBodyRole, Vec<u8>)>,
+        }
+
+        let make_head =
+            |entity_id: &str,
+             kind: HistoryEntityKind,
+             text_channel: Option<crate::ThreadTextChannel>,
+             tool: Option<(&str, &str)>,
+             detail_id: &str,
+             observation: HistoryObservation| HistoryEntityHead {
+                entity_id: entity_id.into(),
+                run_id: None,
+                attempt_id: Some("att-1".into()),
+                source: if kind == HistoryEntityKind::Input {
+                    HistorySource::Input {
+                        input_id: entity_id.into(),
+                    }
+                } else {
+                    HistorySource::ForegroundTurn {
+                        turn_id: "turn-1".into(),
+                    }
+                },
+                kind,
+                delivery: if kind == HistoryEntityKind::Input || kind == HistoryEntityKind::Text {
+                    HistoryDelivery::Independent
+                } else {
+                    HistoryDelivery::Foreground
+                },
+                state: HistoryEntityState::KnownTerminal {
+                    outcome: crate::ChatTerminalOutcome::Completed,
+                },
+                started_at: Some(1_000),
+                finished_at: Some(2_000),
+                text_channel,
+                tool: tool.map(|(cid, name)| HistoryToolIdentity {
+                    call_id: cid.into(),
+                    name: name.into(),
+                }),
+                wait: None,
+                content_present: None,
+                single_visibility: (kind == HistoryEntityKind::Input
+                    || kind == HistoryEntityKind::Text
+                    || kind == HistoryEntityKind::Plan)
+                    .then_some(HistorySingleVisibility::Content),
+                observation,
+                presentation_contract: tool.map(|_| "builtin.exec@2".into()),
+                detail_event_id: Some(detail_id.into()),
+                input_manifest_event_id: Some(detail_id.into()),
+                body_manifest_event_id: Some(detail_id.into()),
+            };
+
+        let make_ref = |owner: &str, body_key: &str, body_id: &str, len: usize| {
+            serde_json::json!({
+                "databaseId": db_id,
+                "ownerEventId": owner,
+                "bodyKey": body_key,
+                "bodyId": body_id,
+                "byteStart": 0,
+                "byteLength": len,
+            })
+        };
+
+        let canonical_fixtures = vec![
+            CanonicalFixture {
+                event_id: "orig-input-1",
+                row_kind: "input_accepted",
+                original_kind: "input",
+                tool_name: None,
+                call_id: None,
+                entity_id: "app-1",
+                head: make_head(
+                    "app-1",
+                    HistoryEntityKind::Input,
+                    Some(crate::ThreadTextChannel::User),
+                    None,
+                    "orig-input-1",
+                    HistoryObservation::Original,
+                ),
+                payload: serde_json::json!({
+                    "contract": "anywork.chat/1",
+                    "type": "text",
+                    "data": { "channel": "user", "attachments": [] },
+                    "bodies": [{
+                        "key": "body",
+                        "byteLength": b"hello user prompt".len(),
+                        "reference": make_ref("orig-input-1", "legacy-content:body", "b-input-body", b"hello user prompt".len()),
+                    }],
+                }),
+                bodies: vec![(
+                    "b-input-body",
+                    "legacy-content:body",
+                    HistoryBodyRole::Body,
+                    b"hello user prompt".to_vec(),
+                )],
+            },
+            CanonicalFixture {
+                event_id: "orig-reason-1",
+                row_kind: "entity_ended",
+                original_kind: "reasoning",
+                tool_name: None,
+                call_id: None,
+                entity_id: "reason-1",
+                head: make_head(
+                    "reason-1",
+                    HistoryEntityKind::Reasoning,
+                    None,
+                    None,
+                    "orig-reason-1",
+                    HistoryObservation::Original,
+                ),
+                payload: serde_json::json!({
+                    "contract": "anywork.chat/1",
+                    "type": "thinking",
+                    "data": { "outcome": { "kind": "completed" } },
+                    "bodies": [{
+                        "key": "part.summaryText.0",
+                        "byteLength": b"thinking summary".len(),
+                        "reference": make_ref("orig-reason-1", "legacy-content:part.summaryText.0", "b-reason-sum", b"thinking summary".len()),
+                    }],
+                }),
+                bodies: vec![(
+                    "b-reason-sum",
+                    "legacy-content:part.summaryText.0",
+                    HistoryBodyRole::ReasoningSummary,
+                    b"thinking summary".to_vec(),
+                )],
+            },
+            CanonicalFixture {
+                event_id: "orig-tool-1",
+                row_kind: "entity_ended",
+                original_kind: "toolCall",
+                tool_name: Some("exec"),
+                call_id: Some("call-1"),
+                entity_id: "tool-1",
+                head: make_head(
+                    "tool-1",
+                    HistoryEntityKind::ToolCall,
+                    None,
+                    Some(("call-1", "exec")),
+                    "orig-tool-1",
+                    HistoryObservation::Original,
+                ),
+                payload: serde_json::json!({
+                    "contract": "anywork.chat/1",
+                    "type": "tool",
+                    "data": {
+                        "invocation": {
+                            "toolCallId": "call-1",
+                            "callId": "call-1",
+                            "name": "exec",
+                            "presentationContract": "builtin.exec@2"
+                        },
+                        "state": { "kind": "succeeded", "startedAt": 1, "finishedAt": 2 }
+                    },
+                    "bodies": [
+                        {
+                            "key": "tool.arguments",
+                            "byteLength": b"{\"cmd\":\"ls\"}".len(),
+                            "reference": make_ref("orig-tool-1", "legacy-content:tool.arguments", "b-tool-args", b"{\"cmd\":\"ls\"}".len()),
+                        },
+                        {
+                            "key": "tool.result",
+                            "byteLength": b"ok output".len(),
+                            "reference": make_ref("orig-tool-1", "legacy-content:tool.result", "b-tool-res", b"ok output".len()),
+                        }
+                    ],
+                }),
+                bodies: vec![
+                    (
+                        "b-tool-args",
+                        "legacy-content:tool.arguments",
+                        HistoryBodyRole::ToolArguments,
+                        b"{\"cmd\":\"ls\"}".to_vec(),
+                    ),
+                    (
+                        "b-tool-res",
+                        "legacy-content:tool.result",
+                        HistoryBodyRole::ToolOutput,
+                        b"ok output".to_vec(),
+                    ),
+                ],
+            },
+            CanonicalFixture {
+                event_id: "orig-plan-1",
+                row_kind: "entity_ended",
+                original_kind: "plan",
+                tool_name: None,
+                call_id: Some("call-plan-1"),
+                entity_id: "plan-1",
+                head: make_head(
+                    "plan-1",
+                    HistoryEntityKind::Plan,
+                    None,
+                    Some(("call-plan-1", "plan")),
+                    "orig-plan-1",
+                    HistoryObservation::Original,
+                ),
+                payload: serde_json::json!({
+                    "contract": "anywork.chat/1",
+                    "type": "plan",
+                    "data": { "decision": "approved", "documentVersion": 1 },
+                    "bodies": [{
+                        "key": "plan.document",
+                        "byteLength": b"# Step 1".len(),
+                        "reference": make_ref("orig-plan-1", "legacy-content:plan.document", "b-plan-doc", b"# Step 1".len()),
+                    }],
+                }),
+                bodies: vec![(
+                    "b-plan-doc",
+                    "legacy-content:plan.document",
+                    HistoryBodyRole::Other {
+                        name: "legacy_content".into(),
+                    },
+                    b"# Step 1".to_vec(),
+                )],
+            },
+            CanonicalFixture {
+                event_id: "orig-text-1",
+                row_kind: "entity_ended",
+                original_kind: "text",
+                tool_name: None,
+                call_id: None,
+                entity_id: "text-1",
+                head: make_head(
+                    "text-1",
+                    HistoryEntityKind::Text,
+                    Some(crate::ThreadTextChannel::Final),
+                    None,
+                    "orig-text-1",
+                    HistoryObservation::Original,
+                ),
+                payload: serde_json::json!({
+                    "contract": "anywork.chat/1",
+                    "type": "text",
+                    "data": { "channel": "final", "attachments": [] },
+                    "bodies": [{
+                        "key": "body",
+                        "byteLength": b"final assistant reply".len(),
+                        "reference": make_ref("orig-text-1", "legacy-content:body", "b-text-body", b"final assistant reply".len()),
+                    }],
+                }),
+                bodies: vec![(
+                    "b-text-body",
+                    "legacy-content:body",
+                    HistoryBodyRole::Body,
+                    b"final assistant reply".to_vec(),
+                )],
+            },
+        ];
+
+        for item in &canonical_fixtures {
+            let pbid = format!("{}:cp", item.event_id);
+            tx.execute_raw(statement(
+                "INSERT INTO history_events(seq,event_id,kind,attempt_id,entity_id,turn_id,call_id,query_class,original_kind,tool_name,occurred_at,recorded_at,payload_body_id) \
+                 VALUES(?,?,?,?,?,'turn-1',?,'conversation',?,?,2000,2000,?)",
+                vec![
+                    next_seq.into(),
+                    item.event_id.into(),
+                    item.row_kind.into(),
+                    "att-1".into(),
+                    item.entity_id.into(),
+                    item.call_id.into(),
+                    item.original_kind.into(),
+                    item.tool_name.into(),
+                    pbid.clone().into(),
+                ],
+            ))
+            .await?;
+            next_seq += 1;
+
+            super::v25_schema::insert_v25_body(
+                &tx,
+                item.event_id,
+                0,
+                &HistoryBody {
+                    body_id: pbid,
+                    body_key: "canonical_payload".into(),
+                    role: HistoryBodyRole::CanonicalPayload,
+                    media_type: Some("application/json".into()),
+                    bytes: serde_json::to_vec(&item.payload)?.into(),
+                },
+            )
+            .await?;
+            super::v25_schema::insert_v25_body(
+                &tx,
+                item.event_id,
+                1,
+                &HistoryBody {
+                    body_id: format!("{}:cm", item.event_id),
+                    body_key: "canonical_metadata".into(),
+                    role: HistoryBodyRole::CanonicalMetadata,
+                    media_type: Some("application/json".into()),
+                    bytes: serde_json::to_vec(&item.head)?.into(),
+                },
+            )
+            .await?;
+            super::v25_schema::insert_v25_body(
+                &tx,
+                item.event_id,
+                2,
+                &HistoryBody {
+                    body_id: format!("{}:lm", item.event_id),
+                    body_key: "legacy_metadata".into(),
+                    role: HistoryBodyRole::Other {
+                        name: "legacy_metadata".into(),
+                    },
+                    media_type: Some("application/json".into()),
+                    bytes: serde_json::to_vec(&item.head)?.into(),
+                },
+            )
+            .await?;
+            for (idx, (bid, bkey, role, bytes)) in item.bodies.iter().enumerate() {
+                super::v25_schema::insert_v25_body(
+                    &tx,
+                    item.event_id,
+                    (3 + idx) as u64,
+                    &HistoryBody {
+                        body_id: (*bid).into(),
+                        body_key: (*bkey).into(),
+                        role: role.clone(),
+                        media_type: Some("text/plain; charset=utf-8".into()),
+                        bytes: bytes.clone().into(),
+                    },
+                )
+                .await?;
+            }
+        }
+
+        // Insert legacy_observed display rows (payload_body_id = NULL, detail_event_id -> canonical row)
+        // in an interleaved / later order so earlier canonical rows have already been scanned.
+        let display_rows = [
+            (
+                "legacy:v24:single-input",
+                "single",
+                "single:input-1",
+                None::<&str>,
+                make_head(
+                    "app-1",
+                    HistoryEntityKind::Input,
+                    Some(crate::ThreadTextChannel::User),
+                    None,
+                    "orig-input-1",
+                    HistoryObservation::Original,
+                ),
+            ),
+            (
+                "legacy:v24:member-reason",
+                "member",
+                "member:reason-1",
+                Some("work-1"),
+                make_head(
+                    "reason-1",
+                    HistoryEntityKind::Reasoning,
+                    None,
+                    None,
+                    "orig-reason-1",
+                    HistoryObservation::Original,
+                ),
+            ),
+            (
+                "legacy:v24:member-tool",
+                "member",
+                "member:tool-1",
+                Some("work-1"),
+                make_head(
+                    "tool-1",
+                    HistoryEntityKind::ToolCall,
+                    None,
+                    Some(("call-1", "exec")),
+                    "orig-tool-1",
+                    HistoryObservation::Original,
+                ),
+            ),
+            (
+                "legacy:v24:member-unavail",
+                "member",
+                "member:unavail-1",
+                Some("work-1"),
+                make_head(
+                    "unavail-1",
+                    HistoryEntityKind::Reasoning,
+                    None,
+                    None,
+                    "legacy:v24:member-unavail",
+                    HistoryObservation::UnavailableLegacy {
+                        captured_at: Some(9_000),
+                    },
+                ),
+            ),
+            (
+                "legacy:v24:single-plan",
+                "single",
+                "single:plan-1",
+                None::<&str>,
+                make_head(
+                    "plan-1",
+                    HistoryEntityKind::Plan,
+                    None,
+                    Some(("call-plan-1", "plan")),
+                    "orig-plan-1",
+                    HistoryObservation::Original,
+                ),
+            ),
+            (
+                "legacy:v24:single-text",
+                "single",
+                "single:text-1",
+                None::<&str>,
+                make_head(
+                    "text-1",
+                    HistoryEntityKind::Text,
+                    Some(crate::ThreadTextChannel::Final),
+                    None,
+                    "orig-text-1",
+                    HistoryObservation::Original,
+                ),
+            ),
+        ];
+
+        for (eid, scope, rkey, gid, mut head) in display_rows {
+            head.attempt_id = None;
+            let row_head = if scope == "single" {
+                HistoryRowHead::Single(head.clone())
+            } else {
+                HistoryRowHead::Member(head.clone())
+            };
+            tx.execute_raw(statement(
+                "INSERT INTO history_events(seq,event_id,kind,entity_id,turn_id,call_id,tool_name,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id) \
+                 VALUES(?,?,'legacy_observed',?,'turn-1',?,NULL,?,?,?,1,2000,2000,?,NULL)",
+                vec![
+                    next_seq.into(),
+                    eid.into(),
+                    head.entity_id.clone().into(),
+                    head.tool.as_ref().map(|t| t.call_id.clone()).into(),
+                    gid.into(),
+                    scope.into(),
+                    rkey.into(),
+                    serde_json::to_string(&row_head)?.into(),
+                ],
+            ))
+            .await?;
+            next_seq += 1;
+        }
+        tx.commit().await?;
+
+        let pre_body_count = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS c FROM history_bodies",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get::<i64>("", "c")?;
+        let pre_chunk_count = db
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS c FROM history_body_chunks",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get::<i64>("", "c")?;
+        db.close().await?;
+
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+
+        let verify_conn = schema::connect(&history_path, true, false).await?;
+        let post_body_count = verify_conn
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS c FROM history_bodies",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get::<i64>("", "c")?;
+        let post_chunk_count = verify_conn
+            .query_one_raw(statement(
+                "SELECT COUNT(*) AS c FROM history_body_chunks",
+                vec![],
+            ))
+            .await?
+            .unwrap()
+            .try_get::<i64>("", "c")?;
+        assert_eq!(post_body_count, pre_body_count);
+        assert_eq!(post_chunk_count, pre_chunk_count);
+        verify_conn.close().await?;
+
+        let store = crate::history::HistoryStore::open(
+            &history_path,
+            thread_id,
+            crate::history::HistoryLimits::default(),
+        )
+        .await?;
+        let reader = store.reader();
+        let timeline = reader
+            .timeline_page(None, None, crate::history::HistoryDemand::default())
+            .await?;
+        // Newest-first dividers + 1 work range: single-text, single-plan, work, single-input
+        assert_eq!(timeline.items.len(), 4);
+
+        let HistoryTimelineItem::Divider(text_div) = &timeline.items[0] else {
+            panic!("expected single-text divider");
+        };
+        assert_eq!(text_div.kind, CurrentHistoryEventKind::TextCompleted);
+        let text_env = body::decode_event_envelope(text_div)?;
+        assert_eq!(text_env.item_type, "text");
+        assert!(text_env.bodies.iter().all(|b| b.role != "legacy_metadata"));
+        assert_eq!(
+            body::read_event_body_bytes(&reader, text_div, "body", None).await?,
+            Some(b"final assistant reply".to_vec())
+        );
+
+        let HistoryTimelineItem::Divider(plan_div) = &timeline.items[1] else {
+            panic!("expected single-plan divider");
+        };
+        assert_eq!(plan_div.kind, CurrentHistoryEventKind::PlanResolved);
+        let plan_env = body::decode_event_envelope(plan_div)?;
+        assert_eq!(plan_env.item_type, "plan");
+        assert_eq!(
+            body::read_event_body_bytes(&reader, plan_div, "plan.document", None).await?,
+            Some(b"# Step 1".to_vec())
+        );
+
+        let HistoryTimelineItem::WorkRange(range) = &timeline.items[2] else {
+            panic!("expected work range");
+        };
+        let work = reader
+            .work_range_page(
+                range.after_seq,
+                range.before_seq,
+                Some(timeline.cut.clone()),
+                None,
+                crate::history::HistoryDemand::default(),
+            )
+            .await?;
+        assert_eq!(work.events.len(), 3);
+        let reason_ev = &work.events[0];
+        let tool_ev = &work.events[1];
+        let unavail_ev = &work.events[2];
+
+        assert_eq!(reason_ev.kind, CurrentHistoryEventKind::ReasoningCompleted);
+        assert_eq!(
+            body::read_event_body_bytes(&reader, reason_ev, "part.summaryText.0", None).await?,
+            Some(b"thinking summary".to_vec())
+        );
+
+        assert_eq!(tool_ev.kind, CurrentHistoryEventKind::ToolCompleted);
+        assert_eq!(
+            body::read_event_body_bytes(&reader, tool_ev, "tool.arguments", None).await?,
+            Some(b"{\"cmd\":\"ls\"}".to_vec())
+        );
+        assert_eq!(
+            body::read_event_body_bytes(&reader, tool_ev, "tool.result", None).await?,
+            Some(b"ok output".to_vec())
+        );
+
+        assert_eq!(unavail_ev.kind, CurrentHistoryEventKind::LegacyObserved);
+        let unavail_env = body::decode_event_envelope(unavail_ev)?;
+        assert_eq!(unavail_env.captured_at, Some(9_000));
+        assert_eq!(unavail_env.data["legacyUnavailable"], true);
+
+        let HistoryTimelineItem::Divider(input_div) = &timeline.items[3] else {
+            panic!("expected single-input divider");
+        };
+        assert_eq!(input_div.kind, CurrentHistoryEventKind::InputAccepted);
+        assert_eq!(
+            body::read_event_body_bytes(&reader, input_div, "body", None).await?,
+            Some(b"hello user prompt".to_vec())
+        );
 
         reader.close().await;
         store.close().await?;

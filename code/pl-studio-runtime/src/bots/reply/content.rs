@@ -178,9 +178,7 @@ pub(super) async fn history_turn_terminal(
             ) {
                 let turn = crate::studio::runtime::history_turn(reader, head)
                     .await
-                    .map_err(|error| {
-                        read_failure("reply immutable Turn detail failed", error)
-                    })?;
+                    .map_err(|error| read_failure("reply immutable Turn detail failed", error))?;
                 if turn.id != turn_id || turn.state.completed_at().is_none() {
                     return Err(gap("reply Turn detail does not prove its terminal outcome"));
                 }

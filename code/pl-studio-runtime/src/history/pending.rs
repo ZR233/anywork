@@ -94,9 +94,7 @@ impl Pending {
     }
 
     pub fn event(&self, id: &str) -> Option<&Arc<Accepted>> {
-        self.identities
-            .get(id)
-            .and_then(|seq| self.events.get(seq))
+        self.identities.get(id).and_then(|seq| self.events.get(seq))
     }
 
     pub fn body(&self, id: &str) -> Option<(&Arc<Accepted>, &Body, usize)> {

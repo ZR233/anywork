@@ -1,8 +1,6 @@
 //! Actual lifecycle folded by the existing projection owner, emitting stateless atomic history events.
 use super::*;
-use crate::history::{
-    HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole,
-};
+use crate::history::{HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole};
 use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
@@ -117,11 +115,13 @@ fn set_event_atom_columns(
     event.attempt_id = atom.attempt_id.clone();
     event.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
     event.entity_id = Some(atom.id.clone());
-    event.message_id = matched_message_id.map(str::to_owned).or_else(|| match &atom.source {
-        ChatSourceId::InboxMessage { message_id, .. }
-        | ChatSourceId::BackgroundResult { message_id } => Some(message_id.clone()),
-        _ => None,
-    });
+    event.message_id = matched_message_id
+        .map(str::to_owned)
+        .or_else(|| match &atom.source {
+            ChatSourceId::InboxMessage { message_id, .. }
+            | ChatSourceId::BackgroundResult { message_id } => Some(message_id.clone()),
+            _ => None,
+        });
     event.tool_name = atom.tool.as_ref().map(|tool| tool.name.clone());
     event.source = Some(atom.source.clone());
     Ok(())
@@ -358,13 +358,7 @@ impl LiveProjection {
                     HistoryTimelineRole::Hidden,
                     recorded_at,
                 );
-                set_event_atom_columns(
-                    &mut history_event,
-                    &atom,
-                    run,
-                    atom.started_at,
-                    None,
-                )?;
+                set_event_atom_columns(&mut history_event, &atom, run, atom.started_at, None)?;
                 crate::studio::runtime::chat_item::build_active_state_event(
                     &mut history_event,
                     &atom,
@@ -549,9 +543,9 @@ impl LiveProjection {
                         matches!(input.state(), crate::ThreadToolUserInputState::Pending)
                     });
                 let backgrounded = task.is_some_and(|task| task.acknowledgement.is_some())
-                    || self.completion_exists(
-                        &super::super::order::tool_background_started_id(call_id),
-                    )?;
+                    || self.completion_exists(&super::super::order::tool_background_started_id(
+                        call_id,
+                    ))?;
                 let stage = if cancel_requested {
                     EmittedToolStage::CancelRequested
                 } else if waiting {
@@ -587,7 +581,9 @@ impl LiveProjection {
                 .as_ref()
                 .map_or_else(|| atom.source.clone(), |old| old.source.clone());
             atom.attempt_id = old.as_ref().and_then(|old| old.attempt_id.clone());
-            atom.contents = old.as_ref().map_or_else(Vec::new, |old| old.contents.clone());
+            atom.contents = old
+                .as_ref()
+                .map_or_else(Vec::new, |old| old.contents.clone());
             merge_item_contents(&mut atom, item, &current_owner_id)?;
             let actual_start = match item.state() {
                 ExecutionShape::Tool(tool) => {
@@ -790,12 +786,8 @@ impl LiveProjection {
                 )?;
                 let kind = event_kind_for_draft(&atom);
                 let timeline_role = draft_timeline_role(&atom);
-                let mut history_event = HistoryEvent::new(
-                    draft.item_id.clone(),
-                    kind,
-                    timeline_role,
-                    recorded_at,
-                );
+                let mut history_event =
+                    HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
                 set_event_atom_columns(
                     &mut history_event,
                     &atom,
@@ -954,12 +946,8 @@ impl LiveProjection {
             }
             let kind = event_kind_for_draft(&atom);
             let timeline_role = draft_timeline_role(&atom);
-            let mut history_event = HistoryEvent::new(
-                draft.item_id.clone(),
-                kind,
-                timeline_role,
-                recorded_at,
-            );
+            let mut history_event =
+                HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
             set_event_atom_columns(
                 &mut history_event,
                 &atom,
@@ -1060,6 +1048,9 @@ impl LiveProjection {
                 "source provenance exceeds retained window".into(),
             ));
         }
-        Ok((staged.into_iter().map(|(_, event)| event).collect(), sources))
+        Ok((
+            staged.into_iter().map(|(_, event)| event).collect(),
+            sources,
+        ))
     }
 }

@@ -171,7 +171,7 @@ final class TimelineMessageController {
         );
       }
       final oldUnit = _unitOf(old);
-      if (sameDisplayBlock(oldUnit.block, block)) continue;
+      if (sameImmutableTimelineBlock(oldUnit.block, block)) continue;
       final next = _message(block);
       if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
         continue;

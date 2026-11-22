@@ -195,11 +195,12 @@ impl<'a, C: ConnectionTrait> HistoryImport<'a, C> {
                         ));
                     }
                     let read_len = u32::try_from(metadata.length).map_err(|_| {
-                        HistoryError::InvalidEvent("canonical import metadata length overflow".into())
+                        HistoryError::InvalidEvent(
+                            "canonical import metadata length overflow".into(),
+                        )
                     })?;
                     serde_json::from_slice::<super::upgrade::HistoryEntityHeadV25>(
-                        &db::window(self.connection, &metadata, 0, read_len)
-                            .await?,
+                        &db::window(self.connection, &metadata, 0, read_len).await?,
                     )?
                 }
             };
@@ -681,7 +682,9 @@ mod tests {
         let mut options = sea_orm::ConnectOptions::new("sqlite:");
         let buf = path.to_path_buf();
         options.map_sqlx_sqlite_opts(move |opts| {
-            opts.filename(&buf).foreign_keys(true).create_if_missing(true)
+            opts.filename(&buf)
+                .foreign_keys(true)
+                .create_if_missing(true)
         });
         Ok(Database::connect(options).await?)
     }
@@ -776,16 +779,19 @@ mod tests {
         source.close().await?;
         assert_eq!(std::fs::read(&source_path)?, source_before);
 
-        let report = super::super::upgrade::upgrade_history(&target_path, "import", temp.path()).await?;
-        assert_eq!(report.status, super::super::upgrade::UpgradeStatus::Upgraded);
+        let report =
+            super::super::upgrade::upgrade_history(&target_path, "import", temp.path()).await?;
+        assert_eq!(
+            report.status,
+            super::super::upgrade::UpgradeStatus::Upgraded
+        );
         let reopened = HistoryStore::open(&target_path, "import", HistoryLimits::default()).await?;
         let reader = reopened.reader();
         let event_rec = reader
             .read_event("original".into(), HistoryDemand::default())
             .await?;
         assert_eq!(event_rec.payload_schema, "anywork.business/1");
-        let env: super::body::BusinessFactEnvelope =
-            serde_json::from_str(&event_rec.payload_json)?;
+        let env: super::body::BusinessFactEnvelope = serde_json::from_str(&event_rec.payload_json)?;
         assert_eq!(env.bodies.len(), 1);
         let upgraded_ref = env.bodies[0]
             .reference

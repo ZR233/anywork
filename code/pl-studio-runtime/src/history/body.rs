@@ -151,9 +151,9 @@ pub fn decode_event_envelope(record: &HistoryEventRecord) -> Result<EventPayload
 pub(crate) fn decode_business_head_from_record(
     record: &HistoryEventRecord,
 ) -> Result<HistoryBusinessRowHead> {
-    let scope = record.row_scope.ok_or_else(|| {
-        HistoryError::Integrity("business record has no row_scope".into())
-    })?;
+    let scope = record
+        .row_scope
+        .ok_or_else(|| HistoryError::Integrity("business record has no row_scope".into()))?;
     let expected_schema = match scope {
         super::HistoryBusinessRowScope::Turn => "anywork.turn/1",
         super::HistoryBusinessRowScope::Source => "anywork.source/1",
@@ -206,7 +206,10 @@ pub async fn read_event_body_bytes(
     max_bytes: Option<usize>,
 ) -> Result<Option<Vec<u8>>> {
     if let Ok(container) = serde_json::from_str::<AnyBodiesContainer>(&event.payload_json)
-        && let Some(entry) = container.bodies.into_iter().find(|item| item.key == body_key)
+        && let Some(entry) = container
+            .bodies
+            .into_iter()
+            .find(|item| item.key == body_key)
     {
         if let Some(inline) = entry.inline_text {
             let bytes = inline.into_bytes();

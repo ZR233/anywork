@@ -1,10 +1,11 @@
 //! Frozen Schema 25 wire and persistence types used solely at the explicit migration boundary.
 
 use super::super::{
-    HistoryAccountingHead, HistoryBody, HistoryCostHead, HistoryDelivery,
-    HistoryEntityKind, HistoryEntityState, HistoryError, HistoryOriginalInfo, HistorySingleVisibility,
-    HistorySource, HistorySourceHead, HistoryTurnHead, HistoryWaitHead,
-    Result, db::{number, statement}, types::source_key,
+    HistoryAccountingHead, HistoryBody, HistoryCostHead, HistoryDelivery, HistoryEntityKind,
+    HistoryEntityState, HistoryError, HistoryOriginalInfo, HistorySingleVisibility, HistorySource,
+    HistorySourceHead, HistoryTurnHead, HistoryWaitHead, Result,
+    db::{number, statement},
+    types::source_key,
 };
 use sea_orm::ConnectionTrait;
 use serde::{Deserialize, Serialize};
@@ -164,7 +165,8 @@ impl HistoryEntityHeadV25 {
             }
         };
         let to_ms = |secs: Option<i64>| -> Result<Option<i64>> {
-            secs.map(super::super::milliseconds_from_seconds).transpose()
+            secs.map(super::super::milliseconds_from_seconds)
+                .transpose()
         };
         Ok(Self {
             entity_id: atom.id.clone(),
@@ -248,11 +250,7 @@ pub(in crate::history) struct HistoryEventV25 {
 }
 
 impl HistoryEventV25 {
-    pub fn new(
-        event_id: impl Into<String>,
-        kind: HistoryEventKindV25,
-        recorded_at: i64,
-    ) -> Self {
+    pub fn new(event_id: impl Into<String>, kind: HistoryEventKindV25, recorded_at: i64) -> Self {
         Self {
             header: HistoryEventHeaderV25 {
                 seq: 0,
@@ -297,7 +295,7 @@ pub(in crate::history) async fn insert_v25_event(
                 _ => {
                     return Err(HistoryError::InvalidEvent(
                         "original kind did not serialize as string".into(),
-                    ))
+                    ));
                 }
             };
             (
@@ -377,7 +375,11 @@ pub(in crate::history) async fn insert_v25_body(
         ],
     ))
     .await?;
-    for (chunk_no, chunk) in body.bytes.chunks(super::super::BODY_CHUNK_BYTES).enumerate() {
+    for (chunk_no, chunk) in body
+        .bytes
+        .chunks(super::super::BODY_CHUNK_BYTES)
+        .enumerate()
+    {
         db.execute_raw(statement(
             "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
             vec![

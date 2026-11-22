@@ -959,7 +959,12 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         contents: vec![],
         payload: None,
     };
-    let start = history_change("lifecycle-start", HistoryEventKind::CompactionStarted, &atom, 1)?;
+    let start = history_change(
+        "lifecycle-start",
+        HistoryEventKind::CompactionStarted,
+        &atom,
+        1,
+    )?;
     atom.lifecycle = crate::ChatAtomLifecycle::Terminal {
         started: Some(crate::ChatFactPosition {
             effect_seq: 1,
@@ -971,7 +976,12 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         }),
         outcome: crate::ChatTerminalOutcome::Cancelled,
     };
-    let end = history_change("lifecycle-end", HistoryEventKind::CompactionCompleted, &atom, 2)?;
+    let end = history_change(
+        "lifecycle-end",
+        HistoryEventKind::CompactionCompleted,
+        &atom,
+        2,
+    )?;
     let start: Arc<[_]> = Arc::from([start]);
     let end: Arc<[_]> = Arc::from([end]);
     coord

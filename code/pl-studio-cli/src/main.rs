@@ -5,6 +5,8 @@ use pl_studio_cli::{Cli, Command, PreparedAcp, PreparedExec, SignalListener};
 use std::{io::Write, process::ExitCode};
 use tracing_subscriber::EnvFilter;
 
+const CLI_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 fn main() -> ExitCode {
     let Cli { command } = Cli::parse();
     tracing_subscriber::fmt()
@@ -31,8 +33,30 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let handle = match std::thread::Builder::new()
+        .name("anywk-main".into())
+        .stack_size(CLI_STACK_BYTES)
+        .spawn(move || run_prepared(request))
+    {
+        Ok(handle) => handle,
+        Err(error) => {
+            eprintln!("anywk: 无法创建执行线程: {error}");
+            return ExitCode::from(11);
+        }
+    };
+    match handle.join() {
+        Ok(code) => code,
+        Err(_) => {
+            eprintln!("anywk: 执行线程异常终止");
+            ExitCode::from(11)
+        }
+    }
+}
+
+fn run_prepared(request: Prepared) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(CLI_STACK_BYTES)
         .build()
     {
         Ok(runtime) => runtime,

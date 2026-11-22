@@ -3,9 +3,7 @@ use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Sha256;
 
-use super::{
-    HistoryBusinessRowScope, HistoryCut, HistoryError, HistoryEventsQuery, Result,
-};
+use super::{HistoryBusinessRowScope, HistoryCut, HistoryError, HistoryEventsQuery, Result};
 
 const MAX_TOKEN_BYTES: usize = 64 * 1024;
 const TOKEN_VERSION: u32 = 2;

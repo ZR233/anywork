@@ -174,7 +174,8 @@ async fn stream_body_manifest<S: ContentBlobSink>(
             .1;
             (Some(reference.clone()), blob)
         } else if entry.byte_length == 0 {
-            let blob = write_static_blob(sink, &[], entry.media_type.clone(), "utf-8".into()).await?;
+            let blob =
+                write_static_blob(sink, &[], entry.media_type.clone(), "utf-8".into()).await?;
             (None, blob)
         } else {
             anyhow::bail!(

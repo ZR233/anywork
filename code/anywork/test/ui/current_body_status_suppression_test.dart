@@ -25,6 +25,7 @@ const _threadId = 'thread-main';
 const _turnId = 'turn';
 const _atomId = 'current-body';
 const _bodyText = 'mounted Current body';
+const _inputText = 'immutable prompt';
 const _cut = HistoryCut('body-status-cut');
 
 CurrentContentRef _bodyRef(String ownerId) => CurrentContentRef(
@@ -72,28 +73,35 @@ final class _BodyStatusTransport extends RecordingDemoTransport {
           DividerTimelineItem(
             HistoryEventRecord(
               seq: 4,
-              eventId: 'event:$_atomId',
-              kind: 'text_updated',
+              eventId: 'event:input-1',
+              kind: 'input_accepted',
               timelineRole: HistoryTimelineRole.divider,
               recordedAt: 4,
+              occurredAt: 4,
               runId: runId,
               turnId: _turnId,
-              entityId: _atomId,
-              rowKey: 'row:$_atomId',
-              source: const ForegroundTurnChatSource(turnId: _turnId),
+              entityId: 'input-1',
+              rowKey: 'row:input-1',
+              source: const InputChatSource(inputId: 'input-1'),
               payloadSchema: 'anywork.event/1',
               payloadJson: jsonEncode({
                 'contract': 'anywork.event/1',
                 'type': 'text',
                 'meta': {
-                  'entityId': _atomId,
-                  'entityKind': 'text',
+                  'entityId': 'input-1',
+                  'entityKind': 'input',
                   'delivery': 'foreground',
-                  'state': {'kind': 'knownActive', 'status': 'running'},
-                  'contentPresent': false,
+                  'state': {'kind': 'knownTerminal', 'outcome': 'completed'},
+                  'contentPresent': true,
                 },
-                'data': {'channel': 'final'},
-                'bodies': <Object?>[],
+                'data': {'channel': 'user'},
+                'bodies': [
+                  {
+                    'key': 'body',
+                    'byteLength': utf8.encode(_inputText).length,
+                    'inlineText': _inputText,
+                  },
+                ],
               }),
             ),
           ),
@@ -130,6 +138,7 @@ ProjectionCurrentFrame _projectionFrame({
   required String ownerId,
   required int revision,
   required String turnId,
+  bool includeBodyAtom = true,
 }) => ProjectionCurrentFrame(
   revision: CurrentRevision(ownerId: ownerId, revision: revision),
   projection: CurrentProjection(
@@ -137,7 +146,9 @@ ProjectionCurrentFrame _projectionFrame({
     executionPresent: true,
     activeTurn: CurrentTurnHead(id: turnId, phase: CurrentTurnPhase.responding),
     sources: const [],
-    atoms: [_currentAtom(turnId: turnId, ownerId: ownerId)],
+    atoms: includeBodyAtom
+        ? [_currentAtom(turnId: turnId, ownerId: ownerId)]
+        : const [],
     previews: const [],
     collections: const [],
   ),
@@ -163,6 +174,7 @@ Widget _root({
   required AppGraph graph,
   required String threadId,
   required bool Function() showTimeline,
+  required bool Function() showLiveStatus,
   required void Function(StateSetter) exposeSetState,
 }) => ProviderScope(
   overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -182,7 +194,7 @@ Widget _root({
             children: [
               if (showTimeline())
                 Expanded(child: TimelineConnector(threadId: threadId)),
-              LiveStatusBar(threadId: threadId),
+              if (showLiveStatus()) LiveStatusBar(threadId: threadId),
             ],
           );
         },
@@ -193,7 +205,7 @@ Widget _root({
 
 void main() {
   testWidgets(
-    'Current body layout gates responding suppression until real unmount',
+    'LiveStatusBar owns Current body layout and responding suppression while Timeline stays immutable',
     (tester) async {
       final transport = _BodyStatusTransport();
       final graph = testAppGraph(
@@ -232,12 +244,14 @@ void main() {
       graph.timeline.updateReadDemand(chatDemand);
 
       var showTimeline = true;
+      var showLiveStatus = true;
       late StateSetter rebuildRoot;
       await tester.pumpWidget(
         _root(
           graph: graph,
           threadId: _threadId,
           showTimeline: () => showTimeline,
+          showLiveStatus: () => showLiveStatus,
           exposeSetState: (setState) => rebuildRoot = setState,
         ),
       );
@@ -308,8 +322,13 @@ void main() {
         onListen: () => firstListening.complete(),
       );
       addTearDown(firstBody.close);
-      reader.onReadBody = (_, range) async =>
-          _window(range.offset, range.maxBytes, ownerId);
+      reader.onReadBody = (_, range) async => ContentWindow(
+        offset: range.offset,
+        bytes: const [],
+        generation: _bodyRef(ownerId).generation,
+        availableThrough: 0,
+        sealed: false,
+      );
       reader.onWatchBody = (_, _) => firstBody.stream;
       reader.emitCurrentFrame(
         _projectionFrame(ownerId: ownerId, revision: 3, turnId: _turnId),
@@ -324,6 +343,13 @@ void main() {
         findsOneWidget,
         reason: 'A subscribed but unlaid-out body does not hide responding.',
       );
+      expect(
+        find.descendant(
+          of: find.byType(TimelineConnector),
+          matching: find.byType(ConversationResponseView),
+        ),
+        findsNothing,
+      );
 
       firstBody.add(_window(0, 4096, ownerId));
       await pumpClientUntil(
@@ -335,20 +361,72 @@ void main() {
                 .contains(_atomId) &&
             find.text(_bodyText).evaluate().isNotEmpty &&
             find.byType(ConversationActivityStatus).evaluate().isEmpty,
-        'laid-out Current body',
+        'laid-out Current body inside LiveStatusBar',
       );
-      expect(find.byType(ContentLayoutWitness), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(LiveStatusBar),
+          matching: find.byType(ContentLayoutWitness),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(LiveStatusBar),
+          matching: find.byType(ConversationResponseView),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byType(TimelineConnector),
+          matching: find.text(_bodyText),
+        ),
+        findsNothing,
+      );
+      expect(
+        graph.timeline.lease(_threadId)!.controller.messages.map((m) => m.id),
+        ['row:input-1'],
+      );
       expect(find.byType(ConversationActivityStatus), findsNothing);
 
+      // Hiding Timeline does not interrupt LiveStatusBar streaming or suppression.
       showTimeline = false;
+      rebuildRoot(() {});
+      await tester.pump();
+      expect(
+        graph.timeline.lease(_threadId)!.renderedCurrentAtomIds,
+        contains(_atomId),
+      );
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+
+      // Unmounting LiveStatusBar immediately clears rendered Current body evidence.
+      showLiveStatus = false;
       rebuildRoot(() {});
       await tester.pump();
       await pumpClientUntil(
         tester,
-        () =>
-            graph.timeline.lease(_threadId)!.renderedCurrentAtomIds.isEmpty &&
-            find.byType(ConversationActivityStatus).evaluate().isNotEmpty,
-        'unmounted Current body restores status',
+        () => graph.timeline.lease(_threadId)!.renderedCurrentAtomIds.isEmpty,
+        'unmounted LiveStatusBar clears renderedCurrentAtomIds',
+      );
+
+      // Removing active body atom restores ConversationActivityStatus when LiveStatusBar returns.
+      showTimeline = true;
+      showLiveStatus = true;
+      reader.emitCurrentFrame(
+        _projectionFrame(
+          ownerId: ownerId,
+          revision: 4,
+          turnId: _turnId,
+          includeBodyAtom: false,
+        ),
+      );
+      rebuildRoot(() {});
+      await tester.pump();
+      await pumpClientUntil(
+        tester,
+        () => find.byType(ConversationActivityStatus).evaluate().isNotEmpty,
+        'missing Current body restores status',
       );
 
       final secondListening = Completer<void>();
@@ -361,10 +439,8 @@ void main() {
           _window(range.offset, range.maxBytes, ownerId);
       reader.onWatchBody = (_, _) => secondBody.stream;
       reader.emitCurrentFrame(
-        _projectionFrame(ownerId: ownerId, revision: 4, turnId: 'other-turn'),
+        _projectionFrame(ownerId: ownerId, revision: 5, turnId: 'other-turn'),
       );
-      showTimeline = true;
-      rebuildRoot(() {});
       await tester.pump();
       await pumpClientUntil(
         tester,

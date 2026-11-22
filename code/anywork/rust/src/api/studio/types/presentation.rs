@@ -1,12 +1,11 @@
 //! Mechanical FRB types for the independent history and current read ports.
 
 use super::{
-    BridgeCacheUsageSummary, BridgeChatAtomKind, BridgeChatAtomLifecycle,
-    BridgeChatContentRole, BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState,
-    BridgeChatTerminalOutcome, BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeReadDemand,
-    BridgeThreadActivityKind, BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope,
-    BridgeThreadSnapshot, BridgeThreadStatus, BridgeThreadTextChannel,
-    BridgeThreadWaitPresentation, BridgeTurnPhase,
+    BridgeCacheUsageSummary, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatContentRole,
+    BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState, BridgeChatTerminalOutcome,
+    BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeReadDemand, BridgeThreadActivityKind,
+    BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope, BridgeThreadSnapshot,
+    BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation, BridgeTurnPhase,
 };
 
 pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 2;
@@ -291,7 +290,6 @@ pub struct BridgeHistoryBodyPage {
 pub struct BridgeHistoryAccounting {
     pub head: BridgeHistoryAccountingHead,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeOpenHistoryReader {

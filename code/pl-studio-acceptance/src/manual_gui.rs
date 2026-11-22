@@ -5583,9 +5583,7 @@ async fn history_content_contains(
 }
 
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
-    use pl_studio_runtime::history::{
-        EventPayloadEnvelope, HistoryEntityKind, HistoryEntityState,
-    };
+    use pl_studio_runtime::history::{EventPayloadEnvelope, HistoryEntityKind, HistoryEntityState};
     use pl_studio_runtime::{ChatTerminalOutcome, ThreadTextChannel};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -49,21 +49,74 @@ final class ExecutionLiveNotice extends LiveStatusNotice {
   int get hashCode => view.hashCode;
 }
 
-/// 实时状态栏唯一主表面：权威活动/错误通知，不包含 Current Work 或历史行镜像。
+/// 实时状态栏唯一主表面：承载权威活动/错误通知，以及实时开放工作组和流式 Current 正文。
 @immutable
 final class LiveStatusNoticeSurface {
-  LiveStatusNoticeSurface({required List<LiveStatusNotice> notices})
-    : notices = List.unmodifiable(notices);
+  LiveStatusNoticeSurface({
+    required List<LiveStatusNotice> notices,
+    this.liveOpenWork,
+    List<CurrentAtom> liveWorkAtoms = const [],
+    List<CurrentAtom> liveResponseAtoms = const [],
+  }) : notices = List.unmodifiable(notices),
+       liveWorkAtoms = List.unmodifiable(liveWorkAtoms),
+       liveResponseAtoms = List.unmodifiable(liveResponseAtoms);
 
   final List<LiveStatusNotice> notices;
+  final DisplayBlock? liveOpenWork;
+  final List<CurrentAtom> liveWorkAtoms;
+  final List<CurrentAtom> liveResponseAtoms;
+
+  bool get isEmpty =>
+      notices.isEmpty &&
+      liveOpenWork == null &&
+      liveWorkAtoms.isEmpty &&
+      liveResponseAtoms.isEmpty;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is LiveStatusNoticeSurface && listEquals(notices, other.notices);
+      other is LiveStatusNoticeSurface &&
+          listEquals(notices, other.notices) &&
+          _sameOptionalBlock(liveOpenWork, other.liveOpenWork) &&
+          _sameCurrentAtoms(liveWorkAtoms, other.liveWorkAtoms) &&
+          _sameCurrentAtoms(liveResponseAtoms, other.liveResponseAtoms);
 
   @override
-  int get hashCode => Object.hashAll(notices);
+  int get hashCode => Object.hash(
+    Object.hashAll(notices),
+    liveOpenWork?.id,
+    liveOpenWork?.blockOrder,
+    Object.hashAll(liveWorkAtoms.map((a) => a.id)),
+    Object.hashAll(liveResponseAtoms.map((a) => a.id)),
+  );
+}
+
+bool _sameOptionalBlock(DisplayBlock? a, DisplayBlock? b) =>
+    a == null && b == null ||
+    (a != null && b != null && sameDisplayBlock(a, b));
+
+bool _sameCurrentAtoms(List<CurrentAtom> a, List<CurrentAtom> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    final x = a[i];
+    final y = b[i];
+    if (x.id != y.id ||
+        x.kind != y.kind ||
+        x.turnId != y.turnId ||
+        x.attemptId != y.attemptId ||
+        x.startedAt != y.startedAt ||
+        x.lifecycle.runtimeType != y.lifecycle.runtimeType ||
+        x.contents.length != y.contents.length) {
+      return false;
+    }
+    for (var j = 0; j < x.contents.length; j++) {
+      if (x.contents[j].role != y.contents[j].role ||
+          x.contents[j].reference != y.contents[j].reference) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /// Current activity-tool collection is exposed as one bounded page. The total
@@ -202,6 +255,7 @@ final class LiveStatusInputs {
     this.activeTurnId,
     this.activity,
     this.current,
+    this.liveOpenWork,
     Set<String> renderedCurrentAtomIds = const {},
     this.hasContentOwner = false,
   }) : interactions = List.unmodifiable(interactions),
@@ -214,6 +268,7 @@ final class LiveStatusInputs {
       activeTurnId = null,
       activity = null,
       current = null,
+      liveOpenWork = null,
       renderedCurrentAtomIds = const {},
       hasContentOwner = false;
 
@@ -223,6 +278,7 @@ final class LiveStatusInputs {
   final String? activeTurnId;
   final ThreadActivityView? activity;
   final CurrentAtomSnapshot? current;
+  final DisplayBlock? liveOpenWork;
   final Set<String> renderedCurrentAtomIds;
   final bool hasContentOwner;
 
@@ -236,6 +292,7 @@ final class LiveStatusInputs {
           activeTurnId == other.activeTurnId &&
           activity == other.activity &&
           current == other.current &&
+          _sameOptionalBlock(liveOpenWork, other.liveOpenWork) &&
           setEquals(renderedCurrentAtomIds, other.renderedCurrentAtomIds) &&
           hasContentOwner == other.hasContentOwner;
 
@@ -247,6 +304,7 @@ final class LiveStatusInputs {
     activeTurnId,
     activity,
     current,
+    liveOpenWork?.id,
     Object.hashAllUnordered(renderedCurrentAtomIds),
     hasContentOwner,
   );

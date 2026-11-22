@@ -93,11 +93,7 @@ pub(crate) async fn reports(
             }
         }
         let remaining = budget.saturating_sub(bytes);
-        let max_read = if page.is_empty() {
-            budget
-        } else {
-            remaining
-        };
+        let max_read = if page.is_empty() { budget } else { remaining };
         let (message, size): (ThreadMessage, usize) =
             match decode(reader, &event, "pl.studio.parent-report", max_read).await {
                 Ok(result) => result,

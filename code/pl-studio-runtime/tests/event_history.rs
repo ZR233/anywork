@@ -12,9 +12,7 @@ use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatActiveStatus, ChatTerminalOutcome, ContentRange,
     CurrentContentRef, CurrentFrame, CurrentProjection, RuntimeCostAmount,
 };
-use sea_orm::{
-    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
-};
+use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 use std::{path::Path, sync::Arc};
 use support::{Environment, current_demand, prompt_step, reached};
 
@@ -907,8 +905,7 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
         detail_event_id: None,
     };
     let turn_event = |id: &str, kind: HistoryEventKind, head: HistoryTurnHead, anchor: bool| {
-        let mut event =
-            HistoryEvent::new(id, kind, HistoryTimelineRole::Hidden, head.updated_at);
+        let mut event = HistoryEvent::new(id, kind, HistoryTimelineRole::Hidden, head.updated_at);
         event.run_id = Some(run.to_string());
         event.turn_id = Some("turn-a".into());
         event.row_scope = Some(HistoryBusinessRowScope::Turn);
@@ -921,7 +918,12 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     store
         .accept_batch(&[
             member_start,
-            turn_event("turn-start", HistoryEventKind::TurnStarted, turn.clone(), true),
+            turn_event(
+                "turn-start",
+                HistoryEventKind::TurnStarted,
+                turn.clone(),
+                true,
+            ),
         ])
         .await?;
     store
@@ -1005,7 +1007,11 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     );
     assert_eq!(reader.turns_page(Some(cut), None, demand()).await?, turns);
     let latest_main = reader.timeline_page(None, None, demand()).await?;
-    assert_eq!(latest_main.items.len(), main.items.len(), "rollback must not hide Timeline rows");
+    assert_eq!(
+        latest_main.items.len(),
+        main.items.len(),
+        "rollback must not hide Timeline rows"
+    );
     let HistoryTimelineItem::WorkRange(latest_range) = &latest_main.items[0] else {
         panic!("expected updated work range");
     };
@@ -1021,7 +1027,10 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
         )
         .await?;
     assert_eq!(latest_members.events.len(), 2);
-    assert_eq!(latest_members.events[1].kind, HistoryEventKind::ToolCompleted);
+    assert_eq!(
+        latest_members.events[1].kind,
+        HistoryEventKind::ToolCompleted
+    );
     let latest_turns = reader.turns_page(None, None, demand()).await?;
     assert!(matches!(
         &latest_turns.entries[0].head,
@@ -1044,7 +1053,12 @@ async fn event_retries_are_exact_and_sql_enforces_immutable_facts() -> Result<()
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("history.sqlite");
     let store = HistoryStore::open(&path, "immutability", HistoryLimits::default()).await?;
-    let event = single("idempotent", RuntimeEpoch::new(), store.database_id(), b"retained");
+    let event = single(
+        "idempotent",
+        RuntimeEpoch::new(),
+        store.database_id(),
+        b"retained",
+    );
     let first = store.accept_batch(std::slice::from_ref(&event)).await?;
     assert_eq!(
         store.accept_batch(std::slice::from_ref(&event)).await?,
@@ -1251,7 +1265,12 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_dividers_split_
         .expect("deferred wait body present");
     assert_eq!(actual, expected);
 
-    let invalid = HistoryEvent::new("", HistoryEventKind::ToolCalled, HistoryTimelineRole::Work, 3);
+    let invalid = HistoryEvent::new(
+        "",
+        HistoryEventKind::ToolCalled,
+        HistoryTimelineRole::Work,
+        3,
+    );
     assert!(matches!(
         store.accept_batch(&[invalid]).await,
         Err(HistoryError::InvalidEvent(_))
@@ -1867,7 +1886,9 @@ async fn schema25_upgrade_preserves_backup_and_large_body_bytes_without_copying_
     let reopened = HistoryStore::open(&source_path, "import", HistoryLimits::default()).await?;
     let reader = reopened.reader();
     let event = reader.read_event("original".into(), demand()).await?;
-    let bodies = reader.list_bodies("original".into(), None, demand()).await?;
+    let bodies = reader
+        .list_bodies("original".into(), None, demand())
+        .await?;
     let reference = bodies
         .entries
         .into_iter()
@@ -2310,13 +2331,22 @@ async fn schema26_hybrid_16k_inline_vs_blob_and_attachment_boundaries() -> Resul
     let manifest_bin = pack_bodies(
         &mut ev_binary,
         vec![
-            PendingBody::new("att", HistoryBodyRole::Attachment, None, attach_bytes.clone()),
+            PendingBody::new(
+                "att",
+                HistoryBodyRole::Attachment,
+                None,
+                attach_bytes.clone(),
+            ),
             PendingBody::new("bin", HistoryBodyRole::ToolOutput, None, non_utf8.clone()),
         ],
         &db_id,
     )?;
     assert_eq!(ev_binary.bodies.len(), 2);
-    assert!(manifest_bin.iter().all(|b| b.inline_text.is_none() && b.reference.is_some()));
+    assert!(
+        manifest_bin
+            .iter()
+            .all(|b| b.inline_text.is_none() && b.reference.is_some())
+    );
     ev_binary.payload_schema = "anywork.event/1".into();
     ev_binary.payload_json = serde_json::to_string(&EventPayloadEnvelope {
         contract: "anywork.event/1".into(),
@@ -2347,7 +2377,9 @@ async fn schema26_hybrid_16k_inline_vs_blob_and_attachment_boundaries() -> Resul
             .is_empty()
     );
 
-    let rec_blob = reader.read_event("blob-16k-plus-1".into(), demand()).await?;
+    let rec_blob = reader
+        .read_event("blob-16k-plus-1".into(), demand())
+        .await?;
     assert_eq!(
         read_event_body_bytes(&reader, &rec_blob, "body", None).await?,
         Some(over_16k)

@@ -154,6 +154,39 @@ bool sameDisplayBlock(DisplayBlock first, DisplayBlock second) =>
     first.blockOrder == second.blockOrder &&
     sameDisplayBlockBody(first.body, second.body);
 
+/// Checks whether [existing] in the immutable main Timeline already represents
+/// the exact same historical entry or sealed Work interval as [incoming].
+///
+/// Sealed History Work blocks keep their original `cut` and identity once
+/// admitted so advancing `HistoryCut` or adding trailing `divider`s never
+/// triggers in-place message replacement or resets expanded Work groups.
+bool sameImmutableTimelineBlock(DisplayBlock existing, DisplayBlock incoming) {
+  if (sameDisplayBlock(existing, incoming)) return true;
+  if (existing.id != incoming.id ||
+      existing.blockOrder != incoming.blockOrder) {
+    return false;
+  }
+  final a = existing.body;
+  final b = incoming.body;
+  if (a is! WorkDisplayBlock || b is! WorkDisplayBlock) return false;
+  return a.groupClosed &&
+      b.groupClosed &&
+      !a.executionPresent &&
+      !b.executionPresent &&
+      a.unfinishedCount == b.unfinishedCount &&
+      a.memberCount == b.memberCount &&
+      a.summary == b.summary &&
+      a.timing.startedAtMillis == b.timing.startedAtMillis &&
+      a.timing.finishedAtMillis == b.timing.finishedAtMillis &&
+      a.members.blockId == b.members.blockId &&
+      a.members.anchorSeq == b.members.anchorSeq &&
+      a.members.headSeq == b.members.headSeq &&
+      a.members.afterSeq == b.members.afterSeq &&
+      a.members.runId == b.members.runId &&
+      (a.members.beforeSeq == b.members.beforeSeq ||
+          a.members.beforeSeq == null);
+}
+
 bool sameDisplayBlockBody(DisplayBlockBody first, DisplayBlockBody second) {
   if (first is WorkDisplayBlock && second is WorkDisplayBlock) {
     return first.members == second.members &&
@@ -305,10 +338,16 @@ final class CurrentAtomSnapshot {
   CurrentAtomSnapshot({
     required this.revision,
     List<CurrentAtom> currentAtoms = const [],
+    this.ownerId,
+    this.executionPresent = false,
+    this.executionActive = false,
   }) : currentAtoms = List.unmodifiable(currentAtoms);
   final int revision;
+  final String? ownerId;
+  final bool executionPresent;
+  final bool executionActive;
 
-  /// The bounded Current run facts used to enrich matching History rows.
-  /// They are not a second timeline row collection.
+  /// The bounded Current run facts rendered inside LiveStatusBar and open live Work.
+  /// They are never overlaid onto immutable main-Timeline rows.
   final List<CurrentAtom> currentAtoms;
 }
