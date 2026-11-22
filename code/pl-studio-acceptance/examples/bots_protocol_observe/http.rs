@@ -4,8 +4,8 @@ use futures::{StreamExt, stream::BoxStream};
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use pl_studio_runtime::WorkspaceRecord;
 use pl_studio_runtime::history::{
-    HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryBodyWindow, HistoryBusinessPage, HistoryCut,
-    HistoryDemand, HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
+    HISTORY_PROTOCOL_VERSION, HistoryBodyWindow, HistoryBusinessPage, HistoryCut, HistoryDemand,
+    HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
     HistoryTimelinePage, HistoryWorkRangePage,
 };
 use pl_studio_runtime::{
@@ -153,18 +153,6 @@ impl HistoryRead {
         self.post(
             "history/event",
             &serde_json::json!({ "eventId": event_id, "demand": demand }),
-        )
-        .await
-    }
-    pub async fn bodies(
-        &self,
-        event_id: &str,
-        cursor: Option<String>,
-        demand: HistoryDemand,
-    ) -> Result<HistoryBodyPage> {
-        self.post(
-            "history/bodies",
-            &serde_json::json!({ "eventId": event_id, "cursor": cursor, "demand": demand }),
         )
         .await
     }
