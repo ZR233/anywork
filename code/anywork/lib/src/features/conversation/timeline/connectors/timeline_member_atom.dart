@@ -260,48 +260,61 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
   );
 
-  Widget _windows({ChatContentRole? role}) => _owner == null
-      ? const SizedBox.shrink()
-      : ListenableBuilder(
-          listenable: _owner!,
-          builder: (_, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (_owner!.cleanupError != null)
-                Text(_owner!.cleanupError.toString()),
-              for (final observation in _owner!.windows)
-                if (role == null || _hasRole(observation, role))
-                  _witness(
-                    observation,
-                    ConversationCurrentWindowView(
-                      id: observation.id,
-                      bodyBuilder:
-                          (widget.atom.kind == ChatAtomKind.text ||
-                                  widget.atom.kind == ChatAtomKind.input) &&
-                              _hasRole(observation, ChatContentRole.body)
-                          ? (text) => _body(observation.id, text)
-                          : null,
-                      text: observation.window == null
-                          ? observation.source.text
-                          : utf8.decode(
-                              observation.window!.bytes,
-                              allowMalformed: true,
-                            ),
-                      error: observation.error,
-                      offset: observation.window?.offset,
-                      end: observation.window == null
-                          ? null
-                          : observation.window!.offset +
-                                observation.window!.bytes.length,
-                      availableThrough: observation.window?.availableThrough,
-                      onFirst: () => _owner!.firstWindow(observation),
-                      onNext: () => _owner!.nextWindow(observation),
-                    ),
-                  ),
-            ],
-          ),
+  Widget _windows({ChatContentRole? role, bool liveResponse = false}) {
+    final owner = _owner;
+    if (owner == null) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: owner,
+      builder: (_, _) {
+        final cleanupError = owner.cleanupError;
+        var ready = cleanupError != null;
+        final children = <Widget>[
+          if (cleanupError != null) Text(cleanupError.toString()),
+        ];
+        for (final observation in owner.windows) {
+          if (role != null && !_hasRole(observation, role)) continue;
+          final window = observation.window;
+          final text = window == null
+              ? observation.source.text
+              : utf8.decode(window.bytes, allowMalformed: true);
+          final error = observation.error;
+          if (liveResponse && !ready) {
+            ready = error != null || (window != null && text.trim().isNotEmpty);
+          }
+          children.add(
+            _witness(
+              observation,
+              ConversationCurrentWindowView(
+                id: observation.id,
+                bodyBuilder:
+                    (widget.atom.kind == ChatAtomKind.text ||
+                            widget.atom.kind == ChatAtomKind.input) &&
+                        _hasRole(observation, ChatContentRole.body)
+                    ? (text) => _body(observation.id, text)
+                    : null,
+                text: text,
+                error: error,
+                offset: window?.offset,
+                end: window == null
+                    ? null
+                    : window.offset + window.bytes.length,
+                availableThrough: window?.availableThrough,
+                onFirst: () => owner.firstWindow(observation),
+                onNext: () => owner.nextWindow(observation),
+              ),
+            ),
+          );
+        }
+        if (liveResponse && !ready) return const SizedBox.shrink();
+        final body = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: children,
         );
+        return liveResponse ? _response(body) : body;
+      },
+    );
+  }
 
   Widget _reasoning() {
     Widget view() {
@@ -509,7 +522,7 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
         children: [_windows()],
       );
     }
-    if (_isLiveStreamingText) return _liveStreamingText();
+    if (_isLiveStreamingText) return _windows(liveResponse: true);
     return _response(_windows());
   }
 
@@ -519,44 +532,15 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       widget.atom.kind == ChatAtomKind.text &&
       widget.atom.lifecycle is ActiveChatAtom;
 
-  Widget _liveStreamingText() {
-    final owner = _owner;
-    if (owner == null) return const SizedBox.shrink();
-    return ListenableBuilder(
-      listenable: owner,
-      builder: (_, _) {
-        final ready =
-            owner.cleanupError != null ||
-            owner.windows.any(
-              (observation) =>
-                  observation.error != null ||
-                  (observation.window != null &&
-                      utf8
-                          .decode(
-                            observation.window!.bytes,
-                            allowMalformed: true,
-                          )
-                          .trim()
-                          .isNotEmpty),
-            );
-        if (!ready) return const SizedBox.shrink();
-        return ConversationResponseView(
-          startedAt: widget.atom.startedAt,
-          child: _windows(),
-        );
-      },
-    );
-  }
-
   Widget _response(Widget body) {
-    final atom = widget.atom;
-    if (widget.record.contentSource is CurrentAtomSource &&
-        widget.executionPresent &&
-        atom.kind == ChatAtomKind.text &&
-        atom.lifecycle is ActiveChatAtom) {
-      return ConversationResponseView(startedAt: atom.startedAt, child: body);
+    if (_isLiveStreamingText) {
+      return ConversationResponseView(
+        startedAt: widget.atom.startedAt,
+        child: body,
+      );
     }
-    if ((atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input) &&
+    if ((widget.atom.kind == ChatAtomKind.text ||
+            widget.atom.kind == ChatAtomKind.input) &&
         SelectionContainer.maybeOf(context) == null) {
       body = SelectionArea(child: body);
     }
@@ -567,22 +551,24 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
     final onCurrentLayout = widget.onCurrentContentLayout;
+    final onCurrentUnmounted = widget.onCurrentContentUnmounted;
     if (clock == null ||
         (onLayout == null && onCurrentLayout == null) ||
         observation.window?.bytes.isEmpty != false) {
       return child;
     }
+    final isCurrent = widget.record.contentSource is CurrentAtomSource;
+    final atomId = widget.atom.id;
     return ContentLayoutWitness(
+      key: ObjectKey(observation),
       itemId: widget.displayId,
       monotonicMicros: clock,
       onContentLayout: (itemId, micros) {
         onLayout?.call(itemId, micros);
-        if (widget.record.contentSource is CurrentAtomSource) {
-          onCurrentLayout?.call(widget.record.atom.id, micros);
-        }
+        if (isCurrent) onCurrentLayout?.call(atomId, micros);
       },
-      onContentUnmounted: widget.record.contentSource is CurrentAtomSource
-          ? (_) => widget.onCurrentContentUnmounted?.call(widget.record.atom.id)
+      onContentUnmounted: isCurrent
+          ? (_) => onCurrentUnmounted?.call(atomId)
           : null,
       isDisplayActive: () => _active,
       child: child,

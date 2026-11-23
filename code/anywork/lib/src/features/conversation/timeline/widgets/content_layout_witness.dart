@@ -5,6 +5,8 @@ import 'package:flutter/widgets.dart';
 /// A witness of one decoded body, never of its row, controls or placeholder.
 /// Layout supplies the timestamp; composition only qualifies actual visibility,
 /// including when an ancestor reuses a retained layer without repainting this body.
+/// A replacement body for the same item can supply a different key. Appending
+/// to the same body and replacing callbacks preserve its first layout evidence.
 class ContentLayoutWitness extends SingleChildRenderObjectWidget {
   /// MetaData marker for controls/diagnostics inside an otherwise real body.
   static const nonContent = #timelineContentLayoutNonContent;
@@ -79,23 +81,15 @@ class _ContentLayoutRender extends RenderProxyBox {
     bool Function()? isActive,
     void Function(String)? onUnmounted,
   ) {
-    if (_reported &&
-        (_itemId != itemId || (_onUnmounted != null && onUnmounted == null))) {
-      _scheduleUnmountNotification();
-      _reported = false;
-    }
-    if (_itemId == itemId &&
-        _clock == clock &&
-        _onLayout == onLayout &&
-        _isActive == isActive &&
-        _onUnmounted == onUnmounted) {
-      return;
-    }
+    final sameBody =
+        _itemId == itemId && (_onUnmounted == null) == (onUnmounted == null);
+    if (!sameBody && _reported) _scheduleUnmountNotification();
     _itemId = itemId;
     _clock = clock;
     _onLayout = onLayout;
     _isActive = isActive;
     _onUnmounted = onUnmounted;
+    if (sameBody) return;
     _candidate = null;
     _revealRequest = null;
     _reported = false;
@@ -108,22 +102,19 @@ class _ContentLayoutRender extends RenderProxyBox {
     if (_reported) return;
     final candidate = _LayoutCandidate(_clock());
     _candidate = candidate;
-    final itemId = _itemId;
-    final onLayout = _onLayout;
-    final isActive = _isActive;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       if (!identical(_candidate, candidate)) return;
       _candidate = null;
       if (!candidate.composited ||
           !attached ||
-          !(isActive?.call() ?? true) ||
+          !(_isActive?.call() ?? true) ||
           !_hasVisibleContent()) {
         return;
       }
       _reported = true;
       _removeCompositionCallback?.call();
       _removeCompositionCallback = null;
-      onLayout(itemId, candidate.completedMicros);
+      _onLayout(_itemId, candidate.completedMicros);
     });
   }
 
