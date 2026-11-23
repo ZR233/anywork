@@ -1393,14 +1393,16 @@ class FrbStudioTransport
     await _ensureReady();
     final response = await _bridgeCall(
       () => frb.setThreadModelRoute(
-        operationId: operationId.value,
-        threadId: threadId,
-        accountId: accountId,
-        modelId: modelId,
-        effort: effort,
-        serviceTier: serviceTier,
-        expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
-        expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+        request: frb_command.BridgeSetThreadModelRouteRequest(
+          operationId: operationId.value,
+          threadId: threadId,
+          expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          accountId: accountId,
+          modelId: modelId,
+          effort: effort,
+          serviceTier: serviceTier,
+        ),
       ),
     );
     return ThreadModelRouteCommandReply(

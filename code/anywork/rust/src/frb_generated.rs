@@ -7753,28 +7753,17 @@ fn wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_thread_id = <String>::sse_decode(&mut deserializer);
-            let api_account_id = <String>::sse_decode(&mut deserializer);
-            let api_model_id = <String>::sse_decode(&mut deserializer);
-            let api_effort = <Option<String>>::sse_decode(&mut deserializer);
-            let api_service_tier = <Option<String>>::sse_decode(&mut deserializer);
-            let api_expected_model_route_revision = <u64>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::api::studio::types::command::BridgeSetThreadModelRouteRequest>::sse_decode(
+                    &mut deserializer,
+                );
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
                     (move || async move {
                         let output_ok =
                             crate::api::studio::handlers::thread::set_thread_model_route(
-                                api_operation_id,
-                                api_thread_id,
-                                api_account_id,
-                                api_model_id,
-                                api_effort,
-                                api_service_tier,
-                                api_expected_model_route_revision,
-                                api_expected_settings_revision,
+                                api_request,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)
@@ -20198,6 +20187,30 @@ impl SseDecode for crate::api::studio::types::bots::BridgeSetBotTrustedUserReque
             expected_config_revision: var_expectedConfigRevision,
             open_id: var_openId,
             trusted: var_trusted,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_operationId = <String>::sse_decode(deserializer);
+        let mut var_threadId = <String>::sse_decode(deserializer);
+        let mut var_expectedModelRouteRevision = <u64>::sse_decode(deserializer);
+        let mut var_expectedSettingsRevision = <u64>::sse_decode(deserializer);
+        let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_modelId = <String>::sse_decode(deserializer);
+        let mut var_effort = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceTier = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+            operation_id: var_operationId,
+            thread_id: var_threadId,
+            expected_model_route_revision: var_expectedModelRouteRevision,
+            expected_settings_revision: var_expectedSettingsRevision,
+            account_id: var_accountId,
+            model_id: var_modelId,
+            effort: var_effort,
+            service_tier: var_serviceTier,
         };
     }
 }
@@ -42132,6 +42145,41 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.operation_id.into_into_dart().into_dart(),
+            self.thread_id.into_into_dart().into_dart(),
+            self.expected_model_route_revision
+                .into_into_dart()
+                .into_dart(),
+            self.expected_settings_revision.into_into_dart().into_dart(),
+            self.account_id.into_into_dart().into_dart(),
+            self.model_id.into_into_dart().into_dart(),
+            self.effort.into_into_dart().into_dart(),
+            self.service_tier.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::command::BridgeSetThreadModelRouteRequest,
+    > for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::command::BridgeSettingsCommandReply
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -56632,6 +56680,20 @@ impl SseEncode for crate::api::studio::types::bots::BridgeSetBotTrustedUserReque
         <u64>::sse_encode(self.expected_config_revision, serializer);
         <String>::sse_encode(self.open_id, serializer);
         <bool>::sse_encode(self.trusted, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.operation_id, serializer);
+        <String>::sse_encode(self.thread_id, serializer);
+        <u64>::sse_encode(self.expected_model_route_revision, serializer);
+        <u64>::sse_encode(self.expected_settings_revision, serializer);
+        <String>::sse_encode(self.account_id, serializer);
+        <String>::sse_encode(self.model_id, serializer);
+        <Option<String>>::sse_encode(self.effort, serializer);
+        <Option<String>>::sse_encode(self.service_tier, serializer);
     }
 }
 

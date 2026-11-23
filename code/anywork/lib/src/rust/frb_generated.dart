@@ -1117,14 +1117,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<BridgeThreadModelRouteCommandReply>
   crateApiStudioHandlersThreadSetThreadModelRoute({
-    required String operationId,
-    required String threadId,
-    required String accountId,
-    required String modelId,
-    String? effort,
-    String? serviceTier,
-    required BigInt expectedModelRouteRevision,
-    required BigInt expectedSettingsRevision,
+    required BridgeSetThreadModelRouteRequest request,
   });
 
   Future<BridgeExitReport> crateApiStudioHandlersLifecycleShutdownRuntime({
@@ -8665,27 +8658,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<BridgeThreadModelRouteCommandReply>
   crateApiStudioHandlersThreadSetThreadModelRoute({
-    required String operationId,
-    required String threadId,
-    required String accountId,
-    required String modelId,
-    String? effort,
-    String? serviceTier,
-    required BigInt expectedModelRouteRevision,
-    required BigInt expectedSettingsRevision,
+    required BridgeSetThreadModelRouteRequest request,
   }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_String(operationId, serializer);
-          sse_encode_String(threadId, serializer);
-          sse_encode_String(accountId, serializer);
-          sse_encode_String(modelId, serializer);
-          sse_encode_opt_String(effort, serializer);
-          sse_encode_opt_String(serviceTier, serializer);
-          sse_encode_u_64(expectedModelRouteRevision, serializer);
-          sse_encode_u_64(expectedSettingsRevision, serializer);
+          sse_encode_box_autoadd_bridge_set_thread_model_route_request(
+            request,
+            serializer,
+          );
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -8698,16 +8680,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta: kCrateApiStudioHandlersThreadSetThreadModelRouteConstMeta,
-        argValues: [
-          operationId,
-          threadId,
-          accountId,
-          modelId,
-          effort,
-          serviceTier,
-          expectedModelRouteRevision,
-          expectedSettingsRevision,
-        ],
+        argValues: [request],
         apiImpl: this,
       ),
     );
@@ -8716,16 +8689,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   TaskConstMeta get kCrateApiStudioHandlersThreadSetThreadModelRouteConstMeta =>
       const TaskConstMeta(
         debugName: "set_thread_model_route",
-        argNames: [
-          "operationId",
-          "threadId",
-          "accountId",
-          "modelId",
-          "effort",
-          "serviceTier",
-          "expectedModelRouteRevision",
-          "expectedSettingsRevision",
-        ],
+        argNames: ["request"],
       );
 
   @override
@@ -11605,6 +11569,13 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   dco_decode_box_autoadd_bridge_set_bot_trusted_user_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_bridge_set_bot_trusted_user_request(raw);
+  }
+
+  @protected
+  BridgeSetThreadModelRouteRequest
+  dco_decode_box_autoadd_bridge_set_thread_model_route_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_set_thread_model_route_request(raw);
   }
 
   @protected
@@ -19613,6 +19584,25 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeSetThreadModelRouteRequest
+  dco_decode_bridge_set_thread_model_route_request(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 8)
+      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    return BridgeSetThreadModelRouteRequest(
+      operationId: dco_decode_String(arr[0]),
+      threadId: dco_decode_String(arr[1]),
+      expectedModelRouteRevision: dco_decode_u_64(arr[2]),
+      expectedSettingsRevision: dco_decode_u_64(arr[3]),
+      accountId: dco_decode_String(arr[4]),
+      modelId: dco_decode_String(arr[5]),
+      effort: dco_decode_opt_String(arr[6]),
+      serviceTier: dco_decode_opt_String(arr[7]),
+    );
+  }
+
+  @protected
   BridgeSettingsCommandReply dco_decode_bridge_settings_command_reply(
     dynamic raw,
   ) {
@@ -27351,6 +27341,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_bridge_set_bot_trusted_user_request(deserializer));
+  }
+
+  @protected
+  BridgeSetThreadModelRouteRequest
+  sse_decode_box_autoadd_bridge_set_thread_model_route_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_set_thread_model_route_request(deserializer));
   }
 
   @protected
@@ -37527,6 +37526,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeSetThreadModelRouteRequest
+  sse_decode_bridge_set_thread_model_route_request(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_operationId = sse_decode_String(deserializer);
+    var var_threadId = sse_decode_String(deserializer);
+    var var_expectedModelRouteRevision = sse_decode_u_64(deserializer);
+    var var_expectedSettingsRevision = sse_decode_u_64(deserializer);
+    var var_accountId = sse_decode_String(deserializer);
+    var var_modelId = sse_decode_String(deserializer);
+    var var_effort = sse_decode_opt_String(deserializer);
+    var var_serviceTier = sse_decode_opt_String(deserializer);
+    return BridgeSetThreadModelRouteRequest(
+      operationId: var_operationId,
+      threadId: var_threadId,
+      expectedModelRouteRevision: var_expectedModelRouteRevision,
+      expectedSettingsRevision: var_expectedSettingsRevision,
+      accountId: var_accountId,
+      modelId: var_modelId,
+      effort: var_effort,
+      serviceTier: var_serviceTier,
+    );
+  }
+
+  @protected
   BridgeSettingsCommandReply sse_decode_bridge_settings_command_reply(
     SseDeserializer deserializer,
   ) {
@@ -47535,6 +47560,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_set_thread_model_route_request(
+    BridgeSetThreadModelRouteRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_set_thread_model_route_request(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_settings_config_state_data(
     BridgeSettingsConfigStateData self,
     SseSerializer serializer,
@@ -55751,6 +55785,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_64(self.expectedConfigRevision, serializer);
     sse_encode_String(self.openId, serializer);
     sse_encode_bool(self.trusted, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_set_thread_model_route_request(
+    BridgeSetThreadModelRouteRequest self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.operationId, serializer);
+    sse_encode_String(self.threadId, serializer);
+    sse_encode_u_64(self.expectedModelRouteRevision, serializer);
+    sse_encode_u_64(self.expectedSettingsRevision, serializer);
+    sse_encode_String(self.accountId, serializer);
+    sse_encode_String(self.modelId, serializer);
+    sse_encode_opt_String(self.effort, serializer);
+    sse_encode_opt_String(self.serviceTier, serializer);
   }
 
   @protected

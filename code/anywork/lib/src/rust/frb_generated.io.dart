@@ -1298,6 +1298,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_set_bot_trusted_user_request(dynamic raw);
 
   @protected
+  BridgeSetThreadModelRouteRequest
+  dco_decode_box_autoadd_bridge_set_thread_model_route_request(dynamic raw);
+
+  @protected
   BridgeSettingsConfigStateData
   dco_decode_box_autoadd_bridge_settings_config_state_data(dynamic raw);
 
@@ -3331,6 +3335,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeSetBotTrustedUserRequest dco_decode_bridge_set_bot_trusted_user_request(
     dynamic raw,
   );
+
+  @protected
+  BridgeSetThreadModelRouteRequest
+  dco_decode_bridge_set_thread_model_route_request(dynamic raw);
 
   @protected
   BridgeSettingsCommandReply dco_decode_bridge_settings_command_reply(
@@ -6521,6 +6529,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeSetThreadModelRouteRequest
+  sse_decode_box_autoadd_bridge_set_thread_model_route_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeSettingsConfigStateData
   sse_decode_box_autoadd_bridge_settings_config_state_data(
     SseDeserializer deserializer,
@@ -9174,6 +9188,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeSetBotTrustedUserRequest sse_decode_bridge_set_bot_trusted_user_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeSetThreadModelRouteRequest
+  sse_decode_bridge_set_thread_model_route_request(
     SseDeserializer deserializer,
   );
 
@@ -12951,6 +12971,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_bridge_set_thread_model_route_request(
+    BridgeSetThreadModelRouteRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_bridge_settings_config_state_data(
     BridgeSettingsConfigStateData self,
     SseSerializer serializer,
@@ -16127,6 +16153,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_set_bot_trusted_user_request(
     BridgeSetBotTrustedUserRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_set_thread_model_route_request(
+    BridgeSetThreadModelRouteRequest self,
     SseSerializer serializer,
   );
 

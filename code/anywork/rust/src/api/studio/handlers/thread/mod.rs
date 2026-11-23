@@ -15,8 +15,8 @@ use crate::api::studio::convert::{
 use crate::api::studio::types::{
     BridgeArchiveThreadCommandReply, BridgeDeleteThreadCommandReply, BridgeError,
     BridgeNewThreadStartEvent, BridgeRenameThreadCommandReply, BridgeSessionDirectoryRow,
-    BridgeStartNewThreadRequest, BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply,
-    StartNewThreadResponse, SubmitPromptResponse,
+    BridgeSetThreadModelRouteRequest, BridgeStartNewThreadRequest, BridgeThreadModeCommandReply,
+    BridgeThreadModelRouteCommandReply, StartNewThreadResponse, SubmitPromptResponse,
 };
 use pl_studio_runtime::mode::ThreadModeId;
 
@@ -194,28 +194,21 @@ pub async fn set_thread_mode(
 
 /// Changes a root Thread's durable model route. The active Turn keeps its admitted binding.
 pub async fn set_thread_model_route(
-    operation_id: String,
-    thread_id: String,
-    account_id: String,
-    model_id: String,
-    effort: Option<String>,
-    service_tier: Option<String>,
-    expected_model_route_revision: u64,
-    expected_settings_revision: u64,
+    request: BridgeSetThreadModelRouteRequest,
 ) -> Result<BridgeThreadModelRouteCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     let response = bridge
         .studio
         .save_thread_model_route(
-            &thread_id,
+            &request.thread_id,
             pl_studio_runtime::SetThreadModelRouteRequest {
-                operation_id,
-                expected_model_route_revision,
-                expected_settings_revision,
-                account_id,
-                model_id,
-                effort,
-                service_tier,
+                operation_id: request.operation_id,
+                expected_model_route_revision: request.expected_model_route_revision,
+                expected_settings_revision: request.expected_settings_revision,
+                account_id: request.account_id,
+                model_id: request.model_id,
+                effort: request.effort,
+                service_tier: request.service_tier,
             },
         )
         .await?;
