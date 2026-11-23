@@ -327,6 +327,22 @@ fn chat_events(text: &str, model: &str) -> Vec<Value> {
 }
 
 fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
+    attachment_request(
+        prompt,
+        bytes,
+        AttachmentModality::Image,
+        "tiny.png",
+        "image/png",
+    )
+}
+
+fn attachment_request(
+    prompt: &str,
+    bytes: Vec<u8>,
+    modality: AttachmentModality,
+    name: &str,
+    mime: &str,
+) -> CompletionRequest {
     let message = Message {
         content: MessageContent::new(vec![
             ContentPart::Text {
@@ -334,9 +350,9 @@ fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
             },
             ContentPart::Attachment {
                 attachment_id: "image-1".into(),
-                modality: AttachmentModality::Image,
-                media_type: "image/png".into(),
-                filename: Some("tiny.png".into()),
+                modality,
+                media_type: mime.into(),
+                filename: Some(name.into()),
             },
         ]),
         ..user("")
@@ -345,9 +361,9 @@ fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
         .messages(vec![message])
         .attachments(vec![AttachmentInput {
             attachment_id: "image-1".into(),
-            modality: AttachmentModality::Image,
-            media_type: "image/png".into(),
-            filename: Some("tiny.png".into()),
+            modality,
+            media_type: mime.into(),
+            filename: Some(name.into()),
             source: AttachmentSource::Bytes {
                 bytes: Arc::from(bytes),
             },
@@ -4793,34 +4809,52 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
 
 #[tokio::test]
 async fn deepseek_file_upload_precedes_responses_and_sends_only_file_reference() {
-    let bytes = tiny_png();
-    let fixture = FixtureServer::start(vec![
+    for (bytes, modality, name, mime, purpose) in [
+        (
+            tiny_png(),
+            AttachmentModality::Image,
+            "tiny.png",
+            "image/png",
+            "user_data",
+        ),
+        (
+            b"%PDF-1.4\nfixture".to_vec(),
+            AttachmentModality::File,
+            "check.pdf",
+            "application/pdf",
+            "text_recognition",
+        ),
+    ] {
+        let fixture = FixtureServer::start(vec![
         Step::exact(Protocol::Files, json!({
-            "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
-            "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes))}
+            "purpose":purpose, "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
+            "file":{"filename":name,"mime_type":mime,"sha256":hex::encode(Sha256::digest(&bytes))}
         }), Reply::Json(json!({"id":"file-fixture"}))),
         Step::prompt(Protocol::ResponsesHttp, "inspect", 1,
             Reply::Sse(responses_text("uploaded", "deep-file", "deepseek-flash"))),
     ]).await.unwrap();
-    let mut endpoint = pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
-    endpoint.service_capabilities.files = pl_model_openai_deepseek::upload::FILE_UPLOAD.id.clone();
-    let runtime =
-        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
+        let mut endpoint =
+            pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
+        endpoint.service_capabilities.files =
+            pl_model_openai_deepseek::upload::FILE_UPLOAD.id.clone();
+        let runtime =
+            pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
+                .unwrap();
+        let result = runtime
+            .complete(
+                attachment_request("inspect", bytes, modality, name, mime),
+                ModelInvocationContext::default(),
+            )
+            .await
             .unwrap();
-    let result = runtime
-        .complete(
-            image_request("inspect", bytes),
-            ModelInvocationContext::default(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.content.as_deref(), Some("uploaded"));
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].path, "/v1/files");
-    assert_eq!(
-        records[1].body["input"][0]["content"][1]["file_id"],
-        "file-fixture"
-    );
+        assert_eq!(result.content.as_deref(), Some("uploaded"));
+        let records = fixture.finish().await.unwrap();
+        assert_eq!(records[0].path, "/v1/files");
+        assert_eq!(
+            records[1].body["input"][0]["content"][1]["file_id"],
+            "file-fixture"
+        );
+    }
 }
 
 #[tokio::test]

@@ -94,14 +94,14 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 ### 附件准备与文件输入协议
 
 附件输入在核心层仅描述资源来源（远程 URL、Base64、共享字节块或宿主资源引用），在模型请求准备阶段才解析为具体发送形态（远程 URL、Data URL 或上传后的文件 ID）：
-- **会话级上传缓存**：持久化历史仅保存资源引用与快照，上传所得的 `file_id` 作为按「端点、凭据身份、内容摘要」隔离的可重建会话缓存维护。DeepSeek 文件上传使用 `user_data` 用途与 24 小时租期；遇到用户取消或上传结果未知时严禁盲目重复发起 `POST`，仅当端点明确不支持文件上传时才允许在推理请求发出前回退至内联（inline）编码。
+- **会话级上传缓存**：持久化历史仅保存资源引用与快照，上传所得的 `file_id` 作为按「端点、凭据身份、内容摘要」隔离的可重建会话缓存维护。DeepSeek 文件上传按 MIME 类型选择用途并申请 24 小时租期；遇到用户取消或上传结果未知时严禁盲目重复发起 `POST`，仅当端点明确不支持文件上传时才允许在推理请求发出前回退至内联（inline）编码。
 - **OpenAI Responses 文件输入**：采用官方 `input_file` 结构（参考[官方文件输入规范](https://developers.openai.com/api/docs/guides/file-inputs)），根据已冻结的媒体表示发送 `file_data`（附 `filename`）、`file_url` 或 `file_id`，与图片输入共享资源解析、体积限制及重放链路。内置视觉文本模型显式声明支持 PDF 与 UTF-8 文本文件，单文件及单次请求文件总大小上限均为 50 MB；未声明支持的文件类型在附件准入阶段直接拒绝，禁止将普通文档伪装成图片发送。若历史资源缺失文件名，则按明确的媒体类型补齐 `.pdf` 或 `.txt` 默认后缀。当同一账号的在线目录缓存未显式声明输入模态能力时，继承当前本地目录的模态声明及同协议缺失的媒体编码规则；若在线目录已显式声明则以在线声明为准，禁止跨账号或跨线协议借用编码规则。
 
 Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Responses 端点还可以通过 `input_file` 把文档解析为模型输入。合成时保留同一账号、同一模型已经声明的文档类型、发送方式和大小限制。在线或手填的 `capabilities.input` 可以显式指定完整准入集合。标准模型声明也可通过 `input_modalities = ["text", "file"]` 为 Responses 模型启用文件输入。Web Search 消费明确的 `supports_web_search`、`web_search_tool_type` 或 `capabilities.web_search` 声明，显式账号服务策略优先。独立搜索 API 与 Responses 托管搜索分别解析。
 
 | 已验证的 Responses 路径 | 文件输入 | 搜索 |
 | --- | --- | --- |
-| DeepSeek Flash | UTF-8 文本经 Files API 上传，使用 `input_file.file_id` 读取 | 独立 Search API |
+| DeepSeek Flash | UTF-8 文本以 `user_data` 上传，PDF 以 `text_recognition` 上传，两者都用 `input_file.file_id` 读取 | 独立 Search API |
 | GLM Coding Plan Flash | PDF 使用 `input_file.file_data` 或 `file_url`。该端点拒绝内联纯文本文件 | Responses `web_search` |
 | GPT-6.2 Sol | UTF-8 文本可使用 `input_file.file_data`。可用的上传接口取决于账号端点 | Responses `web_search` |
 

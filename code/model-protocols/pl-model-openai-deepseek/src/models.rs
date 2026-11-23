@@ -78,7 +78,10 @@ fn text_family() -> ModelFamily {
         request_profile,
         base_instructions: String::new(),
     }
-    .with_responses_files(&["text/plain"], MediaSendOrder::ProviderFileFirst)
+    .with_responses_files(
+        &["text/plain", "application/pdf"],
+        MediaSendOrder::ProviderFileFirst,
+    )
 }
 
 fn image_family(mut family: ModelFamily) -> ModelFamily {
