@@ -139,23 +139,35 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     assert!(
         matches!(&receipt.files[2], FileDisplayResult::Ready { resource: other, .. } if other == resource)
     );
-    for index in [1, 3, 4] {
+    for index in [1, 3] {
         assert!(matches!(
             &receipt.files[index],
             FileDisplayResult::Failed { .. }
         ));
     }
-    assert_eq!(
-        *media.0.lock().unwrap(),
-        vec![b"exact original\n".to_vec(); 2]
-    );
+    // A file past the former 50 MiB ceiling is archived exactly instead of refused.
+    assert!(matches!(
+        &receipt.files[4],
+        FileDisplayResult::Ready { resource, filename, .. }
+            if filename == "large.bin" && resource.byte_len() == 50 * 1024 * 1024 + 1
+    ));
+    {
+        let retained = media.0.lock().unwrap();
+        assert!(
+            retained[..2]
+                .iter()
+                .all(|bytes| bytes == b"exact original\n")
+        );
+        assert_eq!(retained[2].len(), 50 * 1024 * 1024 + 1);
+        assert!(retained[2].iter().all(|&byte| byte == 0));
+    }
     assert!(
         output
             .context()
             .iter()
             .all(|content| !matches!(content, ContextContent::Opaque { .. }))
     );
-    assert_eq!(output.context().len(), 3);
+    assert_eq!(output.context().len(), 4);
     for input in [
         serde_json::json!({"files":[]}),
         serde_json::json!({"files":[{"kind":"workspace","path":"a.txt"}],"caption":"x".repeat(241)}),
@@ -165,7 +177,7 @@ async fn ordered_partial_results_keep_exact_bytes_and_do_not_project_model_media
     }
     assert_eq!(
         media.0.lock().unwrap().len(),
-        2,
+        3,
         "invalid batch must not read/retain"
     );
 }
