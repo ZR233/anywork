@@ -35,7 +35,6 @@ class AcpContentBlockView extends StatelessWidget {
     this.onOpenLink,
     this.imageBuilder,
     this.textStyle,
-    this.fullDetails = false,
   });
 
   final String id;
@@ -44,7 +43,6 @@ class AcpContentBlockView extends StatelessWidget {
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
   final TextStyle? textStyle;
-  final bool fullDetails;
 
   @override
   Widget build(BuildContext context) => switch (block) {
@@ -98,12 +96,7 @@ class AcpContentBlockView extends StatelessWidget {
       :final text,
       :final mimeType,
     ) =>
-      _AcpEmbeddedTextResource(
-        uri: uri,
-        text: text,
-        mimeType: mimeType,
-        fullDetails: fullDetails,
-      ),
+      _AcpEmbeddedTextResource(uri: uri, text: text, mimeType: mimeType),
     AcpBlobResourceBlockPresentation(
       :final uri,
       :final mimeType,
@@ -303,63 +296,36 @@ class _AcpResourceCard extends StatelessWidget {
   }
 }
 
-class _AcpEmbeddedTextResource extends StatefulWidget {
+class _AcpEmbeddedTextResource extends StatelessWidget {
   const _AcpEmbeddedTextResource({
     required this.uri,
     required this.text,
     this.mimeType,
-    this.fullDetails = false,
   });
 
   final String uri;
   final String text;
   final String? mimeType;
-  final bool fullDetails;
-
-  @override
-  State<_AcpEmbeddedTextResource> createState() =>
-      _AcpEmbeddedTextResourceState();
-}
-
-class _AcpEmbeddedTextResourceState extends State<_AcpEmbeddedTextResource> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
+    return TimelineActivityDisclosure(
+      childrenPadding: const EdgeInsetsDirectional.only(top: 4, bottom: 4),
+      titleBuilder: (context, expanded) => TimelineActivityRow(
+        icon: Icons.description_outlined,
+        label: uri,
+        meta: mimeType,
+        expanded: expanded,
+        expandable: true,
+        tooltip: uri,
+      ),
       children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: widget.fullDetails
-              ? null
-              : () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: TimelineActivityRow(
-              icon: Icons.description_outlined,
-              label: widget.uri,
-              meta: widget.mimeType,
-              expanded: _expanded || widget.fullDetails,
-              expandable: !widget.fullDetails,
-              tooltip: widget.uri,
-            ),
-          ),
+        StudioCodeBlock(
+          text: text,
+          language: mimeType ?? uri,
+          horizontalScroll: false,
+          backgroundColor: context.colors.surfaceContainerLowest,
         ),
-        if (_expanded || widget.fullDetails)
-          Padding(
-            padding: const EdgeInsets.only(
-              left: TimelineActivityRow.contentIndent,
-              top: 4,
-              bottom: 4,
-            ),
-            child: StudioCodeBlock(
-              text: widget.text,
-              language: widget.mimeType ?? widget.uri,
-              horizontalScroll: false,
-            ),
-          ),
       ],
     );
   }

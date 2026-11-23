@@ -6351,7 +6351,59 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get acpProcessGroupRunning => '执行中';
+  String acpProcessGroupToolsOnly(int toolCount) {
+    return '执行了 $toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupThoughtsOnly(int count) {
+    return '思考了 $count 段';
+  }
+
+  @override
+  String acpProcessGroupActivitiesOnly(int count) {
+    return '过程 · $count 项活动';
+  }
+
+  @override
+  String acpProcessGroupRunningToolsMeta(int toolCount) {
+    return '$toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupRunningActivitiesMeta(int count) {
+    return '$count 项活动';
+  }
+
+  @override
+  String get acpToolKindRead => '读取';
+
+  @override
+  String get acpToolKindEdit => '编辑';
+
+  @override
+  String get acpToolKindDelete => '删除';
+
+  @override
+  String get acpToolKindMove => '移动';
+
+  @override
+  String get acpToolKindSearch => '搜索';
+
+  @override
+  String get acpToolKindExecute => '执行';
+
+  @override
+  String get acpToolKindThink => '思考';
+
+  @override
+  String get acpToolKindFetch => '获取';
+
+  @override
+  String get acpToolKindSwitchMode => '切换模式';
+
+  @override
+  String get acpToolKindOther => '工具';
 
   @override
   String get acpContentAudioLabel => '音频内容';

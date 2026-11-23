@@ -502,6 +502,28 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
         'Feature must use Client queries/actions, not transport: $uri',
       );
     }
+    if (applicationPath.startsWith(
+          'code/anywork/lib/src/features/conversation/timeline/tools/',
+        ) &&
+        ((uri.startsWith('package:anywork_client/') &&
+                uri != 'package:anywork_client/models.dart') ||
+            uri.startsWith('package:flutter_rust_bridge/') ||
+            const [
+              'riverpod',
+              'flutter_riverpod',
+              'riverpod_annotation',
+              'provider',
+            ].any((package) => uri.startsWith('package:$package/')) ||
+            resolved.contains('/connectors/') ||
+            resolved.contains('/view_models/') ||
+            resolved.startsWith(_acpRoot) ||
+            const {'dart:io', 'dart:ffi', 'dart:isolate'}.contains(uri))) {
+      report(
+        literal.offset,
+        'UI-02',
+        'Timeline tool presentation/adapters must not depend on ACP, ViewModels, connectors, or platform owners: $uri',
+      );
+    }
     if (isAccountPresentation) {
       final appDependency = resolved.startsWith('code/anywork/lib/');
       final pureAppDependency =
@@ -573,6 +595,9 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
           ) ||
           resolved.startsWith(
             'code/anywork/lib/src/features/conversation/timeline/widgets/',
+          ) ||
+          resolved.startsWith(
+            'code/anywork/lib/src/features/conversation/timeline/tools/',
           ) ||
           resolved.startsWith(
             'code/anywork/lib/src/features/conversation/interactions/widgets/',

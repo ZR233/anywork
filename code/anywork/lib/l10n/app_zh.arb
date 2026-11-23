@@ -2672,8 +2672,66 @@
   "acpComposerBlockerRunning": "正在生成回复",
   "acpContentThoughtLabel": "思考过程",
   "acpProcessGroupSummary": "过程 · {count} 项活动 · {toolCount} 个工具",
-  "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
-  "acpProcessGroupRunning": "执行中",
+  "@acpProcessGroupSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupToolsOnly": "执行了 {toolCount} 个工具",
+  "@acpProcessGroupToolsOnly": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupThoughtsOnly": "思考了 {count} 段",
+  "@acpProcessGroupThoughtsOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupActivitiesOnly": "过程 · {count} 项活动",
+  "@acpProcessGroupActivitiesOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningToolsMeta": "{toolCount} 个工具",
+  "@acpProcessGroupRunningToolsMeta": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningActivitiesMeta": "{count} 项活动",
+  "@acpProcessGroupRunningActivitiesMeta": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpToolKindRead": "读取",
+  "acpToolKindEdit": "编辑",
+  "acpToolKindDelete": "删除",
+  "acpToolKindMove": "移动",
+  "acpToolKindSearch": "搜索",
+  "acpToolKindExecute": "执行",
+  "acpToolKindThink": "思考",
+  "acpToolKindFetch": "获取",
+  "acpToolKindSwitchMode": "切换模式",
+  "acpToolKindOther": "工具",
   "acpContentAudioLabel": "音频内容",
   "acpContentResourceLabel": "内嵌资源",
   "acpContentBinarySummary": "{mimeType} · {byteCount} 字节",

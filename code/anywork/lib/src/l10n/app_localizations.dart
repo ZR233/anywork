@@ -11979,11 +11979,95 @@ abstract class AppLocalizations {
   /// **'Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
   String acpProcessGroupSummary(int count, int toolCount);
 
-  /// No description provided for @acpProcessGroupRunning.
+  /// No description provided for @acpProcessGroupToolsOnly.
   ///
   /// In en, this message translates to:
-  /// **'Running'**
-  String get acpProcessGroupRunning;
+  /// **'{toolCount, plural, =1{Ran 1 tool} other{Ran {toolCount} tools}}'**
+  String acpProcessGroupToolsOnly(int toolCount);
+
+  /// No description provided for @acpProcessGroupThoughtsOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{Thought once} other{{count} thoughts}}'**
+  String acpProcessGroupThoughtsOnly(int count);
+
+  /// No description provided for @acpProcessGroupActivitiesOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Process · {count, plural, =1{1 activity} other{{count} activities}}'**
+  String acpProcessGroupActivitiesOnly(int count);
+
+  /// No description provided for @acpProcessGroupRunningToolsMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'{toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
+  String acpProcessGroupRunningToolsMeta(int toolCount);
+
+  /// No description provided for @acpProcessGroupRunningActivitiesMeta.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 activity} other{{count} activities}}'**
+  String acpProcessGroupRunningActivitiesMeta(int count);
+
+  /// No description provided for @acpToolKindRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Read'**
+  String get acpToolKindRead;
+
+  /// No description provided for @acpToolKindEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit'**
+  String get acpToolKindEdit;
+
+  /// No description provided for @acpToolKindDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get acpToolKindDelete;
+
+  /// No description provided for @acpToolKindMove.
+  ///
+  /// In en, this message translates to:
+  /// **'Move'**
+  String get acpToolKindMove;
+
+  /// No description provided for @acpToolKindSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search'**
+  String get acpToolKindSearch;
+
+  /// No description provided for @acpToolKindExecute.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute'**
+  String get acpToolKindExecute;
+
+  /// No description provided for @acpToolKindThink.
+  ///
+  /// In en, this message translates to:
+  /// **'Think'**
+  String get acpToolKindThink;
+
+  /// No description provided for @acpToolKindFetch.
+  ///
+  /// In en, this message translates to:
+  /// **'Fetch'**
+  String get acpToolKindFetch;
+
+  /// No description provided for @acpToolKindSwitchMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Switch mode'**
+  String get acpToolKindSwitchMode;
+
+  /// No description provided for @acpToolKindOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool'**
+  String get acpToolKindOther;
 
   /// No description provided for @acpContentAudioLabel.
   ///

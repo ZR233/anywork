@@ -171,6 +171,12 @@ void main() {
       rule: 'UI-02',
     ),
     (
+      name: 'Timeline tool adapter cannot import ACP presentation or Riverpod',
+      path: 'code/anywork/lib/src/features/conversation/timeline/tools/items/acp/fixture.dart',
+      source: "import '../../../../acp/widgets/acp_tool_card.dart';",
+      rule: 'UI-02',
+    ),
+    (
       name: 'ACP pure barrel cannot export a Connector',
       path: '${_acpFeature}acp_views.dart',
       source: "export 'connectors/acp_workspace_connector.dart';",

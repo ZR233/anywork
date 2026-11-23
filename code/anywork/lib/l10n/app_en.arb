@@ -3157,8 +3157,66 @@
   "acpComposerBlockerRunning": "Response in progress",
   "acpContentThoughtLabel": "Thinking",
   "acpProcessGroupSummary": "Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
-  "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
-  "acpProcessGroupRunning": "Running",
+  "@acpProcessGroupSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupToolsOnly": "{toolCount, plural, =1{Ran 1 tool} other{Ran {toolCount} tools}}",
+  "@acpProcessGroupToolsOnly": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupThoughtsOnly": "{count, plural, =1{Thought once} other{{count} thoughts}}",
+  "@acpProcessGroupThoughtsOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupActivitiesOnly": "Process · {count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupActivitiesOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningToolsMeta": "{toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
+  "@acpProcessGroupRunningToolsMeta": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningActivitiesMeta": "{count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupRunningActivitiesMeta": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpToolKindRead": "Read",
+  "acpToolKindEdit": "Edit",
+  "acpToolKindDelete": "Delete",
+  "acpToolKindMove": "Move",
+  "acpToolKindSearch": "Search",
+  "acpToolKindExecute": "Execute",
+  "acpToolKindThink": "Think",
+  "acpToolKindFetch": "Fetch",
+  "acpToolKindSwitchMode": "Switch mode",
+  "acpToolKindOther": "Tool",
   "acpContentAudioLabel": "Audio content",
   "acpContentResourceLabel": "Embedded resource",
   "acpContentBinarySummary": "{mimeType} · {byteCount} bytes",
