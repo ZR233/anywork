@@ -3729,5 +3729,18 @@
   "acpDetailLastStopReason": "Last finish",
   "acpDetailUpdatedAt": "Updated",
   "acpDetailCapabilitiesSection": "Capabilities & identity",
-  "acpDetailSessionId": "Remote session"
+  "acpDetailSessionId": "Remote session",
+  "acpContextDetailSection": "Context breakdown",
+  "acpContextUsedLabel": "Used tokens",
+  "acpContextCapacityLabel": "Window capacity",
+  "acpContextDeltaLabel": "Delta vs previous",
+  "acpThroughputDetailSection": "Latest sample",
+  "acpThroughputFormulaNote": "Estimated at ~1 token per 4 chars, including initial wait",
+  "acpThroughputTokensLabel": "Est. output tokens",
+  "acpThroughputDurationLabel": "Response time",
+  "acpCostDetailSection": "Cost breakdown",
+  "acpCostCurrencyLabel": "Currency",
+  "acpCostRawLabel": "Raw reading",
+  "acpCostScopeLabel": "Source",
+  "acpSessionDetailTitle": "Session info"
 }

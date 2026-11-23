@@ -87,6 +87,9 @@ final class AcpConversationState {
     this.lastStopReasonRaw,
     this.completedTurns,
     this.snapshotUpdatedAt,
+    this.usageUpdatedAt,
+    this.costUpdatedAt,
+    this.textPerformanceUpdatedAt,
     this.pendingPermissions = const [],
   });
 
@@ -120,6 +123,9 @@ final class AcpConversationState {
   final String? lastStopReasonRaw;
   final int? completedTurns;
   final DateTime? snapshotUpdatedAt;
+  final DateTime? usageUpdatedAt;
+  final DateTime? costUpdatedAt;
+  final DateTime? textPerformanceUpdatedAt;
   final List<AcpPermissionEventView> pendingPermissions;
 
   bool get usesLegacyModes => configOptions == null && modes != null;
@@ -197,6 +203,9 @@ final class AcpConversationSession {
   String? _lastStopReasonRaw;
   int? _completedTurns;
   DateTime? _snapshotUpdatedAt;
+  DateTime? _usageUpdatedAt;
+  DateTime? _costUpdatedAt;
+  DateTime? _textPerformanceUpdatedAt;
   List<AcpPermissionEventView> _permissions = const [];
 
   AcpConversationState get state => _source.value;
@@ -233,6 +242,9 @@ final class AcpConversationSession {
     lastStopReasonRaw: _lastStopReasonRaw,
     completedTurns: _completedTurns,
     snapshotUpdatedAt: _snapshotUpdatedAt,
+    usageUpdatedAt: _usageUpdatedAt,
+    costUpdatedAt: _costUpdatedAt,
+    textPerformanceUpdatedAt: _textPerformanceUpdatedAt,
     pendingPermissions: _permissions,
   );
 
@@ -301,15 +313,33 @@ final class AcpConversationSession {
   void _applyInfoSnapshot(AcpSessionInfoSnapshotView snapshot) {
     if (snapshot.cost case final cost?) {
       _latestCost = (amount: cost.amount, currency: cost.currency);
+      if (cost.updatedAt > 0) {
+        _costUpdatedAt = DateTime.fromMillisecondsSinceEpoch(
+          cost.updatedAt * 1000,
+          isUtc: true,
+        );
+      }
     }
     if (snapshot.usage case final usage?) {
       _latestUsage = (used: usage.used, size: usage.size, cost: _latestCost);
+      if (usage.updatedAt > 0) {
+        _usageUpdatedAt = DateTime.fromMillisecondsSinceEpoch(
+          usage.updatedAt * 1000,
+          isUtc: true,
+        );
+      }
     }
     if (snapshot.textPerformance case final perf?) {
       _textPerformance = (
         estimatedOutputTokens: perf.estimatedOutputTokens,
         responseMillis: perf.responseMillis,
       );
+      if (perf.updatedAt > 0) {
+        _textPerformanceUpdatedAt = DateTime.fromMillisecondsSinceEpoch(
+          perf.updatedAt * 1000,
+          isUtc: true,
+        );
+      }
     }
     if (snapshot.serverInfo case final info?) {
       _serverInfo = info;
@@ -373,8 +403,10 @@ final class AcpConversationSession {
         _lastCompleted = completed;
         if (_activeRun == null || _activeRun == completed.run) {
           if (completed.textPerformance case final perf?) {
+            final now = DateTime.now().toUtc();
             _textPerformance = perf;
-            _snapshotUpdatedAt = DateTime.now().toUtc();
+            _textPerformanceUpdatedAt = now;
+            _snapshotUpdatedAt = now;
           }
           if (completed.result case AcpSuccessView<AcpPromptResponseView>(
             :final value,
@@ -393,10 +425,12 @@ final class AcpConversationSession {
         _loseObservation();
       case AcpUpdateEventView(:final update, :final textPerformance):
         if (textPerformance != null) {
+          final now = DateTime.now().toUtc();
           _textPerformance = textPerformance;
+          _textPerformanceUpdatedAt = now;
           _metricsLive =
               !(_history == AcpConversationHistory.loadReplay && !_ready);
-          _snapshotUpdatedAt = DateTime.now().toUtc();
+          _snapshotUpdatedAt = now;
         }
         _update(update.update);
     }
@@ -417,15 +451,18 @@ final class AcpConversationSession {
       final replaying =
           _history == AcpConversationHistory.loadReplay && !_ready;
       if (!_disconnected && !_observationEnded && _hasObservation == true) {
+        final now = DateTime.now().toUtc();
         if (_latestUsage case final previous? when previous.used != used) {
           _previousContextUsed = previous.used;
         }
         if (cost != null) {
           _latestCost = (amount: cost.amount, currency: cost.currency);
+          _costUpdatedAt = now;
         }
         _latestUsage = (used: used, size: size, cost: _latestCost);
+        _usageUpdatedAt = now;
         _metricsLive = !replaying;
-        _snapshotUpdatedAt = DateTime.now().toUtc();
+        _snapshotUpdatedAt = now;
       }
     }
     if (update is! AcpUserMessageChunkView &&

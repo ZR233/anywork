@@ -1113,7 +1113,7 @@ void main() {
         cost: const AcpCostSnapshotView(
           amount: 0.42,
           currency: 'USD',
-          updatedAt: 1700000010,
+          updatedAt: 1700000011,
         ),
         textPerformance: const AcpTextPerformanceSnapshotView(
           estimatedOutputTokens: 120,
@@ -1166,6 +1166,85 @@ void main() {
         owner.state.snapshotUpdatedAt,
         DateTime.fromMillisecondsSinceEpoch(1700000012 * 1000, isUtc: true),
       );
+      expect(
+        owner.state.usageUpdatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000010 * 1000, isUtc: true),
+      );
+      expect(
+        owner.state.costUpdatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000011 * 1000, isUtc: true),
+      );
+      expect(
+        owner.state.textPerformanceUpdatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000012 * 1000, isUtc: true),
+      );
     },
   );
+
+  test('live metric timestamps advance independently when cost is omitted or performance updates', () async {
+    final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
+    final client = AcpSessionClient(port: _port(source));
+    addTearDown(client.dispose);
+    final owner = await _open(client);
+    await owner.source.waitFor((s) => s.ready);
+
+    _push(
+      source,
+      _event(
+        AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: _remote,
+            update: AcpUsageUpdateView(
+              used: BigInt.from(100),
+              size: BigInt.from(1000),
+              cost: const AcpCostView(amount: 0.1, currency: 'USD'),
+            ),
+          ),
+        ),
+      ),
+    );
+    await owner.source.waitFor((s) => s.latestCost != null);
+    final firstCostAt = owner.state.costUpdatedAt;
+    final firstUsageAt = owner.state.usageUpdatedAt;
+    expect(firstCostAt, isNotNull);
+    expect(firstUsageAt, isNotNull);
+    expect(owner.state.textPerformanceUpdatedAt, isNull);
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    _push(
+      source,
+      _event(
+        AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: _remote,
+            update: AcpUsageUpdateView(
+              used: BigInt.from(200),
+              size: BigInt.from(1000),
+            ),
+          ),
+        ),
+      ),
+    );
+    await owner.source.waitFor((s) => s.latestUsage?.used == BigInt.from(200));
+    expect(owner.state.usageUpdatedAt!.isAfter(firstUsageAt!), isTrue);
+    expect(owner.state.costUpdatedAt, firstCostAt);
+    expect(owner.state.textPerformanceUpdatedAt, isNull);
+
+    _push(
+      source,
+      _event(
+        const AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: _remote,
+            update: AcpAgentMessageChunkView(
+              AcpContentChunkView(content: AcpTextContentView(text: 'hi')),
+            ),
+          ),
+          textPerformance: (estimatedOutputTokens: 16, responseMillis: 500),
+        ),
+      ),
+    );
+    await owner.source.waitFor((s) => s.textPerformanceUpdatedAt != null);
+    expect(owner.state.costUpdatedAt, firstCostAt);
+  });
 }

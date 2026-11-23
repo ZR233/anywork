@@ -190,6 +190,81 @@ final acpThroughputViewModelProvider = Provider.autoDispose
 
 @riverpod
 AcpContextDetailViewState acpContextDetailViewModel(Ref ref, String threadId) {
+  final selected = ref.watch(
+    acpConversationStateProvider(threadId).select((asyncState) {
+      final state = asyncState.value;
+      final usage = state?.latestUsage;
+      return (
+        used: usage?.used,
+        size: usage != null && usage.size > BigInt.zero ? usage.size : null,
+        previousUsed: state?.previousContextUsed,
+        isLive: state?.metricsLive ?? false,
+        updatedAt: state?.usageUpdatedAt,
+      );
+    }),
+  );
+  return AcpContextDetailViewState(
+    used: selected.used,
+    size: selected.size,
+    previousUsed: selected.previousUsed,
+    isLive: selected.isLive,
+    updatedAt: selected.updatedAt,
+  );
+}
+
+@riverpod
+AcpThroughputDetailViewState acpThroughputDetailViewModel(
+  Ref ref,
+  String threadId,
+) {
+  final selected = ref.watch(
+    acpConversationStateProvider(threadId).select((asyncState) {
+      final state = asyncState.value;
+      return (
+        sample: state?.textPerformance,
+        isLive: state?.metricsLive ?? false,
+        updatedAt: state?.textPerformanceUpdatedAt,
+      );
+    }),
+  );
+  final sample = selected.sample;
+  return AcpThroughputDetailViewState(
+    tokensPerSecond: tokenThroughput(
+      sample?.estimatedOutputTokens,
+      sample?.responseMillis,
+    ),
+    estimatedOutputTokens: sample?.estimatedOutputTokens,
+    responseMillis: sample?.responseMillis,
+    isLive: selected.isLive,
+    updatedAt: selected.updatedAt,
+  );
+}
+
+@riverpod
+AcpCostDetailViewState? acpCostDetailViewModel(Ref ref, String threadId) {
+  final selected = ref.watch(
+    acpConversationStateProvider(threadId).select((asyncState) {
+      final state = asyncState.value;
+      final cost = state?.latestCost ?? state?.latestUsage?.cost;
+      return (
+        cost: cost,
+        isLive: state?.metricsLive ?? false,
+        updatedAt: state?.costUpdatedAt,
+      );
+    }),
+  );
+  final cost = selected.cost;
+  if (cost == null) return null;
+  return AcpCostDetailViewState(
+    amount: cost.amount,
+    currency: cost.currency,
+    isLive: selected.isLive,
+    updatedAt: selected.updatedAt,
+  );
+}
+
+@riverpod
+AcpSessionDetailViewState acpSessionDetailViewModel(Ref ref, String threadId) {
   final state = ref.watch(acpConversationStateProvider(threadId)).value;
   final statusBar = ref.watch(acpStatusBarViewModelProvider(threadId));
   final backend = ref.watch(
@@ -215,9 +290,6 @@ AcpContextDetailViewState acpContextDetailViewModel(Ref ref, String threadId) {
     }
   }
 
-  final usage = state?.latestUsage;
-  final size = usage != null && usage.size > BigInt.zero ? usage.size : null;
-  final sample = state?.textPerformance;
   final server = state?.serverInfo;
   final serverName = _trimOrNull(server?.title) ?? _trimOrNull(server?.name);
   final serverVersion = _trimOrNull(server?.version);
@@ -226,24 +298,14 @@ AcpContextDetailViewState acpContextDetailViewModel(Ref ref, String threadId) {
     state?.lastStopReasonRaw,
   );
 
-  return AcpContextDetailViewState(
-    used: usage?.used,
-    size: size,
-    previousUsed: state?.previousContextUsed,
+  return AcpSessionDetailViewState(
+    phase: statusBar.phase,
     isLive: state?.metricsLive ?? false,
-    tokensPerSecond: tokenThroughput(
-      sample?.estimatedOutputTokens,
-      sample?.responseMillis,
-    ),
-    estimatedOutputTokens: sample?.estimatedOutputTokens,
-    responseMillis: sample?.responseMillis,
-    cost: state?.latestCost ?? usage?.cost,
     serviceName: serviceName,
     serverName: serverName,
     serverVersion: serverVersion,
     remoteSessionId:
         _trimOrNull(state?.remoteSessionId?.value) ?? referenceSessionId,
-    phase: statusBar.phase,
     lastStopReason: lastStopReason,
     lastStopReasonRaw: lastStopReasonRaw,
     completedTurns: state?.completedTurns,

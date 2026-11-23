@@ -64,9 +64,16 @@ class AcpStatusBarView extends StatelessWidget {
 }
 
 class AcpConnectionStatusView extends StatelessWidget {
-  const AcpConnectionStatusView({super.key, required this.state});
+  const AcpConnectionStatusView({
+    super.key,
+    required this.state,
+    this.threadId,
+    this.detailBuilder,
+  });
 
   final AcpStatusBarViewState state;
+  final String? threadId;
+  final WidgetBuilder? detailBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -77,35 +84,58 @@ class AcpConnectionStatusView extends StatelessWidget {
         context.l10n.acpProvenanceResumed,
       _ => null,
     };
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        DecoratedBox(
-          decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
-          child: const SizedBox.square(dimension: 7),
-        ),
-        const SizedBox(width: 6),
-        Tooltip(
-          message: statusText,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 220),
-            child: Text(
-              statusText,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: context.text.labelSmall,
-            ),
+    final textChild = ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 220),
+      child: Text(
+        statusText,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: context.text.labelSmall,
+      ),
+    );
+    final triggerRow = KeyedSubtree(
+      key: threadId == null
+          ? null
+          : ValueKey(AcpViewKeyValues.status(threadId!)),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DecoratedBox(
+            decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+            child: const SizedBox.square(dimension: 7),
           ),
-        ),
-        if (provenanceLabel != null) ...[
           const SizedBox(width: 6),
-          StudioCompactChip(
-            icon: Icons.history_rounded,
-            label: provenanceLabel,
-            maxWidth: 140,
-          ),
+          if (detailBuilder == null)
+            Tooltip(message: statusText, child: textChild)
+          else
+            textChild,
+          if (provenanceLabel != null) ...[
+            const SizedBox(width: 6),
+            StudioCompactChip(
+              icon: Icons.history_rounded,
+              label: provenanceLabel,
+              maxWidth: 140,
+            ),
+          ],
         ],
-      ],
+      ),
+    );
+    if (detailBuilder == null) {
+      return triggerRow;
+    }
+    return StudioHoverDetail(
+      maxWidth: 368,
+      semanticsLabel: statusText,
+      detailBuilder: (context) {
+        final detail = detailBuilder!(context);
+        return threadId == null
+            ? detail
+            : KeyedSubtree(
+                key: ValueKey(AcpViewKeyValues.statusDetail(threadId!)),
+                child: detail,
+              );
+      },
+      child: triggerRow,
     );
   }
 
@@ -284,36 +314,24 @@ class AcpContextDetailView extends StatelessWidget {
         ? used - previousUsed
         : null;
 
-    final primaryIdentity = _primaryIdentityLabel(state);
-    final secondaryIdentity = _secondaryIdentityLabel(state);
-    final stopReasonLabel =
-        state.lastStopReason == null && state.lastStopReasonRaw == null
-        ? null
-        : _stopReasonText(l10n, state.lastStopReason, state.lastStopReasonRaw);
-
-    final sessionRows = <Widget>[
-      if (primaryIdentity != null || state.serverVersion != null)
-        _ServerIdentityRow(
-          primary: primaryIdentity,
-          secondary: secondaryIdentity,
-          version: state.serverVersion,
-        ),
-      for (final item in state.configItems)
+    final detailRows = <Widget>[
+      if (used != null)
         StatusDetailRow(
-          label: item.useModeFallbackLabel
-              ? l10n.acpConfigModeFallbackLabel
-              : item.label,
-          value: item.booleanValue == null
-              ? item.value
-              : (item.booleanValue!
-                    ? l10n.acpConfigBooleanOn
-                    : l10n.acpConfigBooleanOff),
+          label: l10n.acpContextUsedLabel,
+          value: _formatGroupedBigInt(used),
           valueMaxLines: 1,
         ),
-      if (stopReasonLabel != null)
+      if (hasCapacity)
         StatusDetailRow(
-          label: l10n.acpDetailLastStopReason,
-          value: stopReasonLabel,
+          label: l10n.acpContextCapacityLabel,
+          value: _formatGroupedBigInt(size),
+          valueMaxLines: 1,
+        ),
+      if (delta != null)
+        StatusDetailRow(
+          label: l10n.acpContextDeltaLabel,
+          value:
+              '${delta > BigInt.zero ? '+' : '-'}${_formatGroupedBigInt(delta.abs())}',
           valueMaxLines: 1,
         ),
       if (state.updatedAt != null)
@@ -324,15 +342,17 @@ class AcpContextDetailView extends StatelessWidget {
         ),
     ];
 
-    final hasCapabilities = state.capabilities.isNotEmpty;
-    final hasRemoteId =
-        state.remoteSessionId != null && state.remoteSessionId!.isNotEmpty;
-
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _ContextHeroHeader(isLive: state.isLive),
+        _DetailHeaderRow(
+          title: l10n.acpContextWindowTitle,
+          badgeLabel: state.isLive
+              ? l10n.acpSnapshotLiveBadge
+              : l10n.acpSnapshotRetainedBadge,
+          badgeTone: state.isLive ? StudioTone.success : StudioTone.neutral,
+        ),
         const SizedBox(height: 8),
         if (hasCapacity)
           _HeroUsageNumbers(
@@ -404,72 +424,238 @@ class AcpContextDetailView extends StatelessWidget {
             ],
           ),
         ],
-        if (hasCapacity) ...[
-          const SizedBox(height: 3),
-          Text(
-            l10n.acpContextExactTokens(
-              _formatGroupedBigInt(resolvedUsed),
-              _formatGroupedBigInt(size),
-            ),
+        if (detailRows.isNotEmpty) ...[
+          const StatusDetailDivider(),
+          StatusDetailPanel(
+            title: l10n.acpContextDetailSection,
+            children: detailRows,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class AcpThroughputDetailView extends StatelessWidget {
+  const AcpThroughputDetailView({super.key, required this.state});
+
+  final AcpThroughputDetailViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final speed = state.tokensPerSecond;
+    final hasSpeed = speed != null;
+    final hasSample =
+        state.estimatedOutputTokens != null &&
+        state.responseMillis != null &&
+        state.responseMillis! > 0;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DetailHeaderRow(
+          title: l10n.acpMetricSpeedTitle,
+          badgeLabel: state.isLive
+              ? l10n.acpSnapshotLiveBadge
+              : l10n.acpSnapshotRetainedBadge,
+          badgeTone: state.isLive ? StudioTone.success : StudioTone.neutral,
+        ),
+        const SizedBox(height: 8),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            hasSpeed
+                ? '≈ ${context.tokenThroughputLabel(speed)}'
+                : tokenCountUnknown,
             maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurfaceVariant,
+            style: context.text.titleLarge?.copyWith(
+              fontSize: 22,
+              height: 1.15,
+              fontWeight: FontWeight.w600,
+              color: hasSpeed
+                  ? context.colors.onSurface
+                  : context.colors.onSurfaceVariant,
               fontFeatures: const [FontFeature.tabularFigures()],
             ),
           ),
-        ],
-        const SizedBox(height: 10),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        ),
+        const SizedBox(height: 6),
+        Text(
+          l10n.acpThroughputFormulaNote,
+          style: context.text.bodySmall?.copyWith(
+            color: context.colors.onSurfaceVariant,
+            height: 1.3,
+          ),
+        ),
+        const StatusDetailDivider(),
+        StatusDetailPanel(
+          title: l10n.acpThroughputDetailSection,
           children: [
-            Expanded(
-              child: _MetricTile(
-                icon: Icons.speed_rounded,
-                title: l10n.acpMetricSpeedTitle,
-                value: context.tokenThroughputLabel(state.tokensPerSecond),
-                valueMuted: state.tokensPerSecond == null,
-                subtitle:
-                    state.estimatedOutputTokens != null &&
-                        state.responseMillis != null &&
-                        state.responseMillis! > 0
-                    ? l10n.acpMetricSpeedDetail(
-                        _formatGroupedInt(state.estimatedOutputTokens!),
-                        _formatDuration(state.responseMillis!),
-                      )
-                    : tokenCountUnknown,
+            StatusDetailRow(
+              label: l10n.acpThroughputTokensLabel,
+              value: hasSample
+                  ? '≈ ${_formatGroupedInt(state.estimatedOutputTokens!)}'
+                  : tokenCountUnknown,
+              valueMaxLines: 1,
+            ),
+            StatusDetailRow(
+              label: l10n.acpThroughputDurationLabel,
+              value: hasSample
+                  ? _formatDuration(state.responseMillis!)
+                  : tokenCountUnknown,
+              valueMaxLines: 1,
+            ),
+            if (state.updatedAt != null)
+              StatusDetailRow(
+                label: l10n.acpDetailUpdatedAt,
+                value: _formatLocalTime(state.updatedAt!),
+                valueMaxLines: 1,
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: state.cost != null
-                  ? _MetricTile(
-                      icon: Icons.payments_outlined,
-                      title: l10n.acpMetricCostTitle,
-                      value: formatRuntimeCostAmount(
-                        state.cost!.currency,
-                        state.cost!.amount,
-                      ),
-                      valueMuted: false,
-                      subtitle: state.completedTurns != null
-                          ? l10n.acpMetricTurnsValue(state.completedTurns!)
-                          : l10n.acpMetricCostSubtitle,
-                    )
-                  : _MetricTile(
-                      icon: Icons.repeat_rounded,
-                      title: l10n.acpMetricTurnsTitle,
-                      value: state.completedTurns != null
-                          ? l10n.acpMetricTurnsValue(state.completedTurns!)
-                          : tokenCountUnknown,
-                      valueMuted: state.completedTurns == null,
-                      subtitle:
-                          stopReasonLabel ?? _phaseLabel(l10n, state.phase),
-                    ),
-            ),
           ],
         ),
+      ],
+    );
+  }
+}
+
+class AcpCostDetailView extends StatelessWidget {
+  const AcpCostDetailView({super.key, required this.state});
+
+  final AcpCostDetailViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DetailHeaderRow(
+          title: l10n.acpMetricCostTitle,
+          badgeLabel: state.isLive
+              ? l10n.acpSnapshotLiveBadge
+              : l10n.acpSnapshotRetainedBadge,
+          badgeTone: state.isLive ? StudioTone.success : StudioTone.neutral,
+        ),
+        const SizedBox(height: 8),
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            formatRuntimeCostAmount(state.currency, state.amount),
+            maxLines: 1,
+            style: context.text.titleLarge?.copyWith(
+              fontSize: 22,
+              height: 1.15,
+              fontWeight: FontWeight.w600,
+              color: context.colors.onSurface,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ),
+        const StatusDetailDivider(),
+        StatusDetailPanel(
+          title: l10n.acpCostDetailSection,
+          children: [
+            StatusDetailRow(
+              label: l10n.acpCostCurrencyLabel,
+              value: state.currency,
+              valueMaxLines: 1,
+            ),
+            StatusDetailRow(
+              label: l10n.acpCostRawLabel,
+              value: '${state.amount} ${state.currency}',
+              valueMaxLines: 1,
+            ),
+            StatusDetailRow(
+              label: l10n.acpCostScopeLabel,
+              value: l10n.acpMetricCostSubtitle,
+              valueMaxLines: 1,
+            ),
+            if (state.updatedAt != null)
+              StatusDetailRow(
+                label: l10n.acpDetailUpdatedAt,
+                value: _formatLocalTime(state.updatedAt!),
+                valueMaxLines: 1,
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class AcpSessionDetailView extends StatelessWidget {
+  const AcpSessionDetailView({super.key, required this.state});
+
+  final AcpSessionDetailViewState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final primaryIdentity = _primaryIdentityLabel(state);
+    final secondaryIdentity = _secondaryIdentityLabel(state);
+    final stopReasonLabel =
+        state.lastStopReason == null && state.lastStopReasonRaw == null
+        ? null
+        : _stopReasonText(l10n, state.lastStopReason, state.lastStopReasonRaw);
+
+    final sessionRows = <Widget>[
+      if (primaryIdentity != null || state.serverVersion != null)
+        _ServerIdentityRow(
+          primary: primaryIdentity,
+          secondary: secondaryIdentity,
+          version: state.serverVersion,
+        ),
+      for (final item in state.configItems)
+        StatusDetailRow(
+          label: item.useModeFallbackLabel
+              ? l10n.acpConfigModeFallbackLabel
+              : item.label,
+          value: item.booleanValue == null
+              ? item.value
+              : (item.booleanValue!
+                    ? l10n.acpConfigBooleanOn
+                    : l10n.acpConfigBooleanOff),
+          valueMaxLines: 1,
+        ),
+      if (state.completedTurns != null)
+        StatusDetailRow(
+          label: l10n.acpMetricTurnsTitle,
+          value: l10n.acpMetricTurnsValue(state.completedTurns!),
+          valueMaxLines: 1,
+        ),
+      if (stopReasonLabel != null)
+        StatusDetailRow(
+          label: l10n.acpDetailLastStopReason,
+          value: stopReasonLabel,
+          valueMaxLines: 1,
+        ),
+      if (state.updatedAt != null)
+        StatusDetailRow(
+          label: l10n.acpDetailUpdatedAt,
+          value: _formatLocalTime(state.updatedAt!),
+          valueMaxLines: 1,
+        ),
+    ];
+
+    final hasCapabilities = state.capabilities.isNotEmpty;
+    final hasRemoteId =
+        state.remoteSessionId != null && state.remoteSessionId!.isNotEmpty;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _DetailHeaderRow(
+          title: l10n.acpSessionDetailTitle,
+          badgeLabel: _phaseLabel(l10n, state.phase),
+          badgeTone: _phaseTone(state.phase),
+        ),
         if (sessionRows.isNotEmpty) ...[
-          const StatusDetailDivider(),
+          const SizedBox(height: 8),
           StatusDetailPanel(
             title: l10n.acpDetailSessionSection,
             children: sessionRows,
@@ -508,19 +694,24 @@ class AcpContextDetailView extends StatelessWidget {
   }
 }
 
-class _ContextHeroHeader extends StatelessWidget {
-  const _ContextHeroHeader({required this.isLive});
+class _DetailHeaderRow extends StatelessWidget {
+  const _DetailHeaderRow({
+    required this.title,
+    required this.badgeLabel,
+    required this.badgeTone,
+  });
 
-  final bool isLive;
+  final String title;
+  final String badgeLabel;
+  final StudioTone badgeTone;
 
   @override
   Widget build(BuildContext context) {
-    final l10n = context.l10n;
     return Row(
       children: [
         Expanded(
           child: Text(
-            l10n.acpContextWindowTitle.toUpperCase(),
+            title.toUpperCase(),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: context.text.labelSmall?.copyWith(
@@ -532,12 +723,7 @@ class _ContextHeroHeader extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        StudioPill(
-          label: isLive
-              ? l10n.acpSnapshotLiveBadge
-              : l10n.acpSnapshotRetainedBadge,
-          tone: isLive ? StudioTone.success : StudioTone.neutral,
-        ),
+        StudioPill(label: badgeLabel, tone: badgeTone),
       ],
     );
   }
@@ -626,106 +812,36 @@ class _DeltaBadge extends StatelessWidget {
   }
 }
 
-class _MetricTile extends StatelessWidget {
-  const _MetricTile({
-    required this.icon,
-    required this.title,
-    required this.value,
-    required this.valueMuted,
-    required this.subtitle,
-  });
+String? _primaryIdentityLabel(AcpSessionDetailViewState state) {
+  final service = state.serviceName?.trim();
+  if (service != null && service.isNotEmpty) return service;
+  final server = state.serverName?.trim();
+  return server != null && server.isNotEmpty ? server : null;
+}
 
-  final IconData icon;
-  final String title;
-  final String value;
-  final bool valueMuted;
-  final String subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = context.colors;
-    final labelStyle = context.text.labelSmall?.copyWith(
-      color: colors.onSurfaceVariant,
-      fontFeatures: const [FontFeature.tabularFigures()],
-    );
-    final valueStyle = context.text.titleSmall?.copyWith(
-      fontWeight: FontWeight.w600,
-      color: valueMuted ? colors.onSurfaceVariant : colors.onSurface,
-      fontFeatures: const [FontFeature.tabularFigures()],
-    );
-    final labelFontSize = labelStyle?.fontSize ?? 11;
-    final valueFontSize = valueStyle?.fontSize ?? 14;
-    final textScaler = MediaQuery.textScalerOf(context);
-    final valueBoxHeight = textScaler.scale(valueFontSize * 1.45);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
-        border: Border.all(color: colors.outlineVariant.withValues(alpha: 0.7)),
-        borderRadius: BorderRadius.circular(StudioRadii.sm),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(10),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(icon, size: 13, color: colors.onSurfaceVariant),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: labelStyle,
-                    strutStyle: StrutStyle(
-                      fontSize: labelFontSize,
-                      height: 1.35,
-                      forceStrutHeight: true,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            SizedBox(
-              height: valueBoxHeight,
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    value,
-                    maxLines: 1,
-                    style: valueStyle,
-                    strutStyle: StrutStyle(
-                      fontSize: valueFontSize,
-                      height: 1.35,
-                      forceStrutHeight: true,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 3),
-            Text(
-              subtitle,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: labelStyle,
-              strutStyle: StrutStyle(
-                fontSize: labelFontSize,
-                height: 1.35,
-                forceStrutHeight: true,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+String? _secondaryIdentityLabel(AcpSessionDetailViewState state) {
+  final service = state.serviceName?.trim();
+  final server = state.serverName?.trim();
+  if (service == null ||
+      service.isEmpty ||
+      server == null ||
+      server.isEmpty ||
+      service.toLowerCase() == server.toLowerCase()) {
+    return null;
   }
+  return server;
+}
+
+StudioTone _phaseTone(AcpSessionStatusPhase phase) {
+  return switch (phase) {
+    AcpSessionStatusPhase.connecting ||
+    AcpSessionStatusPhase.stopping => StudioTone.warning,
+    AcpSessionStatusPhase.ready ||
+    AcpSessionStatusPhase.completed => StudioTone.success,
+    AcpSessionStatusPhase.running => StudioTone.active,
+    AcpSessionStatusPhase.disconnected => StudioTone.error,
+    AcpSessionStatusPhase.ended => StudioTone.neutral,
+  };
 }
 
 class _ServerIdentityRow extends StatelessWidget {
@@ -856,26 +972,6 @@ String _formatLocalTime(DateTime timestamp) {
   return '$hh:$mm:$ss';
 }
 
-String? _primaryIdentityLabel(AcpContextDetailViewState state) {
-  final service = state.serviceName?.trim();
-  if (service != null && service.isNotEmpty) return service;
-  final server = state.serverName?.trim();
-  return server != null && server.isNotEmpty ? server : null;
-}
-
-String? _secondaryIdentityLabel(AcpContextDetailViewState state) {
-  final service = state.serviceName?.trim();
-  final server = state.serverName?.trim();
-  if (service == null ||
-      service.isEmpty ||
-      server == null ||
-      server.isEmpty ||
-      service.toLowerCase() == server.toLowerCase()) {
-    return null;
-  }
-  return server;
-}
-
 String _phaseLabel(AppLocalizations l10n, AcpSessionStatusPhase phase) {
   return switch (phase) {
     AcpSessionStatusPhase.connecting => l10n.acpStatusConnecting,
@@ -926,9 +1022,16 @@ String _capabilityLabel(AppLocalizations l10n, AcpCapabilityKind capability) {
 }
 
 class AcpCostReadoutView extends StatelessWidget {
-  const AcpCostReadoutView({super.key, required this.state});
+  const AcpCostReadoutView({
+    super.key,
+    required this.state,
+    this.threadId,
+    this.detailBuilder,
+  });
 
   final AcpCostViewState? state;
+  final String? threadId;
+  final WidgetBuilder? detailBuilder;
 
   @override
   Widget build(BuildContext context) {
@@ -941,6 +1044,14 @@ class AcpCostReadoutView extends StatelessWidget {
       icon: Icons.payments_outlined,
       label: '${context.l10n.statusCost}: $text',
       text: text,
+      triggerKey: threadId == null
+          ? null
+          : ValueKey(AcpViewKeyValues.cost(threadId!)),
+      detailKey: threadId == null
+          ? null
+          : ValueKey(AcpViewKeyValues.costDetail(threadId!)),
+      detailMaxWidth: 320,
+      detailBuilder: detailBuilder,
     );
   }
 }

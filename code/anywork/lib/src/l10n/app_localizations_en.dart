@@ -7792,4 +7792,44 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpDetailSessionId => 'Remote session';
+
+  @override
+  String get acpContextDetailSection => 'Context breakdown';
+
+  @override
+  String get acpContextUsedLabel => 'Used tokens';
+
+  @override
+  String get acpContextCapacityLabel => 'Window capacity';
+
+  @override
+  String get acpContextDeltaLabel => 'Delta vs previous';
+
+  @override
+  String get acpThroughputDetailSection => 'Latest sample';
+
+  @override
+  String get acpThroughputFormulaNote =>
+      'Estimated at ~1 token per 4 chars, including initial wait';
+
+  @override
+  String get acpThroughputTokensLabel => 'Est. output tokens';
+
+  @override
+  String get acpThroughputDurationLabel => 'Response time';
+
+  @override
+  String get acpCostDetailSection => 'Cost breakdown';
+
+  @override
+  String get acpCostCurrencyLabel => 'Currency';
+
+  @override
+  String get acpCostRawLabel => 'Raw reading';
+
+  @override
+  String get acpCostScopeLabel => 'Source';
+
+  @override
+  String get acpSessionDetailTitle => 'Session info';
 }

@@ -3096,5 +3096,18 @@
   "timelineToolMalformedLabel": "{name} · 内容格式错误",
   "timelineToolDeferredLabel": "{name} · 正文按需读取",
   "timelineToolDeferredReason": "参数按需读取，尚未取得完整业务内容",
-  "timelineToolParseFailed": "当前工具内容无法解析：{reason}"
+  "timelineToolParseFailed": "当前工具内容无法解析：{reason}",
+  "acpContextDetailSection": "上下文明细",
+  "acpContextUsedLabel": "已用词元",
+  "acpContextCapacityLabel": "窗口容量",
+  "acpContextDeltaLabel": "较上次变化",
+  "acpThroughputDetailSection": "最近样本",
+  "acpThroughputFormulaNote": "按每 4 个字符约计 1 词元估算，含首段等待耗时",
+  "acpThroughputTokensLabel": "估算输出词元",
+  "acpThroughputDurationLabel": "响应耗时",
+  "acpCostDetailSection": "费用明细",
+  "acpCostCurrencyLabel": "币种",
+  "acpCostRawLabel": "原始读数",
+  "acpCostScopeLabel": "统计口径",
+  "acpSessionDetailTitle": "会话信息"
 }

@@ -7355,4 +7355,43 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpDetailSessionId => '远端会话';
+
+  @override
+  String get acpContextDetailSection => '上下文明细';
+
+  @override
+  String get acpContextUsedLabel => '已用词元';
+
+  @override
+  String get acpContextCapacityLabel => '窗口容量';
+
+  @override
+  String get acpContextDeltaLabel => '较上次变化';
+
+  @override
+  String get acpThroughputDetailSection => '最近样本';
+
+  @override
+  String get acpThroughputFormulaNote => '按每 4 个字符约计 1 词元估算，含首段等待耗时';
+
+  @override
+  String get acpThroughputTokensLabel => '估算输出词元';
+
+  @override
+  String get acpThroughputDurationLabel => '响应耗时';
+
+  @override
+  String get acpCostDetailSection => '费用明细';
+
+  @override
+  String get acpCostCurrencyLabel => '币种';
+
+  @override
+  String get acpCostRawLabel => '原始读数';
+
+  @override
+  String get acpCostScopeLabel => '统计口径';
+
+  @override
+  String get acpSessionDetailTitle => '会话信息';
 }

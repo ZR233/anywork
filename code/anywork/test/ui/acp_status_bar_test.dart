@@ -214,6 +214,9 @@ void main() {
     await tester.pumpAndSettle();
     expectChanges([0, 0, 0, 0, 0]);
     expect(find.byType(AcpContextDetailView), findsNothing);
+    expect(find.byType(AcpThroughputDetailView), findsNothing);
+    expect(find.byType(AcpCostDetailView), findsNothing);
+    expect(find.byType(AcpSessionDetailView), findsNothing);
     h.update(_usage(25, 100, amount: 2));
     await tester.pumpAndSettle();
     expectChanges([0, 0, 1, 0, 0]);
@@ -490,7 +493,7 @@ void main() {
   });
 
   testWidgets(
-    'hovering ACP context ring mounts rich detail popover and switches badge on disconnect',
+    'hovering ACP context ring mounts context-only detail popover and switches badge on disconnect',
     (tester) async {
       final h = await AcpComponentHarness.create();
       addTearDown(() => h.close(tester));
@@ -570,28 +573,34 @@ void main() {
       await tester.pump(const Duration(milliseconds: 160));
       await tester.pumpAndSettle();
 
-      expect(
-        find.byKey(ValueKey(AcpViewKeyValues.contextUsageDetail('thread'))),
-        findsOneWidget,
+      final detailFinder = find.byKey(
+        ValueKey(AcpViewKeyValues.contextUsageDetail('thread')),
       );
+      expect(detailFinder, findsOneWidget);
+      expect(find.byType(AcpContextDetailView), findsOneWidget);
+      expect(find.byType(AcpThroughputDetailView), findsNothing);
+      expect(find.byType(AcpCostDetailView), findsNothing);
+      expect(find.byType(AcpSessionDetailView), findsNothing);
+
       expect(find.text('实时'), findsOneWidget);
       expect(find.text('64.5k / 200k'), findsOneWidget);
       expect(find.text('32%'), findsOneWidget);
       expect(find.text('+14.5k'), findsOneWidget);
-      expect(find.text('精确 64,500 / 200,000 词元'), findsOneWidget);
       expect(find.text('剩余可用 135.5k'), findsOneWidget);
-      expect(find.text('80 词元/秒'), findsOneWidget);
-      expect(find.text('≈ 320 词元 · 4.0s'), findsOneWidget);
-      expect(find.text(r'$0.42'), findsOneWidget);
-      expect(find.text('1 轮'), findsOneWidget);
-      expect(find.text('Codex CLI'), findsOneWidget);
-      expect(find.text('v0.9.4'), findsOneWidget);
-      expect(find.text('GPT-5'), findsOneWidget);
-      expect(find.text('关闭'), findsOneWidget);
-      expect(find.text('图片输入'), findsOneWidget);
-      expect(find.text('加载历史'), findsOneWidget);
-      expect(find.text('恢复会话'), findsOneWidget);
-      expect(find.text(acpRemoteFixture.value), findsOneWidget);
+      expect(find.text('64,500'), findsOneWidget);
+      expect(find.text('200,000'), findsOneWidget);
+      expect(find.text('+14,500'), findsOneWidget);
+
+      // Context popover must stay strictly scoped to context metrics.
+      expect(
+        find.descendant(of: detailFinder, matching: find.text('≈ 80 词元/秒')),
+        findsNothing,
+      );
+      expect(find.text(r'$0.42'), findsNothing);
+      expect(find.text('Codex CLI'), findsNothing);
+      expect(find.text('GPT-5'), findsNothing);
+      expect(find.text('图片输入'), findsNothing);
+      expect(find.text(acpRemoteFixture.value), findsNothing);
 
       h.emit(const AcpGapEventView(AcpObservationGapView.disconnected));
       await tester.pumpAndSettle();
@@ -602,45 +611,298 @@ void main() {
   );
 
   testWidgets(
-    'AcpContextDetailView handles narrow width, 1.3x scale, over-capacity, and negative delta cleanly',
+    'hovering ACP throughput readout mounts speed detail popover and updates badge on disconnect',
+    (tester) async {
+      final h = await AcpComponentHarness.create();
+      addTearDown(() => h.close(tester));
+      await tester.pumpWidget(
+        h.scope(const AcpStatusBarConnector(threadId: 'thread')),
+      );
+      h.update(_usage(64500, 200000, amount: 0.42));
+      final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
+      h.port.run = run;
+      await h.owner.send(const [AcpTextContentView(text: 'hi')]);
+      h.emit(
+        AcpCompletedEventView(
+          AcpCompletedRunView(
+            run: run,
+            completionSequence: BigInt.one,
+            result: const AcpSuccessView(
+              AcpPromptResponseView(stopReason: AcpStopReasonView.endTurn),
+            ),
+            summary: 'ok',
+            truncated: false,
+            textPerformance: (estimatedOutputTokens: 320, responseMillis: 4000),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AcpThroughputDetailView), findsNothing);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(ValueKey(AcpViewKeyValues.throughput('thread'))),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pumpAndSettle();
+
+      final throughputDetailFinder = find.byKey(
+        ValueKey(AcpViewKeyValues.throughputDetail('thread')),
+      );
+      expect(throughputDetailFinder, findsOneWidget);
+      expect(find.byType(AcpThroughputDetailView), findsOneWidget);
+      expect(find.byType(AcpContextDetailView), findsNothing);
+      expect(find.byType(AcpCostDetailView), findsNothing);
+      expect(find.byType(AcpSessionDetailView), findsNothing);
+
+      expect(find.text('实时'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: throughputDetailFinder,
+          matching: find.text('≈ 80 词元/秒'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('≈ 320'), findsOneWidget);
+      expect(find.text('4.0s'), findsOneWidget);
+      expect(find.text('64.5k / 200k'), findsNothing);
+      expect(find.text(r'$0.42'), findsNothing);
+
+      h.emit(const AcpGapEventView(AcpObservationGapView.disconnected));
+      await tester.pumpAndSettle();
+      expect(find.text('上次快照'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: throughputDetailFinder,
+          matching: find.text('≈ 80 词元/秒'),
+        ),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'hovering ACP cost readout mounts cost detail popover and updates badge on disconnect',
+    (tester) async {
+      final h = await AcpComponentHarness.create();
+      addTearDown(() => h.close(tester));
+      await tester.pumpWidget(
+        h.scope(const AcpStatusBarConnector(threadId: 'thread')),
+      );
+      h.update(_usage(64500, 200000, amount: 0.42));
+      await tester.pumpAndSettle();
+      expect(find.byType(AcpCostDetailView), findsNothing);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(
+        tester.getCenter(find.byKey(ValueKey(AcpViewKeyValues.cost('thread')))),
+      );
+      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pumpAndSettle();
+
+      final costDetailFinder = find.byKey(
+        ValueKey(AcpViewKeyValues.costDetail('thread')),
+      );
+      expect(costDetailFinder, findsOneWidget);
+      expect(find.byType(AcpCostDetailView), findsOneWidget);
+      expect(find.byType(AcpContextDetailView), findsNothing);
+      expect(find.byType(AcpThroughputDetailView), findsNothing);
+      expect(find.byType(AcpSessionDetailView), findsNothing);
+
+      expect(find.text('实时'), findsOneWidget);
+      expect(find.text(r'$0.42'), findsOneWidget);
+      expect(find.text('USD'), findsOneWidget);
+      expect(
+        find.descendant(of: costDetailFinder, matching: find.text('0.42 USD')),
+        findsOneWidget,
+      );
+      expect(find.text('对端累计报告'), findsOneWidget);
+      expect(find.text('64.5k / 200k'), findsNothing);
+
+      h.emit(const AcpGapEventView(AcpObservationGapView.disconnected));
+      await tester.pumpAndSettle();
+      expect(find.text('上次快照'), findsOneWidget);
+      expect(find.text(r'$0.42'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'hovering ACP connection status mounts session info detail popover',
+    (tester) async {
+      final h = await AcpComponentHarness.create();
+      addTearDown(() => h.close(tester));
+      await tester.pumpWidget(
+        h.scope(const AcpStatusBarConnector(threadId: 'thread')),
+      );
+      h.emit(
+        const AcpInitializedEventView(
+          AcpAgentCapabilitiesView(
+            image: true,
+            audio: false,
+            embeddedContext: true,
+            loadSession: true,
+            listSessions: true,
+            resumeSession: true,
+          ),
+          serverInfo: AcpServerInfoView(
+            name: 'codex-acp',
+            version: '0.9.4',
+            title: 'Codex CLI',
+          ),
+        ),
+      );
+      h.update(
+        AcpConfigOptionsUpdateView(
+          configOptions: [
+            AcpSessionConfigOptionView(
+              id: const AcpConfigId('model'),
+              name: '模型',
+              kind: AcpSelectConfigView(
+                currentValue: const AcpConfigValueId('gpt-5'),
+                options: AcpUngroupedOptionsView(const [
+                  AcpSelectOptionView(
+                    value: AcpConfigValueId('gpt-5'),
+                    name: 'GPT-5',
+                  ),
+                ]),
+              ),
+            ),
+            acpBooleanFixture,
+          ],
+        ),
+      );
+      final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
+      h.port.run = run;
+      await h.owner.send(const [AcpTextContentView(text: 'hi')]);
+      h.emit(
+        AcpCompletedEventView(
+          AcpCompletedRunView(
+            run: run,
+            completionSequence: BigInt.one,
+            result: const AcpSuccessView(
+              AcpPromptResponseView(stopReason: AcpStopReasonView.endTurn),
+            ),
+            summary: 'ok',
+            truncated: false,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AcpSessionDetailView), findsNothing);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(ValueKey(AcpViewKeyValues.status('thread'))),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(ValueKey(AcpViewKeyValues.statusDetail('thread'))),
+        findsOneWidget,
+      );
+      expect(find.byType(AcpSessionDetailView), findsOneWidget);
+      expect(find.byType(AcpContextDetailView), findsNothing);
+      expect(find.byType(AcpThroughputDetailView), findsNothing);
+      expect(find.byType(AcpCostDetailView), findsNothing);
+
+      expect(find.text('Codex CLI'), findsOneWidget);
+      expect(find.text('v0.9.4'), findsOneWidget);
+      expect(find.text('GPT-5'), findsOneWidget);
+      expect(find.text('关闭'), findsOneWidget);
+      expect(find.text('1 轮'), findsOneWidget);
+      expect(find.text('图片输入'), findsOneWidget);
+      expect(find.text('加载历史'), findsOneWidget);
+      expect(find.text('恢复会话'), findsOneWidget);
+      expect(find.text(acpRemoteFixture.value), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'ACP detail views handle narrow width, 1.3x scale, over-capacity, and negative delta cleanly',
     (tester) async {
       await tester.pumpWidget(
         acpTestApp(
           MediaQuery(
             data: const MediaQueryData(textScaler: TextScaler.linear(1.3)),
-            child: Center(
-              child: SizedBox(
-                width: 280,
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: AcpContextDetailView(
-                    state: AcpContextDetailViewState(
-                      used: BigInt.from(215000),
-                      size: BigInt.from(200000),
-                      previousUsed: BigInt.from(220000),
-                      isLive: false,
-                      tokensPerSecond: 62.5,
-                      estimatedOutputTokens: 250,
-                      responseMillis: 4000,
-                      serviceName: 'Workstation Enterprise ACP Proxy Long Name',
-                      serverName: 'claude-agent-acp',
-                      serverVersion: 'v2.4.1',
-                      remoteSessionId: 'session_01JXYZLONGIDENTIFIER99887766',
-                      phase: AcpSessionStatusPhase.disconnected,
-                      lastStopReason: AcpStopReasonKind.maxTokens,
-                      completedTurns: 6,
-                      updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
-                      configItems: const [
-                        AcpConfigReadoutItem(
-                          label: '',
-                          value: 'Plan Mode',
-                          useModeFallbackLabel: true,
+            child: SingleChildScrollView(
+              child: Center(
+                child: SizedBox(
+                  width: 280,
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AcpContextDetailView(
+                          state: AcpContextDetailViewState(
+                            used: BigInt.from(215000),
+                            size: BigInt.from(200000),
+                            previousUsed: BigInt.from(220000),
+                            isLive: false,
+                            updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
+                          ),
                         ),
-                      ],
-                      capabilities: const [
-                        AcpCapabilityKind.image,
-                        AcpCapabilityKind.loadSession,
-                        AcpCapabilityKind.resumeSession,
+                        const SizedBox(height: 12),
+                        AcpThroughputDetailView(
+                          state: AcpThroughputDetailViewState(
+                            tokensPerSecond: 62.5,
+                            estimatedOutputTokens: 250,
+                            responseMillis: 4000,
+                            isLive: false,
+                            updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AcpCostDetailView(
+                          state: AcpCostDetailViewState(
+                            amount: 12.85,
+                            currency: 'CNY',
+                            isLive: false,
+                            updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AcpSessionDetailView(
+                          state: AcpSessionDetailViewState(
+                            phase: AcpSessionStatusPhase.disconnected,
+                            isLive: false,
+                            serviceName:
+                                'Workstation Enterprise ACP Proxy Long Name',
+                            serverName: 'claude-agent-acp',
+                            serverVersion: 'v2.4.1',
+                            remoteSessionId:
+                                'session_01JXYZLONGIDENTIFIER99887766',
+                            lastStopReason: AcpStopReasonKind.maxTokens,
+                            completedTurns: 6,
+                            updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
+                            configItems: const [
+                              AcpConfigReadoutItem(
+                                label: '',
+                                value: 'Plan Mode',
+                                useModeFallbackLabel: true,
+                              ),
+                            ],
+                            capabilities: const [
+                              AcpCapabilityKind.image,
+                              AcpCapabilityKind.loadSession,
+                              AcpCapabilityKind.resumeSession,
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -651,9 +913,11 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(find.text('上次快照'), findsOneWidget);
+      expect(find.text('上次快照'), findsNWidgets(3));
       expect(find.text('-5k'), findsOneWidget);
       expect(find.text('超出容量 15k'), findsOneWidget);
+      expect(find.text('≈ 63 词元/秒'), findsOneWidget);
+      expect(find.text('￥12.85'), findsOneWidget);
       expect(find.text('6 轮'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },

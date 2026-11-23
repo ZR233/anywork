@@ -13850,6 +13850,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Remote session'**
   String get acpDetailSessionId;
+
+  /// No description provided for @acpContextDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Context breakdown'**
+  String get acpContextDetailSection;
+
+  /// No description provided for @acpContextUsedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Used tokens'**
+  String get acpContextUsedLabel;
+
+  /// No description provided for @acpContextCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Window capacity'**
+  String get acpContextCapacityLabel;
+
+  /// No description provided for @acpContextDeltaLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Delta vs previous'**
+  String get acpContextDeltaLabel;
+
+  /// No description provided for @acpThroughputDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest sample'**
+  String get acpThroughputDetailSection;
+
+  /// No description provided for @acpThroughputFormulaNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated at ~1 token per 4 chars, including initial wait'**
+  String get acpThroughputFormulaNote;
+
+  /// No description provided for @acpThroughputTokensLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Est. output tokens'**
+  String get acpThroughputTokensLabel;
+
+  /// No description provided for @acpThroughputDurationLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Response time'**
+  String get acpThroughputDurationLabel;
+
+  /// No description provided for @acpCostDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Cost breakdown'**
+  String get acpCostDetailSection;
+
+  /// No description provided for @acpCostCurrencyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Currency'**
+  String get acpCostCurrencyLabel;
+
+  /// No description provided for @acpCostRawLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw reading'**
+  String get acpCostRawLabel;
+
+  /// No description provided for @acpCostScopeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get acpCostScopeLabel;
+
+  /// No description provided for @acpSessionDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session info'**
+  String get acpSessionDetailTitle;
 }
 
 class _AppLocalizationsDelegate

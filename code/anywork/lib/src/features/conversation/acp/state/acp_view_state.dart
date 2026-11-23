@@ -41,10 +41,20 @@ abstract final class AcpViewKeyValues {
   static (String, String) planCard(String threadId) => ('acp-plan', threadId);
   static (String, String) toolCard(String toolCallId) =>
       ('acp-tool', toolCallId);
+  static (String, String) status(String threadId) => ('acp-status', threadId);
+  static (String, String) statusDetail(String threadId) =>
+      ('acp-status-detail', threadId);
   static (String, String) contextUsage(String threadId) =>
       ('acp-context-usage', threadId);
   static (String, String) contextUsageDetail(String threadId) =>
       ('acp-context-usage-detail', threadId);
+  static (String, String) throughput(String threadId) =>
+      ('acp-throughput', threadId);
+  static (String, String) throughputDetail(String threadId) =>
+      ('acp-throughput-detail', threadId);
+  static (String, String) cost(String threadId) => ('acp-cost', threadId);
+  static (String, String) costDetail(String threadId) =>
+      ('acp-cost-detail', threadId);
   static (String, String) externalHistoryButton(String threadId) =>
       ('acp-external-history-button', threadId);
   static (String, String) externalHistoryLoad(String sessionId) =>
@@ -478,22 +488,48 @@ abstract class AcpContextDetailViewState with _$AcpContextDetailViewState {
     BigInt? size,
     BigInt? previousUsed,
     @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpContextDetailViewState;
+}
+
+@freezed
+abstract class AcpThroughputDetailViewState
+    with _$AcpThroughputDetailViewState {
+  const factory AcpThroughputDetailViewState({
     double? tokensPerSecond,
     int? estimatedOutputTokens,
     int? responseMillis,
-    AcpCostViewState? cost,
+    @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpThroughputDetailViewState;
+}
+
+@freezed
+abstract class AcpCostDetailViewState with _$AcpCostDetailViewState {
+  const factory AcpCostDetailViewState({
+    required double amount,
+    required String currency,
+    @Default(false) bool isLive,
+    DateTime? updatedAt,
+  }) = _AcpCostDetailViewState;
+}
+
+@freezed
+abstract class AcpSessionDetailViewState with _$AcpSessionDetailViewState {
+  const factory AcpSessionDetailViewState({
+    required AcpSessionStatusPhase phase,
+    @Default(false) bool isLive,
     String? serviceName,
     String? serverName,
     String? serverVersion,
     String? remoteSessionId,
-    required AcpSessionStatusPhase phase,
     AcpStopReasonKind? lastStopReason,
     String? lastStopReasonRaw,
     int? completedTurns,
     DateTime? updatedAt,
     @Default(<AcpConfigReadoutItem>[]) List<AcpConfigReadoutItem> configItems,
     @Default(<AcpCapabilityKind>[]) List<AcpCapabilityKind> capabilities,
-  }) = _AcpContextDetailViewState;
+  }) = _AcpSessionDetailViewState;
 }
 
 enum AcpExternalHistoryAvailability {
