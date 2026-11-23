@@ -9,7 +9,7 @@ import 'timeline_work_group_shell.dart';
 
 enum WorkDisplayLocation { live, history }
 
-/// One producer-defined Work header with naturally sized complete members.
+/// One Work header with a bounded member viewport in the live status bar.
 class CompletionRunView extends StatelessWidget {
   const CompletionRunView({
     required this.id,
@@ -50,6 +50,7 @@ class CompletionRunView extends StatelessWidget {
       disclosureKey: ValueKey('completion-run-disclosure:$id'),
       initiallyExpanded: initiallyExpanded,
       onExpandedChanged: onExpandedChanged,
+      scrollBody: location == WorkDisplayLocation.live,
       railInset: live ? 15.5 : 9.5,
       railContentInset: live ? 25.5 : 17.5,
       headerBuilder: (context, expanded) => TimelineActivityClock(

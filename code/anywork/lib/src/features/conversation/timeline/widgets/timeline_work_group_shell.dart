@@ -16,6 +16,7 @@ class TimelineWorkGroupShell extends StatefulWidget {
     this.onExpandedChanged,
     this.disclosureKey,
     this.storageKey,
+    this.scrollBody = false,
     this.railInset = 9.5,
     this.railContentInset = 17.5,
     this.bodyPadding = const EdgeInsets.only(top: 5, bottom: 3),
@@ -29,6 +30,7 @@ class TimelineWorkGroupShell extends StatefulWidget {
   final ValueChanged<bool>? onExpandedChanged;
   final Key? disclosureKey;
   final PageStorageKey<Object>? storageKey;
+  final bool scrollBody;
   final double railInset;
   final double railContentInset;
   final EdgeInsetsGeometry bodyPadding;
@@ -123,20 +125,27 @@ class _TimelineWorkGroupShellState extends State<TimelineWorkGroupShell> {
           child: widget.headerBuilder(context, _disclosure.isExpanded),
         ),
       ),
-      bodyBuilder: (context, animation) => !_disclosure.isExpanded
-          ? const SizedBox.shrink()
-          : Padding(
-              padding: widget.bodyPadding,
-              child: TimelineActivityRail(
-                inset: widget.railInset,
-                contentInset: widget.railContentInset,
-                child: Builder(builder: widget.bodyBuilder),
-              ),
-            ),
+      bodyBuilder: (context, animation) {
+        if (!_disclosure.isExpanded) return const SizedBox.shrink();
+        final content = Padding(
+          padding: widget.bodyPadding,
+          child: TimelineActivityRail(
+            inset: widget.railInset,
+            contentInset: widget.railContentInset,
+            child: Builder(builder: widget.bodyBuilder),
+          ),
+        );
+        return widget.scrollBody
+            ? SingleChildScrollView(primary: false, child: content)
+            : content;
+      },
       expansibleBuilder: (context, header, body, animation) => Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, body],
+        children: [
+          header,
+          widget.scrollBody ? Flexible(child: body) : body,
+        ],
       ),
     );
   }
