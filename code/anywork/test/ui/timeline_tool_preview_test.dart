@@ -7,7 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_view_s
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/expanded_work_timeline_fixture.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
@@ -129,16 +129,16 @@ void main() {
     });
     await tester.pumpWidget(collapsedWorkGroupToolPreview());
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineToolDetails), findsNothing);
+    expect(find.byType(TimelineToolItemView), findsNothing);
     await tester.pumpWidget(expandedWorkGroupScrollToolPreview());
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineToolDetails), findsNWidgets(3));
+    expect(find.byType(TimelineToolItemView), findsNWidgets(3));
     final group = find.byType(CompletionRunView);
     expect(tester.getSize(group).height, greaterThan(420));
     final originalGroup = tester.widget<CompletionRunView>(group);
     final previewHost = tester.widget<MaterialApp>(find.byType(MaterialApp));
     final tail = tester
-        .widgetList<TimelineToolDetails>(find.byType(TimelineToolDetails))
+        .widgetList<TimelineToolItemView>(find.byType(TimelineToolItemView))
         .last;
     final tailText = _expectedReadableText[tail.item.presentationContract]!;
 
@@ -191,7 +191,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineToolDetails), findsNWidgets(3));
+    expect(find.byType(TimelineToolItemView), findsNWidgets(3));
     expect(tester.getSize(group).height, greaterThan(420));
     expect(controls.scrollController.positions, hasLength(1));
     final position = controls.scrollController.position;
@@ -204,7 +204,7 @@ void main() {
     final mainScroll = find.ancestor(of: group, matching: verticalScroll);
     expect(mainScroll, findsOneWidget);
     expect(tester.state<ScrollableState>(mainScroll).position, same(position));
-    for (final element in find.byType(TimelineToolDetails).evaluate()) {
+    for (final element in find.byType(TimelineToolItemView).evaluate()) {
       final member = find.byElementPredicate(
         (value) => identical(value, element),
       );
@@ -227,7 +227,8 @@ void main() {
         .descendant(
           of: find.byWidgetPredicate(
             (widget) =>
-                widget is TimelineToolDetails && widget.item.id == tail.item.id,
+                widget is TimelineToolItemView &&
+                widget.item.id == tail.item.id,
           ),
           matching: find.textContaining(tailText),
         )
@@ -296,7 +297,7 @@ void main() {
       final item = fixture.toPresentation('test-${fixture.name}');
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: item,
             initiallyExpanded: true,
             additionalContentBuilder:
@@ -308,7 +309,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.byType(TimelineToolDetails),
+        find.byType(TimelineToolItemView),
         findsOneWidget,
         reason: fixture.contract,
       );
@@ -379,7 +380,7 @@ void main() {
     );
     await tester.pumpWidget(
       _host(
-        TimelineToolDetails(
+        TimelineToolItemView(
           item: fixture.toPresentation('test-valid-apply-patch'),
           initiallyExpanded: true,
         ),
@@ -402,7 +403,7 @@ void main() {
       final item = fixture.toPresentation('test-media-${fixture.name}');
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: item,
             initiallyExpanded: true,
             additionalContentBuilder: (_) => toolDetailPreviewMediaSlot(item),
@@ -433,7 +434,7 @@ void main() {
     ]) {
       await tester.pumpWidget(
         _host(
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: fixture.toPresentation('test-error'),
             initiallyExpanded: true,
           ),

@@ -21,7 +21,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_disp
 import 'timeline_preview_fixtures.dart';
 import 'expanded_work_timeline_fixture.dart' show ExpandedWorkPreviewControls;
 
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_compacting_zip_icon.dart';
@@ -100,7 +100,7 @@ Widget liveStatusGroupPreview({
               text: '核对现有调用链和组件边界，随后检查布局和状态。',
             ),
           ),
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: TimelineToolPresentation(
               id: 'preview-idle-command',
               toolCallId: 'preview-idle-command',
@@ -149,7 +149,7 @@ Widget liveStatusGroupPreview({
           ),
         ),
         if (!thinkingOnly)
-          const TimelineToolDetails(
+          const TimelineToolItemView(
             item: TimelineToolPresentation(
               id: 'preview-command',
               toolCallId: 'preview-command',
@@ -348,7 +348,7 @@ Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
         kind: ConversationActivityKind.thinking,
       ),
       timing: const WorkTiming(startedAtMillis: 154_000),
-      childBuilder: (_) => const TimelineToolDetails(
+      childBuilder: (_) => const TimelineToolItemView(
         item: TimelineToolPresentation(
           id: 'preview-failed-call',
           toolCallId: 'preview-failed-call',
@@ -566,7 +566,7 @@ Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
           ),
         ],
       ),
-      childBuilder: (_) => TimelineToolDetails(
+      childBuilder: (_) => TimelineToolItemView(
         initiallyExpanded: true,
         item: TimelineToolPresentation(
           id: 'long-tool-output',
@@ -619,7 +619,7 @@ Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
             ],
           ),
           timing: const WorkTiming(startedAtMillis: 213_000),
-          childBuilder: (_) => const TimelineToolDetails(
+          childBuilder: (_) => const TimelineToolItemView(
             item: TimelineToolPresentation(
               id: 'preview-next-group-cmd',
               toolCallId: 'preview-next-group-cmd',
@@ -803,7 +803,7 @@ class _SealedToolWorkGroupPreviewState
           childBuilder: (_) => const Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              TimelineToolDetails(
+              TimelineToolItemView(
                 item: TimelineToolPresentation(
                   id: 'sealed-tool-preview-exec',
                   toolCallId: 'sealed-tool-preview-exec-call',
@@ -815,7 +815,7 @@ class _SealedToolWorkGroupPreviewState
                 ),
                 initiallyExpanded: true,
               ),
-              TimelineToolDetails(
+              TimelineToolItemView(
                 item: TimelineToolPresentation(
                   id: 'sealed-tool-preview-search',
                   toolCallId: 'sealed-tool-preview-search-call',

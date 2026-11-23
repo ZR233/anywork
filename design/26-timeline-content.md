@@ -118,7 +118,7 @@ Current 正文的打开失败或读取过期通过正文流交付，不作为原
 
 保存失败、停止、审批、存储错误和冷恢复限制必须保持可见，不能被普通活动摘要合并隐藏。发送回显由原 Composer 持有；Current 中同一 `input_id` 的规范输入被时间线消费者应用后，临时回显结算为正式呈现，不产生历史事件或按正文去重。
 
-每个内置工具由一个独立 Dart 展示策略文件持有精确契约、本地化名称、条目动词与目标、参数／结果／附件的语义转换及正文与接纳策略。集中注册处只引入策略并建立契约索引，不重复声明工具身份或分派具体工具行为；未知工具契约统一回退内置 `generic@1` 通用策略，展示工具名、状态、参数与输出而不报错。
+每个内置工具由 `timeline/tools/items/<domain>/` 下的独立 Dart 文件实现 `TimelineToolItemAdapter`（通用兜底 `generic@1` 同样独立实现），完整声明 `TimelineToolMatcher` 匹配规则、`TimelineToolIcon` 静态/动态图标策略（支持组件与 `TimelineToolItemController` 通过 `TimelineToolItemScope` 动态更新图标）、单行折叠摘要与展开视图。集中注册入口 `timeline/tools/tool_item_registry.dart` 建立唯一索引并校验精确契约不重复；`wait` 与 `sleep` 统一纳入同一 `TimelineToolItemView` 与适配器管线，不再单独分叉；未知工具契约回退内置 `generic@1`，展示工具名、状态、参数与输出而不报错。
 
 ## 26.10 当前快照格式与旧数据边界
 

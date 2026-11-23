@@ -7,7 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_file_p
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_attachments_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 
 import 'conversation_live_status_previews.dart';
@@ -70,7 +70,7 @@ Widget _tool(String contract, {bool expanded = true}) {
   final fixture = _fixture(contract);
   final item = fixture.toPresentation('preview-${fixture.name}');
   return _toolHost(
-    TimelineToolDetails(
+    TimelineToolItemView(
       item: item,
       initiallyExpanded: expanded,
       additionalContentBuilder:
@@ -210,14 +210,14 @@ Widget genericToolDetailPreview() => _tool('generic@1');
 
 @Preview(name: '工具详情 / 失败状态', group: '工具详情', size: Size(960, 640))
 Widget failedToolDetailPreview() => _toolHost(
-  TimelineToolDetails(
+  TimelineToolItemView(
     item: failedToolPreviewFixture.toPresentation('preview-failed-web-search'),
     initiallyExpanded: true,
   ),
 );
 @Preview(name: '工具详情 / 执行超时', group: '工具详情', size: Size(960, 640))
 Widget timedOutToolDetailPreview() => _toolHost(
-  TimelineToolDetails(
+  TimelineToolItemView(
     item: timedOutToolPreviewFixture.toPresentation('preview-timeout-exec'),
     initiallyExpanded: true,
   ),
@@ -225,7 +225,7 @@ Widget timedOutToolDetailPreview() => _toolHost(
 
 @Preview(name: '工具详情 / 窄屏 390', group: '工具详情', size: Size(390, 760))
 Widget narrowToolDetailPreview() => _toolHost(
-  TimelineToolDetails(
+  TimelineToolItemView(
     item: _fixture('builtin.web_search@1')
         .toPresentation('preview-narrow-search'),
     initiallyExpanded: true,
@@ -233,7 +233,7 @@ Widget narrowToolDetailPreview() => _toolHost(
 );
 @Preview(name: '工具详情 / 字号 160%', group: '工具详情', size: Size(960, 760))
 Widget largeTextToolDetailPreview() => _toolHost(
-  TimelineToolDetails(
+  TimelineToolItemView(
     item: _fixture('builtin.deepseek_web_search@1')
         .toPresentation('preview-large-text-search'),
     initiallyExpanded: true,
@@ -247,7 +247,7 @@ Widget largeTextToolDetailPreview() => _toolHost(
   brightness: Brightness.dark,
 )
 Widget darkToolDetailPreview() => _toolHost(
-  TimelineToolDetails(
+  TimelineToolItemView(
     item: _fixture('builtin.exec@2').toPresentation('preview-dark-exec'),
     initiallyExpanded: true,
   ),
@@ -258,7 +258,7 @@ Widget longToolResultPreview() {
   final base = _fixture('builtin.deepseek_web_search@1');
   final item = base.toPresentation('preview-long-search');
   return _toolHost(
-    TimelineToolDetails(
+    TimelineToolItemView(
       item: TimelineToolPresentation(
         id: item.id,
         toolCallId: item.toolCallId,
@@ -303,7 +303,7 @@ Widget expandedWorkGroupScrollToolPreview() => _toolHost(
           toolDetailPreviewFixtures[19],
           toolDetailPreviewFixtures[33],
         ])
-          TimelineToolDetails(
+          TimelineToolItemView(
             item: fixture.toPresentation('preview-group-${fixture.name}'),
             initiallyExpanded: true,
           ),

@@ -6,7 +6,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_o
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -248,7 +248,7 @@ void main() {
           '{"accepted":false,"code":"staleRevision","recoveryAction":"Qualified rejection"}';
       ValueChanged<ContentWindow>? callback;
       Widget owner(String contract, String call) => _host(
-        TimelineToolDetails(
+        TimelineToolItemView(
           item: TimelineToolPresentation(
             id: 'item',
             toolCallId: call,
