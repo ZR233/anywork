@@ -370,8 +370,12 @@ void main() {
               .style,
           TimelineActivityIndicatorStyle.restingCat,
         );
+      },
+    );
 
-        // 4. Open work with thinkingSummary keeps thought label + restingCat even when exec runs.
+    testWidgets(
+      'open work keeps the latest thinking summary above scrolling members',
+      (tester) async {
         final workWithThought = LiveStatusMachine.project(
           threadId: 'thread-1',
           inputs: LiveStatusInputs(
@@ -382,7 +386,7 @@ void main() {
               blockOrder: 1,
               body: const WorkDisplayBlock(
                 timing: WorkTiming(startedAtMillis: 100_000),
-                summary: '优先梳理状态机投影边界',
+                summary: '先梳理调用链',
                 members: DisplayBlockRef(
                   blockId: 'work-thought',
                   cut: HistoryCut(''),
@@ -402,6 +406,7 @@ void main() {
               turnId: 'turn-1',
               kind: ThreadActivityKind.runningTool,
               summary: '',
+              thinkingSummary: '优先梳理状态机投影边界',
               tools: ThreadActivityTools(
                 count: 1,
                 active: const [
@@ -418,10 +423,31 @@ void main() {
           ),
         );
         await tester.pumpWidget(
-          _host(LiveStatusSurfaceView(gate: workWithThought.gate), width: 760),
+          _host(
+            SizedBox(
+              height: 170,
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: LiveStatusSurfaceView(
+                  gate: workWithThought.gate,
+                  liveWorkChildBuilder: (_) => Column(
+                    children: [
+                      for (var i = 1; i <= 12; i++)
+                        SizedBox(height: 36, child: Text('member $i')),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            width: 360,
+            scale: 1.6,
+            disableAnimations: true,
+          ),
         );
         expect(tester.takeException(), isNull);
-        expect(find.text('优先梳理状态机投影边界'), findsOneWidget);
+        final title = find.text('优先梳理状态机投影边界');
+        expect(title, findsOneWidget);
+        expect(find.text('先梳理调用链'), findsNothing);
         expect(
           tester
               .widget<TimelineActivityIndicator>(
@@ -433,6 +459,27 @@ void main() {
               .style,
           TimelineActivityIndicatorStyle.restingCat,
         );
+        await tester.tap(title);
+        await tester.pump();
+        final titlePosition = tester.getTopLeft(title);
+        final lastMember = find.text('member 12');
+        final memberScroll = find.descendant(
+          of: find.byType(ConversationActivityBar),
+          matching: find.byType(Scrollable),
+        );
+        expect(lastMember.hitTestable(), findsNothing);
+        await tester.scrollUntilVisible(
+          lastMember,
+          65,
+          scrollable: memberScroll,
+        );
+        expect(lastMember.hitTestable(), findsOneWidget);
+        expect(tester.getTopLeft(title), titlePosition);
+        expect(title.hitTestable(), findsOneWidget);
+        await tester.tap(title);
+        await tester.pump();
+        expect(lastMember, findsNothing);
+        expect(title, findsOneWidget);
       },
     );
 

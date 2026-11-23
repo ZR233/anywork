@@ -297,6 +297,7 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
         intent: _intent,
         child: WorkGroupMemberList(
           controller: controller,
+          showLoadingIndicator: false,
           blockReference: controller?.reference,
           executionPresent: widget.phase.executionPresent,
           threadId: widget.threadId,

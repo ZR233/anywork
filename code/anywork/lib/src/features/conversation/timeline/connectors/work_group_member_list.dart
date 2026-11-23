@@ -14,11 +14,12 @@ import 'timeline_member_atom.dart';
 
 /// 历史工作组与实时状态栏开放工作组共用的成员列表连接器视图。
 ///
-/// 统一处理成员控制器的加载进度条、失败重试、封存占位文案，以及尚未落入分页切片的
+/// 统一处理历史成员的加载进度、读取失败重试、封存占位文案，以及尚未落入分页切片的
 /// 实时 `CurrentAtom` 追加项去重叠加。
 class WorkGroupMemberList extends StatelessWidget {
   const WorkGroupMemberList({
     required this.controller,
+    required this.showLoadingIndicator,
     required this.blockReference,
     required this.executionPresent,
     required this.threadId,
@@ -38,6 +39,7 @@ class WorkGroupMemberList extends StatelessWidget {
   });
 
   final DisplayMemberController? controller;
+  final bool showLoadingIndicator;
   final DisplayBlockRef? blockReference;
   final bool executionPresent;
   final String threadId;
@@ -88,7 +90,8 @@ class WorkGroupMemberList extends StatelessWidget {
                   ),
                 ],
               ),
-            if (activeController.loading) const LinearProgressIndicator(),
+            if (showLoadingIndicator && activeController.loading)
+              const LinearProgressIndicator(),
             for (final entry in activeController.entries)
               ValueListenableBuilder<DisplayMemberHead?>(
                 key: ValueKey(entry.memberKey),

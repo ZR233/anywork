@@ -118,6 +118,7 @@ class _MembersState extends State<CompletionRunConnector>
   @override
   Widget build(BuildContext context) => WorkGroupMemberList(
     controller: _controller,
+    showLoadingIndicator: true,
     blockReference: blockReference,
     executionPresent: widget.unit.executionPresent,
     threadId: widget.threadId,

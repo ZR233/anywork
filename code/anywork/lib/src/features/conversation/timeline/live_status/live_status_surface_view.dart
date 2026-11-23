@@ -105,10 +105,7 @@ class LiveStatusSurfaceView extends StatelessWidget {
             key: ValueKey(('live-work', work.id)),
             flex: 2,
             fit: FlexFit.loose,
-            child: SingleChildScrollView(
-              primary: false,
-              child: _buildWorkGroup(context, work),
-            ),
+            child: _buildWorkGroup(context, work),
           ),
         );
       case LiveActivityPhase(:final activity):
@@ -134,6 +131,14 @@ class LiveStatusSurfaceView extends StatelessWidget {
           fit: FlexFit.loose,
           child: _buildAttention(context, attention),
         ),
+      );
+    }
+
+    if (presenting.primary is LiveWorkPhase) {
+      return ConversationActivityViewport(
+        key: viewportKey,
+        fixedActivity: ConversationActivityBar(children: barChildren),
+        children: [?details],
       );
     }
 
