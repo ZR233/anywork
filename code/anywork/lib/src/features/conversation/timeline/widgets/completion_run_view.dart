@@ -151,7 +151,6 @@ class _WorkHeader extends StatelessWidget {
       context,
       state: state,
       executionPresent: executionPresent,
-      hasUnfinishedMembers: hasUnfinishedMembers,
       activity: activity,
       thinkingSummary: thinkingSummary,
       seconds: seconds,

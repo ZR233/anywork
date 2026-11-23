@@ -7636,6 +7636,54 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek web fetch';
 
   @override
+  String get liveStatusConnectionDisconnected => 'Live updates disconnected';
+
+  @override
+  String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
+
+  @override
+  String liveStatusActivityToolsTitle(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count active tools',
+      one: '1 active tool',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String liveStatusActivityToolsLoaded(int loaded, int total) {
+    return 'Active tools $loaded/$total';
+  }
+
+  @override
+  String get liveStatusToolsCollapse => 'Collapse';
+
+  @override
+  String get liveStatusToolsFirstPage => 'First page';
+
+  @override
+  String get liveStatusToolsPreviousPage => 'Previous';
+
+  @override
+  String get liveStatusToolsNextPage => 'Next';
+
+  @override
+  String get liveStatusMembersUnavailable => 'Member view unavailable';
+
+  @override
+  String get liveStatusMembersLoading => 'Loading sealed members…';
+
+  @override
+  String get liveStatusRetryAction => 'Retry';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return 'Bytes $start–$end / $total';
+  }
+
+  @override
   String get liveStatusContentFirstSegment => 'First chunk';
 
   @override

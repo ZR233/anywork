@@ -68,26 +68,25 @@ class LiveStatusSurfaceView extends StatelessWidget {
       );
     }
 
-    final leading = <Widget>[];
-    final bodyChildren = <Widget>[];
+    final barChildren = <Widget>[];
 
     switch (presenting.primary) {
-      case LiveResponsePhase(:final companionWork, :final activity) &&
-          final response:
-        if (companionWork != null) {
-          leading.add(_buildWorkGroup(context, companionWork));
-        }
+      case LiveResponsePhase(:final activity) && final response:
         if (activity != null) {
-          bodyChildren.add(
-            ConversationActivityStatus(
+          barChildren.add(
+            Flexible(
               key: ValueKey(('live-primary-activity', activity.identity)),
-              view: activity,
+              flex: 1,
+              fit: FlexFit.loose,
+              child: ConversationActivityStatus(view: activity),
             ),
           );
         }
-        bodyChildren.add(
-          KeyedSubtree(
+        barChildren.add(
+          Flexible(
             key: const ValueKey('live-primary-response'),
+            flex: 3,
+            fit: FlexFit.loose,
             child:
                 responseBuilder?.call(context, response) ??
                 ConversationResponseView(
@@ -102,23 +101,34 @@ class LiveStatusSurfaceView extends StatelessWidget {
                 ),
           ),
         );
-      case LiveCompactingPhase(:final companionWork, :final activity):
-        if (companionWork != null) {
-          leading.add(_buildWorkGroup(context, companionWork));
-        }
-        bodyChildren.add(
-          ConversationActivityStatus(
+      case LiveCompactingPhase(:final activity):
+        barChildren.add(
+          Flexible(
             key: ValueKey(('live-primary-activity', activity.identity)),
-            view: activity,
+            flex: 1,
+            fit: FlexFit.loose,
+            child: ConversationActivityStatus(view: activity),
           ),
         );
       case LiveWorkPhase() && final work:
-        leading.add(_buildWorkGroup(context, work));
+        barChildren.add(
+          Flexible(
+            key: ValueKey(('live-work', work.id)),
+            flex: 2,
+            fit: FlexFit.loose,
+            child: SingleChildScrollView(
+              primary: false,
+              child: _buildWorkGroup(context, work),
+            ),
+          ),
+        );
       case LiveActivityPhase(:final activity):
-        bodyChildren.add(
-          ConversationActivityStatus(
+        barChildren.add(
+          Flexible(
             key: ValueKey(('live-primary-activity', activity.identity)),
-            view: activity,
+            flex: 1,
+            fit: FlexFit.loose,
+            child: ConversationActivityStatus(view: activity),
           ),
         );
       case null:
@@ -127,32 +137,38 @@ class LiveStatusSurfaceView extends StatelessWidget {
 
     for (var i = 0; i < presenting.attentions.length; i++) {
       final attention = presenting.attentions[i];
-      bodyChildren.add(
-        _buildAttention(
-          context,
-          attention,
-          key: ValueKey(('live-attention', i)),
+      final key = ValueKey(('live-attention', i));
+      barChildren.add(
+        Flexible(
+          key: key,
+          flex: 1,
+          fit: FlexFit.loose,
+          child: _buildAttention(context, attention),
         ),
       );
     }
 
     if (presenting.activityTools case final tools?) {
-      bodyChildren.add(
-        _ActivityToolsPanel(
+      barChildren.add(
+        Flexible(
           key: const ValueKey('live-activity-tools-panel'),
-          tools: tools,
-          onOpen: onOpenActivityTools,
-          onClose: onCloseActivityTools,
-          onFirst: onFirstActivityTools,
-          onPrevious: onPreviousActivityTools,
-          onNext: onNextActivityTools,
+          flex: 3,
+          fit: FlexFit.loose,
+          child: _ActivityToolsPanel(
+            tools: tools,
+            onOpen: onOpenActivityTools,
+            onClose: onCloseActivityTools,
+            onFirst: onFirstActivityTools,
+            onPrevious: onPreviousActivityTools,
+            onNext: onNextActivityTools,
+          ),
         ),
       );
     }
 
     final viewportChildren = <Widget>[
-      if (leading.isNotEmpty || bodyChildren.isNotEmpty)
-        ConversationActivityBar(leading: leading, children: bodyChildren),
+      if (barChildren.isNotEmpty)
+        ConversationActivityBar(children: barChildren),
       ?details,
     ];
     if (viewportChildren.isEmpty) return const SizedBox.shrink();
@@ -176,53 +192,40 @@ class LiveStatusSurfaceView extends StatelessWidget {
       timing: work.timing,
       activity: work.activity,
       thinkingSummary: work.thinkingSummary,
-      hasUnfinishedMembers: work.hasUnfinishedMembers,
       initiallyExpanded: liveWorkInitiallyExpanded,
       now: now,
       childBuilder: liveWorkChildBuilder ?? (_) => const SizedBox.shrink(),
     );
   }
 
-  Widget _buildAttention(
-    BuildContext context,
-    LiveStatusAttention attention, {
-    required Key key,
-  }) => switch (attention) {
-    LiveStoppingAttention(:final activity) ||
-    LiveApprovalAttention(:final activity) ||
-    LiveInputAttention(
-      :final activity,
-    ) => ConversationActivityStatus(key: key, view: activity),
-    LiveStorageAttention(:final activity, :final severity) =>
-      ConversationActivityStatus(
-        key: key,
-        view: activity,
-        storageSeverity: severity,
-      ),
-    LiveConnectionAttention() => _AttentionHeaderRow(
-      key: key,
-      spec: LiveStatusHeaderSpec.forAttention(context, attention),
-    ),
-    LiveErrorAttention(:final retryable) => _AttentionHeaderRow(
-      key: key,
-      spec: LiveStatusHeaderSpec.forAttention(context, attention),
-      trailingAction: retryable && onRetryError != null
-          ? TextButton(
-              onPressed: onRetryError,
-              style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-              child: Text(context.l10n.liveStatusRetryAction),
-            )
-          : null,
-    ),
-  };
+  Widget _buildAttention(BuildContext context, LiveStatusAttention attention) =>
+      switch (attention) {
+        LiveStoppingAttention(:final activity) ||
+        LiveApprovalAttention(
+          :final activity,
+        ) => ConversationActivityStatus(view: activity),
+        LiveStorageAttention(:final activity, :final severity) =>
+          ConversationActivityStatus(view: activity, storageSeverity: severity),
+        LiveConnectionAttention() => _AttentionHeaderRow(
+          spec: LiveStatusHeaderSpec.forAttention(context, attention),
+        ),
+        LiveErrorAttention(:final retryable) => _AttentionHeaderRow(
+          spec: LiveStatusHeaderSpec.forAttention(context, attention),
+          trailingAction: retryable && onRetryError != null
+              ? TextButton(
+                  onPressed: onRetryError,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  child: Text(context.l10n.liveStatusRetryAction),
+                )
+              : null,
+        ),
+      };
 }
 
 class _AttentionHeaderRow extends StatelessWidget {
-  const _AttentionHeaderRow({
-    required this.spec,
-    this.trailingAction,
-    super.key,
-  });
+  const _AttentionHeaderRow({required this.spec, this.trailingAction});
 
   final LiveStatusHeaderSpec spec;
   final Widget? trailingAction;
@@ -267,7 +270,6 @@ class _ActivityToolsPanel extends StatelessWidget {
     this.onFirst,
     this.onPrevious,
     this.onNext,
-    super.key,
   });
 
   final LiveActivityToolsWindow tools;

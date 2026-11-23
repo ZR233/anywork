@@ -294,7 +294,6 @@ class _LiveWorkGroupHostState extends State<_LiveWorkGroupHost> {
     timing: widget.phase.timing,
     activity: widget.phase.activity,
     thinkingSummary: widget.phase.thinkingSummary,
-    hasUnfinishedMembers: widget.phase.hasUnfinishedMembers,
     initiallyExpanded: _expanded,
     onExpandedChanged: _onExpandedChanged,
     childBuilder: (_) {

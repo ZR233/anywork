@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart' show immutable, listEquals, setEquals;
 import '../state/timeline_display_models.dart';
 
 /// 实时工作组在状态机中的运行子形态。
-enum LiveWorkGroupMode { active, waiting, coldUnrestored, closing, idleRecord }
+enum LiveWorkGroupMode { active, waiting, stopping }
 
 /// 存储阻塞的 typed 严重度分类；由后端 `ThreadStorageStateView` 直接派生，绝不解析错误文本。
 enum LiveStorageSeverity {
@@ -75,7 +75,7 @@ sealed class LiveStatusPrimaryPhase {
   const LiveStatusPrimaryPhase();
 }
 
-/// 主模型正在产出流式正文，可选伴随当前工作组与未抑制的活动提示。
+/// 主模型正在产出流式正文，可选附带未抑制的活动提示。
 final class LiveResponsePhase extends LiveStatusPrimaryPhase {
   LiveResponsePhase({
     List<CurrentAtom> responseAtoms = const [],
@@ -83,7 +83,6 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
     this.startedAt,
     this.finishedAt,
     this.activity,
-    this.companionWork,
   }) : responseAtoms = List.unmodifiable(responseAtoms);
 
   final List<CurrentAtom> responseAtoms;
@@ -91,7 +90,6 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
   final int? startedAt;
   final int? finishedAt;
   final ConversationActivityView? activity;
-  final LiveWorkPhase? companionWork;
 
   bool get isActive => finishedAt == null;
 
@@ -103,8 +101,7 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
           previewText == other.previewText &&
           startedAt == other.startedAt &&
           finishedAt == other.finishedAt &&
-          activity == other.activity &&
-          companionWork == other.companionWork;
+          activity == other.activity;
 
   @override
   int get hashCode => Object.hash(
@@ -113,11 +110,10 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
     startedAt,
     finishedAt,
     activity,
-    companionWork,
   );
 }
 
-/// 开放工作组正在实时状态栏主区运行、等待或保持未收束态。
+/// 开放工作组正在实时状态栏主区运行、等待或停止。
 final class LiveWorkPhase extends LiveStatusPrimaryPhase {
   LiveWorkPhase({
     required this.id,
@@ -128,7 +124,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     this.activity,
     this.thinkingSummary,
     required this.executionPresent,
-    required this.hasUnfinishedMembers,
   }) : liveWorkAtoms = List.unmodifiable(liveWorkAtoms);
 
   final String id;
@@ -139,7 +134,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
   final ConversationActivityView? activity;
   final String? thinkingSummary;
   final bool executionPresent;
-  final bool hasUnfinishedMembers;
 
   @override
   bool operator ==(Object other) =>
@@ -152,8 +146,7 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
           timing == other.timing &&
           activity == other.activity &&
           thinkingSummary == other.thinkingSummary &&
-          executionPresent == other.executionPresent &&
-          hasUnfinishedMembers == other.hasUnfinishedMembers;
+          executionPresent == other.executionPresent;
 
   @override
   int get hashCode => Object.hash(
@@ -166,32 +159,25 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     activity,
     thinkingSummary,
     executionPresent,
-    hasUnfinishedMembers,
   );
 }
 
-/// 上下文压缩阶段（可选伴随开放工作组）。
+/// 上下文压缩阶段。
 final class LiveCompactingPhase extends LiveStatusPrimaryPhase {
-  const LiveCompactingPhase({
-    required this.activity,
-    this.startedAt,
-    this.companionWork,
-  });
+  const LiveCompactingPhase({required this.activity, this.startedAt});
 
   final ConversationActivityView activity;
   final int? startedAt;
-  final LiveWorkPhase? companionWork;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveCompactingPhase &&
           activity == other.activity &&
-          startedAt == other.startedAt &&
-          companionWork == other.companionWork;
+          startedAt == other.startedAt;
 
   @override
-  int get hashCode => Object.hash(activity, startedAt, companionWork);
+  int get hashCode => Object.hash(activity, startedAt);
 }
 
 /// 独立活动状态（无正文/无开放工作组时的准备、思考、规划、等待或单行执行态）。
@@ -241,20 +227,6 @@ final class LiveApprovalAttention extends LiveStatusAttention {
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is LiveApprovalAttention && activity == other.activity;
-
-  @override
-  int get hashCode => activity.hashCode;
-}
-
-final class LiveInputAttention extends LiveStatusAttention {
-  const LiveInputAttention(this.activity);
-
-  final ConversationActivityView activity;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveInputAttention && activity == other.activity;
 
   @override
   int get hashCode => activity.hashCode;

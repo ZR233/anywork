@@ -238,16 +238,16 @@ abstract final class LiveStatusMachine {
         : null;
     if (openWork != null && openBody == null) return null;
 
-    final timing = openBody?.timing ?? _timingFromAtoms(liveWorkAtoms);
     final effectiveExecutionPresent =
         openBody?.executionPresent ?? executionPresent;
-    final hasUnfinishedMembers = openBody != null
-        ? openBody.unfinishedCount > 0
-        : liveWorkAtoms.isNotEmpty;
+    if (!effectiveExecutionPresent) return null;
+
+    final timing = openBody?.timing ?? _timingFromAtoms(liveWorkAtoms);
     final headerActivity = _filterWorkHeaderActivity(activity);
-    final thinkingSummary =
-        _nonEmpty(headerActivity?.thinkingSummary) ??
-        _nonEmpty(openBody?.summary);
+    final thinkingSummary = _allowsThinkingSummaryOnHeader(headerActivity?.kind)
+        ? (_nonEmpty(headerActivity?.thinkingSummary) ??
+              _nonEmpty(openBody?.summary))
+        : null;
 
     final id = openWork?.id ?? 'live-work:$threadId';
     final effectiveBlock =
@@ -265,25 +265,18 @@ abstract final class LiveStatusMachine {
               headSeq: 0,
               afterSeq: 0,
             ),
-            executionPresent: effectiveExecutionPresent,
+            executionPresent: true,
             memberCount: liveWorkAtoms.length,
             unfinishedCount: liveWorkAtoms.length,
             groupClosed: false,
           ),
         );
 
-    final mode = switch (effectiveExecutionPresent) {
-      false when hasUnfinishedMembers => LiveWorkGroupMode.coldUnrestored,
-      false => LiveWorkGroupMode.idleRecord,
-      true when openBody?.groupClosed == true => LiveWorkGroupMode.closing,
-      true
-          when activity != null &&
-              (activity.wait != null ||
-                  activity.kind == ConversationActivityKind.awaitingApproval ||
-                  activity.kind == ConversationActivityKind.awaitingInput) =>
-        LiveWorkGroupMode.waiting,
-      true when activity != null => LiveWorkGroupMode.active,
-      true => LiveWorkGroupMode.idleRecord,
+    final mode = switch (headerActivity?.kind) {
+      ConversationActivityKind.stopping => LiveWorkGroupMode.stopping,
+      ConversationActivityKind.awaitingApproval => LiveWorkGroupMode.waiting,
+      _ when headerActivity?.wait != null => LiveWorkGroupMode.waiting,
+      _ => LiveWorkGroupMode.active,
     };
 
     return LiveWorkPhase(
@@ -294,10 +287,18 @@ abstract final class LiveStatusMachine {
       timing: timing,
       activity: headerActivity,
       thinkingSummary: thinkingSummary,
-      executionPresent: effectiveExecutionPresent,
-      hasUnfinishedMembers: hasUnfinishedMembers,
+      executionPresent: true,
     );
   }
+
+  static bool _allowsThinkingSummaryOnHeader(ConversationActivityKind? kind) =>
+      switch (kind) {
+        ConversationActivityKind.preparing ||
+        ConversationActivityKind.thinking ||
+        ConversationActivityKind.planning ||
+        ConversationActivityKind.runningTool => true,
+        _ => false,
+      };
 
   static ConversationActivityView? _filterWorkHeaderActivity(
     ConversationActivityView? activity,
@@ -306,14 +307,14 @@ abstract final class LiveStatusMachine {
     return switch (activity.kind) {
       ConversationActivityKind.responding ||
       ConversationActivityKind.compacting ||
-      ConversationActivityKind.stopping ||
-      ConversationActivityKind.awaitingApproval ||
       ConversationActivityKind.awaitingInput ||
       ConversationActivityKind.storageBlocked => null,
       ConversationActivityKind.preparing ||
       ConversationActivityKind.thinking ||
       ConversationActivityKind.planning ||
-      ConversationActivityKind.runningTool => activity,
+      ConversationActivityKind.runningTool ||
+      ConversationActivityKind.awaitingApproval ||
+      ConversationActivityKind.stopping => activity,
     };
   }
 
@@ -333,8 +334,7 @@ abstract final class LiveStatusMachine {
       final showCompanionActivity =
           execution != null &&
           !responseSuppressed &&
-          !_isAttentionOnlyActivity(execution.kind) &&
-          !_isAbsorbedByLiveWork(execution, hasLiveWork: liveWork != null);
+          !_isAttentionOnlyActivity(execution.kind);
       return LiveResponsePhase(
         responseAtoms: liveResponseAtoms,
         previewText: previewResponseText,
@@ -342,18 +342,18 @@ abstract final class LiveStatusMachine {
             previewResponseStartedAt ??
             liveResponseAtoms.firstOrNull?.startedAt,
         activity: showCompanionActivity ? execution : null,
-        companionWork: liveWork,
       );
+    }
+
+    if (execution != null &&
+        execution.kind == ConversationActivityKind.responding) {
+      return LiveActivityPhase(activity: execution);
     }
 
     if (execution != null &&
         execution.kind == ConversationActivityKind.compacting &&
         !compactingSuppressed) {
-      return LiveCompactingPhase(
-        activity: execution,
-        startedAt: liveWork?.timing.startedAtMillis,
-        companionWork: liveWork,
-      );
+      return LiveCompactingPhase(activity: execution);
     }
 
     if (liveWork != null) {
@@ -381,9 +381,13 @@ abstract final class LiveStatusMachine {
     required LiveStatusPrimaryPhase? primary,
   }) {
     final attentions = <LiveStatusAttention>[];
+    final workAbsorbedKind = primary is LiveWorkPhase
+        ? primary.activity?.kind
+        : null;
 
     if (execution != null &&
-        execution.kind == ConversationActivityKind.stopping) {
+        execution.kind == ConversationActivityKind.stopping &&
+        workAbsorbedKind != ConversationActivityKind.stopping) {
       attentions.add(LiveStoppingAttention(execution));
     }
 
@@ -391,13 +395,9 @@ abstract final class LiveStatusMachine {
         execution?.kind == ConversationActivityKind.awaitingApproval
         ? execution
         : approvalView;
-    if (approvalActivity != null) {
+    if (approvalActivity != null &&
+        workAbsorbedKind != ConversationActivityKind.awaitingApproval) {
       attentions.add(LiveApprovalAttention(approvalActivity));
-    }
-
-    if (execution != null &&
-        execution.kind == ConversationActivityKind.awaitingInput) {
-      attentions.add(LiveInputAttention(execution));
     }
 
     if (storage != null && storageView != null) {
@@ -464,24 +464,9 @@ abstract final class LiveStatusMachine {
       switch (kind) {
         ConversationActivityKind.stopping ||
         ConversationActivityKind.awaitingApproval ||
-        ConversationActivityKind.awaitingInput ||
         ConversationActivityKind.storageBlocked => true,
         _ => false,
       };
-
-  static bool _isAbsorbedByLiveWork(
-    ConversationActivityView view, {
-    required bool hasLiveWork,
-  }) {
-    if (!hasLiveWork || view.errorMessage != null) return false;
-    return switch (view.kind) {
-      ConversationActivityKind.preparing ||
-      ConversationActivityKind.thinking ||
-      ConversationActivityKind.planning ||
-      ConversationActivityKind.runningTool => true,
-      _ => false,
-    };
-  }
 
   static WorkTiming _timingFromAtoms(List<CurrentAtom> atoms) {
     int? earliestMillis;

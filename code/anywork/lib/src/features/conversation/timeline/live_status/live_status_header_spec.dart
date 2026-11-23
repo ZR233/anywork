@@ -93,6 +93,7 @@ final class LiveStatusHeaderSpec {
     LiveStorageSeverity? storageSeverity,
     int? seconds,
     bool showTrailingMeta = true,
+    Key? labelKey,
   }) {
     final reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
     final baseLabel =
@@ -229,6 +230,7 @@ final class LiveStatusHeaderSpec {
                 thinkingThought.contains('\n') ||
                 thinkingThought.contains('\r'))
         ? TimelineReasoningSummary(
+            key: labelKey,
             id: 'live-activity-thinking-summary',
             text: thinkingThought,
             style: labelStyle,
@@ -256,6 +258,7 @@ final class LiveStatusHeaderSpec {
         StudioTone.success ||
         StudioTone.warning => tone.indicator(context),
       },
+      labelColor: headerTextColor,
       labelWidget: labelWidget,
       meta: effectiveMeta,
       tooltip: tooltip,
@@ -270,98 +273,139 @@ final class LiveStatusHeaderSpec {
     BuildContext context, {
     required DisplayBlockState state,
     required bool executionPresent,
-    required bool hasUnfinishedMembers,
     ConversationActivityView? activity,
     String? thinkingSummary,
     int? seconds,
     Key? titleKey,
   }) {
     final live = state == DisplayBlockState.open;
-    final cold = live && !executionPresent && hasUnfinishedMembers;
-    final active = live && executionPresent && activity != null;
     final l10n = context.l10n;
 
-    final fallback = cold
-        ? l10n.timelineGroupUnrestored
-        : active
-        ? context.conversationActivityLabel(activity)
-        : l10n.timelineGroupRecord;
-    final thought = active ? _trimmed(thinkingSummary) : null;
-    final rawSummary = active ? _trimmed(activity.summary) : null;
-    final status = thought ?? rawSummary ?? fallback;
+    if (!live) {
+      final label = seconds == null
+          ? l10n.timelineGroupRecord
+          : activityDurationLabel(
+              context,
+              seconds,
+              kind: ActivityDurationKind.worked,
+            );
+      return LiveStatusHeaderSpec(
+        label: label,
+        icon: null,
+        indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
+        active: false,
+        tone: StudioTone.neutral,
+        iconColor: context.colors.onSurfaceVariant.withValues(alpha: .78),
+        labelColor: context.colors.onSurfaceVariant,
+        tooltip: label,
+        semanticsLabel: label,
+        emphasized: false,
+        isIssue: false,
+      );
+    }
 
     final duration = seconds == null
-        ? fallback
+        ? null
         : activityDurationLabel(
             context,
             seconds,
-            kind: live
-                ? ActivityDurationKind.executing
-                : ActivityDurationKind.worked,
+            kind: ActivityDurationKind.executing,
           );
-    final current = live && (cold || active);
-    final label = live ? status : duration;
-    final description = [
-      label,
-      if (live && current && label != fallback) fallback,
-      if (live && label != duration) duration,
-    ].join('，');
 
-    final icon = cold
-        ? Icons.history_outlined
-        : !live
-        ? null
-        : activity?.kind.icon ?? Icons.work_outline;
+    if (executionPresent && activity != null) {
+      final base = LiveStatusHeaderSpec.forActivity(
+        context,
+        activity,
+        seconds: seconds,
+        labelKey: titleKey,
+      );
+      final allowThoughtOverride = switch (activity.kind) {
+        ConversationActivityKind.preparing ||
+        ConversationActivityKind.thinking ||
+        ConversationActivityKind.planning ||
+        ConversationActivityKind.runningTool => true,
+        _ => false,
+      };
+      final thought = allowThoughtOverride ? _trimmed(thinkingSummary) : null;
+      if (thought == null) {
+        final description = [
+          base.label,
+          if (base.meta != null) base.meta!,
+        ].join('，');
+        return LiveStatusHeaderSpec(
+          label: base.label,
+          icon: base.icon,
+          indicatorStyle: base.indicatorStyle,
+          active: base.active,
+          tone: base.tone,
+          iconColor: base.iconColor,
+          labelColor: base.labelColor,
+          labelWidget: base.labelWidget,
+          meta: base.meta,
+          tooltip: description,
+          semanticsLabel: description,
+          emphasized: base.emphasized,
+          isIssue: base.isIssue,
+        );
+      }
 
-    final style = active
-        ? resolveLiveHeaderIndicatorStyle(
-            activity,
-            displayingThinkingSummary: thought != null,
-          )
-        : TimelineActivityIndicatorStyle.restingCat;
+      final titleStyle = context.text.bodySmall!.copyWith(
+        color: base.labelColor ?? context.colors.onSurface,
+        fontSize: TimelineActivityRow.headerFontSize,
+        fontWeight: FontWeight.w500,
+        height: 1.36,
+      );
+      final Widget? labelWidget =
+          timelineNeedsSafeMarkdown(thought) ||
+              thought.contains('\n') ||
+              thought.contains('\r')
+          ? TimelineReasoningSummary(
+              key: titleKey,
+              id: 'work-header-summary',
+              text: thought,
+              style: titleStyle,
+              strutStyle: TimelineActivityRow.headerStrutStyle,
+              inlineCodeBackgroundColor: context.colors.surfaceContainerHigh
+                  .withValues(alpha: .75),
+            )
+          : null;
+      final fallbackLabel = context.conversationActivityLabel(activity);
+      final description = [
+        thought,
+        if (thought != fallbackLabel) fallbackLabel,
+        ?base.meta,
+      ].join('，');
+      return LiveStatusHeaderSpec(
+        label: thought,
+        icon: base.icon,
+        indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
+        active: base.active,
+        tone: base.tone,
+        iconColor: base.iconColor,
+        labelColor: titleStyle.color,
+        labelWidget: labelWidget,
+        meta: base.meta,
+        tooltip: description,
+        semanticsLabel: description,
+        emphasized: base.emphasized,
+        isIssue: base.isIssue,
+      );
+    }
 
-    final titleStyle = context.text.bodySmall!.copyWith(
-      color: live
-          ? (active
-                ? context.colors.onSurface
-                : context.colors.onSurfaceVariant)
-          : context.colors.onSurfaceVariant,
-      fontSize: live ? TimelineActivityRow.headerFontSize : 12,
-      fontWeight: live ? FontWeight.w500 : FontWeight.w400,
-      height: live ? 1.36 : 1.45,
-    );
-
-    final Widget? labelWidget =
-        thought != null &&
-            (timelineNeedsSafeMarkdown(thought) ||
-                thought.contains('\n') ||
-                thought.contains('\r'))
-        ? TimelineReasoningSummary(
-            key: titleKey,
-            id: 'work-header-summary',
-            text: thought,
-            style: titleStyle,
-            strutStyle: TimelineActivityRow.headerStrutStyle,
-            inlineCodeBackgroundColor: context.colors.surfaceContainerHigh
-                .withValues(alpha: .75),
-          )
-        : null;
-
+    final fallback = l10n.timelineGroupRecord;
+    final description = [fallback, ?duration].join('，');
     return LiveStatusHeaderSpec(
-      label: label,
-      icon: icon,
-      indicatorStyle: style,
-      active: active,
-      tone: active ? StudioTone.active : StudioTone.neutral,
-      iconColor: active
-          ? context.statusColors.activeIndicator
-          : context.colors.onSurfaceVariant.withValues(alpha: .78),
-      labelColor: titleStyle.color,
-      labelWidget: labelWidget,
-      meta: live && seconds != null && label != duration ? duration : null,
+      label: fallback,
+      icon: Icons.work_outline,
+      indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
+      active: false,
+      tone: StudioTone.neutral,
+      iconColor: context.colors.onSurfaceVariant.withValues(alpha: .78),
+      labelColor: context.colors.onSurfaceVariant,
+      meta: duration,
       tooltip: description,
       semanticsLabel: description,
-      emphasized: live && active,
+      emphasized: false,
       isIssue: false,
     );
   }
@@ -378,10 +422,6 @@ final class LiveStatusHeaderSpec {
         LiveStatusHeaderSpec.forActivity(context, activity),
       LiveApprovalAttention(:final activity) =>
         LiveStatusHeaderSpec.forActivity(context, activity),
-      LiveInputAttention(:final activity) => LiveStatusHeaderSpec.forActivity(
-        context,
-        activity,
-      ),
       LiveStorageAttention(:final activity, :final severity) =>
         LiveStatusHeaderSpec.forActivity(
           context,

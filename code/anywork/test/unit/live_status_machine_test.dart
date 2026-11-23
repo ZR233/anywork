@@ -148,7 +148,7 @@ void main() {
       expect(view.primaryActivity, phase.activity);
     });
 
-    test('projects LiveWorkPhase modes accurately (active, waiting, coldUnrestored)', () {
+    test('projects LiveWorkPhase modes accurately (active, waiting, stopping) and rejects cold work', () {
       final wait = ThreadWaitPresentationView(
         intent: ThreadWaitTimerIntentView(durationMs: 5000),
         state: ThreadWaitStateView.waiting,
@@ -187,6 +187,84 @@ void main() {
       expect(waitingWork.mode, LiveWorkGroupMode.waiting);
       expect(waitingWork.activity?.wait, wait);
 
+      final stoppingView = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          liveOpenWork: _openWorkBlock(summary: 'Old thought summary'),
+          activity: _activity(ThreadActivityKind.stopping),
+          current: CurrentAtomSnapshot(
+            revision: 2,
+            executionPresent: true,
+            currentAtoms: [_toolAtom(id: 'a1', callId: 'c1')],
+          ),
+        ),
+      );
+      final stoppingPresenting =
+          (stoppingView.gate as LiveStatusPresenting).presentation;
+      final stoppingWork = stoppingPresenting.primary as LiveWorkPhase;
+      expect(stoppingWork.mode, LiveWorkGroupMode.stopping);
+      expect(stoppingWork.activity?.kind, ConversationActivityKind.stopping);
+      expect(stoppingWork.thinkingSummary, isNull);
+      expect(
+        stoppingPresenting.attentions.whereType<LiveStoppingAttention>(),
+        isEmpty,
+      );
+
+      final approvalView = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          hasContentOwner: true,
+          businessRefs: const ThreadBusinessRefs(
+            plan: null,
+            interactions: CurrentCollectionRef(
+              ownerId: 'o1',
+              collection: 'interactions',
+              revision: 1,
+            ),
+          ),
+          liveOpenWork: _openWorkBlock(summary: 'Old thought summary'),
+          activity: _activity(
+            ThreadActivityKind.awaitingApproval,
+            summary: 'exec: cargo test',
+          ),
+          interactions: const [
+            PendingInteraction(
+              id: 'int-1',
+              threadId: 'thread-1',
+              turnId: 'turn-1',
+              kind: InteractionKind.toolApproval,
+              title: 'Approve',
+              body: 'Allow?',
+              payload: ToolApprovalInteractionPayload(
+                toolName: 'exec',
+                workingDirectory: '/ws',
+              ),
+            ),
+          ],
+          current: CurrentAtomSnapshot(
+            revision: 3,
+            executionPresent: true,
+            currentAtoms: [_toolAtom(id: 'a1', callId: 'c1')],
+          ),
+        ),
+      );
+      final approvalPresenting =
+          (approvalView.gate as LiveStatusPresenting).presentation;
+      final approvalWork = approvalPresenting.primary as LiveWorkPhase;
+      expect(approvalWork.mode, LiveWorkGroupMode.waiting);
+      expect(
+        approvalWork.activity?.kind,
+        ConversationActivityKind.awaitingApproval,
+      );
+      expect(approvalWork.thinkingSummary, isNull);
+      expect(
+        approvalPresenting.attentions.whereType<LiveApprovalAttention>(),
+        isEmpty,
+      );
+      expect(approvalPresenting.showInteractionDetails, isTrue);
+
       final coldView = LiveStatusMachine.project(
         threadId: 'thread-1',
         inputs: LiveStatusInputs(
@@ -196,12 +274,7 @@ void main() {
           ),
         ),
       );
-      final coldWork =
-          ((coldView.gate as LiveStatusPresenting).presentation.primary
-              as LiveWorkPhase);
-      expect(coldWork.mode, LiveWorkGroupMode.coldUnrestored);
-      expect(coldWork.executionPresent, isFalse);
-      expect(coldWork.hasUnfinishedMembers, isTrue);
+      expect(coldView.gate, const LiveStatusIdle());
     });
 
     test('suppresses same-turn responding status only after response layout witness fires', () {
@@ -282,32 +355,65 @@ void main() {
       },
     );
 
-    test(
-      'attaches companionWork onto LiveResponsePhase when open work coexists',
-      () {
-        final view = LiveStatusMachine.project(
-          threadId: 'thread-1',
-          inputs: LiveStatusInputs(
-            activeTurnId: 'turn-1',
-            activity: _activity(ThreadActivityKind.responding),
-            liveOpenWork: _openWorkBlock(summary: 'Coexisting work'),
-            current: CurrentAtomSnapshot(
-              revision: 2,
-              executionPresent: true,
-              currentAtoms: [_textAtom(id: 'body-1', turnId: 'turn-1')],
-            ),
-            renderedCurrentAtomIds: const {'body-1'},
+    test('responding ends preceding work group instead of rendering companion work', () {
+      final streamed = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          activity: _activity(ThreadActivityKind.responding),
+          liveOpenWork: _openWorkBlock(summary: 'Settled work'),
+          current: CurrentAtomSnapshot(
+            revision: 2,
+            executionPresent: true,
+            currentAtoms: [_textAtom(id: 'body-1', turnId: 'turn-1')],
           ),
-        );
+          renderedCurrentAtomIds: const {'body-1'},
+        ),
+      );
+      final streamedPhase =
+          (streamed.gate as LiveStatusPresenting).presentation.primary;
+      expect(streamedPhase, isA<LiveResponsePhase>());
 
-        final phase =
-            ((view.gate as LiveStatusPresenting).presentation.primary
-                as LiveResponsePhase);
-        expect(phase.companionWork, isNotNull);
-        expect(phase.companionWork!.id, 'work-1');
-        expect(phase.companionWork!.activity, isNull);
-      },
-    );
+      final stoppingWithResponse = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          activity: _activity(ThreadActivityKind.stopping),
+          current: CurrentAtomSnapshot(
+            revision: 3,
+            executionPresent: true,
+            currentAtoms: [_textAtom(id: 'body-1', turnId: 'turn-1')],
+          ),
+          renderedCurrentAtomIds: const {'body-1'},
+        ),
+      );
+      final stoppingPresenting =
+          (stoppingWithResponse.gate as LiveStatusPresenting).presentation;
+      expect(stoppingPresenting.primary, isA<LiveResponsePhase>());
+      expect(
+        stoppingPresenting.attentions.whereType<LiveStoppingAttention>(),
+        hasLength(1),
+      );
+
+      final respondingActivityOnly = LiveStatusMachine.project(
+        threadId: 'thread-1',
+        inputs: LiveStatusInputs(
+          activeTurnId: 'turn-1',
+          activity: _activity(ThreadActivityKind.responding),
+          liveOpenWork: _openWorkBlock(summary: 'Settled work'),
+          current: CurrentAtomSnapshot(
+            revision: 4,
+            executionPresent: true,
+            currentAtoms: [],
+          ),
+        ),
+      );
+      final activityOnlyPhase =
+          (respondingActivityOnly.gate as LiveStatusPresenting)
+              .presentation
+              .primary;
+      expect(activityOnlyPhase, isA<LiveActivityPhase>());
+    });
 
     test(
       'deduplicates approval/stopping/storage/connection attentions cleanly',

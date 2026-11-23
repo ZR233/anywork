@@ -7205,6 +7205,48 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
 
   @override
+  String get liveStatusConnectionDisconnected => '实时同步已断开';
+
+  @override
+  String get liveStatusConnectionReconnecting => '正在重连实时同步';
+
+  @override
+  String liveStatusActivityToolsTitle(int count) {
+    return '活动工具 $count';
+  }
+
+  @override
+  String liveStatusActivityToolsLoaded(int loaded, int total) {
+    return '活动工具 $loaded/$total';
+  }
+
+  @override
+  String get liveStatusToolsCollapse => '收起';
+
+  @override
+  String get liveStatusToolsFirstPage => '第一页';
+
+  @override
+  String get liveStatusToolsPreviousPage => '上一页';
+
+  @override
+  String get liveStatusToolsNextPage => '下一页';
+
+  @override
+  String get liveStatusMembersUnavailable => '成员读取尚未就绪';
+
+  @override
+  String get liveStatusMembersLoading => '正在读取封存观察…';
+
+  @override
+  String get liveStatusRetryAction => '重试';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return '字节 $start–$end / $total';
+  }
+
+  @override
   String get liveStatusContentFirstSegment => '第一段';
 
   @override

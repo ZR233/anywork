@@ -13611,6 +13611,78 @@ abstract class AppLocalizations {
   /// **'DeepSeek web fetch'**
   String get timelineToolNameDeepseekWebFetch;
 
+  /// No description provided for @liveStatusConnectionDisconnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Live updates disconnected'**
+  String get liveStatusConnectionDisconnected;
+
+  /// No description provided for @liveStatusConnectionReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting live updates'**
+  String get liveStatusConnectionReconnecting;
+
+  /// No description provided for @liveStatusActivityToolsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'{count, plural, =1{1 active tool} other{{count} active tools}}'**
+  String liveStatusActivityToolsTitle(int count);
+
+  /// No description provided for @liveStatusActivityToolsLoaded.
+  ///
+  /// In en, this message translates to:
+  /// **'Active tools {loaded}/{total}'**
+  String liveStatusActivityToolsLoaded(int loaded, int total);
+
+  /// No description provided for @liveStatusToolsCollapse.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse'**
+  String get liveStatusToolsCollapse;
+
+  /// No description provided for @liveStatusToolsFirstPage.
+  ///
+  /// In en, this message translates to:
+  /// **'First page'**
+  String get liveStatusToolsFirstPage;
+
+  /// No description provided for @liveStatusToolsPreviousPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Previous'**
+  String get liveStatusToolsPreviousPage;
+
+  /// No description provided for @liveStatusToolsNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Next'**
+  String get liveStatusToolsNextPage;
+
+  /// No description provided for @liveStatusMembersUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Member view unavailable'**
+  String get liveStatusMembersUnavailable;
+
+  /// No description provided for @liveStatusMembersLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading sealed members…'**
+  String get liveStatusMembersLoading;
+
+  /// No description provided for @liveStatusRetryAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get liveStatusRetryAction;
+
+  /// No description provided for @liveStatusContentRangeWindow.
+  ///
+  /// In en, this message translates to:
+  /// **'Bytes {start}–{end} / {total}'**
+  String liveStatusContentRangeWindow(int start, int end, int total);
+
   /// No description provided for @liveStatusContentFirstSegment.
   ///
   /// In en, this message translates to:

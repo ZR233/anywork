@@ -408,12 +408,21 @@ void main() {
     );
 
     testWidgets(
-      'hides long trailing meta on 360px 1.6x layout so work title stays readable',
+      'open work absorbs approval on header and hides long trailing meta at 360px 1.6x',
       (tester) async {
         final projected = LiveStatusMachine.project(
           threadId: 'thread-1',
           inputs: LiveStatusInputs(
             activeTurnId: 'turn-1',
+            activity: const ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'appr-narrow',
+              revision: 1,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.awaitingApproval,
+              summary: 'exec: cargo flutter test',
+              tools: ThreadActivityTools.empty,
+            ),
             liveOpenWork: DisplayBlock(
               id: 'work-narrow',
               blockOrder: 1,
@@ -437,6 +446,7 @@ void main() {
           _host(
             LiveStatusSurfaceView(
               gate: projected.gate,
+              liveWorkChildBuilder: (_) => const Text('member details'),
               now: () => DateTime.fromMillisecondsSinceEpoch(
                 100_000 + (3600 + 15 * 60 + 8) * 1000,
               ),
@@ -446,10 +456,86 @@ void main() {
           ),
         );
         expect(tester.takeException(), isNull);
-        final titleFinder = find.text('工作记录');
+        expect(find.byType(CompletionRunView), findsOneWidget);
+        expect(find.byType(ConversationActivityStatus), findsNothing);
+        expect(find.text('工作记录'), findsNothing);
+        final titleFinder = find.textContaining('等待工具授权');
         expect(titleFinder, findsOneWidget);
         expect(tester.getSize(titleFinder).width, greaterThanOrEqualTo(40));
         expect(find.text('执行了 1 小时 15 分 8 秒'), findsNothing);
+
+        await tester.tap(find.byType(CompletionRunView));
+        await tester.pumpAndSettle();
+        expect(find.text('member details'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'stopping is absorbed by open work group and shows alongside streaming response',
+      (tester) async {
+        final workStopping = LiveStatusMachine.project(
+          threadId: 'thread-1',
+          inputs: LiveStatusInputs(
+            activeTurnId: 'turn-1',
+            activity: const ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'stop-work',
+              revision: 1,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.stopping,
+              summary: '',
+              tools: ThreadActivityTools.empty,
+            ),
+            liveOpenWork: DisplayBlock(
+              id: 'work-stop',
+              blockOrder: 1,
+              body: const WorkDisplayBlock(
+                timing: WorkTiming(startedAtMillis: 100_000),
+                members: DisplayBlockRef(
+                  blockId: 'work-stop',
+                  cut: HistoryCut(''),
+                  anchorSeq: 1,
+                  headSeq: 1,
+                ),
+                executionPresent: true,
+                memberCount: 1,
+                unfinishedCount: 1,
+                groupClosed: false,
+              ),
+            ),
+          ),
+        );
+        await tester.pumpWidget(
+          _host(LiveStatusSurfaceView(gate: workStopping.gate)),
+        );
+        expect(find.byType(CompletionRunView), findsOneWidget);
+        expect(find.byType(ConversationActivityStatus), findsNothing);
+        expect(find.text('停止中'), findsOneWidget);
+
+        final responseStopping = LiveStatusMachine.project(
+          threadId: 'thread-1',
+          inputs: LiveStatusInputs(
+            activeTurnId: 'turn-1',
+            activity: const ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'stop-resp',
+              revision: 1,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.stopping,
+              summary: '',
+              tools: ThreadActivityTools.empty,
+            ),
+            previewResponseText: '正在终止当前输出',
+            previewResponseStartedAt: 100,
+          ),
+        );
+        await tester.pumpWidget(
+          _host(LiveStatusSurfaceView(gate: responseStopping.gate)),
+        );
+        expect(find.byType(CompletionRunView), findsNothing);
+        expect(find.byType(ConversationResponseView), findsOneWidget);
+        expect(find.byType(ConversationActivityStatus), findsOneWidget);
+        expect(find.text('停止中'), findsOneWidget);
       },
     );
   });

@@ -10,13 +10,9 @@ import 'timeline_activity_section.dart';
 
 /// 实时区唯一外壳。生产连接层和官方预览传入同一套纯呈现组件。
 class ConversationActivityBar extends StatelessWidget {
-  const ConversationActivityBar({
-    required this.children,
-    this.leading = const [],
-    super.key,
-  });
+  const ConversationActivityBar({required this.children, super.key});
+
   final List<Widget> children;
-  final List<Widget> leading;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -43,45 +39,27 @@ class ConversationActivityBar extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
               child: LiveStatusMotionHost(
                 child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final maxHeight = constraints.hasBoundedHeight
-                        ? constraints.maxHeight
-                        : MediaQuery.sizeOf(context).height * .45;
-                    return ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: maxHeight),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          if (leading.isNotEmpty)
-                            ConstrainedBox(
-                              key: const ObjectKey(ConversationActivityBar),
-                              constraints: BoxConstraints(
-                                maxHeight: children.isEmpty
-                                    ? maxHeight
-                                    : maxHeight * 0.48,
-                              ),
-                              child: SingleChildScrollView(
-                                primary: false,
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: leading,
+                  builder: (context, constraints) => ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: constraints.hasBoundedHeight
+                          ? constraints.maxHeight
+                          : MediaQuery.sizeOf(context).height * .45,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final child in children)
+                          child is Flexible
+                              ? child
+                              : Flexible(
+                                  key: child.key,
+                                  fit: FlexFit.loose,
+                                  child: child,
                                 ),
-                              ),
-                            ),
-                          for (final child in children)
-                            Flexible(
-                              key: child.key,
-                              flex: 3,
-                              fit: FlexFit.loose,
-                              child: child,
-                            ),
-                        ],
-                      ),
-                    );
-                  },
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
