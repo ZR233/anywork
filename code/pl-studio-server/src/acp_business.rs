@@ -21,8 +21,39 @@ use frames::OpenFrames;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AcpDraftCommitRequest {
-    pub target: AcpSessionTarget,
-    pub first_prompt_text: String,
+    pub session_id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+    pub instance: u64,
+    pub first_prompt_text: Option<String>,
+}
+
+#[cfg(test)]
+mod draft_commit_tests {
+    use super::AcpDraftCommitRequest;
+
+    #[test]
+    fn draft_commit_accepts_the_original_http_target_and_optional_text() {
+        let target = serde_json::json!({
+            "sessionId": "session",
+            "agentId": "agent",
+            "threadId": "thread",
+            "instance": 7
+        });
+        let original: AcpDraftCommitRequest = serde_json::from_value(target.clone()).unwrap();
+        assert_eq!(original.first_prompt_text, None);
+        let mut with_title = target;
+        with_title["firstPromptText"] = "  First\nrequest  ".into();
+        let current: AcpDraftCommitRequest = serde_json::from_value(with_title).unwrap();
+        assert_eq!(
+            current.first_prompt_text.as_deref(),
+            Some("  First\nrequest  ")
+        );
+        assert_eq!(current.session_id, "session");
+        assert_eq!(current.agent_id, "agent");
+        assert_eq!(current.thread_id, "thread");
+        assert_eq!(current.instance, 7);
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -106,9 +137,24 @@ async fn commit_draft(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<AcpDraftCommitRequest>,
 ) -> Result<Json<()>, AcpApiError> {
+    let AcpDraftCommitRequest {
+        session_id,
+        agent_id,
+        thread_id,
+        instance,
+        first_prompt_text,
+    } = request;
     state
         .runtime
-        .commit_acp_draft(request.target, &request.first_prompt_text)
+        .commit_acp_draft(
+            AcpSessionTarget {
+                session_id,
+                agent_id,
+                thread_id,
+                instance,
+            },
+            first_prompt_text.as_deref().unwrap_or_default(),
+        )
         .await?;
     Ok(Json(()))
 }

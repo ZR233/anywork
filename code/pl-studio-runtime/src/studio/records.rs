@@ -74,8 +74,11 @@ pub(in crate::studio) struct SessionDirectoryRecord {
     /// 会话主成员 ID；首版与 `session_id` 同字节，类型与字段语义分开。
     pub(in crate::studio) root_agent_id: String,
     pub(in crate::studio) workspace_id: String,
-    /// 会话标题；不被子成员的任务摘要覆盖。
+    /// 本地备用名称、别名或旧标签；Native 保持原标题语义，不被对端标题覆盖。
     pub(in crate::studio) title: String,
+    /// 仅 ACP 根会话拥有的标题来源事实；不另存派生显示标题。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::studio) acp_title: Option<AcpDirectoryTitle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::studio) native_mode: Option<crate::mode::ThreadModeId>,
     pub(in crate::studio) workspace_mode: crate::ThreadWorkspaceMode,
@@ -92,10 +95,56 @@ pub(in crate::studio) struct SessionDirectoryRecord {
 }
 
 impl SessionDirectoryRecord {
+    /// 只投影已接纳的事实，不清理文本或判断对端标题的更新资格。
+    pub(in crate::studio) fn display_title(&self) -> &str {
+        match &self.acp_title {
+            Some(AcpDirectoryTitle {
+                label: AcpTitleLabel::Alias,
+                ..
+            })
+            | None => &self.title,
+            Some(acp) => match &acp.peer {
+                Some(AcpPeerTitle::Listed { title })
+                | Some(AcpPeerTitle::Pushed { title: Some(title) }) => title,
+                Some(AcpPeerTitle::Pushed { title: None }) | None => &self.title,
+            },
+        }
+    }
+
     /// 与 `SessionDescriptor::directory_sort_time` 相同的目录排序键。
     pub(in crate::studio) fn directory_sort_time(&self) -> i64 {
         self.last_user_message_at.unwrap_or(self.created_at)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::studio) struct AcpDirectoryTitle {
+    pub(in crate::studio) label: AcpTitleLabel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::studio) peer: Option<AcpPeerTitle>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::studio) enum AcpTitleLabel {
+    AwaitingInput,
+    Fallback,
+    Alias,
+    Legacy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "camelCase", deny_unknown_fields)]
+pub(in crate::studio) enum AcpPeerTitle {
+    Listed {
+        title: String,
+    },
+    Pushed {
+        /// `None` 是对端明确清空，不等同于尚未收到对端标题。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 /// 成员目录事实：`catalog.toml` `agents` 记录的运行期形态。
@@ -176,7 +225,14 @@ pub(in crate::studio) fn row_projection(
         parent_agent_id: agent.parent_agent_id.clone(),
         thread_id: agent.thread_id.clone(),
         workspace_id: session.workspace_id.clone(),
-        title: agent.title.clone().unwrap_or_else(|| session.title.clone()),
+        title: if agent.is_root_agent() {
+            session.display_title().to_owned()
+        } else {
+            agent
+                .title
+                .clone()
+                .unwrap_or_else(|| session.display_title().to_owned())
+        },
         mode: agent
             .is_root_agent()
             .then(|| session.native_mode.clone())
@@ -270,6 +326,7 @@ pub(in crate::studio) fn directory_facts_from_thread(
             root_agent_id: thread.id.clone(),
             workspace_id: thread.workspace_id.clone(),
             title: thread.title.clone(),
+            acp_title: None,
             native_mode: thread.mode.clone(),
             workspace_mode: thread.workspace_mode,
             delegation_mode: thread.delegation_mode,

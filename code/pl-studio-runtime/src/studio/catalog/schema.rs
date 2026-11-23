@@ -1,7 +1,7 @@
-//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6→7 类型迁移链。
+//! Catalog TOML 的冻结历史 DTO 与 1→2→3→4→5→6→7→8 类型迁移链。
 //!
 //! 历史条目的嵌套 enum / 冻结路由使用本模块的 wire 形状，不借用会演进的
-//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV7`]；owner 再
+//! `pl_protocol` 类型。库链输出最新冻结文件 DTO [`CatalogV8`]；owner 再
 //! `TryFrom` 为运行期 [`super::CatalogDocument`]。V5→V6 把逐 Thread 复合身份
 //! 重组为会话/成员两级记录，缺失根、跨会话 parent 与循环都给出明确诊断。
 
@@ -15,14 +15,16 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
 use super::CatalogDocument;
-use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
+use crate::studio::records::{
+    AcpDirectoryTitle, AcpPeerTitle, AcpTitleLabel, AgentDirectoryRecord, SessionDirectoryRecord,
+};
 use crate::toml_schema::{self, LoadedDocument};
 
 pub(super) const ENTITY: &str = "catalog";
 pub(super) const SCHEMA_KEY: &str = "schemaVersion";
 
 pub(super) fn current_version() -> Result<u32> {
-    toml_schema::integer_version(CatalogV7::VERSION)
+    toml_schema::integer_version(CatalogV8::VERSION)
         .map_err(|error| toml_schema::chain_error(ENTITY, error))
 }
 
@@ -43,7 +45,8 @@ fn migrator() -> Result<&'static Migrator> {
                 .step::<CatalogV5>()
                 .step::<CatalogV6>()
                 .step::<CatalogV7>()
-                .into::<CatalogV7>(),
+                .step::<CatalogV8>()
+                .into::<CatalogV8>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(MIGRATOR.get_or_init(|| migrator))
@@ -75,7 +78,7 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
             ));
         }
     }
-    let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV7>(
+    let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV8>(
         path,
         value,
         migrator()?,
@@ -228,6 +231,11 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
                 session.native_mode.is_some()
                     == matches!(root.backend, crate::AgentBackend::Native { .. }),
                 "Studio catalog root Native mode does not match its backend"
+            );
+            ensure!(
+                session.acp_title.is_some()
+                    == matches!(root.backend, crate::AgentBackend::Acp { .. }),
+                "Studio catalog ACP title does not match its root backend"
             );
         }
         ensure!(
@@ -498,6 +506,66 @@ pub(super) struct CatalogV7 {
     revision: u64,
     sessions: Vec<CatalogSessionV7>,
     agents: Vec<CatalogAgentV7>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
+#[versioned(version = "8.0.0")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct CatalogV8 {
+    revision: u64,
+    sessions: Vec<CatalogSessionV8>,
+    agents: Vec<CatalogAgentV7>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CatalogSessionV8 {
+    session_id: String,
+    root_agent_id: String,
+    workspace_id: String,
+    title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    acp_title: Option<FrozenAcpDirectoryTitleV8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    native_mode: Option<FrozenModeId>,
+    workspace_mode: FrozenWorkspaceMode,
+    delegation_mode: FrozenDelegationMode,
+    delegation_preference: FrozenDelegationPreference,
+    workspace_path: String,
+    created_at: i64,
+    updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_user_message_at: Option<i64>,
+    archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenAcpDirectoryTitleV8 {
+    label: FrozenAcpTitleLabelV8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    peer: Option<FrozenAcpPeerTitleV8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum FrozenAcpTitleLabelV8 {
+    AwaitingInput,
+    Fallback,
+    Alias,
+    Legacy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "camelCase", deny_unknown_fields)]
+enum FrozenAcpPeerTitleV8 {
+    Listed {
+        title: String,
+    },
+    Pushed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -954,16 +1022,57 @@ fn migrate_v5_to_v6(document: CatalogV5) -> CatalogV6 {
     }
 }
 
-impl IntoDomain<CatalogV7> for CatalogV7 {
-    fn into_domain(self) -> CatalogV7 {
+impl MigratesTo<CatalogV8> for CatalogV7 {
+    fn migrate(self) -> CatalogV8 {
+        let sessions = self
+            .sessions
+            .into_iter()
+            .map(|session| {
+                let acp = self.agents.iter().any(|agent| {
+                    agent.agent_id == session.root_agent_id
+                        && agent.session_id == session.session_id
+                        && agent.parent_agent_id.is_none()
+                        && matches!(agent.backend, FrozenBackendV7::Acp { .. })
+                });
+                CatalogSessionV8 {
+                    session_id: session.session_id,
+                    root_agent_id: session.root_agent_id,
+                    workspace_id: session.workspace_id,
+                    title: session.title,
+                    acp_title: acp.then_some(FrozenAcpDirectoryTitleV8 {
+                        label: FrozenAcpTitleLabelV8::Legacy,
+                        peer: None,
+                    }),
+                    native_mode: session.native_mode,
+                    workspace_mode: session.workspace_mode,
+                    delegation_mode: session.delegation_mode,
+                    delegation_preference: session.delegation_preference,
+                    workspace_path: session.workspace_path,
+                    created_at: session.created_at,
+                    updated_at: session.updated_at,
+                    last_user_message_at: session.last_user_message_at,
+                    archived: session.archived,
+                }
+            })
+            .collect();
+        CatalogV8 {
+            revision: self.revision,
+            sessions,
+            agents: self.agents,
+        }
+    }
+}
+
+impl IntoDomain<CatalogV8> for CatalogV8 {
+    fn into_domain(self) -> CatalogV8 {
         self
     }
 }
 
-impl TryFrom<CatalogV7> for CatalogDocument {
+impl TryFrom<CatalogV8> for CatalogDocument {
     type Error = anyhow::Error;
 
-    fn try_from(document: CatalogV7) -> Result<Self> {
+    fn try_from(document: CatalogV8) -> Result<Self> {
         Ok(Self {
             revision: document.revision,
             sessions: document
@@ -980,15 +1089,27 @@ impl TryFrom<CatalogV7> for CatalogDocument {
     }
 }
 
-impl TryFrom<CatalogSessionV7> for SessionDirectoryRecord {
+impl TryFrom<CatalogSessionV8> for SessionDirectoryRecord {
     type Error = anyhow::Error;
 
-    fn try_from(session: CatalogSessionV7) -> Result<Self> {
+    fn try_from(session: CatalogSessionV8) -> Result<Self> {
         Ok(Self {
             session_id: session.session_id,
             root_agent_id: session.root_agent_id,
             workspace_id: session.workspace_id,
             title: session.title,
+            acp_title: session.acp_title.map(|acp| AcpDirectoryTitle {
+                label: match acp.label {
+                    FrozenAcpTitleLabelV8::AwaitingInput => AcpTitleLabel::AwaitingInput,
+                    FrozenAcpTitleLabelV8::Fallback => AcpTitleLabel::Fallback,
+                    FrozenAcpTitleLabelV8::Alias => AcpTitleLabel::Alias,
+                    FrozenAcpTitleLabelV8::Legacy => AcpTitleLabel::Legacy,
+                },
+                peer: acp.peer.map(|peer| match peer {
+                    FrozenAcpPeerTitleV8::Listed { title } => AcpPeerTitle::Listed { title },
+                    FrozenAcpPeerTitleV8::Pushed { title } => AcpPeerTitle::Pushed { title },
+                }),
+            }),
             native_mode: session
                 .native_mode
                 .map(|mode| ThreadModeId::new(mode.0))
@@ -1121,8 +1242,8 @@ mod tests {
             })
         );
 
-        let current =
-            CatalogDocument::try_from(v4.migrate().migrate().migrate()).expect("construct current");
+        let current = CatalogDocument::try_from(v4.migrate().migrate().migrate().migrate())
+            .expect("construct current");
         assert_eq!(current.sessions.len(), 1);
         assert_eq!(current.sessions[0].session_id, "thread-a");
         assert_eq!(
@@ -1201,15 +1322,18 @@ mod tests {
     }
 
     #[test]
-    fn v6_to_v7_keeps_all_native_directory_facts() {
+    fn v6_to_current_keeps_all_native_directory_facts() {
         let legacy = v6_document();
         let migrated = legacy.clone().migrate();
-        let current = CatalogDocument::try_from(migrated).expect("current V7");
+        let current = CatalogDocument::try_from(migrated.migrate()).expect("current V8");
         validate(&current).expect("valid topology");
         let session = &current.sessions[0];
         assert_eq!(session.session_id, legacy.sessions[0].session_id);
         assert_eq!(session.root_agent_id, legacy.sessions[0].root_agent_id);
         assert_eq!(session.native_mode, Some(ThreadModeId::simple()));
+        assert_eq!(session.acp_title, None);
+        assert_eq!(session.title, legacy.sessions[0].title);
+        assert_eq!(session.display_title(), legacy.sessions[0].title);
         assert_eq!(session.last_user_message_at, Some(3));
         assert_eq!(session.created_at, legacy.sessions[0].created_at);
         assert_eq!(session.updated_at, legacy.sessions[0].updated_at);
@@ -1243,8 +1367,7 @@ mod tests {
         assert_eq!(child.mode, None);
     }
 
-    #[test]
-    fn acp_reference_validates_without_a_native_thread_projection() {
+    fn acp_v7_document() -> CatalogV7 {
         let mut v7 = v6_document().migrate();
         v7.agents.truncate(1);
         v7.sessions[0].native_mode = None;
@@ -1255,7 +1378,42 @@ mod tests {
                 cwd: "/project".into(),
             },
         };
-        let current = CatalogDocument::try_from(v7).expect("ACP reference");
+        v7
+    }
+
+    #[test]
+    fn v7_acp_migration_keeps_old_names_with_unknown_origin() {
+        for old_title in ["旧会话", "用户可能改过的名称", "  原有文本\n不清理  "]
+        {
+            let mut v7 = acp_v7_document();
+            v7.sessions[0].title = old_title.into();
+            let bytes = toml_schema::encode(&v7, SCHEMA_KEY).expect("V7 bytes");
+            let loaded = load_document(Path::new("catalog.toml"), &bytes).expect("upgrade V7");
+            assert_eq!(loaded.source_version, 7);
+            assert!(loaded.migrated);
+            assert_eq!(loaded.document.revision, v7.revision);
+            let session = &loaded.document.sessions[0];
+            assert_eq!(session.title, old_title);
+            assert_eq!(session.display_title(), old_title);
+            assert_eq!(
+                session.acp_title,
+                Some(AcpDirectoryTitle {
+                    label: AcpTitleLabel::Legacy,
+                    peer: None,
+                })
+            );
+            assert_eq!(session.updated_at, v7.sessions[0].updated_at);
+            assert_eq!(
+                session.last_user_message_at,
+                v7.sessions[0].last_user_message_at
+            );
+        }
+    }
+
+    #[test]
+    fn acp_reference_validates_without_a_native_thread_projection() {
+        let current =
+            CatalogDocument::try_from(acp_v7_document().migrate()).expect("ACP reference");
         validate(&current).expect("valid ACP root");
         assert!(
             crate::studio::records::thread_projection(
@@ -1268,8 +1426,60 @@ mod tests {
     }
 
     #[test]
+    fn v8_rejects_title_ownership_mismatches_without_extending_v7() {
+        let path = Path::new("catalog.toml");
+        let mut acp = acp_v7_document().migrate();
+        acp.sessions[0].acp_title = None;
+        let bytes = toml_schema::encode(&acp, SCHEMA_KEY).expect("missing ACP title");
+        let error = load_document(path, &bytes)
+            .err()
+            .expect("ACP title required");
+        assert!(format!("{error:#}").contains("ACP title does not match its root backend"));
+
+        let mut native = v6_document().migrate().migrate();
+        native.sessions[0].acp_title = Some(FrozenAcpDirectoryTitleV8 {
+            label: FrozenAcpTitleLabelV8::Legacy,
+            peer: None,
+        });
+        let bytes = toml_schema::encode(&native, SCHEMA_KEY).expect("Native with ACP title");
+        let error = load_document(path, &bytes)
+            .err()
+            .expect("Native cannot own ACP title");
+        assert!(format!("{error:#}").contains("ACP title does not match its root backend"));
+
+        let v7 = acp_v7_document();
+        let bytes = toml_schema::encode(&v7, SCHEMA_KEY).expect("V7 bytes");
+        let mut table: toml::Table = toml::from_str(&bytes).expect("V7 table");
+        let title = toml::Value::try_from(AcpDirectoryTitle {
+            label: AcpTitleLabel::Alias,
+            peer: None,
+        })
+        .expect("title wire");
+        table["sessions"][0]
+            .as_table_mut()
+            .expect("session table")
+            .insert("acpTitle".into(), title.clone());
+        let bytes = toml::to_string(&table).expect("unknown V7 field");
+        assert!(load_document(path, &bytes).is_err(), "V7 remains frozen");
+
+        let bytes = toml_schema::encode(&acp_v7_document().migrate(), SCHEMA_KEY)
+            .expect("current ACP bytes");
+        let mut table: toml::Table = toml::from_str(&bytes).expect("V8 table");
+        table["agents"][0]
+            .as_table_mut()
+            .expect("agent table")
+            .insert("acpTitle".into(), title);
+        let bytes = toml::to_string(&table).expect("misplaced title");
+        assert!(
+            load_document(path, &bytes).is_err(),
+            "title belongs to session only"
+        );
+    }
+
+    #[test]
     fn native_projection_resolves_real_thread_addresses_and_requires_root_mode() {
-        let mut document = CatalogDocument::try_from(v6_document().migrate()).expect("V7");
+        let mut document =
+            CatalogDocument::try_from(v6_document().migrate().migrate()).expect("V8");
         document.sessions[0].session_id = "product-session".into();
         document.sessions[0].root_agent_id = "root-agent".into();
         document.agents[0].agent_id = "root-agent".into();
@@ -1447,7 +1657,7 @@ mod tests {
                 archived: false,
             }],
         };
-        let current: CatalogV7 = current.migrate().migrate().migrate();
+        let current: CatalogV8 = current.migrate().migrate().migrate().migrate();
         let encoded = toml_schema::encode(&current, SCHEMA_KEY).expect("current bytes");
         let future = encoded.replacen(
             &format!(

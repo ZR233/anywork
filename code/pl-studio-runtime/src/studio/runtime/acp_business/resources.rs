@@ -3,14 +3,15 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use pl_acp::session::{Driver, Exit, Observer, OpenRequest, Session};
-use tokio::sync::Mutex;
+use pl_acp::session::{Driver, Exit, Observer, OpenRequest, Session, SessionTitleUpdate};
+use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
 use crate::studio::runtime::acp_accounts::AccountConnection;
 use crate::studio::runtime::acp_host_mcp::HostMcp;
+use crate::{AcpSessionReference, studio::records::AcpPeerTitle};
 
 /// A thin delivery into the original parent's inbox, bound by the Session owner.
 pub(crate) type AcpReportDelivery = Arc<
@@ -43,6 +44,7 @@ struct Owned {
     worker_error: Option<String>,
     driver_error: Option<String>,
     association: Option<Association>,
+    title_join: Option<JoinHandle<()>>,
     report_join: Option<JoinHandle<()>>,
     workspace_closed: bool,
 }
@@ -68,7 +70,6 @@ pub(crate) struct AcpResources {
     session: OnceLock<Session>,
     pub(crate) cancellation: CancellationToken,
     initial_configuration: AtomicBool,
-    initial_title_pending: AtomicBool,
     cleanup: pl_acp::auth::CleanupBudget,
     owned: Mutex<Owned>,
     association_gate: Mutex<()>,
@@ -101,7 +102,6 @@ impl AcpResources {
         workspace_id: String,
         completion: super::AcpSessionCompletion,
         draft: bool,
-        initial_title_pending: bool,
     ) -> Arc<Self> {
         let cleanup = pl_acp::auth::CleanupBudget::new(Duration::from_secs(5));
         Arc::new(Self {
@@ -112,7 +112,6 @@ impl AcpResources {
             session: OnceLock::new(),
             cancellation: CancellationToken::new(),
             initial_configuration: AtomicBool::new(false),
-            initial_title_pending: AtomicBool::new(initial_title_pending),
             cleanup,
             owned: Mutex::new(Owned {
                 draft,
@@ -125,6 +124,7 @@ impl AcpResources {
                 worker_error: None,
                 driver_error: None,
                 association: None,
+                title_join: None,
                 report_join: None,
                 workspace_closed: false,
             }),
@@ -173,20 +173,8 @@ impl AcpResources {
         !owned.draft && owned.association.is_none()
     }
 
-    pub(super) fn initial_title_pending(&self) -> bool {
-        self.initial_title_pending.load(Ordering::Relaxed)
-    }
-
-    /// First input acceptance and an explicit manual rename both retire this
-    /// eligibility while holding Studio's Thread lifecycle admission.
-    pub(in crate::studio::runtime) fn take_initial_title_eligibility(&self) -> bool {
-        self.initial_title_pending.swap(false, Ordering::Relaxed)
-    }
-
     /// Order a title directory write against this exact generation's close.
-    pub(in crate::studio::runtime) async fn title_update_admission(
-        &self,
-    ) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+    pub(super) async fn title_update_admission(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
         let gate = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return None,
@@ -194,6 +182,51 @@ impl AcpResources {
         };
         let snapshot = self.session().ok()?.snapshot().await.ok()?;
         (snapshot.ready && !snapshot.closing && !self.cancellation.is_cancelled()).then_some(gate)
+    }
+
+    /// Observe only the latest title from the original typed SDK state. The
+    /// protocol driver and content observer never await directory publication.
+    pub(super) async fn start_title_projection(
+        self: &Arc<Self>,
+        events: crate::studio::ProductEventBus,
+        thread_id: String,
+        reference: AcpSessionReference,
+        mut changes: watch::Receiver<Option<SessionTitleUpdate>>,
+    ) {
+        let _gate = self.association_gate.lock().await;
+        if self.cancellation.is_cancelled() {
+            return;
+        }
+        let close = self.cancellation.clone();
+        let resources = Arc::downgrade(self);
+        let mut owned = self.owned.lock().await;
+        debug_assert!(
+            owned.title_join.is_none(),
+            "title projection belongs to one preparation"
+        );
+        owned.title_join = Some(tokio::spawn(async move {
+            loop {
+                let update = changes.borrow_and_update().clone();
+                if let Some(update) = update {
+                    let Some(resources) = resources.upgrade() else {
+                        break;
+                    };
+                    let Some(_gate) = resources.title_update_admission().await else {
+                        break;
+                    };
+                    if resources.association_published().await {
+                        events
+                            .record_acp_pushed_title(&thread_id, &reference, pushed_title(&update))
+                            .await;
+                    }
+                }
+                tokio::select! {
+                    biased;
+                    () = close.cancelled() => break,
+                    result = changes.changed() => if result.is_err() { break; },
+                }
+            }
+        }));
     }
 
     pub(crate) async fn retain_draft_worktree(
@@ -497,7 +530,7 @@ impl AcpResources {
     async fn publish_association(&self, events: &crate::studio::ProductEventBus) -> Result<()> {
         let association = self.owned.lock().await.association.clone();
         if let Some(Association {
-            session,
+            mut session,
             agent,
             baseline,
         }) = association
@@ -517,6 +550,15 @@ impl AcpResources {
                 events.commit_session_update(session_base, session).await?;
                 events.commit_agent_update(agent_base, agent).await?;
             } else {
+                // A draft may receive its peer title before the user sends any input.
+                // The first directory cut can carry it without opening a second observer.
+                if !self.cancellation.is_cancelled()
+                    && let Ok(sdk) = self.session()
+                    && let Some(update) = sdk.title_changes().borrow().as_ref()
+                    && let Some(metadata) = session.acp_title.as_mut()
+                {
+                    metadata.peer = Some(pushed_title(update));
+                }
                 events
                     .commit_directory(crate::studio::store::directory::DirectoryDelta {
                         session_upserts: vec![session],
@@ -552,6 +594,14 @@ impl AcpResources {
         // Releases only the original observation; SDK cancellation settles pending permissions.
         self.retained_observation.lock().await.take();
         let mut owned = self.owned.lock().await;
+        if let Some(join) = owned.title_join.as_mut()
+            && let Ok(result) = tokio::time::timeout_at(self.cleanup.deadline(), join).await
+        {
+            owned.title_join = None;
+            if let Err(error) = result {
+                owned.driver_error = Some(format!("ACP title projection failed: {error}"));
+            }
+        }
         if owned.draft {
             owned.association = None;
             if let Some((factory, id)) = &owned.draft_worktree {
@@ -678,6 +728,7 @@ impl AcpResources {
         let local_complete = owned.join.is_none()
             && owned.draft_worktree.is_none()
             && owned.association.is_none()
+            && owned.title_join.is_none()
             && owned.report_join.is_none()
             && host_mcp.is_none()
             && workspace_complete;
@@ -699,6 +750,17 @@ impl AcpResources {
     }
 }
 
+fn pushed_title(update: &SessionTitleUpdate) -> AcpPeerTitle {
+    let title = match update {
+        SessionTitleUpdate::Clear => None,
+        SessionTitleUpdate::Set(title) => {
+            let title = title.trim();
+            (!title.is_empty()).then(|| title.to_owned())
+        }
+    };
+    AcpPeerTitle::Pushed { title }
+}
+
 impl Drop for AcpResources {
     fn drop(&mut self) {
         self.cancel();
@@ -708,6 +770,9 @@ impl Drop for AcpResources {
         }
         if let Some(report) = &self.owned.get_mut().report_join {
             report.abort();
+        }
+        if let Some(title) = &self.owned.get_mut().title_join {
+            title.abort();
         }
     }
 }
@@ -722,7 +787,6 @@ mod tests {
         let resources = AcpResources::new(
             "status-workspace".into(),
             super::super::AcpSessionCompletion { publication },
-            false,
             false,
         );
         let calls = Arc::new(AtomicU64::new(7));

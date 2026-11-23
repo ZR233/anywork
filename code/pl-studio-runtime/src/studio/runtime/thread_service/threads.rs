@@ -9,8 +9,7 @@ use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::{
-    ThreadTitleCancellation, ThreadTitleCancellationCause, ThreadTitleSource, manual_title,
-    provisional_title,
+    ThreadTitleCancellation, ThreadTitleCancellationCause, manual_title, provisional_title,
 };
 use super::super::{
     ArchiveThreadCommandReply, RenameThreadCommandReply, StudioArchiveThreadResult,
@@ -381,13 +380,7 @@ impl StudioRuntime {
         };
         if auto_title {
             self.title_tasks
-                .spawn(
-                    self.clone(),
-                    thread.id.clone(),
-                    provisional,
-                    title_prompt,
-                    ThreadTitleSource::Native,
-                )
+                .spawn(self.clone(), thread.id.clone(), provisional, title_prompt)
                 .await;
         }
         Ok(StudioStartNewThreadResponse { thread, submission })
@@ -416,26 +409,24 @@ impl StudioRuntime {
         if session.archived {
             bail!("archived Threads cannot be renamed");
         }
-        let baseline = session.clone();
-        // A user edit is authoritative: stop the best-effort Explorer task
-        // and revoke any pending first-input eligibility before publishing.
-        if matches!(&agent.backend, crate::AgentBackend::Acp { .. })
-            && let Some(owner) = self.session_of(&thread_id)
-            && let Ok(Some(resources)) = owner.resident_acp(&thread_id)
-        {
-            resources.take_initial_title_eligibility();
-        }
-        self.title_tasks
-            .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
-            .await;
-        let changed = session.title != title;
-        session.title = title;
-        session.updated_at = crate::studio::unix_seconds();
-        let committed = self
-            .agent_facility
-            .product_events
-            .commit_session_update(baseline, session)
-            .await?;
+        let events = &self.agent_facility.product_events;
+        let (committed, changed) = if matches!(agent.backend, crate::AgentBackend::Acp { .. }) {
+            events.rename_acp_root_title(&thread_id, title).await?
+        } else {
+            let baseline = session.clone();
+            // A user edit is authoritative: stop the best-effort Explorer task
+            // before publishing the canonical manual title.
+            self.title_tasks
+                .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
+                .await;
+            let changed = session.title != title;
+            session.title = title;
+            session.updated_at = crate::studio::unix_seconds();
+            (
+                events.commit_session_update(baseline, session).await?,
+                changed,
+            )
+        };
         let crate::StudioProductEventKind::ThreadDirectoryChanged(delta) = &committed.kind else {
             bail!("thread rename did not publish its directory result");
         };
@@ -461,29 +452,13 @@ impl StudioRuntime {
         thread_id: &str,
         expected_title: &str,
         title: &str,
-        source: &ThreadTitleSource,
         cancellation: &mut ThreadTitleCancellation,
     ) -> Result<()> {
         let _lifecycle_guard = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
             guard = self.lifecycle_lock.lock() => guard,
         };
-        let resources = match source {
-            ThreadTitleSource::Native => None,
-            ThreadTitleSource::Acp { resources, .. } => match resources.upgrade() {
-                Some(resources) => Some(resources),
-                None => return Ok(()),
-            },
-        };
-        let _acp_admission = if let Some(resources) = &resources {
-            let Some(admission) = resources.title_update_admission().await else {
-                return Ok(());
-            };
-            Some(admission)
-        } else {
-            None
-        };
-        if self.shutdown_committed() || cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Ok(());
         }
         let Some((mut session, agent)) = self
@@ -494,7 +469,6 @@ impl StudioRuntime {
             return Ok(());
         };
         if session.archived
-            || agent.explicitly_closed
             || agent.parent_agent_id.is_some()
             || session.title != expected_title
             || session.title == title

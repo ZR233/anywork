@@ -17,6 +17,9 @@ def emit(value):
 def update(sid, text):
     emit({'jsonrpc':'2.0','method':'session/update','params':{
         'sessionId':sid,'update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':text}}}})
+def title_update(sid, fields):
+    emit({'jsonrpc':'2.0','method':'session/update','params':{
+        'sessionId':sid,'update':{'sessionUpdate':'session_info_update', **fields}}})
 for line in sys.stdin:
     msg=json.loads(line)
     method=msg['method']
@@ -42,6 +45,8 @@ for line in sys.stdin:
         # Ordinary lifecycle cases use HTTP so they do not require the separately
         # packaged stdio executable. Dedicated stdio cases exercise that transport.
         capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}, 'sessionCapabilities':{'close':{}}}
+        if mode == 'session-titles':
+            capabilities['sessionCapabilities']['list'] = {}
         result={'protocolVersion':1, 'agentCapabilities':capabilities,
                 'agentInfo':{'name':'synthetic-peer','version':'1.4.5'},
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
@@ -102,6 +107,8 @@ for line in sys.stdin:
             log.write(json.dumps({'id':sid, 'cwd':msg['params']['cwd'], 'mcp':bool(msg['params'].get('mcpServers', []))}) + '\n')
         if mode in ['replay', 'load-hold']:
             update(sid, 'history before ready')
+        if mode == 'session-titles' and method == 'session/load' and (root / 'load-title').exists():
+            title_update(sid, {'title': (root / 'load-title').read_text()})
         if mode == 'load-hold':
             (root / 'opening').write_text('received')
             while not (root / 'release').exists():
@@ -129,6 +136,9 @@ for line in sys.stdin:
     elif method == 'session/prompt':
         sid=msg['params']['sessionId']
         assert sid
+        if (root / 'mode').read_text() == 'session-titles' and (root / 'title-updates.json').exists():
+            for notification in json.loads((root / 'title-updates.json').read_text()):
+                title_update(notification.get('sessionId', sid), notification['fields'])
         if (root / 'mode').read_text() == 'prompt-fail':
             emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32603,'message':'prompt failed'}})
             continue
@@ -142,11 +152,15 @@ for line in sys.stdin:
                 log.write(sid + '\n')
         update(sid, '### Quota Limits\n- No quota limits reported.' if usage else 'actual answer')
         result={'stopReason':'end_turn'}
+    elif method == 'session/list' and (root / 'mode').read_text() == 'session-titles':
+        result={'sessions':json.loads((root / 'listed.json').read_text())}
     elif method == 'authenticate':
         assert msg['params']['methodId'] == 'login'
         (root / 'mode').write_text('replay')
         result={}
     elif method == 'session/close':
+        if (root / 'mode').read_text() == 'session-titles' and msg['params']['sessionId'] not in probe_sessions:
+            title_update(msg['params']['sessionId'], {'title':'Late title after close'})
         result={}
     else:
         emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32601,'message':'method not found'}})

@@ -33,7 +33,7 @@ struct CatalogDocument {
 }
 
 impl Versioned for CatalogDocument {
-    const VERSION: &'static str = schema::CatalogV7::VERSION;
+    const VERSION: &'static str = schema::CatalogV8::VERSION;
 }
 
 impl RevisionedDocument for CatalogDocument {
@@ -463,6 +463,7 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::records::{AcpDirectoryTitle, AcpPeerTitle, AcpTitleLabel};
     use crate::studio::store::directory::DirectoryDelta;
     use crate::toml_schema::DocumentMigrationFailed;
 
@@ -510,6 +511,7 @@ mod tests {
                 root_agent_id: "thread-a".into(),
                 workspace_id: "project-a".into(),
                 title: "Root".into(),
+                acp_title: None,
                 native_mode: Some(crate::mode::ThreadModeId::simple()),
                 workspace_mode: crate::ThreadWorkspaceMode::Local,
                 delegation_mode: crate::DelegationMode::Profile,
@@ -547,6 +549,7 @@ mod tests {
         let path = dir.path().join("catalog.toml");
         let document = current_document();
         let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode");
+        assert!(!encoded.contains("acpTitle"), "Native wire is unchanged");
         tokio::fs::write(&path, &encoded).await.expect("write");
         let store = CatalogStore::load(path.clone())
             .await
@@ -572,6 +575,129 @@ mod tests {
             tokio::fs::read_to_string(&path).await.expect("read"),
             encoded
         );
+    }
+
+    #[tokio::test]
+    async fn current_acp_titles_keep_wire_values_and_project_without_changing_local_labels() {
+        let cases = [
+            (
+                AcpTitleLabel::AwaitingInput,
+                None,
+                "awaitingInput",
+                "本地名称",
+            ),
+            (
+                AcpTitleLabel::Fallback,
+                Some(AcpPeerTitle::Listed {
+                    title: "名单标题".into(),
+                }),
+                "fallback",
+                "名单标题",
+            ),
+            (
+                AcpTitleLabel::Fallback,
+                Some(AcpPeerTitle::Pushed {
+                    title: Some("主动标题".into()),
+                }),
+                "fallback",
+                "主动标题",
+            ),
+            (
+                AcpTitleLabel::Fallback,
+                Some(AcpPeerTitle::Pushed { title: None }),
+                "fallback",
+                "本地名称",
+            ),
+            (
+                AcpTitleLabel::Alias,
+                Some(AcpPeerTitle::Pushed {
+                    title: Some("被别名遮蔽".into()),
+                }),
+                "alias",
+                "本地名称",
+            ),
+            (
+                AcpTitleLabel::Legacy,
+                Some(AcpPeerTitle::Listed {
+                    title: "旧会话的对端标题".into(),
+                }),
+                "legacy",
+                "旧会话的对端标题",
+            ),
+        ];
+        let dir = tempfile::tempdir().expect("temp");
+        for (index, (label, peer, wire_label, expected_display)) in cases.into_iter().enumerate() {
+            let mut document = current_document();
+            let mut child = document.agents[0].clone();
+            child.agent_id = "child".into();
+            child.thread_id = "child".into();
+            child.parent_agent_id = Some("thread-a".into());
+            child.title = Some("子任务摘要".into());
+            document.agents.push(child);
+            document.sessions[0].title = "本地名称".into();
+            document.sessions[0].native_mode = None;
+            if label == AcpTitleLabel::AwaitingInput {
+                document.sessions[0].last_user_message_at = None;
+            }
+            document.sessions[0].acp_title = Some(AcpDirectoryTitle {
+                label,
+                peer: peer.clone(),
+            });
+            document.agents[0].backend = crate::AgentBackend::Acp {
+                reference: crate::AcpSessionReference {
+                    account_id: "account".into(),
+                    acp_session_id: "remote-session".into(),
+                    cwd: "/tmp/a".into(),
+                },
+            };
+            let encoded = toml_schema::encode(&document, schema::SCHEMA_KEY).expect("encode ACP");
+            let table: toml::Table = toml::from_str(&encoded).expect("wire");
+            assert_eq!(table["schemaVersion"].as_integer(), Some(8));
+            let title = &table["sessions"][0]["acpTitle"];
+            assert_eq!(title["label"].as_str(), Some(wire_label));
+            match peer {
+                None => assert!(title.get("peer").is_none()),
+                Some(AcpPeerTitle::Listed { title: expected }) => {
+                    assert_eq!(title["peer"]["source"].as_str(), Some("listed"));
+                    assert_eq!(title["peer"]["title"].as_str(), Some(expected.as_str()));
+                }
+                Some(AcpPeerTitle::Pushed { title: expected }) => {
+                    assert_eq!(title["peer"]["source"].as_str(), Some("pushed"));
+                    assert_eq!(
+                        title["peer"].get("title").and_then(toml::Value::as_str),
+                        expected.as_deref()
+                    );
+                }
+            }
+            for agent in table["agents"].as_array().expect("agents") {
+                assert!(agent.get("acpTitle").is_none());
+            }
+            let path = dir.path().join(format!("catalog-{index}.toml"));
+            tokio::fs::write(&path, &encoded)
+                .await
+                .expect("write current ACP");
+            let store = CatalogStore::load(path.clone())
+                .await
+                .expect("load current ACP");
+            assert_eq!(*store.lock(), document);
+            assert_eq!(
+                tokio::fs::read_to_string(path).await.expect("read current"),
+                encoded
+            );
+            let session = store.get_session("thread-a").expect("session");
+            assert_eq!(session.title, "本地名称");
+            assert_eq!(session.display_title(), expected_display);
+            let root_row = crate::studio::records::row_projection(
+                &session,
+                &store.get_agent("thread-a").expect("root"),
+            );
+            assert_eq!(root_row.title, expected_display);
+            let child_row = crate::studio::records::row_projection(
+                &session,
+                &store.get_agent("child").expect("child"),
+            );
+            assert_eq!(child_row.title, "子任务摘要");
+        }
     }
 
     #[tokio::test]
@@ -612,10 +738,10 @@ mod tests {
         assert_ne!(upgraded, legacy);
         assert_eq!(
             toml::from_str::<toml::Table>(&upgraded).unwrap()["schemaVersion"].as_integer(),
-            Some(7)
+            Some(8)
         );
         drop(store);
-        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V7");
+        let reopened = CatalogStore::load(path.clone()).await.expect("reopen V8");
         assert_eq!(*reopened.lock(), document);
         assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), upgraded);
     }
