@@ -37,7 +37,7 @@ impl ConnectionLifecycle {
         *self = Self::default();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn seed_attempts_for_test(&mut self, attempts: u32) {
         self.attempts = attempts;
     }
