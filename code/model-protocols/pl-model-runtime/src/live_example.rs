@@ -337,8 +337,12 @@ impl CommonCommand {
                 else {
                     return Err(ModelCatalogQueryError::UnexpectedNotModified.into());
                 };
+                let mut records = (adapter.parse_catalog)(&bytes)?;
+                for record in &mut records {
+                    record.service_tiers.authorize(&endpoint);
+                }
                 let entries = discovery::models(
-                    (adapter.parse_catalog)(&bytes)?,
+                    records,
                     &ModelCatalogDiscovery {
                         transport: pl_model_openai_wire::model::ModelTransportProfile {
                             protocol: api,

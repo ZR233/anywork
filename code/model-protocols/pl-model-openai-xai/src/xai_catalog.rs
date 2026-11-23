@@ -151,6 +151,7 @@ impl WireRecord {
             .unwrap_or_default();
         let id = required_id(self.id)?;
         Ok(Record {
+            service_tiers: Default::default(),
             id,
             display_name: presentation_name(self.display_name, self.name),
             context_window: self.context_length.map(Some),

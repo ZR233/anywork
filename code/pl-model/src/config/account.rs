@@ -586,6 +586,14 @@ impl AccountConfig {
                 AccountModelEntry::new(model.clone(), AccountModelOrigin::Manual),
             );
         }
+        // Speed is an observation of the authenticated Codex catalog, not a
+        // switch that a local or bundled model declaration can grant itself.
+        for entry in local.values_mut() {
+            entry
+                .model
+                .parameters
+                .retain(|parameter| parameter.name != "service_tier");
+        }
         let Some(overlay) = &self.model_catalog_overlay else {
             return Ok(self.restrict_authentication_transport(local.into_values().collect()));
         };

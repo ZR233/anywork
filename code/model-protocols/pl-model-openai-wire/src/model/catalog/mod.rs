@@ -75,6 +75,7 @@ pub fn wire_set_one(path: &str, value: &str) -> ParameterWire {
 /// Declare effort values that the wire accepts without translation.
 pub fn effort_parameter(path: &str, candidates: &[&str], default: Option<&str>) -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         name: "effort".into(),
         label: None,
         default: default.map(str::to_owned),

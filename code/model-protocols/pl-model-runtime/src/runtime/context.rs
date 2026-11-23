@@ -54,6 +54,11 @@ pub(super) fn project_request(
     account_id: &str,
     mut request: crate::completion::CompletionRequest,
 ) -> Result<crate::completion::CompletionRequest> {
+    pl_model_openai_wire::service_tiers::validate(
+        endpoint,
+        model,
+        request.service_tier.as_deref(),
+    )?;
     if endpoint.authorization.is_some() {
         super::openai::validate_chatgpt_request(&request)?;
         if !endpoint.service_capabilities.web_search.hosted_responses

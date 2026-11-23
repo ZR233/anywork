@@ -13,6 +13,12 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get composerSpeed => '速度';
+
+  @override
+  String get composerSpeedStandard => '标准';
+
+  @override
   String get acpConnectionReconnecting => '重连中';
 
   @override

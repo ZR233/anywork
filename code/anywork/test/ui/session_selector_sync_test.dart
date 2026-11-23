@@ -1756,6 +1756,7 @@ class _ComposerStartTransport extends TestDemoStudioTransport {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -1766,6 +1767,7 @@ class _ComposerStartTransport extends TestDemoStudioTransport {
         input,
         mode,
         route: route,
+        serviceTier: serviceTier,
         delegationMode: delegationMode,
         delegationPreference: delegationPreference,
         workspaceMode: workspaceMode,

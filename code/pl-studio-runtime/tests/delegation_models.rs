@@ -260,6 +260,7 @@ async fn profile_tool_reports_frozen_mode_without_automatic_preset_routes() -> R
                             model_id: support::MODEL.into(),
                             effort: None,
                         },
+                        service_tier: None,
                         delegation_mode: Some(mode),
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,

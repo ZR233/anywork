@@ -21,5 +21,7 @@ pub fn summary_request(
     prefix.tools.retain(|tool| !tool.is_hosted());
     prefix.tool_choice = "none".into();
     prefix.max_tokens = max_output_tokens;
+    // Session acceleration is a turn choice, not an auxiliary summary policy.
+    prefix.service_tier = None;
     prefix
 }

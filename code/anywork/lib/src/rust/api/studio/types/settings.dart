@@ -13,7 +13,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'settings.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `bridge_input_source`, `bridge_modality`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 class AccountInput {
   final String accountId;
@@ -924,6 +924,7 @@ class BridgeModelDescriptor {
   final BridgeModelTransportDescriptor transport;
   final BridgeModelCapabilities capabilities;
   final BridgeModelReasoningDescriptor? reasoning;
+  final BridgeModelServiceTierParameterDescriptor? serviceTiers;
   final BridgeModelPricing? pricing;
 
   const BridgeModelDescriptor({
@@ -940,6 +941,7 @@ class BridgeModelDescriptor {
     required this.transport,
     required this.capabilities,
     this.reasoning,
+    this.serviceTiers,
     this.pricing,
   });
 
@@ -958,6 +960,7 @@ class BridgeModelDescriptor {
       transport.hashCode ^
       capabilities.hashCode ^
       reasoning.hashCode ^
+      serviceTiers.hashCode ^
       pricing.hashCode;
 
   @override
@@ -978,6 +981,7 @@ class BridgeModelDescriptor {
           transport == other.transport &&
           capabilities == other.capabilities &&
           reasoning == other.reasoning &&
+          serviceTiers == other.serviceTiers &&
           pricing == other.pricing;
 }
 
@@ -1128,6 +1132,45 @@ class BridgeModelReasoningDescriptor {
           runtimeType == other.runtimeType &&
           parameter == other.parameter &&
           label == other.label &&
+          defaultCandidate == other.defaultCandidate &&
+          candidates == other.candidates;
+}
+
+class BridgeModelServiceTierDescriptor {
+  final String id;
+  final String? displayName;
+
+  const BridgeModelServiceTierDescriptor({required this.id, this.displayName});
+
+  @override
+  int get hashCode => id.hashCode ^ displayName.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelServiceTierDescriptor &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          displayName == other.displayName;
+}
+
+class BridgeModelServiceTierParameterDescriptor {
+  final String? defaultCandidate;
+  final List<BridgeModelServiceTierDescriptor> candidates;
+
+  const BridgeModelServiceTierParameterDescriptor({
+    this.defaultCandidate,
+    required this.candidates,
+  });
+
+  @override
+  int get hashCode => defaultCandidate.hashCode ^ candidates.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeModelServiceTierParameterDescriptor &&
+          runtimeType == other.runtimeType &&
           defaultCandidate == other.defaultCandidate &&
           candidates == other.candidates;
 }

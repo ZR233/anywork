@@ -472,9 +472,22 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
     if (model.capabilities.instructionSnapshotOverrides) '历史指令更新',
   ];
   final reasoning = model.reasoning;
+  final serviceTiers = model.serviceTiers;
   final pricing = model.pricing;
   return AccountModelView(
     modelId: model.modelId,
+    serviceTiers: serviceTiers == null
+        ? null
+        : ModelServiceTierParameterView(
+            defaultCandidate: serviceTiers.defaultCandidate,
+            candidates: [
+              for (final candidate in serviceTiers.candidates)
+                ModelServiceTierView(
+                  id: candidate.id,
+                  displayName: candidate.displayName,
+                ),
+            ],
+          ),
     enabled: model.enabled,
     typeSupport: [
       for (final support in model.typeSupport)

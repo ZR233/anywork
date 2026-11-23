@@ -112,6 +112,7 @@ pub struct StudioStartNewThreadRequest {
     pub input: StudioPromptInput,
     pub mode: crate::mode::ThreadModeId,
     pub route: crate::NewThreadModelRoute,
+    pub service_tier: Option<String>,
     pub delegation_mode: Option<crate::DelegationMode>,
     pub delegation_preference: Option<crate::DelegationPreference>,
     pub workspace_mode: crate::ThreadWorkspaceMode,

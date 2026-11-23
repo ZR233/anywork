@@ -498,10 +498,14 @@ impl AcpBusinessOwner {
                             .publish_acp_child_resources(identity.thread_id.as_str())
                             .map_err(|error| projection::preparation(&error.to_string()))?;
                     } else {
-                        resources.start_title_projection(
-                            events.clone(), identity.thread_id.to_string(), reference,
-                            session.title_changes(),
-                        ).await;
+                        resources
+                            .start_title_projection(
+                                events.clone(),
+                                identity.thread_id.to_string(),
+                                reference,
+                                session.title_changes(),
+                            )
+                            .await;
                     }
                     owner
                         .bind_acp_result_delivery(&identity, &resources)

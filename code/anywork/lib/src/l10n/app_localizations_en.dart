@@ -13,6 +13,12 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get composerSpeed => 'Speed';
+
+  @override
+  String get composerSpeedStandard => 'Standard';
+
+  @override
   String get acpConnectionReconnecting => 'Reconnecting';
 
   @override

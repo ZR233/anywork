@@ -72,6 +72,7 @@ pub fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: ModelMetad
             target.parameters = source
                 .parameters
                 .iter()
+                .filter(|parameter| parameter.name != "service_tier")
                 .map(|parameter| {
                     let mut resolved = parameter.clone();
                     resolved.default = previous
@@ -108,6 +109,23 @@ pub fn apply_field(target: &mut ModelInfo, source: &ModelInfo, field: ModelMetad
                     resolved
                 })
                 .collect();
+            target.parameters.extend(
+                previous
+                    .into_iter()
+                    .filter(|parameter| parameter.name == "service_tier"),
+            );
+        }
+        ServiceTiers => {
+            target
+                .parameters
+                .retain(|parameter| parameter.name != "service_tier");
+            target.parameters.extend(
+                source
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.name == "service_tier")
+                    .cloned(),
+            );
         }
     }
 }
@@ -175,6 +193,7 @@ pub const SHARED_FIELDS: &[ModelMetadataField] = &[
     ModelMetadataField::FreeformTools,
     ModelMetadataField::ProgrammaticToolCalling,
     ModelMetadataField::Parameters,
+    ModelMetadataField::ServiceTiers,
     ModelMetadataField::Interleaved,
     ModelMetadataField::PromptCache,
     ModelMetadataField::InstructionSnapshotOverrides,

@@ -720,6 +720,7 @@ pub struct BridgeModelDescriptor {
     pub transport: BridgeModelTransportDescriptor,
     pub capabilities: BridgeModelCapabilities,
     pub reasoning: Option<BridgeModelReasoningDescriptor>,
+    pub service_tiers: Option<BridgeModelServiceTierParameterDescriptor>,
     pub pricing: Option<BridgeModelPricing>,
 }
 
@@ -822,6 +823,20 @@ pub struct BridgeModelReasoningDescriptor {
     pub label: String,
     pub default_candidate: Option<String>,
     pub candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelServiceTierParameterDescriptor {
+    pub default_candidate: Option<String>,
+    pub candidates: Vec<BridgeModelServiceTierDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BridgeModelServiceTierDescriptor {
+    pub id: String,
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -981,6 +996,19 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
                     default_candidate: reasoning.default,
                     candidates: reasoning.candidates,
                 }),
+            service_tiers: model.service_tiers.map(|parameter| {
+                BridgeModelServiceTierParameterDescriptor {
+                    default_candidate: parameter.default,
+                    candidates: parameter
+                        .candidates
+                        .into_iter()
+                        .map(|tier| BridgeModelServiceTierDescriptor {
+                            id: tier.id,
+                            display_name: tier.display_name,
+                        })
+                        .collect(),
+                }
+            }),
             pricing: model.pricing.map(Into::into),
         }
     }

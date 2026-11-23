@@ -1,4 +1,6 @@
 {
+  "composerSpeed": "Speed",
+  "composerSpeedStandard": "Standard",
   "acpConnectionReconnecting": "Reconnecting",
   "studioFailureConversationResyncRequired": "Conversation content needs to be synchronized again. Please retry.",
   "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",
