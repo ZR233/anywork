@@ -19,12 +19,12 @@ import '../widgets/chat_item_view.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/conversation_current_views.dart';
 import '../widgets/content_layout_witness.dart';
+import '../tools/tool_item_registry.dart';
+import '../tools/tool_item_view.dart';
 import '../widgets/timeline_activity_clock.dart';
 import '../widgets/timeline_activity_row.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_reasoning_view.dart';
-import '../widgets/timeline_tool_blocks.dart';
-import '../widgets/timeline_wait_blocks.dart';
 import 'timeline_media_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
 
@@ -417,7 +417,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           : ChatItemPresentation.forRecord(widget.record, id: widget.displayId);
       Widget render(ChatItemPresentation item) {
         bool qualified() =>
-            (item.presentationContract == 'builtin.show_files@1'
+            (timelineToolItemRegistry
+                    .resolveForChatItem(item)
+                    .usesFileArtifactsMedia
                 ? _active
                 : _readActive('attachments')) &&
             identical(qualification, _rangeQualification);
@@ -452,9 +454,9 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
     }
     if (atom.kind == ChatAtomKind.reasoning) return _reasoning();
     if (atom.tool case final tool?) {
-      final details = TimelineToolDetails(
-        inline: atom.wait != null,
+      return TimelineToolItemView(
         initiallyExpanded: _expanded,
+        staticObservation: widget.record.contentSource is FrozenObservation,
         item: TimelineToolPresentation(
           id: widget.displayId,
           toolCallId: tool.callId,
@@ -475,29 +477,19 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           frozenObservation: widget.record.contentSource is FrozenObservation,
           arguments: '',
           output: '',
+          wait: atom.wait,
         ),
         onExpansionChanged: _expand,
         declaredContentIdentity: _rangeQualification,
         declaredContentBuilder: (_, _) => [_windows()],
       );
-      return atom.wait == null
-          ? details
-          : TimelineWaitPanel(
-              identity: widget.displayId,
-              staticObservation:
-                  widget.record.contentSource is FrozenObservation,
-              presentation: atom.wait!,
-              initiallyExpanded: _expanded,
-              diagnostics: details,
-              onExpansionChanged: _expand,
-            );
     }
     if (atom.kind == ChatAtomKind.toolCall) {
       return TimelineActivityDisclosure(
         initiallyExpanded: _expanded,
         onExpansionChanged: _expand,
         titleBuilder: (_, expanded) => TimelineActivityRow(
-          label: '工具调用',
+          label: context.l10n.timelineToolCallFallback,
           icon: Icons.build_outlined,
           expanded: expanded,
         ),

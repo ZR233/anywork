@@ -61,20 +61,22 @@ mod tests {
         );
         let route =
             decode(&upgrade_route(&legacy).expect("v1 route converts")).expect("current route");
-        assert_eq!(route.account_id.as_str(), "deepseek");
-        assert_eq!(route.model_id, "deepseek-flash");
+        assert_eq!(route.model.account_id.as_str(), "deepseek");
+        assert_eq!(route.model.model_id, "deepseek-flash");
         assert_eq!(
-            route.effort.as_ref().map(|value| value.as_str()),
+            route.model.effort.as_ref().map(|value| value.as_str()),
             Some("high")
         );
+        assert_eq!(route.service_tier, None);
 
         let current = payload(
             2,
             serde_json::json!({ "account_id": "second", "model_id": "m", "effort": null }),
         );
         let route = decode(&current).expect("v2 route decodes");
-        assert_eq!(route.account_id.as_str(), "second");
-        assert_eq!(route.model_id, "m");
+        assert_eq!(route.model.account_id.as_str(), "second");
+        assert_eq!(route.model.model_id, "m");
+        assert_eq!(route.service_tier, None);
     }
 
     #[test]

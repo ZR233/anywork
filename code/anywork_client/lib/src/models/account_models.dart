@@ -103,11 +103,31 @@ class ModelContextView {
   );
 }
 
+class ModelServiceTierView {
+  const ModelServiceTierView({required this.id, this.displayName});
+
+  final String id;
+  final String? displayName;
+
+  String get label => displayName?.isNotEmpty == true ? displayName! : id;
+}
+
+class ModelServiceTierParameterView {
+  const ModelServiceTierParameterView({
+    this.defaultCandidate,
+    required this.candidates,
+  });
+
+  final String? defaultCandidate;
+  final List<ModelServiceTierView> candidates;
+}
+
 class AccountModelView {
   const AccountModelView({
     required this.modelId,
     required this.displayName,
     required this.reasoningEfforts,
+    this.serviceTiers,
     this.enabled = true,
     this.typeSupport = const [],
     this.description = '',
@@ -143,6 +163,7 @@ class AccountModelView {
       supportFor(type)?.exclusions.isEmpty == true;
   final String displayName;
   final List<String> reasoningEfforts;
+  final ModelServiceTierParameterView? serviceTiers;
   final String description;
   final int? contextWindow;
   final int? maxContextWindow;
@@ -171,6 +192,7 @@ class AccountModelView {
     bool? enabled,
     String? displayName,
     List<String>? reasoningEfforts,
+    ModelServiceTierParameterView? serviceTiers,
     List<ModelTypeSupportView>? typeSupport,
     String? description,
     int? contextWindow,
@@ -198,6 +220,7 @@ class AccountModelView {
       enabled: enabled ?? this.enabled,
       displayName: displayName ?? this.displayName,
       reasoningEfforts: reasoningEfforts ?? this.reasoningEfforts,
+      serviceTiers: serviceTiers ?? this.serviceTiers,
       typeSupport: typeSupport ?? this.typeSupport,
       description: description ?? this.description,
       contextWindow: contextWindow ?? this.contextWindow,

@@ -167,7 +167,9 @@ class DemoAcpAuth {
     }
     final current = _accounts[account.accountId]!;
     _accounts[account.accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: account.enabled && current.state is AcpVerifiedState
+          ? const AcpConnectionReadyState()
+          : const AcpConnectionStoppedState(),
       accountId: current.accountId,
       connectionRevision: current.connectionRevision,
       state: current.state,
@@ -231,7 +233,11 @@ class DemoAcpAuth {
     AcpAuthActiveOperationView? activeOperation,
   }) {
     _accounts[account.accountId] = AcpAuthAccountView(
-      connection: const AcpConnectionStoppedState(),
+      connection: account.enabled && state is AcpVerifiedState
+          ? const AcpConnectionReadyState()
+          : (account.enabled && (activeOperation != null || state.isBusy)
+                ? const AcpConnectionStartingState()
+                : const AcpConnectionStoppedState()),
       accountId: account.accountId,
       connectionRevision: account.connectionRevision,
       // demo 不合成真实阶段：检查/登录直接收敛到需要登录或认证通过，

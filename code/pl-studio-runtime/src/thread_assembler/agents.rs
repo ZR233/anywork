@@ -1558,6 +1558,7 @@ pub(crate) mod archive_tests {
             context: info.resolve_context(None),
             model: info,
             effort: None,
+            service_tier: None,
         };
         let profile = crate::AgentProfileSnapshot {
             profile_id: "fixture".into(),

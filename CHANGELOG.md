@@ -13,6 +13,30 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.46.0](https://github.com/ZR233/anywork/compare/v6.45.0...v6.46.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** ACP 草稿提交 HTTP 请求体现在要求 target 和 firstPromptText；仅附件提交时传入空字符串。
+* **studio:** 以插件化接口重构时间线工具项架构与国际化 ([#531](https://github.com/ZR233/anywork/issues/531))
+
+### Features
+
+* **studio:** 单例化 ACP 后台连接并按能力异步复用 ([#532](https://github.com/ZR233/anywork/issues/532)) ([f509646](https://github.com/ZR233/anywork/commit/f509646a9b91ab3fc75080f53f60aaf66a01cc46))
+* **studio:** 支持 ChatGPT Fast 和 Ultrafast 档位 ([#530](https://github.com/ZR233/anywork/issues/530)) ([add45fc](https://github.com/ZR233/anywork/commit/add45fccea5a12bdfb8558cc678f99c008b6a015))
+
+
+### Bug Fixes
+
+* **studio:** 工作组成员保持单行并移除思考复制按钮 ([#528](https://github.com/ZR233/anywork/issues/528)) ([4dd3b7b](https://github.com/ZR233/anywork/commit/4dd3b7bc0f2a59c7c916d84a6102406c93fda253))
+* **studio:** 显示 ACP 服务端会话标题 ([#529](https://github.com/ZR233/anywork/issues/529)) ([b7f4b1a](https://github.com/ZR233/anywork/commit/b7f4b1a8b2a550cc0f62397f1fd59002e1b0a311))
+
+
+### Refactoring
+
+* **studio:** 以插件化接口重构时间线工具项架构与国际化 ([#531](https://github.com/ZR233/anywork/issues/531)) ([c77800d](https://github.com/ZR233/anywork/commit/c77800d909167bbffad56f2aa7b0e5f293d6f7eb))
+
 ## [6.45.0](https://github.com/ZR233/anywork/compare/v6.44.0...v6.45.0) (2026-11-23)
 
 

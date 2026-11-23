@@ -3684,6 +3684,7 @@ fn wire__crate__api__studio__handlers__acp_business__commit_acp_draft_impl(
                 <crate::api::studio::types::acp_business::BridgeAcpSessionTarget>::sse_decode(
                     &mut deserializer,
                 );
+            let api_first_prompt_text = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<
@@ -3694,6 +3695,7 @@ fn wire__crate__api__studio__handlers__acp_business__commit_acp_draft_impl(
                         let output_ok =
                             crate::api::studio::handlers::acp_business::commit_acp_draft(
                                 api_target,
+                                api_first_prompt_text,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)
@@ -7753,26 +7755,17 @@ fn wire__crate__api__studio__handlers__thread__set_thread_model_route_impl(
             };
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_thread_id = <String>::sse_decode(&mut deserializer);
-            let api_account_id = <String>::sse_decode(&mut deserializer);
-            let api_model_id = <String>::sse_decode(&mut deserializer);
-            let api_effort = <Option<String>>::sse_decode(&mut deserializer);
-            let api_expected_model_route_revision = <u64>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
+            let api_request =
+                <crate::api::studio::types::command::BridgeSetThreadModelRouteRequest>::sse_decode(
+                    &mut deserializer,
+                );
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<_, crate::api::studio::types::error::BridgeError>(
                     (move || async move {
                         let output_ok =
                             crate::api::studio::handlers::thread::set_thread_model_route(
-                                api_operation_id,
-                                api_thread_id,
-                                api_account_id,
-                                api_model_id,
-                                api_effort,
-                                api_expected_model_route_revision,
-                                api_expected_settings_revision,
+                                api_request,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)
@@ -18431,6 +18424,9 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelDescriptor {
         let mut var_reasoning = <Option<
             crate::api::studio::types::settings::BridgeModelReasoningDescriptor,
         >>::sse_decode(deserializer);
+        let mut var_serviceTiers = <Option<
+            crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor,
+        >>::sse_decode(deserializer);
         let mut var_pricing =
             <Option<crate::api::studio::types::settings::BridgeModelPricing>>::sse_decode(
                 deserializer,
@@ -18449,6 +18445,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelDescriptor {
             transport: var_transport,
             capabilities: var_capabilities,
             reasoning: var_reasoning,
+            service_tiers: var_serviceTiers,
             pricing: var_pricing,
         };
     }
@@ -18646,6 +18643,32 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeModelSelectionSo
                 "Invalid variant for BridgeModelSelectionSourceKind: {}",
                 inner
             ),
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::settings::BridgeModelServiceTierDescriptor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <String>::sse_decode(deserializer);
+        let mut var_displayName = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::settings::BridgeModelServiceTierDescriptor {
+            id: var_id,
+            display_name: var_displayName,
+        };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_defaultCandidate = <Option<String>>::sse_decode(deserializer);
+        let mut var_candidates = <Vec<
+            crate::api::studio::types::settings::BridgeModelServiceTierDescriptor,
+        >>::sse_decode(deserializer);
+        return crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor {
+            default_candidate: var_defaultCandidate,
+            candidates: var_candidates,
         };
     }
 }
@@ -20302,6 +20325,30 @@ impl SseDecode for crate::api::studio::types::bots::BridgeSetBotTrustedUserReque
     }
 }
 
+impl SseDecode for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_operationId = <String>::sse_decode(deserializer);
+        let mut var_threadId = <String>::sse_decode(deserializer);
+        let mut var_expectedModelRouteRevision = <u64>::sse_decode(deserializer);
+        let mut var_expectedSettingsRevision = <u64>::sse_decode(deserializer);
+        let mut var_accountId = <String>::sse_decode(deserializer);
+        let mut var_modelId = <String>::sse_decode(deserializer);
+        let mut var_effort = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceTier = <Option<String>>::sse_decode(deserializer);
+        return crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+            operation_id: var_operationId,
+            thread_id: var_threadId,
+            expected_model_route_revision: var_expectedModelRouteRevision,
+            expected_settings_revision: var_expectedSettingsRevision,
+            account_id: var_accountId,
+            model_id: var_modelId,
+            effort: var_effort,
+            service_tier: var_serviceTier,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::command::BridgeSettingsCommandReply {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -20738,6 +20785,7 @@ impl SseDecode for crate::api::studio::types::thread_preparation::BridgeStartNew
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_modelId = <String>::sse_decode(deserializer);
         let mut var_effort = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceTier = <Option<String>>::sse_decode(deserializer);
         let mut var_workspaceMode = <Option<String>>::sse_decode(deserializer);
         let mut var_delegationMode =
             <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_decode(deserializer);
@@ -20752,6 +20800,7 @@ impl SseDecode for crate::api::studio::types::thread_preparation::BridgeStartNew
             account_id: var_accountId,
             model_id: var_modelId,
             effort: var_effort,
+            service_tier: var_serviceTier,
             workspace_mode: var_workspaceMode,
             delegation_mode: var_delegationMode,
             delegation_preference: var_delegationPreference,
@@ -22189,6 +22238,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadModelRo
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_modelId = <String>::sse_decode(deserializer);
         let mut var_effort = <Option<String>>::sse_decode(deserializer);
+        let mut var_serviceTier = <Option<String>>::sse_decode(deserializer);
         let mut var_revision = <u64>::sse_decode(deserializer);
         let mut var_available = <bool>::sse_decode(deserializer);
         let mut var_unavailableReason = <Option<String>>::sse_decode(deserializer);
@@ -22197,6 +22247,7 @@ impl SseDecode for crate::api::studio::types::thread_stream::BridgeThreadModelRo
             account_id: var_accountId,
             model_id: var_modelId,
             effort: var_effort,
+            service_tier: var_serviceTier,
             revision: var_revision,
             available: var_available,
             unavailable_reason: var_unavailableReason,
@@ -25326,6 +25377,22 @@ impl SseDecode for Vec<crate::api::studio::types::delegation::BridgeModelSelecti
     }
 }
 
+impl SseDecode for Vec<crate::api::studio::types::settings::BridgeModelServiceTierDescriptor> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(
+                <crate::api::studio::types::settings::BridgeModelServiceTierDescriptor>::sse_decode(
+                    deserializer,
+                ),
+            );
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::studio::types::settings::BridgeModelTypeExclusion> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -27169,6 +27236,19 @@ impl SseDecode for Option<crate::api::studio::types::delegation::BridgeModelSele
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(<crate::api::studio::types::delegation::BridgeModelSelectionMeasurement>::sse_decode(deserializer));
+        } else {
+            return None;
+        }
+    }
+}
+
+impl SseDecode
+    for Option<crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        if (<bool>::sse_decode(deserializer)) {
+            return Some(<crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor>::sse_decode(deserializer));
         } else {
             return None;
         }
@@ -40279,6 +40359,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::settings::Brid
             self.transport.into_into_dart().into_dart(),
             self.capabilities.into_into_dart().into_dart(),
             self.reasoning.into_into_dart().into_dart(),
+            self.service_tiers.into_into_dart().into_dart(),
             self.pricing.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -40576,6 +40657,60 @@ impl
     fn into_into_dart(
         self,
     ) -> crate::api::studio::types::delegation::BridgeModelSelectionSourceKind {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::settings::BridgeModelServiceTierDescriptor
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.display_name.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::settings::BridgeModelServiceTierDescriptor
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::settings::BridgeModelServiceTierDescriptor,
+    > for crate::api::studio::types::settings::BridgeModelServiceTierDescriptor
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::settings::BridgeModelServiceTierDescriptor {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.default_candidate.into_into_dart().into_dart(),
+            self.candidates.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor,
+    > for crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor {
         self
     }
 }
@@ -42428,6 +42563,41 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.operation_id.into_into_dart().into_dart(),
+            self.thread_id.into_into_dart().into_dart(),
+            self.expected_model_route_revision
+                .into_into_dart()
+                .into_dart(),
+            self.expected_settings_revision.into_into_dart().into_dart(),
+            self.account_id.into_into_dart().into_dart(),
+            self.model_id.into_into_dart().into_dart(),
+            self.effort.into_into_dart().into_dart(),
+            self.service_tier.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::command::BridgeSetThreadModelRouteRequest,
+    > for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest
+{
+    fn into_into_dart(
+        self,
+    ) -> crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::command::BridgeSettingsCommandReply
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -42913,6 +43083,7 @@ impl flutter_rust_bridge::IntoDart
             self.account_id.into_into_dart().into_dart(),
             self.model_id.into_into_dart().into_dart(),
             self.effort.into_into_dart().into_dart(),
+            self.service_tier.into_into_dart().into_dart(),
             self.workspace_mode.into_into_dart().into_dart(),
             self.delegation_mode.into_into_dart().into_dart(),
             self.delegation_preference.into_into_dart().into_dart(),
@@ -44625,6 +44796,7 @@ impl flutter_rust_bridge::IntoDart
             self.account_id.into_into_dart().into_dart(),
             self.model_id.into_into_dart().into_dart(),
             self.effort.into_into_dart().into_dart(),
+            self.service_tier.into_into_dart().into_dart(),
             self.revision.into_into_dart().into_dart(),
             self.available.into_into_dart().into_dart(),
             self.unavailable_reason.into_into_dart().into_dart(),
@@ -55540,6 +55712,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelDescriptor {
             self.reasoning,
             serializer,
         );
+        <Option<crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor>>::sse_encode(self.service_tiers, serializer);
         <Option<crate::api::studio::types::settings::BridgeModelPricing>>::sse_encode(
             self.pricing,
             serializer,
@@ -55698,6 +55871,25 @@ impl SseEncode for crate::api::studio::types::delegation::BridgeModelSelectionSo
 crate::api::studio::types::delegation::BridgeModelSelectionSourceKind::Benchmark => { 1 }
 crate::api::studio::types::delegation::BridgeModelSelectionSourceKind::Community => { 2 }
  _ => { unimplemented!(""); }}, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::settings::BridgeModelServiceTierDescriptor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.id, serializer);
+        <Option<String>>::sse_encode(self.display_name, serializer);
+    }
+}
+
+impl SseEncode for crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <Option<String>>::sse_encode(self.default_candidate, serializer);
+        <Vec<crate::api::studio::types::settings::BridgeModelServiceTierDescriptor>>::sse_encode(
+            self.candidates,
+            serializer,
+        );
     }
 }
 
@@ -56997,6 +57189,20 @@ impl SseEncode for crate::api::studio::types::bots::BridgeSetBotTrustedUserReque
     }
 }
 
+impl SseEncode for crate::api::studio::types::command::BridgeSetThreadModelRouteRequest {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.operation_id, serializer);
+        <String>::sse_encode(self.thread_id, serializer);
+        <u64>::sse_encode(self.expected_model_route_revision, serializer);
+        <u64>::sse_encode(self.expected_settings_revision, serializer);
+        <String>::sse_encode(self.account_id, serializer);
+        <String>::sse_encode(self.model_id, serializer);
+        <Option<String>>::sse_encode(self.effort, serializer);
+        <Option<String>>::sse_encode(self.service_tier, serializer);
+    }
+}
+
 impl SseEncode for crate::api::studio::types::command::BridgeSettingsCommandReply {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -57319,6 +57525,7 @@ impl SseEncode for crate::api::studio::types::thread_preparation::BridgeStartNew
         <String>::sse_encode(self.account_id, serializer);
         <String>::sse_encode(self.model_id, serializer);
         <Option<String>>::sse_encode(self.effort, serializer);
+        <Option<String>>::sse_encode(self.service_tier, serializer);
         <Option<String>>::sse_encode(self.workspace_mode, serializer);
         <crate::api::studio::types::delegation::BridgeDelegationMode>::sse_encode(
             self.delegation_mode,
@@ -58383,6 +58590,7 @@ impl SseEncode for crate::api::studio::types::thread_stream::BridgeThreadModelRo
         <String>::sse_encode(self.account_id, serializer);
         <String>::sse_encode(self.model_id, serializer);
         <Option<String>>::sse_encode(self.effort, serializer);
+        <Option<String>>::sse_encode(self.service_tier, serializer);
         <u64>::sse_encode(self.revision, serializer);
         <bool>::sse_encode(self.available, serializer);
         <Option<String>>::sse_encode(self.unavailable_reason, serializer);
@@ -60724,6 +60932,18 @@ impl SseEncode for Vec<crate::api::studio::types::delegation::BridgeModelSelecti
     }
 }
 
+impl SseEncode for Vec<crate::api::studio::types::settings::BridgeModelServiceTierDescriptor> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::studio::types::settings::BridgeModelServiceTierDescriptor>::sse_encode(
+                item, serializer,
+            );
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::studio::types::settings::BridgeModelTypeExclusion> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -62224,6 +62444,18 @@ impl SseEncode for Option<crate::api::studio::types::delegation::BridgeModelSele
             <crate::api::studio::types::delegation::BridgeModelSelectionMeasurement>::sse_encode(
                 value, serializer,
             );
+        }
+    }
+}
+
+impl SseEncode
+    for Option<crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor>
+{
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <bool>::sse_encode(self.is_some(), serializer);
+        if let Some(value) = self {
+            <crate::api::studio::types::settings::BridgeModelServiceTierParameterDescriptor>::sse_encode(value, serializer);
         }
     }
 }

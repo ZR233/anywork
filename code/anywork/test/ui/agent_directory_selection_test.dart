@@ -1177,6 +1177,7 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,

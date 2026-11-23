@@ -1227,6 +1227,7 @@ class FrbStudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -1241,6 +1242,7 @@ class FrbStudioTransport
           accountId: route.accountId,
           modelId: route.modelId,
           effort: route.effort.isEmpty ? null : route.effort,
+          serviceTier: serviceTier,
           workspaceMode: workspaceMode,
           delegationMode: _delegationModeToFrb(delegationMode),
           delegationPreference: _delegationPreferenceToFrb(
@@ -1386,17 +1388,21 @@ class FrbStudioTransport
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     await _ensureReady();
     final response = await _bridgeCall(
       () => frb.setThreadModelRoute(
-        operationId: operationId.value,
-        threadId: threadId,
-        accountId: accountId,
-        modelId: modelId,
-        effort: effort,
-        expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
-        expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+        request: frb_command.BridgeSetThreadModelRouteRequest(
+          operationId: operationId.value,
+          threadId: threadId,
+          expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
+          expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
+          accountId: accountId,
+          modelId: modelId,
+          effort: effort,
+          serviceTier: serviceTier,
+        ),
       ),
     );
     return ThreadModelRouteCommandReply(

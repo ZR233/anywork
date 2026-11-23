@@ -611,11 +611,11 @@ class DemoStudioTransport extends StudioTransport
                 isDefault: false,
                 acpEnabled: account.enabled,
                 acpConnectionRevision: account.connectionRevision,
-                capabilities: const AccountCapabilities(
+                capabilities: AccountCapabilities(
                   setDefault: false,
                   edit: true,
                   remove: true,
-                  queryUsage: false,
+                  queryUsage: account.enabled && account.template != null,
                   syncModels: false,
                   editModels: false,
                   acpAuth: true,
@@ -2916,6 +2916,7 @@ class DemoStudioTransport extends StudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -3000,6 +3001,7 @@ class DemoStudioTransport extends StudioTransport
           accountId: route.accountId,
           modelId: route.modelId,
           effort: route.effort,
+          serviceTier: serviceTier,
           revision: 1,
           available: true,
         ),
@@ -3959,6 +3961,7 @@ class DemoStudioTransport extends StudioTransport
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     final current = _demoSettingsState();
     _checkSettingsRevision(expectedSettingsRevision);
@@ -3983,6 +3986,13 @@ class DemoStudioTransport extends StudioTransport
     final selectedEffort = selected.reasoningEfforts.contains(effort)
         ? effort
         : selected.reasoningEfforts.firstOrNull ?? '';
+    if (serviceTier != null &&
+        selected.serviceTiers?.candidates.any(
+              (candidate) => candidate.id == serviceTier,
+            ) !=
+            true) {
+      throw StateError('Selected service tier is unavailable');
+    }
     if (!row.isRootRow ||
         row.backend is! NativeAgentBackendView ||
         row.mode == null) {
@@ -3990,21 +4000,28 @@ class DemoStudioTransport extends StudioTransport
         'Saving a Native mode route requires a Native root with mode',
       );
     }
-    _modeRoutes = [
-      for (final route in current.modeModelRoutes)
-        if (route.modeId != row.mode) route,
-      ModeModelRouteView(
-        modeId: row.mode!,
-        accountId: accountId,
-        modelId: modelId,
-        effort: selectedEffort ?? '',
-      ),
-    ];
-    _settingsRevision += 1;
+    final modeDefaultSaved =
+        previousRoute.accountId != accountId ||
+        previousRoute.modelId != modelId ||
+        previousRoute.effort != selectedEffort;
+    if (modeDefaultSaved) {
+      _modeRoutes = [
+        for (final route in current.modeModelRoutes)
+          if (route.modeId != row.mode) route,
+        ModeModelRouteView(
+          modeId: row.mode!,
+          accountId: accountId,
+          modelId: modelId,
+          effort: selectedEffort ?? '',
+        ),
+      ];
+      _settingsRevision += 1;
+    }
     final route = ThreadModelRouteView(
       accountId: accountId,
       modelId: modelId,
       effort: selectedEffort,
+      serviceTier: serviceTier,
       revision: previousRoute.revision + 1,
       available: true,
     );
@@ -4018,7 +4035,7 @@ class DemoStudioTransport extends StudioTransport
         modelRoute: route,
       ),
     );
-    final settings = _settingsWriteResult();
+    final settings = modeDefaultSaved ? _settingsWriteResult() : current;
     return ThreadModelRouteCommandReply(
       receipt: _demoReceipt(
         operationId,
@@ -4026,19 +4043,20 @@ class DemoStudioTransport extends StudioTransport
             previousRoute.accountId != accountId ||
             previousRoute.modelId != modelId ||
             previousRoute.effort != selectedEffort ||
+            previousRoute.serviceTier != serviceTier ||
             !_sameDemoFacts(
               _demoSettingsFacts(current),
               _demoSettingsFacts(settings),
             ),
         targets: [
           _demoStamp('thread-route:$threadId', route.revision),
-          _demoStamp('settings', settings.revision),
+          if (modeDefaultSaved) _demoStamp('settings', settings.revision),
         ],
         effect: EffectPoint.nextTurn,
       ),
       runtime: workspace.runtime,
       settings: settings,
-      modeDefaultSaved: true,
+      modeDefaultSaved: modeDefaultSaved,
       warning: null,
     );
   }

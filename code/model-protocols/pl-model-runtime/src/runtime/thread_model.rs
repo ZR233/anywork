@@ -82,6 +82,7 @@ impl ThreadModel {
         self.validate_context_origin(&request.context)?;
         let mut encoded = codec::request(request, &self.runtime)?;
         encoded.reasoning = self.reasoning.clone();
+        encoded.service_tier = self.runtime.service_tier.clone();
         if self.runtime.endpoint().authorization.is_none() {
             encoded.max_tokens = self.runtime.model().max_output_tokens;
         }
@@ -256,7 +257,7 @@ impl CoreModelSession for ThreadModelSession {
                 parallel_tool_calls: encoded.parallel_tool_calls,
                 reasoning: encoded.reasoning.as_ref(),
                 output_schema: None,
-                service_tier: None,
+                service_tier: encoded.service_tier.as_deref(),
                 compacted: compaction_id.is_some() && self.last_compaction_id != compaction_id,
                 prompt_cache_policy: runtime
                     .endpoint()
@@ -398,6 +399,88 @@ fn usage(report: &crate::model::UsageReport) -> ModelUsage {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn service_tiers_route_selection_is_frozen_for_each_thread_scope() {
+        use crate::config::{AccountId, AgentRoleId, ResolvedModelRoute};
+        use crate::runtime::invocation::chatgpt_tests::{catalog, fixture_for};
+        let (_temp, mut runtime) = fixture_for(true);
+        runtime.model = catalog(
+            &runtime,
+            serde_json::json!({
+                "slug":"fixture-model", "service_tiers":[{"id":"priority"},{"id":"ultrafast"}],
+                "default_service_tier":"ultrafast"
+            }),
+            None,
+        )
+        .remove(0);
+        let mut route = ResolvedModelRoute {
+            pricing_mode: runtime.pricing_mode,
+            account_id: AccountId::new("wire").unwrap(),
+            role: AgentRoleId::new("main").unwrap(),
+            endpoint: runtime.endpoint.clone(),
+            model: runtime.model.clone(),
+            context: runtime.context().clone(),
+            effort: None,
+            service_tier: None,
+        };
+        assert!(matches!(
+            route.clone().with_service_tier(Some("invalid")),
+            Err(pl_protocol::PureError::ConfigError(_))
+        ));
+        let selected = route.clone().with_service_tier(Some("priority")).unwrap();
+        let frozen = ThreadModel::new(ModelRuntime::bind_route(selected, None).unwrap(), None);
+        // A later UI/catalog selection changes another binding, not the already-bound Thread.
+        route = route.with_service_tier(Some("ultrafast")).unwrap();
+        let newer = ThreadModel::new(ModelRuntime::bind_route(route.clone(), None).unwrap(), None);
+        let standard = ThreadModel::new(
+            ModelRuntime::bind_route(route.with_service_tier(None).unwrap(), None).unwrap(),
+            None,
+        );
+        for (model, expected) in [
+            (&frozen, Some("priority")),
+            (&newer, Some("ultrafast")),
+            (&standard, None),
+        ] {
+            let encoded = model
+                .encode_request(&ModelRequest {
+                    thread_id: "tier-thread".into(),
+                    turn_id: "tier-turn".into(),
+                    attempt_id: "tier-attempt".into(),
+                    context: pl_core::context::ContextSnapshot {
+                        revision: 0,
+                        records: Arc::from([]),
+                    },
+                    tools: Arc::from([]),
+                    tool_call_mode: pl_core::model::ToolCallMode::Parallel,
+                    solo_tool_ids: Arc::from([]),
+                    committed_private_context: None,
+                    resources: None,
+                    cancellation: pl_core::model::CancellationToken::new(),
+                    progress: None,
+                    members: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(encoded.completion.service_tier.as_deref(), expected);
+        }
+        let (_temp, legacy) = fixture_for(false);
+        let unsupported = ResolvedModelRoute {
+            pricing_mode: legacy.pricing_mode,
+            account_id: AccountId::new("wire").unwrap(),
+            role: AgentRoleId::new("main").unwrap(),
+            endpoint: legacy.endpoint.clone(),
+            model: legacy.model.clone(),
+            context: legacy.context().clone(),
+            effort: None,
+            service_tier: None,
+        };
+        assert!(unsupported.clone().with_service_tier(None).is_ok());
+        assert!(matches!(
+            unsupported.with_service_tier(Some("priority")),
+            Err(pl_protocol::PureError::ConfigError(_))
+        ));
+    }
 
     #[tokio::test]
     async fn ordinary_thread_model_exposes_the_current_producer_endpoint() {

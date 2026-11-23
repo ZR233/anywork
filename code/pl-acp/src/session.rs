@@ -9,7 +9,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
 use agent_client_protocol::v1::{ConnectionTo, Responder};
 use agent_client_protocol::{Agent, JsonRpcMessage, JsonRpcResponse};
 #[cfg(test)]
@@ -238,6 +238,14 @@ pub struct Session {
     commands: mpsc::Sender<Command>,
     opened: watch::Receiver<Option<Result<SessionId, Error>>>,
     completion_changes: watch::Receiver<u64>,
+    title_changes: watch::Receiver<Option<SessionTitleUpdate>>,
+}
+
+/// 对端正式会话标题的显式更新；字符串保持原样，不生成或规整标题。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionTitleUpdate {
+    Set(String),
+    Clear,
 }
 
 impl Session {
@@ -318,6 +326,14 @@ impl Session {
         self.completion_changes.clone()
     }
 
+    /// 读取本实例最新的显式标题，不消费 Observer，也不重放中间更新。
+    /// None 表示尚未收到标题字段；省略字段不改值，显式 null 为 Clear。
+    /// 晚订阅仍可读最新值；关闭后停止投影，驱动退出或被丢弃时关闭通道。
+    /// 读取时应及时释放 watch 借用，不跨 await 保留借用。
+    pub fn title_changes(&self) -> watch::Receiver<Option<SessionTitleUpdate>> {
+        self.title_changes.clone()
+    }
+
     /// 仅确认开始关闭；必须继续 join driver，并由宿主回收进程。
     pub async fn close(&self) -> Result<(), Error> {
         self.call(Command::Close).await
@@ -359,6 +375,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
     let (events, observer) = observe::channel();
     let (opened, open_result) = watch::channel(None);
     let (completion_changes, completion_receiver) = watch::channel(0);
+    let (title_changes, title_receiver) = watch::channel(None);
     let session_id = match &request.intent {
         Open::New => None,
         Open::Load(id) | Open::Resume(id) => Some(id.clone()),
@@ -376,6 +393,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         active: None,
         last_completed: None,
         completion_changes: Some(completion_changes),
+        title_changes: Some(title_changes),
         prompt_instructions: None,
         on_text_performance: request.on_text_performance.clone(),
         next_run: 0,
@@ -408,6 +426,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
             commands: tx,
             opened: open_result,
             completion_changes: completion_receiver,
+            title_changes: title_receiver,
         },
         observer,
         Driver {
@@ -460,7 +479,7 @@ pub(crate) struct State {
     pub(crate) session_id: Option<SessionId>,
     ready: bool,
     pub(crate) finished: bool,
-    // DriverLifetime settles pending open and closes completion/events even when
+    // DriverLifetime settles pending open and closes completion/title/events even when
     // Session retains this original State after the driver exits or is cancelled.
     opened: watch::Sender<Option<Result<SessionId, Error>>>,
     initialized: Option<Result<InitializeResponse, agent_client_protocol::Error>>,
@@ -470,6 +489,7 @@ pub(crate) struct State {
     active: Option<Active>,
     last_completed: Option<Completed>,
     completion_changes: Option<watch::Sender<u64>>,
+    title_changes: Option<watch::Sender<Option<SessionTitleUpdate>>>,
     prompt_instructions: Option<String>,
     on_text_performance: Option<OnTextPerformance>,
     next_run: u64,
@@ -529,6 +549,7 @@ impl State {
             let _ = reply.send(Err(Error::Closed));
         }
         self.completion_changes.take();
+        self.title_changes.take();
         self.events.close();
     }
 
@@ -580,6 +601,16 @@ impl State {
         }
         let mut text_performance = None;
         match &notification.update {
+            SessionUpdate::SessionInfoUpdate(update) if !self.closing => {
+                let title = match &update.title {
+                    MaybeUndefined::Undefined => None,
+                    MaybeUndefined::Null => Some(SessionTitleUpdate::Clear),
+                    MaybeUndefined::Value(title) => Some(SessionTitleUpdate::Set(title.clone())),
+                };
+                if let (Some(sender), Some(title)) = (&self.title_changes, title) {
+                    sender.send_replace(Some(title));
+                }
+            }
             SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = Some(update.config_options.clone());
                 self.updated_at = Some(unix_seconds());
@@ -1839,6 +1870,7 @@ mod tests {
                     peer_lock(&new_state).setups.push((request.mcp_servers, request.system_prompt));
                     if new_scenario.auth_required { return responder.respond_with_error(RpcError::auth_required()); }
                     connection.send_notification(update("business", text("unbound must not be claimed")))?;
+                    connection.send_notification(title_update("business", SessionInfoUpdate::new().title("unbound title must not be claimed")))?;
                     responder.respond(NewSessionResponse::new("business")
                         .config_options(new_scenario.config.clone()).modes(new_scenario.modes.clone()))
                 }, agent_client_protocol::on_receive_request!())
@@ -2073,6 +2105,10 @@ mod tests {
         )
     }
 
+    fn title_update(id: &str, info: SessionInfoUpdate) -> SessionNotification {
+        update(id, SessionUpdate::SessionInfoUpdate(info))
+    }
+
     fn input(value: &str) -> Vec<ContentBlock> {
         vec![ContentBlock::Text(TextContent::new(value))]
     }
@@ -2093,6 +2129,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn title_updates_preserve_typed_values_and_original_observer_order() {
+        let mut harness = Harness::new(Open::New, Scenario::default());
+        harness.ready().await;
+        let mut titles = harness.session.title_changes();
+        assert_eq!(*titles.borrow_and_update(), None);
+        let full_title = format!("  {}\n\t", "服务端标题".repeat(100));
+        let cases = [
+            (
+                SessionInfoUpdate::new().updated_at("2026-01-01T00:00:00Z"),
+                None,
+            ),
+            (
+                SessionInfoUpdate::new().title(full_title.clone()),
+                Some(SessionTitleUpdate::Set(full_title.clone())),
+            ),
+            (
+                SessionInfoUpdate::new(),
+                Some(SessionTitleUpdate::Set(full_title)),
+            ),
+            (
+                SessionInfoUpdate::new().title(""),
+                Some(SessionTitleUpdate::Set(String::new())),
+            ),
+            (
+                SessionInfoUpdate::new().title(None),
+                Some(SessionTitleUpdate::Clear),
+            ),
+            (SessionInfoUpdate::new(), Some(SessionTitleUpdate::Clear)),
+            (
+                SessionInfoUpdate::new().title("renamed"),
+                Some(SessionTitleUpdate::Set("renamed".into())),
+            ),
+        ];
+        for (info, expected) in cases {
+            let explicit = !info.title.is_undefined();
+            let before = update("business", text("before title"));
+            let notification = title_update("business", info);
+            let after = update("business", text("after title"));
+            harness
+                .updates(vec![
+                    title_update("foreign", SessionInfoUpdate::new().title("wrong session")),
+                    before.clone(),
+                    notification.clone(),
+                    after.clone(),
+                ])
+                .await;
+            if explicit {
+                // The title is projected before the UI consumes any Observer event.
+                tokio::time::timeout(Duration::from_secs(5), titles.changed())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(*titles.borrow_and_update(), expected);
+            }
+            for expected_event in [before, notification, after] {
+                match harness.event().await {
+                    Event::Update(actual, None) => assert_eq!(actual, expected_event),
+                    event => panic!("original ordered update expected: {event:?}"),
+                }
+            }
+            assert_eq!(*titles.borrow_and_update(), expected);
+            assert!(
+                !titles.has_changed().unwrap(),
+                "omitted and foreign titles must not notify"
+            );
+            // A new subscriber reads the latest value without replaying intermediate updates.
+            assert_eq!(*harness.session.title_changes().borrow(), expected);
+        }
+        let session = harness.session.clone();
+        harness.finish().await;
+        assert_eq!(
+            *session.title_changes().borrow(),
+            Some(SessionTitleUpdate::Set("renamed".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn title_projection_survives_observer_gap_and_late_subscription() {
+        let mut harness = Harness::new(Open::New, Scenario::default());
+        harness.ready().await;
+        let mut updates: Vec<_> = (0..70)
+            .map(|_| update("business", text("unconsumed")))
+            .collect();
+        updates.push(title_update(
+            "business",
+            SessionInfoUpdate::new().title("after gap"),
+        ));
+        harness.updates(updates).await;
+        let mut titles = harness.session.title_changes();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            titles.wait_for(|value| value.is_some()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            *titles.borrow_and_update(),
+            Some(SessionTitleUpdate::Set("after gap".into()))
+        );
+        assert!(matches!(
+            harness.event().await,
+            Event::Gap(Gap::WindowExceeded)
+        ));
+        harness
+            .updates(vec![title_update(
+                "business",
+                SessionInfoUpdate::new().title(None),
+            )])
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), titles.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(*titles.borrow_and_update(), Some(SessionTitleUpdate::Clear));
+        assert_eq!(
+            *harness.session.title_changes().borrow(),
+            Some(SessionTitleUpdate::Clear)
+        );
+        harness.finish().await;
+    }
+
+    #[tokio::test]
     async fn snapshot_reads_original_completion_after_driver_exit_before_join() {
         for ending in ["close", "eof", "driver-drop", "close-timeout"] {
             let mut harness = Harness::with_cleanup(
@@ -2106,6 +2265,21 @@ mod tests {
             harness.ready().await;
             let session = harness.session.clone();
             let mut changes = session.completion_changes();
+            let mut titles = session.title_changes();
+            harness
+                .updates(vec![title_update(
+                    "business",
+                    SessionInfoUpdate::new().title("retained"),
+                )])
+                .await;
+            tokio::time::timeout(Duration::from_secs(5), titles.changed())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                *titles.borrow_and_update(),
+                Some(SessionTitleUpdate::Set("retained".into()))
+            );
             let run = session
                 .submit(input("complete before shutdown"))
                 .await
@@ -2128,6 +2302,21 @@ mod tests {
             }
             // Observe closure and read the source before the resource owner receives Exit.
             assert!(completion_changed(&mut changes).await.is_err());
+            assert!(
+                tokio::time::timeout(Duration::from_secs(5), titles.changed())
+                    .await
+                    .unwrap()
+                    .is_err()
+            );
+            // A retained original State cannot accept a late notification after driver teardown.
+            lock(&session.state).update(title_update(
+                "business",
+                SessionInfoUpdate::new().title("too late"),
+            ));
+            assert_eq!(
+                *session.title_changes().borrow(),
+                Some(SessionTitleUpdate::Set("retained".into()))
+            );
             let after = session.snapshot().await.unwrap();
             assert!(after.closing, "{ending}");
             assert!(!after.ready, "{ending}");
@@ -2830,6 +3019,28 @@ mod tests {
                     .await;
             }
             harness
+                .updates(vec![title_update(
+                    "business",
+                    SessionInfoUpdate::new().title("load replay title"),
+                )])
+                .await;
+            let mut titles = harness.session.title_changes();
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                titles.wait_for(|title| title.is_some()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                *titles.borrow_and_update(),
+                Some(SessionTitleUpdate::Set("load replay title".into()))
+            );
+            assert!(
+                !harness.session.snapshot().await.unwrap().ready,
+                "Load title arrives before its held response"
+            );
+            harness
                 .control
                 .send(PeerCommand::ReleaseLoad)
                 .await
@@ -2956,6 +3167,9 @@ mod tests {
         drop(driver);
         drop(observer);
         assert!(matches!(opened(&session).await, Err(Error::Closed)));
+        let mut titles = session.title_changes();
+        assert_eq!(*titles.borrow_and_update(), None);
+        assert!(titles.changed().await.is_err());
     }
 
     #[tokio::test]
@@ -3558,6 +3772,7 @@ mod tests {
     async fn close_cancels_permission_and_waits_for_real_prompt_tail() {
         let mut harness = Harness::new(Open::New, Scenario::default());
         harness.ready().await;
+        let mut titles = harness.session.title_changes();
         let run = harness.session.submit(input("active close")).await.unwrap();
         harness.wait(|state| !state.prompts.is_empty()).await;
         harness.control.send(PeerCommand::Permission).await.unwrap();
@@ -3589,14 +3804,28 @@ mod tests {
             harness.session.submit(input("closed")).await,
             Err(Error::Closed)
         ));
+        let late_title = title_update("business", SessionInfoUpdate::new().title("closing title"));
         harness
-            .updates(vec![update("business", text("final tail"))])
+            .updates(vec![
+                late_title.clone(),
+                update("business", text("final tail")),
+            ])
             .await;
+        match harness.event().await {
+            Event::Update(actual, None) => assert_eq!(actual, late_title),
+            event => panic!("original title event must survive closing: {event:?}"),
+        }
         assert!(matches!(harness.event().await, Event::Update(..)));
+        assert_eq!(*titles.borrow_and_update(), None);
+        assert!(
+            !titles.has_changed().unwrap(),
+            "closing does not end the title sender before the driver exits"
+        );
         harness.complete(StopReason::Cancelled).await;
         assert!(matches!(harness.event().await, Event::Completed(_)));
         let exit = harness.driver.await.unwrap();
         harness.peer.await.unwrap().unwrap();
+        assert!(titles.changed().await.is_err());
         assert!(exit.unfinished_prompt.is_none());
         assert_eq!(exit.last_completed.as_ref().unwrap().run, run);
         assert_eq!(exit.last_completed.unwrap().summary, "final tail");

@@ -158,6 +158,7 @@ pub(crate) mod tests {
                             model_id: MODEL.into(),
                             effort: None,
                         },
+                        service_tier: None,
                         delegation_mode: Some(DelegationMode::Profile),
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,

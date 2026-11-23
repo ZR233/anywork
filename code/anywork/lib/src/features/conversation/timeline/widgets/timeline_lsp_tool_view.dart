@@ -4,57 +4,10 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/lsp_presentation.dart';
-import '../state/tool_presentation.dart';
-import '../state/tool_display_registry.dart';
+import '../tools/support/tool_detail_values.dart' show timelineFormatBytes;
 import 'timeline_markdown.dart';
-import 'timeline_tool_blocks.dart';
 
 typedef TimelineLspMarkdownBuilder = Widget Function(String id, String text);
-
-/// 内联路径（`declaredContents == null`）下的 LSP 工具语义卡片入口。
-Widget? timelineLspInlineBody(
-  TimelineToolPresentation tool, {
-  TimelineLspMarkdownBuilder? markdownBuilder,
-}) {
-  final presentation = parseTimelineLspPresentation(
-    tool,
-    kind: toolDisplayRegistry[tool.presentationContract]?.kind,
-  );
-  if (presentation == null) return null;
-  // 无参数工具（capabilities / status）在尚无输出时不渲染空壳卡片，保留错误或运行态。
-  switch (presentation) {
-    case TimelineLspCapabilitiesPresentation(hasOutput: false):
-    case TimelineLspStatusPresentation(hasOutput: false):
-      return null;
-    case _:
-      return TimelineLspToolView(
-        itemId: tool.id,
-        presentation: presentation,
-        markdownBuilder: markdownBuilder,
-      );
-  }
-}
-
-/// 声明内容窗口路径（`TimelineBodyReadIntent`）下的 LSP 工具语义卡片入口。
-Widget timelineLspWindowBody(
-  TimelineToolPresentation tool,
-  String windowText, {
-  TimelineLspMarkdownBuilder? markdownBuilder,
-}) {
-  final presentation = parseTimelineLspPresentation(
-    tool,
-    kind: toolDisplayRegistry[tool.presentationContract]?.kind,
-    outputOverride: windowText,
-  );
-  if (presentation == null) {
-    return Text(windowText, softWrap: true);
-  }
-  return TimelineLspToolView(
-    itemId: tool.id,
-    presentation: presentation,
-    markdownBuilder: markdownBuilder,
-  );
-}
 
 IconData _lspOpIcon(TimelineLspOperation operation) => switch (operation) {
   TimelineLspOperation.goToDefinition => Icons.my_location_outlined,

@@ -131,6 +131,33 @@ fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelInfo>, 
     provider.set_model_catalog_overlay(models).unwrap();
 }
 
+#[tokio::test]
+async fn service_tiers_are_ignored_for_api_key_and_other_vendor_catalogs() {
+    for adapter in [
+        pl_model::protocol::providers::openai::ID,
+        pl_model::protocol::providers::deepseek::ID,
+        pl_model::protocol::providers::xai::ID,
+        pl_model::protocol::providers::mimo::ID,
+    ] {
+        let models = discover(
+            json!({"data":[{
+                "id":"unknown-service-tier-model",
+                "service_tiers":{"unrelated":"not-a-Codex-list"},
+                "default_service_tier":[42]
+            }]}),
+            adapter,
+        )
+        .await;
+        assert_eq!(models.len(), 1);
+        assert!(
+            models[0]
+                .parameters
+                .iter()
+                .all(|p| p.name != "service_tier")
+        );
+    }
+}
+
 #[test]
 fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
     use pl_model::model::{ModelMetadataField, ModelObservation};

@@ -39,6 +39,8 @@ struct WireRecord {
     output_modalities: Option<Vec<ModelModality>>,
     #[serde(flatten)]
     reasoning: ReasoningDeclaration,
+    #[serde(flatten)]
+    service_tiers: pl_model_openai_wire::service_tiers::ServiceTierDeclaration,
     binding: Option<ModelBinding>,
     capabilities: Option<Capabilities>,
     supports_parallel_tool_calls: Option<bool>,
@@ -86,6 +88,7 @@ impl WireRecord {
             supports_streaming: self.supports_streaming,
             supports_reasoning: self.supports_reasoning,
             reasoning: self.reasoning,
+            service_tiers: self.service_tiers,
             binding: self.binding,
             capabilities: self.capabilities,
             pricing: None,

@@ -38,6 +38,7 @@ class BridgeStartNewThreadRequest {
   final String accountId;
   final String modelId;
   final String? effort;
+  final String? serviceTier;
   final String? workspaceMode;
   final BridgeDelegationMode delegationMode;
   final BridgeDelegationPreference delegationPreference;
@@ -49,6 +50,7 @@ class BridgeStartNewThreadRequest {
     required this.accountId,
     required this.modelId,
     this.effort,
+    this.serviceTier,
     this.workspaceMode,
     required this.delegationMode,
     required this.delegationPreference,
@@ -62,6 +64,7 @@ class BridgeStartNewThreadRequest {
       accountId.hashCode ^
       modelId.hashCode ^
       effort.hashCode ^
+      serviceTier.hashCode ^
       workspaceMode.hashCode ^
       delegationMode.hashCode ^
       delegationPreference.hashCode;
@@ -77,6 +80,7 @@ class BridgeStartNewThreadRequest {
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&
+          serviceTier == other.serviceTier &&
           workspaceMode == other.workspaceMode &&
           delegationMode == other.delegationMode &&
           delegationPreference == other.delegationPreference;

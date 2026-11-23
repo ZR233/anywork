@@ -273,6 +273,8 @@ pub struct ThreadModelRouteSnapshot {
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     pub revision: u64,
     pub available: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

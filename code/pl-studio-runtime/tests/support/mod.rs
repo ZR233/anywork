@@ -328,6 +328,7 @@ impl Environment {
                     model_id: MODEL.into(),
                     effort: None,
                 },
+                service_tier: None,
                 delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: mode,

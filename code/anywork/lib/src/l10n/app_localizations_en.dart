@@ -13,6 +13,12 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get composerSpeed => 'Speed';
+
+  @override
+  String get composerSpeedStandard => 'Standard';
+
+  @override
   String get acpConnectionReconnecting => 'Reconnecting';
 
   @override
@@ -7672,6 +7678,56 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek web fetch';
+
+  @override
+  String get timelinePatchUnavailableHint =>
+      'Patch hunk unavailable: content is incomplete or cannot be parsed';
+
+  @override
+  String get timelinePatchFileAdd => 'Add';
+
+  @override
+  String get timelinePatchFileUpdate => 'Update';
+
+  @override
+  String get timelinePatchFileDelete => 'Delete';
+
+  @override
+  String get timelineToolCallFallback => 'Tool call';
+
+  @override
+  String get timelineToolArgumentsIncompleteTitle =>
+      'Tool arguments incomplete';
+
+  @override
+  String get timelineToolArgumentsIncompleteDetail =>
+      'The argument window did not include the complete body';
+
+  @override
+  String get timelineToolIdentityMismatchTitle => 'Tool identity mismatch';
+
+  @override
+  String get timelineToolIdentityMismatchDetail =>
+      'Declared call identity differs from completion payload';
+
+  @override
+  String timelineToolMalformedLabel(String name) {
+    return '$name · Malformed content';
+  }
+
+  @override
+  String timelineToolDeferredLabel(String name) {
+    return '$name · Body loaded on demand';
+  }
+
+  @override
+  String get timelineToolDeferredReason =>
+      'Arguments are loaded on demand; full content has not been retrieved yet';
+
+  @override
+  String timelineToolParseFailed(String reason) {
+    return 'Current tool content cannot be parsed: $reason';
+  }
 
   @override
   String get acpContextWindowTitle => 'Context window';

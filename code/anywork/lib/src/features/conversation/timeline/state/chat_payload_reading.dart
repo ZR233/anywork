@@ -4,8 +4,9 @@ import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
 import 'timeline_display_unit.dart';
-import 'tool_display.dart';
-import 'tool_display_registry.dart';
+import '../tools/items/wait/sleep_tool_item.dart';
+import '../tools/items/wait/wait_tool_item.dart';
+import '../tools/tool_item_registry.dart';
 import 'tool_presentation.dart';
 
 Map<String, Object?> chatObject(Object? value, String field) {
@@ -81,22 +82,17 @@ final class UnavailableToolCard extends ToolCardReading {
   const UnavailableToolCard(
     this.reason, {
     this.kind = ToolCardUnavailableKind.malformed,
+    this.detail,
   });
   final String reason;
   final ToolCardUnavailableKind kind;
+  final String? detail;
 }
 
 enum ToolCardUnavailableKind { malformed, deferred }
 
-const _fallbackToolContract = 'generic@1';
-
 ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
-  final marker = item.presentationContract;
-  final resolvedContract =
-      marker != null && toolDisplayRegistry.containsKey(marker)
-      ? marker
-      : _fallbackToolContract;
-  final spec = toolDisplayRegistry[resolvedContract]!;
+  final adapter = timelineToolItemRegistry.resolveForChatItem(item);
   try {
     final invocation = chatObject(item.data['invocation'], 'invocation');
     final state = chatObject(item.data['state'], 'state');
@@ -126,8 +122,7 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
     }
     arguments ??= item.inlineText('tool.arguments') ?? '';
     if (arguments.isNotEmpty &&
-        spec.category != ToolDisplayCategory.generic &&
-        spec.inputBody != ToolInputBody.patch) {
+        adapter.bodyPolicy.requiresJsonObjectArguments) {
       chatObject(jsonDecode(arguments), '工具参数');
     }
     final output = state['output'] == null
@@ -158,7 +153,7 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
           'invocation.toolCallId',
         ),
         name: chatString(invocation['name'], 'invocation.name'),
-        presentationContract: resolvedContract,
+        presentationContract: adapter.id,
         statusString: status,
         frozenObservation:
             item.displayRecord?.contentSource is FrozenObservation,
@@ -183,7 +178,7 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
         attachments: chatAttachments(output?['attachments']),
         outputArtifacts: artifacts == null ? const [] : [artifacts],
         wait:
-            spec.category == ToolDisplayCategory.wait &&
+            (adapter is WaitToolItem || adapter is SleepToolItem) &&
                 item.data['wait'] != null
             ? _wait(item.data['wait'])
             : null,
@@ -193,11 +188,13 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
     return UnavailableToolCard(
       '当前工具内容无法解析：${error.message}',
       kind: ToolCardUnavailableKind.malformed,
+      detail: error.message,
     );
   } on TypeError catch (error) {
     return UnavailableToolCard(
       '当前工具内容无法解析：$error',
       kind: ToolCardUnavailableKind.malformed,
+      detail: '$error',
     );
   }
 }

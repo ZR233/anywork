@@ -37,8 +37,9 @@ Widget _host(
   Widget child, {
   Size surface = const Size(800, 600),
   TextScaler? textScaler,
+  Locale locale = const Locale('zh'),
 }) => MaterialApp(
-  locale: const Locale('zh'),
+  locale: locale,
   theme: pureStudioTheme(),
   localizationsDelegates: [
     AppLocalizations.delegate,
@@ -392,6 +393,41 @@ void main() {
             surface: const Size(360, 600),
             textScaler: TextScaler.linear(1.6),
           ),
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'localizes file operation labels and unavailable hint in English',
+      (tester) async {
+        const patch =
+            '*** Begin Patch\n'
+            '*** Add File: lib/added.dart\n'
+            '+new line\n'
+            '*** Update File: lib/updated.dart\n'
+            '@@\n'
+            '-old\n'
+            '+new\n'
+            '*** Delete File: lib/removed.dart\n'
+            '*** End Patch';
+        await tester.pumpWidget(
+          _host(
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [_view(patch), const TimelinePatchUnavailableHint()],
+            ),
+            locale: const Locale('en'),
+          ),
+        );
+        expect(find.textContaining('Add'), findsWidgets);
+        expect(find.textContaining('Update'), findsWidgets);
+        expect(find.textContaining('Delete'), findsWidgets);
+        expect(
+          find.text(
+            'Patch hunk unavailable: content is incomplete or cannot be parsed',
+          ),
+          findsOneWidget,
         );
         expect(tester.takeException(), isNull);
       },

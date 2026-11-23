@@ -548,6 +548,28 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             native_context_family: capabilities.native_context_family.clone(),
         },
         reasoning,
+        service_tiers: model
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "service_tier" && !parameter.candidates.is_empty())
+            .map(|parameter| super::ModelServiceTierParameterDescriptor {
+                default: parameter
+                    .default
+                    .clone()
+                    .filter(|value| parameter.has_candidate(value)),
+                candidates: parameter
+                    .candidates
+                    .iter()
+                    .map(|id| super::ModelServiceTierDescriptor {
+                        id: id.clone(),
+                        display_name: parameter
+                            .candidate_display_names
+                            .get(id)
+                            .filter(|name| !name.trim().is_empty())
+                            .cloned(),
+                    })
+                    .collect(),
+            }),
         pricing,
     }
 }

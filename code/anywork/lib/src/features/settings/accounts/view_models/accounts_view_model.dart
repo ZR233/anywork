@@ -305,6 +305,8 @@ class AccountsViewModel extends _$AccountsViewModel {
         if ((account.identity is NativeAccountIdentity &&
                 account.capabilities.queryUsage) ||
             (account.identity is AcpAccountIdentity &&
+                account.acpEnabled == true &&
+                account.capabilities.queryUsage &&
                 account.acpConnectionRevision != null))
           displayIdentity(account.identity),
     ];

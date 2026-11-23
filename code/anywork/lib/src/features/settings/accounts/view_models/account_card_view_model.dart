@@ -74,10 +74,16 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     return _derive();
   }
 
+  bool _canQueryAcpUsage(AccountSummary? account) =>
+      account != null &&
+      account.acpEnabled == true &&
+      account.capabilities.queryUsage &&
+      account.acpConnectionRevision != null;
+
   int? _queryRevision(AccountSummary? account) =>
       _key.kind == AccountKind.native
       ? account?.usageQueryRevision
-      : account?.acpConnectionRevision;
+      : (_canQueryAcpUsage(account) ? account?.acpConnectionRevision : null);
 
   void setStrings(AccountStrings strings) {
     _strings = strings;
@@ -198,6 +204,15 @@ class AccountCardViewModel extends _$AccountCardViewModel {
           auth.stamp?.ownerEpoch != source.stamp?.ownerEpoch) {
         return;
       }
+      final row = auth.value?.account(
+        _key.id,
+        connectionRevision: account.acpConnectionRevision!,
+      );
+      if (row?.usage != null ||
+          row?.activeOperation?.action is AcpQueryUsageActionView) {
+        _initialStarted = true;
+        return;
+      }
     }
     _initialStarted = true;
     unawaited(refresh());
@@ -276,14 +291,16 @@ class AccountCardViewModel extends _$AccountCardViewModel {
             ?.account(_key.id, connectionRevision: revision)
             ?.state;
       }
-      final projection = projectAcpUsage(
-        snapshot: resource.value,
-        stale: stale,
-        accountId: _key.id,
-        connectionRevision: revision,
-        strings: _strings,
-      );
-      if (projection.queried || projection.busy) acpUsage = projection;
+      if (account.capabilities.queryUsage) {
+        final projection = projectAcpUsage(
+          snapshot: resource.value,
+          stale: stale,
+          accountId: _key.id,
+          connectionRevision: revision,
+          strings: _strings,
+        );
+        if (projection.queried || projection.busy) acpUsage = projection;
+      }
     }
     return AccountRowPresentation(
       key: _key,
@@ -341,8 +358,9 @@ class AccountCardViewModel extends _$AccountCardViewModel {
               (_key.kind == AccountKind.acp && revision == null)
           ? const []
           : [
-              if (account.capabilities.queryUsage ||
-                  (_key.kind == AccountKind.acp && revision != null))
+              if ((_key.kind == AccountKind.native &&
+                      account.capabilities.queryUsage) ||
+                  _canQueryAcpUsage(account))
                 AccountRowAction.refresh,
               if (account.capabilities.setDefault && !account.isDefault)
                 AccountRowAction.setDefault,

@@ -10,9 +10,20 @@ pub struct ResolvedModelRoute {
     pub model: ModelInfo,
     pub context: crate::model::ModelContextResolution,
     pub effort: Option<ReasoningEffort>,
+    pub service_tier: Option<String>,
 }
 
 impl ResolvedModelRoute {
+    /// Freezes an explicitly selected Codex service tier; `None` always means standard.
+    ///
+    /// # Errors
+    /// Rejects unsupported authentication, transport, or an exact ID outside this model's catalog.
+    pub fn with_service_tier(mut self, requested: Option<&str>) -> pl_protocol::Result<Self> {
+        crate::service_tiers::validate(&self.endpoint, &self.model, requested)?;
+        self.service_tier = requested.map(str::to_owned);
+        Ok(self)
+    }
+
     /// 返回该已解析路由的稳定目录身份。
     pub fn key(&self) -> AccountModelKey {
         AccountModelKey {

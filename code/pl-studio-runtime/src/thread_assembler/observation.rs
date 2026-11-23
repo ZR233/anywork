@@ -1139,6 +1139,7 @@ mod storage_fault_tests {
                     context: model_info.resolve_context(None),
                     model: model_info,
                     effort: None,
+                    service_tier: None,
                 };
                 let model = pl_model::runtime::ThreadModel::new(
                     pl_model::runtime::from_route(&route)?,

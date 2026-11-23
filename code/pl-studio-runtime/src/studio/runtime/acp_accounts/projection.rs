@@ -37,6 +37,13 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
 }
 
 impl AcpAccountRuntime {
+    /// 单一策略事实源：当前 ACP 定义是否支持账户级额度查询。
+    pub(crate) fn definition_supports_usage(
+        definition: &crate::config::AcpServiceDefinition,
+    ) -> bool {
+        super::strategy::AcpAgentStrategy::for_definition(definition).supports_usage()
+    }
+
     /// canonical Settings 中的 ACP 接入投影。
     ///
     /// 只能在 [`crate::config::ConfigRuntime`] 的 Settings command 边界内调用：`settings_revision`

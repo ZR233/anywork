@@ -511,6 +511,7 @@ abstract class AcpAccountPresentation with _$AcpAccountPresentation {
     required String status,
     String? subtitle,
     @Default(AcpUsagePresentation()) AcpUsagePresentation usage,
+    @Default(false) bool supportsUsage,
     String? message,
     String? error,
     double? progress,

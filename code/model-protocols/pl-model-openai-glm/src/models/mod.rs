@@ -255,6 +255,7 @@ fn chat_parallel_request_profile() -> ModelRequestProfile {
 /// Zhipu 普通模型 effort：候选值按弱到强 none/enabled，映射 `thinking.type` 开关。
 fn zhipu_plain_effort_parameter() -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".to_string(),
         label: None,
@@ -293,6 +294,7 @@ fn zhipu_plain_effort_parameter() -> ModelParameter {
 /// GLM-5.2 effort：候选值按弱到强 none/high/max，联动 `reasoning_effort` 与 `thinking`。
 fn zhipu_glm52_effort_parameter() -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".to_string(),
         label: None,
@@ -317,6 +319,7 @@ fn zhipu_glm52_effort_parameter() -> ModelParameter {
 /// GLM-5.3 effort：候选值按弱到强 low/high/max，三档共用「始终思考」wire，仅切换 reasoning_effort。
 fn zhipu_glm53_effort_parameter() -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".to_string(),
         label: None,

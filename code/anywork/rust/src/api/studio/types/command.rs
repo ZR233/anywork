@@ -44,6 +44,19 @@ pub struct BridgeThreadModeCommandReply {
     pub receipt: BridgeStudioCommandReceipt,
 }
 
+/// A root Thread's model selection and the revisions it was based on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BridgeSetThreadModelRouteRequest {
+    pub operation_id: String,
+    pub thread_id: String,
+    pub expected_model_route_revision: u64,
+    pub expected_settings_revision: u64,
+    pub account_id: String,
+    pub model_id: String,
+    pub effort: Option<String>,
+    pub service_tier: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadModelRouteCommandReply {
     pub runtime: BridgeThreadRuntimeSnapshot,

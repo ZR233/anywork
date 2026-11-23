@@ -231,7 +231,7 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 - **请求期冻结**：每次模型调用在请求准备阶段将已解析的 `context_window`、`max_context_window` 与 `auto_compact_limit` 一并冻结到请求及结果回执中，历史记录解码时若缺失这些可选字段则保持为未知，绝不读取当前目录或当前配置回填历史。
 - **远程压缩能力**：完成请求输入支持携带含 `encryptedContent` 的专用压缩条目（`Compaction`），该条目可映射为 Responses 原生输入，而在 Chat Completions 协议下会被明确拒绝。端点是否支持远程压缩须显式声明，执行时复用共享执行器并固定走 HTTP 通道。
 
-## 6.8 模型可调参数（推理强度机制）
+## 6.8 模型可调参数
 
 推理强度（`effort`）并非全局固定的静态枚举，而是由模型自身声明的可调参数（通用参数机制的首个应用，同一结构可扩展至 `thinking`、`verbosity` 等参数）。模型目录独占维护参数的候选值域、显示名称、默认候选值以及线协议写入规则表（`wire` 规则），角色路由仅保存当前选中的候选值：
 
@@ -251,6 +251,12 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 | MiMo | `disabled` / `enabled` | `thinking.type` = 选中值 | — |
 
 内置模型的候选值按思考强度从弱到强排列，在线发现的候选集保持服务端返回的原始顺序。内部摘要类辅助请求（如会话自动生成标题）复用探索智能体（`explorer`）路由所绑定的模型，并固定选取该模型候选列表的首项（最轻量档位）。
+
+### ChatGPT/Codex 会话速度
+
+速度（`service_tier`）选择同一模型的服务档位，与推理强度独立，提速可能消耗更多订阅额度。Codex 的 `models[].service_tiers` 声明有序候选：`id` 是精确选择和发送的值，`name` 是可选展示名；`default_service_tier` 仅作为目录元数据，只有命中候选时才有效。沿用模型参数的候选校验及 wire 规则；速度声明与推理声明独立合成。仅同一账号的 Codex 目录能声明该能力，未提供或显式空都不产生可选速度；不从模型名、套餐、旧 `additional_speed_tiers` 或其他账号补齐，也不信任目录指定任意请求写入规则。
+
+标准速度表示不显式请求加速，不从目录默认值或候选首项自动选择。显式选择必须仍属于该账号模型的目录；失效的会话保存值保留但拒绝下一轮准入。通过准入的选择随该轮模型绑定冻结，调用沿用已有的 ChatGPT/Codex Responses HTTP 路径，将档位标识写入顶层 `service_tier`（Fast 为 `priority`，Ultrafast 为 `ultrafast`）。上游实际处理档位可能与请求值不同。该选项不改变 API Key、旧 SIWC、WebSocket、远程压缩、计费规则或子代理选模。协议依据：[OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)、[Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode)和 [Codex 目录](https://github.com/openai/codex/blob/e0a6d0532deefa65eb7e86287fffadebbfda7591/codex-rs/protocol/src/openai_models.rs#L419)。
 
 ## 6.9 模型家族预设与完整助手回放
 

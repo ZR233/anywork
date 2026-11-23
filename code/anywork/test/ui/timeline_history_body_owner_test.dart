@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -7,9 +8,10 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_c
 import 'package:anywork/src/features/conversation/timeline/state/content_reference_identity.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -159,7 +161,10 @@ void main() {
       find.byKey(const ValueKey('completion-run-header:work-row')),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineWaitPanel), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.waitingCard('wait-row')),
+      findsOneWidget,
+    );
     expect(reads, ['tool.arguments']);
     await tester.tap(find.byKey(StudioDriverKeys.waitingCard('wait-row')));
     await tester.pumpAndSettle();
@@ -181,10 +186,177 @@ void main() {
     );
     expect(unit.expansion.bodyActive, isFalse);
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineWaitPanel), findsNothing);
+    expect(find.byKey(StudioDriverKeys.waitingCard('wait-row')), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(unit.expansion.bodyActive, isFalse);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('historical reasoning is compact and only pages its open body', (
+    tester,
+  ) async {
+    const summaryKey = 'part.summaryText.0';
+    const bodyKey = 'part.reasoningText.0';
+    const lead = '检查组件边界';
+    final summary = utf8.encode(
+      '### **$lead** 与 `WorkRange`\n${'说明需要在概要行截断。' * 20}',
+    );
+    final first = utf8.encode('思考正文首段');
+    final last = utf8.encode('思考正文尾段');
+    const moreSummaryBytes = 10;
+    final summaryRead = Completer<ContentWindow>();
+    final unit = TimelineDisplayUnit(
+      block: const DisplayBlock(
+        id: 'reasoning-work',
+        blockOrder: 1,
+        body: WorkDisplayBlock(
+          timing: WorkTiming(startedAtMillis: 1000, finishedAtMillis: 15000),
+          members: DisplayBlockRef(
+            blockId: 'work',
+            cut: HistoryCut('fixed-cut'),
+            anchorSeq: 1,
+            headSeq: 1,
+          ),
+          executionPresent: false,
+          memberCount: 2,
+          unfinishedCount: 0,
+          groupClosed: true,
+        ),
+      ),
+    );
+    unit.expansion.current = unit;
+    addTearDown(unit.expansion.dispose);
+    final reads = <(String, int)>[];
+    final bodyLength = first.length + last.length;
+    unit.expansion.readHistoryBody = (_, reference, range) async {
+      reads.add((reference.bodyKey, range.offset));
+      if (reference.bodyKey == summaryKey) return summaryRead.future;
+      return ContentWindow(
+        offset: range.offset,
+        bytes: range.offset == 0 ? first : last,
+        generation: reference.bodyId,
+        availableThrough: bodyLength,
+        sealed: true,
+      );
+    };
+    ChatBodyPresentation referenced(String key, int length) =>
+        ChatBodyPresentation(
+          key: key,
+          byteLength: length,
+          historyReference: HistoryEventBodyRef(
+            databaseId: 'db',
+            ownerEventId: 'reasoning-event',
+            bodyKey: key,
+            bodyId: key,
+            byteStart: 0,
+            byteLength: length,
+          ),
+        );
+    final item = ChatItemPresentation(
+      id: 'reasoning-row',
+      compatibility: ChatItemCompatibility.current,
+      type: 'thinking',
+      data: const {},
+      bodies: [
+        referenced(summaryKey, summary.length + moreSummaryBytes),
+        referenced(bodyKey, bodyLength),
+      ],
+    );
+    const toolKey = ValueKey('one-line-tool');
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(1.5)),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 260,
+                child: SelectionArea(
+                  child: TimelineDisplayUnitView(
+                    unit: unit,
+                    childBuilder: (_) => Column(
+                      children: [
+                        const TimelineActivityRow(
+                          key: toolKey,
+                          icon: Icons.terminal,
+                          label: '已运行检查',
+                          expandable: false,
+                        ),
+                        ChatItemView(
+                          item: item,
+                          bodyBuilder: (id, text) => TimelineMarkdown(
+                            id: id,
+                            text: text,
+                            onLink: (_) {},
+                            isSafeLink: (_) => false,
+                            imageBuilder: (_, url) => Text(url),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    expect(reads, isEmpty);
+    await tester.tap(
+      find.byKey(const ValueKey('completion-run-header:reasoning-work')),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(reads, [(summaryKey, 0)]);
+    final row = find.descendant(
+      of: find.byType(ChatItemView),
+      matching: find.byType(TimelineActivityRow),
+    );
+    final singleLineHeight = tester.getSize(find.byKey(toolKey)).height;
+    summaryRead.complete(
+      ContentWindow(
+        offset: 0,
+        bytes: summary,
+        generation: summaryKey,
+        availableThrough: summary.length + moreSummaryBytes,
+        sealed: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining(lead, findRichText: true), findsOneWidget);
+    expect(tester.getSize(row).height, lessThanOrEqualTo(singleLineHeight + 4));
+    expect(find.byIcon(Icons.copy_rounded), findsNothing);
+    expect(find.text('下一段'), findsNothing);
+    expect(find.byIcon(Icons.chevron_right_rounded), findsOneWidget);
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(reads, [(summaryKey, 0), (bodyKey, 0)]);
+    expect(find.text('思考正文首段'), findsOneWidget);
+    expect(find.byIcon(Icons.copy_rounded), findsNothing);
+    await tester.tap(find.text('下一段'));
+    await tester.pumpAndSettle();
+    expect(reads.last, (bodyKey, first.length));
+    expect(find.text('思考正文尾段'), findsOneWidget);
+    expect(find.text('思考正文首段'), findsNothing);
+    expect(find.text('下一段'), findsNothing);
+    expect(find.byIcon(Icons.copy_rounded), findsNothing);
+
+    await tester.tap(row);
+    await tester.pumpAndSettle();
+    expect(find.text('思考正文尾段'), findsNothing);
+    expect(tester.getSize(row).height, lessThanOrEqualTo(singleLineHeight + 4));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
   });
 
   for (final (entityId, channel, expectedCopy, failed) in [

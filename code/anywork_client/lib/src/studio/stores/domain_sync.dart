@@ -60,6 +60,7 @@ class CommandTarget {
     this.accountId,
     this.modelId,
     this.effort,
+    this.serviceTier,
     this.enabled,
     this.label,
   });
@@ -67,6 +68,7 @@ class CommandTarget {
   final String? accountId;
   final String? modelId;
   final String? effort;
+  final String? serviceTier;
   final bool? enabled;
   final String? label;
 
@@ -77,11 +79,13 @@ class CommandTarget {
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&
+          serviceTier == other.serviceTier &&
           enabled == other.enabled &&
           label == other.label;
 
   @override
-  int get hashCode => Object.hash(accountId, modelId, effort, enabled, label);
+  int get hashCode =>
+      Object.hash(accountId, modelId, effort, serviceTier, enabled, label);
 }
 
 class CommandStatus {

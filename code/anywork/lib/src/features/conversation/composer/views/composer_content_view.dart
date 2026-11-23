@@ -289,6 +289,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
             accountId: route?.accountId,
             modelId: route?.modelId,
             effort: route?.effort,
+            serviceTier: route?.serviceTier,
             enabled: view.settingsLoaded,
             pending: view.routePending,
             available: route?.available ?? false,
@@ -300,6 +301,7 @@ class _ComposerContentViewState extends State<ComposerContentView> {
             onExplain: (message) => setState(() => _notice = message),
             onModelSelected: actions.setModel,
             onEffortSelected: actions.setEffort,
+            onServiceTierSelected: actions.setServiceTier,
           ),
       ],
     );
