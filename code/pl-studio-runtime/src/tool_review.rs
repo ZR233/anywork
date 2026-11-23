@@ -108,6 +108,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         model_id: Some(route.model.model_id.clone()),
         model_observation,
         effort: route.effort.as_ref().map(|effort| effort.as_str().into()),
+        requested_service_tier: Some("notApplicable".into()),
         context_window: route.context.context_window,
         accounting,
         prompt_generation: None,

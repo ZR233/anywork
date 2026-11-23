@@ -2876,6 +2876,7 @@ mod storage_fault_tests {
                 model_id: Some("frozen-model".into()),
                 model_observation: None,
                 effort: None,
+                requested_service_tier: None,
                 context_window: None,
                 accounting: crate::InferenceAccounting {
                     usage: crate::UsageReport {
@@ -5610,6 +5611,7 @@ mod storage_fault_tests {
                     model_id: Some("frozen-model".into()),
                     model_observation: None,
                     effort: None,
+                    requested_service_tier: None,
                     context_window: Some(64_000),
                     accounting: crate::InferenceAccounting {
                         usage: crate::UsageReport {
@@ -5646,6 +5648,7 @@ mod storage_fault_tests {
                     auto_compact_limit: None,
                 },
                 reasoning_effort: None,
+                requested_service_tier: None,
                 context_window: Some(64_000),
                 turn_id: "frozen-turn".into(),
                 accounting: receipt.billing.accounting.clone(),

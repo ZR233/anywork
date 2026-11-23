@@ -337,6 +337,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: result.binding,
                     reasoning_effort,
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -434,6 +435,7 @@ impl ContextPreparationHook for StudioCompaction {
                     inference_id: id.clone(),
                     binding: receipt.binding,
                     reasoning_effort: reasoning_effort.clone(),
+                    requested_service_tier: Some("notApplicable".into()),
                     reasoning_effort_source: Some(if handoff.is_some() {
                         CompactionEffortSource::CurrentModelDefault
                     } else {
@@ -1064,6 +1066,10 @@ pub(crate) struct CompactionReceipt {
     pub inference_id: String,
     pub binding: pl_model::runtime::ModelCallBinding,
     pub reasoning_effort: Option<String>,
+    /// Newly recorded compaction requests do not have a selectable tier. Historical
+    /// receipts retain absence so reprojecting them does not change a durable call hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort_source: Option<CompactionEffortSource>,
     pub context_window: Option<u64>,

@@ -19,6 +19,18 @@ pub fn supports_endpoint(endpoint: &ProtocolEndpoint) -> bool {
             .is_some_and(|auth| auth.workspace_id().is_some())
 }
 
+/// Whether a request on this route can select an explicit service tier.
+pub fn has_selectable_tier(endpoint: &ProtocolEndpoint, model: &ModelInfo) -> bool {
+    supports_endpoint(endpoint)
+        && model.parameters.iter().any(|parameter| {
+            parameter.name == "service_tier"
+                && parameter
+                    .candidates
+                    .iter()
+                    .any(|tier| validate_model(model, Some(tier)).is_ok())
+        })
+}
+
 /// Validates an explicit choice without applying the catalog's default or first candidate.
 ///
 /// # Errors

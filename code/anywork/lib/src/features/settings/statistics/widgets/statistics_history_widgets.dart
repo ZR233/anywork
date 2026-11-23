@@ -16,6 +16,8 @@ class StatisticsHistoryHeader extends StatelessWidget {
     required this.onChanged,
     required this.effortValue,
     required this.onEffortChanged,
+    this.serviceTierValue,
+    this.onServiceTierChanged,
     required this.mismatchesOnly,
     required this.onMismatchesOnlyChanged,
     super.key,
@@ -26,6 +28,8 @@ class StatisticsHistoryHeader extends StatelessWidget {
   final ValueChanged<String?> onChanged;
   final String? effortValue;
   final ValueChanged<String?> onEffortChanged;
+  final String? serviceTierValue;
+  final ValueChanged<String?>? onServiceTierChanged;
   final bool mismatchesOnly;
   final ValueChanged<bool> onMismatchesOnlyChanged;
 
@@ -112,6 +116,38 @@ class StatisticsHistoryHeader extends StatelessWidget {
             onSelected: onEffortChanged,
           ),
         );
+        final serviceTierFilter = SizedBox(
+          key: StudioDriverKeys.statisticsServiceTierFilter,
+          width: filterWidth,
+          child: DropdownMenu<String?>(
+            initialSelection: serviceTierValue,
+            hintText: context.l10n.statisticsAllServiceTiers,
+            expandedInsets: EdgeInsets.zero,
+            dropdownMenuEntries: [
+              DropdownMenuEntry<String?>(
+                value: null,
+                label: context.l10n.statisticsAllServiceTiers,
+                labelWidget: Text(context.l10n.statisticsAllServiceTiers),
+              ),
+              for (final option in options.serviceTiers)
+                DropdownMenuEntry<String?>(
+                  value: option.key,
+                  label: formatStatisticsRequestedServiceTier(
+                    context,
+                    option.requestedServiceTier,
+                  ),
+                  labelWidget: Text(
+                    formatStatisticsRequestedServiceTier(
+                      context,
+                      option.requestedServiceTier,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onSelected: onServiceTierChanged,
+          ),
+        );
         final mismatchFilter = InkWell(
           onTap: () => onMismatchesOnlyChanged(!mismatchesOnly),
           borderRadius: BorderRadius.circular(4),
@@ -136,14 +172,20 @@ class StatisticsHistoryHeader extends StatelessWidget {
             ),
           ),
         );
-        // 筛选区域按可用宽度换行：标题与三个控件都保持自身宽度，空间不足时整组
+        // 筛选区域按可用宽度换行：标题与控件都保持自身宽度，空间不足时整组
         // 换到下一行，不隐藏、不压缩，也不依赖固定机型阈值。
         return Wrap(
           alignment: WrapAlignment.spaceBetween,
           crossAxisAlignment: WrapCrossAlignment.center,
           spacing: 12,
           runSpacing: 8,
-          children: [title, mismatchFilter, filter, effortFilter],
+          children: [
+            title,
+            mismatchFilter,
+            filter,
+            effortFilter,
+            serviceTierFilter,
+          ],
         );
       },
     );
@@ -161,6 +203,7 @@ class StatisticsWideHistoryHeader extends StatelessWidget {
         Text(context.l10n.statisticsCompletedAt),
         Text(context.l10n.statisticsHistoryModelHeader),
         Text(context.l10n.statisticsReasoningEffort),
+        Text(context.l10n.statisticsRequestedServiceTier),
         Text(context.l10n.statisticsOutputTokens),
         const Text('TTFT'),
         Text(context.l10n.statisticsDecode),
@@ -196,6 +239,12 @@ class StatisticsWideHistoryRow extends StatelessWidget {
         _ModelIdentity(sample: sample),
         Text(formatStatisticsReasoningEffort(context, sample.effort)),
         Text(
+          formatStatisticsRequestedServiceTier(
+            context,
+            sample.requestedServiceTier,
+          ),
+        ),
+        Text(
           sample.completionTokens == null
               ? context.l10n.usageUnknown
               : _sampleTokens(sample),
@@ -211,6 +260,9 @@ class StatisticsWideHistoryRow extends StatelessWidget {
 
 class _WideCells extends StatelessWidget {
   const _WideCells({required this.children, this.emphasized = false});
+
+  // Shared by the header and rows: give the time, model name and TPS label more room.
+  static const _columnFlex = [4, 4, 2, 3, 2, 2, 3, 3, 4];
 
   final List<Widget> children;
   final bool emphasized;
@@ -232,7 +284,7 @@ class _WideCells extends StatelessWidget {
           children: [
             for (var index = 0; index < children.length; index++)
               Expanded(
-                flex: index == 1 ? 2 : 1,
+                flex: _columnFlex[index],
                 child: DefaultTextStyle(
                   style: emphasized
                       ? Theme.of(context).textTheme.labelMedium!
@@ -280,6 +332,13 @@ class StatisticsCompactHistoryCard extends StatelessWidget {
               SettingsMetric(
                 context.l10n.statisticsReasoningEffort,
                 formatStatisticsReasoningEffort(context, sample.effort),
+              ),
+              SettingsMetric(
+                context.l10n.statisticsRequestedServiceTier,
+                formatStatisticsRequestedServiceTier(
+                  context,
+                  sample.requestedServiceTier,
+                ),
               ),
               SettingsMetric(
                 context.l10n.statisticsSpeed,

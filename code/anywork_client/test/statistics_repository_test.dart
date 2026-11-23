@@ -8,6 +8,42 @@ import 'package:test/test.dart';
 import 'support/statistics_test_feed.dart';
 
 void main() {
+  test('request tier participates in immutable statistics content identity', () {
+    const tiers = [
+      null,
+      'standard',
+      'notApplicable',
+      'tier:priority',
+      'tier:ultrafast',
+    ];
+    final efforts = [
+      for (final tier in tiers) _effort('high', requestedServiceTier: tier),
+    ];
+    final samples = [
+      for (final tier in tiers) _sample(0, requestedServiceTier: tier),
+    ];
+    expect(efforts.toSet(), hasLength(tiers.length));
+    expect(samples.toSet(), hasLength(tiers.length));
+    for (var index = 0; index < tiers.length; index++) {
+      final effort = _effort('high', requestedServiceTier: tiers[index]);
+      final sample = _sample(0, requestedServiceTier: tiers[index]);
+      expect(efforts[index], effort);
+      expect(efforts[index].hashCode, effort.hashCode);
+      expect(samples[index], sample);
+      expect(samples[index].hashCode, sample.hashCode);
+      for (var other = 0; other < index; other++) {
+        expect(efforts[index], isNot(efforts[other]));
+        expect(samples[index], isNot(samples[other]));
+      }
+      // Independent effort filtering must not turn into a combined-tier filter.
+      expect(samples[index].effortKey, samples.first.effortKey);
+      expect(
+        samples[index].serviceTierKey,
+        '[${tiers[index] == null ? 'null' : '"${tiers[index]}"'}]',
+      );
+    }
+  });
+
   group('StatisticsRepository public behavior', () {
     test(
       'materializes every bounded page and reuses unchanged material',
@@ -18,9 +54,25 @@ void main() {
               _summaryItem('model-$index', effortCount: index == 0 ? 129 : 0),
         );
         final efforts = <int, Iterable<StatisticsEffortSummary>>{
-          0: List.generate(129, (index) => _effort('effort-$index')),
+          0: [
+            for (var index = 0; index < 126; index++)
+              _effort('high', requestedServiceTier: 'tier:custom-$index'),
+            _effort('high', requestedServiceTier: 'standard'),
+            _effort('high', requestedServiceTier: 'tier:priority'),
+            _effort('high', requestedServiceTier: 'tier:ultrafast'),
+          ],
         };
-        final history = List.generate(3000, (index) => _sample(index));
+        final history = List.generate(
+          3000,
+          (index) => _sample(
+            index,
+            requestedServiceTier: switch (index % 3) {
+              0 => 'standard',
+              1 => 'tier:priority',
+              _ => 'tier:ultrafast',
+            },
+          ),
+        );
         final initial = _publication(
           summaries: summaries,
           history: history,
@@ -54,6 +106,18 @@ void main() {
         expect(
           baseline.snapshot!.summaries.first.effortBreakdowns,
           hasLength(129),
+        );
+        expect(baseline.snapshot!.summaries.first.effortBreakdowns, efforts[0]);
+        expect(baseline.snapshot!.history, history);
+        expect(
+          baseline.snapshot!.summaries.first.effortBreakdowns
+              .skip(126)
+              .map((item) => (item.effort, item.requestedServiceTier)),
+          [
+            ('high', 'standard'),
+            ('high', 'tier:priority'),
+            ('high', 'tier:ultrafast'),
+          ],
         );
         expect(connection.summaryOffsets, [0, 128]);
         expect(connection.historyOffsets, [
@@ -861,8 +925,12 @@ StatisticsSummaryPageItem _summaryItem(String modelId, {int effortCount = 0}) =>
       effortCount: effortCount,
     );
 
-StatisticsEffortSummary _effort(String effort) => StatisticsEffortSummary(
+StatisticsEffortSummary _effort(
+  String effort, {
+  String? requestedServiceTier,
+}) => StatisticsEffortSummary(
   effort: effort,
+  requestedServiceTier: requestedServiceTier,
   sampleCount: 1,
   completionTokens: 1,
   totalTtftMillis: 1,
@@ -873,7 +941,11 @@ StatisticsEffortSummary _effort(String effort) => StatisticsEffortSummary(
   averageResponseMillis: 2,
 );
 
-StatisticsSample _sample(int index, {String? modelId}) => StatisticsSample(
+StatisticsSample _sample(
+  int index, {
+  String? modelId,
+  String? requestedServiceTier,
+}) => StatisticsSample(
   threadId: 'thread-statistics',
   callId: 'call-$index',
   purpose: 'primary',
@@ -889,6 +961,7 @@ StatisticsSample _sample(int index, {String? modelId}) => StatisticsSample(
   reportedModel: modelId ?? 'model-$index',
   modelMatchState: StatisticsModelMatchState.matched,
   effort: 'high',
+  requestedServiceTier: requestedServiceTier,
   completionTokens: 20,
   ttftMillis: 40,
   decodeMillis: 160,

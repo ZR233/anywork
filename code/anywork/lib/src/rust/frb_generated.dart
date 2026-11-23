@@ -19999,18 +19999,19 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 9)
-      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    if (arr.length != 10)
+      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
     return BridgeStatisticsEffortSummary(
       effort: dco_decode_opt_String(arr[0]),
-      sampleCount: dco_decode_u_64(arr[1]),
-      completionTokens: dco_decode_u_64(arr[2]),
-      totalTtftMillis: dco_decode_u_64(arr[3]),
-      ttftSampleCount: dco_decode_u_64(arr[4]),
-      totalResponseMillis: dco_decode_u_64(arr[5]),
-      tokensPerSecond: dco_decode_f_64(arr[6]),
-      averageTtftMillis: dco_decode_opt_box_autoadd_f_64(arr[7]),
-      averageResponseMillis: dco_decode_f_64(arr[8]),
+      requestedServiceTier: dco_decode_opt_String(arr[1]),
+      sampleCount: dco_decode_u_64(arr[2]),
+      completionTokens: dco_decode_u_64(arr[3]),
+      totalTtftMillis: dco_decode_u_64(arr[4]),
+      ttftSampleCount: dco_decode_u_64(arr[5]),
+      totalResponseMillis: dco_decode_u_64(arr[6]),
+      tokensPerSecond: dco_decode_f_64(arr[7]),
+      averageTtftMillis: dco_decode_opt_box_autoadd_f_64(arr[8]),
+      averageResponseMillis: dco_decode_f_64(arr[9]),
     );
   }
 
@@ -20099,8 +20100,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeStatisticsSample dco_decode_bridge_statistics_sample(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 20)
-      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
+    if (arr.length != 21)
+      throw Exception('unexpected arr length: expect 21 but see ${arr.length}');
     return BridgeStatisticsSample(
       threadId: dco_decode_String(arr[0]),
       callId: dco_decode_String(arr[1]),
@@ -20117,11 +20118,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       reportedModel: dco_decode_opt_String(arr[12]),
       modelMatchState: dco_decode_bridge_statistics_model_match_state(arr[13]),
       effort: dco_decode_opt_String(arr[14]),
-      completionTokens: dco_decode_opt_box_autoadd_u_64(arr[15]),
-      ttftMillis: dco_decode_opt_box_autoadd_u_64(arr[16]),
-      decodeMillis: dco_decode_opt_box_autoadd_u_64(arr[17]),
-      totalResponseMillis: dco_decode_opt_box_autoadd_u_64(arr[18]),
-      tokensPerSecond: dco_decode_opt_box_autoadd_f_64(arr[19]),
+      requestedServiceTier: dco_decode_opt_String(arr[15]),
+      completionTokens: dco_decode_opt_box_autoadd_u_64(arr[16]),
+      ttftMillis: dco_decode_opt_box_autoadd_u_64(arr[17]),
+      decodeMillis: dco_decode_opt_box_autoadd_u_64(arr[18]),
+      totalResponseMillis: dco_decode_opt_box_autoadd_u_64(arr[19]),
+      tokensPerSecond: dco_decode_opt_box_autoadd_f_64(arr[20]),
     );
   }
 
@@ -38061,6 +38063,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_effort = sse_decode_opt_String(deserializer);
+    var var_requestedServiceTier = sse_decode_opt_String(deserializer);
     var var_sampleCount = sse_decode_u_64(deserializer);
     var var_completionTokens = sse_decode_u_64(deserializer);
     var var_totalTtftMillis = sse_decode_u_64(deserializer);
@@ -38071,6 +38074,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_averageResponseMillis = sse_decode_f_64(deserializer);
     return BridgeStatisticsEffortSummary(
       effort: var_effort,
+      requestedServiceTier: var_requestedServiceTier,
       sampleCount: var_sampleCount,
       completionTokens: var_completionTokens,
       totalTtftMillis: var_totalTtftMillis,
@@ -38204,6 +38208,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       deserializer,
     );
     var var_effort = sse_decode_opt_String(deserializer);
+    var var_requestedServiceTier = sse_decode_opt_String(deserializer);
     var var_completionTokens = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_ttftMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_decodeMillis = sse_decode_opt_box_autoadd_u_64(deserializer);
@@ -38225,6 +38230,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       reportedModel: var_reportedModel,
       modelMatchState: var_modelMatchState,
       effort: var_effort,
+      requestedServiceTier: var_requestedServiceTier,
       completionTokens: var_completionTokens,
       ttftMillis: var_ttftMillis,
       decodeMillis: var_decodeMillis,
@@ -56188,6 +56194,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_String(self.effort, serializer);
+    sse_encode_opt_String(self.requestedServiceTier, serializer);
     sse_encode_u_64(self.sampleCount, serializer);
     sse_encode_u_64(self.completionTokens, serializer);
     sse_encode_u_64(self.totalTtftMillis, serializer);
@@ -56298,6 +56305,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_opt_String(self.effort, serializer);
+    sse_encode_opt_String(self.requestedServiceTier, serializer);
     sse_encode_opt_box_autoadd_u_64(self.completionTokens, serializer);
     sse_encode_opt_box_autoadd_u_64(self.ttftMillis, serializer);
     sse_encode_opt_box_autoadd_u_64(self.decodeMillis, serializer);

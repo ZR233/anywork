@@ -43,6 +43,7 @@ final class AccountModelKey {
 final class StatisticsEffortSummary {
   const StatisticsEffortSummary({
     required this.effort,
+    this.requestedServiceTier,
     required this.sampleCount,
     required this.completionTokens,
     required this.totalTtftMillis,
@@ -54,6 +55,7 @@ final class StatisticsEffortSummary {
   });
 
   final String? effort;
+  final String? requestedServiceTier;
   final int sampleCount;
   final int completionTokens;
   final int totalTtftMillis;
@@ -70,6 +72,7 @@ final class StatisticsEffortSummary {
       identical(this, other) ||
       other is StatisticsEffortSummary &&
           effort == other.effort &&
+          requestedServiceTier == other.requestedServiceTier &&
           sampleCount == other.sampleCount &&
           completionTokens == other.completionTokens &&
           totalTtftMillis == other.totalTtftMillis &&
@@ -82,6 +85,7 @@ final class StatisticsEffortSummary {
   @override
   int get hashCode => Object.hash(
     effort,
+    requestedServiceTier,
     sampleCount,
     completionTokens,
     totalTtftMillis,
@@ -189,6 +193,7 @@ final class StatisticsSample {
     required this.reportedModel,
     required this.modelMatchState,
     required this.effort,
+    this.requestedServiceTier,
     required this.completionTokens,
     required this.ttftMillis,
     required this.decodeMillis,
@@ -215,6 +220,7 @@ final class StatisticsSample {
   final String? reportedModel;
   final StatisticsModelMatchState modelMatchState;
   final String? effort;
+  final String? requestedServiceTier;
   final int? completionTokens;
   final int? ttftMillis;
   final int? decodeMillis;
@@ -228,6 +234,9 @@ final class StatisticsSample {
   late final String filterKey = identity.encoded;
   String get displayModel => modelId ?? sentModel ?? '';
   late final String effortKey = jsonEncode(<Object?>[effort]);
+  late final String serviceTierKey = jsonEncode(<Object?>[
+    requestedServiceTier,
+  ]);
 
   @override
   bool operator ==(Object other) =>
@@ -248,6 +257,7 @@ final class StatisticsSample {
           reportedModel == other.reportedModel &&
           modelMatchState == other.modelMatchState &&
           effort == other.effort &&
+          requestedServiceTier == other.requestedServiceTier &&
           completionTokens == other.completionTokens &&
           ttftMillis == other.ttftMillis &&
           decodeMillis == other.decodeMillis &&
@@ -271,6 +281,7 @@ final class StatisticsSample {
     reportedModel,
     modelMatchState,
     effort,
+    requestedServiceTier,
     completionTokens,
     ttftMillis,
     decodeMillis,

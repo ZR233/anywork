@@ -8,6 +8,7 @@ final class StatisticsFilterOptions {
   ) {
     final models = <String, StatisticsModelFilterOption>{};
     final efforts = <String, StatisticsEffortFilterOption>{};
+    final serviceTiers = <String, StatisticsServiceTierFilterOption>{};
     for (final sample in history) {
       models.putIfAbsent(
         sample.filterKey,
@@ -25,6 +26,13 @@ final class StatisticsFilterOptions {
           effort: sample.effort,
         ),
       );
+      serviceTiers.putIfAbsent(
+        sample.serviceTierKey,
+        () => StatisticsServiceTierFilterOption(
+          key: sample.serviceTierKey,
+          requestedServiceTier: sample.requestedServiceTier,
+        ),
+      );
     }
     for (final summary in summaries) {
       models.putIfAbsent(
@@ -40,13 +48,15 @@ final class StatisticsFilterOptions {
     return StatisticsFilterOptions._(
       List.unmodifiable(models.values),
       List.unmodifiable(efforts.values),
+      List.unmodifiable(serviceTiers.values),
     );
   }
 
-  const StatisticsFilterOptions._(this.models, this.efforts);
+  const StatisticsFilterOptions._(this.models, this.efforts, this.serviceTiers);
 
   final List<StatisticsModelFilterOption> models;
   final List<StatisticsEffortFilterOption> efforts;
+  final List<StatisticsServiceTierFilterOption> serviceTiers;
 }
 
 final class StatisticsModelFilterOption {
@@ -68,4 +78,14 @@ final class StatisticsEffortFilterOption {
 
   final String key;
   final String? effort;
+}
+
+final class StatisticsServiceTierFilterOption {
+  const StatisticsServiceTierFilterOption({
+    required this.key,
+    required this.requestedServiceTier,
+  });
+
+  final String key;
+  final String? requestedServiceTier;
 }

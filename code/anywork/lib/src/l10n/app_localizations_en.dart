@@ -1721,7 +1721,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsStatisticsSubtitle =>
-      'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.';
+      'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.';
 
   @override
   String get settingsStatisticsSummaryTitle => 'Model performance';
@@ -4962,7 +4962,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statisticsAllEfforts => 'All effort levels';
 
   @override
-  String get statisticsEffortBreakdownTitle => 'Effort breakdown';
+  String get statisticsEffortBreakdownTitle =>
+      'Effort and request tier breakdown';
+
+  @override
+  String get statisticsRequestedServiceTier => 'Request speed tier';
+
+  @override
+  String get statisticsAllServiceTiers => 'All request tiers';
+
+  @override
+  String get statisticsServiceTierStandard => 'Standard';
+
+  @override
+  String get statisticsServiceTierUnrecorded => 'Not recorded';
+
+  @override
+  String get statisticsServiceTierNotApplicable => 'Not applicable';
 
   @override
   String get accountProtocolOpenAi => 'OpenAI';

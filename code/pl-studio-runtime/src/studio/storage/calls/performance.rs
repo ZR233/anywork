@@ -24,6 +24,7 @@ pub(super) struct PerformanceSample {
     pub(super) sent_model: Option<String>,
     pub(super) reported_model: Option<String>,
     pub(super) effort: Option<String>,
+    pub(super) requested_service_tier: Option<String>,
     pub(super) output_tokens: Option<i64>,
     pub(super) ttft_millis: Option<i64>,
     pub(super) decode_millis: Option<i64>,
@@ -43,6 +44,7 @@ impl PerformanceSample {
                 &self.sent_model,
                 &self.reported_model,
                 &self.effort,
+                &self.requested_service_tier,
             ]
             .into_iter()
             .flatten()
@@ -88,6 +90,7 @@ fn sample_with_validity(
         sent_model: record.sent_model.clone(),
         reported_model: record.reported_model.clone(),
         effort: record.effort.clone(),
+        requested_service_tier: record.requested_service_tier.clone(),
         output_tokens: usage
             .and_then(|usage| usage.output_tokens)
             .and_then(opt_i64),
@@ -110,8 +113,8 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
         "INSERT INTO performance_samples(
             thread_id,call_id,completed_at,account_id,account_display_name,
             model_id,sent_model,reported_model,effort,output_tokens,
-            ttft_millis,decode_millis,response_millis,purpose,usage_status,first_output_source,throughput_valid)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ttft_millis,decode_millis,response_millis,purpose,usage_status,first_output_source,throughput_valid,requested_service_tier)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(thread_id,call_id) DO UPDATE SET
             completed_at=excluded.completed_at,
             account_id=excluded.account_id,
@@ -120,6 +123,7 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
             sent_model=excluded.sent_model,
             reported_model=excluded.reported_model,
             effort=excluded.effort,
+            requested_service_tier=excluded.requested_service_tier,
             output_tokens=excluded.output_tokens,
             ttft_millis=excluded.ttft_millis,
             decode_millis=excluded.decode_millis,
@@ -144,6 +148,7 @@ pub(super) async fn record(db: &impl ConnectionTrait, sample: &PerformanceSample
             enum_text(sample.usage_status)?.into(),
             enum_text(sample.first_output_source)?.into(),
             (sample.throughput_valid as i32).into(),
+            sample.requested_service_tier.clone().into(),
         ],
     ))
     .await?;
@@ -167,6 +172,12 @@ pub(super) async fn read_history(
     )).await?;
     rows.iter()
         .map(|row| {
+            let purpose: Option<String> = row.try_get("", "purpose")?;
+            let requested_service_tier = row
+                .try_get::<Option<String>>("", "requested_service_tier")?
+                .or_else(|| {
+                    (purpose.as_deref() == Some(ACP_TEXT_ESTIMATE)).then(|| "notApplicable".into())
+                });
             let optional = |name| -> Result<Option<u64>> {
                 row.try_get::<Option<i64>>("", name)?
                     .map(u64::try_from)
@@ -176,7 +187,7 @@ pub(super) async fn read_history(
             Ok(PerformanceSampleRow {
                 thread_id: row.try_get("", "thread_id")?,
                 call_id: row.try_get("", "call_id")?,
-                purpose: row.try_get("", "purpose")?,
+                purpose,
                 completed_at: row.try_get("", "completed_at")?,
                 account_id: row
                     .try_get::<Option<String>>("", "account_id")?
@@ -190,6 +201,7 @@ pub(super) async fn read_history(
                     .unwrap_or_default(),
                 reported_model: row.try_get("", "reported_model")?,
                 effort: row.try_get("", "effort")?,
+                requested_service_tier,
                 completion_tokens: optional("output_tokens")?,
                 usage_status: serde_json::from_value(serde_json::Value::String(
                     row.try_get("", "usage_status")?,
@@ -210,7 +222,7 @@ pub(super) async fn read_summary(db: &impl ConnectionTrait) -> Result<Vec<Perfor
     let rows = db
         .query_all_raw(statement(
             "SELECT account_id,COALESCE(MAX(account_display_name),'') AS account_display_name,
-                model_id,effort,COUNT(*) AS sample_count,
+                model_id,effort,requested_service_tier,COUNT(*) AS sample_count,
                 SUM(output_tokens) AS completion_tokens,
                 COALESCE(SUM(ttft_millis),0) AS total_ttft_millis,
                 COUNT(ttft_millis) AS ttft_sample_count,
@@ -220,8 +232,9 @@ pub(super) async fn read_summary(db: &impl ConnectionTrait) -> Result<Vec<Perfor
            AND throughput_valid=1 AND output_tokens>0 AND response_millis>0
            AND usage_status NOT IN ('invalid','legacyUnknown')
            AND (purpose IS NULL OR purpose<>?)
-         GROUP BY account_id,model_id,effort
-         ORDER BY account_id,model_id,effort IS NOT NULL,effort",
+         GROUP BY account_id,model_id,effort,requested_service_tier
+         ORDER BY account_id,model_id,effort IS NOT NULL,effort,
+                  requested_service_tier IS NOT NULL,requested_service_tier",
             vec![ACP_TEXT_ESTIMATE.into()],
         ))
         .await?;
@@ -699,6 +712,7 @@ INSERT INTO performance_samples VALUES
                 sent_model: Some("model".to_owned()),
                 reported_model: None,
                 effort: None,
+                requested_service_tier: None,
                 output_tokens: Some(200),
                 ttft_millis: None,
                 decode_millis: None,

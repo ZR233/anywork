@@ -379,6 +379,7 @@ async fn generate_title(
         model_id: Some(route.model.model_id.clone()),
         model_observation,
         effort: reasoning_effort,
+        requested_service_tier: Some("notApplicable".into()),
         context_window: route.context.context_window,
         accounting,
         prompt_generation: None,

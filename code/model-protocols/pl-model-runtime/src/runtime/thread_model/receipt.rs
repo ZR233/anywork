@@ -269,6 +269,9 @@ pub struct ModelRequestReceipt {
     pub reasoning: Option<crate::completion::ReasoningConfig>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u64>,
+    /// Frozen request grouping key; absent in historical receipts.
+    #[serde(default)]
+    pub requested_service_tier: Option<String>,
     /// Hashes of the normalized request; independent of the stable account cache hint.
     #[serde(default)]
     pub prompt: Option<crate::runtime::ThreadPromptSnapshot>,
@@ -310,6 +313,7 @@ pub fn model_response_receipt(
 }
 
 pub(super) fn request_metadata(
+    runtime: &ModelRuntime,
     binding: &ModelCallBinding,
     request: &crate::completion::CompletionRequest,
     prompt: Option<&crate::runtime::ThreadPromptSnapshot>,
@@ -324,6 +328,7 @@ pub(super) fn request_metadata(
         reasoning: &'a Option<crate::completion::ReasoningConfig>,
         temperature: Option<f32>,
         max_tokens: Option<u64>,
+        requested_service_tier: String,
         prompt: Option<&'a crate::runtime::ThreadPromptSnapshot>,
     }
     let content = serde_json::to_string(&RequestMetadata {
@@ -334,6 +339,17 @@ pub(super) fn request_metadata(
         reasoning: &request.reasoning,
         temperature: request.temperature,
         max_tokens: request.max_tokens,
+        requested_service_tier: match request.service_tier.as_deref() {
+            Some(id) => format!("tier:{id}"),
+            None if pl_model_openai_wire::service_tiers::has_selectable_tier(
+                runtime.endpoint(),
+                runtime.model(),
+            ) =>
+            {
+                "standard".into()
+            }
+            None => "notApplicable".into(),
+        },
         prompt,
     })
     .map_err(|source| {

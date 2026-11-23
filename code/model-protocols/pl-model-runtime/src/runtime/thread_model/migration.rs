@@ -617,6 +617,7 @@ impl LegacyModelRequestReceipt {
             reasoning: self.reasoning,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            requested_service_tier: None,
             prompt,
         }
     }

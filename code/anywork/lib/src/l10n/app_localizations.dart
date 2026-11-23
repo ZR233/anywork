@@ -3158,7 +3158,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsStatisticsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Recent successful calls grouped by account and configured model, with an in-group effort breakdown.'**
+  /// **'Recent successful calls grouped by account and configured model, with a breakdown by reasoning effort and requested speed tier.'**
   String get settingsStatisticsSubtitle;
 
   /// No description provided for @settingsStatisticsSummaryTitle.
@@ -8886,8 +8886,38 @@ abstract class AppLocalizations {
   /// No description provided for @statisticsEffortBreakdownTitle.
   ///
   /// In en, this message translates to:
-  /// **'Effort breakdown'**
+  /// **'Effort and request tier breakdown'**
   String get statisticsEffortBreakdownTitle;
+
+  /// No description provided for @statisticsRequestedServiceTier.
+  ///
+  /// In en, this message translates to:
+  /// **'Request speed tier'**
+  String get statisticsRequestedServiceTier;
+
+  /// No description provided for @statisticsAllServiceTiers.
+  ///
+  /// In en, this message translates to:
+  /// **'All request tiers'**
+  String get statisticsAllServiceTiers;
+
+  /// No description provided for @statisticsServiceTierStandard.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard'**
+  String get statisticsServiceTierStandard;
+
+  /// No description provided for @statisticsServiceTierUnrecorded.
+  ///
+  /// In en, this message translates to:
+  /// **'Not recorded'**
+  String get statisticsServiceTierUnrecorded;
+
+  /// No description provided for @statisticsServiceTierNotApplicable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not applicable'**
+  String get statisticsServiceTierNotApplicable;
 
   /// No description provided for @accountProtocolOpenAi.
   ///

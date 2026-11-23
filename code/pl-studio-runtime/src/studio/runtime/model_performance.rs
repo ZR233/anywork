@@ -927,11 +927,11 @@ fn purpose_cost_snapshot(rollup: &PurposeCostRollup) -> crate::StudioPurposeCost
     }
 }
 
-/// 把 (account_id, model_id, effort) 的数据库分组折叠为唯一顶层 (account, model) 汇总。
+/// 把 (account_id, model_id, effort, requested_service_tier) 分组折叠为唯一顶层汇总。
 ///
 /// 同一账号模型在不同推理强度下的样本先在该组内累加得到顶层指标，再以
-/// `effort_breakdowns` 提供二级细分。调用库已按 account/model/effort 排序，沿相邻身份
-/// 折叠即可；显示名保留该有序输入中首个非空值（SQL 已在 effort 内取 MAX），不参与身份。
+/// `effort_breakdowns` 提供推理强度与请求档位的交叉细分。调用库已按这些键稳定排序，
+/// 沿相邻身份折叠即可；显示名保留有序输入中首个非空值，不参与身份。
 fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerformanceSummary> {
     let mut groups: Vec<StudioModelPerformanceSummary> = Vec::new();
     for row in rows {
@@ -976,6 +976,7 @@ fn summary_snapshots(rows: &[PerformanceSummaryRow]) -> Vec<StudioModelPerforman
             .effort_breakdowns
             .push(StudioModelPerformanceEffortSummary {
                 effort: row.effort.clone(),
+                requested_service_tier: row.requested_service_tier.clone(),
                 sample_count: row.sample_count,
                 completion_tokens: row.completion_tokens,
                 total_ttft_millis: row.total_ttft_millis,
@@ -1034,6 +1035,7 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
                 )
             }),
         effort: row.effort.clone(),
+        requested_service_tier: row.requested_service_tier.clone(),
         completion_tokens: row.completion_tokens,
         ttft_millis: row.ttft_millis,
         decode_millis: row.decode_millis,
@@ -1135,6 +1137,7 @@ mod tests {
             account_display_name: "Shared label".into(),
             model_id: model.into(),
             effort: effort.map(str::to_owned),
+            requested_service_tier: None,
             sample_count: 1,
             completion_tokens: 20,
             total_ttft_millis: 0,
@@ -1187,6 +1190,132 @@ mod tests {
         );
         assert_eq!(first.effort_breakdowns[1].average_ttft_millis, None);
         assert!(summary_snapshots(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_tiers_keep_independent_weights_and_one_account_model_total()
+    -> anyhow::Result<()> {
+        use crate::studio::storage::calls::{AcpPerformanceObservation, CallsStore};
+
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("calls.sqlite");
+        let store = CallsStore::open(&path).await?;
+        let cases = [
+            (None, 10, 100),
+            (Some("notApplicable"), 20, 200),
+            (Some("standard"), 30, 300),
+            (Some("standard"), 60, 900),
+            (Some("tier:priority"), 40, 400),
+            (Some("tier:priority"), 20, 1_000),
+            (Some("tier:ultrafast"), 50, 500),
+            // An explicit ID called standard must not become the standard sentinel.
+            (Some("tier:standard"), 5, 100),
+        ];
+        for (index, (tier, tokens, millis)) in cases.iter().enumerate() {
+            let billing: InferenceBillingRecord = serde_json::from_value(serde_json::json!({
+                "inferenceId": format!("call-{index}"),
+                "accountId": "account", "modelId": "model", "effort": "high",
+                "requestedServiceTier": tier,
+                "accounting": crate::InferenceAccounting {
+                    usage: crate::UsageReport { output_tokens: Some(*tokens), ..Default::default() },
+                    ..Default::default()
+                },
+                "timing": crate::InferenceTiming { response_millis: *millis, ..Default::default() },
+                "recordedAt": unix_seconds(),
+            }))?;
+            let ticket = store.admit_billing(
+                "root",
+                "thread",
+                &billing,
+                CallStatus::Committed,
+                CallRetention::Turn,
+            )?;
+            assert_eq!(
+                store.admit_billing(
+                    "root",
+                    "thread",
+                    &billing,
+                    CallStatus::Committed,
+                    CallRetention::Turn
+                )?,
+                ticket
+            );
+        }
+        store.record_acp_performance(AcpPerformanceObservation {
+            thread_id: "thread".into(),
+            call_id: "acp".into(),
+            account_id: "account".into(),
+            account_name: "Account".into(),
+            model: Some("model".into()),
+            effort: Some("high".into()),
+            performance: crate::AcpTextPerformance {
+                estimated_output_tokens: 9_999,
+                response_millis: 1,
+            },
+        });
+        store.close().await?;
+        assert_eq!(store.last_error(), None);
+        let store = CallsStore::open(&path).await?;
+        let material = store
+            .read_statistics(StatisticsReadRequest {
+                costs: true,
+                performance: true,
+            })
+            .await?;
+        let summaries = summary_snapshots(&material.summary.unwrap());
+        assert_eq!(summaries.len(), 1);
+        let summary = &summaries[0];
+        assert_eq!(summary.sample_count, 8);
+        assert_eq!(summary.completion_tokens, 235);
+        assert_eq!(summary.total_response_millis, 3_500);
+        assert_eq!(summary.tokens_per_second, 235_000.0 / 3_500.0);
+        let expected = [
+            (None, 1, 10, 100),
+            (Some("notApplicable"), 1, 20, 200),
+            (Some("standard"), 2, 90, 1_200),
+            (Some("tier:priority"), 2, 60, 1_400),
+            (Some("tier:standard"), 1, 5, 100),
+            (Some("tier:ultrafast"), 1, 50, 500),
+        ];
+        assert_eq!(summary.effort_breakdowns.len(), expected.len());
+        for (group, (tier, count, tokens, millis)) in summary.effort_breakdowns.iter().zip(expected)
+        {
+            assert_eq!(group.effort.as_deref(), Some("high"));
+            assert_eq!(group.requested_service_tier.as_deref(), tier);
+            assert_eq!(group.sample_count, count, "{tier:?}");
+            assert_eq!(group.completion_tokens, tokens, "{tier:?}");
+            assert_eq!(group.total_response_millis, millis, "{tier:?}");
+            assert_eq!(
+                group.tokens_per_second,
+                tokens as f64 * 1_000.0 / millis as f64,
+                "{tier:?}"
+            );
+        }
+        let history: Vec<_> = material
+            .history
+            .unwrap()
+            .iter()
+            .map(history_sample)
+            .collect();
+        assert_eq!(history.len(), 9);
+        for (index, (tier, _, _)) in cases.iter().enumerate() {
+            let sample = history
+                .iter()
+                .find(|sample| sample.call_id == format!("call-{index}"))
+                .unwrap();
+            assert_eq!(sample.requested_service_tier.as_deref(), *tier);
+        }
+        assert_eq!(
+            history
+                .iter()
+                .find(|sample| sample.call_id == "acp")
+                .unwrap()
+                .requested_service_tier
+                .as_deref(),
+            Some("notApplicable")
+        );
+        store.close().await?;
+        Ok(())
     }
 
     #[tokio::test]

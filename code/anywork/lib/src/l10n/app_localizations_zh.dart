@@ -1624,7 +1624,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsStatisticsTitle => '统计';
 
   @override
-  String get settingsStatisticsSubtitle => '按账号、配置模型与组内思考强度汇总最近成功调用。';
+  String get settingsStatisticsSubtitle => '按账号和配置模型汇总最近成功调用，并按思考强度与请求速度档位细分。';
 
   @override
   String get settingsStatisticsSummaryTitle => '模型性能';
@@ -4705,7 +4705,22 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statisticsAllEfforts => '全部强度';
 
   @override
-  String get statisticsEffortBreakdownTitle => '组内思考强度';
+  String get statisticsEffortBreakdownTitle => '组内思考强度与请求档位';
+
+  @override
+  String get statisticsRequestedServiceTier => '请求速度档位';
+
+  @override
+  String get statisticsAllServiceTiers => '全部请求档位';
+
+  @override
+  String get statisticsServiceTierStandard => '标准';
+
+  @override
+  String get statisticsServiceTierUnrecorded => '未记录';
+
+  @override
+  String get statisticsServiceTierNotApplicable => '不适用';
 
   @override
   String get accountProtocolOpenAi => 'OpenAI';

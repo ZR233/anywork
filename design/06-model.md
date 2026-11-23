@@ -258,6 +258,8 @@ ChatGPT 订阅请求在既有协议编解码与唯一模型运行时中适配，
 
 标准速度表示不显式请求加速，不从目录默认值或候选首项自动选择。显式选择必须仍属于该账号模型的目录；失效的会话保存值保留但拒绝下一轮准入。通过准入的选择随该轮模型绑定冻结，调用沿用已有的 ChatGPT/Codex Responses HTTP 路径，将档位标识写入顶层 `service_tier`（Fast 为 `priority`，Ultrafast 为 `ultrafast`）。上游实际处理档位可能与请求值不同。该选项不改变 API Key、旧 SIWC、WebSocket、远程压缩、计费规则或子代理选模。协议依据：[OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)、[Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode)和 [Codex 目录](https://github.com/openai/codex/blob/e0a6d0532deefa65eb7e86287fffadebbfda7591/codex-rs/protocol/src/openai_models.rs#L419)。
 
+模型性能统计按调用发出前冻结的**请求**速度档位归组，不读取响应的 `service_tier` 来决定样本归属。适用的请求未选择加速即为标准；不适用的调用与没有历史请求档位证据的调用均不得归入标准。实测速率和时延用于计算组内指标，不参与归组。样本保留及分组见 [17](./17-studio-storage.md)。
+
 ## 6.9 模型家族预设与完整助手回放
 
 ### 模型家族预设
