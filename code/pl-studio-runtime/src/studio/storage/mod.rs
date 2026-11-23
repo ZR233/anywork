@@ -3145,8 +3145,7 @@ mod mode_migration_tests {
         let home = directory.path().join("home");
         let workspace = directory.path().join("workspace");
         tokio::fs::create_dir(&workspace).await?;
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
-        endpoint.set_nonblocking(true)?;
+        let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
         let account_id = AccountId::new("archive-fixture")?;
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
@@ -3160,7 +3159,7 @@ mod mode_migration_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Archive fixture",
-                    format!("http://{}", endpoint.local_addr()?),
+                    endpoint.base_url(),
                 ),
                 vec![ModelDefinition::compatible(&route.model_id)],
             ),
@@ -3290,16 +3289,17 @@ mod mode_migration_tests {
                 b"reliable"
             );
         }
-        assert_eq!(
-            endpoint.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
+
         anyhow::Ok(())
     }
     .await;
         let shutdown = runtime.shutdown_runtime().await;
         result?;
         shutdown?;
+        assert!(
+            endpoint.finish().await?.is_empty(),
+            "archiving must not send inference"
+        );
         Ok(())
     }
 

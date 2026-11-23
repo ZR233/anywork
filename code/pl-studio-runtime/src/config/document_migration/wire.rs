@@ -1281,6 +1281,14 @@ impl From<ModelInfo> for ModelDeclaration34 {
                 base.insert(key.into(), value);
             }
         }
+        // An empty historical label represented the absence of a display override.
+        if base
+            .get("display_name")
+            .and_then(|v| v.as_str())
+            .is_some_and(str::is_empty)
+        {
+            base.remove("display_name");
+        }
         if let Some(text) = old
             .remove("base_instructions")
             .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
