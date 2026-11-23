@@ -866,6 +866,22 @@ class FrbStudioTransport
   }
 
   @override
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    await _ensureReady();
+    return _acpInstallReplyFromFrb(
+      await _bridgeCall(
+        () => frb.checkAcpInstallUpdate(
+          operationId: operationId.value,
+          provider: _acpProviderToFrb(provider),
+        ),
+      ),
+    );
+  }
+
+  @override
   Future<AgentProfilesStateView> readAgentProfilesState() async {
     await _ensureReady();
     return _agentProfilesStateFromFrb(

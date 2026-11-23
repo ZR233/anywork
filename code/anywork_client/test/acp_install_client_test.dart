@@ -11,17 +11,23 @@ const _release = AcpInstallReleaseView(
   target: 'linux-x86_64',
   archiveUrl: 'https://dl.google.com/agy-extensions/releases/a.zip',
 );
-AcpInstallSnapshotView _snapshot(int revision, AcpInstallStateView state) =>
-    AcpInstallSnapshotView(
-      revision: revision,
-      updatedAt: revision,
-      installations: [
-        AcpInstallEntryView(
-          provider: AcpProviderView.antigravity,
-          state: state,
-        ),
-      ],
-    );
+AcpInstallSnapshotView _snapshot(
+  int revision,
+  AcpInstallStateView state, {
+  AcpInstalledServerView? installed,
+  AcpInstallUpdateStateView update = const AcpInstallUpdateIdleState(),
+}) => AcpInstallSnapshotView(
+  revision: revision,
+  updatedAt: revision,
+  installations: [
+    AcpInstallEntryView(
+      provider: AcpProviderView.antigravity,
+      state: state,
+      installed: installed,
+      update: update,
+    ),
+  ],
+);
 
 final class _InstallTransport extends AccountsTestTransport {
   _InstallTransport() {
@@ -31,9 +37,11 @@ final class _InstallTransport extends AccountsTestTransport {
   final startEntered = Completer<void>();
   int startCalls = 0;
   int cancelCalls = 0;
+  int checkUpdateCalls = 0;
   OperationId? lastStart;
   OperationId? lastCancelTarget;
   AcpProviderView? lastCancelProvider;
+  AcpProviderView? lastCheckProvider;
   @override
   Future<AcpInstallCommandReply> startAcpInstall({
     required OperationId operationId,
@@ -82,6 +90,28 @@ final class _InstallTransport extends AccountsTestTransport {
     pendingStart?.complete();
     pendingStart = null;
     return reply;
+  }
+
+  @override
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    checkUpdateCalls++;
+    lastCheckProvider = provider;
+    return _reply(
+      operationId,
+      _snapshot(
+        3,
+        const AcpInstallIdleState(),
+        installed: const AcpInstalledServerView(
+          installationId: 'installed-145',
+          release: _release,
+          program: '/servers/1.4.5/agy_acp_server.par',
+        ),
+        update: const AcpInstallUpdateCheckingState(),
+      ),
+    );
   }
 }
 
@@ -318,6 +348,65 @@ void main() {
     expect(
       renewed.resolve(ready, provider: AcpProviderView.antigravity),
       isNull,
+    );
+  });
+
+  test('checkUpdate 应用检查态且同时暴露已安装与可用更新版本', () async {
+    final transport = _InstallTransport();
+    final client = _client(transport);
+    final demand = client.domains.acp.observeInstall();
+    addTearDown(demand.release);
+    await pumpEventQueue();
+    final checked = await client.domains.acp.checkUpdate(
+      AcpProviderView.antigravity,
+    );
+    expect(transport.checkUpdateCalls, 1);
+    expect(transport.lastCheckProvider, AcpProviderView.antigravity);
+    expect(
+      checked.installedOf(AcpProviderView.antigravity)?.release.version,
+      '1.4.5',
+    );
+    expect(
+      checked.updateOf(AcpProviderView.antigravity),
+      const AcpInstallUpdateCheckingState(),
+    );
+
+    const release152 = AcpInstallReleaseView(
+      version: '1.5.2',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.5.2.zip',
+    );
+    transport.emitAccount(
+      AcpInstallFrame(
+        testStamp('acp-install', 4, epoch: transport.epoch),
+        _snapshot(
+          4,
+          const AcpDownloadingState(
+            operationId: 'upgrade-152',
+            release: release152,
+            progress: AcpInstallProgressView(completedBytes: 512),
+          ),
+          installed: const AcpInstalledServerView(
+            installationId: 'installed-145',
+            release: _release,
+            program: '/servers/1.4.5/agy_acp_server.par',
+          ),
+          update: const AcpInstallUpdateAvailableState(
+            checkedAt: 100,
+            latest: release152,
+          ),
+        ),
+      ),
+    );
+    await pumpEventQueue();
+    final current = client.domains.acp.install.value.value!;
+    expect(
+      current.readyServer(AcpProviderView.antigravity)?.release.version,
+      '1.4.5',
+    );
+    expect(
+      current.updateOf(AcpProviderView.antigravity),
+      const AcpInstallUpdateAvailableState(checkedAt: 100, latest: release152),
     );
   });
 }

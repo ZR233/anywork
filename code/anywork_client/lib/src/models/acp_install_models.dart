@@ -570,23 +570,136 @@ final class AcpInstallFailedState extends AcpInstallStateView {
   int get hashCode => Object.hash(0x041b, operationId, failure);
 }
 
+/// 受管 ACP server 后台/手动检查新版本的状态；独立于安装或升级状态机。
+sealed class AcpInstallUpdateStateView {
+  const AcpInstallUpdateStateView();
+}
+
+final class AcpInstallUpdateIdleState extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateIdleState();
+
+  @override
+  bool operator ==(Object other) => other is AcpInstallUpdateIdleState;
+
+  @override
+  int get hashCode => (AcpInstallUpdateIdleState).hashCode;
+}
+
+final class AcpInstallUpdateCheckingState extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateCheckingState();
+
+  @override
+  bool operator ==(Object other) => other is AcpInstallUpdateCheckingState;
+
+  @override
+  int get hashCode => (AcpInstallUpdateCheckingState).hashCode;
+}
+
+final class AcpInstallUpdateUpToDateState extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateUpToDateState({
+    required this.checkedAt,
+    required this.latestVersion,
+  });
+
+  final int checkedAt;
+  final String latestVersion;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpInstallUpdateUpToDateState &&
+      other.checkedAt == checkedAt &&
+      other.latestVersion == latestVersion;
+
+  @override
+  int get hashCode => Object.hash(0x0501, checkedAt, latestVersion);
+}
+
+final class AcpInstallUpdateAvailableState extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateAvailableState({
+    required this.checkedAt,
+    required this.latest,
+  });
+
+  final int checkedAt;
+  final AcpInstallReleaseView latest;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpInstallUpdateAvailableState &&
+      other.checkedAt == checkedAt &&
+      other.latest == latest;
+
+  @override
+  int get hashCode => Object.hash(0x0502, checkedAt, latest);
+}
+
+final class AcpInstallUpdateIncompatibleMajorState
+    extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateIncompatibleMajorState({
+    required this.checkedAt,
+    required this.latestVersion,
+  });
+
+  final int checkedAt;
+  final String latestVersion;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpInstallUpdateIncompatibleMajorState &&
+      other.checkedAt == checkedAt &&
+      other.latestVersion == latestVersion;
+
+  @override
+  int get hashCode => Object.hash(0x0503, checkedAt, latestVersion);
+}
+
+final class AcpInstallUpdateFailedState extends AcpInstallUpdateStateView {
+  const AcpInstallUpdateFailedState({
+    required this.checkedAt,
+    required this.failure,
+  });
+
+  final int checkedAt;
+  final AcpInstallFailureView failure;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpInstallUpdateFailedState &&
+      other.checkedAt == checkedAt &&
+      other.failure == failure;
+
+  @override
+  int get hashCode => Object.hash(0x0504, checkedAt, failure);
+}
+
 /// 单个 provider 的安装条目。
 class AcpInstallEntryView {
-  const AcpInstallEntryView({required this.provider, required this.state});
+  const AcpInstallEntryView({
+    required this.provider,
+    required this.state,
+    this.installed,
+    this.update = const AcpInstallUpdateIdleState(),
+  });
 
   final AcpProviderView provider;
 
   final AcpInstallStateView state;
+
+  final AcpInstalledServerView? installed;
+
+  final AcpInstallUpdateStateView update;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       other is AcpInstallEntryView &&
           other.provider == provider &&
-          other.state == state;
+          other.state == state &&
+          other.installed == installed &&
+          other.update == update;
 
   @override
-  int get hashCode => Object.hash(provider, state);
+  int get hashCode => Object.hash(provider, state, installed, update);
 }
 
 /// `acpInstall` 领域的 canonical snapshot。
@@ -613,9 +726,15 @@ class AcpInstallSnapshotView {
   AcpInstallEntryView? entry(AcpProviderView provider) =>
       installations.where((entry) => entry.provider == provider).firstOrNull;
 
-  /// 该 provider 当前 canonical 的就绪结果（无论 operation 身份）。
+  /// 该 provider 当前 canonical 的就绪结果（无论 operation 身份或升级中覆盖）。
   AcpInstalledServerView? readyServer(AcpProviderView provider) =>
-      stateOf(provider).server;
+      stateOf(provider).server ?? installedOf(provider);
+
+  AcpInstalledServerView? installedOf(AcpProviderView provider) =>
+      entry(provider)?.installed;
+
+  AcpInstallUpdateStateView updateOf(AcpProviderView provider) =>
+      entry(provider)?.update ?? const AcpInstallUpdateIdleState();
 
   @override
   bool operator ==(Object other) =>

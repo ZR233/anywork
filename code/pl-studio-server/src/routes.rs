@@ -13,19 +13,19 @@ use pl_studio_runtime::{
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AcpLocalDetectionCommandReply,
     AcpLocalDetectionSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
     CancelAcpAuthRequest, CancelAcpInstallRequest, CancelAcpLocalDetectionRequest,
-    ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
-    ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest, CreateThreadRequest,
-    DelegationModelDetail, DelegationModelDetails, DelegationModelList, DeleteMcpDocumentRequest,
-    GetDelegationModelRequest, GetDelegationModelsRequest, HealthResponse,
-    ListDelegationModelsRequest, LspResetRequest, McpCatalogSnapshot, McpDocumentCommitReceipt,
-    McpDocumentContent, McpDocumentRef, McpScope, OpenProjectRequest, PatchAccountRequest,
-    ReconnectThreadMcpRequest, RemoveAccountModelRequest, RemoveAccountRequest,
-    RemoveAcpAccountRequest, ResolveInteractionRequest, SetAccountBillingKindRequest,
-    SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
-    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
-    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
-    StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest, StopThreadResponse,
-    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
+    CheckAcpInstallUpdateRequest, ContinuationOperationView, ContinueAcpAuthRequest,
+    ContinueThreadRequest, ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest,
+    CreateThreadRequest, DelegationModelDetail, DelegationModelDetails, DelegationModelList,
+    DeleteMcpDocumentRequest, GetDelegationModelRequest, GetDelegationModelsRequest,
+    HealthResponse, ListDelegationModelsRequest, LspResetRequest, McpCatalogSnapshot,
+    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, OpenProjectRequest,
+    PatchAccountRequest, ReconnectThreadMcpRequest, RemoveAccountModelRequest,
+    RemoveAccountRequest, RemoveAcpAccountRequest, ResolveInteractionRequest,
+    SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
+    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
+    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
+    StartAcpAuthRequest, StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest,
+    StopThreadResponse, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
     SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest, ThreadLspResetRequest,
     ThreadMcpStateSnapshot, ThreadModelRouteCommandReply, UpdateAcpAccountRequest,
     UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
@@ -418,6 +418,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_acp_install))
         .routes(routes!(start_acp_install))
         .routes(routes!(cancel_acp_install))
+        .routes(routes!(check_acp_install_update))
         .routes(routes!(read_acp_local_detection))
         .routes(routes!(start_acp_local_detection))
         .routes(routes!(cancel_acp_local_detection))
@@ -1416,6 +1417,19 @@ async fn cancel_acp_install(
         state
             .runtime
             .cancel_acp_install(request)
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/runtime/acp-install/check-update", operation_id = "acpInstall.checkUpdate", request_body = CheckAcpInstallUpdateRequest, responses(StudioApiErrors, (status = 200, body = AcpInstallCommandReply)))]
+async fn check_acp_install_update(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<CheckAcpInstallUpdateRequest>,
+) -> Result<Json<AcpInstallCommandReply>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .check_acp_install_update(request)
             .map_err(ApiError::from)?,
     ))
 }

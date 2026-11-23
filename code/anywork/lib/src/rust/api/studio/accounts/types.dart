@@ -292,6 +292,7 @@ class BridgeAccountSummary {
 
   /// ACP authentication-owner identity; not a settings/catalog observation watermark.
   final BigInt? acpConnectionRevision;
+  final BridgeAcpProvider? acpTemplate;
   final BridgeAccountCapabilities capabilities;
 
   const BridgeAccountSummary({
@@ -307,6 +308,7 @@ class BridgeAccountSummary {
     this.usageQueryRevision,
     this.acpEnabled,
     this.acpConnectionRevision,
+    this.acpTemplate,
     required this.capabilities,
   });
 
@@ -324,6 +326,7 @@ class BridgeAccountSummary {
       usageQueryRevision.hashCode ^
       acpEnabled.hashCode ^
       acpConnectionRevision.hashCode ^
+      acpTemplate.hashCode ^
       capabilities.hashCode;
 
   @override
@@ -343,6 +346,7 @@ class BridgeAccountSummary {
           usageQueryRevision == other.usageQueryRevision &&
           acpEnabled == other.acpEnabled &&
           acpConnectionRevision == other.acpConnectionRevision &&
+          acpTemplate == other.acpTemplate &&
           capabilities == other.capabilities;
 }
 

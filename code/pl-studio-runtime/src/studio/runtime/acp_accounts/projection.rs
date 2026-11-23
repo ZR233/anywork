@@ -28,7 +28,7 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
             display_name: "Antigravity".to_string(),
             description: "通过官方 ACP server 连接 Antigravity，并使用其自身登录凭据。".to_string(),
             icon_key: "antigravity".to_string(),
-            supported_version: super::super::acp_install::SERVER_VERSION.to_string(),
+            supported_version: super::super::acp_install::SUPPORTED_VERSION_RANGE.to_string(),
             install_url: "https://antigravity.google/docs/ide/extensions".to_string(),
             terms_url: "https://antigravity.google/terms".to_string(),
             automatic_install: super::super::acp_install::automatic_install_availability(),

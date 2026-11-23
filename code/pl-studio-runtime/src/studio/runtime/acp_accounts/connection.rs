@@ -43,6 +43,8 @@ pub(crate) struct AccountConnection {
     pub(super) supervisor_finished: AtomicBool,
     pub(super) failure: Mutex<Option<AcpFailure>>,
     pub(super) initialized_at: Mutex<Option<tokio::time::Instant>>,
+    pub(super) installed_version: Mutex<Option<String>>,
+    pub(super) pending_upgrade_version: Mutex<Option<String>>,
     pub(super) launch_now: tokio::sync::Notify,
     retirement_wake: Arc<tokio::sync::Notify>,
     issue: Mutex<Option<String>>,
@@ -95,6 +97,39 @@ impl AccountConnection {
         members.retain(|member| member.has_obligations());
         members.push(member.clone());
         Ok(())
+    }
+
+    /// 在持 `members` 锁期间检查活跃成员并在非空时原子写入待升级目标版本，避免与成员关闭发生竞态。
+    pub(super) fn mark_pending_upgrade_if_active(&self, version: &str) -> bool {
+        let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+        members.retain(|member| member.has_obligations());
+        if members.is_empty() {
+            return false;
+        }
+        *self
+            .pending_upgrade_version
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(version.to_owned());
+        true
+    }
+
+    pub(crate) fn notify_member_closed(&self) {
+        let should_cancel = {
+            let mut members = self.members.lock().unwrap_or_else(PoisonError::into_inner);
+            members.retain(|member| member.has_obligations());
+            if !members.is_empty() {
+                false
+            } else {
+                self.pending_upgrade_version
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .is_some()
+            }
+        };
+        if should_cancel {
+            self.signal_cancel();
+            self.retirement_wake.notify_one();
+        }
     }
 
     pub(crate) async fn frontend(&self) -> Result<crate::host_mcp_assets::HostMcpAsset> {
@@ -343,6 +378,8 @@ impl AcpAccountRuntime {
                     supervisor_finished: AtomicBool::new(false),
                     failure: Mutex::new(None),
                     initialized_at: Mutex::new(None),
+                    installed_version: Mutex::new(None),
+                    pending_upgrade_version: Mutex::new(None),
                     launch_now: tokio::sync::Notify::new(),
                     retirement_wake: inner.retirement_wake.clone(),
                     issue: Mutex::new(None),
@@ -435,7 +472,13 @@ async fn supervise(
     inner.connection_state(&account, AcpConnectionState::Starting);
     let launched = spawn_process(&inner, &account.account_id, &definition, &account.cancel).await;
     let (mut worker, probe_dir, expected_version) = match launched {
-        Ok(value) => value,
+        Ok((worker, probe_dir, expected_version)) => {
+            *account
+                .installed_version
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = expected_version.clone();
+            (worker, probe_dir, expected_version)
+        }
         Err(error) => {
             *account
                 .failure
@@ -1078,6 +1121,8 @@ mod tests {
             retirement_wake: runtime.acp_accounts.inner.retirement_wake.clone(),
             issue: Mutex::new(None),
             retry: tokio::sync::Notify::new(),
+            installed_version: Mutex::new(None),
+            pending_upgrade_version: Mutex::new(None),
         });
         (account, release)
     }

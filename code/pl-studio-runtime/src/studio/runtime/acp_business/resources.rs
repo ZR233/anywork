@@ -732,21 +732,29 @@ impl AcpResources {
             && owned.report_join.is_none()
             && host_mcp.is_none()
             && workspace_complete;
-        if local_complete {
+        let closed_account = if local_complete {
             self.mcp_frontend
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
-            owned.account = None;
+            let account = owned.account.take();
             owned.usage = None;
             self.obligations.store(false, Ordering::Release);
-        }
-        AcpCloseOutcome {
+            account
+        } else {
+            None
+        };
+        let outcome = AcpCloseOutcome {
             exit: owned.exit.clone(),
             local_complete,
             worker_error: owned.worker_error.clone(),
             driver_error: owned.driver_error.clone(),
+        };
+        drop(owned);
+        if let Some(account) = closed_account {
+            account.notify_member_closed();
         }
+        outcome
     }
 }
 

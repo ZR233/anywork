@@ -2960,7 +2960,7 @@
   "acpEditorStepBasicTitle": "1. Account information",
   "acpEditorStepBasicSubtitle": "Set a display name for this Antigravity account in anywork. No API key is needed.",
   "acpEditorStepPrepareTitle": "2. Prepare official managed server",
-  "acpEditorStepPrepareSubtitle": "anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).",
+  "acpEditorStepPrepareSubtitle": "anywork automatically verifies or downloads the official Google Antigravity server (1.x).",
   "acpEditorStepConnectTitle": "3. Save and sign in with Google",
   "acpEditorStepConnectSubtitle": "Once the server is ready, click Save and connect to open account details and sign in with Google in your browser.",
   "acpInstallIdleHint": "Click Download and prepare below to reuse an existing installation or download from the official source.",
@@ -3746,5 +3746,84 @@
   "acpCostCurrencyLabel": "Currency",
   "acpCostRawLabel": "Raw reading",
   "acpCostScopeLabel": "Source",
-  "acpSessionDetailTitle": "Session info"
+  "acpSessionDetailTitle": "Session info",
+  "accountsCategoryAll": "All",
+  "accountsCategoryAcp": "ACP Agents",
+  "accountsCategoryNative": "API Accounts",
+  "accountsUpgradableCount": "{count} update{count, plural, =1{} other{s}}",
+  "@accountsUpgradableCount": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpManagedBadge": "Managed",
+  "acpLocalBadge": "Local command",
+  "acpVersionTag": "v{version}",
+  "@acpVersionTag": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeCheck": "Check for updates",
+  "acpUpgradeChecking": "Checking for updates…",
+  "acpUpgradeUpToDate": "Up to date · v{version}",
+  "@acpUpgradeUpToDate": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeAvailableTitle": "Update available",
+  "acpUpgradeAvailableVersions": "v{current} → v{latest}",
+  "@acpUpgradeAvailableVersions": {
+    "placeholders": {
+      "current": {
+        "type": "String"
+      },
+      "latest": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeAction": "Upgrade to v{version}",
+  "@acpUpgradeAction": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeActionGeneric": "Upgrade now",
+  "acpUpgradeUpgrading": "Upgrading to v{version}",
+  "@acpUpgradeUpgrading": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradePendingSwitch": "Installed v{version}; will switch once active sessions end",
+  "@acpUpgradePendingSwitch": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeIncompatibleMajor": "v{version} available (update anywork to support major v2)",
+  "@acpUpgradeIncompatibleMajor": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "acpUpgradeCheckFailed": "Update check failed. Try again.",
+  "acpUpgradeRetryCheck": "Retry check",
+  "acpManagedServerTitle": "Managed server & updates"
 }

@@ -135,6 +135,9 @@ AccountDomainFrame _accountFrameFromFrb(
             acpConnectionRevision: _frbNullableInt(
               account.acpConnectionRevision,
             ),
+            acpTemplate: account.acpTemplate == null
+                ? null
+                : _acpProviderFromFrb(account.acpTemplate!),
             capabilities: AccountCapabilities(
               setDefault: account.capabilities.setDefault,
               edit: account.capabilities.edit,

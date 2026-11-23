@@ -47,8 +47,10 @@ for line in sys.stdin:
         capabilities={'loadSession':True, 'mcpCapabilities':{'http': mode != 'mcp-stdio'}, 'sessionCapabilities':{'close':{}}}
         if mode == 'session-titles':
             capabilities['sessionCapabilities']['list'] = {}
+        version_path=root / 'server-version'
+        server_version=version_path.read_text().strip() if version_path.exists() else '1.4.5'
         result={'protocolVersion':1, 'agentCapabilities':capabilities,
-                'agentInfo':{'name':'synthetic-peer','version':'1.4.5'},
+                'agentInfo':{'name':'synthetic-peer','version':server_version},
                 'authMethods':[{'id':'login','name':'Sign in','description':'Use the official server login'}]}
     elif method in ['session/new','session/load','session/resume']:
         mode=(root / 'mode').read_text()

@@ -81,7 +81,7 @@ pub(super) async fn resolve_launch(
                 program: verified.program,
                 args: verified.args,
                 env,
-                expected_server_version: Some(super::acp_install::SERVER_VERSION.into()),
+                expected_server_version: Some(verified.release.version.clone()),
                 template: Some(*template),
             })
         }

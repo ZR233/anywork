@@ -155,22 +155,20 @@ fn map_usage_failure_code(code: crate::AcpAuthFailureCode) -> crate::AcpUsageFai
     }
 }
 
-/// ConfigRuntime owns connection revisions; auth only tracks its admitted identity and enabled state.
+/// ConfigRuntime owns connection revisions; auth only tracks its admitted identity, enabled state, and configured template kind.
+/// Does NOT encode mutable on-disk server patch version so upgrades never trigger `StaleRevision` on Settings views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectionIdentity {
     revision: u64,
     pub(super) enabled: bool,
-    release: Option<super::super::acp_install::ReleaseIdentity>,
+    template: Option<crate::config::AcpProvider>,
 }
 impl ConnectionIdentity {
     pub(super) fn of(entry: &AcpDefinitionEntry) -> Self {
         Self {
             revision: entry.connection_revision,
             enabled: entry.definition.enabled,
-            release: entry
-                .definition
-                .template_kind()
-                .and_then(super::super::acp_install::release_identity),
+            template: entry.definition.template_kind(),
         }
     }
 }
@@ -622,7 +620,7 @@ mod tests {
             identity: ConnectionIdentity {
                 revision: 7,
                 enabled: true,
-                release: None,
+                template: None,
             },
             revision: 7,
             state,
@@ -648,7 +646,7 @@ mod tests {
                     identity: ConnectionIdentity {
                         revision: 7,
                         enabled: true,
-                        release: None,
+                        template: None,
                     },
                     revision: 7,
                     state: AcpAuthState::Checking {
@@ -686,7 +684,7 @@ mod tests {
                 identity: ConnectionIdentity {
                     revision: 8,
                     enabled: true,
-                    release: None,
+                    template: None,
                 },
                 // observe_committed 的身份变化分支：新修订 + 旧操作仍在收束（Closing）。
                 revision: 8,

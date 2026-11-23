@@ -59,6 +59,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   _AuthenticationAttempt? _authenticating;
   ({int sequence, String operation})? _cancelInstall;
   ({int sequence, String operation})? _cancelAuth;
+  bool _checkingUpdate = false;
+  String? _checkUpdateError;
   bool _finished = false;
   String? _authOwnerEpoch;
   String? _installOwnerEpoch;
@@ -210,7 +212,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       return;
     }
     final known = _service.install.value;
-    if (known.loaded && known.value?.stateOf(_provider!).server != null) return;
+    final knownHasUpdate =
+        known.loaded &&
+        known.value?.updateOf(_provider!) is AcpInstallUpdateAvailableState;
+    if (known.loaded &&
+        known.value?.stateOf(_provider!).server != null &&
+        !knownHasUpdate) {
+      return;
+    }
     final attempt = ++_sequence;
     _preparing = attempt;
     _intent = _intent?.renewed();
@@ -230,10 +239,14 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         _error = _strings['stale'];
         return;
       }
-      // Shared Ready is a real, unclaimed installation. Starting another
-      // operation merely to obtain a receipt would bypass explicit usePrepared.
+      // Shared Ready is a real, unclaimed installation unless an approved 1.x
+      // update is available to download.
       final installation = current.value!.stateOf(_provider!);
-      if (installation.server != null || installation.isBusy) return;
+      final canUpgrade =
+          current.value!.updateOf(_provider!) is AcpInstallUpdateAvailableState;
+      if (installation.isBusy || (installation.server != null && !canUpgrade)) {
+        return;
+      }
       final snapshot = await _service.prepare(_provider!);
       if (!_ownsPrepare(attempt, generation)) return;
       final operation = snapshot.stateOf(_provider!).operationId;
@@ -522,11 +535,21 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         auth is AcpFailedState &&
         (auth.failure.code == AcpAuthFailureCodeView.preparationRequired ||
             auth.failure.code == AcpAuthFailureCodeView.installationInvalid);
+    final hasInstalledServer =
+        (_provider != null &&
+            (_service.install.value.value?.installedOf(_provider!) != null ||
+                _service.install.value.value?.stateOf(_provider!).server !=
+                    null)) ||
+        switch (auth) {
+          AcpVerifiedState(:final server) ||
+          AcpRequiredState(:final server) => server != null,
+          _ => false,
+        };
     final showInstall =
         _provider != null &&
         (_key.creating ||
-            preparing ||
-            (requiresPreparation && !_preparedForEditor));
+            (requiresPreparation && !_preparedForEditor) ||
+            (preparing && !hasInstalledServer));
     final methods = auth is AcpRequiredState
         ? auth.agentMethods
         : const <AcpAuthMethodView>[];
@@ -667,7 +690,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         phase: phase,
         usage: usage,
         supportsUsage: supportsUsage,
-        status: _preparing != null && !install.isBusy
+        status: showInstall && _preparing != null && !install.isBusy
             ? _strings['pendingPreparation']
             : showInstall && install.stage != null
             ? _strings['stage.${install.stage!.name}']
@@ -678,7 +701,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         subtitle: null,
         message: _template?.automaticInstall.isAvailable == false && showInstall
             ? _strings['unsupportedPlatform']
-            : preparing
+            : showInstall && preparing
             ? _strings['sharedPreparation']
             : auth is AcpRequiredState && auth.agentMethods.isEmpty
             ? (auth.terminalOnly
@@ -686,10 +709,10 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
                   : _strings['noAuthMethods'])
             : null,
         error: error,
-        progress: progress?.fraction,
-        progressLabel: progress == null
-            ? null
-            : '${progress.completedBytes}${progress.totalBytes == null ? '' : ' / ${progress.totalBytes}'} B',
+        progress: showInstall ? progress?.fraction : null,
+        progressLabel: showInstall
+            ? formatInstallProgressLabel(progress)
+            : null,
         facts: [
           if (install is AcpDownloadingState)
             AccountDisplayFact(
@@ -713,11 +736,16 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
               label: _strings['stage'],
               value: _strings['stage.${stage.name}'],
             ),
-          if (_template?.supportedVersion.isNotEmpty == true)
-            AccountDisplayFact(
-              label: _strings['version'],
-              value: _template!.supportedVersion,
-            ),
+          if ((_provider == null
+                      ? null
+                      : _service.install.value.value
+                            ?.installedOf(_provider!)
+                            ?.release
+                            .version) ??
+                  server?.version ??
+                  _template?.supportedVersion
+              case final version? when version.isNotEmpty)
+            AccountDisplayFact(label: _strings['version'], value: version),
           if (install.release case final release?)
             AccountDisplayFact(
               label: _strings['platform'],
@@ -752,8 +780,39 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             methods.length > 1 &&
             auth is AcpRequiredState &&
             _authenticating == null,
+        upgrade: showInstall || _provider == null
+            ? null
+            : projectAcpUpgrade(
+                snapshot: _service.install.value.value,
+                installStale: _service.install.value.stale,
+                template: _provider,
+                connection: _connection,
+                runningVersion: server?.version,
+                strings: _strings,
+                busyCheck: _checkingUpdate,
+                commandError: _checkUpdateError,
+              ),
       ),
     );
+  }
+
+  Future<void> checkUpdate() async {
+    if (_provider == null || _checkingUpdate || _finished) return;
+    _checkingUpdate = true;
+    _checkUpdateError = null;
+    _publish();
+    try {
+      await _service.checkUpdate(_provider!);
+    } catch (error) {
+      if (ref.mounted && !_finished) {
+        _checkUpdateError = safeAccountError(error, _strings);
+      }
+    } finally {
+      if (ref.mounted && !_finished) {
+        _checkingUpdate = false;
+        _publish();
+      }
+    }
   }
 
   void _publish() {

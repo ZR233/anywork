@@ -89,4 +89,5 @@ abstract interface class AcpService {
   Future<AcpAuthSnapshotView> cancelAuth(AcpAccountIdentity identity);
   Future<AcpInstallSnapshotView> prepare(AcpProviderView provider);
   Future<AcpInstallSnapshotView> cancelPreparation(AcpProviderView provider);
+  Future<AcpInstallSnapshotView> checkUpdate(AcpProviderView provider);
 }

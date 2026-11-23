@@ -11,7 +11,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
     AcpInstallEntry, AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease,
-    AcpInstallSnapshot, AcpInstallStage, AcpInstallState, AcpInstalledServer, AcpProvider,
+    AcpInstallSnapshot, AcpInstallStage, AcpInstallState, AcpInstallUpdateState,
+    AcpInstalledServer, AcpProvider,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::studio::{ProductEventBus, unix_seconds};
 
 use super::mapping::failure;
+use super::source::SourcePolicy;
 
 /// 每操作独立的资源 owner：当前阻塞阶段任务与自有暂存都登记在这里，登记先于等待。
 ///
@@ -281,11 +283,14 @@ pub(super) struct ResidueHold {
 
 /// 尚未发布的业务结果。
 pub(super) enum BusinessOutcome {
-    Ready(AcpInstalledServer),
+    Ready {
+        server: AcpInstalledServer,
+        from_online_registry: bool,
+    },
     Failed(AcpInstallFailure),
 }
 
-/// 一个 provider 当前 target 的槽位（只描述**当前在途业务**）。
+/// 一个 provider 当前 target 的槽位（只描述当前在途业务、已安装事实与更新检查状态）。
 ///
 /// - `busy`：准入占用；终态发布时释放（与契约"终态发布与 busy 释放同一提交"一致）。
 /// - `operation`：只在操作在途/收束中（含 residue）时存在。业务终态发布后，句柄归属移交给
@@ -294,9 +299,31 @@ pub(super) struct Slot {
     pub(super) state: AcpInstallState,
     pub(super) operation: Option<Arc<Operation>>,
     pub(super) busy: bool,
+    pub(super) installed: Option<AcpInstalledServer>,
+    pub(super) update: AcpInstallUpdateState,
 }
 
-/// 一条命令身份绑定的意图；同 ID 只允许同一意图，start 与 cancel 共享容量与台账。
+impl Slot {
+    pub(super) fn idle() -> Self {
+        Self {
+            state: AcpInstallState::Idle,
+            operation: None,
+            busy: false,
+            installed: None,
+            update: AcpInstallUpdateState::Idle,
+        }
+    }
+}
+
+/// 后台或显式触发的版本检查任务归属（按 provider 至多一条活动任务）。
+pub(super) struct CheckTask {
+    pub(super) generation: u64,
+    pub(super) allow_remote: bool,
+    pub(super) cancel: CancellationToken,
+    pub(super) join: Option<JoinHandle<()>>,
+}
+
+/// 一条命令身份绑定的意图；同 ID 只允许同一意图，start 与 cancel 与 checkUpdate 共享容量与台账。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CommandIntent {
     Start {
@@ -306,6 +333,9 @@ pub(super) enum CommandIntent {
     Cancel {
         provider: AcpProvider,
         target_operation_id: String,
+    },
+    CheckUpdate {
+        provider: AcpProvider,
     },
 }
 
@@ -318,7 +348,9 @@ pub(super) struct Registry {
     /// 关闭闸门：与 start 登记同锁，一旦封闭不再接受新操作，也不再准入发布提交。
     pub(super) closed: bool,
     pub(super) slots: BTreeMap<AcpProvider, Slot>,
-    /// 已受理命令身份（含 start 与 cancel，含已完成）；容量有界、只增不减。
+    /// 并行版本检查任务（启动初始化与显式检查更新共用，退出时真实 join）。
+    pub(super) check_tasks: BTreeMap<AcpProvider, CheckTask>,
+    /// 已受理命令身份（含 start、cancel、checkUpdate，含已完成）；容量有界、只增不减。
     pub(super) commands: BTreeMap<String, CommandIntent>,
     /// 清理未确认收束的资源保管：每个 provider 一条，随 runtime 生命周期存在（有界，不重试膨胀）。
     pub(super) residue: BTreeMap<AcpProvider, ResidueHold>,
@@ -342,7 +374,7 @@ impl Registry {
         self.next_generation
     }
 
-    /// 已发布快照：每个有槽位的 provider 一条，终态保留 operation 身份。
+    /// 已发布快照：每个有槽位的 provider 一条，终态保留 operation 身份、已安装事实与更新状态。
     pub(super) fn snapshot(&self) -> AcpInstallSnapshot {
         AcpInstallSnapshot {
             revision: self.revision,
@@ -353,6 +385,8 @@ impl Registry {
                 .map(|(provider, slot)| AcpInstallEntry {
                     provider: *provider,
                     state: slot.state.clone(),
+                    installed: slot.installed.clone(),
+                    update: slot.update.clone(),
                 })
                 .collect(),
         }
@@ -372,6 +406,8 @@ pub(super) struct AcpInstallInner {
     pub(super) store: crate::studio::StudioStore,
     events: ProductEventBus,
     accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
+    #[cfg(test)]
+    policy_override: Mutex<Option<super::source::TestSourceOverride>>,
     registry: Mutex<Registry>,
 }
 
@@ -385,8 +421,31 @@ impl AcpInstallInner {
             store,
             events,
             accounts,
+            #[cfg(test)]
+            policy_override: Mutex::new(None),
             registry: Mutex::new(Registry::default()),
         }
+    }
+
+    pub(super) fn policy(&self) -> SourcePolicy {
+        #[cfg(test)]
+        if let Some(custom) = self
+            .policy_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        {
+            return SourcePolicy::for_test(custom);
+        }
+        SourcePolicy::official()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_test_policy(&self, override_source: super::source::TestSourceOverride) {
+        *self
+            .policy_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(override_source);
     }
 
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Registry> {
@@ -534,8 +593,9 @@ impl AcpInstallInner {
         provider: AcpProvider,
         generation: u64,
         terminal: AcpInstallState,
+        from_online_registry: bool,
     ) {
-        let snapshot = {
+        let (snapshot, ready_version) = {
             let mut registry = self.lock();
             let Some(slot) = registry.slots.get_mut(&provider) else {
                 return;
@@ -568,6 +628,13 @@ impl AcpInstallInner {
             } else {
                 terminal
             };
+            let ready_version = if let AcpInstallState::Ready { ref server, .. } = decided {
+                slot.installed = Some(server.clone());
+                apply_installed_to_update_state(&mut slot.update, server, from_online_registry);
+                Some(server.release.version.clone())
+            } else {
+                None
+            };
             // 终态、准入释放与句柄移交同一提交：业务清理已确认完成，重型资源释放，句柄与 identity
             // 移交给 retired 登记（关闭时真实 join），因此新 start 不再因旧句柄被拒。
             let retired = Arc::clone(&operation);
@@ -583,15 +650,149 @@ impl AcpInstallInner {
                     .insert(retired.operation_id.clone(), retired);
             }
             registry.bump();
+            (registry.snapshot(), ready_version)
+        };
+        self.emit(snapshot);
+        if let Some(version) = ready_version {
+            self.accounts.installation_ready(provider, &version);
+        }
+    }
+
+    /// 更新当前 provider 的版本检查结果（不干扰正在进行的安装操作）。
+    pub(super) fn note_update_state(&self, provider: AcpProvider, update: AcpInstallUpdateState) {
+        let snapshot = {
+            let mut registry = self.lock();
+            if registry.closed {
+                return;
+            }
+            let slot = registry.slots.entry(provider).or_insert_with(Slot::idle);
+            if slot.update == update {
+                return;
+            }
+            slot.update = update;
+            registry.bump();
             registry.snapshot()
         };
-        let ready = snapshot.installations.iter().any(|entry| {
-            entry.provider == provider && matches!(entry.state, AcpInstallState::Ready { .. })
-        });
         self.emit(snapshot);
-        if ready {
-            self.accounts.installation_ready(provider);
-        }
+    }
+
+    /// 供后台/手动版本检查任务提交本机已安装扫描事实；仅匹配最新代次且未取消时生效。
+    pub(super) fn publish_local_scan(
+        &self,
+        provider: AcpProvider,
+        generation: u64,
+        installed: Option<AcpInstalledServer>,
+    ) {
+        let snapshot = {
+            let mut registry = self.lock();
+            if registry.closed {
+                return;
+            }
+            let current = registry
+                .check_tasks
+                .get(&provider)
+                .is_some_and(|task| task.generation == generation && !task.cancel.is_cancelled());
+            if !current {
+                return;
+            }
+            if installed.is_none() && !registry.slots.contains_key(&provider) {
+                return;
+            }
+            let slot = registry.slots.entry(provider).or_insert_with(Slot::idle);
+            // 绝不用更旧或空白扫描覆盖已通过在线升级发布的更高安装。
+            let next_installed = match (&slot.installed, installed) {
+                (Some(existing), Some(scanned)) => {
+                    if semver_gt(&scanned.release.version, &existing.release.version) {
+                        Some(scanned)
+                    } else {
+                        Some(existing.clone())
+                    }
+                }
+                (Some(existing), None) => Some(existing.clone()),
+                (None, scanned) => scanned,
+            };
+            if slot.installed == next_installed {
+                return;
+            }
+            slot.installed = next_installed;
+            registry.bump();
+            registry.snapshot()
+        };
+        self.emit(snapshot);
+    }
+
+    /// 完成一次远端注册表版本检查，并在同一把锁内对比当下真实 `slot.installed`。
+    pub(super) fn finish_remote_check(
+        &self,
+        provider: AcpProvider,
+        generation: u64,
+        result: Result<super::source::RegistryLookup, AcpInstallFailure>,
+    ) {
+        let snapshot = {
+            let mut registry = self.lock();
+            if registry.closed {
+                return;
+            }
+            let current = registry
+                .check_tasks
+                .get(&provider)
+                .is_some_and(|task| task.generation == generation && !task.cancel.is_cancelled());
+            if !current {
+                return;
+            }
+            let now = unix_seconds();
+            let slot = registry.slots.entry(provider).or_insert_with(Slot::idle);
+            let next_update = match result {
+                Ok(super::source::RegistryLookup::Release(latest)) => {
+                    match slot.installed.as_ref() {
+                        Some(installed)
+                            if semver_lt(&installed.release.version, &latest.release.version) =>
+                        {
+                            AcpInstallUpdateState::UpdateAvailable {
+                                checked_at: now,
+                                latest: latest.release,
+                            }
+                        }
+                        Some(installed) => {
+                            let best_known =
+                                if semver_gt(&installed.release.version, &latest.release.version) {
+                                    installed.release.version.clone()
+                                } else {
+                                    latest.release.version
+                                };
+                            AcpInstallUpdateState::UpToDate {
+                                checked_at: now,
+                                latest_version: best_known,
+                            }
+                        }
+                        None => AcpInstallUpdateState::UpToDate {
+                            checked_at: now,
+                            latest_version: latest.release.version,
+                        },
+                    }
+                }
+                Ok(super::source::RegistryLookup::IncompatibleMajor { version }) => {
+                    AcpInstallUpdateState::IncompatibleMajor {
+                        checked_at: now,
+                        latest_version: version,
+                    }
+                }
+                Err(failure) if failure.code == AcpInstallFailureCode::Cancelled => {
+                    return;
+                }
+                Err(failure) => AcpInstallUpdateState::Failed {
+                    checked_at: now,
+                    failure,
+                },
+            };
+            if slot.update == next_update {
+                return;
+            }
+            slot.update = next_update;
+            registry.bump();
+            registry.snapshot()
+        };
+        self.emit(snapshot);
     }
 
     /// 监督任务异常终止（panic）时的收尾：清理句柄槽、释放 busy 并发布可观察失败。
@@ -716,17 +917,26 @@ impl AcpInstallInner {
         let Some(hold) = self.lock().residue.remove(&provider) else {
             return;
         };
-        let terminal = match hold.business {
-            BusinessOutcome::Ready(server) => AcpInstallState::Ready {
-                operation_id: hold.operation_id.clone(),
+        let (terminal, online) = match hold.business {
+            BusinessOutcome::Ready {
                 server,
-            },
-            BusinessOutcome::Failed(failure) => AcpInstallState::Failed {
-                operation_id: hold.operation_id.clone(),
-                failure,
-            },
+                from_online_registry,
+            } => (
+                AcpInstallState::Ready {
+                    operation_id: hold.operation_id.clone(),
+                    server,
+                },
+                from_online_registry,
+            ),
+            BusinessOutcome::Failed(failure) => (
+                AcpInstallState::Failed {
+                    operation_id: hold.operation_id.clone(),
+                    failure,
+                },
+                false,
+            ),
         };
-        self.complete_operation(provider, hold.operation.generation, terminal);
+        self.complete_operation(provider, hold.operation.generation, terminal, online);
     }
 
     /// 关闭阶段：已结束业务操作的句柄快照（只克隆 Arc，不把回收责任移出 owner）。
@@ -742,5 +952,53 @@ impl AcpInstallInner {
     /// 当前仍有保管的 provider 列表。
     pub(super) fn residue_providers(&self) -> Vec<AcpProvider> {
         self.lock().residue.keys().copied().collect()
+    }
+}
+
+fn semver_lt(left: &str, right: &str) -> bool {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(l), Ok(r)) => l < r,
+        _ => false,
+    }
+}
+
+fn semver_gt(left: &str, right: &str) -> bool {
+    match (semver::Version::parse(left), semver::Version::parse(right)) {
+        (Ok(l), Ok(r)) => l > r,
+        _ => false,
+    }
+}
+
+fn apply_installed_to_update_state(
+    update: &mut AcpInstallUpdateState,
+    installed: &AcpInstalledServer,
+    from_online_registry: bool,
+) {
+    let installed_version = installed.release.version.as_str();
+    let now = unix_seconds();
+    match update {
+        AcpInstallUpdateState::UpdateAvailable { latest, .. } => {
+            if !semver_lt(installed_version, &latest.version) {
+                *update = AcpInstallUpdateState::UpToDate {
+                    checked_at: now,
+                    latest_version: installed.release.version.clone(),
+                };
+            }
+        }
+        AcpInstallUpdateState::IncompatibleMajor { .. } => {}
+        AcpInstallUpdateState::Idle | AcpInstallUpdateState::Failed { .. } => {
+            if from_online_registry {
+                *update = AcpInstallUpdateState::UpToDate {
+                    checked_at: now,
+                    latest_version: installed.release.version.clone(),
+                };
+            }
+        }
+        AcpInstallUpdateState::UpToDate { latest_version, .. } => {
+            if semver_gt(installed_version, latest_version) {
+                *latest_version = installed.release.version.clone();
+            }
+        }
+        AcpInstallUpdateState::Checking => {}
     }
 }

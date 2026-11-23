@@ -5,8 +5,8 @@
 //! `acpAuth` 的认证状态共用水位。这里不携带原始 URL 之外的任何凭据、代理信息、本地文件路径
 //! 或库错误链——失败只暴露稳定 code/phase/安全摘要（见 design/28 §28.6、§28.7）。
 //!
-//! 安装的版本、target、archive 与启动 argv 全部来自产品固定清单，运行期不读取远端 registry，
-//! 也不解析远端版本（design/28 §28.5）。
+//! 安装来源优先从官方 ACP 注册表在线发现大版本 `1` 范围内的兼容发行（`>= 1.4.5, < 2.0.0`），
+//! 并保留内置 `1.4.5` 作为离线兼容基线；不开放任意版本号或第三方下载地址（design/28 §28.5）。
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -16,8 +16,9 @@ use super::{AcpProvider, StudioCommandReceipt};
 /// 自动准备的平台可用性。
 ///
 /// `target` 只由后端按运行 Studio 的宿主平台产生（`linux-x86_64`/`linux-aarch64`/
-/// `windows-x86_64`/`windows-aarch64`），客户端显示平台不决定下载目标。不支持的平台没有可准备的
-/// 官方发行，接入的检查会明确失败为 `unsupportedPlatform`，不存在本地程序或任意版本回退。
+/// `windows-x86_64`/`windows-aarch64`/`darwin-x86_64`/`darwin-aarch64`），客户端显示平台不决定
+/// 下载目标。不支持的平台没有可准备的官方发行，接入的检查会明确失败为 `unsupportedPlatform`，
+/// 不存在本地程序或任意版本回退。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
 pub enum AcpInstallAvailability {
@@ -76,7 +77,7 @@ pub struct AcpInstalledServer {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum AcpInstallStage {
-    /// 解析产品固定清单（本地、不联网）。
+    /// 解析受管发行（优先查询官方 ACP 注册表，大版本 1 兼容范围内升级）。
     Resolve,
     WaitForLock,
     Download,
@@ -251,12 +252,48 @@ impl AcpInstallState {
     }
 }
 
+/// 大版本 1 兼容范围内（`>= 1.4.5, < 2.0.0`）的更新检查状态；与正在执行的安装操作独立，互不阻塞。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
+pub enum AcpInstallUpdateState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate {
+        checked_at: i64,
+        latest_version: String,
+    },
+    UpdateAvailable {
+        checked_at: i64,
+        latest: AcpInstallRelease,
+    },
+    IncompatibleMajor {
+        checked_at: i64,
+        latest_version: String,
+    },
+    Failed {
+        checked_at: i64,
+        failure: AcpInstallFailure,
+    },
+}
+
 /// 一个 provider 的安装条目。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpInstallEntry {
     pub provider: AcpProvider,
     pub state: AcpInstallState,
+    /// 当前宿主平台已通过完整性验证的最高 `1.x` 安装事实（启动扫描或安装/升级就绪后填充）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installed: Option<AcpInstalledServer>,
+    /// 后台并行检查或手动检查得到的版本更新状态。
+    #[serde(default)]
+    pub update: AcpInstallUpdateState,
 }
 
 /// 安装 topic 的 canonical 快照；revision 独立于 Settings 与 `acpAuth`。
@@ -277,6 +314,23 @@ impl AcpInstallSnapshot {
             .map(|entry| entry.state.clone())
             .unwrap_or(AcpInstallState::Idle)
     }
+
+    /// 某 provider 当前本机已验证的最高 `1.x` 安装。
+    pub fn installed_of(&self, provider: AcpProvider) -> Option<&AcpInstalledServer> {
+        self.installations
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .and_then(|entry| entry.installed.as_ref())
+    }
+
+    /// 某 provider 的更新检查状态；没有条目时是 `Idle`。
+    pub fn update_of(&self, provider: AcpProvider) -> AcpInstallUpdateState {
+        self.installations
+            .iter()
+            .find(|entry| entry.provider == provider)
+            .map(|entry| entry.update.clone())
+            .unwrap_or_default()
+    }
 }
 
 /// 安装命令回执：受理身份与受理时的 canonical 快照。
@@ -287,10 +341,18 @@ pub struct AcpInstallCommandReply {
     pub snapshot: AcpInstallSnapshot,
 }
 
-/// 显式准备请求；只表达 provider，平台 target 由后端决定。
+/// 显式准备/升级请求；只表达 provider，平台 target 由后端决定。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartAcpInstallRequest {
+    pub operation_id: String,
+    pub provider: AcpProvider,
+}
+
+/// 显式检查受管 server 新版本请求；在后台执行并发布到 `acpInstall` topic。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckAcpInstallUpdateRequest {
     pub operation_id: String,
     pub provider: AcpProvider,
 }

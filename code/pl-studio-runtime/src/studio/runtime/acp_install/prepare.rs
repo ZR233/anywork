@@ -1,27 +1,30 @@
-//! 认证前的固定受管安装验证（只读）。
+//! 认证前的受管安装离线发现与完整验证（只读）。
 //!
-//! 认证只能用产品固定发行、且经**完整验证**的受管安装启动：这里按产品清单重新计算冻结描述符，
-//! 定位 `<Studio home>/studio/acp-servers/installed/<provider>/<target>/<installation>`，并用安装
-//! 器自己的完整验证边界（回执、完整成员集合、size/hash、权限、入口执行位）核对实际磁盘内容。
+//! 认证只能用受管大版本 `1` 范围内（`>= 1.4.5, < 2.0.0`）、且经**完整验证**的已安装版本启动：
+//! 这里离线扫描 `<Studio home>/studio/acp-servers/installed/<provider>/<target>/` 下的受管安装目录，
+//! 校验每个候选的回执身份与来源政策并选出最高语义化 `1.x` 版本，再使用安装器自己的完整验证边界
+//! （完整成员集合、mode/size/SHA-256、入口执行位）核对实际磁盘内容。
 //!
-//! 只验证，不下载、不修复、不创建目录、不写回执：缺失是"需要准备"，不合格是"安装无效"，
-//! 都不隐式补救，也不把 runtime 曾发布过的 Ready 缓存当成磁盘事实（design/28 §28.3、§28.8）。
+//! 只验证，不联网、不下载、不修复、不创建目录、不写回执：缺失是"需要准备"，任一候选项损坏或
+//! 不合规是"安装无效"，绝不静默降级或绕过（design/28 §28.3、§28.7、§28.8）。
 //!
 //! 与安装资产锁的关系：本模块只读取**已发布**安装。发布是不可被业务取消回滚的原子 rename，安装器
-//! 从不修改已发布树，因此认证验证既不获取跨进程资产锁，也不会与安装器形成锁序死锁；任何无法确认
-//! 的情形都按失败处理，绝不放行启动。验证本身只占用阻塞线程与只读句柄，不派生进程或管道，因此
-//! supervisor 只需等待它返回，不存在需要额外回收的物理资源。
+//! 从不修改已发布树，因此认证验证既不获取跨进程资产锁，也不会与安装器形成锁序死锁。
 
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use crate::{
-    AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease, AcpInstallStage, AcpProvider,
+    AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease, AcpInstallStage,
+    AcpInstalledServer, AcpProvider,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::archive::{self, ExpectedInstall};
 use super::paths::ManagedRoot;
-use super::source;
+use super::source::{self, ResolvedRelease, SourcePolicy, VersionClassification};
+
+const MAX_INSTALLED_DIRS_SCAN: usize = 64;
 
 /// 验证通过的启动资格：绝对 program 与固定 argv 只在 runtime 私有边界内存在。
 ///
@@ -37,11 +40,11 @@ pub(in crate::studio::runtime) struct VerifiedInstall {
 /// 前置验证失败的安全类别；由认证 owner 映射成 `AcpAuthStage::Prepare` 上的 typed 失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::studio::runtime) enum PrepareFailure {
-    /// 没有该固定发行的受管安装：需要用户显式准备。
+    /// 宿主下尚未准备任何符合条件的 `1.x` 受管安装：需要用户显式准备。
     PreparationRequired,
-    /// 安装存在但回执、完整成员、权限或入口执行位不合格。
+    /// 安装存在但回执、来源政策、完整成员、权限或入口执行位不合格。
     InstallationInvalid,
-    /// 宿主平台没有产品固定支持的官方发行。
+    /// 宿主平台没有产品支持的官方发行。
     UnsupportedPlatform,
     /// 真实本地 IO 失败：无法确认安装，不放行启动。
     Io,
@@ -49,28 +52,7 @@ pub(in crate::studio::runtime) enum PrepareFailure {
     Cancelled,
 }
 
-/// 产品固定发行身份（版本 + 宿主 target）；平台不支持时为 `None`。
-///
-/// 认证的连接代次由 provider 与该身份共同决定：产品更换固定版本后旧代次自然失效，而名称编辑不会
-/// 改变它（design/28 §28.2）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::studio::runtime) struct ReleaseIdentity {
-    pub(in crate::studio::runtime) version: String,
-    pub(in crate::studio::runtime) target: String,
-}
-
-/// 当前宿主的固定发行身份；不联网，也不读配置。
-pub(in crate::studio::runtime) fn release_identity(
-    provider: crate::config::AcpProvider,
-) -> Option<ReleaseIdentity> {
-    let resolved = source::resolve(protocol_provider(provider)).ok()?;
-    Some(ReleaseIdentity {
-        version: resolved.release.version,
-        target: resolved.release.target,
-    })
-}
-
-/// 验证指定固定发行的受管安装并返回冻结启动资格。
+/// 离线验证当前宿主已安装的最高大版本 `1` 受管 server 并返回冻结启动资格。
 pub(in crate::studio::runtime) async fn verified_install(
     store: &crate::studio::StudioStore,
     provider: crate::config::AcpProvider,
@@ -79,68 +61,211 @@ pub(in crate::studio::runtime) async fn verified_install(
     let home = store.paths().home().to_path_buf();
     let root = store.acp_servers_root();
     let cancel = cancellation.clone();
-    // 完整验证是同步文件工作：放进阻塞池，不占用异步 worker；只读，不需要额外的 join 责任。
-    match tokio::task::spawn_blocking(move || verify(&home, root, provider, &cancel)).await {
+    match tokio::task::spawn_blocking(move || {
+        verify(&home, root, &SourcePolicy::official(), provider, &cancel)
+    })
+    .await
+    {
         Ok(result) => result,
-        // 阻塞任务 panic 不是"未准备"，也无法确认安装：如实按本地 IO 失败。
         Err(_) => Err(PrepareFailure::Io),
     }
 }
 
-fn verify(
+/// 供 `AcpInstallRuntime` 启动阶段做只读扫描（不因缺失或失败阻断启动）。
+pub(super) async fn scan_installed(
+    store: &crate::studio::StudioStore,
+    policy: SourcePolicy,
+    provider: AcpProvider,
+    cancellation: &CancellationToken,
+) -> Option<AcpInstalledServer> {
+    let home = store.paths().home().to_path_buf();
+    let root = store.acp_servers_root();
+    let cancel = cancellation.clone();
+    let config_provider = match provider {
+        AcpProvider::Antigravity => crate::config::AcpProvider::Antigravity,
+    };
+    tokio::task::spawn_blocking(move || {
+        let verified = verify(&home, root, &policy, config_provider, &cancel).ok()?;
+        let receipt_path = verified
+            .program
+            .parent()
+            .map(|parent| parent.join(archive::RECEIPT_NAME));
+        let ready_at = receipt_path
+            .and_then(|path| std::fs::symlink_metadata(path).ok())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .and_then(|dur| i64::try_from(dur.as_secs()).ok())
+            .unwrap_or_else(crate::studio::unix_seconds);
+        Some(AcpInstalledServer {
+            installation_id: verified.installation_id,
+            release: verified.release,
+            program: verified.program.to_string_lossy().into_owned(),
+            ready_at,
+            reused: true,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 查找本机已安装且通过完整性校验的最高 `1.x` 发行描述符，供远端出现 `2.x` 时复核现有 `1.x`。
+pub(super) async fn best_local_release(
+    store: &crate::studio::StudioStore,
+    policy: SourcePolicy,
+    provider: AcpProvider,
+    cancellation: &CancellationToken,
+) -> Option<ResolvedRelease> {
+    let home = store.paths().home().to_path_buf();
+    let root = store.acp_servers_root();
+    let cancel = cancellation.clone();
+    let config_provider = match provider {
+        AcpProvider::Antigravity => crate::config::AcpProvider::Antigravity,
+    };
+    tokio::task::spawn_blocking(move || {
+        let verified = verify(&home, root, &policy, config_provider, &cancel).ok()?;
+        let command = archive::normalize_relative(verified.program.file_name()?.to_str()?);
+        Some(ResolvedRelease {
+            release: verified.release,
+            command,
+            args: verified.args,
+        })
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+pub(super) fn verify(
     home: &Path,
     root_path: PathBuf,
+    policy: &SourcePolicy,
     provider: crate::config::AcpProvider,
     cancellation: &CancellationToken,
 ) -> Result<VerifiedInstall, PrepareFailure> {
     if cancellation.is_cancelled() {
         return Err(PrepareFailure::Cancelled);
     }
-    let wire_provider = protocol_provider(provider);
-    let resolved = source::resolve(wire_provider).map_err(map_install_failure)?;
-    let installation_id = source::installation_id(wire_provider, &resolved);
-    let storage_key =
-        source::storage_key(&installation_id).ok_or(PrepareFailure::InstallationInvalid)?;
     let stage = AcpInstallStage::Verify;
+    let Some(target) = source::current_target() else {
+        return Err(PrepareFailure::UnsupportedPlatform);
+    };
+    let wire_provider = protocol_provider(provider);
+
     // 只读打开安装根：不创建目录，缺失就是"尚未准备"。
     let Some(root) =
         ManagedRoot::open_existing(home, root_path, stage).map_err(map_install_failure)?
     else {
         return Err(PrepareFailure::PreparationRequired);
     };
-    let installed = super::paths::installed_path(
-        &root,
-        wire_provider.as_str(),
-        &resolved.release.target,
-        &storage_key,
-    );
-    match std::fs::symlink_metadata(&installed) {
-        // 存在（含链接）：交给完整验证按类型/权限拒绝，不在这里猜结论。
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(PrepareFailure::PreparationRequired);
+
+    let installed_root = root.anchor().join("installed");
+    let provider_dir = installed_root.join(wire_provider.as_str());
+    let target_dir = provider_dir.join(target);
+    for dir in [&installed_root, &provider_dir, &target_dir] {
+        match std::fs::symlink_metadata(dir) {
+            Ok(_) => root
+                .require_directory(dir, stage)
+                .map_err(map_install_failure)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PrepareFailure::PreparationRequired);
+            }
+            Err(_) => return Err(PrepareFailure::Io),
         }
-        Err(_) => return Err(PrepareFailure::Io),
     }
+
+    let entries = root
+        .entries_strict(&target_dir, stage)
+        .map_err(map_install_failure)?;
+    if entries.len() > MAX_INSTALLED_DIRS_SCAN {
+        return Err(PrepareFailure::InstallationInvalid);
+    }
+
+    let mut candidates: Vec<(semver::Version, String, PathBuf, archive::Receipt)> = Vec::new();
+    for (entry_path, metadata) in entries {
+        if cancellation.is_cancelled() {
+            return Err(PrepareFailure::Cancelled);
+        }
+        if !metadata.is_dir() {
+            return Err(PrepareFailure::InstallationInvalid);
+        }
+        root.require_directory(&entry_path, stage)
+            .map_err(map_install_failure)?;
+        let Some(dir_name) = entry_path.file_name().and_then(|name| name.to_str()) else {
+            return Err(PrepareFailure::InstallationInvalid);
+        };
+        if !is_hex_storage_key(dir_name) {
+            return Err(PrepareFailure::InstallationInvalid);
+        }
+        let receipt = archive::read_receipt(&root, &entry_path).map_err(map_install_failure)?;
+        let version = match source::classify_version(&receipt.release.version) {
+            VersionClassification::Supported(version) => version,
+            _ => return Err(PrepareFailure::InstallationInvalid),
+        };
+        if receipt.release.target != target {
+            return Err(PrepareFailure::InstallationInvalid);
+        }
+        let archive_url = reqwest::Url::parse(&receipt.release.archive_url)
+            .map_err(|_| PrepareFailure::InstallationInvalid)?;
+        policy
+            .validate_archive_url(&archive_url)
+            .map_err(|_| PrepareFailure::InstallationInvalid)?;
+        source::validate_optional_sha256(receipt.release.sha256.as_deref(), stage)
+            .map_err(|_| PrepareFailure::InstallationInvalid)?;
+        let normalized_cmd =
+            source::validate_target_command_args(target, &receipt.command, &receipt.args, stage)
+                .map_err(|_| PrepareFailure::InstallationInvalid)?;
+        if normalized_cmd != archive::normalize_relative(&receipt.command) {
+            return Err(PrepareFailure::InstallationInvalid);
+        }
+        let resolved = ResolvedRelease {
+            release: receipt.release.clone(),
+            command: normalized_cmd,
+            args: receipt.args.clone(),
+        };
+        let expected_id = source::installation_id(wire_provider, &resolved);
+        if receipt.installation_id != expected_id
+            || source::storage_key(&expected_id).as_deref() != Some(dir_name)
+        {
+            return Err(PrepareFailure::InstallationInvalid);
+        }
+        candidates.push((version, dir_name.to_string(), entry_path, receipt));
+    }
+
+    let Some((_, _, best_path, expected_receipt)) = candidates
+        .into_iter()
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)))
+    else {
+        return Err(PrepareFailure::PreparationRequired);
+    };
+
     let receipt = archive::verify_installed(
         &root,
-        &installed,
+        &best_path,
         ExpectedInstall {
-            installation_id: &installation_id,
-            release: &resolved.release,
-            command: &resolved.command,
-            args: &resolved.args,
+            installation_id: &expected_receipt.installation_id,
+            release: &expected_receipt.release,
+            command: &expected_receipt.command,
+            args: &expected_receipt.args,
         },
         cancellation,
         &|_completed, _total| {},
     )
     .map_err(map_install_failure)?;
+
     Ok(VerifiedInstall {
-        program: installed.join(&receipt.command),
-        args: resolved.args,
+        program: best_path.join(&receipt.command),
+        args: receipt.args,
         installation_id: receipt.installation_id,
         release: receipt.release,
     })
+}
+
+fn is_hex_storage_key(name: &str) -> bool {
+    name.len() == 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// 安装失败分类到前置验证类别的穷尽映射。

@@ -611,6 +611,7 @@ class DemoStudioTransport extends StudioTransport
                 isDefault: false,
                 acpEnabled: account.enabled,
                 acpConnectionRevision: account.connectionRevision,
+                acpTemplate: account.template,
                 capabilities: AccountCapabilities(
                   setDefault: false,
                   edit: true,
@@ -1178,6 +1179,8 @@ class DemoStudioTransport extends StudioTransport
   final DemoAcpAuth _demoAcpAuth = DemoAcpAuth();
   int _acpInstallRevision = 0;
   final Map<AcpProviderView, AcpInstallStateView> _acpInstalls = {};
+  final Map<AcpProviderView, AcpInstalledServerView> _acpInstalledServers = {};
+  final Map<AcpProviderView, AcpInstallUpdateStateView> _acpInstallUpdates = {};
   final Map<AcpProviderView, Timer> _acpInstallTimers = {};
   final Map<McpScope, int> _mcpCatalogRevisions = {};
   final Map<McpDocumentRef, ({String id, int revision, String rawToml})>
@@ -2464,17 +2467,38 @@ class DemoStudioTransport extends StudioTransport
   // `acpInstall` demo：只模拟后端发布的阶段与真实形状的进度，不联网、不写盘。
   // -------------------------------------------------------------------------
 
-  AcpInstallSnapshotView _demoInstallSnapshot() => AcpInstallSnapshotView(
-    revision: _acpInstallRevision,
-    updatedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
-    installations: [
-      for (final entry in _acpInstalls.entries)
-        AcpInstallEntryView(provider: entry.key, state: entry.value),
-    ],
-  );
+  AcpInstallSnapshotView _demoInstallSnapshot() {
+    final providers = <AcpProviderView>{
+      ..._acpInstalls.keys,
+      ..._acpInstalledServers.keys,
+      ..._acpInstallUpdates.keys,
+    };
+    return AcpInstallSnapshotView(
+      revision: _acpInstallRevision,
+      updatedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+      installations: [
+        for (final provider in providers)
+          AcpInstallEntryView(
+            provider: provider,
+            state: _acpInstalls[provider] ?? const AcpInstallIdleState(),
+            installed: _acpInstalledServers[provider],
+            update:
+                _acpInstallUpdates[provider] ??
+                const AcpInstallUpdateIdleState(),
+          ),
+      ],
+    );
+  }
 
   void _publishInstall(AcpProviderView provider, AcpInstallStateView state) {
     _acpInstalls[provider] = state;
+    if (state is AcpInstallReadyState) {
+      _acpInstalledServers[provider] = state.server;
+      _acpInstallUpdates[provider] = AcpInstallUpdateUpToDateState(
+        checkedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+        latestVersion: state.server.release.version,
+      );
+    }
     _acpInstallRevision += 1;
     _publishProductPayload(
       AcpInstallStateChangedPayload(_demoInstallSnapshot()),
@@ -2494,10 +2518,13 @@ class DemoStudioTransport extends StudioTransport
     snapshot: _demoInstallSnapshot(),
   );
 
-  AcpInstallReleaseView _demoInstallRelease() => const AcpInstallReleaseView(
-    version: '1.4.5',
+  AcpInstallReleaseView _demoInstallRelease({
+    String version = '1.5.2',
+  }) => AcpInstallReleaseView(
+    version: version,
     target: 'linux-x86_64',
-    archiveUrl: 'https://dl.google.com/agy-extensions/releases/antigravity-acp-linux-x86_64.zip',
+    archiveUrl:
+        'https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-$version-linux-x86_64.zip',
   );
 
   static const int _demoInstallTotalBytes = 12582912;
@@ -2599,7 +2626,8 @@ class DemoStudioTransport extends StudioTransport
                 server: AcpInstalledServerView(
                   installationId: 'demo-installation-$op',
                   release: release,
-                  program: '/home/studio/acp-servers/antigravity/1.4.5/program',
+                  program:
+                      '/home/studio/acp-servers/antigravity/${release.version}/agy_acp_server.par',
                   readyAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
                 ),
               ),
@@ -2608,6 +2636,36 @@ class DemoStudioTransport extends StudioTransport
       },
     );
     return _demoInstallReply(operationId, provider);
+  }
+
+  @override
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) async {
+    _ensureDemoRunning();
+    final currentInstalled = _acpInstalledServers[provider]?.release.version;
+    final latest = _demoInstallRelease();
+    _acpInstallUpdates[provider] = const AcpInstallUpdateCheckingState();
+    _acpInstallRevision += 1;
+    _publishProductPayload(
+      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
+    );
+    final reply = _demoInstallReply(operationId, provider);
+    _acpInstallUpdates[provider] = currentInstalled == latest.version
+        ? AcpInstallUpdateUpToDateState(
+            checkedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+            latestVersion: latest.version,
+          )
+        : AcpInstallUpdateAvailableState(
+            checkedAt: _fixtureTime.millisecondsSinceEpoch ~/ 1000,
+            latest: latest,
+          );
+    _acpInstallRevision += 1;
+    _publishProductPayload(
+      AcpInstallStateChangedPayload(_demoInstallSnapshot()),
+    );
+    return reply;
   }
 
   @override

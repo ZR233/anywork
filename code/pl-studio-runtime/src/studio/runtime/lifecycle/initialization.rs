@@ -276,7 +276,10 @@ impl StudioRuntime {
                 return Err(StudioStartupError::input("assemble", error));
             }
         };
-        let prepared = runtime.prepare_global(observer, cancellation).await;
+        let allow_remote_acp_check = !matches!(resolved.host, crate::StudioHostKind::Test);
+        let prepared = runtime
+            .prepare_global(observer, cancellation, allow_remote_acp_check)
+            .await;
         if let Err(error) = prepared {
             observer(StudioStartupStage::ClosingResources);
             runtime.dispose_startup().await?;
@@ -289,6 +292,7 @@ impl StudioRuntime {
         &self,
         observer: &Observer,
         cancellation: &CancellationToken,
+        allow_remote_acp_check: bool,
     ) -> Result<(), StudioStartupError> {
         self.runtime_state
             .apply(crate::studio::StudioRuntimeCommand::BeginInitialize {
@@ -395,6 +399,8 @@ impl StudioRuntime {
             .await
             .map_err(|error| internal("start_model_catalogs", error))?;
         self.start_tool_refresh().await;
+        self.acp_install
+            .start_background_check(allow_remote_acp_check);
         self.start_lsp_state_watcher()
             .await
             .map_err(|error| observer_start_error("start_lsp_state", error))?;
@@ -437,7 +443,7 @@ impl StudioRuntime {
         // 在任何 join 前通知所有独立 owner；投影的当前迭代只能自然收束。
         self.broadcast_cancel().await;
         // All independent cleanup runs even when one task reports an error.
-        let (usage, catalogs, results, observers, sessions) = tokio::join!(
+        let (usage, catalogs, results, acp_cleanup, observers, sessions) = tokio::join!(
             self.account_usage.close(),
             self.stop_model_catalog_probes(),
             async {
@@ -445,6 +451,12 @@ impl StudioRuntime {
                     self.stop_recovery_scan(),
                     self.stop_model_refresh(),
                     self.stop_tool_refresh(),
+                )
+            },
+            async {
+                tokio::join!(
+                    self.acp_accounts.cancel_and_join(),
+                    self.acp_install.cancel_and_join(),
                 )
             },
             async {
@@ -516,7 +528,13 @@ impl StudioRuntime {
         };
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         usage.map_err(|error| internal("stop_account_usage", error))?;
-        for result in [results.0, results.1, results.2] {
+        for result in [
+            results.0,
+            results.1,
+            results.2,
+            acp_cleanup.0,
+            acp_cleanup.1,
+        ] {
             result.map_err(|error| internal("stop_services", error))?;
         }
         // 保留原有失败优先级：服务（LSP、Profiles）先于 persistence observer。

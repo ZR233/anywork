@@ -21,3 +21,4 @@ export 'widgets/account_model_evaluations.dart';
 export 'widgets/account_sections.dart';
 export 'widgets/account_usage_view.dart';
 export 'widgets/acp_account_panel.dart';
+export 'widgets/acp_upgrade_banner.dart';
