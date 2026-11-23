@@ -13,6 +13,17 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.45.0](https://github.com/ZR233/anywork/compare/v6.44.0...v6.45.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **studio:** History SQLite 存储升级至 schema 26，History 读取协议升级至 v2（以 Divider/WorkRange 与 `work_range_page` 取代旧 `Work`/`Member`/`groupPage` 接口）。
+
+### Refactoring
+
+* **studio:** 以 schema 26 原子事件重构历史存储与工作组读取 ([#526](https://github.com/ZR233/anywork/issues/526)) ([c373496](https://github.com/ZR233/anywork/commit/c37349619a6e9dc8069fb8a2384cf43409ce97e4))
+
 ## [6.44.0](https://github.com/ZR233/anywork/compare/v6.43.0...v6.44.0) (2026-11-18)
 
 
