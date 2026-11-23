@@ -1,7 +1,9 @@
-//! Producer envelopes acquire immutable body references at the History freeze boundary.
+//! Producer envelopes acquire Schema 26 atomic event serialization and 16 KiB hybrid bodies.
 use super::*;
 use crate::history::{
-    HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEvent, HistoryEventBodyRef,
+    EventPayloadEnvelope, HistoryBodyRole, HistoryEntityState, HistoryEvent, HistoryEventMeta,
+    HistorySingleVisibility, HistoryTimelineRole, HistoryWaitHead, PendingBody,
+    milliseconds_from_seconds, pack_bodies,
 };
 use anyhow::Context as _;
 
@@ -30,82 +32,88 @@ fn content_bytes(content: &ChatContent) -> Result<Arc<[u8]>> {
     })
 }
 
-fn freeze_contents(
-    event: &mut HistoryEvent,
-    contents: impl IntoIterator<Item = Arc<ChatContent>>,
-    database_id: &str,
-) -> Result<Vec<serde_json::Value>> {
-    let mut manifest = Vec::new();
-    for content in contents {
-        let key = &content.descriptor.key.key;
-        let mut body = HistoryBody::new(key, role(key), content_bytes(&content)?);
-        body.media_type = content.descriptor.media_type.clone();
-        let reference = HistoryEventBodyRef {
-            database_id: database_id.into(),
-            owner_event_id: event.header.event_id.clone(),
-            body_key: body.body_key.clone(),
-            body_id: body.body_id.clone(),
-            byte_start: 0,
-            byte_length: body.bytes.len() as u64,
-        };
-        manifest.push(
-            serde_json::json!({"key":key,"byteLength":reference.byte_length,"reference":reference}),
-        );
-        event.bodies.push(body);
-    }
-    Ok(manifest)
+fn block_bytes(block: Arc<ContentBlock>) -> Result<Vec<u8>> {
+    let data = ContentData::text(block);
+    Ok(data.range(0, data.len())?.as_bytes().to_vec())
 }
 
-fn finish(
-    event: &mut HistoryEvent,
-    entity: &mut HistoryEntityHead,
-    payload: Vec<u8>,
-    database_id: &str,
-) -> Result<()> {
-    entity.detail_event_id = Some(event.header.event_id.clone());
-    entity.input_manifest_event_id = Some(event.header.event_id.clone());
-    entity.body_manifest_event_id = Some(event.header.event_id.clone());
-    let mut body = HistoryBody::new(
-        "canonical_payload",
-        HistoryBodyRole::CanonicalPayload,
-        payload,
-    );
-    body.media_type = Some("application/json".into());
-    event.payload_body_id = Some(body.body_id.clone());
-    event.bodies.insert(0, body);
-    crate::history::prepare_entity_content(event, entity, database_id)?;
-    event.bodies.sort_by_key(|body| match body.role {
-        HistoryBodyRole::CanonicalPayload => 0,
-        HistoryBodyRole::CanonicalMetadata => 1,
-        _ => 2,
-    });
-    Ok(())
+fn event_meta(
+    atom: &crate::ChatAtom,
+    presentation_contract: Option<String>,
+    single_visibility: Option<HistorySingleVisibility>,
+) -> Result<HistoryEventMeta> {
+    let state = match atom.lifecycle {
+        crate::ChatAtomLifecycle::Active { status, .. } => {
+            HistoryEntityState::KnownActive { status }
+        }
+        crate::ChatAtomLifecycle::Terminal { outcome, .. } => {
+            HistoryEntityState::KnownTerminal { outcome }
+        }
+    };
+    Ok(HistoryEventMeta {
+        entity_id: atom.id.clone(),
+        entity_kind: atom.kind,
+        delivery: atom.delivery,
+        state,
+        started_at: atom.started_at.map(milliseconds_from_seconds).transpose()?,
+        finished_at: atom
+            .finished_at
+            .map(milliseconds_from_seconds)
+            .transpose()?,
+        text_channel: atom.text_channel,
+        single_visibility,
+        presentation_contract,
+        source_order: atom.source_order,
+        content_present: atom.content_present,
+        wait: atom
+            .wait
+            .clone()
+            .map(|presentation| HistoryWaitHead::Inline { presentation }),
+        tool: atom.tool.clone(),
+    })
 }
 
-pub(in crate::studio) fn freeze_history_original(
+fn extract_presentation_contract(data: &serde_json::Value) -> Option<String> {
+    data.get("invocation")
+        .and_then(|invocation| invocation.get("presentationContract"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
+pub(in crate::studio) fn build_event_from_draft(
     event: &mut HistoryEvent,
-    entity: &mut HistoryEntityHead,
+    atom: &crate::ChatAtom,
     draft: &ChatDraft,
     database_id: &str,
 ) -> Result<()> {
-    // Only the producer's declared envelope fields are rewritten. Opaque data stays untouched.
-    let mut envelope: BTreeMap<String, Box<serde_json::value::RawValue>> =
-        serde_json::from_slice(&draft.payload)?;
-    let contract = envelope
+    let payload: serde_json::Value = serde_json::from_slice(&draft.payload)?;
+    let obj = payload
+        .as_object()
+        .context("canonical producer payload is not a JSON object")?;
+    let contract = obj
         .get("contract")
+        .and_then(serde_json::Value::as_str)
         .context("canonical producer contract is missing")?;
     ensure!(
-        serde_json::from_str::<String>(contract.get())? == "anywork.chat/1",
+        contract == "anywork.chat/1",
         "unsupported canonical producer contract"
     );
-    let declarations: Vec<serde_json::Value> = serde_json::from_str(
-        envelope
-            .get("bodies")
-            .context("canonical body declarations are missing")?
-            .get(),
-    )?;
+    let item_type = obj
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .context("canonical producer type is missing")?
+        .to_owned();
+    let data = obj
+        .get("data")
+        .cloned()
+        .context("canonical producer data is missing")?;
+    let declarations = obj
+        .get("bodies")
+        .and_then(serde_json::Value::as_array)
+        .context("canonical body declarations are missing")?;
+
     let mut ordered = Vec::with_capacity(declarations.len());
-    for declaration in &declarations {
+    for declaration in declarations {
         let key = declaration["key"]
             .as_str()
             .context("declared body key is missing")?;
@@ -131,38 +139,126 @@ pub(in crate::studio) fn freeze_history_original(
         ordered.len() == draft.contents.len(),
         "canonical content is not declared by its producer"
     );
-    let atom: crate::ChatAtom = serde_json::from_slice(&draft.metadata)?;
-    if let Some(order) = atom.source_order {
-        envelope.insert(
-            "sourceOrder".into(),
-            serde_json::value::to_raw_value(&order)?,
-        );
+
+    let mut pending = Vec::with_capacity(ordered.len());
+    for content in ordered {
+        let key = content.descriptor.key.key.clone();
+        pending.push(PendingBody::new(
+            key.clone(),
+            role(&key),
+            content.descriptor.media_type.clone(),
+            content_bytes(&content)?,
+        ));
     }
-    let manifest = freeze_contents(event, ordered, database_id)?;
-    envelope.insert("bodies".into(), serde_json::value::to_raw_value(&manifest)?);
-    finish(event, entity, serde_json::to_vec(&envelope)?, database_id)
+    let manifest = pack_bodies(event, pending, database_id)?;
+    let presentation_contract = extract_presentation_contract(&data);
+    let single_visibility = if atom.kind == crate::ChatAtomKind::Text
+        && event.timeline_role == HistoryTimelineRole::Divider
+    {
+        Some(HistorySingleVisibility::Content)
+    } else {
+        None
+    };
+    let turn_id = obj
+        .get("turnId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| atom.turn_id.clone());
+
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type,
+        meta: event_meta(atom, presentation_contract, single_visibility)?,
+        data,
+        bodies: manifest,
+        source_order: atom.source_order,
+        turn_id,
+        captured_at: None,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(())
 }
 
-pub(in crate::studio) fn freeze_history_observation(
+pub(in crate::studio) fn build_active_tool_event(
     event: &mut HistoryEvent,
-    entity: &mut HistoryEntityHead,
-    state: &ExecutionShape,
     atom: &crate::ChatAtom,
-    thread_id: &str,
-    contents: Vec<Arc<ChatContent>>,
+    item: &ExecutionItem,
+    cancel_requested: bool,
     database_id: &str,
 ) -> Result<()> {
-    validate_observation(state, atom, thread_id)?;
-    let manifest = freeze_contents(event, contents, database_id)?;
-    let descriptor = serde_json::to_value(descriptor::observation_descriptor(state, thread_id)?)?;
-    let mut payload = payload_envelope(state, descriptor, manifest, 0)?;
-    payload
-        .as_object_mut()
-        .context("observation envelope is not an object")?
-        .remove("sourceEffectSeq");
-    payload["capturedAt"] = serde_json::to_value(event.header.occurred_at)?;
-    if let Some(turn) = &atom.turn_id {
-        payload["turnId"] = turn.clone().into();
+    let descriptor = serde_json::to_value(descriptor::observation_descriptor(
+        item.state(),
+        &item.thread_id,
+    )?)?;
+    let envelope_val = payload_envelope(item.state(), descriptor, Vec::new(), 0)?;
+    let item_type = envelope_val
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .context("active tool envelope has no type")?
+        .to_owned();
+    let mut data = envelope_val
+        .get("data")
+        .cloned()
+        .context("active tool envelope has no data")?;
+    if cancel_requested {
+        if let Some(state_obj) = data
+            .get_mut("state")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            state_obj.insert("cancelRequested".into(), serde_json::Value::Bool(true));
+        }
+        if let Some(data_obj) = data.as_object_mut() {
+            data_obj.insert("cancelRequested".into(), serde_json::Value::Bool(true));
+        }
     }
-    finish(event, entity, serde_json::to_vec(&payload)?, database_id)
+
+    let mut fields = content_fields(item.state())?;
+    fields.retain(|key, _| atom_content_role(key).is_some());
+    let mut pending = Vec::with_capacity(fields.len());
+    for (key, block) in fields {
+        let key_str = key.as_key();
+        pending.push(PendingBody::new(
+            key_str.clone(),
+            role(&key_str),
+            Some("text/plain; charset=utf-8".into()),
+            block_bytes(block)?,
+        ));
+    }
+    let manifest = pack_bodies(event, pending, database_id)?;
+    let presentation_contract = extract_presentation_contract(&data);
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type,
+        meta: event_meta(atom, presentation_contract, None)?,
+        data,
+        bodies: manifest,
+        source_order: atom.source_order,
+        turn_id: atom.turn_id.clone(),
+        captured_at: event.occurred_at,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(())
+}
+
+pub(in crate::studio) fn build_active_state_event(
+    event: &mut HistoryEvent,
+    atom: &crate::ChatAtom,
+    item_type: &str,
+    data: serde_json::Value,
+) -> Result<()> {
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: item_type.to_owned(),
+        meta: event_meta(atom, None, None)?,
+        data,
+        bodies: Vec::new(),
+        source_order: atom.source_order,
+        turn_id: atom.turn_id.clone(),
+        captured_at: event.occurred_at,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(())
 }

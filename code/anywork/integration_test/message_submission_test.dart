@@ -422,10 +422,9 @@ void main() {
       conversations: graph.client.conversations,
       threadId: threadId,
       matches: (rows) {
-        final matches = rows.where((entry) {
-          final head = entry.head;
-          return head is SingleHistoryRow &&
-              head.head.source == InputChatSource(inputId: inputId);
+        final matches = rows.where((item) {
+          return item is DividerTimelineItem &&
+              item.event.source == InputChatSource(inputId: inputId);
         }).toList();
         if (matches.length > 1) {
           throw StateError(
@@ -437,10 +436,9 @@ void main() {
       description: 'one canonical History input row for $inputId',
     );
     expect(
-      historyRows.where((entry) {
-        final head = entry.head;
-        return head is SingleHistoryRow &&
-            head.head.source == InputChatSource(inputId: inputId);
+      historyRows.where((item) {
+        return item is DividerTimelineItem &&
+            item.event.source == InputChatSource(inputId: inputId);
       }),
       hasLength(1),
     );
@@ -844,19 +842,21 @@ class _SubmissionHistoryReader implements HistoryReader {
   @override
   Future<HistoryCut> capture() => original.capture();
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) => original.groupPage(
-    groupId: groupId,
+  }) => original.workRangePage(
+    afterSeq: afterSeq,
+    beforeSeq: beforeSeq,
     cut: cut,
     cursor: cursor,
     demand: demand,
   );
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
@@ -874,7 +874,7 @@ class _SubmissionHistoryReader implements HistoryReader {
     demand: demand,
   );
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) => original.readEvent(eventId: eventId, demand: demand);
@@ -898,7 +898,7 @@ class _SubmissionHistoryReader implements HistoryReader {
   Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
       original.accounting(cut: cut);
   @override
-  Future<HistoryTimelinePage> costsPage({
+  Future<HistoryBusinessPage> costsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,

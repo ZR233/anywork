@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_models.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
@@ -11,31 +13,34 @@ import '../support/chat_fixtures.dart';
 void main() {
   test('a frozen History member retains its millisecond boundary', () {
     const capturedAt = 1_785_000_006_250;
-    final block = TimelineHistoryProjection.block(
-      const HistoryTimelineEntry(
+    final block = TimelineHistoryProjection.eventRecord(
+      HistoryEventRecord(
+        seq: 2,
+        eventId: 'event:reasoning',
+        kind: 'legacy_observed',
+        timelineRole: HistoryTimelineRole.work,
+        recordedAt: 2,
+        entityId: 'reasoning',
         rowKey: 'member:reasoning',
-        anchorSeq: 1,
-        headSeq: 2,
-        head: MemberHistoryRow(
-          HistoryEntityHead(
-            entityId: 'reasoning',
-            source: ForegroundTurnChatSource(turnId: 'turn'),
-            kind: ChatAtomKind.reasoning,
-            delivery: ChatDeliveryKind.foreground,
-            state: HistoryEntityState(
-              kind: HistoryEntityStateKind.knownActive,
-              activeStatus: ChatActiveStatus.running,
-            ),
-            startedAt: 1_785_000_000_000,
-            observation: HistoryObservation(
-              kind: HistoryObservationKind.boundary,
-              capturedAt: capturedAt,
-            ),
-          ),
-        ),
+        source: const ForegroundTurnChatSource(turnId: 'turn'),
+        payloadSchema: 'anywork.event/1',
+        payloadJson: jsonEncode({
+          'contract': 'anywork.event/1',
+          'type': 'thinking',
+          'meta': {
+            'entityId': 'reasoning',
+            'entityKind': 'reasoning',
+            'delivery': 'foreground',
+            'state': {'kind': 'knownActive', 'status': 'running'},
+            'startedAt': 1_785_000_000_000,
+          },
+          'data': <String, Object?>{},
+          'bodies': <Object?>[],
+          'capturedAt': capturedAt,
+        }),
       ),
       cut: const HistoryCut('history-cut'),
-    )!;
+    );
     final record = (block.body as SingleDisplayBlock).record;
     expect((record.contentSource as FrozenObservation).capturedAt, capturedAt);
     expect(record.displayStartedAt, 1_785_000_000);

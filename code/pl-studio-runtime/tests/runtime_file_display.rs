@@ -5,27 +5,11 @@ use anyhow::{Context, Result, ensure};
 use pl_core::context::OpaquePayload;
 use pl_studio_runtime::{
     ChatScope, ThreadWorkspaceMode,
-    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader},
+    history::{HistoryDemand, HistoryEventsQuery, read_event_body_bytes},
     resource_store::RESOURCE_ID_PREFIX,
 };
 use pl_tool::file_display::saved_file_display_receipt;
 use serde_json::json;
-
-async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while bytes.len() as u64 != reference.byte_length {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                bytes.len() as u64,
-                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty(), "artifact body did not advance");
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
 
 async fn public_artifact(
     runtime: &pl_studio_runtime::StudioRuntime,
@@ -52,28 +36,21 @@ async fn public_artifact(
             .await?;
         ensure!(!originals.entries.is_empty(), "history has no originals");
         for event in originals.entries {
-            let Some(payload_ref) = &event.payload_ref else {
+            if event.payload_schema != "anywork.event/1" {
                 continue;
-            };
-            let payload = body(&reader, payload_ref).await?;
-            let value: serde_json::Value = serde_json::from_slice(&payload)?;
-            if event.header.turn_id.as_deref() != Some(turn)
+            }
+            let value: serde_json::Value = serde_json::from_str(&event.payload_json)?;
+            if event.turn_id.as_deref() != Some(turn)
                 || value["type"] != "tool"
                 || value["data"]["invocation"]["name"] != "show_files"
             {
                 continue;
             }
-            ensure!(event.header.turn_id.as_deref() == Some(turn));
+            ensure!(event.turn_id.as_deref() == Some(turn));
             ensure!(value["data"]["invocation"]["presentationContract"] == "builtin.show_files@1");
-            let bodies = reader
-                .list_bodies(event.header.event_id.clone(), None, demand)
-                .await?;
-            let artifacts = bodies
-                .entries
-                .into_iter()
-                .find(|entry| entry.body_key == "tool.output-artifacts")
+            let bytes = read_event_body_bytes(&reader, &event, "tool.output-artifacts", None)
+                .await?
                 .context("file display artifact manifest")?;
-            let bytes = body(&reader, &artifacts.reference).await?;
             let artifacts: serde_json::Value = serde_json::from_slice(&bytes)?;
             let artifact = artifacts
                 .as_array()

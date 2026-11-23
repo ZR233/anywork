@@ -95,14 +95,16 @@ final class HistoryReadScope implements HistoryQueryScope {
   );
 
   @override
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) => _run(
-    () => _reader.groupPage(
-      groupId: groupId,
+    () => _reader.workRangePage(
+      afterSeq: afterSeq,
+      beforeSeq: beforeSeq,
       cut: cut,
       cursor: cursor,
       demand: demand,
@@ -110,14 +112,36 @@ final class HistoryReadScope implements HistoryQueryScope {
   );
 
   @override
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   }) => _run(() => _reader.turnsPage(cut: cut, cursor: cursor, demand: demand));
 
   @override
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryBusinessPage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(() => _reader.costsPage(cut: cut, cursor: cursor, demand: demand));
+
+  @override
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => _run(
+    () => _reader.eventsPage(
+      query: query,
+      cut: cut,
+      cursor: cursor,
+      demand: demand,
+    ),
+  );
+
+  @override
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   }) => _run(() => _reader.readEvent(eventId: eventId, demand: demand));

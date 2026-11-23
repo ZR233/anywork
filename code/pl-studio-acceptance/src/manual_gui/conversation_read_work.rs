@@ -19,7 +19,10 @@ use pl_studio_runtime::{
 use pl_studio_runtime::{
     CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
-    history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead, HistoryTurnState},
+    history::{
+        HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryDemand, HistoryTimelineItem,
+        HistoryTurnState,
+    },
     mode::ThreadModeId,
 };
 use serde::Serialize;
@@ -327,7 +330,7 @@ pub(super) async fn wait_initial_turn(
                     )
                     .await?;
                 if let Some(head) = page.entries.iter().find_map(|entry| match &entry.head {
-                    HistoryRowHead::Turn(head)
+                    HistoryBusinessRowHead::Turn(head)
                         if head.input_id.as_deref() == Some(input_id)
                             && head.state == HistoryTurnState::Completed =>
                     {
@@ -596,10 +599,9 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
             let page = reader
                 .timeline_page(cut.clone(), cursor.clone(), demand)
                 .await?;
-            for entry in &page.entries {
-                match &entry.head {
-                    HistoryRowHead::Single(_) | HistoryRowHead::Work(_) => {}
-                    _ => bail!("timeline Main contained a non-row head"),
+            for item in &page.items {
+                match item {
+                    HistoryTimelineItem::Divider(_) | HistoryTimelineItem::WorkRange(_) => {}
                 }
                 total = total
                     .checked_add(1)

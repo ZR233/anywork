@@ -1,7 +1,8 @@
 //! Exact archived-resource ownership over the History entity index.
 use crate::history::{
-    HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEvent, HistoryEventKind,
-    HistoryEventsQuery, HistoryReader,
+    HistoryBodyRole, HistoryDemand, HistoryEvent, HistoryEventKind, HistoryEventsQuery,
+    HistoryReader, HistoryTimelineRole, PendingBody, body::BusinessFactEnvelope, pack_bodies,
+    read_event_body_bytes,
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::context::{OpaquePayload, ResourceReader, ResourceReference};
@@ -13,6 +14,7 @@ pub(crate) fn observed_event(
     turn: Option<&str>,
     effect: u64,
     at: i64,
+    database_id: &str,
 ) -> Result<HistoryEvent> {
     let mut event = HistoryEvent::new(
         format!(
@@ -20,26 +22,35 @@ pub(crate) fn observed_event(
             call.len(),
             reference.id()
         ),
-        HistoryEventKind::BusinessChanged,
+        HistoryEventKind::RetainedResourceRecorded,
+        HistoryTimelineRole::Hidden,
         at,
     );
-    event.header.run_id = Some(thread_run.into());
-    event.header.entity_id = Some(reference.id().into());
-    event.header.call_id = Some(call.into());
-    event.header.turn_id = turn.map(str::to_owned);
+    event.run_id = Some(thread_run.into());
+    event.entity_id = Some(reference.id().into());
+    event.call_id = Some(call.into());
+    event.turn_id = turn.map(str::to_owned);
     let payload = OpaquePayload::new(
         "pl.studio.retained-tool-resource",
         1,
         serde_json::to_string(reference)?,
     )?;
-    let mut body = HistoryBody::new(
-        "resource",
-        HistoryBodyRole::CanonicalPayload,
-        serde_json::to_vec(&payload)?,
-    );
-    body.media_type = Some("application/json".into());
-    event.payload_body_id = Some(body.body_id.clone());
-    event.bodies.push(body);
+    let manifest = pack_bodies(
+        &mut event,
+        vec![PendingBody::new(
+            "resource",
+            HistoryBodyRole::CanonicalPayload,
+            Some("application/json".into()),
+            serde_json::to_vec(&payload)?,
+        )],
+        database_id,
+    )?;
+    event.payload_schema = "anywork.business/1".into();
+    event.payload_json = serde_json::to_string(&BusinessFactEnvelope {
+        fact_type: "retained_resource".into(),
+        data: None,
+        bodies: manifest,
+    })?;
     Ok(event)
 }
 
@@ -65,18 +76,9 @@ pub(crate) async fn read(
             )
             .await?;
         for event in page.entries {
-            let body = event.payload_ref.context("resource fact has no body")?;
-            let mut bytes = Vec::new();
-            let mut offset = 0;
-            while offset < body.byte_length {
-                let window = reader.read_body(body.clone(), offset, 64 * 1024).await?;
-                ensure!(
-                    !window.bytes.is_empty(),
-                    "resource fact body did not advance"
-                );
-                offset += window.bytes.len() as u64;
-                bytes.extend(window.bytes);
-            }
+            let bytes = read_event_body_bytes(reader, &event, "resource", None)
+                .await?
+                .context("resource fact has no body")?;
             let payload: OpaquePayload = serde_json::from_slice(&bytes)?;
             ensure!(
                 payload.format() == "pl.studio.retained-tool-resource" && payload.version() == 1,

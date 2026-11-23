@@ -99,7 +99,7 @@ abstract class BridgeHistoryReader implements RustOpaqueInterface {
 
   Future<void> close();
 
-  Future<BridgeHistoryTimelinePage> costsPage({
+  Future<BridgeHistoryBusinessPage> costsPage({
     BridgeHistoryCut? cut,
     String? cursor,
     required BridgeHistoryDemand demand,
@@ -107,13 +107,6 @@ abstract class BridgeHistoryReader implements RustOpaqueInterface {
 
   Future<BridgeHistoryEventsPage> eventsPage({
     required BridgeHistoryEventsQuery query,
-    BridgeHistoryCut? cut,
-    String? cursor,
-    required BridgeHistoryDemand demand,
-  });
-
-  Future<BridgeHistoryGroupPage> groupPage({
-    required String groupId,
     BridgeHistoryCut? cut,
     String? cursor,
     required BridgeHistoryDemand demand,
@@ -133,7 +126,7 @@ abstract class BridgeHistoryReader implements RustOpaqueInterface {
     required int maxBytes,
   });
 
-  Future<BridgeHistoryEventDetail> readEvent({
+  Future<BridgeHistoryEventRecord> readEvent({
     required String eventId,
     required BridgeHistoryDemand demand,
   });
@@ -148,11 +141,19 @@ abstract class BridgeHistoryReader implements RustOpaqueInterface {
     required BridgeHistoryDemand demand,
   });
 
-  Future<BridgeHistoryTimelinePage> turnsPage({
+  Future<BridgeHistoryBusinessPage> turnsPage({
     BridgeHistoryCut? cut,
     String? cursor,
     required BridgeHistoryDemand demand,
   });
 
   Future<BridgeHistoryCut> waitChanged({required BridgeHistoryCut after});
+
+  Future<BridgeHistoryWorkRangePage> workRangePage({
+    BigInt? afterSeq,
+    BigInt? beforeSeq,
+    BridgeHistoryCut? cut,
+    String? cursor,
+    required BridgeHistoryDemand demand,
+  });
 }

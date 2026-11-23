@@ -120,7 +120,9 @@ pub async fn terminal(
     id: &str,
     input: Option<&str>,
 ) -> Result<pl_studio_runtime::Turn> {
-    use pl_studio_runtime::history::{HistoryDemand, HistoryRowHead, HistoryTurnState};
+    use pl_studio_runtime::history::{
+        HistoryBusinessRowHead, HistoryDemand, HistoryTurnState, read_event_body_bytes,
+    };
     let reader = runtime
         .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
         .await?;
@@ -137,7 +139,7 @@ pub async fn terminal(
                     .turns_page(Some(cut.clone()), cursor.clone(), demand)
                     .await?;
                 for entry in page.entries {
-                    let HistoryRowHead::Turn(head) = entry.head else {
+                    let HistoryBusinessRowHead::Turn(head) = entry.head else {
                         continue;
                     };
                     if !input.is_none_or(|input| head.input_id.as_deref() == Some(input))
@@ -152,41 +154,10 @@ pub async fn terminal(
                         continue;
                     }
                     let event = head.detail_event_id.context("terminal Turn detail event")?;
-                    let mut body_cursor = None;
-                    let mut detail = None;
-                    loop {
-                        let bodies = reader
-                            .list_bodies(event.clone(), body_cursor.clone(), demand)
-                            .await?;
-                        ensure!(bodies.owner_event_id == event, "Turn body owner differs");
-                        for body in bodies.entries {
-                            if body.body_key == "turn_detail" {
-                                ensure!(detail.is_none(), "duplicate Turn detail body");
-                                detail = Some(body.reference);
-                            }
-                        }
-                        let Some(next) = bodies.next else { break };
-                        ensure!(
-                            body_cursor.as_ref() != Some(&next),
-                            "Turn body cursor did not advance"
-                        );
-                        body_cursor = Some(next);
-                    }
-                    let reference = detail.context("immutable Turn detail body")?;
-                    let mut bytes = Vec::new();
-                    while (bytes.len() as u64) < reference.byte_length {
-                        let offset = bytes.len() as u64;
-                        let limit = (reference.byte_length - offset).min(64 * 1024) as u32;
-                        let window = reader.read_body(reference.clone(), offset, limit).await?;
-                        ensure!(
-                            window.offset == offset
-                                && window.total_length == reference.byte_length
-                                && !window.bytes.is_empty()
-                                && window.bytes.len() <= limit as usize,
-                            "Turn detail body did not advance"
-                        );
-                        bytes.extend(window.bytes);
-                    }
+                    let detail = reader.read_event(event, demand).await?;
+                    let bytes = read_event_body_bytes(&reader, &detail, "turn_detail", None)
+                        .await?
+                        .context("immutable Turn detail body")?;
                     let turn: pl_studio_runtime::Turn = serde_json::from_slice(&bytes)?;
                     ensure!(
                         turn.id == head.turn_id

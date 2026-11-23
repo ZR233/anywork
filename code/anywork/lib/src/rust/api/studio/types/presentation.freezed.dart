@@ -1551,37 +1551,42 @@ as String,
 }
 
 /// @nodoc
-mixin _$BridgeHistoryEntityState {
+mixin _$BridgeHistoryBusinessRowHead {
 
-
+ Object get field0;
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryEntityState);
+  final _this = this as BridgeHistoryBusinessRowHead;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryBusinessRowHead&&const DeepCollectionEquality().equals(other.field0, _this.field0));
 }
 
 
 @override
-int get hashCode => runtimeType.hashCode;
+int get hashCode {
+  final _this = this as BridgeHistoryBusinessRowHead;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
+}
 
 @override
 String toString() {
-    return 'BridgeHistoryEntityState()';
+  final _this = this as BridgeHistoryBusinessRowHead;
+  return 'BridgeHistoryBusinessRowHead(field0: ${_this.field0})';
 }
 
 
 }
 
 /// @nodoc
-class $BridgeHistoryEntityStateCopyWith<$Res>  {
-$BridgeHistoryEntityStateCopyWith(BridgeHistoryEntityState _, $Res Function(BridgeHistoryEntityState) __);
+class $BridgeHistoryBusinessRowHeadCopyWith<$Res>  {
+$BridgeHistoryBusinessRowHeadCopyWith(BridgeHistoryBusinessRowHead _, $Res Function(BridgeHistoryBusinessRowHead) __);
 }
 
 
-/// Adds pattern-matching-related methods to [BridgeHistoryEntityState].
-extension BridgeHistoryEntityStatePatterns on BridgeHistoryEntityState {
+/// Adds pattern-matching-related methods to [BridgeHistoryBusinessRowHead].
+extension BridgeHistoryBusinessRowHeadPatterns on BridgeHistoryBusinessRowHead {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -1594,13 +1599,14 @@ extension BridgeHistoryEntityStatePatterns on BridgeHistoryEntityState {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryEntityState_Unknown value)?  unknown,TResult Function( BridgeHistoryEntityState_KnownActive value)?  knownActive,TResult Function( BridgeHistoryEntityState_KnownTerminal value)?  knownTerminal,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryBusinessRowHead_Turn value)?  turn,TResult Function( BridgeHistoryBusinessRowHead_Source value)?  source,TResult Function( BridgeHistoryBusinessRowHead_Cost value)?  cost,TResult Function( BridgeHistoryBusinessRowHead_Accounting value)?  accounting,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown() when unknown != null:
-return unknown(_that);case BridgeHistoryEntityState_KnownActive() when knownActive != null:
-return knownActive(_that);case BridgeHistoryEntityState_KnownTerminal() when knownTerminal != null:
-return knownTerminal(_that);case _:
+case BridgeHistoryBusinessRowHead_Turn() when turn != null:
+return turn(_that);case BridgeHistoryBusinessRowHead_Source() when source != null:
+return source(_that);case BridgeHistoryBusinessRowHead_Cost() when cost != null:
+return cost(_that);case BridgeHistoryBusinessRowHead_Accounting() when accounting != null:
+return accounting(_that);case _:
   return orElse();
 
 }
@@ -1618,13 +1624,14 @@ return knownTerminal(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryEntityState_Unknown value)  unknown,required TResult Function( BridgeHistoryEntityState_KnownActive value)  knownActive,required TResult Function( BridgeHistoryEntityState_KnownTerminal value)  knownTerminal,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryBusinessRowHead_Turn value)  turn,required TResult Function( BridgeHistoryBusinessRowHead_Source value)  source,required TResult Function( BridgeHistoryBusinessRowHead_Cost value)  cost,required TResult Function( BridgeHistoryBusinessRowHead_Accounting value)  accounting,}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown():
-return unknown(_that);case BridgeHistoryEntityState_KnownActive():
-return knownActive(_that);case BridgeHistoryEntityState_KnownTerminal():
-return knownTerminal(_that);}
+case BridgeHistoryBusinessRowHead_Turn():
+return turn(_that);case BridgeHistoryBusinessRowHead_Source():
+return source(_that);case BridgeHistoryBusinessRowHead_Cost():
+return cost(_that);case BridgeHistoryBusinessRowHead_Accounting():
+return accounting(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -1638,13 +1645,14 @@ return knownTerminal(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryEntityState_Unknown value)?  unknown,TResult? Function( BridgeHistoryEntityState_KnownActive value)?  knownActive,TResult? Function( BridgeHistoryEntityState_KnownTerminal value)?  knownTerminal,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryBusinessRowHead_Turn value)?  turn,TResult? Function( BridgeHistoryBusinessRowHead_Source value)?  source,TResult? Function( BridgeHistoryBusinessRowHead_Cost value)?  cost,TResult? Function( BridgeHistoryBusinessRowHead_Accounting value)?  accounting,}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown() when unknown != null:
-return unknown(_that);case BridgeHistoryEntityState_KnownActive() when knownActive != null:
-return knownActive(_that);case BridgeHistoryEntityState_KnownTerminal() when knownTerminal != null:
-return knownTerminal(_that);case _:
+case BridgeHistoryBusinessRowHead_Turn() when turn != null:
+return turn(_that);case BridgeHistoryBusinessRowHead_Source() when source != null:
+return source(_that);case BridgeHistoryBusinessRowHead_Cost() when cost != null:
+return cost(_that);case BridgeHistoryBusinessRowHead_Accounting() when accounting != null:
+return accounting(_that);case _:
   return null;
 
 }
@@ -1661,12 +1669,13 @@ return knownTerminal(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  unknown,TResult Function( BridgeChatActiveStatus status)?  knownActive,TResult Function( BridgeChatTerminalOutcome outcome)?  knownTerminal,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeHistoryTurnHead field0)?  turn,TResult Function( BridgeHistorySourceHead field0)?  source,TResult Function( BridgeHistoryCostHead field0)?  cost,TResult Function( BridgeHistoryAccountingHead field0)?  accounting,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown() when unknown != null:
-return unknown();case BridgeHistoryEntityState_KnownActive() when knownActive != null:
-return knownActive(_that.status);case BridgeHistoryEntityState_KnownTerminal() when knownTerminal != null:
-return knownTerminal(_that.outcome);case _:
+case BridgeHistoryBusinessRowHead_Turn() when turn != null:
+return turn(_that.field0);case BridgeHistoryBusinessRowHead_Source() when source != null:
+return source(_that.field0);case BridgeHistoryBusinessRowHead_Cost() when cost != null:
+return cost(_that.field0);case BridgeHistoryBusinessRowHead_Accounting() when accounting != null:
+return accounting(_that.field0);case _:
   return orElse();
 
 }
@@ -1684,12 +1693,13 @@ return knownTerminal(_that.outcome);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  unknown,required TResult Function( BridgeChatActiveStatus status)  knownActive,required TResult Function( BridgeChatTerminalOutcome outcome)  knownTerminal,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeHistoryTurnHead field0)  turn,required TResult Function( BridgeHistorySourceHead field0)  source,required TResult Function( BridgeHistoryCostHead field0)  cost,required TResult Function( BridgeHistoryAccountingHead field0)  accounting,}) {final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown():
-return unknown();case BridgeHistoryEntityState_KnownActive():
-return knownActive(_that.status);case BridgeHistoryEntityState_KnownTerminal():
-return knownTerminal(_that.outcome);}
+case BridgeHistoryBusinessRowHead_Turn():
+return turn(_that.field0);case BridgeHistoryBusinessRowHead_Source():
+return source(_that.field0);case BridgeHistoryBusinessRowHead_Cost():
+return cost(_that.field0);case BridgeHistoryBusinessRowHead_Accounting():
+return accounting(_that.field0);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1703,12 +1713,13 @@ return knownTerminal(_that.outcome);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  unknown,TResult? Function( BridgeChatActiveStatus status)?  knownActive,TResult? Function( BridgeChatTerminalOutcome outcome)?  knownTerminal,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryTurnHead field0)?  turn,TResult? Function( BridgeHistorySourceHead field0)?  source,TResult? Function( BridgeHistoryCostHead field0)?  cost,TResult? Function( BridgeHistoryAccountingHead field0)?  accounting,}) {final _that = this;
 switch (_that) {
-case BridgeHistoryEntityState_Unknown() when unknown != null:
-return unknown();case BridgeHistoryEntityState_KnownActive() when knownActive != null:
-return knownActive(_that.status);case BridgeHistoryEntityState_KnownTerminal() when knownTerminal != null:
-return knownTerminal(_that.outcome);case _:
+case BridgeHistoryBusinessRowHead_Turn() when turn != null:
+return turn(_that.field0);case BridgeHistoryBusinessRowHead_Source() when source != null:
+return source(_that.field0);case BridgeHistoryBusinessRowHead_Cost() when cost != null:
+return cost(_that.field0);case BridgeHistoryBusinessRowHead_Accounting() when accounting != null:
+return accounting(_that.field0);case _:
   return null;
 
 }
@@ -1719,77 +1730,45 @@ return knownTerminal(_that.outcome);case _:
 /// @nodoc
 
 
-class BridgeHistoryEntityState_Unknown extends BridgeHistoryEntityState {
-  const BridgeHistoryEntityState_Unknown(): super._();
+class BridgeHistoryBusinessRowHead_Turn extends BridgeHistoryBusinessRowHead {
+  const BridgeHistoryBusinessRowHead_Turn(this.field0): super._();
 
 
+@override final  BridgeHistoryTurnHead field0;
 
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryEntityState_Unknown);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeHistoryEntityState.unknown()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeHistoryEntityState_KnownActive extends BridgeHistoryEntityState {
-  const BridgeHistoryEntityState_KnownActive({required this.status}): super._();
-
-
- final  BridgeChatActiveStatus status;
-
-/// Create a copy of BridgeHistoryEntityState
+/// Create a copy of BridgeHistoryBusinessRowHead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeHistoryEntityState_KnownActiveCopyWith<BridgeHistoryEntityState_KnownActive> get copyWith => _$BridgeHistoryEntityState_KnownActiveCopyWithImpl<BridgeHistoryEntityState_KnownActive>(this, _$identity);
+$BridgeHistoryBusinessRowHead_TurnCopyWith<BridgeHistoryBusinessRowHead_Turn> get copyWith => _$BridgeHistoryBusinessRowHead_TurnCopyWithImpl<BridgeHistoryBusinessRowHead_Turn>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryEntityState_KnownActive&&(identical(other.status, status) || other.status == status));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryBusinessRowHead_Turn&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,status);
+    return Object.hash(runtimeType,field0);
 }
 
 @override
 String toString() {
-    return 'BridgeHistoryEntityState.knownActive(status: $status)';
+    return 'BridgeHistoryBusinessRowHead.turn(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeHistoryEntityState_KnownActiveCopyWith<$Res> implements $BridgeHistoryEntityStateCopyWith<$Res> {
-  factory $BridgeHistoryEntityState_KnownActiveCopyWith(BridgeHistoryEntityState_KnownActive value, $Res Function(BridgeHistoryEntityState_KnownActive) _then) = _$BridgeHistoryEntityState_KnownActiveCopyWithImpl;
+abstract mixin class $BridgeHistoryBusinessRowHead_TurnCopyWith<$Res> implements $BridgeHistoryBusinessRowHeadCopyWith<$Res> {
+  factory $BridgeHistoryBusinessRowHead_TurnCopyWith(BridgeHistoryBusinessRowHead_Turn value, $Res Function(BridgeHistoryBusinessRowHead_Turn) _then) = _$BridgeHistoryBusinessRowHead_TurnCopyWithImpl;
 @useResult
 $Res call({
- BridgeChatActiveStatus status
+ BridgeHistoryTurnHead field0
 });
 
 
@@ -1797,19 +1776,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeHistoryEntityState_KnownActiveCopyWithImpl<$Res>
-    implements $BridgeHistoryEntityState_KnownActiveCopyWith<$Res> {
-  _$BridgeHistoryEntityState_KnownActiveCopyWithImpl(this._self, this._then);
+class _$BridgeHistoryBusinessRowHead_TurnCopyWithImpl<$Res>
+    implements $BridgeHistoryBusinessRowHead_TurnCopyWith<$Res> {
+  _$BridgeHistoryBusinessRowHead_TurnCopyWithImpl(this._self, this._then);
 
-  final BridgeHistoryEntityState_KnownActive _self;
-  final $Res Function(BridgeHistoryEntityState_KnownActive) _then;
+  final BridgeHistoryBusinessRowHead_Turn _self;
+  final $Res Function(BridgeHistoryBusinessRowHead_Turn) _then;
 
-/// Create a copy of BridgeHistoryEntityState
+/// Create a copy of BridgeHistoryBusinessRowHead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? status = null,}) {
-  return _then(BridgeHistoryEntityState_KnownActive(
-status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as BridgeChatActiveStatus,
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryBusinessRowHead_Turn(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistoryTurnHead,
   ));
 }
 
@@ -1819,45 +1798,45 @@ as BridgeChatActiveStatus,
 /// @nodoc
 
 
-class BridgeHistoryEntityState_KnownTerminal extends BridgeHistoryEntityState {
-  const BridgeHistoryEntityState_KnownTerminal({required this.outcome}): super._();
+class BridgeHistoryBusinessRowHead_Source extends BridgeHistoryBusinessRowHead {
+  const BridgeHistoryBusinessRowHead_Source(this.field0): super._();
 
 
- final  BridgeChatTerminalOutcome outcome;
+@override final  BridgeHistorySourceHead field0;
 
-/// Create a copy of BridgeHistoryEntityState
+/// Create a copy of BridgeHistoryBusinessRowHead
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeHistoryEntityState_KnownTerminalCopyWith<BridgeHistoryEntityState_KnownTerminal> get copyWith => _$BridgeHistoryEntityState_KnownTerminalCopyWithImpl<BridgeHistoryEntityState_KnownTerminal>(this, _$identity);
+$BridgeHistoryBusinessRowHead_SourceCopyWith<BridgeHistoryBusinessRowHead_Source> get copyWith => _$BridgeHistoryBusinessRowHead_SourceCopyWithImpl<BridgeHistoryBusinessRowHead_Source>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryEntityState_KnownTerminal&&(identical(other.outcome, outcome) || other.outcome == outcome));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryBusinessRowHead_Source&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,outcome);
+    return Object.hash(runtimeType,field0);
 }
 
 @override
 String toString() {
-    return 'BridgeHistoryEntityState.knownTerminal(outcome: $outcome)';
+    return 'BridgeHistoryBusinessRowHead.source(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeHistoryEntityState_KnownTerminalCopyWith<$Res> implements $BridgeHistoryEntityStateCopyWith<$Res> {
-  factory $BridgeHistoryEntityState_KnownTerminalCopyWith(BridgeHistoryEntityState_KnownTerminal value, $Res Function(BridgeHistoryEntityState_KnownTerminal) _then) = _$BridgeHistoryEntityState_KnownTerminalCopyWithImpl;
+abstract mixin class $BridgeHistoryBusinessRowHead_SourceCopyWith<$Res> implements $BridgeHistoryBusinessRowHeadCopyWith<$Res> {
+  factory $BridgeHistoryBusinessRowHead_SourceCopyWith(BridgeHistoryBusinessRowHead_Source value, $Res Function(BridgeHistoryBusinessRowHead_Source) _then) = _$BridgeHistoryBusinessRowHead_SourceCopyWithImpl;
 @useResult
 $Res call({
- BridgeChatTerminalOutcome outcome
+ BridgeHistorySourceHead field0
 });
 
 
@@ -1865,19 +1844,155 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeHistoryEntityState_KnownTerminalCopyWithImpl<$Res>
-    implements $BridgeHistoryEntityState_KnownTerminalCopyWith<$Res> {
-  _$BridgeHistoryEntityState_KnownTerminalCopyWithImpl(this._self, this._then);
+class _$BridgeHistoryBusinessRowHead_SourceCopyWithImpl<$Res>
+    implements $BridgeHistoryBusinessRowHead_SourceCopyWith<$Res> {
+  _$BridgeHistoryBusinessRowHead_SourceCopyWithImpl(this._self, this._then);
 
-  final BridgeHistoryEntityState_KnownTerminal _self;
-  final $Res Function(BridgeHistoryEntityState_KnownTerminal) _then;
+  final BridgeHistoryBusinessRowHead_Source _self;
+  final $Res Function(BridgeHistoryBusinessRowHead_Source) _then;
 
-/// Create a copy of BridgeHistoryEntityState
+/// Create a copy of BridgeHistoryBusinessRowHead
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? outcome = null,}) {
-  return _then(BridgeHistoryEntityState_KnownTerminal(
-outcome: null == outcome ? _self.outcome : outcome // ignore: cast_nullable_to_non_nullable
-as BridgeChatTerminalOutcome,
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryBusinessRowHead_Source(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistorySourceHead,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeHistoryBusinessRowHead_Cost extends BridgeHistoryBusinessRowHead {
+  const BridgeHistoryBusinessRowHead_Cost(this.field0): super._();
+
+
+@override final  BridgeHistoryCostHead field0;
+
+/// Create a copy of BridgeHistoryBusinessRowHead
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeHistoryBusinessRowHead_CostCopyWith<BridgeHistoryBusinessRowHead_Cost> get copyWith => _$BridgeHistoryBusinessRowHead_CostCopyWithImpl<BridgeHistoryBusinessRowHead_Cost>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryBusinessRowHead_Cost&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeHistoryBusinessRowHead.cost(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeHistoryBusinessRowHead_CostCopyWith<$Res> implements $BridgeHistoryBusinessRowHeadCopyWith<$Res> {
+  factory $BridgeHistoryBusinessRowHead_CostCopyWith(BridgeHistoryBusinessRowHead_Cost value, $Res Function(BridgeHistoryBusinessRowHead_Cost) _then) = _$BridgeHistoryBusinessRowHead_CostCopyWithImpl;
+@useResult
+$Res call({
+ BridgeHistoryCostHead field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeHistoryBusinessRowHead_CostCopyWithImpl<$Res>
+    implements $BridgeHistoryBusinessRowHead_CostCopyWith<$Res> {
+  _$BridgeHistoryBusinessRowHead_CostCopyWithImpl(this._self, this._then);
+
+  final BridgeHistoryBusinessRowHead_Cost _self;
+  final $Res Function(BridgeHistoryBusinessRowHead_Cost) _then;
+
+/// Create a copy of BridgeHistoryBusinessRowHead
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryBusinessRowHead_Cost(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistoryCostHead,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeHistoryBusinessRowHead_Accounting extends BridgeHistoryBusinessRowHead {
+  const BridgeHistoryBusinessRowHead_Accounting(this.field0): super._();
+
+
+@override final  BridgeHistoryAccountingHead field0;
+
+/// Create a copy of BridgeHistoryBusinessRowHead
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeHistoryBusinessRowHead_AccountingCopyWith<BridgeHistoryBusinessRowHead_Accounting> get copyWith => _$BridgeHistoryBusinessRowHead_AccountingCopyWithImpl<BridgeHistoryBusinessRowHead_Accounting>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryBusinessRowHead_Accounting&&(identical(other.field0, field0) || other.field0 == field0));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,field0);
+}
+
+@override
+String toString() {
+    return 'BridgeHistoryBusinessRowHead.accounting(field0: $field0)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeHistoryBusinessRowHead_AccountingCopyWith<$Res> implements $BridgeHistoryBusinessRowHeadCopyWith<$Res> {
+  factory $BridgeHistoryBusinessRowHead_AccountingCopyWith(BridgeHistoryBusinessRowHead_Accounting value, $Res Function(BridgeHistoryBusinessRowHead_Accounting) _then) = _$BridgeHistoryBusinessRowHead_AccountingCopyWithImpl;
+@useResult
+$Res call({
+ BridgeHistoryAccountingHead field0
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeHistoryBusinessRowHead_AccountingCopyWithImpl<$Res>
+    implements $BridgeHistoryBusinessRowHead_AccountingCopyWith<$Res> {
+  _$BridgeHistoryBusinessRowHead_AccountingCopyWithImpl(this._self, this._then);
+
+  final BridgeHistoryBusinessRowHead_Accounting _self;
+  final $Res Function(BridgeHistoryBusinessRowHead_Accounting) _then;
+
+/// Create a copy of BridgeHistoryBusinessRowHead
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryBusinessRowHead_Accounting(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistoryAccountingHead,
   ));
 }
 
@@ -2640,1011 +2755,6 @@ String toString() {
 
 
 /// @nodoc
-mixin _$BridgeHistoryObservation {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryObservation);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeHistoryObservation()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeHistoryObservationCopyWith<$Res>  {
-$BridgeHistoryObservationCopyWith(BridgeHistoryObservation _, $Res Function(BridgeHistoryObservation) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeHistoryObservation].
-extension BridgeHistoryObservationPatterns on BridgeHistoryObservation {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryObservation_Original value)?  original,TResult Function( BridgeHistoryObservation_Boundary value)?  boundary,TResult Function( BridgeHistoryObservation_UnavailableLegacy value)?  unavailableLegacy,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original() when original != null:
-return original(_that);case BridgeHistoryObservation_Boundary() when boundary != null:
-return boundary(_that);case BridgeHistoryObservation_UnavailableLegacy() when unavailableLegacy != null:
-return unavailableLegacy(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryObservation_Original value)  original,required TResult Function( BridgeHistoryObservation_Boundary value)  boundary,required TResult Function( BridgeHistoryObservation_UnavailableLegacy value)  unavailableLegacy,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original():
-return original(_that);case BridgeHistoryObservation_Boundary():
-return boundary(_that);case BridgeHistoryObservation_UnavailableLegacy():
-return unavailableLegacy(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryObservation_Original value)?  original,TResult? Function( BridgeHistoryObservation_Boundary value)?  boundary,TResult? Function( BridgeHistoryObservation_UnavailableLegacy value)?  unavailableLegacy,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original() when original != null:
-return original(_that);case BridgeHistoryObservation_Boundary() when boundary != null:
-return boundary(_that);case BridgeHistoryObservation_UnavailableLegacy() when unavailableLegacy != null:
-return unavailableLegacy(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  original,TResult Function( PlatformInt64? capturedAt)?  boundary,TResult Function( PlatformInt64? capturedAt)?  unavailableLegacy,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original() when original != null:
-return original();case BridgeHistoryObservation_Boundary() when boundary != null:
-return boundary(_that.capturedAt);case BridgeHistoryObservation_UnavailableLegacy() when unavailableLegacy != null:
-return unavailableLegacy(_that.capturedAt);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  original,required TResult Function( PlatformInt64? capturedAt)  boundary,required TResult Function( PlatformInt64? capturedAt)  unavailableLegacy,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original():
-return original();case BridgeHistoryObservation_Boundary():
-return boundary(_that.capturedAt);case BridgeHistoryObservation_UnavailableLegacy():
-return unavailableLegacy(_that.capturedAt);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  original,TResult? Function( PlatformInt64? capturedAt)?  boundary,TResult? Function( PlatformInt64? capturedAt)?  unavailableLegacy,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryObservation_Original() when original != null:
-return original();case BridgeHistoryObservation_Boundary() when boundary != null:
-return boundary(_that.capturedAt);case BridgeHistoryObservation_UnavailableLegacy() when unavailableLegacy != null:
-return unavailableLegacy(_that.capturedAt);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryObservation_Original extends BridgeHistoryObservation {
-  const BridgeHistoryObservation_Original(): super._();
-
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryObservation_Original);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeHistoryObservation.original()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class BridgeHistoryObservation_Boundary extends BridgeHistoryObservation {
-  const BridgeHistoryObservation_Boundary({this.capturedAt}): super._();
-
-
- final  PlatformInt64? capturedAt;
-
-/// Create a copy of BridgeHistoryObservation
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryObservation_BoundaryCopyWith<BridgeHistoryObservation_Boundary> get copyWith => _$BridgeHistoryObservation_BoundaryCopyWithImpl<BridgeHistoryObservation_Boundary>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryObservation_Boundary&&(identical(other.capturedAt, capturedAt) || other.capturedAt == capturedAt));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,capturedAt);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryObservation.boundary(capturedAt: $capturedAt)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryObservation_BoundaryCopyWith<$Res> implements $BridgeHistoryObservationCopyWith<$Res> {
-  factory $BridgeHistoryObservation_BoundaryCopyWith(BridgeHistoryObservation_Boundary value, $Res Function(BridgeHistoryObservation_Boundary) _then) = _$BridgeHistoryObservation_BoundaryCopyWithImpl;
-@useResult
-$Res call({
- PlatformInt64? capturedAt
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryObservation_BoundaryCopyWithImpl<$Res>
-    implements $BridgeHistoryObservation_BoundaryCopyWith<$Res> {
-  _$BridgeHistoryObservation_BoundaryCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryObservation_Boundary _self;
-  final $Res Function(BridgeHistoryObservation_Boundary) _then;
-
-/// Create a copy of BridgeHistoryObservation
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? capturedAt = freezed,}) {
-  return _then(BridgeHistoryObservation_Boundary(
-capturedAt: freezed == capturedAt ? _self.capturedAt : capturedAt // ignore: cast_nullable_to_non_nullable
-as PlatformInt64?,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryObservation_UnavailableLegacy extends BridgeHistoryObservation {
-  const BridgeHistoryObservation_UnavailableLegacy({this.capturedAt}): super._();
-
-
- final  PlatformInt64? capturedAt;
-
-/// Create a copy of BridgeHistoryObservation
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryObservation_UnavailableLegacyCopyWith<BridgeHistoryObservation_UnavailableLegacy> get copyWith => _$BridgeHistoryObservation_UnavailableLegacyCopyWithImpl<BridgeHistoryObservation_UnavailableLegacy>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryObservation_UnavailableLegacy&&(identical(other.capturedAt, capturedAt) || other.capturedAt == capturedAt));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,capturedAt);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryObservation.unavailableLegacy(capturedAt: $capturedAt)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryObservation_UnavailableLegacyCopyWith<$Res> implements $BridgeHistoryObservationCopyWith<$Res> {
-  factory $BridgeHistoryObservation_UnavailableLegacyCopyWith(BridgeHistoryObservation_UnavailableLegacy value, $Res Function(BridgeHistoryObservation_UnavailableLegacy) _then) = _$BridgeHistoryObservation_UnavailableLegacyCopyWithImpl;
-@useResult
-$Res call({
- PlatformInt64? capturedAt
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryObservation_UnavailableLegacyCopyWithImpl<$Res>
-    implements $BridgeHistoryObservation_UnavailableLegacyCopyWith<$Res> {
-  _$BridgeHistoryObservation_UnavailableLegacyCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryObservation_UnavailableLegacy _self;
-  final $Res Function(BridgeHistoryObservation_UnavailableLegacy) _then;
-
-/// Create a copy of BridgeHistoryObservation
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? capturedAt = freezed,}) {
-  return _then(BridgeHistoryObservation_UnavailableLegacy(
-capturedAt: freezed == capturedAt ? _self.capturedAt : capturedAt // ignore: cast_nullable_to_non_nullable
-as PlatformInt64?,
-  ));
-}
-
-
-}
-
-/// @nodoc
-mixin _$BridgeHistoryRowHead {
-
- Object get field0;
-
-
-
-@override
-bool operator ==(Object other) {
-  final _this = this as BridgeHistoryRowHead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead&&const DeepCollectionEquality().equals(other.field0, _this.field0));
-}
-
-
-@override
-int get hashCode {
-  final _this = this as BridgeHistoryRowHead;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
-}
-
-@override
-String toString() {
-  final _this = this as BridgeHistoryRowHead;
-  return 'BridgeHistoryRowHead(field0: ${_this.field0})';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeHistoryRowHeadCopyWith<$Res>  {
-$BridgeHistoryRowHeadCopyWith(BridgeHistoryRowHead _, $Res Function(BridgeHistoryRowHead) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeHistoryRowHead].
-extension BridgeHistoryRowHeadPatterns on BridgeHistoryRowHead {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryRowHead_Work value)?  work,TResult Function( BridgeHistoryRowHead_Single value)?  single,TResult Function( BridgeHistoryRowHead_Member value)?  member,TResult Function( BridgeHistoryRowHead_Turn value)?  turn,TResult Function( BridgeHistoryRowHead_Source value)?  source,TResult Function( BridgeHistoryRowHead_Cost value)?  cost,TResult Function( BridgeHistoryRowHead_Accounting value)?  accounting,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work() when work != null:
-return work(_that);case BridgeHistoryRowHead_Single() when single != null:
-return single(_that);case BridgeHistoryRowHead_Member() when member != null:
-return member(_that);case BridgeHistoryRowHead_Turn() when turn != null:
-return turn(_that);case BridgeHistoryRowHead_Source() when source != null:
-return source(_that);case BridgeHistoryRowHead_Cost() when cost != null:
-return cost(_that);case BridgeHistoryRowHead_Accounting() when accounting != null:
-return accounting(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryRowHead_Work value)  work,required TResult Function( BridgeHistoryRowHead_Single value)  single,required TResult Function( BridgeHistoryRowHead_Member value)  member,required TResult Function( BridgeHistoryRowHead_Turn value)  turn,required TResult Function( BridgeHistoryRowHead_Source value)  source,required TResult Function( BridgeHistoryRowHead_Cost value)  cost,required TResult Function( BridgeHistoryRowHead_Accounting value)  accounting,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work():
-return work(_that);case BridgeHistoryRowHead_Single():
-return single(_that);case BridgeHistoryRowHead_Member():
-return member(_that);case BridgeHistoryRowHead_Turn():
-return turn(_that);case BridgeHistoryRowHead_Source():
-return source(_that);case BridgeHistoryRowHead_Cost():
-return cost(_that);case BridgeHistoryRowHead_Accounting():
-return accounting(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryRowHead_Work value)?  work,TResult? Function( BridgeHistoryRowHead_Single value)?  single,TResult? Function( BridgeHistoryRowHead_Member value)?  member,TResult? Function( BridgeHistoryRowHead_Turn value)?  turn,TResult? Function( BridgeHistoryRowHead_Source value)?  source,TResult? Function( BridgeHistoryRowHead_Cost value)?  cost,TResult? Function( BridgeHistoryRowHead_Accounting value)?  accounting,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work() when work != null:
-return work(_that);case BridgeHistoryRowHead_Single() when single != null:
-return single(_that);case BridgeHistoryRowHead_Member() when member != null:
-return member(_that);case BridgeHistoryRowHead_Turn() when turn != null:
-return turn(_that);case BridgeHistoryRowHead_Source() when source != null:
-return source(_that);case BridgeHistoryRowHead_Cost() when cost != null:
-return cost(_that);case BridgeHistoryRowHead_Accounting() when accounting != null:
-return accounting(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeHistoryWorkHead field0)?  work,TResult Function( BridgeHistoryEntityHead field0)?  single,TResult Function( BridgeHistoryEntityHead field0)?  member,TResult Function( BridgeHistoryTurnHead field0)?  turn,TResult Function( BridgeHistorySourceHead field0)?  source,TResult Function( BridgeHistoryCostHead field0)?  cost,TResult Function( BridgeHistoryAccountingHead field0)?  accounting,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work() when work != null:
-return work(_that.field0);case BridgeHistoryRowHead_Single() when single != null:
-return single(_that.field0);case BridgeHistoryRowHead_Member() when member != null:
-return member(_that.field0);case BridgeHistoryRowHead_Turn() when turn != null:
-return turn(_that.field0);case BridgeHistoryRowHead_Source() when source != null:
-return source(_that.field0);case BridgeHistoryRowHead_Cost() when cost != null:
-return cost(_that.field0);case BridgeHistoryRowHead_Accounting() when accounting != null:
-return accounting(_that.field0);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeHistoryWorkHead field0)  work,required TResult Function( BridgeHistoryEntityHead field0)  single,required TResult Function( BridgeHistoryEntityHead field0)  member,required TResult Function( BridgeHistoryTurnHead field0)  turn,required TResult Function( BridgeHistorySourceHead field0)  source,required TResult Function( BridgeHistoryCostHead field0)  cost,required TResult Function( BridgeHistoryAccountingHead field0)  accounting,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work():
-return work(_that.field0);case BridgeHistoryRowHead_Single():
-return single(_that.field0);case BridgeHistoryRowHead_Member():
-return member(_that.field0);case BridgeHistoryRowHead_Turn():
-return turn(_that.field0);case BridgeHistoryRowHead_Source():
-return source(_that.field0);case BridgeHistoryRowHead_Cost():
-return cost(_that.field0);case BridgeHistoryRowHead_Accounting():
-return accounting(_that.field0);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryWorkHead field0)?  work,TResult? Function( BridgeHistoryEntityHead field0)?  single,TResult? Function( BridgeHistoryEntityHead field0)?  member,TResult? Function( BridgeHistoryTurnHead field0)?  turn,TResult? Function( BridgeHistorySourceHead field0)?  source,TResult? Function( BridgeHistoryCostHead field0)?  cost,TResult? Function( BridgeHistoryAccountingHead field0)?  accounting,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryRowHead_Work() when work != null:
-return work(_that.field0);case BridgeHistoryRowHead_Single() when single != null:
-return single(_that.field0);case BridgeHistoryRowHead_Member() when member != null:
-return member(_that.field0);case BridgeHistoryRowHead_Turn() when turn != null:
-return turn(_that.field0);case BridgeHistoryRowHead_Source() when source != null:
-return source(_that.field0);case BridgeHistoryRowHead_Cost() when cost != null:
-return cost(_that.field0);case BridgeHistoryRowHead_Accounting() when accounting != null:
-return accounting(_that.field0);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Work extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Work(this.field0): super._();
-
-
-@override final  BridgeHistoryWorkHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_WorkCopyWith<BridgeHistoryRowHead_Work> get copyWith => _$BridgeHistoryRowHead_WorkCopyWithImpl<BridgeHistoryRowHead_Work>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Work&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.work(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_WorkCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_WorkCopyWith(BridgeHistoryRowHead_Work value, $Res Function(BridgeHistoryRowHead_Work) _then) = _$BridgeHistoryRowHead_WorkCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryWorkHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_WorkCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_WorkCopyWith<$Res> {
-  _$BridgeHistoryRowHead_WorkCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Work _self;
-  final $Res Function(BridgeHistoryRowHead_Work) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Work(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryWorkHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Single extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Single(this.field0): super._();
-
-
-@override final  BridgeHistoryEntityHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_SingleCopyWith<BridgeHistoryRowHead_Single> get copyWith => _$BridgeHistoryRowHead_SingleCopyWithImpl<BridgeHistoryRowHead_Single>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Single&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.single(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_SingleCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_SingleCopyWith(BridgeHistoryRowHead_Single value, $Res Function(BridgeHistoryRowHead_Single) _then) = _$BridgeHistoryRowHead_SingleCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryEntityHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_SingleCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_SingleCopyWith<$Res> {
-  _$BridgeHistoryRowHead_SingleCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Single _self;
-  final $Res Function(BridgeHistoryRowHead_Single) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Single(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryEntityHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Member extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Member(this.field0): super._();
-
-
-@override final  BridgeHistoryEntityHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_MemberCopyWith<BridgeHistoryRowHead_Member> get copyWith => _$BridgeHistoryRowHead_MemberCopyWithImpl<BridgeHistoryRowHead_Member>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Member&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.member(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_MemberCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_MemberCopyWith(BridgeHistoryRowHead_Member value, $Res Function(BridgeHistoryRowHead_Member) _then) = _$BridgeHistoryRowHead_MemberCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryEntityHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_MemberCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_MemberCopyWith<$Res> {
-  _$BridgeHistoryRowHead_MemberCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Member _self;
-  final $Res Function(BridgeHistoryRowHead_Member) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Member(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryEntityHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Turn extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Turn(this.field0): super._();
-
-
-@override final  BridgeHistoryTurnHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_TurnCopyWith<BridgeHistoryRowHead_Turn> get copyWith => _$BridgeHistoryRowHead_TurnCopyWithImpl<BridgeHistoryRowHead_Turn>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Turn&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.turn(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_TurnCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_TurnCopyWith(BridgeHistoryRowHead_Turn value, $Res Function(BridgeHistoryRowHead_Turn) _then) = _$BridgeHistoryRowHead_TurnCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryTurnHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_TurnCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_TurnCopyWith<$Res> {
-  _$BridgeHistoryRowHead_TurnCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Turn _self;
-  final $Res Function(BridgeHistoryRowHead_Turn) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Turn(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryTurnHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Source extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Source(this.field0): super._();
-
-
-@override final  BridgeHistorySourceHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_SourceCopyWith<BridgeHistoryRowHead_Source> get copyWith => _$BridgeHistoryRowHead_SourceCopyWithImpl<BridgeHistoryRowHead_Source>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Source&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.source(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_SourceCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_SourceCopyWith(BridgeHistoryRowHead_Source value, $Res Function(BridgeHistoryRowHead_Source) _then) = _$BridgeHistoryRowHead_SourceCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistorySourceHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_SourceCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_SourceCopyWith<$Res> {
-  _$BridgeHistoryRowHead_SourceCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Source _self;
-  final $Res Function(BridgeHistoryRowHead_Source) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Source(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistorySourceHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Cost extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Cost(this.field0): super._();
-
-
-@override final  BridgeHistoryCostHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_CostCopyWith<BridgeHistoryRowHead_Cost> get copyWith => _$BridgeHistoryRowHead_CostCopyWithImpl<BridgeHistoryRowHead_Cost>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Cost&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.cost(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_CostCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_CostCopyWith(BridgeHistoryRowHead_Cost value, $Res Function(BridgeHistoryRowHead_Cost) _then) = _$BridgeHistoryRowHead_CostCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryCostHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_CostCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_CostCopyWith<$Res> {
-  _$BridgeHistoryRowHead_CostCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Cost _self;
-  final $Res Function(BridgeHistoryRowHead_Cost) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Cost(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryCostHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryRowHead_Accounting extends BridgeHistoryRowHead {
-  const BridgeHistoryRowHead_Accounting(this.field0): super._();
-
-
-@override final  BridgeHistoryAccountingHead field0;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryRowHead_AccountingCopyWith<BridgeHistoryRowHead_Accounting> get copyWith => _$BridgeHistoryRowHead_AccountingCopyWithImpl<BridgeHistoryRowHead_Accounting>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryRowHead_Accounting&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryRowHead.accounting(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryRowHead_AccountingCopyWith<$Res> implements $BridgeHistoryRowHeadCopyWith<$Res> {
-  factory $BridgeHistoryRowHead_AccountingCopyWith(BridgeHistoryRowHead_Accounting value, $Res Function(BridgeHistoryRowHead_Accounting) _then) = _$BridgeHistoryRowHead_AccountingCopyWithImpl;
-@useResult
-$Res call({
- BridgeHistoryAccountingHead field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryRowHead_AccountingCopyWithImpl<$Res>
-    implements $BridgeHistoryRowHead_AccountingCopyWith<$Res> {
-  _$BridgeHistoryRowHead_AccountingCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryRowHead_Accounting _self;
-  final $Res Function(BridgeHistoryRowHead_Accounting) _then;
-
-/// Create a copy of BridgeHistoryRowHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeHistoryRowHead_Accounting(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryAccountingHead,
-  ));
-}
-
-
-}
-
-/// @nodoc
 mixin _$BridgeHistorySourceLifecycle {
 
 
@@ -3943,42 +3053,42 @@ as BridgeChatTerminalOutcome,
 }
 
 /// @nodoc
-mixin _$BridgeHistoryWaitHead {
+mixin _$BridgeHistoryTimelineItem {
 
- Object get presentation;
+ Object get field0;
 
 
 
 @override
 bool operator ==(Object other) {
-  final _this = this as BridgeHistoryWaitHead;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitHead&&const DeepCollectionEquality().equals(other.presentation, _this.presentation));
+  final _this = this as BridgeHistoryTimelineItem;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryTimelineItem&&const DeepCollectionEquality().equals(other.field0, _this.field0));
 }
 
 
 @override
 int get hashCode {
-  final _this = this as BridgeHistoryWaitHead;
-  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.presentation));
+  final _this = this as BridgeHistoryTimelineItem;
+  return Object.hash(runtimeType,const DeepCollectionEquality().hash(_this.field0));
 }
 
 @override
 String toString() {
-  final _this = this as BridgeHistoryWaitHead;
-  return 'BridgeHistoryWaitHead(presentation: ${_this.presentation})';
+  final _this = this as BridgeHistoryTimelineItem;
+  return 'BridgeHistoryTimelineItem(field0: ${_this.field0})';
 }
 
 
 }
 
 /// @nodoc
-class $BridgeHistoryWaitHeadCopyWith<$Res>  {
-$BridgeHistoryWaitHeadCopyWith(BridgeHistoryWaitHead _, $Res Function(BridgeHistoryWaitHead) __);
+class $BridgeHistoryTimelineItemCopyWith<$Res>  {
+$BridgeHistoryTimelineItemCopyWith(BridgeHistoryTimelineItem _, $Res Function(BridgeHistoryTimelineItem) __);
 }
 
 
-/// Adds pattern-matching-related methods to [BridgeHistoryWaitHead].
-extension BridgeHistoryWaitHeadPatterns on BridgeHistoryWaitHead {
+/// Adds pattern-matching-related methods to [BridgeHistoryTimelineItem].
+extension BridgeHistoryTimelineItemPatterns on BridgeHistoryTimelineItem {
 /// A variant of `map` that fallback to returning `orElse`.
 ///
 /// It is equivalent to doing:
@@ -3991,12 +3101,12 @@ extension BridgeHistoryWaitHeadPatterns on BridgeHistoryWaitHead {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryWaitHead_Inline value)?  inline,TResult Function( BridgeHistoryWaitHead_Deferred value)?  deferred_,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryTimelineItem_Divider value)?  divider,TResult Function( BridgeHistoryTimelineItem_WorkRange value)?  workRange,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline() when inline != null:
-return inline(_that);case BridgeHistoryWaitHead_Deferred() when deferred_ != null:
-return deferred_(_that);case _:
+case BridgeHistoryTimelineItem_Divider() when divider != null:
+return divider(_that);case BridgeHistoryTimelineItem_WorkRange() when workRange != null:
+return workRange(_that);case _:
   return orElse();
 
 }
@@ -4014,12 +3124,12 @@ return deferred_(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryWaitHead_Inline value)  inline,required TResult Function( BridgeHistoryWaitHead_Deferred value)  deferred_,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryTimelineItem_Divider value)  divider,required TResult Function( BridgeHistoryTimelineItem_WorkRange value)  workRange,}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline():
-return inline(_that);case BridgeHistoryWaitHead_Deferred():
-return deferred_(_that);}
+case BridgeHistoryTimelineItem_Divider():
+return divider(_that);case BridgeHistoryTimelineItem_WorkRange():
+return workRange(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -4033,12 +3143,12 @@ return deferred_(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryWaitHead_Inline value)?  inline,TResult? Function( BridgeHistoryWaitHead_Deferred value)?  deferred_,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryTimelineItem_Divider value)?  divider,TResult? Function( BridgeHistoryTimelineItem_WorkRange value)?  workRange,}){
 final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline() when inline != null:
-return inline(_that);case BridgeHistoryWaitHead_Deferred() when deferred_ != null:
-return deferred_(_that);case _:
+case BridgeHistoryTimelineItem_Divider() when divider != null:
+return divider(_that);case BridgeHistoryTimelineItem_WorkRange() when workRange != null:
+return workRange(_that);case _:
   return null;
 
 }
@@ -4055,11 +3165,11 @@ return deferred_(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeThreadWaitPresentation presentation)?  inline,TResult Function( BridgeHistoryWaitIntent intent,  BridgeHistoryWaitState state,  bool? messagesReady,  BridgeHistoryEventBodyRef presentation)?  deferred_,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeHistoryEventRecord field0)?  divider,TResult Function( BridgeHistoryWorkRange field0)?  workRange,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline() when inline != null:
-return inline(_that.presentation);case BridgeHistoryWaitHead_Deferred() when deferred_ != null:
-return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation);case _:
+case BridgeHistoryTimelineItem_Divider() when divider != null:
+return divider(_that.field0);case BridgeHistoryTimelineItem_WorkRange() when workRange != null:
+return workRange(_that.field0);case _:
   return orElse();
 
 }
@@ -4077,11 +3187,11 @@ return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeThreadWaitPresentation presentation)  inline,required TResult Function( BridgeHistoryWaitIntent intent,  BridgeHistoryWaitState state,  bool? messagesReady,  BridgeHistoryEventBodyRef presentation)  deferred_,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeHistoryEventRecord field0)  divider,required TResult Function( BridgeHistoryWorkRange field0)  workRange,}) {final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline():
-return inline(_that.presentation);case BridgeHistoryWaitHead_Deferred():
-return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation);}
+case BridgeHistoryTimelineItem_Divider():
+return divider(_that.field0);case BridgeHistoryTimelineItem_WorkRange():
+return workRange(_that.field0);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -4095,11 +3205,11 @@ return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeThreadWaitPresentation presentation)?  inline,TResult? Function( BridgeHistoryWaitIntent intent,  BridgeHistoryWaitState state,  bool? messagesReady,  BridgeHistoryEventBodyRef presentation)?  deferred_,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryEventRecord field0)?  divider,TResult? Function( BridgeHistoryWorkRange field0)?  workRange,}) {final _that = this;
 switch (_that) {
-case BridgeHistoryWaitHead_Inline() when inline != null:
-return inline(_that.presentation);case BridgeHistoryWaitHead_Deferred() when deferred_ != null:
-return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation);case _:
+case BridgeHistoryTimelineItem_Divider() when divider != null:
+return divider(_that.field0);case BridgeHistoryTimelineItem_WorkRange() when workRange != null:
+return workRange(_that.field0);case _:
   return null;
 
 }
@@ -4110,45 +3220,45 @@ return deferred_(_that.intent,_that.state,_that.messagesReady,_that.presentation
 /// @nodoc
 
 
-class BridgeHistoryWaitHead_Inline extends BridgeHistoryWaitHead {
-  const BridgeHistoryWaitHead_Inline({required this.presentation}): super._();
+class BridgeHistoryTimelineItem_Divider extends BridgeHistoryTimelineItem {
+  const BridgeHistoryTimelineItem_Divider(this.field0): super._();
 
 
-@override final  BridgeThreadWaitPresentation presentation;
+@override final  BridgeHistoryEventRecord field0;
 
-/// Create a copy of BridgeHistoryWaitHead
+/// Create a copy of BridgeHistoryTimelineItem
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeHistoryWaitHead_InlineCopyWith<BridgeHistoryWaitHead_Inline> get copyWith => _$BridgeHistoryWaitHead_InlineCopyWithImpl<BridgeHistoryWaitHead_Inline>(this, _$identity);
+$BridgeHistoryTimelineItem_DividerCopyWith<BridgeHistoryTimelineItem_Divider> get copyWith => _$BridgeHistoryTimelineItem_DividerCopyWithImpl<BridgeHistoryTimelineItem_Divider>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitHead_Inline&&(identical(other.presentation, presentation) || other.presentation == presentation));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryTimelineItem_Divider&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,presentation);
+    return Object.hash(runtimeType,field0);
 }
 
 @override
 String toString() {
-    return 'BridgeHistoryWaitHead.inline(presentation: $presentation)';
+    return 'BridgeHistoryTimelineItem.divider(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeHistoryWaitHead_InlineCopyWith<$Res> implements $BridgeHistoryWaitHeadCopyWith<$Res> {
-  factory $BridgeHistoryWaitHead_InlineCopyWith(BridgeHistoryWaitHead_Inline value, $Res Function(BridgeHistoryWaitHead_Inline) _then) = _$BridgeHistoryWaitHead_InlineCopyWithImpl;
+abstract mixin class $BridgeHistoryTimelineItem_DividerCopyWith<$Res> implements $BridgeHistoryTimelineItemCopyWith<$Res> {
+  factory $BridgeHistoryTimelineItem_DividerCopyWith(BridgeHistoryTimelineItem_Divider value, $Res Function(BridgeHistoryTimelineItem_Divider) _then) = _$BridgeHistoryTimelineItem_DividerCopyWithImpl;
 @useResult
 $Res call({
- BridgeThreadWaitPresentation presentation
+ BridgeHistoryEventRecord field0
 });
 
 
@@ -4156,19 +3266,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeHistoryWaitHead_InlineCopyWithImpl<$Res>
-    implements $BridgeHistoryWaitHead_InlineCopyWith<$Res> {
-  _$BridgeHistoryWaitHead_InlineCopyWithImpl(this._self, this._then);
+class _$BridgeHistoryTimelineItem_DividerCopyWithImpl<$Res>
+    implements $BridgeHistoryTimelineItem_DividerCopyWith<$Res> {
+  _$BridgeHistoryTimelineItem_DividerCopyWithImpl(this._self, this._then);
 
-  final BridgeHistoryWaitHead_Inline _self;
-  final $Res Function(BridgeHistoryWaitHead_Inline) _then;
+  final BridgeHistoryTimelineItem_Divider _self;
+  final $Res Function(BridgeHistoryTimelineItem_Divider) _then;
 
-/// Create a copy of BridgeHistoryWaitHead
+/// Create a copy of BridgeHistoryTimelineItem
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? presentation = null,}) {
-  return _then(BridgeHistoryWaitHead_Inline(
-presentation: null == presentation ? _self.presentation : presentation // ignore: cast_nullable_to_non_nullable
-as BridgeThreadWaitPresentation,
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryTimelineItem_Divider(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistoryEventRecord,
   ));
 }
 
@@ -4178,289 +3288,45 @@ as BridgeThreadWaitPresentation,
 /// @nodoc
 
 
-class BridgeHistoryWaitHead_Deferred extends BridgeHistoryWaitHead {
-  const BridgeHistoryWaitHead_Deferred({required this.intent, required this.state, this.messagesReady, required this.presentation}): super._();
+class BridgeHistoryTimelineItem_WorkRange extends BridgeHistoryTimelineItem {
+  const BridgeHistoryTimelineItem_WorkRange(this.field0): super._();
 
 
- final  BridgeHistoryWaitIntent intent;
- final  BridgeHistoryWaitState state;
- final  bool? messagesReady;
-@override final  BridgeHistoryEventBodyRef presentation;
+@override final  BridgeHistoryWorkRange field0;
 
-/// Create a copy of BridgeHistoryWaitHead
+/// Create a copy of BridgeHistoryTimelineItem
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$BridgeHistoryWaitHead_DeferredCopyWith<BridgeHistoryWaitHead_Deferred> get copyWith => _$BridgeHistoryWaitHead_DeferredCopyWithImpl<BridgeHistoryWaitHead_Deferred>(this, _$identity);
+$BridgeHistoryTimelineItem_WorkRangeCopyWith<BridgeHistoryTimelineItem_WorkRange> get copyWith => _$BridgeHistoryTimelineItem_WorkRangeCopyWithImpl<BridgeHistoryTimelineItem_WorkRange>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitHead_Deferred&&(identical(other.intent, intent) || other.intent == intent)&&(identical(other.state, state) || other.state == state)&&(identical(other.messagesReady, messagesReady) || other.messagesReady == messagesReady)&&(identical(other.presentation, presentation) || other.presentation == presentation));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryTimelineItem_WorkRange&&(identical(other.field0, field0) || other.field0 == field0));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,intent,state,messagesReady,presentation);
+    return Object.hash(runtimeType,field0);
 }
 
 @override
 String toString() {
-    return 'BridgeHistoryWaitHead.deferred_(intent: $intent, state: $state, messagesReady: $messagesReady, presentation: $presentation)';
+    return 'BridgeHistoryTimelineItem.workRange(field0: $field0)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $BridgeHistoryWaitHead_DeferredCopyWith<$Res> implements $BridgeHistoryWaitHeadCopyWith<$Res> {
-  factory $BridgeHistoryWaitHead_DeferredCopyWith(BridgeHistoryWaitHead_Deferred value, $Res Function(BridgeHistoryWaitHead_Deferred) _then) = _$BridgeHistoryWaitHead_DeferredCopyWithImpl;
+abstract mixin class $BridgeHistoryTimelineItem_WorkRangeCopyWith<$Res> implements $BridgeHistoryTimelineItemCopyWith<$Res> {
+  factory $BridgeHistoryTimelineItem_WorkRangeCopyWith(BridgeHistoryTimelineItem_WorkRange value, $Res Function(BridgeHistoryTimelineItem_WorkRange) _then) = _$BridgeHistoryTimelineItem_WorkRangeCopyWithImpl;
 @useResult
 $Res call({
- BridgeHistoryWaitIntent intent, BridgeHistoryWaitState state, bool? messagesReady, BridgeHistoryEventBodyRef presentation
-});
-
-
-$BridgeHistoryWaitIntentCopyWith<$Res> get intent;
-
-}
-/// @nodoc
-class _$BridgeHistoryWaitHead_DeferredCopyWithImpl<$Res>
-    implements $BridgeHistoryWaitHead_DeferredCopyWith<$Res> {
-  _$BridgeHistoryWaitHead_DeferredCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryWaitHead_Deferred _self;
-  final $Res Function(BridgeHistoryWaitHead_Deferred) _then;
-
-/// Create a copy of BridgeHistoryWaitHead
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? intent = null,Object? state = null,Object? messagesReady = freezed,Object? presentation = null,}) {
-  return _then(BridgeHistoryWaitHead_Deferred(
-intent: null == intent ? _self.intent : intent // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryWaitIntent,state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryWaitState,messagesReady: freezed == messagesReady ? _self.messagesReady : messagesReady // ignore: cast_nullable_to_non_nullable
-as bool?,presentation: null == presentation ? _self.presentation : presentation // ignore: cast_nullable_to_non_nullable
-as BridgeHistoryEventBodyRef,
-  ));
-}
-
-/// Create a copy of BridgeHistoryWaitHead
-/// with the given fields replaced by the non-null parameter values.
-@override
-@pragma('vm:prefer-inline')
-$BridgeHistoryWaitIntentCopyWith<$Res> get intent {
-
-  return $BridgeHistoryWaitIntentCopyWith<$Res>(_self.intent, (value) {
-    return _then(_self.copyWith(intent: value));
-  });
-}
-}
-
-/// @nodoc
-mixin _$BridgeHistoryWaitIntent {
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitIntent);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-    return 'BridgeHistoryWaitIntent()';
-}
-
-
-}
-
-/// @nodoc
-class $BridgeHistoryWaitIntentCopyWith<$Res>  {
-$BridgeHistoryWaitIntentCopyWith(BridgeHistoryWaitIntent _, $Res Function(BridgeHistoryWaitIntent) __);
-}
-
-
-/// Adds pattern-matching-related methods to [BridgeHistoryWaitIntent].
-extension BridgeHistoryWaitIntentPatterns on BridgeHistoryWaitIntent {
-/// A variant of `map` that fallback to returning `orElse`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeHistoryWaitIntent_Events value)?  events,TResult Function( BridgeHistoryWaitIntent_Timer value)?  timer,required TResult orElse(),}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events() when events != null:
-return events(_that);case BridgeHistoryWaitIntent_Timer() when timer != null:
-return timer(_that);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// Callbacks receives the raw object, upcasted.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case final Subclass2 value:
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeHistoryWaitIntent_Events value)  events,required TResult Function( BridgeHistoryWaitIntent_Timer value)  timer,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events():
-return events(_that);case BridgeHistoryWaitIntent_Timer():
-return timer(_that);}
-}
-/// A variant of `map` that fallback to returning `null`.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case final Subclass value:
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeHistoryWaitIntent_Events value)?  events,TResult? Function( BridgeHistoryWaitIntent_Timer value)?  timer,}){
-final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events() when events != null:
-return events(_that);case BridgeHistoryWaitIntent_Timer() when timer != null:
-return timer(_that);case _:
-  return null;
-
-}
-}
-/// A variant of `when` that fallback to an `orElse` callback.
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return orElse();
-/// }
-/// ```
-
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BigInt targetCount,  BigInt timeoutMs)?  events,TResult Function( BigInt durationMs)?  timer,required TResult orElse(),}) {final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events() when events != null:
-return events(_that.targetCount,_that.timeoutMs);case BridgeHistoryWaitIntent_Timer() when timer != null:
-return timer(_that.durationMs);case _:
-  return orElse();
-
-}
-}
-/// A `switch`-like method, using callbacks.
-///
-/// As opposed to `map`, this offers destructuring.
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case Subclass2(:final field2):
-///     return ...;
-/// }
-/// ```
-
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BigInt targetCount,  BigInt timeoutMs)  events,required TResult Function( BigInt durationMs)  timer,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events():
-return events(_that.targetCount,_that.timeoutMs);case BridgeHistoryWaitIntent_Timer():
-return timer(_that.durationMs);}
-}
-/// A variant of `when` that fallback to returning `null`
-///
-/// It is equivalent to doing:
-/// ```dart
-/// switch (sealedClass) {
-///   case Subclass(:final field):
-///     return ...;
-///   case _:
-///     return null;
-/// }
-/// ```
-
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BigInt targetCount,  BigInt timeoutMs)?  events,TResult? Function( BigInt durationMs)?  timer,}) {final _that = this;
-switch (_that) {
-case BridgeHistoryWaitIntent_Events() when events != null:
-return events(_that.targetCount,_that.timeoutMs);case BridgeHistoryWaitIntent_Timer() when timer != null:
-return timer(_that.durationMs);case _:
-  return null;
-
-}
-}
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryWaitIntent_Events extends BridgeHistoryWaitIntent {
-  const BridgeHistoryWaitIntent_Events({required this.targetCount, required this.timeoutMs}): super._();
-
-
- final  BigInt targetCount;
- final  BigInt timeoutMs;
-
-/// Create a copy of BridgeHistoryWaitIntent
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryWaitIntent_EventsCopyWith<BridgeHistoryWaitIntent_Events> get copyWith => _$BridgeHistoryWaitIntent_EventsCopyWithImpl<BridgeHistoryWaitIntent_Events>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitIntent_Events&&(identical(other.targetCount, targetCount) || other.targetCount == targetCount)&&(identical(other.timeoutMs, timeoutMs) || other.timeoutMs == timeoutMs));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,targetCount,timeoutMs);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryWaitIntent.events(targetCount: $targetCount, timeoutMs: $timeoutMs)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryWaitIntent_EventsCopyWith<$Res> implements $BridgeHistoryWaitIntentCopyWith<$Res> {
-  factory $BridgeHistoryWaitIntent_EventsCopyWith(BridgeHistoryWaitIntent_Events value, $Res Function(BridgeHistoryWaitIntent_Events) _then) = _$BridgeHistoryWaitIntent_EventsCopyWithImpl;
-@useResult
-$Res call({
- BigInt targetCount, BigInt timeoutMs
+ BridgeHistoryWorkRange field0
 });
 
 
@@ -4468,88 +3334,19 @@ $Res call({
 
 }
 /// @nodoc
-class _$BridgeHistoryWaitIntent_EventsCopyWithImpl<$Res>
-    implements $BridgeHistoryWaitIntent_EventsCopyWith<$Res> {
-  _$BridgeHistoryWaitIntent_EventsCopyWithImpl(this._self, this._then);
+class _$BridgeHistoryTimelineItem_WorkRangeCopyWithImpl<$Res>
+    implements $BridgeHistoryTimelineItem_WorkRangeCopyWith<$Res> {
+  _$BridgeHistoryTimelineItem_WorkRangeCopyWithImpl(this._self, this._then);
 
-  final BridgeHistoryWaitIntent_Events _self;
-  final $Res Function(BridgeHistoryWaitIntent_Events) _then;
+  final BridgeHistoryTimelineItem_WorkRange _self;
+  final $Res Function(BridgeHistoryTimelineItem_WorkRange) _then;
 
-/// Create a copy of BridgeHistoryWaitIntent
+/// Create a copy of BridgeHistoryTimelineItem
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? targetCount = null,Object? timeoutMs = null,}) {
-  return _then(BridgeHistoryWaitIntent_Events(
-targetCount: null == targetCount ? _self.targetCount : targetCount // ignore: cast_nullable_to_non_nullable
-as BigInt,timeoutMs: null == timeoutMs ? _self.timeoutMs : timeoutMs // ignore: cast_nullable_to_non_nullable
-as BigInt,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeHistoryWaitIntent_Timer extends BridgeHistoryWaitIntent {
-  const BridgeHistoryWaitIntent_Timer({required this.durationMs}): super._();
-
-
- final  BigInt durationMs;
-
-/// Create a copy of BridgeHistoryWaitIntent
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeHistoryWaitIntent_TimerCopyWith<BridgeHistoryWaitIntent_Timer> get copyWith => _$BridgeHistoryWaitIntent_TimerCopyWithImpl<BridgeHistoryWaitIntent_Timer>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeHistoryWaitIntent_Timer&&(identical(other.durationMs, durationMs) || other.durationMs == durationMs));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,durationMs);
-}
-
-@override
-String toString() {
-    return 'BridgeHistoryWaitIntent.timer(durationMs: $durationMs)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeHistoryWaitIntent_TimerCopyWith<$Res> implements $BridgeHistoryWaitIntentCopyWith<$Res> {
-  factory $BridgeHistoryWaitIntent_TimerCopyWith(BridgeHistoryWaitIntent_Timer value, $Res Function(BridgeHistoryWaitIntent_Timer) _then) = _$BridgeHistoryWaitIntent_TimerCopyWithImpl;
-@useResult
-$Res call({
- BigInt durationMs
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeHistoryWaitIntent_TimerCopyWithImpl<$Res>
-    implements $BridgeHistoryWaitIntent_TimerCopyWith<$Res> {
-  _$BridgeHistoryWaitIntent_TimerCopyWithImpl(this._self, this._then);
-
-  final BridgeHistoryWaitIntent_Timer _self;
-  final $Res Function(BridgeHistoryWaitIntent_Timer) _then;
-
-/// Create a copy of BridgeHistoryWaitIntent
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? durationMs = null,}) {
-  return _then(BridgeHistoryWaitIntent_Timer(
-durationMs: null == durationMs ? _self.durationMs : durationMs // ignore: cast_nullable_to_non_nullable
-as BigInt,
+@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
+  return _then(BridgeHistoryTimelineItem_WorkRange(
+null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
+as BridgeHistoryWorkRange,
   ));
 }
 

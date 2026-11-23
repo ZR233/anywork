@@ -12,9 +12,7 @@ use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatActiveStatus, ChatTerminalOutcome, ContentRange,
     CurrentContentRef, CurrentFrame, CurrentProjection, RuntimeCostAmount,
 };
-use sea_orm::{
-    ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait,
-};
+use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 use std::{path::Path, sync::Arc};
 use support::{Environment, current_demand, prompt_step, reached};
 
@@ -152,15 +150,10 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
     continuation.release();
     env.finish(result).await
 }
-fn entity(id: &str, run: RuntimeEpoch, active: bool) -> HistoryEntityHead {
-    HistoryEntityHead {
+fn event_meta(id: &str, active: bool) -> HistoryEventMeta {
+    HistoryEventMeta {
         entity_id: id.into(),
-        run_id: Some(run.to_string()),
-        attempt_id: Some(uuid::Uuid::new_v4().to_string()),
-        source: HistorySource::ForegroundTurn {
-            turn_id: "turn-a".into(),
-        },
-        kind: HistoryEntityKind::Text,
+        entity_kind: HistoryEntityKind::Text,
         delivery: HistoryDelivery::Foreground,
         state: if active {
             HistoryEntityState::KnownActive {
@@ -174,49 +167,102 @@ fn entity(id: &str, run: RuntimeEpoch, active: bool) -> HistoryEntityHead {
         started_at: Some(10),
         finished_at: (!active).then_some(20),
         text_channel: Some(ThreadTextChannel::Final),
-        tool: None,
-        wait: None,
-        content_present: Some(true),
         single_visibility: None,
-        observation: HistoryObservation::Original,
         presentation_contract: None,
-        detail_event_id: None,
-        input_manifest_event_id: None,
-        body_manifest_event_id: None,
+        source_order: None,
+        content_present: Some(true),
+        wait: None,
+        tool: None,
     }
 }
-fn single(id: &str, run: RuntimeEpoch, body: &[u8]) -> HistoryEvent {
-    let mut event = HistoryEvent::new(id, HistoryEventKind::EntityEnded, 20);
-    let mut head = entity(id, run, false);
-    head.body_manifest_event_id = Some(id.into());
-    head.detail_event_id = Some(id.into());
-    event.header.run_id = head.run_id.clone();
-    event.header.attempt_id = head.attempt_id.clone();
-    event.header.entity_id = Some(id.into());
-    event.header.turn_id = Some("turn-a".into());
-    event.header.source = Some(head.source.clone());
-    event.header.row_key = Some(format!("single:{id}"));
-    event.header.original = Some(HistoryOriginalInfo {
+
+fn single(id: &str, run: RuntimeEpoch, database_id: &str, body: &[u8]) -> HistoryEvent {
+    let mut event = HistoryEvent::new(
+        id,
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Divider,
+        20,
+    );
+    let meta = event_meta(id, false);
+    let source = HistorySource::ForegroundTurn {
+        turn_id: "turn-a".into(),
+    };
+    event.run_id = Some(run.to_string());
+    event.attempt_id = Some(uuid::Uuid::new_v4().to_string());
+    event.entity_id = Some(id.into());
+    event.turn_id = Some("turn-a".into());
+    event.source = Some(source);
+    event.original = Some(HistoryOriginalInfo {
         query_class: "conversation".into(),
         parent_id: None,
-        original_kind: head.kind,
+        original_kind: meta.entity_kind,
         tool_name: None,
     });
-    event.head = Some(HistoryRowHead::Single(head));
-    event.is_anchor = true;
-    let payload = HistoryBody::new(
-        "canonical",
-        HistoryBodyRole::CanonicalPayload,
-        b"opaque original bytes".to_vec(),
-    );
-    event.payload_body_id = Some(payload.body_id.clone());
-    event.bodies.push(payload);
-    event.bodies.push(HistoryBody::new(
-        "body",
-        HistoryBodyRole::Body,
-        body.to_vec(),
-    ));
+    let manifest = pack_bodies(
+        &mut event,
+        vec![PendingBody::new(
+            "body",
+            HistoryBodyRole::Body,
+            Some("text/plain".into()),
+            body.to_vec(),
+        )],
+        database_id,
+    )
+    .expect("pack test body");
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "text".into(),
+        meta,
+        data: serde_json::json!({ "channel": "final" }),
+        bodies: manifest,
+        source_order: None,
+        turn_id: Some("turn-a".into()),
+        captured_at: None,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope).expect("encode test envelope");
     event
+}
+
+#[allow(clippy::too_many_arguments)]
+fn work_tool_event(
+    event_id: &str,
+    kind: HistoryEventKind,
+    recorded_at: i64,
+    run_id: &str,
+    turn_id: Option<&str>,
+    call_id: &str,
+    tool_name: &str,
+    entity_id: &str,
+    meta: HistoryEventMeta,
+    data: serde_json::Value,
+    pending_bodies: Vec<PendingBody>,
+    database_id: &str,
+) -> Result<HistoryEvent> {
+    let mut event = HistoryEvent::new(event_id, kind, HistoryTimelineRole::Work, recorded_at);
+    event.occurred_at = Some(recorded_at);
+    event.run_id = Some(run_id.to_owned());
+    event.turn_id = turn_id.map(str::to_owned);
+    event.call_id = Some(call_id.to_owned());
+    event.entity_id = Some(entity_id.to_owned());
+    event.tool_name = Some(tool_name.to_owned());
+    event.source = turn_id.map(|turn| HistorySource::ForegroundTurn {
+        turn_id: turn.to_owned(),
+    });
+    let manifest = pack_bodies(&mut event, pending_bodies, database_id)?;
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "tool".into(),
+        meta,
+        data,
+        bodies: manifest,
+        source_order: None,
+        turn_id: turn_id.map(str::to_owned),
+        captured_at: None,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(event)
 }
 #[tokio::test]
 async fn ordinary_question_answer_continues_from_current_without_history_reconstruction()
@@ -636,30 +682,27 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
         let mut canonical = None;
         let mut durable = None;
         for event in originals.entries {
-            let Some(payload_ref) = event.payload_ref.clone() else {
+            if event.payload_schema != "anywork.event/1" {
+                continue;
+            }
+            let envelope = decode_event_envelope(&event)?;
+            ensure!(envelope.contract == "anywork.event/1");
+            let Some(bytes) = read_event_body_bytes(&history, &event, "body", None).await? else {
                 continue;
             };
-            let payload = read_history_body(&history, &payload_ref).await?;
-            let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
-            ensure!(envelope["contract"] == "anywork.chat/1");
-            let bodies = history
-                .list_bodies(event.header.event_id.clone(), None, history_demand)
-                .await?;
-            let body = bodies
-                .entries
-                .into_iter()
-                .find(|entry| entry.role == HistoryBodyRole::Body)
-                .context("text original has no body")?;
-            let bytes = read_history_body(&history, &body.reference).await?;
             if bytes == expected {
                 ensure!(canonical.is_none(), "final body was stored more than once");
-                canonical = Some((event.header.event_id.clone(), envelope));
-                durable = Some(body.reference);
+                durable = envelope
+                    .bodies
+                    .iter()
+                    .find(|entry| entry.key == "body")
+                    .and_then(|entry| entry.reference.clone());
+                canonical = Some((event.event_id.clone(), envelope));
             }
         }
         let (event_id, envelope) = canonical.context("final text original")?;
         let durable = durable.context("final text body reference")?;
-        ensure!(envelope["turnId"].is_string());
+        ensure!(envelope.turn_id.is_some());
         history.close().await;
         let provider_requests = env.root_provider.recorded().len();
         ensure!(provider_requests == 1, "fixture prompt made extra requests");
@@ -674,7 +717,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             .read_event(event_id.clone(), history_demand)
             .await?;
         ensure!(read_history_body(&broken_current_history, &durable).await? == expected);
-        ensure!(detail.header.event_id == event_id);
+        ensure!(detail.event_id == event_id);
         broken_current_history.close().await;
         ensure!(env.root_provider.recorded().len() == provider_requests);
 
@@ -736,13 +779,13 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
     let reader = store.reader();
     let run = RuntimeEpoch::new();
     let bytes: Vec<_> = (0..150_002).map(|index| (index % 251) as u8).collect();
-    let first = single("first", run, &bytes);
+    let first = single("first", run, store.database_id(), &bytes);
     store.accept_batch(std::slice::from_ref(&first)).await?;
     let cut = reader.capture().await?;
     let before = reader
         .timeline_page(Some(cut.clone()), None, demand())
         .await?;
-    assert_eq!(before.entries.len(), 1);
+    assert_eq!(before.items.len(), 1);
     let body_page = reader.list_bodies("first".into(), None, demand()).await?;
     let body = body_page
         .entries
@@ -766,18 +809,14 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
         reader.read_body(invalid, 0, 1).await,
         Err(HistoryError::InvalidCursor)
     ));
-    let mut changed = first.clone();
-    changed.header.seq = 0;
-    changed.header.event_id = "first-status".into();
-    changed.header.original = None;
-    changed.is_anchor = false;
-    changed.bodies.clear();
-    changed.payload_body_id = None;
-    if let Some(HistoryRowHead::Single(head)) = &mut changed.head {
-        head.finished_at = Some(50);
-    }
+    let changed = HistoryEvent::new(
+        "first-status",
+        HistoryEventKind::TurnChanged,
+        HistoryTimelineRole::Hidden,
+        50,
+    );
     store
-        .accept_batch(&[changed, single("second", run, b"next")])
+        .accept_batch(&[changed, single("second", run, store.database_id(), b"next")])
         .await?;
     assert_eq!(
         reader
@@ -807,12 +846,10 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
         .await?;
     assert_eq!(original.entries.len(), 2);
     let detail = reader.read_event("first".into(), demand()).await?;
+    assert_eq!(decode_event_envelope(&detail)?.item_type, "text");
     assert_eq!(
-        reader
-            .read_body(detail.payload_ref.unwrap(), 0, 64)
-            .await?
-            .bytes,
-        b"opaque original bytes"
+        read_event_body_bytes(&reader, &detail, "body", None).await?,
+        Some(bytes)
     );
     reader.close().await;
     store.close().await?;
@@ -830,27 +867,30 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     .await?;
     let reader = store.reader();
     let run = RuntimeEpoch::new();
-    let mut classifier = HistoryClassifier::new(run);
-    let mut member = entity("member", run, true);
-    member.kind = HistoryEntityKind::ToolCall;
-    member.text_channel = None;
-    member.tool = Some(HistoryToolIdentity {
+    let mut member_meta = event_meta("member", true);
+    member_meta.entity_kind = HistoryEntityKind::ToolCall;
+    member_meta.text_channel = None;
+    member_meta.tool = Some(HistoryToolIdentity {
         call_id: "call".into(),
         name: "lookup".into(),
     });
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: HistoryEvent::new("member-start", HistoryEventKind::EntityStarted, 10),
-                entity: member.clone(),
-                placement: HistoryPlacement::Work,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
-    let group = classifier.open_group().unwrap().to_owned();
+    let member_start = work_tool_event(
+        "member-start",
+        HistoryEventKind::ToolCalled,
+        10,
+        &run.to_string(),
+        Some("turn-a"),
+        "call",
+        "lookup",
+        "member",
+        member_meta.clone(),
+        serde_json::json!({
+            "invocation": { "toolCallId": "call", "name": "lookup" },
+            "state": { "kind": "running" }
+        }),
+        Vec::new(),
+        store.database_id(),
+    )?;
     let mut turn = HistoryTurnHead {
         turn_id: "turn-a".into(),
         input_id: Some("input-a".into()),
@@ -864,22 +904,27 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
         updated_at: 10,
         detail_event_id: None,
     };
-    let turn_event = |id, kind, head: HistoryTurnHead, anchor| {
-        let mut event = HistoryEvent::new(id, kind, head.updated_at);
-        event.header.run_id = Some(run.to_string());
-        event.header.turn_id = Some("turn-a".into());
-        event.header.row_key = Some("turn:turn-a".into());
-        event.head = Some(HistoryRowHead::Turn(head));
+    let turn_event = |id: &str, kind: HistoryEventKind, head: HistoryTurnHead, anchor: bool| {
+        let mut event = HistoryEvent::new(id, kind, HistoryTimelineRole::Hidden, head.updated_at);
+        event.run_id = Some(run.to_string());
+        event.turn_id = Some("turn-a".into());
+        event.row_scope = Some(HistoryBusinessRowScope::Turn);
+        event.row_key = Some("turn:turn-a".into());
         event.is_anchor = anchor;
+        event.payload_schema = "anywork.turn/1".into();
+        event.payload_json = serde_json::json!({ "head": head }).to_string();
         event
     };
     store
-        .accept_batch(&[turn_event(
-            "turn-start",
-            HistoryEventKind::TurnStarted,
-            turn.clone(),
-            true,
-        )])
+        .accept_batch(&[
+            member_start,
+            turn_event(
+                "turn-start",
+                HistoryEventKind::TurnStarted,
+                turn.clone(),
+                true,
+            ),
+        ])
         .await?;
     store
         .record_usage(&usage("priced-usage", run, true))
@@ -888,29 +933,45 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     let main = reader
         .timeline_page(Some(cut.clone()), None, demand())
         .await?;
+    assert_eq!(main.items.len(), 1);
+    let HistoryTimelineItem::WorkRange(range) = &main.items[0] else {
+        panic!("expected open work range");
+    };
     let members = reader
-        .group_page(group.clone(), Some(cut.clone()), None, demand())
+        .work_range_page(
+            range.after_seq,
+            range.before_seq,
+            Some(cut.clone()),
+            None,
+            demand(),
+        )
         .await?;
+    assert_eq!(members.events.len(), 1);
     let turns = reader.turns_page(Some(cut.clone()), None, demand()).await?;
     let costs = reader.costs_page(Some(cut.clone()), None, demand()).await?;
     let accounting = reader.accounting(Some(cut.clone())).await?;
 
-    member.state = HistoryEntityState::KnownTerminal {
+    member_meta.state = HistoryEntityState::KnownTerminal {
         outcome: ChatTerminalOutcome::Completed,
     };
-    member.finished_at = Some(30);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: HistoryEvent::new("member-end", HistoryEventKind::EntityEnded, 30),
-                entity: member,
-                placement: HistoryPlacement::Work,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
+    member_meta.finished_at = Some(30);
+    let member_end = work_tool_event(
+        "member-end",
+        HistoryEventKind::ToolCompleted,
+        30,
+        &run.to_string(),
+        Some("turn-a"),
+        "call",
+        "lookup",
+        "member",
+        member_meta,
+        serde_json::json!({
+            "invocation": { "toolCallId": "call", "name": "lookup" },
+            "state": { "kind": "succeeded" }
+        }),
+        Vec::new(),
+        store.database_id(),
+    )?;
     turn.state = HistoryTurnState::Completed;
     turn.finished_at = Some(30);
     turn.updated_at = 30;
@@ -919,6 +980,7 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     turn.updated_at = 40;
     store
         .accept_batch(&[
+            member_end,
             ended,
             turn_event("rollback", HistoryEventKind::TurnRolledBack, turn, false),
         ])
@@ -933,29 +995,48 @@ async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback(
     );
     assert_eq!(
         reader
-            .group_page(group.clone(), Some(cut.clone()), None, demand())
+            .work_range_page(
+                range.after_seq,
+                range.before_seq,
+                Some(cut.clone()),
+                None,
+                demand(),
+            )
             .await?,
         members
     );
     assert_eq!(reader.turns_page(Some(cut), None, demand()).await?, turns);
     let latest_main = reader.timeline_page(None, None, demand()).await?;
-    let latest_members = reader.group_page(group, None, None, demand()).await?;
-    let latest_turns = reader.turns_page(None, None, demand()).await?;
     assert_eq!(
-        latest_main.entries.len(),
-        main.entries.len(),
+        latest_main.items.len(),
+        main.items.len(),
         "rollback must not hide Timeline rows"
     );
+    let HistoryTimelineItem::WorkRange(latest_range) = &latest_main.items[0] else {
+        panic!("expected updated work range");
+    };
+    assert_ne!(latest_range, range);
+    assert_eq!(latest_range.event_count, 2);
+    let latest_members = reader
+        .work_range_page(
+            latest_range.after_seq,
+            latest_range.before_seq,
+            None,
+            None,
+            demand(),
+        )
+        .await?;
+    assert_eq!(latest_members.events.len(), 2);
     assert_eq!(
-        latest_members.members.len(),
-        members.members.len(),
-        "rollback must not hide members"
+        latest_members.events[1].kind,
+        HistoryEventKind::ToolCompleted
     );
-    assert_ne!(latest_main.entries[0].head, main.entries[0].head);
-    assert!(matches!(&latest_members.members[0].head,
-        HistoryRowHead::Member(head) if matches!(head.state, HistoryEntityState::KnownTerminal { .. })));
-    assert!(matches!(&latest_turns.entries[0].head,
-        HistoryRowHead::Turn(head) if head.context_disposition == pl_studio_runtime::ThreadContextDisposition::RolledBack));
+    let latest_turns = reader.turns_page(None, None, demand()).await?;
+    assert!(matches!(
+        &latest_turns.entries[0].head,
+        HistoryBusinessRowHead::Turn(head)
+            if head.context_disposition == pl_studio_runtime::ThreadContextDisposition::RolledBack
+    ));
     assert_eq!(
         reader.costs_page(None, None, demand()).await?.entries,
         costs.entries,
@@ -972,22 +1053,45 @@ async fn event_retries_are_exact_and_sql_enforces_immutable_facts() -> Result<()
     let temp = tempfile::tempdir()?;
     let path = temp.path().join("history.sqlite");
     let store = HistoryStore::open(&path, "immutability", HistoryLimits::default()).await?;
-    let event = single("idempotent", RuntimeEpoch::new(), b"retained");
+    let event = single(
+        "idempotent",
+        RuntimeEpoch::new(),
+        store.database_id(),
+        b"retained",
+    );
     let first = store.accept_batch(std::slice::from_ref(&event)).await?;
     assert_eq!(
         store.accept_batch(std::slice::from_ref(&event)).await?,
         first
     );
-    let mut conflict = event.clone();
-    conflict.bodies[1].bytes = Arc::from(&b"different"[..]);
+    let mut inline_conflict = event.clone();
+    inline_conflict.payload_json = "{}".into();
     assert!(matches!(
-        store.accept_batch(&[conflict.clone()]).await,
+        store.accept_batch(&[inline_conflict.clone()]).await,
+        Err(HistoryError::Conflict(_))
+    ));
+    let big_event = single(
+        "idempotent-big",
+        RuntimeEpoch::new(),
+        store.database_id(),
+        &vec![b'x'; 20_000],
+    );
+    let big_seq = store.accept_batch(std::slice::from_ref(&big_event)).await?;
+    let mut big_conflict = big_event.clone();
+    big_conflict.bodies[0].bytes = Arc::from(vec![b'y'; 20_000]);
+    assert!(matches!(
+        store.accept_batch(&[big_conflict.clone()]).await,
         Err(HistoryError::Conflict(_))
     ));
     store.flush().await?;
     assert_eq!(store.accept_batch(&[event]).await?, first);
+    assert_eq!(store.accept_batch(&[big_event]).await?, big_seq);
     assert!(matches!(
-        store.accept_batch(&[conflict]).await,
+        store.accept_batch(&[inline_conflict]).await,
+        Err(HistoryError::Conflict(_))
+    ));
+    assert!(matches!(
+        store.accept_batch(&[big_conflict]).await,
         Err(HistoryError::Conflict(_))
     ));
     let db = raw(&path).await?;
@@ -1014,7 +1118,12 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
     let reader = store.reader();
     let db = raw(&path).await?;
     db.execute_unprepared("CREATE TRIGGER reject_test_write BEFORE INSERT ON history_events BEGIN SELECT RAISE(ABORT,'injected database failure'); END;").await?;
-    let event = single("retained", RuntimeEpoch::new(), b"original");
+    let event = single(
+        "retained",
+        RuntimeEpoch::new(),
+        store.database_id(),
+        &b"original".repeat(3000),
+    );
     store.accept_batch(&[event]).await?;
     let cut = reader.capture().await?;
     assert!(store.flush().await.is_err());
@@ -1024,7 +1133,7 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
         reader
             .timeline_page(Some(cut.clone()), None, demand())
             .await?
-            .entries
+            .items
             .len(),
         1
     );
@@ -1037,7 +1146,7 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
         reader
             .timeline_page(Some(cut), None, demand())
             .await?
-            .entries
+            .items
             .len(),
         1
     );
@@ -1072,8 +1181,8 @@ async fn failed_transaction_keeps_accepted_facts_and_corrupt_chunks_are_not_eof(
 }
 
 #[tokio::test]
-async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_final() -> Result<()>
-{
+async fn large_wait_targets_are_preserved_in_a_deferred_body_and_dividers_split_work_ranges()
+-> Result<()> {
     let temp = tempfile::tempdir()?;
     let store = HistoryStore::open(
         temp.path().join("h.sqlite"),
@@ -1083,7 +1192,6 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
     .await?;
     let run = RuntimeEpoch::new();
     let reader = store.reader();
-    let mut classifier = HistoryClassifier::new(run);
     let targets = (0..2000)
         .map(|index| {
             pl_studio_runtime::ThreadWaitTarget::new(
@@ -1103,73 +1211,68 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
         None,
     );
     let expected = serde_json::to_vec(&presentation)?;
-    let mut head = entity("wait", run, true);
-    head.kind = HistoryEntityKind::ToolCall;
+    assert!(expected.len() > INLINE_BODY_MAX_BYTES);
+    let mut head = event_meta("wait", true);
+    head.entity_kind = HistoryEntityKind::ToolCall;
+    head.text_channel = None;
     head.tool = Some(HistoryToolIdentity {
         call_id: "wait-call".into(),
         name: "wait_events".into(),
     });
-    head.wait = Some(HistoryWaitHead::Inline { presentation });
-    let change = HistoryEntityChange {
-        event: HistoryEvent::new("wait-start", HistoryEventKind::EntityStarted, 1),
-        entity: head.clone(),
-        placement: HistoryPlacement::Work,
-        boundary_observations: Vec::new(),
-        public_summary: None,
+    let wait_start = work_tool_event(
+        "wait-start",
+        HistoryEventKind::ToolCalled,
+        1,
+        &run.to_string(),
+        Some("turn-a"),
+        "wait-call",
+        "wait_events",
+        "wait",
+        head,
+        serde_json::json!({
+            "invocation": { "toolCallId": "wait-call", "name": "wait_events" },
+            "state": { "kind": "running" }
+        }),
+        vec![PendingBody::new(
+            "wait_presentation",
+            HistoryBodyRole::WaitPresentation,
+            Some("application/json".into()),
+            expected.clone(),
+        )],
+        store.database_id(),
+    )?;
+    let separator = single("separator", run, store.database_id(), b"divider");
+    store.accept_batch(&[wait_start, separator]).await?;
+
+    let page = reader.timeline_page(None, None, demand()).await?;
+    assert_eq!(page.items.len(), 2);
+    assert!(matches!(&page.items[0], HistoryTimelineItem::Divider(d) if d.event_id == "separator"));
+    let HistoryTimelineItem::WorkRange(range) = &page.items[1] else {
+        panic!("expected work range before divider");
     };
-    classifier.record(&store, &change).await?;
-    let group = classifier.open_group().unwrap().to_owned();
-    let page = reader
-        .group_page(group.clone(), None, None, demand())
+    let work = reader
+        .work_range_page(
+            range.after_seq,
+            range.before_seq,
+            Some(page.cut.clone()),
+            None,
+            demand(),
+        )
         .await?;
-    let HistoryRowHead::Member(member) = &page.members[0].head else {
-        panic!("wait member")
-    };
-    let Some(HistoryWaitHead::Deferred {
-        intent: HistoryWaitIntentHead::Events {
-            target_count: 2000, ..
-        },
-        presentation,
-        ..
-    }) = &member.wait
-    else {
-        panic!("deferred wait")
-    };
-    let mut actual = Vec::new();
-    while actual.len() < expected.len() {
-        actual.extend(
-            reader
-                .read_body(presentation.clone(), actual.len() as u64, 65_536)
-                .await?
-                .bytes,
-        );
-    }
+    assert_eq!(work.events.len(), 1);
+    let actual = read_event_body_bytes(&reader, &work.events[0], "wait_presentation", None)
+        .await?
+        .expect("deferred wait body present");
     assert_eq!(actual, expected);
-    let observed = head;
-    let visible = HistoryEntityChange {
-        event: HistoryEvent::new("separator", HistoryEventKind::ContentBecameVisible, 2),
-        entity: entity("separator", run, true),
-        placement: HistoryPlacement::Single,
-        boundary_observations: vec![HistoryBoundaryObservation {
-            event: HistoryEvent::new("wait-boundary", HistoryEventKind::BoundaryObserved, 2),
-            entity: observed,
-        }],
-        public_summary: None,
-    };
-    classifier.record(&store, &visible).await?;
-    let mut late = HistoryEvent::new("illegal-late", HistoryEventKind::EntityStateChanged, 3);
-    let mut member = member.clone();
-    member.detail_event_id = None;
-    late.header.run_id = member.run_id.clone();
-    late.header.attempt_id = member.attempt_id.clone();
-    late.header.entity_id = Some(member.entity_id.clone());
-    late.header.source = Some(member.source.clone());
-    late.header.call_id = member.tool.as_ref().map(|tool| tool.call_id.clone());
-    late.header.group_id = Some(group.clone());
-    late.header.row_key = Some(format!("member:{group}:wait"));
-    late.head = Some(HistoryRowHead::Member(member));
+
+    let invalid = HistoryEvent::new(
+        "",
+        HistoryEventKind::ToolCalled,
+        HistoryTimelineRole::Work,
+        3,
+    );
     assert!(matches!(
-        store.accept_batch(&[late]).await,
+        store.accept_batch(&[invalid]).await,
         Err(HistoryError::InvalidEvent(_))
     ));
     reader.close().await;
@@ -1191,7 +1294,7 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
     store
         .accept_batch(
             &(0..5)
-                .map(|index| single(&format!("row-{index}"), run, b"body"))
+                .map(|index| single(&format!("row-{index}"), run, store.database_id(), b"body"))
                 .collect::<Vec<_>>(),
         )
         .await?;
@@ -1238,7 +1341,10 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
             )
             .await?;
         assert!(serde_json::to_vec(&page)?.len() <= budget as usize);
-        ids.extend(page.entries.into_iter().map(|entry| entry.row_key));
+        ids.extend(page.items.into_iter().map(|item| match item {
+            HistoryTimelineItem::Divider(rec) => rec.event_id,
+            HistoryTimelineItem::WorkRange(range) => range.range_id,
+        }));
         next = page.next;
         if next.is_none() {
             break;
@@ -1248,7 +1354,7 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
         ids,
         (0..5)
             .rev()
-            .map(|index| format!("single:row-{index}"))
+            .map(|index| format!("row-{index}"))
             .collect::<Vec<_>>()
     );
     assert!(matches!(
@@ -1267,7 +1373,7 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
     let token = one.next.unwrap();
     assert!(matches!(
         reader
-            .group_page("different".into(), None, Some(token.clone()), demand())
+            .work_range_page(Some(999), None, None, Some(token.clone()), demand())
             .await,
         Err(HistoryError::InvalidCursor)
     ));
@@ -1288,8 +1394,13 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
     let long_call_id = "c".repeat(14_000);
     let mut long_events = Vec::new();
     for id in ["long-first", "long-second"] {
-        let mut event = HistoryEvent::new(id, HistoryEventKind::EntityStarted, 1);
-        event.header.call_id = Some(long_call_id.clone());
+        let mut event = HistoryEvent::new(
+            id,
+            HistoryEventKind::ToolCalled,
+            HistoryTimelineRole::Work,
+            1,
+        );
+        event.call_id = Some(long_call_id.clone());
         long_events.push(event);
     }
     store.accept_batch(&long_events).await?;
@@ -1308,15 +1419,14 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
         .expect("full long-identity page must have a cursor");
     assert!(next.len() > 16 * 1024);
     let second = reader.events_page(query, None, Some(next), request).await?;
-    assert_eq!(second.entries[0].header.event_id, "long-first");
+    assert_eq!(second.entries[0].event_id, "long-first");
     reader.close().await;
     store.close().await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_group() -> Result<()>
-{
+async fn atomic_tool_stages_across_divider_keep_call_id_and_work_ranges() -> Result<()> {
     for (outcome, observed_output) in [
         (
             ChatTerminalOutcome::Completed,
@@ -1336,50 +1446,31 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         .await?;
         let run = RuntimeEpoch::new();
         let reader = store.reader();
-        let mut classifier = HistoryClassifier::new(run);
-        let mut tool = entity("tool", run, true);
-        tool.kind = HistoryEntityKind::ToolCall;
-        tool.text_channel = None;
-        tool.tool = Some(HistoryToolIdentity {
+        let mut tool_meta = event_meta("tool", true);
+        tool_meta.entity_kind = HistoryEntityKind::ToolCall;
+        tool_meta.text_channel = None;
+        tool_meta.tool = Some(HistoryToolIdentity {
             call_id: "attempt-scoped-call".into(),
             name: "terminal".into(),
         });
-        let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
-        let atom = pl_studio_runtime::ChatAtom {
-            id: tool.entity_id.clone(),
-            completion_item_id: None,
-            completion_seq: None,
-            source: tool.source.clone(),
-            source_state: None,
-            source_order: None,
-            kind: tool.kind,
-            delivery: tool.delivery,
-            lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
-                status: ChatActiveStatus::Running,
-                started: None,
-            },
-            turn_id: Some("turn-a".into()),
-            attempt_id: tool.attempt_id.clone(),
-            tool: tool.tool.clone(),
-            wait: None,
-            text_channel: None,
-            started_at: tool.started_at,
-            finished_at: None,
-            content_present: tool.content_present,
-            contents: Vec::new(),
-            payload: None,
-        };
-        let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
-        assert_eq!(change.entity.started_at, Some(10_000));
-        tool = change.entity.clone();
-        let mut invalid_atom = atom.clone();
-        invalid_atom.finished_at = Some(i64::MAX);
-        assert!(matches!(
-            HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
-            Err(HistoryError::InvalidEvent(_))
-        ));
-        change.public_summary = Some("正在执行".into());
-        classifier.record(&store, &change).await?;
+        let start = work_tool_event(
+            "tool-start",
+            HistoryEventKind::ToolCalled,
+            10_000,
+            &run.to_string(),
+            Some("turn-a"),
+            "attempt-scoped-call",
+            "terminal",
+            "tool",
+            tool_meta.clone(),
+            serde_json::json!({
+                "invocation": { "toolCallId": "attempt-scoped-call", "name": "terminal" },
+                "state": { "kind": "running" }
+            }),
+            Vec::new(),
+            store.database_id(),
+        )?;
+        store.accept_batch(&[start]).await?;
         assert_eq!(
             reader
                 .events_page(
@@ -1392,181 +1483,106 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
                 )
                 .await?
                 .entries[0]
-                .header
                 .event_id,
             "tool-start"
         );
-        let old_group = classifier.open_group().unwrap().to_owned();
-        let mut empty = entity("text", run, true);
-        empty.content_present = Some(false);
-        let before_empty = reader.capture().await?;
-        let mut unexpected = HistoryEvent::new(
-            "unexpected-boundary",
-            HistoryEventKind::BoundaryObserved,
-            11,
-        );
-        unexpected.bodies.push(HistoryBody::new(
-            "observed",
-            HistoryBodyRole::ToolOutput,
-            b"must not silently disappear".to_vec(),
-        ));
-        let mut empty_change = HistoryEntityChange {
-            event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
-            entity: empty.clone(),
-            placement: HistoryPlacement::Single,
-            boundary_observations: vec![HistoryBoundaryObservation {
-                event: unexpected,
-                entity: tool.clone(),
-            }],
-            public_summary: None,
-        };
-        assert!(matches!(
-            classifier.record(&store, &empty_change).await,
-            Err(HistoryError::InvalidEvent(_))
-        ));
-        assert_eq!(reader.capture().await?, before_empty);
-        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-        empty_change.boundary_observations.clear();
-        classifier.record(&store, &empty_change).await?;
-        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-        let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
-        boundary.bodies.push(HistoryBody::new(
-            "partial",
-            HistoryBodyRole::ToolOutput,
-            b"old observed bytes".to_vec(),
-        ));
-        let mut observed_tool = tool.clone();
-        observed_tool.body_manifest_event_id = Some("boundary".into());
-        empty.content_present = Some(true);
-        let mut visible = HistoryEvent::new("visible", HistoryEventKind::ContentBecameVisible, 12);
-        visible.header.occurred_at = Some(12);
-        classifier
-            .record(
-                &store,
-                &HistoryEntityChange {
-                    event: visible,
-                    entity: empty.clone(),
-                    placement: HistoryPlacement::Single,
-                    boundary_observations: vec![HistoryBoundaryObservation {
-                        event: boundary,
-                        entity: observed_tool,
-                    }],
-                    public_summary: Some("边界观察".into()),
-                },
-            )
-            .await?;
-        assert!(classifier.open_group().is_none());
+
+        let divider = single("text", run, store.database_id(), b"visible text");
+        store.accept_batch(&[divider]).await?;
         let old_cut = reader.capture().await?;
-        tool.state = HistoryEntityState::KnownTerminal { outcome };
-        tool.finished_at = Some(15);
-        tool.body_manifest_event_id = Some("tool-end".into());
-        let mut end = HistoryEvent::new("tool-end", HistoryEventKind::EntityEnded, 15);
-        end.bodies.push(HistoryBody::new(
-            "observed-output",
-            HistoryBodyRole::ToolOutput,
-            observed_output.to_vec(),
-        ));
-        classifier
-            .record(
-                &store,
-                &HistoryEntityChange {
-                    event: end,
-                    entity: tool,
-                    placement: HistoryPlacement::Work,
-                    boundary_observations: Vec::new(),
-                    public_summary: None,
-                },
-            )
-            .await?;
-        let new_group = classifier.open_group().unwrap().to_owned();
-        assert_ne!(old_group, new_group);
-        // Completing the already-visible text does not close a newer Work group.
-        empty.state = HistoryEntityState::KnownTerminal {
-            outcome: ChatTerminalOutcome::Completed,
-        };
-        empty.content_present = Some(false);
-        empty.finished_at = Some(16);
-        classifier
-            .record(
-                &store,
-                &HistoryEntityChange {
-                    event: HistoryEvent::new("text-end", HistoryEventKind::EntityEnded, 16),
-                    entity: empty,
-                    placement: HistoryPlacement::Single,
-                    boundary_observations: Vec::new(),
-                    public_summary: None,
-                },
-            )
-            .await?;
-        assert_eq!(classifier.open_group(), Some(new_group.as_str()));
-        assert!(reader
-        .timeline_page(None, None, demand())
-        .await?
-        .entries
-        .iter()
-        .any(|entry| matches!(&entry.head, HistoryRowHead::Single(head)
-            if head.entity_id == "text"
-                && head.single_visibility == Some(HistorySingleVisibility::FinalEmptyAfterContent))));
+
+        tool_meta.state = HistoryEntityState::KnownTerminal { outcome };
+        tool_meta.finished_at = Some(15_000);
+        let end = work_tool_event(
+            "tool-end",
+            HistoryEventKind::ToolCompleted,
+            15_000,
+            &run.to_string(),
+            Some("turn-a"),
+            "attempt-scoped-call",
+            "terminal",
+            "tool",
+            tool_meta,
+            serde_json::json!({
+                "invocation": { "toolCallId": "attempt-scoped-call", "name": "terminal" },
+                "state": { "kind": if outcome == ChatTerminalOutcome::Completed { "succeeded" } else { "cancelled" } }
+            }),
+            vec![PendingBody::new(
+                "observed-output",
+                HistoryBodyRole::ToolOutput,
+                Some("text/plain".into()),
+                observed_output.to_vec(),
+            )],
+            store.database_id(),
+        )?;
+        store.accept_batch(&[end]).await?;
         store.flush().await?;
-        let old = reader
-            .group_page(old_group.clone(), None, None, demand())
+
+        let timeline = reader.timeline_page(None, None, demand()).await?;
+        assert_eq!(timeline.items.len(), 3);
+        let HistoryTimelineItem::WorkRange(new_range) = &timeline.items[0] else {
+            panic!("expected new tail work range");
+        };
+        let HistoryTimelineItem::Divider(div) = &timeline.items[1] else {
+            panic!("expected middle divider");
+        };
+        assert_eq!(div.event_id, "text");
+        let HistoryTimelineItem::WorkRange(old_range) = &timeline.items[2] else {
+            panic!("expected earlier work range");
+        };
+
+        let old_work = reader
+            .work_range_page(
+                old_range.after_seq,
+                old_range.before_seq,
+                Some(timeline.cut.clone()),
+                None,
+                demand(),
+            )
             .await?;
-        let Some(HistoryRowHead::Member(old_head)) = old.members.first().map(|entry| &entry.head)
-        else {
-            panic!("old member")
-        };
-        assert!(matches!(
-            old_head.state,
-            HistoryEntityState::KnownActive { .. }
-        ));
-        assert!(matches!(
-            old_head.observation,
-            HistoryObservation::Boundary {
-                captured_at: Some(12)
-            }
-        ));
-        let body = reader
-            .list_bodies(
-                old_head.body_manifest_event_id.clone().unwrap(),
+        assert_eq!(old_work.events.len(), 1);
+        assert_eq!(old_work.events[0].event_id, "tool-start");
+
+        let new_work = reader
+            .work_range_page(
+                new_range.after_seq,
+                new_range.before_seq,
+                Some(timeline.cut.clone()),
                 None,
                 demand(),
             )
-            .await?
-            .entries[0]
-            .reference
-            .clone();
+            .await?;
+        assert_eq!(new_work.events.len(), 1);
+        assert_eq!(new_work.events[0].event_id, "tool-end");
         assert_eq!(
-            reader.read_body(body, 0, 64).await?.bytes,
-            b"old observed bytes"
+            read_event_body_bytes(&reader, &new_work.events[0], "observed-output", None).await?,
+            Some(observed_output.to_vec())
         );
-        let new = reader.group_page(new_group, None, None, demand()).await?;
-        assert_eq!(new.members.len(), 1);
-        let HistoryRowHead::Member(new_head) = &new.members[0].head else {
-            panic!("new member")
-        };
-        assert_eq!(
-            new_head.state,
-            HistoryEntityState::KnownTerminal { outcome }
-        );
-        let body = reader
-            .list_bodies(
-                new_head
-                    .body_manifest_event_id
-                    .clone()
-                    .context("new observation owner")?,
+
+        let by_call = reader
+            .events_page(
+                HistoryEventsQuery::Call {
+                    call_id: "attempt-scoped-call".into(),
+                },
+                None,
                 None,
                 demand(),
             )
-            .await?
-            .entries[0]
-            .reference
-            .clone();
-        assert_eq!(reader.read_body(body, 0, 64).await?.bytes, observed_output);
+            .await?;
+        assert_eq!(
+            by_call
+                .entries
+                .iter()
+                .map(|e| e.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["tool-end", "tool-start"]
+        );
+
         assert_eq!(
             reader
                 .timeline_page(Some(old_cut), None, demand())
                 .await?
-                .entries
+                .items
                 .len(),
             2
         );
@@ -1588,15 +1604,12 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
     let run = RuntimeEpoch::new();
     let mut events = Vec::new();
     for source in ["a", "b"] {
-        let mut event = single(source, run, b"data");
+        let mut event = single(source, run, store.database_id(), b"data");
         let source = HistorySource::InboxMessage {
             source_id: source.into(),
             message_id: "same-message".into(),
         };
-        event.header.source = Some(source.clone());
-        if let Some(HistoryRowHead::Single(head)) = &mut event.head {
-            head.source = source;
-        }
+        event.source = Some(source);
         events.push(event);
     }
     store.accept_batch(&events).await?;
@@ -1615,7 +1628,7 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
         )
         .await?;
     assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].header.event_id, "a");
+    assert_eq!(page.entries[0].event_id, "a");
     let old_cut = cut.clone();
     let waiter = reader.clone();
     let pending = tokio::spawn(async move { waiter.wait_changed(cut).await });
@@ -1626,7 +1639,7 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
             .reader()
             .timeline_page(None, None, demand())
             .await?
-            .entries
+            .items
             .len(),
         2
     );
@@ -1638,7 +1651,7 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
         new_reader
             .timeline_page(None, None, demand())
             .await?
-            .entries
+            .items
             .len(),
         2
     );
@@ -1709,18 +1722,18 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
     );
     let costs = reader.costs_page(None, None, demand()).await?;
     assert_eq!(costs.entries.len(), 1);
-    let HistoryRowHead::Cost(cost) = &costs.entries[0].head else {
+    let HistoryBusinessRowHead::Cost(cost) = &costs.entries[0].head else {
         panic!("cost")
     };
     assert_eq!(cost.cost_total, 0.25);
     assert_eq!(cost.updated_at, 20_000);
     let original_usage = reader.read_event("usage-a".into(), demand()).await?;
-    assert_eq!(original_usage.header.recorded_at, 20_000);
-    let raw_usage = reader
-        .read_body(original_usage.payload_ref.unwrap(), 0, 65_536)
-        .await?;
+    assert_eq!(original_usage.recorded_at, 20_000);
+    let raw_usage = read_event_body_bytes(&reader, &original_usage, "accounting", Some(65_536))
+        .await?
+        .expect("usage business fact payload");
     assert_eq!(
-        serde_json::from_slice::<pl_studio_runtime::InferenceBillingRecord>(&raw_usage.bytes)?
+        serde_json::from_slice::<pl_studio_runtime::InferenceBillingRecord>(&raw_usage)?
             .recorded_at,
         20
     );
@@ -1739,7 +1752,10 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
         events
             .entries
             .iter()
-            .filter(|event| event.payload_ref.is_some())
+            .filter(|event| {
+                event.kind == HistoryEventKind::UsageRecorded
+                    && event.row_scope == Some(HistoryBusinessRowScope::Accounting)
+            })
             .count(),
         2
     );
@@ -1749,9 +1765,8 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
         events
             .entries
             .iter()
-            .find(|event| event.header.event_id == "usage-b")
+            .find(|event| event.event_id == "usage-b")
             .unwrap()
-            .header
             .seq
     );
     assert_eq!(reader.accounting(None).await?.unwrap().inference_count, 2);
@@ -1765,65 +1780,122 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
 }
 
 #[tokio::test]
-async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mutating_source()
+async fn schema25_upgrade_preserves_backup_and_large_body_bytes_without_copying_chunks()
 -> Result<()> {
+    use sea_orm::TransactionTrait;
+    use sha2::Digest;
+
     let temp = tempfile::tempdir()?;
-    let source_path = temp.path().join("v24.sqlite");
-    let target = temp.path().join("v25.sqlite");
+    let source_path = temp.path().join("v25.sqlite");
     let source_db = raw(&source_path).await?;
-    source_db.execute_unprepared("CREATE TABLE history_meta(id INTEGER PRIMARY KEY,schema_version INTEGER,thread_id TEXT); INSERT INTO history_meta VALUES(1,24,'import'); CREATE TABLE conversation_items(seq INTEGER PRIMARY KEY,item_id TEXT UNIQUE,query_class TEXT,parent_id TEXT,payload BLOB,metadata BLOB);").await?;
-    let payload = b"preserved binary original".repeat(7000);
     source_db
-        .execute_raw(Statement::from_sql_and_values(
+        .execute_unprepared(include_str!("../src/history/upgrade/schema_v25.sql"))
+        .await?;
+    source_db
+        .execute_unprepared(
+            "CREATE TABLE IF NOT EXISTS seaql_migrations (version TEXT PRIMARY KEY NOT NULL, applied_at INTEGER NOT NULL);\
+             INSERT INTO seaql_migrations(version, applied_at) VALUES('m20261116_000001_append_only_history', 1);",
+        )
+        .await?;
+    let database_id = uuid::Uuid::new_v4().to_string();
+    let body_id = uuid::Uuid::new_v4().to_string();
+    let payload = b"preserved binary original".repeat(7000);
+    let digest = sha2::Sha256::digest(&payload).to_vec();
+
+    let tx = source_db.begin().await?;
+    tx.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,'import')",
+        vec![database_id.clone().into()],
+    ))
+    .await?;
+    tx.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "INSERT INTO history_bodies(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,digest) VALUES(?,'original',0,'body','body',?,'application/octet-stream',?)",
+        vec![
+            body_id.clone().into(),
+            (payload.len() as i64).into(),
+            digest.into(),
+        ],
+    ))
+    .await?;
+    for (chunk_no, chunk) in payload.chunks(BODY_CHUNK_BYTES).enumerate() {
+        tx.execute_raw(Statement::from_sql_and_values(
             DatabaseBackend::Sqlite,
-            "INSERT INTO conversation_items VALUES(7,'original','conversation',NULL,?,?)",
+            "INSERT INTO history_body_chunks(body_id,chunk_no,data) VALUES(?,?,?)",
             vec![
-                payload.clone().into(),
-                b"typed legacy metadata".to_vec().into(),
+                body_id.clone().into(),
+                (chunk_no as i64).into(),
+                chunk.to_vec().into(),
             ],
         ))
         .await?;
-    source_db.close().await?;
-    let source_before = std::fs::read(&source_path)?;
-    let prepared = HistoryStore::open(&target, "import", HistoryLimits::default()).await?;
-    let database = prepared.database_id().to_owned();
-    prepared.close().await?;
-    let db = raw(&target).await?;
-    let tx = db.begin().await?;
-    let mut importer = HistoryImport::new(&tx, database).await?;
-    let source = V24HistorySource::open(&source_path, "import").await?;
-    let originals = source.originals_page(0, 128).await?;
-    assert_eq!(originals.len(), 1);
-    assert_eq!(originals[0].payload_bytes, payload.len() as u64);
-    let body = source
-        .body(V24Body::Payload {
-            item_id: "original".into(),
-        })
-        .await?;
-    let reference = importer
-        .copy_body(
-            HistoryImportBody {
-                body_id: uuid::Uuid::new_v4().to_string(),
-                owner_event_id: "original".into(),
-                ordinal: 0,
-                body_key: "canonical".into(),
-                role: HistoryBodyRole::CanonicalPayload,
-                media_type: None,
-            },
-            &body,
-        )
-        .await?;
-    let mut event = HistoryEvent::new("original", HistoryEventKind::LegacyObserved, 0);
-    event.payload_body_id = Some(reference.body_id.clone());
-    importer.insert_event(event).await?;
-    importer.finish().await?;
+    }
+    tx.execute_raw(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "INSERT INTO history_events(seq,event_id,kind,entity_id,is_anchor,recorded_at) VALUES(1,'original','legacy_observed','original',0,20)",
+        vec![],
+    ))
+    .await?;
     tx.commit().await?;
-    db.close().await?;
-    drop(body);
-    source.close().await?;
-    assert_eq!(std::fs::read(&source_path)?, source_before);
-    let reopened = HistoryStore::open(&target, "import", HistoryLimits::default()).await?;
+    source_db.close().await?;
+
+    let report = upgrade_history(&source_path, "import", temp.path()).await?;
+    assert_eq!(report.status, UpgradeStatus::Upgraded);
+    let backup = report.backup.as_ref().expect("v25 backup path");
+    assert!(backup.starts_with(temp.path()));
+    assert_eq!(
+        backup.file_name().and_then(|name| name.to_str()),
+        Some("history.v25.sqlite")
+    );
+    let backup_db = raw(backup).await?;
+    let meta = backup_db
+        .query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT schema_version, database_id, thread_id FROM history_store_meta WHERE singleton = 1",
+            vec![],
+        ))
+        .await?
+        .expect("v25 backup meta row");
+    assert_eq!(meta.try_get::<i64>("", "schema_version")?, 25);
+    assert_eq!(meta.try_get::<String>("", "database_id")?, database_id);
+    assert_eq!(meta.try_get::<String>("", "thread_id")?, "import");
+    let event_count = backup_db
+        .query_one_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT COUNT(*) AS c FROM history_events WHERE event_id = 'original'",
+            vec![],
+        ))
+        .await?
+        .expect("v25 backup event count");
+    assert_eq!(event_count.try_get::<i64>("", "c")?, 1);
+    let chunks = backup_db
+        .query_all_raw(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT data FROM history_body_chunks WHERE body_id = ? ORDER BY chunk_no ASC",
+            vec![body_id.clone().into()],
+        ))
+        .await?;
+    let mut backup_payload = Vec::new();
+    for row in chunks {
+        backup_payload.extend(row.try_get::<Vec<u8>>("", "data")?);
+    }
+    assert_eq!(backup_payload, payload);
+    backup_db.close().await?;
+
+    let reopened = HistoryStore::open(&source_path, "import", HistoryLimits::default()).await?;
     let reader = reopened.reader();
+    let event = reader.read_event("original".into(), demand()).await?;
+    let bodies = reader
+        .list_bodies("original".into(), None, demand())
+        .await?;
+    let reference = bodies
+        .entries
+        .into_iter()
+        .find(|entry| entry.role == HistoryBodyRole::Body)
+        .expect("migrated large body")
+        .reference;
+    assert_eq!(reference.body_id, body_id);
     reader.verify_body(reference.clone()).await?;
     let mut actual = Vec::new();
     while actual.len() < payload.len() {
@@ -1835,6 +1907,7 @@ async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mu
         );
     }
     assert_eq!(actual, payload);
+    assert_eq!(event.event_id, "original");
     reader.close().await;
     reopened.close().await?;
     Ok(())
@@ -1928,18 +2001,26 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
         let old_page = history
             .timeline_page(Some(old_cut.clone()), None, demand())
             .await?;
-        let old_group = old_page
-            .entries
+        let old_range = old_page
+            .items
             .iter()
-            .find_map(|entry| match &entry.head {
-                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r1.as_str()) => {
-                    Some(head.group_id.clone())
+            .find_map(|item| match item {
+                HistoryTimelineItem::WorkRange(range)
+                    if range.run_id.as_deref() == Some(r1.as_str()) =>
+                {
+                    Some(range.clone())
                 }
                 _ => None,
             })
-            .context("original R1 work group")?;
+            .context("original R1 work range")?;
         let old_members = history
-            .group_page(old_group.clone(), Some(old_cut.clone()), None, demand())
+            .work_range_page(
+                old_range.after_seq,
+                old_range.before_seq,
+                Some(old_cut.clone()),
+                None,
+                demand(),
+            )
             .await?;
         let route = paused.state.model_route.context("saved route")?.revision;
         env.runtime
@@ -1985,15 +2066,17 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
             let page = history
                 .timeline_page(Some(cut.clone()), None, demand())
                 .await?;
-            if let Some(group) = page.entries.iter().find_map(|entry| match &entry.head {
-                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r2.as_str()) => {
-                    Some(head)
+            if let Some(range) = page.items.iter().find_map(|item| match item {
+                HistoryTimelineItem::WorkRange(range)
+                    if range.run_id.as_deref() == Some(r2.as_str()) =>
+                {
+                    Some(range)
                 }
                 _ => None,
             }) {
                 ensure!(
-                    group.group_id != old_group,
-                    "R2 extended the saved R1 group"
+                    range.range_id != old_range.range_id,
+                    "R2 extended the saved R1 range"
                 );
                 break;
             }
@@ -2007,16 +2090,28 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
         );
         ensure!(
             history
-                .group_page(old_group.clone(), Some(old_cut), None, demand())
+                .work_range_page(
+                    old_range.after_seq,
+                    old_range.before_seq,
+                    Some(old_cut),
+                    None,
+                    demand(),
+                )
                 .await?
                 == old_members
         );
         ensure!(
             history
-                .group_page(old_group, None, None, demand())
+                .work_range_page(
+                    old_range.after_seq,
+                    old_range.before_seq,
+                    None,
+                    None,
+                    demand(),
+                )
                 .await?
-                .members
-                == old_members.members,
+                .events
+                == old_members.events,
             "R2 changed the original R1 members"
         );
         second_stage.release();
@@ -2056,4 +2151,315 @@ async fn restarted_current_keeps_owner_work_and_live_admission_independent_of_sa
     first_stage.release();
     second_stage.release();
     env.finish(result).await
+}
+
+#[tokio::test]
+async fn schema26_index_derived_timeline_and_work_range_ascending_pagination() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = HistoryStore::open(
+        dir.path().join("timeline.sqlite"),
+        "schema26-timeline",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let reader = store.reader();
+    let run = RuntimeEpoch::new();
+    let db_id = store.database_id().to_owned();
+
+    let make_work = |id: &str, ts: i64, call_id: &str| -> Result<HistoryEvent> {
+        let mut meta = event_meta(id, false);
+        meta.entity_kind = HistoryEntityKind::ToolCall;
+        meta.text_channel = None;
+        meta.tool = Some(HistoryToolIdentity {
+            call_id: call_id.into(),
+            name: "exec".into(),
+        });
+        work_tool_event(
+            id,
+            HistoryEventKind::ToolCalled,
+            ts,
+            &run.to_string(),
+            Some("turn-1"),
+            call_id,
+            "exec",
+            &format!("tool:{call_id}"),
+            meta,
+            serde_json::json!({
+                "invocation": { "toolCallId": call_id, "name": "exec" },
+                "state": { "kind": "running" }
+            }),
+            Vec::new(),
+            &db_id,
+        )
+    };
+
+    let seqs = store
+        .accept_batch(&[
+            make_work("w1", 10, "c1")?,
+            make_work("w2", 20, "c2")?,
+            single("d1", run, &db_id, b"divider 1"),
+            make_work("w3", 30, "c3")?,
+            make_work("w4", 40, "c4")?,
+            single("d2", run, &db_id, b"divider 2"),
+            make_work("w5", 50, "c5")?,
+        ])
+        .await?;
+    assert_eq!(seqs, vec![1, 2, 3, 4, 5, 6, 7]);
+    store.flush().await?;
+
+    let timeline = reader.timeline_page(None, None, demand()).await?;
+    assert_eq!(timeline.items.len(), 5);
+    assert!(matches!(
+        &timeline.items[0],
+        HistoryTimelineItem::WorkRange(r)
+            if r.after_seq == Some(6) && r.before_seq.is_none() && r.first_seq == 7 && r.last_seq == 7 && r.event_count == 1
+    ));
+    assert!(matches!(&timeline.items[1], HistoryTimelineItem::Divider(d) if d.event_id == "d2"));
+    let HistoryTimelineItem::WorkRange(mid) = &timeline.items[2] else {
+        panic!("expected middle work range");
+    };
+    assert_eq!(mid.after_seq, Some(3));
+    assert_eq!(mid.before_seq, Some(6));
+    assert_eq!(mid.first_seq, 4);
+    assert_eq!(mid.last_seq, 5);
+    assert_eq!(mid.event_count, 2);
+    assert!(matches!(&timeline.items[3], HistoryTimelineItem::Divider(d) if d.event_id == "d1"));
+    assert!(matches!(
+        &timeline.items[4],
+        HistoryTimelineItem::WorkRange(r)
+            if r.after_seq.is_none() && r.before_seq == Some(3) && r.first_seq == 1 && r.last_seq == 2 && r.event_count == 2
+    ));
+
+    // Paginate middle work range with max_rows = 1 -> strictly ascending seq 4 then seq 5
+    let one_row = HistoryDemand {
+        max_rows: 1,
+        max_bytes: 128 * 1024,
+    };
+    let page1 = reader
+        .work_range_page(
+            mid.after_seq,
+            mid.before_seq,
+            Some(timeline.cut.clone()),
+            None,
+            one_row,
+        )
+        .await?;
+    assert_eq!(page1.events.len(), 1);
+    assert_eq!(page1.events[0].event_id, "w3");
+    assert_eq!(page1.events[0].seq, 4);
+    let page2 = reader
+        .work_range_page(
+            mid.after_seq,
+            mid.before_seq,
+            Some(timeline.cut),
+            page1.next,
+            one_row,
+        )
+        .await?;
+    assert_eq!(page2.events.len(), 1);
+    assert_eq!(page2.events[0].event_id, "w4");
+    assert_eq!(page2.events[0].seq, 5);
+    assert!(page2.next.is_none());
+
+    reader.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn schema26_hybrid_16k_inline_vs_blob_and_attachment_boundaries() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("hybrid16k.sqlite");
+    let store = HistoryStore::open(&path, "hybrid16k", HistoryLimits::default()).await?;
+    let reader = store.reader();
+    let run = RuntimeEpoch::new();
+    let db_id = store.database_id().to_owned();
+
+    // 1. Exact 16_384 UTF-8 bytes -> inlined with 0 history_bodies rows
+    let exact_16k = vec![b'a'; INLINE_BODY_MAX_BYTES];
+    let ev_inline = single("inline-16k", run, &db_id, &exact_16k);
+    assert!(ev_inline.bodies.is_empty());
+
+    // 2. 16_385 UTF-8 bytes -> spilled to history_bodies
+    let over_16k = vec![b'b'; INLINE_BODY_MAX_BYTES + 1];
+    let ev_blob = single("blob-16k-plus-1", run, &db_id, &over_16k);
+    assert_eq!(ev_blob.bodies.len(), 1);
+
+    // 3. Per-event inline sum overflow: two 10_000-byte UTF-8 bodies -> 1st inline, 2nd BLOB
+    let mut ev_overflow = HistoryEvent::new(
+        "overflow-event",
+        HistoryEventKind::ToolCompleted,
+        HistoryTimelineRole::Work,
+        30,
+    );
+    let part1 = vec![b'1'; 10_000];
+    let part2 = vec![b'2'; 10_000];
+    let manifest_overflow = pack_bodies(
+        &mut ev_overflow,
+        vec![
+            PendingBody::new("part1", HistoryBodyRole::ToolArguments, None, part1.clone()),
+            PendingBody::new("part2", HistoryBodyRole::ToolOutput, None, part2.clone()),
+        ],
+        &db_id,
+    )?;
+    assert_eq!(ev_overflow.bodies.len(), 1);
+    assert!(manifest_overflow[0].inline_text.is_some());
+    assert!(manifest_overflow[0].reference.is_none());
+    assert!(manifest_overflow[1].inline_text.is_none());
+    assert!(manifest_overflow[1].reference.is_some());
+    ev_overflow.payload_schema = "anywork.event/1".into();
+    ev_overflow.payload_json = serde_json::to_string(&EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "tool".into(),
+        meta: event_meta("overflow-tool", false),
+        data: serde_json::json!({}),
+        bodies: manifest_overflow,
+        source_order: None,
+        turn_id: None,
+        captured_at: None,
+    })?;
+
+    // 4. Attachment & non-UTF-8 binary under 16 KiB -> NEVER inlined
+    let mut ev_binary = HistoryEvent::new(
+        "binary-attach",
+        HistoryEventKind::ItemRecorded,
+        HistoryTimelineRole::Work,
+        40,
+    );
+    let attach_bytes = b"small attachment".to_vec();
+    let non_utf8 = vec![0xff, 0xfe, 0x00, 0x80];
+    let manifest_bin = pack_bodies(
+        &mut ev_binary,
+        vec![
+            PendingBody::new(
+                "att",
+                HistoryBodyRole::Attachment,
+                None,
+                attach_bytes.clone(),
+            ),
+            PendingBody::new("bin", HistoryBodyRole::ToolOutput, None, non_utf8.clone()),
+        ],
+        &db_id,
+    )?;
+    assert_eq!(ev_binary.bodies.len(), 2);
+    assert!(
+        manifest_bin
+            .iter()
+            .all(|b| b.inline_text.is_none() && b.reference.is_some())
+    );
+    ev_binary.payload_schema = "anywork.event/1".into();
+    ev_binary.payload_json = serde_json::to_string(&EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "tool".into(),
+        meta: event_meta("binary-tool", false),
+        data: serde_json::json!({}),
+        bodies: manifest_bin,
+        source_order: None,
+        turn_id: None,
+        captured_at: None,
+    })?;
+
+    store
+        .accept_batch(&[ev_inline, ev_blob, ev_overflow, ev_binary])
+        .await?;
+    store.flush().await?;
+
+    let rec_inline = reader.read_event("inline-16k".into(), demand()).await?;
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_inline, "body", None).await?,
+        Some(exact_16k)
+    );
+    assert!(
+        reader
+            .list_bodies("inline-16k".into(), None, demand())
+            .await?
+            .entries
+            .is_empty()
+    );
+
+    let rec_blob = reader
+        .read_event("blob-16k-plus-1".into(), demand())
+        .await?;
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_blob, "body", None).await?,
+        Some(over_16k)
+    );
+
+    let rec_overflow = reader.read_event("overflow-event".into(), demand()).await?;
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_overflow, "part1", None).await?,
+        Some(part1)
+    );
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_overflow, "part2", None).await?,
+        Some(part2)
+    );
+
+    let rec_bin = reader.read_event("binary-attach".into(), demand()).await?;
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_bin, "att", None).await?,
+        Some(attach_bytes)
+    );
+    assert_eq!(
+        read_event_body_bytes(&reader, &rec_bin, "bin", None).await?,
+        Some(non_utf8)
+    );
+
+    reader.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn schema26_open_kind_and_unknown_payload_schema_round_trip() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = HistoryStore::open(
+        dir.path().join("open.sqlite"),
+        "open-schema",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let reader = store.reader();
+    let mut future = HistoryEvent::new(
+        "future-ev-1",
+        HistoryEventKind::Other("future_tool_event".into()),
+        HistoryTimelineRole::Work,
+        99_000,
+    );
+    future.call_id = Some("call-future-1".into());
+    future.tool_name = Some("brand_new_tool".into());
+    future.payload_schema = "anywork.future/9".into();
+    future.payload_json = r#"{"futureField":[1,2,3],"nested":{"ok":true}}"#.into();
+
+    store.accept_batch(&[future]).await?;
+    store.flush().await?;
+
+    let timeline = reader.timeline_page(None, None, demand()).await?;
+    assert_eq!(timeline.items.len(), 1);
+    let HistoryTimelineItem::WorkRange(range) = &timeline.items[0] else {
+        panic!("expected work range for open kind");
+    };
+    let work = reader
+        .work_range_page(range.after_seq, range.before_seq, None, None, demand())
+        .await?;
+    assert_eq!(work.events.len(), 1);
+    assert_eq!(
+        work.events[0].kind,
+        HistoryEventKind::Other("future_tool_event".into())
+    );
+    assert_eq!(work.events[0].payload_schema, "anywork.future/9");
+    let raw: serde_json::Value = serde_json::from_str(&work.events[0].payload_json)?;
+    assert_eq!(raw["futureField"], serde_json::json!([1, 2, 3]));
+    assert_eq!(
+        reader
+            .read_event("future-ev-1".into(), demand())
+            .await?
+            .tool_name
+            .as_deref(),
+        Some("brand_new_tool")
+    );
+
+    reader.close().await;
+    store.close().await?;
+    Ok(())
 }

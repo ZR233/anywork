@@ -8,8 +8,11 @@ use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, ReplyStage, Step, WebSocketAction};
 use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatContentRole, ChatScope, ContentRange,
-    CurrentContentRef, CurrentFrame, CurrentProjection, HistoryEventBodyRef, ThreadWorkspaceMode,
-    history::{HistoryBodyRole, HistoryDemand, HistoryEventsQuery, HistoryReader},
+    CurrentContentRef, CurrentFrame, CurrentProjection, ThreadWorkspaceMode,
+    history::{
+        HistoryDemand, HistoryEventRecord, HistoryEventsQuery, HistoryReader,
+        decode_event_envelope, read_event_body_bytes,
+    },
 };
 use std::collections::HashSet;
 use support::{Environment, current_demand, prompt_step, reached};
@@ -85,56 +88,20 @@ async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -
     env.finish(result).await
 }
 
-async fn read_history_body(
+async fn original_bodies(
     reader: &HistoryReader,
-    reference: &HistoryEventBodyRef,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while bytes.len() as u64 != reference.byte_length {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                bytes.len() as u64,
-                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty(), "history body did not advance");
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
-
-async fn original_bodies(reader: &HistoryReader, event_id: &str) -> Result<Vec<(String, Vec<u8>)>> {
-    let demand = HistoryDemand {
-        max_rows: 128,
-        max_bytes: 256 * 1024,
-    };
-    let mut cursor = None;
+    event: &HistoryEventRecord,
+    envelope: &pl_studio_runtime::history::EventPayloadEnvelope,
+) -> Result<Vec<(String, Vec<u8>)>> {
     let mut bodies = Vec::new();
-    loop {
-        let page = reader
-            .list_bodies(event_id.into(), cursor.clone(), demand)
-            .await?;
-        for body in page.entries {
-            if matches!(
-                body.role,
-                HistoryBodyRole::CanonicalPayload | HistoryBodyRole::CanonicalMetadata
-            ) {
-                continue;
-            }
-            bodies.push((
-                body.body_key,
-                read_history_body(reader, &body.reference).await?,
-            ));
+    for entry in &envelope.bodies {
+        if entry.role == "canonical_payload" || entry.role == "canonical_metadata" {
+            continue;
         }
-        let Some(next) = page.next else {
-            break;
-        };
-        ensure!(
-            cursor.as_ref() != Some(&next),
-            "body cursor did not advance"
-        );
-        cursor = Some(next);
+        let bytes = read_event_body_bytes(reader, event, &entry.key, None)
+            .await?
+            .with_context(|| format!("missing body {} for {}", entry.key, event.event_id))?;
+        bodies.push((entry.key.clone(), bytes));
     }
     Ok(bodies)
 }
@@ -173,25 +140,25 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
             .await?;
         for event in page.entries {
             ensure!(
-                identities.insert(event.header.event_id.clone()),
+                identities.insert(event.event_id.clone()),
                 "History repeated an original identity"
             );
-            let Some(payload_ref) = event.payload_ref else {
+            if event.payload_schema != "anywork.event/1" {
                 continue;
-            };
-            let payload = read_history_body(reader, &payload_ref).await?;
-            let value: serde_json::Value = serde_json::from_slice(&payload)?;
-            ensure!(value["contract"] == "anywork.chat/1");
-            let output = value["type"] == "thinking"
-                || (value["type"] == "text"
+            }
+            let envelope = decode_event_envelope(&event)?;
+            ensure!(envelope.contract == "anywork.event/1");
+            let payload = event.payload_json.as_bytes().to_vec();
+            let output = envelope.item_type == "thinking"
+                || (envelope.item_type == "text"
                     && matches!(
-                        value["data"]["channel"].as_str(),
+                        envelope.data["channel"].as_str(),
                         Some("final" | "commentary")
                     ));
             if !output {
                 continue;
             }
-            let bodies = original_bodies(reader, &event.header.event_id).await?;
+            let bodies = original_bodies(reader, &event, &envelope).await?;
             ensure!(
                 !bodies.is_empty(),
                 "public output omitted its original body"
@@ -220,7 +187,7 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                     "recovery notice was published more than once"
                 );
                 result.recovery_notices.push(OutputOriginal {
-                    event_id: event.header.event_id,
+                    event_id: event.event_id,
                     payload,
                     bodies,
                 });
@@ -234,7 +201,7 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                 );
             }
             result.outputs.push(OutputOriginal {
-                event_id: event.header.event_id,
+                event_id: event.event_id,
                 payload,
                 bodies,
             });

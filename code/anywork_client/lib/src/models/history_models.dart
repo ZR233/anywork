@@ -1,10 +1,8 @@
 import 'chat_models.dart';
 import 'current_models.dart' show CurrentTurnPhase;
 import 'runtime_models.dart';
-import 'thread_models.dart' show ThreadTextChannel;
-import 'thread_wait_models.dart';
 
-const historyProtocolVersion = 1;
+const historyProtocolVersion = 2;
 
 final class HistoryCut {
   const HistoryCut(this.token);
@@ -21,9 +19,9 @@ final class HistoryDemand {
   final int maxBytes;
 }
 
-enum HistoryEntityStateKind { unknown, knownActive, knownTerminal }
+enum HistoryTimelineRole { divider, work, hidden }
 
-enum HistoryObservationKind { original, boundary, unavailableLegacy }
+enum HistoryBusinessRowScope { turn, source, cost, accounting }
 
 enum HistoryTurnState {
   unknown,
@@ -38,16 +36,6 @@ enum HistoryTurnState {
 enum HistoryContextDisposition { active, rolledBack }
 
 enum HistorySourceLifecycleKind { unknown, active, ended }
-
-enum HistoryWaitState {
-  waiting,
-  ready,
-  timedOut,
-  elapsed,
-  cancelled,
-  failed,
-  interrupted,
-}
 
 enum HistoryBodyRoleKind {
   canonicalPayload,
@@ -108,140 +96,6 @@ final class OriginalsHistoryEvents extends HistoryEventsQuery {
 
 final class TextOriginalHistoryEvents extends HistoryEventsQuery {
   const TextOriginalHistoryEvents();
-}
-
-/// History records the start and boundary in Unix milliseconds.
-final class HistoryWorkHead {
-  const HistoryWorkHead({
-    required this.groupId,
-    this.runId,
-    this.startedAt,
-    this.boundaryAt,
-    required this.closed,
-    required this.memberCount,
-    required this.unfinishedCount,
-    required this.executionPresent,
-    this.summary,
-  });
-  final String groupId;
-  final String? runId;
-  final int? startedAt;
-  final int? boundaryAt;
-  final bool closed;
-  final int memberCount;
-  final int unfinishedCount;
-  final bool executionPresent;
-  final String? summary;
-}
-
-/// History records the start and finish in Unix milliseconds.
-final class HistoryEntityHead {
-  const HistoryEntityHead({
-    required this.entityId,
-    this.runId,
-    this.attemptId,
-    required this.source,
-    required this.kind,
-    required this.delivery,
-    required this.state,
-    this.startedAt,
-    this.finishedAt,
-    this.textChannel,
-    this.tool,
-    this.wait,
-    this.contentPresent,
-    this.singleVisibility,
-    required this.observation,
-    this.presentationContract,
-    this.detailEventId,
-    this.inputManifestEventId,
-    this.bodyManifestEventId,
-  });
-  final String entityId;
-  final String? runId;
-  final String? attemptId;
-  final ChatSourceId source;
-  final ChatAtomKind kind;
-  final ChatDeliveryKind delivery;
-  final HistoryEntityState state;
-  final int? startedAt;
-  final int? finishedAt;
-  final ThreadTextChannel? textChannel;
-  final ChatToolIdentity? tool;
-  final HistoryWaitHead? wait;
-  final bool? contentPresent;
-  final HistorySingleVisibility? singleVisibility;
-  final HistoryObservation observation;
-  final String? presentationContract;
-  final String? detailEventId;
-  final String? inputManifestEventId;
-  final String? bodyManifestEventId;
-}
-
-final class HistoryEntityState {
-  const HistoryEntityState({
-    required this.kind,
-    this.activeStatus,
-    this.outcome,
-  }) : assert(
-         (kind == HistoryEntityStateKind.knownActive) == (activeStatus != null),
-       ),
-       assert(
-         (kind == HistoryEntityStateKind.knownTerminal) == (outcome != null),
-       );
-  final HistoryEntityStateKind kind;
-  final ChatActiveStatus? activeStatus;
-  final ChatTerminalOutcome? outcome;
-}
-
-final class HistoryObservation {
-  const HistoryObservation({required this.kind, this.capturedAt});
-  final HistoryObservationKind kind;
-
-  /// The observed boundary in Unix milliseconds.
-  final int? capturedAt;
-}
-
-enum HistorySingleVisibility { content, finalEmptyAfterContent }
-
-sealed class HistoryWaitHead {
-  const HistoryWaitHead();
-}
-
-final class InlineHistoryWait extends HistoryWaitHead {
-  const InlineHistoryWait(this.presentation);
-  final ThreadWaitPresentationView presentation;
-}
-
-final class DeferredHistoryWait extends HistoryWaitHead {
-  const DeferredHistoryWait({
-    required this.intent,
-    required this.state,
-    this.messagesReady,
-    required this.presentation,
-  });
-  final HistoryWaitIntent intent;
-  final HistoryWaitState state;
-  final bool? messagesReady;
-  final HistoryEventBodyRef presentation;
-}
-
-sealed class HistoryWaitIntent {
-  const HistoryWaitIntent();
-}
-
-final class EventsHistoryWaitIntent extends HistoryWaitIntent {
-  const EventsHistoryWaitIntent({
-    required this.targetCount,
-    required this.timeoutMs,
-  });
-  final int targetCount;
-  final int timeoutMs;
-}
-
-final class TimerHistoryWaitIntent extends HistoryWaitIntent {
-  const TimerHistoryWaitIntent(this.durationMs);
-  final int durationMs;
 }
 
 final class HistoryTurnHead {
@@ -344,47 +198,140 @@ final class HistoryAccountingHead {
   final String? detailEventId;
 }
 
-sealed class HistoryRowHead {
-  const HistoryRowHead();
+enum HistorySingleVisibility { content, finalEmptyAfterContent }
+
+final class HistoryEventRecord {
+  const HistoryEventRecord({
+    required this.seq,
+    required this.eventId,
+    required this.kind,
+    required this.timelineRole,
+    this.occurredAt,
+    required this.recordedAt,
+    this.runId,
+    this.turnId,
+    this.attemptId,
+    this.callId,
+    this.entityId,
+    this.messageId,
+    this.toolName,
+    this.source,
+    this.original,
+    this.rowScope,
+    this.rowKey,
+    required this.payloadSchema,
+    required this.payloadJson,
+  });
+  final int seq;
+  final String eventId;
+  final String kind;
+  final HistoryTimelineRole timelineRole;
+  final int? occurredAt;
+  final int recordedAt;
+  final String? runId;
+  final String? turnId;
+  final String? attemptId;
+  final String? callId;
+  final String? entityId;
+  final String? messageId;
+  final String? toolName;
+  final ChatSourceId? source;
+  final HistoryOriginalInfo? original;
+  final HistoryBusinessRowScope? rowScope;
+  final String? rowKey;
+  final String payloadSchema;
+  final String payloadJson;
 }
 
-final class WorkHistoryRow extends HistoryRowHead {
-  const WorkHistoryRow(this.head);
-  final HistoryWorkHead head;
+final class HistoryWorkRange {
+  const HistoryWorkRange({
+    required this.rangeId,
+    this.afterSeq,
+    this.beforeSeq,
+    required this.firstSeq,
+    required this.lastSeq,
+    this.startedAt,
+    this.endedAt,
+    this.runId,
+    required this.eventCount,
+  });
+  final String rangeId;
+  final int? afterSeq;
+  final int? beforeSeq;
+  final int firstSeq;
+  final int lastSeq;
+  final int? startedAt;
+  final int? endedAt;
+  final String? runId;
+  final int eventCount;
 }
 
-final class SingleHistoryRow extends HistoryRowHead {
-  const SingleHistoryRow(this.head);
-  final HistoryEntityHead head;
+sealed class HistoryTimelineItem {
+  const HistoryTimelineItem();
 }
 
-final class MemberHistoryRow extends HistoryRowHead {
-  const MemberHistoryRow(this.head);
-  final HistoryEntityHead head;
+final class DividerTimelineItem extends HistoryTimelineItem {
+  const DividerTimelineItem(this.event);
+  final HistoryEventRecord event;
 }
 
-final class TurnHistoryRow extends HistoryRowHead {
-  const TurnHistoryRow(this.head);
+final class WorkRangeTimelineItem extends HistoryTimelineItem {
+  const WorkRangeTimelineItem(this.range);
+  final HistoryWorkRange range;
+}
+
+final class HistoryTimelinePage {
+  HistoryTimelinePage({
+    required this.cut,
+    required List<HistoryTimelineItem> items,
+    this.next,
+  }) : items = List.unmodifiable(items);
+  final HistoryCut cut;
+  final List<HistoryTimelineItem> items;
+  final String? next;
+}
+
+final class HistoryWorkRangePage {
+  HistoryWorkRangePage({
+    required this.cut,
+    this.afterSeq,
+    this.beforeSeq,
+    required List<HistoryEventRecord> events,
+    this.next,
+  }) : events = List.unmodifiable(events);
+  final HistoryCut cut;
+  final int? afterSeq;
+  final int? beforeSeq;
+  final List<HistoryEventRecord> events;
+  final String? next;
+}
+
+sealed class HistoryBusinessRowHead {
+  const HistoryBusinessRowHead();
+}
+
+final class TurnHistoryBusinessRow extends HistoryBusinessRowHead {
+  const TurnHistoryBusinessRow(this.head);
   final HistoryTurnHead head;
 }
 
-final class SourceHistoryRow extends HistoryRowHead {
-  const SourceHistoryRow(this.head);
+final class SourceHistoryBusinessRow extends HistoryBusinessRowHead {
+  const SourceHistoryBusinessRow(this.head);
   final HistorySourceHead head;
 }
 
-final class CostHistoryRow extends HistoryRowHead {
-  const CostHistoryRow(this.head);
+final class CostHistoryBusinessRow extends HistoryBusinessRowHead {
+  const CostHistoryBusinessRow(this.head);
   final HistoryCostHead head;
 }
 
-final class AccountingHistoryRow extends HistoryRowHead {
-  const AccountingHistoryRow(this.head);
+final class AccountingHistoryBusinessRow extends HistoryBusinessRowHead {
+  const AccountingHistoryBusinessRow(this.head);
   final HistoryAccountingHead head;
 }
 
-final class HistoryTimelineEntry {
-  const HistoryTimelineEntry({
+final class HistoryBusinessRowEntry {
+  const HistoryBusinessRowEntry({
     required this.rowKey,
     required this.anchorSeq,
     required this.headSeq,
@@ -393,66 +340,18 @@ final class HistoryTimelineEntry {
   final String rowKey;
   final int anchorSeq;
   final int headSeq;
-  final HistoryRowHead head;
+  final HistoryBusinessRowHead head;
 }
 
-final class HistoryTimelinePage {
-  HistoryTimelinePage({
+final class HistoryBusinessPage {
+  HistoryBusinessPage({
     required this.cut,
-    required List<HistoryTimelineEntry> entries,
+    required List<HistoryBusinessRowEntry> entries,
     this.next,
   }) : entries = List.unmodifiable(entries);
   final HistoryCut cut;
-  final List<HistoryTimelineEntry> entries;
+  final List<HistoryBusinessRowEntry> entries;
   final String? next;
-}
-
-final class HistoryGroupPage {
-  HistoryGroupPage({
-    required this.cut,
-    required this.groupId,
-    required List<HistoryTimelineEntry> members,
-    this.next,
-  }) : members = List.unmodifiable(members);
-  final HistoryCut cut;
-  final String groupId;
-  final List<HistoryTimelineEntry> members;
-  final String? next;
-}
-
-final class HistoryEventHeader {
-  const HistoryEventHeader({
-    required this.seq,
-    required this.eventId,
-    required this.kind,
-    this.runId,
-    this.attemptId,
-    this.entityId,
-    this.turnId,
-    this.source,
-    this.callId,
-    this.messageId,
-    this.groupId,
-    this.rowKey,
-    this.original,
-    this.occurredAt,
-    required this.recordedAt,
-  });
-  final int seq;
-  final String eventId;
-  final String kind;
-  final String? runId;
-  final String? attemptId;
-  final String? entityId;
-  final String? turnId;
-  final ChatSourceId? source;
-  final String? callId;
-  final String? messageId;
-  final String? groupId;
-  final String? rowKey;
-  final HistoryOriginalInfo? original;
-  final int? occurredAt;
-  final int recordedAt;
 }
 
 final class HistoryOriginalInfo {
@@ -505,27 +404,14 @@ final class HistoryEventBodyRef {
   );
 }
 
-final class HistoryEventDetail {
-  const HistoryEventDetail({
-    required this.header,
-    this.head,
-    this.payloadRef,
-    this.ownedManifestEventId,
-  });
-  final HistoryEventHeader header;
-  final HistoryRowHead? head;
-  final HistoryEventBodyRef? payloadRef;
-  final String? ownedManifestEventId;
-}
-
 final class HistoryEventsPage {
   HistoryEventsPage({
     required this.cut,
-    required List<HistoryEventDetail> entries,
+    required List<HistoryEventRecord> entries,
     this.next,
   }) : entries = List.unmodifiable(entries);
   final HistoryCut cut;
-  final List<HistoryEventDetail> entries;
+  final List<HistoryEventRecord> entries;
   final String? next;
 }
 

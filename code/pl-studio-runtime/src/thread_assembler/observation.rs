@@ -535,18 +535,9 @@ mod storage_fault_tests {
                 return Err(error.into());
             }
         };
-        let reference = event.payload_ref.context("original report payload")?;
-        let mut bytes = Vec::new();
-        while bytes.len() < reference.byte_length as usize {
-            let window = reader
-                .read_body(reference.clone(), bytes.len() as u64, 64 * 1024)
-                .await?;
-            anyhow::ensure!(
-                !window.bytes.is_empty(),
-                "original report body did not advance"
-            );
-            bytes.extend(window.bytes);
-        }
+        let bytes = crate::history::read_event_body_bytes(&reader, &event, "business_fact", None)
+            .await?
+            .context("original report payload")?;
         reader.close().await;
         let payload: OpaquePayload = serde_json::from_slice(&bytes)?;
         Ok(Some(serde_json::from_str(payload.content())?))

@@ -1,15 +1,16 @@
 //! Bounded typed History/Current observation shared by the bots acceptance cases.
 use anyhow::{Context, Result, bail, ensure};
 use pl_studio_runtime::history::{
-    HEAD_MAX_BYTES, HistoryBodyEntry, HistoryBodyPage, HistoryBodyRole, HistoryCut, HistoryDemand,
-    HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventDetail,
-    HistoryEventHeader, HistoryEventsPage, HistoryEventsQuery, HistoryGroupPage, HistoryRowHead,
-    HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
+    EventPayloadEnvelope, HistoryBodyManifestEntry, HistoryBusinessPage, HistoryBusinessRowHead,
+    HistoryBusinessRowScope, HistoryCut, HistoryDemand, HistoryEntityState, HistoryEventBodyRef,
+    HistoryEventMeta, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
+    HistoryTimelineItem, HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
+    HistoryWorkRangePage, decode_event_envelope,
 };
 use pl_studio_runtime::{
     ContentRange, CurrentPayloadData, ReadDemand, ThreadTextChannel, Turn, TurnState,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashSet};
 use std::time::Instant;
@@ -29,28 +30,29 @@ const BODY_CHUNK_BYTES: u32 = 64 * 1024;
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct HistoryOriginal {
     pub event_id: String,
-    pub event: HistoryEventHeader,
-    pub head: HistoryEntityHead,
+    pub event: HistoryEventRecord,
+    pub head: HistoryEventMeta,
+    pub envelope: EventPayloadEnvelope,
     pub payload: Value,
-    pub bodies: Vec<HistoryBodyEntry>,
+    pub bodies: Vec<HistoryBodyManifestEntry>,
 }
 
 impl HistoryOriginal {
-    pub(crate) fn text_body(&self) -> Result<Option<&HistoryBodyEntry>> {
+    pub(crate) fn text_body(&self) -> Result<Option<&HistoryBodyManifestEntry>> {
         ensure!(
-            self.head.kind == pl_studio_runtime::ChatAtomKind::Text,
+            self.head.entity_kind == pl_studio_runtime::ChatAtomKind::Text,
             "History entity {} is not typed text",
             self.head.entity_id
         );
         unique_body(&self.bodies, |body| {
-            body.role == HistoryBodyRole::Body && is_text_body_key(&body.body_key)
+            body.role == "body" && is_text_body_key(&body.key)
         })
         .with_context(|| format!("History text {}", self.head.entity_id))
     }
 
-    pub(crate) fn tool_output_body(&self) -> Result<Option<&HistoryBodyEntry>> {
+    pub(crate) fn tool_output_body(&self) -> Result<Option<&HistoryBodyManifestEntry>> {
         ensure!(
-            self.head.kind == pl_studio_runtime::ChatAtomKind::ToolCall,
+            self.head.entity_kind == pl_studio_runtime::ChatAtomKind::ToolCall,
             "History entity {} is not a tool",
             self.head.entity_id
         );
@@ -58,9 +60,9 @@ impl HistoryOriginal {
             .with_context(|| format!("History tool output {}", self.head.entity_id))
     }
 
-    pub(crate) fn tool_arguments_body(&self) -> Result<Option<&HistoryBodyEntry>> {
+    pub(crate) fn tool_arguments_body(&self) -> Result<Option<&HistoryBodyManifestEntry>> {
         ensure!(
-            self.head.kind == pl_studio_runtime::ChatAtomKind::ToolCall,
+            self.head.entity_kind == pl_studio_runtime::ChatAtomKind::ToolCall,
             "History entity {} is not a tool",
             self.head.entity_id
         );
@@ -71,10 +73,10 @@ impl HistoryOriginal {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HistoryMainScan {
-    /// Product Main rows are exactly visible top-level Work + Single rows.
+    /// Product Main rows are exactly visible top-level Divider + WorkRange rows.
     pub rows: usize,
     /// Every visible entity head, including Work members, for independent inventory assertions.
-    pub entities: Vec<HistoryEntityHead>,
+    pub entities: Vec<(HistoryEventRecord, HistoryEventMeta)>,
 }
 
 pub(crate) fn charge_history_page<T: Serialize>(
@@ -98,7 +100,7 @@ pub(crate) fn charge_history_bytes(bytes: usize, remaining: &mut usize) -> Resul
     Ok(())
 }
 
-/// Enumerates Main in product order. Work groups are expanded only to obtain their exact member
+/// Enumerates Main in product order. Work ranges are expanded only to obtain their exact member
 /// inventory; they still contribute one Main row each.
 pub(crate) async fn scan_main(
     read: &crate::http::HistoryRead,
@@ -119,50 +121,54 @@ pub(crate) async fn scan_main(
             charge_history_page(&page, HISTORY_DEMAND, remaining)?;
             let HistoryTimelinePage {
                 cut: page_cut,
-                entries,
+                items,
                 next,
             } = page;
-            for entry in entries {
+            for item in items {
                 rows = rows.checked_add(1).context("Main row count overflow")?;
-                match entry.head {
-                    HistoryRowHead::Single(head) => {
-                        if entity_ids.insert(head.entity_id.clone()) {
-                            entities.push(head);
+                match item {
+                    HistoryTimelineItem::Divider(record) => {
+                        let envelope = decode_event_envelope(&record)?;
+                        if entity_ids.insert(envelope.meta.entity_id.clone()) {
+                            entities.push((record, envelope.meta));
                         }
                     }
-                    HistoryRowHead::Work(work) => {
+                    HistoryTimelineItem::WorkRange(range) => {
                         let mut group_cut = Some(page_cut.clone());
                         let mut group_cursor = None;
                         let mut group_seen = HashSet::new();
                         for group_index in 0..CURSOR_PAGE_LIMIT {
                             let group = read
-                                .group_page(
-                                    work.group_id.clone(),
+                                .work_range_page(
+                                    range.after_seq,
+                                    range.before_seq,
                                     group_cut.clone(),
                                     group_cursor.clone(),
                                     HISTORY_DEMAND,
                                 )
                                 .await?;
                             charge_history_page(&group, HISTORY_DEMAND, remaining)?;
-                            let HistoryGroupPage {
+                            let HistoryWorkRangePage {
                                 cut: next_group_cut,
-                                group_id,
-                                members,
+                                after_seq,
+                                before_seq,
+                                events,
                                 next,
                             } = group;
                             ensure!(
-                                group_id == work.group_id,
-                                "History group response belonged to another Work"
+                                after_seq == range.after_seq && before_seq == range.before_seq,
+                                "History work range response belonged to another window"
                             );
-                            for member in members {
-                                let HistoryRowHead::Member(head) = member.head else {
-                                    bail!(
-                                        "History group {} returned a non-member head",
-                                        work.group_id
-                                    );
-                                };
-                                if entity_ids.insert(head.entity_id.clone()) {
-                                    entities.push(head);
+                            for member in events {
+                                ensure!(
+                                    member.payload_schema == "anywork.event/1",
+                                    "History work range {} returned non-event schema {}",
+                                    range.range_id,
+                                    member.payload_schema
+                                );
+                                let envelope = decode_event_envelope(&member)?;
+                                if entity_ids.insert(envelope.meta.entity_id.clone()) {
+                                    entities.push((member, envelope.meta));
                                 }
                             }
                             let Some(next) = next else {
@@ -171,13 +177,12 @@ pub(crate) async fn scan_main(
                             ensure!(
                                 group_index + 1 < CURSOR_PAGE_LIMIT
                                     && group_seen.insert(next.clone()),
-                                "History group continuation repeated or exceeded its page budget"
+                                "History work range continuation repeated or exceeded its page budget"
                             );
                             group_cut = Some(next_group_cut);
                             group_cursor = Some(next);
                         }
                     }
-                    _ => bail!("History Main returned a non-Work/Single head"),
                 }
             }
             let Some(next) = next else {
@@ -196,23 +201,19 @@ pub(crate) async fn scan_main(
     .context("History Main observation exceeded its deadline")?
 }
 
-/// Reads one canonical original by its typed visible head.
+/// Reads one canonical original by its event identity.
 pub(crate) async fn read_original(
     read: &crate::http::HistoryRead,
-    head: &HistoryEntityHead,
+    event_id: &str,
     remaining: &mut usize,
-    deadline: Instant,
+    _deadline: Instant,
 ) -> Result<HistoryOriginal> {
-    let event_id = head
-        .detail_event_id
-        .as_deref()
-        .context("visible History entity omitted its original event")?;
     let detail = read
         .event(event_id, HISTORY_DEMAND)
         .await
         .with_context(|| format!("read History original {event_id}"))?;
     charge_history_page(&detail, HISTORY_DEMAND, remaining)?;
-    original_from_event(read, detail, remaining, deadline).await
+    original_from_event(detail)
 }
 
 pub(crate) async fn originals_for_turn(
@@ -243,16 +244,12 @@ pub(crate) async fn originals_for_turn(
                 entries,
                 next,
             } = page;
-            details.extend(
-                entries
-                    .into_iter()
-                    .filter(|entry| entry.header.original.is_some()),
-            );
+            details.extend(entries.into_iter().filter(|entry| entry.original.is_some()));
             let Some(next) = next else {
-                details.sort_by_key(|detail| detail.header.seq);
+                details.sort_by_key(|detail| detail.seq);
                 let mut originals = Vec::with_capacity(details.len());
                 for detail in details {
-                    originals.push(original_from_event(read, detail, remaining, deadline).await?);
+                    originals.push(original_from_event(detail)?);
                 }
                 return Ok(originals);
             };
@@ -309,16 +306,12 @@ async fn originals_for_query(
                 entries,
                 next,
             } = page;
-            details.extend(
-                entries
-                    .into_iter()
-                    .filter(|entry| entry.header.original.is_some()),
-            );
+            details.extend(entries.into_iter().filter(|entry| entry.original.is_some()));
             let Some(next) = next else {
-                details.sort_by_key(|detail| detail.header.seq);
+                details.sort_by_key(|detail| detail.seq);
                 let mut originals = Vec::with_capacity(details.len());
                 for detail in details {
-                    originals.push(original_from_event(read, detail, remaining, deadline).await?);
+                    originals.push(original_from_event(detail)?);
                 }
                 return Ok(originals);
             };
@@ -335,107 +328,24 @@ async fn originals_for_query(
     .context("History query observation exceeded its deadline")?
 }
 
-async fn original_from_event(
-    read: &crate::http::HistoryRead,
-    detail: HistoryEventDetail,
-    remaining: &mut usize,
-    deadline: Instant,
-) -> Result<HistoryOriginal> {
+fn original_from_event(detail: HistoryEventRecord) -> Result<HistoryOriginal> {
     ensure!(
-        detail.header.original.is_some(),
+        detail.original.is_some(),
         "History event {} is not a canonical original",
-        detail.header.event_id
+        detail.event_id
     );
-    let bodies = read_body_entries(read, &detail.header.event_id, remaining, deadline).await?;
-    let metadata_head =
-        canonical_head(read, &detail.header.event_id, &bodies, remaining, deadline).await?;
-    let mut indexed_fact = match detail.head {
-        Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
-        None => metadata_head.clone(),
-        Some(_) => bail!("canonical original has a non-entity head"),
-    };
-    indexed_fact.single_visibility = None;
-    let mut original_fact = metadata_head.clone();
-    original_fact.single_visibility = None;
-    ensure!(
-        indexed_fact == original_fact,
-        "canonical metadata and indexed History head disagree"
-    );
-    let head = metadata_head;
-    let payload_ref = detail
-        .payload_ref
-        .context("canonical original omitted its opaque payload")?;
-    let payload_bytes = read_body_bytes(read, &payload_ref, remaining, deadline).await?;
-    let payload = serde_json::from_slice(&payload_bytes)
-        .with_context(|| format!("canonical payload {} is not JSON", head.entity_id))?;
-    ensure_history_payload_matches(&head, &payload)?;
+    let envelope = decode_event_envelope(&detail)?;
+    let payload: Value = serde_json::from_str(&detail.payload_json)
+        .with_context(|| format!("canonical payload {} is not JSON", envelope.meta.entity_id))?;
+    ensure_history_payload_matches(&detail, &envelope.meta, &payload)?;
     Ok(HistoryOriginal {
-        event_id: detail.header.event_id.clone(),
-        event: detail.header,
-        head,
+        event_id: detail.event_id.clone(),
+        head: envelope.meta.clone(),
+        bodies: envelope.bodies.clone(),
         payload,
-        bodies,
+        envelope,
+        event: detail,
     })
-}
-
-async fn canonical_head(
-    read: &crate::http::HistoryRead,
-    event_id: &str,
-    bodies: &[HistoryBodyEntry],
-    remaining: &mut usize,
-    deadline: Instant,
-) -> Result<HistoryEntityHead> {
-    let entry = unique_body(bodies, |body| {
-        body.role == HistoryBodyRole::CanonicalMetadata
-    })?
-    .with_context(|| format!("canonical original {event_id} omitted its typed head body"))?;
-    ensure!(
-        entry.reference.byte_length <= HEAD_MAX_BYTES as u64,
-        "canonical History head exceeded {HEAD_MAX_BYTES} bytes"
-    );
-    let bytes = read_body_bytes(read, &entry.reference, remaining, deadline).await?;
-    serde_json::from_slice(&bytes)
-        .with_context(|| format!("canonical metadata for {event_id} is not HistoryEntityHead"))
-}
-
-pub(crate) async fn read_body_entries(
-    read: &crate::http::HistoryRead,
-    event_id: &str,
-    remaining: &mut usize,
-    deadline: Instant,
-) -> Result<Vec<HistoryBodyEntry>> {
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), async {
-        let mut entries = Vec::new();
-        let mut cursor = None;
-        let mut seen = HashSet::new();
-        for page_index in 0..CURSOR_PAGE_LIMIT {
-            let page = read
-                .bodies(event_id, cursor.clone(), HISTORY_DEMAND)
-                .await?;
-            charge_history_page(&page, HISTORY_DEMAND, remaining)?;
-            let HistoryBodyPage {
-                owner_event_id,
-                entries: page_entries,
-                next,
-            } = page;
-            ensure!(
-                owner_event_id == event_id,
-                "History bodies belonged to another event"
-            );
-            entries.extend(page_entries);
-            let Some(next) = next else {
-                return Ok(entries);
-            };
-            ensure!(
-                page_index + 1 < CURSOR_PAGE_LIMIT && seen.insert(next.clone()),
-                "History body directory repeated or exceeded its page budget"
-            );
-            cursor = Some(next);
-        }
-        bail!("History body directory exceeded its bounded page budget")
-    })
-    .await
-    .context("History body directory observation exceeded its deadline")?
 }
 
 pub(crate) async fn read_body_bytes(
@@ -475,14 +385,34 @@ pub(crate) async fn read_body_bytes(
     Ok(bytes)
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnEnvelope {
+    head: HistoryTurnHead,
+    #[serde(default)]
+    bodies: Vec<HistoryBodyManifestEntry>,
+}
+
 pub(crate) async fn body_text(
     read: &crate::http::HistoryRead,
-    entry: &HistoryBodyEntry,
+    entry: &HistoryBodyManifestEntry,
     remaining: &mut usize,
     deadline: Instant,
 ) -> Result<String> {
-    let bytes = read_body_bytes(read, &entry.reference, remaining, deadline).await?;
-    String::from_utf8(bytes).context("History text body is not UTF-8")
+    if let Some(inline) = &entry.inline_text {
+        return Ok(inline.clone());
+    }
+    if let Some(reference) = &entry.reference {
+        let bytes = read_body_bytes(read, reference, remaining, deadline).await?;
+        return String::from_utf8(bytes).context("History text body is not UTF-8");
+    }
+    ensure!(
+        entry.byte_length == 0,
+        "History body {} omitted both inlineText and reference for {} bytes",
+        entry.key,
+        entry.byte_length
+    );
+    Ok(String::new())
 }
 
 pub(crate) async fn turn_head(
@@ -513,10 +443,12 @@ pub(crate) async fn turn_head(
                 next,
             } = page;
             for entry in entries {
-                if let Some(HistoryRowHead::Turn(head)) = entry.head
-                    && head.turn_id == turn_id
-                {
-                    return Ok(head);
+                if entry.row_scope == Some(HistoryBusinessRowScope::Turn) {
+                    let envelope: TurnEnvelope = serde_json::from_str(&entry.payload_json)
+                        .with_context(|| format!("decode turn envelope {}", entry.event_id))?;
+                    if envelope.head.turn_id == turn_id {
+                        return Ok(envelope.head);
+                    }
                 }
             }
             let Some(next) = next else {
@@ -550,13 +482,13 @@ pub(crate) async fn turn_head_for_input(
                 .turns_page(cut.clone(), cursor.clone(), HISTORY_DEMAND)
                 .await?;
             charge_history_page(&page, HISTORY_DEMAND, remaining)?;
-            let HistoryTimelinePage {
+            let HistoryBusinessPage {
                 cut: page_cut,
                 entries,
                 next,
             } = page;
             for entry in entries {
-                if let HistoryRowHead::Turn(head) = entry.head
+                if let HistoryBusinessRowHead::Turn(head) = entry.head
                     && head.input_id.as_deref() == Some(input_id)
                 {
                     return Ok(Some(head));
@@ -590,10 +522,28 @@ pub(crate) async fn turn_detail(
         .with_context(|| format!("History Turn {} omitted its typed detail", head.turn_id))?;
     let detail = read.event(event_id, HISTORY_DEMAND).await?;
     charge_history_page(&detail, HISTORY_DEMAND, remaining)?;
-    let payload = detail
-        .payload_ref
-        .context("History Turn detail omitted its payload")?;
-    let bytes = read_body_bytes(read, &payload, remaining, deadline).await?;
+    ensure!(
+        detail.row_scope == Some(HistoryBusinessRowScope::Turn),
+        "History Turn {} detail has unexpected row_scope",
+        head.turn_id
+    );
+    let envelope: TurnEnvelope = serde_json::from_str(&detail.payload_json)
+        .with_context(|| format!("History Turn {} detail payload is not JSON", head.turn_id))?;
+    let body = envelope
+        .bodies
+        .iter()
+        .find(|entry| entry.key == "turn_detail")
+        .context("History Turn detail omitted its turn_detail body")?;
+    let bytes = if let Some(inline) = &body.inline_text {
+        inline.as_bytes().to_vec()
+    } else if let Some(reference) = &body.reference {
+        read_body_bytes(read, reference, remaining, deadline).await?
+    } else {
+        bail!(
+            "History Turn {} turn_detail omitted both inlineText and reference",
+            head.turn_id
+        );
+    };
     let turn: Turn = serde_json::from_slice(&bytes)
         .with_context(|| format!("History Turn {} detail is not a Turn", head.turn_id))?;
     ensure!(
@@ -713,9 +663,9 @@ pub(crate) fn current_demand() -> ReadDemand {
 }
 
 fn unique_body(
-    bodies: &[HistoryBodyEntry],
-    predicate: impl Fn(&HistoryBodyEntry) -> bool,
-) -> Result<Option<&HistoryBodyEntry>> {
+    bodies: &[HistoryBodyManifestEntry],
+    predicate: impl Fn(&HistoryBodyManifestEntry) -> bool,
+) -> Result<Option<&HistoryBodyManifestEntry>> {
     let mut matching = bodies.iter().filter(|body| predicate(body));
     let first = matching.next();
     ensure!(
@@ -729,21 +679,23 @@ fn is_text_body_key(key: &str) -> bool {
     key == "body" || key == "legacy-content:body" || key.ends_with(":body")
 }
 
-fn is_tool_output_body(body: &HistoryBodyEntry) -> bool {
-    body.role == HistoryBodyRole::ToolOutput
-        || body.body_key == "tool.result"
-        || body.body_key.ends_with(":tool.result")
+fn is_tool_output_body(body: &HistoryBodyManifestEntry) -> bool {
+    body.role == "tool_output" || body.key == "tool.result" || body.key.ends_with(":tool.result")
 }
 
-fn is_tool_arguments_body(body: &HistoryBodyEntry) -> bool {
-    body.role == HistoryBodyRole::ToolArguments
-        || body.body_key == "tool.arguments"
-        || body.body_key.ends_with(":tool.arguments")
+fn is_tool_arguments_body(body: &HistoryBodyManifestEntry) -> bool {
+    body.role == "tool_arguments"
+        || body.key == "tool.arguments"
+        || body.key.ends_with(":tool.arguments")
 }
 
-fn ensure_history_payload_matches(head: &HistoryEntityHead, payload: &Value) -> Result<()> {
+fn ensure_history_payload_matches(
+    event: &HistoryEventRecord,
+    head: &HistoryEventMeta,
+    payload: &Value,
+) -> Result<()> {
     ensure!(
-        payload["contract"] == "anywork.chat/1"
+        payload["contract"] == "anywork.event/1"
             && payload["type"].is_string()
             && payload["data"].is_object(),
         "canonical payload omitted its current contract, type, or data"
@@ -753,6 +705,12 @@ fn ensure_history_payload_matches(head: &HistoryEntityHead, payload: &Value) -> 
             !turn_id.is_empty(),
             "canonical payload has an empty Turn identity"
         );
+        if let Some(indexed_turn) = event.turn_id.as_deref() {
+            ensure!(
+                turn_id == indexed_turn,
+                "canonical payload turnId and indexed turn_id disagree"
+            );
+        }
     }
     if let Some(channel) = head.text_channel {
         ensure!(
@@ -772,7 +730,7 @@ fn ensure_history_payload_matches(head: &HistoryEntityHead, payload: &Value) -> 
     }
     match &head.state {
         HistoryEntityState::KnownTerminal { outcome } => {
-            if head.kind == pl_studio_runtime::ChatAtomKind::TurnReceipt {
+            if head.entity_kind == pl_studio_runtime::ChatAtomKind::TurnReceipt {
                 ensure!(
                     payload["type"] == "turn",
                     "terminal History Turn receipt is not a Turn payload"

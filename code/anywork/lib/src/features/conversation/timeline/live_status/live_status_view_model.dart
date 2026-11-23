@@ -47,11 +47,13 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
       }
 
       lease.live.addListener(changed);
+      lease.liveOpenWork.addListener(changed);
       lease.retirement.addListener(changed);
       lease.currentCollectionError.addListener(changed);
       lease.renderedCurrentAtoms.addListener(changed);
       ref.onDispose(() {
         lease.live.removeListener(changed);
+        lease.liveOpenWork.removeListener(changed);
         lease.retirement.removeListener(changed);
         lease.currentCollectionError.removeListener(changed);
         lease.renderedCurrentAtoms.removeListener(changed);
@@ -97,6 +99,7 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         activeTurnId: session.activeTurn?.turnId,
         activity: session.activity,
         current: live,
+        liveOpenWork: active ? lease.liveOpenWork.value : null,
         renderedCurrentAtomIds:
             lease?.renderedCurrentAtomIds ?? const <String>{},
         hasContentOwner: active,

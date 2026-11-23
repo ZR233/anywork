@@ -5582,87 +5582,97 @@ async fn history_content_contains(
     Ok(found)
 }
 
-/// Reads only the bounded canonical entity metadata, never the opaque payload.
-async fn history_canonical_head(
-    connection: &mut SqliteConnection,
-    event_id: &str,
-) -> Result<pl_studio_runtime::history::HistoryEntityHead> {
-    let rows: Vec<(String, i64)> = sea_orm::sqlx::query_as(
-        "SELECT body_id,byte_length FROM history_bodies WHERE owner_event_id=?1 AND role='canonical_metadata'",
-    )
-    .bind(event_id)
-    .fetch_all(&mut *connection)
-    .await?;
-    ensure!(
-        rows.len() == 1,
-        "canonical entity must own exactly one metadata head"
-    );
-    let (body_id, length) = rows
-        .into_iter()
-        .next()
-        .context("canonical entity metadata row disappeared")?;
-    ensure!(
-        (1..=16 * 1024).contains(&length),
-        "canonical entity metadata exceeds its head budget"
-    );
-    let bytes: Vec<u8> = sea_orm::sqlx::query_scalar(
-        "SELECT data FROM history_body_chunks WHERE body_id=?1 AND chunk_no=0",
-    )
-    .bind(body_id)
-    .fetch_one(&mut *connection)
-    .await?;
-    ensure!(
-        bytes.len() == usize::try_from(length)?,
-        "canonical metadata length differs"
-    );
-    Ok(serde_json::from_slice(&bytes)?)
-}
-
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
-    use pl_studio_runtime::history::{HistoryEntityKind, HistoryEntityState};
+    use pl_studio_runtime::history::{EventPayloadEnvelope, HistoryEntityKind, HistoryEntityState};
     use pl_studio_runtime::{ChatTerminalOutcome, ThreadTextChannel};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
         let mut connection = SqliteConnection::connect_with(
-            &SqliteConnectOptions::new().filename(database).read_only(true).create_if_missing(false),
-        ).await?;
-        let thread_id: String = sea_orm::sqlx::query_scalar("SELECT thread_id FROM history_store_meta WHERE singleton=1").fetch_one(&mut connection).await?;
+            &SqliteConnectOptions::new()
+                .filename(database)
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await?;
+        let thread_id: String =
+            sea_orm::sqlx::query_scalar("SELECT thread_id FROM history_store_meta WHERE singleton=1")
+                .fetch_one(&mut connection)
+                .await?;
         let mut originals = HistoryFaultOriginals::default();
-        let mut after=0i64;
+        let mut after = 0i64;
         loop {
-            let rows:Vec<(i64,String,Option<String>)> = sea_orm::sqlx::query_as(
-                "SELECT seq,event_id,turn_id FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
-            ).bind(after).fetch_all(&mut connection).await?;
-            if rows.is_empty() { break; }
-            for (seq,event_id,turn_id) in rows {
-                after=seq;
-                let head=history_canonical_head(&mut connection,&event_id).await?;
-                if !matches!(head.state,HistoryEntityState::KnownTerminal { outcome:ChatTerminalOutcome::Completed }) { continue; }
-                let (needle,role,is_answer) = if head.kind==HistoryEntityKind::Text && head.text_channel==Some(ThreadTextChannel::Final) {
-                    (pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,"body",true)
-                } else if head.tool.as_ref().is_some_and(|tool| tool.call_id==pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID) {
-                    (pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,"tool_output",false)
-                } else { continue; };
-                let mut ordinal=-1i64;
-                let mut present=false;
-                loop {
-                    let bodies:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT ordinal,body_key FROM history_bodies WHERE owner_event_id=?1 AND role=?2 AND ordinal>?3 ORDER BY ordinal LIMIT 128")
-                        .bind(&event_id).bind(role).bind(ordinal).fetch_all(&mut connection).await?;
-                    if bodies.is_empty() { break; }
-                    for (next,key) in bodies {
-                        ordinal=next;
-                        present |= history_content_contains(&mut connection,&event_id,&key,needle).await?;
+            let rows: Vec<(i64, String, Option<String>, String, String)> = sea_orm::sqlx::query_as(
+                "SELECT seq,event_id,turn_id,payload_schema,payload_json FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
+            )
+            .bind(after)
+            .fetch_all(&mut connection)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for (seq, event_id, turn_id, payload_schema, payload_json) in rows {
+                after = seq;
+                if payload_schema != "anywork.event/1" {
+                    continue;
+                }
+                let envelope: EventPayloadEnvelope = serde_json::from_str(&payload_json)?;
+                let head = envelope.meta;
+                if !matches!(
+                    head.state,
+                    HistoryEntityState::KnownTerminal {
+                        outcome: ChatTerminalOutcome::Completed
+                    }
+                ) {
+                    continue;
+                }
+                let (needle, role, is_answer) = if head.entity_kind == HistoryEntityKind::Text
+                    && head.text_channel == Some(ThreadTextChannel::Final)
+                {
+                    (pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER, "body", true)
+                } else if head
+                    .tool
+                    .as_ref()
+                    .is_some_and(|tool| tool.call_id == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID)
+                {
+                    (
+                        pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                        "tool_output",
+                        false,
+                    )
+                } else {
+                    continue;
+                };
+                let mut present = false;
+                for entry in &envelope.bodies {
+                    if entry.role != role {
+                        continue;
+                    }
+                    if let Some(inline) = &entry.inline_text {
+                        present |= inline.contains(needle);
+                    } else if entry.reference.is_some() {
+                        present |= history_content_contains(
+                            &mut connection,
+                            &event_id,
+                            &entry.key,
+                            needle,
+                        )
+                        .await?;
                     }
                 }
                 if present {
-                    let identity=HistoryFaultItemIdentity {
-                        item_id:event_id, thread_id:thread_id.clone(),
-                        turn_id:turn_id.context("canonical original has no real Turn")?,
-                        tool_call_id:head.tool.map(|tool| tool.call_id),
+                    let identity = HistoryFaultItemIdentity {
+                        item_id: event_id,
+                        thread_id: thread_id.clone(),
+                        turn_id: turn_id.context("canonical original has no real Turn")?,
+                        tool_call_id: head.tool.map(|tool| tool.call_id),
                     };
-                    if is_answer { originals.answers.push(identity); } else { originals.tools.push(identity); }
+                    if is_answer {
+                        originals.answers.push(identity);
+                    } else {
+                        originals.tools.push(identity);
+                    }
                 }
             }
         }
@@ -5678,24 +5688,51 @@ fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let mut connection=SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(database).read_only(true)).await?;
-        let mut after=0i64;
-        let mut found=0i64;
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(database)
+                .read_only(true),
+        )
+        .await?;
+        let mut after = 0i64;
+        let mut found = 0i64;
         loop {
-            let events:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT seq,event_id FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128")
-                .bind(after).fetch_all(&mut connection).await?;
-            if events.is_empty() { break; }
-            for (seq,event_id) in events {
-                after=seq;
-                let mut matched=false;
-                let mut ordinal=-1i64;
-                loop {
-                    let bodies:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT ordinal,body_key FROM history_bodies WHERE owner_event_id=?1 AND role IN ('body','tool_output') AND ordinal>?2 ORDER BY ordinal LIMIT 128")
-                        .bind(&event_id).bind(ordinal).fetch_all(&mut connection).await?;
-                    if bodies.is_empty() { break; }
-                    for (next,key) in bodies { ordinal=next; matched |= history_content_contains(&mut connection,&event_id,&key,needle).await?; }
+            let events: Vec<(i64, String, String, String)> = sea_orm::sqlx::query_as(
+                "SELECT seq,event_id,payload_schema,payload_json FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
+            )
+            .bind(after)
+            .fetch_all(&mut connection)
+            .await?;
+            if events.is_empty() {
+                break;
+            }
+            for (seq, event_id, payload_schema, payload_json) in events {
+                after = seq;
+                if payload_schema != "anywork.event/1" {
+                    continue;
                 }
-                if matched { found+=1; }
+                let envelope: pl_studio_runtime::history::EventPayloadEnvelope =
+                    serde_json::from_str(&payload_json)?;
+                let mut matched = false;
+                for entry in &envelope.bodies {
+                    if !matches!(entry.role.as_str(), "body" | "tool_output") {
+                        continue;
+                    }
+                    if let Some(inline) = &entry.inline_text {
+                        matched |= inline.contains(needle);
+                    } else if entry.reference.is_some() {
+                        matched |= history_content_contains(
+                            &mut connection,
+                            &event_id,
+                            &entry.key,
+                            needle,
+                        )
+                        .await?;
+                    }
+                }
+                if matched {
+                    found += 1;
+                }
             }
         }
         connection.close().await?;
@@ -6175,47 +6212,83 @@ mod history_fault_tests {
             .build()?;
         runtime.block_on(async {
             use pl_studio_runtime::history::{
-                HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEvent, HistoryEventKind,
-                HistoryLimits, HistoryOriginalInfo, HistoryStore,
+                EventPayloadEnvelope, HistoryBodyRole, HistoryEntityState, HistoryEvent,
+                HistoryEventKind, HistoryEventMeta, HistoryLimits, HistoryOriginalInfo,
+                HistorySingleVisibility, HistoryStore, HistoryTimelineRole, PendingBody,
+                pack_bodies,
             };
             let store = HistoryStore::open(path, "thread", HistoryLimits::default()).await?;
+            let database_id = store.database_id().to_owned();
             let mut events = Vec::new();
             for (id, atom, key, body) in items {
-                let head = HistoryEntityHead::from_atom(atom, None)?;
-                let mut event = HistoryEvent::new(id.clone(), HistoryEventKind::EntityEnded, 0);
-                event.header.entity_id = Some(atom.id.clone());
-                event.header.turn_id = atom.turn_id.clone();
-                event.header.source = Some(atom.source.clone());
-                event.header.original = Some(HistoryOriginalInfo {
+                let is_tool = atom.kind == ChatAtomKind::ToolCall;
+                let timeline_role = if is_tool {
+                    HistoryTimelineRole::Work
+                } else {
+                    HistoryTimelineRole::Divider
+                };
+                let kind = if atom.kind == ChatAtomKind::Input {
+                    HistoryEventKind::InputAccepted
+                } else if is_tool {
+                    HistoryEventKind::ToolCompleted
+                } else {
+                    HistoryEventKind::TextCompleted
+                };
+                let mut event = HistoryEvent::new(id.clone(), kind, timeline_role, 0);
+                event.entity_id = Some(atom.id.clone());
+                event.turn_id = atom.turn_id.clone();
+                event.source = Some(atom.source.clone());
+                event.original = Some(HistoryOriginalInfo {
                     query_class: "fixture".into(),
                     parent_id: None,
                     original_kind: atom.kind,
                     tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
                 });
-                event.header.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
-                let payload = HistoryBody::new(
-                    "canonical_payload",
-                    HistoryBodyRole::CanonicalPayload,
-                    Vec::new(),
-                );
-                event.payload_body_id = Some(payload.body_id.clone());
-                event.bodies = vec![
-                    payload,
-                    HistoryBody::new(
-                        "canonical_metadata",
-                        HistoryBodyRole::CanonicalMetadata,
-                        serde_json::to_vec(&head)?,
-                    ),
-                    HistoryBody::new(
+                event.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
+                event.tool_name = atom.tool.as_ref().map(|tool| tool.name.clone());
+                let body_role = if key == "body" {
+                    HistoryBodyRole::Body
+                } else {
+                    HistoryBodyRole::ToolOutput
+                };
+                let manifest = pack_bodies(
+                    &mut event,
+                    vec![PendingBody::new(
                         key.clone(),
-                        if key == "body" {
-                            HistoryBodyRole::Body
-                        } else {
-                            HistoryBodyRole::ToolOutput
-                        },
+                        body_role,
+                        None,
                         body.as_bytes().to_vec(),
-                    ),
-                ];
+                    )],
+                    &database_id,
+                )?;
+                let envelope = EventPayloadEnvelope {
+                    contract: "anywork.event/1".into(),
+                    item_type: if is_tool { "tool" } else { "text" }.into(),
+                    meta: HistoryEventMeta {
+                        entity_id: atom.id.clone(),
+                        entity_kind: atom.kind,
+                        delivery: atom.delivery,
+                        state: HistoryEntityState::KnownTerminal {
+                            outcome: pl_studio_runtime::ChatTerminalOutcome::Completed,
+                        },
+                        started_at: None,
+                        finished_at: None,
+                        text_channel: atom.text_channel,
+                        single_visibility: (!is_tool).then_some(HistorySingleVisibility::Content),
+                        presentation_contract: None,
+                        source_order: None,
+                        content_present: Some(true),
+                        wait: None,
+                        tool: atom.tool.clone(),
+                    },
+                    data: serde_json::json!({}),
+                    bodies: manifest,
+                    source_order: None,
+                    turn_id: atom.turn_id.clone(),
+                    captured_at: None,
+                };
+                event.payload_schema = "anywork.event/1".into();
+                event.payload_json = serde_json::to_string(&envelope)?;
                 events.push(event);
             }
             store.accept_batch(&events).await?;
@@ -6231,8 +6304,9 @@ mod history_fault_tests {
             .build()?;
         runtime.block_on(async {
             use pl_studio_runtime::history::{
-                HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEvent, HistoryEventKind,
-                HistoryLimits, HistoryObservation, HistoryRowHead, HistoryStore,
+                EventPayloadEnvelope, HistoryBodyRole, HistoryEntityState, HistoryEvent,
+                HistoryEventKind, HistoryEventMeta, HistoryLimits, HistoryStore,
+                HistoryTimelineRole, PendingBody, pack_bodies,
             };
             let (_, mut atom, _, body) = tool(
                 "boundary-result",
@@ -6241,32 +6315,56 @@ mod history_fault_tests {
             );
             atom.completion_item_id = None;
             atom.completion_seq = None;
-            atom.lifecycle = ChatAtomLifecycle::Active {
-                started: None,
-                status: pl_studio_runtime::ChatActiveStatus::Running,
-            };
-            let mut head = HistoryEntityHead::from_atom(&atom, None)?;
-            head.observation = HistoryObservation::Boundary {
+            let store = HistoryStore::open(path, "thread", HistoryLimits::default()).await?;
+            let mut event = HistoryEvent::new(
+                "boundary-result",
+                HistoryEventKind::ToolBackgrounded,
+                HistoryTimelineRole::Work,
+                0,
+            );
+            event.entity_id = Some(atom.id.clone());
+            event.turn_id = atom.turn_id.clone();
+            event.source = Some(atom.source.clone());
+            event.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
+            event.tool_name = atom.tool.as_ref().map(|tool| tool.name.clone());
+            let manifest = pack_bodies(
+                &mut event,
+                vec![PendingBody::new(
+                    "tool.result",
+                    HistoryBodyRole::ToolOutput,
+                    None,
+                    body.as_bytes().to_vec(),
+                )],
+                store.database_id(),
+            )?;
+            let envelope = EventPayloadEnvelope {
+                contract: "anywork.event/1".into(),
+                item_type: "tool".into(),
+                meta: HistoryEventMeta {
+                    entity_id: atom.id,
+                    entity_kind: atom.kind,
+                    delivery: atom.delivery,
+                    state: HistoryEntityState::KnownActive {
+                        status: pl_studio_runtime::ChatActiveStatus::Running,
+                    },
+                    started_at: None,
+                    finished_at: None,
+                    text_channel: None,
+                    single_visibility: None,
+                    presentation_contract: None,
+                    source_order: None,
+                    content_present: Some(true),
+                    wait: None,
+                    tool: atom.tool,
+                },
+                data: serde_json::json!({ "state": { "kind": "backgroundStarted" } }),
+                bodies: manifest,
+                source_order: None,
+                turn_id: atom.turn_id,
                 captured_at: Some(0),
             };
-            head.detail_event_id = None;
-            head.body_manifest_event_id = None;
-            let mut event =
-                HistoryEvent::new("boundary-result", HistoryEventKind::BoundaryObserved, 0);
-            event.header.entity_id = Some(head.entity_id.clone());
-            event.header.turn_id = atom.turn_id.clone();
-            event.header.source = Some(head.source.clone());
-            event.header.call_id = head.tool.as_ref().map(|tool| tool.call_id.clone());
-            event.header.group_id = Some("fault-group".into());
-            event.header.row_key = Some("member:fault-group:boundary-result".into());
-            event.is_anchor = true;
-            event.head = Some(HistoryRowHead::Member(head));
-            event.bodies.push(HistoryBody::new(
-                "tool.result",
-                HistoryBodyRole::ToolOutput,
-                body.as_bytes().to_vec(),
-            ));
-            let store = HistoryStore::open(path, "thread", HistoryLimits::default()).await?;
+            event.payload_schema = "anywork.event/1".into();
+            event.payload_json = serde_json::to_string(&envelope)?;
             let events = [event];
             store.accept_batch(&events).await?;
             store.flush().await?;
@@ -6317,22 +6415,33 @@ mod history_fault_tests {
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let mut connection = SqliteConnection::connect_with(
-                &SqliteConnectOptions::new()
-                    .filename(&database)
-                    .read_only(true),
+            let store = pl_studio_runtime::history::HistoryStore::open(
+                &database,
+                "thread",
+                pl_studio_runtime::history::HistoryLimits::default(),
             )
             .await?;
-            assert!(
-                history_content_contains(
-                    &mut connection,
-                    "boundary-result",
-                    "tool.result",
-                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+            let reader = store.reader();
+            let event = reader
+                .read_event(
+                    "boundary-result".into(),
+                    pl_studio_runtime::history::HistoryDemand::default(),
                 )
-                .await?
+                .await?;
+            let bytes = pl_studio_runtime::history::read_event_body_bytes(
+                &reader,
+                &event,
+                "tool.result",
+                None,
+            )
+            .await?
+            .context("nonterminal background tool result body")?;
+            assert!(
+                String::from_utf8_lossy(&bytes)
+                    .contains(pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER)
             );
-            connection.close().await?;
+            reader.close().await;
+            store.close().await?;
             Ok::<_, anyhow::Error>(())
         })
     }

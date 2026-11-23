@@ -22,7 +22,7 @@ use pl_core::thread::{
 
 use tokio::time::Instant;
 
-use crate::history::{HistoryClassifier, HistoryStore};
+use crate::history::HistoryStore;
 use crate::studio::StudioStore;
 use crate::studio::storage::calls::is_retryable_write;
 use crate::studio::storage::coordinator::{
@@ -1160,7 +1160,6 @@ pub(crate) struct HistoryChannel {
     #[cfg(test)]
     delivery_admission_entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     progress: Mutex<Progress>,
-    history_classifier: Mutex<Option<HistoryClassifier>>,
     changed: Arc<tokio::sync::Notify>,
     step_lock: tokio::sync::Mutex<()>,
     /// Every writer incarnation's physical workers remain registered until actually joined.
@@ -1586,7 +1585,6 @@ impl HistoryChannel {
             #[cfg(test)]
             delivery_admission_entered: Mutex::new(None),
             progress: Mutex::new(Progress::default()),
-            history_classifier: Mutex::new(None),
             changed: Arc::new(tokio::sync::Notify::new()),
             step_lock: tokio::sync::Mutex::new(()),
             workers: tokio::sync::Mutex::new(Vec::new()),
@@ -2800,7 +2798,7 @@ async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
                 )
                 .await?;
             for entry in page.entries {
-                let crate::history::HistoryRowHead::Cost(cost) = entry.head else {
+                let crate::history::HistoryBusinessRowHead::Cost(cost) = entry.head else {
                     continue;
                 };
                 costs.push(cost);
@@ -4152,37 +4150,35 @@ mod writer_tests {
                 },
             )
             .await?;
-        let mut events: Vec<_> = page.entries.into_iter().filter(|event| matches!(&event.header.source, Some(crate::HistorySource::Operation { operation_id }) if operation_id == "resume-once")).collect();
-        events.sort_by_key(|event| event.header.seq);
+        let mut events: Vec<_> = page
+            .entries
+            .into_iter()
+            .filter(|event| matches!(&event.source, Some(crate::HistorySource::Operation { operation_id }) if operation_id == "resume-once"))
+            .collect();
+        events.sort_by_key(|event| event.seq);
         assert_eq!(events.len(), 2);
-        assert_eq!(
-            events[0].header.kind,
-            crate::HistoryEventKind::SourceStarted
-        );
-        assert_eq!(events[1].header.kind, crate::HistoryEventKind::SourceEnded);
+        assert_eq!(events[0].kind, crate::HistoryEventKind::SourceStarted);
+        assert_eq!(events[1].kind, crate::HistoryEventKind::SourceEnded);
         for (event, expected) in events.iter().zip([
             ContinuationDisposition::Scheduled,
             ContinuationDisposition::Effective,
         ]) {
-            assert_eq!(event.header.entity_id.as_deref(), Some("resume-once"));
-            assert_eq!(event.header.turn_id.as_deref(), Some("reserved-turn"));
+            assert_eq!(event.entity_id.as_deref(), Some("resume-once"));
+            assert_eq!(event.turn_id.as_deref(), Some("reserved-turn"));
             let detail = reader
                 .read_event(
-                    event.header.event_id.clone(),
+                    event.event_id.clone(),
                     HistoryDemand {
                         max_rows: 1,
                         max_bytes: 64 * 1024,
                     },
                 )
                 .await?;
-            let body = reader
-                .read_body(
-                    detail.payload_ref.context("immutable resume payload")?,
-                    0,
-                    64 * 1024,
-                )
-                .await?;
-            let payload: pl_core::context::OpaquePayload = serde_json::from_slice(&body.bytes)?;
+            let bytes =
+                crate::history::read_event_body_bytes(&reader, &detail, "payload", Some(64 * 1024))
+                    .await?
+                    .context("immutable resume payload")?;
+            let payload: pl_core::context::OpaquePayload = serde_json::from_slice(&bytes)?;
             assert_eq!(payload.format(), "pl.core.resume-operation");
             let saved: ContinuationOperation = serde_json::from_str(payload.content())?;
             assert_eq!(saved.request, operation.request);
@@ -4235,11 +4231,11 @@ mod writer_tests {
             .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
             .await?;
         let mut rejected = (*prepared).clone();
-        let first = Arc::make_mut(&mut rejected.history_changes)
-            .first_mut()
-            .context("input completion")?;
-        // Basic run/source candidates are valid. A later canonical candidate is rejected.
-        first.event.header.event_id.clear();
+        let mut events = rejected.history_events.to_vec();
+        let first = events.first_mut().context("input completion")?;
+        // Basic run/source candidates are valid. A later atomic candidate is rejected.
+        first.event_id.clear();
+        rejected.history_events = Arc::from(events);
         assert!(channel.prepare(Arc::new(rejected)));
         channel.request_flush(1);
         let selected = ready(fixture.select(Instant::now()));
@@ -4253,7 +4249,6 @@ mod writer_tests {
             0,
             "a rejected effect leaked its run/source prefix"
         );
-        assert!(channel.history_classifier.lock().unwrap().is_none());
         assert_eq!(
             channel.subscribe().borrow().queued_records,
             1,
@@ -4318,20 +4313,28 @@ mod writer_tests {
             .projection
             .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
             .await?;
-        assert_eq!(first.history_changes.len(), second.history_changes.len());
+        assert_eq!(first.history_events.len(), second.history_events.len());
         for (first, second) in first
-            .history_changes
+            .history_events
             .iter()
-            .zip(second.history_changes.iter())
+            .zip(second.history_events.iter())
         {
             // Body UUIDs are minted at admission. Fresh projection passes must retain the same
             // event semantics, while the SQL retry regression below protects the frozen identity.
-            assert_eq!(first.event.header.event_id, second.event.header.event_id);
-            assert_eq!(first.entity.entity_id, second.entity.entity_id);
-            assert_eq!(first.entity.state, second.entity.state);
-            assert_eq!(first.placement, second.placement);
-            assert_eq!(first.event.bodies.len(), second.event.bodies.len());
-            for (first, second) in first.event.bodies.iter().zip(second.event.bodies.iter()) {
+            assert_eq!(first.event_id, second.event_id);
+            assert_eq!(first.kind, second.kind);
+            assert_eq!(first.timeline_role, second.timeline_role);
+            assert_eq!(first.entity_id, second.entity_id);
+            assert_eq!(first.payload_schema, second.payload_schema);
+            match (
+                normalized_event_body(first.payload_json.as_bytes()),
+                normalized_event_body(second.payload_json.as_bytes()),
+            ) {
+                (Some(first_json), Some(second_json)) => assert_eq!(first_json, second_json),
+                _ => assert_eq!(first.payload_json, second.payload_json),
+            }
+            assert_eq!(first.bodies.len(), second.bodies.len());
+            for (first, second) in first.bodies.iter().zip(second.bodies.iter()) {
                 assert_eq!(first.body_key, second.body_key);
                 assert_eq!(first.role, second.role);
                 match (
@@ -4421,11 +4424,7 @@ mod writer_tests {
         let third = visible_input_ticket(id, 3, "input-3")?;
         let prepared_second = fixture.handoff(&second).await?;
         let prepared_third = fixture.handoff(&third).await?;
-        let rejected_event = prepared_third.history_changes[0]
-            .event
-            .header
-            .event_id
-            .clone();
+        let rejected_event = prepared_third.history_events[0].event_id.clone();
         db.execute_unprepared(&format!(
             "CREATE TRIGGER reject_third_effect BEFORE INSERT ON history_events \
              WHEN NEW.event_id = {} BEGIN \
@@ -4465,16 +4464,12 @@ mod writer_tests {
 
         let originals: Vec<_> = [&prepared_second, &prepared_third]
             .into_iter()
-            .flat_map(|prepared| prepared.history_changes.iter())
-            .map(|change| {
-                let event_id = change.event.header.event_id.clone();
-                let body_id = change
-                    .event
-                    .payload_body_id
-                    .clone()
-                    .or_else(|| change.event.bodies.first().map(|body| body.body_id.clone()))
-                    .expect("visible history change has a body");
-                (event_id, body_id)
+            .flat_map(|prepared| prepared.history_events.iter())
+            .map(|event| {
+                let event_id = event.event_id.clone();
+                let payload_json = event.payload_json.clone();
+                let body_id = event.bodies.first().map(|body| body.body_id.clone());
+                (event_id, payload_json, body_id)
             })
             .collect();
         db.execute_unprepared("DROP TRIGGER reject_third_effect")
@@ -4491,7 +4486,7 @@ mod writer_tests {
         assert_eq!(lock_progress(&fixture.sink.0).durable, 3);
 
         let reader = fixture.store.history(id).await?.reader();
-        for (event_id, body_id) in originals {
+        for (event_id, payload_json, _body_id) in originals {
             let event = reader
                 .read_event(
                     event_id,
@@ -4502,9 +4497,8 @@ mod writer_tests {
                 )
                 .await?;
             assert_eq!(
-                event.payload_ref.expect("event body").body_id,
-                body_id,
-                "retry must commit the accepted immutable body identity"
+                event.payload_json, payload_json,
+                "retry must commit the accepted immutable payload"
             );
         }
         fixture.handoff(&fourth).await?;

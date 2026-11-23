@@ -9,8 +9,11 @@ import 'package:anywork/src/features/conversation/composer/state/composer_view_s
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_display.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -147,21 +150,17 @@ void main() {
       if (body is! WorkDisplayBlock) continue;
       String? cursor;
       do {
-        final page = await lease.history.groupPage(
-          groupId: body.members.blockId,
+        final page = await lease.history.workRangePage(
+          afterSeq: body.members.afterSeq,
+          beforeSeq: body.members.beforeSeq,
           cut: body.members.cut,
           cursor: cursor,
           demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
         );
-        if (page.members.any((member) {
-          final head = member.head;
-          if (head is! MemberHistoryRow ||
-              head.head.tool?.name != 'wait' ||
-              head.head.source !=
-                  ForegroundTurnChatSource(turnId: completed.turnId)) {
-            return false;
-          }
-          return true;
+        if (page.events.any((event) {
+          return event.toolName == 'wait' &&
+              event.source ==
+                  ForegroundTurnChatSource(turnId: completed.turnId);
         })) {
           matchingWork = candidate;
           break;
@@ -208,7 +207,6 @@ void main() {
     expect(waitItem.atom!.lifecycle, isA<TerminalChatAtom>());
     expect(panel.presentation.state, ThreadWaitStateView.ready);
     expect(waitItem.displayRecord?.contentSource, isA<CompletedOriginal>());
-    final toolRow = observed.itemRow(panel.identity);
     final card = find.byKey(StudioDriverKeys.waitingCard(panel.identity));
     await observed.tap(card);
     await observed.until(
@@ -229,26 +227,54 @@ void main() {
       (details.presentation.intent as ThreadWaitEventsIntentView).targets,
       hasLength(2),
     );
-    await observed.tap(
-      find.byKey(StudioDriverKeys.waitingDiagnostics(panel.identity)),
+    final diagnostics = find.byKey(
+      StudioDriverKeys.waitingDiagnostics(panel.identity),
     );
-    TimelineContentRangeView? resultWindow;
+    await observed.tap(diagnostics);
+    String? rawResult;
     await _until(tester, () {
       for (final view in tester.widgetList<TimelineContentRangeView>(
         find.descendant(
-          of: toolRow,
+          of: diagnostics,
           matching: find.byType(TimelineContentRangeView),
         ),
       )) {
         if (view.contentKey == 'tool.result' &&
             (view.window?.bytes.isNotEmpty ?? false)) {
-          resultWindow = view;
+          rawResult = utf8.decode(view.window!.bytes);
           return true;
         }
       }
+      final detailWidgets = tester
+          .widgetList<TimelineToolDetails>(
+            find.descendant(
+              of: diagnostics,
+              matching: find.byType(TimelineToolDetails),
+            ),
+          )
+          .toList();
+      final semanticBodies = tester
+          .widgetList<TimelineToolSemanticBody>(
+            find.descendant(
+              of: diagnostics,
+              matching: find.byType(TimelineToolSemanticBody),
+            ),
+          )
+          .toList();
+      if (detailWidgets.length == 1 &&
+          detailWidgets.single.item.output.isNotEmpty &&
+          semanticBodies.isNotEmpty &&
+          semanticBodies.every(
+            (body) =>
+                body.values.isNotEmpty &&
+                !body.values.any((value) => value is ToolDetailUnavailable),
+          )) {
+        rawResult = detailWidgets.single.item.output;
+        return true;
+      }
       return false;
-    }, 'historical tool result window');
-    final result = jsonDecode(utf8.decode(resultWindow!.window!.bytes)) as Map;
+    }, 'historical tool result');
+    final result = jsonDecode(rawResult!) as Map;
     expect(result['timedOut'], isFalse);
     expect(result['messagesReady'], panel.presentation.messagesReady);
 

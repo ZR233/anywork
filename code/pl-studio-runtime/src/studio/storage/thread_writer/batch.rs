@@ -1,13 +1,16 @@
 //! Private scheduling and append-only history candidates over the original reliable queue.
 //!
 //! The queue still owns Core admission pressure and shutdown ordering. At a selected cut it
-//! converts already-published immutable product facts to schema-25 events, accepts each complete
+//! converts already-published immutable product facts to schema-26 events, accepts each complete
 //! `PreparedEffect` in RAM as one cut, then flushes that prefix. It never reads, fences, or
 //! acknowledges `current.json`.
 
 use super::*;
 use crate::history::{
-    HistoryEvent, HistoryEventKind, HistoryRowHead, HistoryUsageFact, PreparedHistoryUsage,
+    HistoryBodyRole, HistoryBusinessRowScope, HistoryEvent, HistoryEventKind, HistoryTimelineRole,
+    HistoryTurnHead, HistoryUsageFact, PendingBody, PreparedHistoryUsage,
+    body::{BusinessEnvelope, BusinessFactEnvelope},
+    pack_bodies,
 };
 use pl_core::usage::UsageOutcome;
 use std::collections::BTreeSet;
@@ -43,10 +46,7 @@ struct PreparedEffectState {
     events: Vec<HistoryEvent>,
     /// Row anchors already prepared in this effect but not yet published.
     anchors: BTreeSet<String>,
-    /// Candidate classifier state matching `events`; published only after acceptance.
-    classifier: Option<crate::history::HistoryClassifier>,
     basic_done: bool,
-    classifier_changes: usize,
     usage_done: bool,
     complete: bool,
     frozen_events: Option<Arc<[HistoryEvent]>>,
@@ -153,10 +153,12 @@ fn millis(at: i64) -> Result<i64> {
 }
 
 fn turn_event(
-    turn: &crate::history::HistoryTurnHead,
+    event_id: String,
+    turn: &HistoryTurnHead,
     detail: Option<&crate::Turn>,
     recorded_at: i64,
     anchor: bool,
+    database_id: &str,
 ) -> Result<HistoryEvent> {
     let terminal = matches!(
         turn.state,
@@ -166,7 +168,7 @@ fn turn_event(
             | crate::history::HistoryTurnState::BudgetLimited
     );
     let mut event = HistoryEvent::new(
-        format!("turn:{}:{}:{:?}", turn.turn_id, turn.updated_at, turn.state),
+        event_id,
         if terminal {
             HistoryEventKind::TurnEnded
         } else if anchor && turn.started_at.is_some() {
@@ -174,37 +176,52 @@ fn turn_event(
         } else {
             HistoryEventKind::TurnChanged
         },
+        HistoryTimelineRole::Hidden,
         recorded_at,
     );
-    event.header.run_id = turn.run_id.clone();
-    event.header.turn_id = Some(turn.turn_id.clone());
-    event.header.row_key = Some(format!("turn:{}", turn.turn_id));
-    event.header.occurred_at = if terminal {
+    event.run_id = turn.run_id.clone();
+    event.turn_id = Some(turn.turn_id.clone());
+    event.row_scope = Some(HistoryBusinessRowScope::Turn);
+    event.row_key = Some(format!("turn:{}", turn.turn_id));
+    event.occurred_at = if terminal {
         turn.finished_at
     } else {
         turn.started_at
     };
     let mut head = turn.clone();
+    let mut manifest = Vec::new();
     if let Some(detail) = detail {
-        head.detail_event_id = Some(event.header.event_id.clone());
-        let mut body = crate::history::HistoryBody::new(
-            "turn_detail",
-            crate::history::HistoryBodyRole::CanonicalPayload,
-            serde_json::to_vec(detail)?,
-        );
-        body.media_type = Some("application/json".into());
-        event.payload_body_id = Some(body.body_id.clone());
-        event.bodies.push(body);
+        head.detail_event_id = Some(event.event_id.clone());
+        manifest = pack_bodies(
+            &mut event,
+            vec![PendingBody::new(
+                "turn_detail",
+                HistoryBodyRole::CanonicalPayload,
+                Some("application/json".into()),
+                serde_json::to_vec(detail)?,
+            )],
+            database_id,
+        )?;
     }
-    event.head = Some(HistoryRowHead::Turn(head));
+    event.payload_schema = "anywork.turn/1".into();
+    event.payload_json = serde_json::to_string(&BusinessEnvelope {
+        head,
+        bodies: manifest,
+    })?;
     event.is_anchor = anchor;
     Ok(event)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn source_event(
     source: &crate::history::HistorySourceHead,
+    continuation_payload: Option<Vec<u8>>,
+    entity_override: Option<&str>,
+    run_override: Option<String>,
+    turn_override: Option<String>,
     recorded_at: i64,
     anchor: bool,
+    database_id: &str,
 ) -> Result<HistoryEvent> {
     let identity = serde_json::to_string(&source.source)?;
     let ended = matches!(&source.lifecycle, crate::ChatSourceLifecycle::Ended { .. });
@@ -215,26 +232,57 @@ fn source_event(
         } else {
             HistoryEventKind::SourceStarted
         },
+        HistoryTimelineRole::Hidden,
         recorded_at,
     );
-    event.header.source = Some(source.source.clone());
-    event.header.row_key = Some(format!("source:{identity}"));
-    event.header.occurred_at = source.started_at.or(source.ended_at);
-    event.head = Some(HistoryRowHead::Source(source.clone()));
+    event.source = Some(source.source.clone());
+    event.row_scope = Some(HistoryBusinessRowScope::Source);
+    event.row_key = Some(format!("source:{identity}"));
+    event.occurred_at = source.started_at.or(source.ended_at);
+    event.entity_id = entity_override.map(str::to_owned);
+    event.run_id = run_override;
+    event.turn_id = turn_override;
+    let manifest = if let Some(bytes) = continuation_payload {
+        pack_bodies(
+            &mut event,
+            vec![PendingBody::new(
+                "payload",
+                HistoryBodyRole::CanonicalPayload,
+                Some("application/json".into()),
+                bytes,
+            )],
+            database_id,
+        )?
+    } else {
+        Vec::new()
+    };
+    event.payload_schema = "anywork.source/1".into();
+    event.payload_json = serde_json::to_string(&BusinessEnvelope {
+        head: source.clone(),
+        bodies: manifest,
+    })?;
     event.is_anchor = anchor;
     Ok(event)
 }
 
-fn run_event(run: &str, recorded_at: i64) -> HistoryEvent {
+fn run_event(run: &str, recorded_at: i64) -> Result<HistoryEvent> {
     let mut event = HistoryEvent::new(
         format!("run:{run}:started"),
         HistoryEventKind::RunStarted,
+        HistoryTimelineRole::Hidden,
         recorded_at,
     );
-    event.header.run_id = Some(run.to_owned());
-    event
+    event.run_id = Some(run.to_owned());
+    event.payload_schema = "anywork.business/1".into();
+    event.payload_json = serde_json::to_string(&BusinessFactEnvelope {
+        fact_type: "run_started".into(),
+        data: None,
+        bodies: Vec::new(),
+    })?;
+    Ok(event)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn delivery_event(
     thread_id: &str,
     prefix: &str,
@@ -243,15 +291,21 @@ fn delivery_event(
     run: pl_core::thread::current::RuntimeEpoch,
     recorded_at: i64,
     anchor: bool,
-) -> HistoryEvent {
+    database_id: &str,
+) -> Result<HistoryEvent> {
+    let kind = match prefix {
+        "parent_report" => HistoryEventKind::ParentReportRecorded,
+        _ => HistoryEventKind::ReviewDeliveryRecorded,
+    };
     let mut event = HistoryEvent::new(
         format!("{prefix}:{message_id}"),
-        HistoryEventKind::BackgroundDeliveryRecorded,
+        kind,
+        HistoryTimelineRole::Hidden,
         recorded_at,
     );
-    event.header.run_id = Some(run.to_string());
-    event.header.message_id = Some(message_id.to_owned());
-    event.header.source = Some(crate::studio::history_delivery::source(thread_id, prefix));
+    event.run_id = Some(run.to_string());
+    event.message_id = Some(message_id.to_owned());
+    event.source = Some(crate::studio::history_delivery::source(thread_id, prefix));
     let payload = pl_core::context::OpaquePayload::new(
         match prefix {
             "parent_report" => "pl.studio.parent-report",
@@ -259,28 +313,32 @@ fn delivery_event(
         },
         1,
         payload,
-    )
-    .expect("producer delivery is valid JSON");
-    let mut body = crate::history::HistoryBody::new(
-        "business_fact",
-        crate::history::HistoryBodyRole::CanonicalPayload,
-        serde_json::to_vec(&payload).expect("producer delivery is serializable"),
-    );
-    body.media_type = Some("application/json".into());
-    event.payload_body_id = Some(body.body_id.clone());
-    event.bodies.push(body);
+    )?;
+    let manifest = pack_bodies(
+        &mut event,
+        vec![PendingBody::new(
+            "business_fact",
+            HistoryBodyRole::CanonicalPayload,
+            Some("application/json".into()),
+            serde_json::to_vec(&payload)?,
+        )],
+        database_id,
+    )?;
+    event.payload_schema = "anywork.business/1".into();
+    event.payload_json = serde_json::to_string(&BusinessFactEnvelope {
+        fact_type: prefix.to_owned(),
+        data: None,
+        bodies: manifest,
+    })?;
     event.is_anchor = anchor;
-    event
+    Ok(event)
 }
 
 #[derive(Clone)]
 struct EffectStateSnapshot {
     basic_done: bool,
-    classifier_changes: usize,
     usage_done: bool,
     complete: bool,
-    classifier: Option<crate::history::HistoryClassifier>,
-    anchors: BTreeSet<String>,
     frozen_events: Option<Arc<[HistoryEvent]>>,
 }
 
@@ -316,18 +374,15 @@ fn effect_state(inner: &Inner, index: usize) -> Result<EffectStateSnapshot> {
         .context("history effect preparation slot disappeared")?;
     Ok(EffectStateSnapshot {
         basic_done: state.basic_done,
-        classifier_changes: state.classifier_changes,
         usage_done: state.usage_done,
         complete: state.complete,
-        classifier: state.classifier.clone(),
-        anchors: state.anchors.clone(),
         frozen_events: state.frozen_events.clone(),
     })
 }
 
 fn retain_prepared_event(state: &mut PreparedEffectState, event: HistoryEvent) {
     if event.is_anchor
-        && let Some(row) = &event.header.row_key
+        && let Some(row) = &event.row_key
     {
         state.anchors.insert(row.clone());
     }
@@ -349,34 +404,6 @@ fn append_basic_events(inner: &Inner, index: usize, events: Vec<HistoryEvent>) -
         retain_prepared_event(state, event);
     }
     state.basic_done = true;
-    Ok(())
-}
-
-fn append_classifier_events(
-    inner: &Inner,
-    index: usize,
-    next_change: usize,
-    events: Vec<HistoryEvent>,
-    classifier: crate::history::HistoryClassifier,
-) -> Result<()> {
-    let mut progress = lock_progress(inner);
-    let batch = progress
-        .in_flight
-        .as_mut()
-        .context("history prefix was not selected")?;
-    let state = batch
-        .prepared_effects
-        .get_mut(index)
-        .context("history effect preparation slot disappeared")?;
-    ensure!(
-        state.classifier_changes == next_change,
-        "history classifier preparation changed concurrently"
-    );
-    for event in events {
-        retain_prepared_event(state, event);
-    }
-    state.classifier = Some(classifier);
-    state.classifier_changes = next_change + 1;
     Ok(())
 }
 
@@ -449,53 +476,6 @@ fn mark_effect_accepted(inner: &Inner, index: usize) -> Result<()> {
     Ok(())
 }
 
-fn classifier_for_run(
-    inner: &Inner,
-    index: usize,
-    run: &str,
-) -> Result<crate::history::HistoryClassifier> {
-    ensure_effect_state(inner, index)?;
-    if let Some(classifier) = effect_state(inner, index)?.classifier {
-        return Ok(classifier);
-    }
-    let classifier = {
-        let shared = inner
-            .channel
-            .history_classifier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match shared.as_ref() {
-            Some(classifier) if classifier.run_matches(run) => classifier.clone(),
-            _ => crate::history::HistoryClassifier::from_run_id(run)?,
-        }
-    };
-    {
-        let mut progress = lock_progress(inner);
-        let batch = progress
-            .in_flight
-            .as_mut()
-            .context("history prefix was not selected")?;
-        let state = batch
-            .prepared_effects
-            .get_mut(index)
-            .context("history effect preparation slot disappeared")?;
-        ensure!(
-            state.classifier.is_none(),
-            "history classifier was set twice"
-        );
-        state.classifier = Some(classifier.clone());
-    }
-    Ok(classifier)
-}
-
-fn publish_classifier(inner: &Inner, classifier: crate::history::HistoryClassifier) {
-    *inner
-        .channel
-        .history_classifier
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(classifier);
-}
-
 async fn prepare_basic_events(
     inner: &Inner,
     history: &HistoryStore,
@@ -504,13 +484,14 @@ async fn prepare_basic_events(
     run: &str,
 ) -> Result<Vec<HistoryEvent>> {
     let prepared = &effect.prepared;
+    let database_id = history.database_id();
     let mut events = Vec::new();
-    let run_candidate = run_event(run, recorded_at);
+    let run_candidate = run_event(run, recorded_at)?;
     let mut append_run = false;
     match history
         .reader()
         .read_event(
-            run_candidate.header.event_id.clone(),
+            run_candidate.event_id.clone(),
             crate::history::HistoryDemand {
                 max_rows: 1,
                 max_bytes: 4096,
@@ -519,14 +500,13 @@ async fn prepare_basic_events(
         .await
     {
         Ok(existing) => {
-            let mut expected = run_candidate.header.clone();
-            expected.seq = existing.header.seq;
-            expected.recorded_at = existing.header.recorded_at;
             ensure!(
-                existing.header == expected
-                    && existing.payload_ref.is_none()
-                    && existing.head.is_none()
-                    && existing.owned_manifest_event_id.is_none(),
+                existing.event_id == run_candidate.event_id
+                    && existing.kind == run_candidate.kind
+                    && existing.timeline_role == run_candidate.timeline_role
+                    && existing.run_id == run_candidate.run_id
+                    && existing.payload_schema == run_candidate.payload_schema
+                    && existing.payload_json == run_candidate.payload_json,
                 "run start identity conflicts"
             );
         }
@@ -568,7 +548,8 @@ async fn prepare_basic_events(
             prepared.run_id,
             recorded_at,
             false,
-        ));
+            database_id,
+        )?);
     }
     for fact in prepared.review_delivery.iter() {
         events.push(delivery_event(
@@ -579,7 +560,8 @@ async fn prepare_basic_events(
             prepared.run_id,
             recorded_at,
             false,
-        ));
+            database_id,
+        )?);
     }
     for fact in prepared.retained_resources.iter() {
         events.push(crate::studio::history_resources::observed_event(
@@ -589,81 +571,58 @@ async fn prepare_basic_events(
             fact.turn_id.as_deref(),
             prepared.sequence,
             recorded_at,
+            database_id,
         )?);
     }
     for (turn, anchor) in prepared.history_turns.iter().zip(turn_anchors) {
-        let mut event = turn_event(
+        let event = turn_event(
+            format!("turn:{}:{}:{}", run, turn.turn_id, prepared.sequence),
             turn,
             prepared.history_turn_details.get(&turn.turn_id),
             recorded_at,
             anchor,
+            database_id,
         )?;
-        event.header.event_id = format!("turn:{}:{}:{}", run, turn.turn_id, prepared.sequence);
-        if let Some(HistoryRowHead::Turn(head)) = &mut event.head
-            && head.detail_event_id.is_some()
-        {
-            head.detail_event_id = Some(event.header.event_id.clone());
-        }
         events.push(event);
     }
     for (source, anchor) in prepared.history_sources.iter().zip(source_anchors) {
-        let mut event = source_event(source, recorded_at, anchor)?;
-        if let crate::HistorySource::Operation { operation_id } = &source.source
-            && let Some(operation) = effect
-                .write
-                .effect
-                .continuations
-                .iter()
-                .find(|operation| &operation.request.operation_id == operation_id)
-        {
-            let payload = pl_core::context::OpaquePayload::new(
-                "pl.core.resume-operation",
-                1,
-                serde_json::to_string(operation)?,
-            )?;
-            let mut body = crate::history::HistoryBody::new(
-                "resume",
-                crate::history::HistoryBodyRole::CanonicalPayload,
-                Arc::<[u8]>::from(serde_json::to_vec(&payload)?),
-            );
-            body.media_type = Some("application/json".into());
-            event.payload_body_id = Some(body.body_id.clone());
-            event.header.entity_id = Some(operation_id.clone());
-            event.header.run_id = Some(operation.acceptance_epoch.to_string());
-            event.header.turn_id = Some(operation.turn_id.clone());
-            event.bodies.push(body);
-        }
+        let (continuation_payload, entity_override, run_override, turn_override) =
+            if let crate::HistorySource::Operation { operation_id } = &source.source
+                && let Some(operation) = effect
+                    .write
+                    .effect
+                    .continuations
+                    .iter()
+                    .find(|operation| &operation.request.operation_id == operation_id)
+            {
+                let payload = pl_core::context::OpaquePayload::new(
+                    "pl.core.resume-operation",
+                    1,
+                    serde_json::to_string(operation)?,
+                )?;
+                (
+                    Some(serde_json::to_vec(&payload)?),
+                    Some(operation_id.as_str()),
+                    Some(operation.acceptance_epoch.to_string()),
+                    Some(operation.turn_id.clone()),
+                )
+            } else {
+                (None, None, None, None)
+            };
+        let event = source_event(
+            source,
+            continuation_payload,
+            entity_override,
+            run_override,
+            turn_override,
+            recorded_at,
+            anchor,
+            database_id,
+        )?;
         events.push(event);
     }
+    events.extend(prepared.history_events.iter().cloned());
     Ok(events)
-}
-
-async fn prepare_classifier_change(
-    history: &HistoryStore,
-    admission: &tokio::sync::MutexGuard<'_, ()>,
-    change: &crate::history::HistoryEntityChange,
-    inputs: &std::collections::BTreeMap<
-        String,
-        crate::studio::thread_projection::HistoryObservationInput,
-    >,
-    classifier: &crate::history::HistoryClassifier,
-    local_anchors: &BTreeSet<String>,
-) -> Result<(Vec<HistoryEvent>, crate::history::HistoryClassifier)> {
-    let mut change = change.clone();
-    let anchors = classifier
-        .resolve_record_anchors(admission, history, &change, local_anchors)
-        .await?;
-    if anchors.requires_boundary_observation(&change) {
-        for entity in classifier.boundary_entities() {
-            let observed = inputs
-                .get(entity)
-                .with_context(|| format!("boundary has no producer cut for {entity}"))?;
-            change
-                .boundary_observations
-                .push(observed.freeze(&change.event, history.database_id())?);
-        }
-    }
-    Ok(classifier.build_record(&change, anchors, history.database_id())?)
 }
 
 async fn admit_effect(
@@ -678,35 +637,9 @@ async fn admit_effect(
     let admission = history.admission_guard().await;
     ensure_effect_state(inner, index)?;
     if !effect_state(inner, index)?.complete {
-        let classifier = classifier_for_run(inner, index, &run)?;
-        ensure!(
-            classifier.run_matches(&run),
-            "prepared effect changed runtime epoch during history admission"
-        );
         if !effect_state(inner, index)?.basic_done {
             let events = prepare_basic_events(inner, history, effect, recorded_at, &run).await?;
             append_basic_events(inner, index, events)?;
-        }
-
-        loop {
-            let snapshot = effect_state(inner, index)?;
-            if snapshot.classifier_changes >= prepared.history_changes.len() {
-                break;
-            }
-            let classifier = snapshot
-                .classifier
-                .context("history classifier preparation state is missing")?;
-            let change = &prepared.history_changes[snapshot.classifier_changes];
-            let (events, candidate) = prepare_classifier_change(
-                history,
-                &admission,
-                change,
-                &prepared.boundary_inputs,
-                &classifier,
-                &snapshot.anchors,
-            )
-            .await?;
-            append_classifier_events(inner, index, snapshot.classifier_changes, events, candidate)?;
         }
 
         if !effect_state(inner, index)?.usage_done {
@@ -752,9 +685,6 @@ async fn admit_effect(
     accepted.map_err(anyhow::Error::new)?;
     drop(admission);
 
-    if let Some(classifier) = effect_state(inner, index)?.classifier {
-        publish_classifier(inner, classifier);
-    }
     mark_effect_accepted(inner, index)
 }
 

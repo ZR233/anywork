@@ -1732,10 +1732,10 @@ async fn inbound_target_timeline(
         let input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:{message_id}");
         let inputs = originals_for_input(&read, &input_id, &mut remaining, deadline).await?;
         let mut inputs = inputs.iter().filter(|original| {
-            original.head.kind == HistoryEntityKind::Input
+            original.head.entity_kind == HistoryEntityKind::Input
                 && matches!(
-                    &original.head.source,
-                    pl_studio_runtime::ChatSourceId::Input { input_id: source_input }
+                    &original.event.source,
+                    Some(pl_studio_runtime::ChatSourceId::Input { input_id: source_input })
                         if source_input == &input_id
                 )
         });
@@ -1825,7 +1825,7 @@ async fn assert_canonical_final_blank(
         let turn_id = &target.turn_id;
         for item in &target.originals {
             if item.event.turn_id.as_deref() != Some(turn_id.as_str())
-                || item.head.kind != HistoryEntityKind::Text
+                || item.head.entity_kind != HistoryEntityKind::Text
             {
                 continue;
             }
@@ -1895,7 +1895,6 @@ async fn final_total_bytes(target: &mut TargetChat) -> Result<u64> {
     Ok(original
         .text_body()?
         .context("Final body is missing")?
-        .reference
         .byte_length)
 }
 
@@ -1908,7 +1907,7 @@ fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<HistoryOrig
     };
     let mut items = target.originals.iter().filter(|original| {
         original.event.turn_id.as_deref() == Some(turn_id.as_str())
-            && original.head.kind == HistoryEntityKind::Text
+            && original.head.entity_kind == HistoryEntityKind::Text
             && original.head.text_channel == Some(expected_channel)
     });
     let item = items

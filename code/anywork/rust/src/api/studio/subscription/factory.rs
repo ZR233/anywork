@@ -491,7 +491,7 @@ pub(crate) mod tests {
                 page.entries.iter().any(|entry| {
                     matches!(
                         &entry.head,
-                        pl_studio_runtime::history::HistoryRowHead::Turn(turn)
+                        pl_studio_runtime::history::HistoryBusinessRowHead::Turn(turn)
                             if turn.turn_id == completed_id
                     )
                 }),

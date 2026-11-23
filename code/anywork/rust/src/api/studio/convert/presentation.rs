@@ -96,25 +96,6 @@ pub(crate) fn bridge_to_cut(value: BridgeHistoryCut) -> runtime_history::History
     runtime_history::HistoryCut { token: value.token }
 }
 
-fn entity_state(value: runtime_history::HistoryEntityState) -> BridgeHistoryEntityState {
-    match value {
-        runtime_history::HistoryEntityState::Unknown => BridgeHistoryEntityState::Unknown,
-        runtime_history::HistoryEntityState::KnownActive { status } => {
-            BridgeHistoryEntityState::KnownActive {
-                status: match status {
-                    protocol::ChatActiveStatus::Running => BridgeChatActiveStatus::Running,
-                    protocol::ChatActiveStatus::Waiting => BridgeChatActiveStatus::Waiting,
-                },
-            }
-        }
-        runtime_history::HistoryEntityState::KnownTerminal { outcome } => {
-            BridgeHistoryEntityState::KnownTerminal {
-                outcome: chat::terminal_outcome(outcome),
-            }
-        }
-    }
-}
-
 fn body_ref(value: runtime_history::HistoryEventBodyRef) -> BridgeHistoryEventBodyRef {
     BridgeHistoryEventBodyRef {
         database_id: value.database_id,
@@ -126,113 +107,113 @@ fn body_ref(value: runtime_history::HistoryEventBodyRef) -> BridgeHistoryEventBo
     }
 }
 
-fn wait_intent(value: runtime_history::HistoryWaitIntentHead) -> BridgeHistoryWaitIntent {
+fn timeline_role(value: runtime_history::HistoryTimelineRole) -> BridgeHistoryTimelineRole {
     match value {
-        runtime_history::HistoryWaitIntentHead::Events {
-            target_count,
-            timeout_ms,
-        } => BridgeHistoryWaitIntent::Events {
-            target_count,
-            timeout_ms,
-        },
-        runtime_history::HistoryWaitIntentHead::Timer { duration_ms } => {
-            BridgeHistoryWaitIntent::Timer { duration_ms }
+        runtime_history::HistoryTimelineRole::Divider => BridgeHistoryTimelineRole::Divider,
+        runtime_history::HistoryTimelineRole::Work => BridgeHistoryTimelineRole::Work,
+        runtime_history::HistoryTimelineRole::Hidden => BridgeHistoryTimelineRole::Hidden,
+    }
+}
+
+fn business_row_scope(
+    value: runtime_history::HistoryBusinessRowScope,
+) -> BridgeHistoryBusinessRowScope {
+    match value {
+        runtime_history::HistoryBusinessRowScope::Turn => BridgeHistoryBusinessRowScope::Turn,
+        runtime_history::HistoryBusinessRowScope::Source => BridgeHistoryBusinessRowScope::Source,
+        runtime_history::HistoryBusinessRowScope::Cost => BridgeHistoryBusinessRowScope::Cost,
+        runtime_history::HistoryBusinessRowScope::Accounting => {
+            BridgeHistoryBusinessRowScope::Accounting
         }
     }
 }
 
-fn wait(value: runtime_history::HistoryWaitHead) -> BridgeHistoryWaitHead {
-    match value {
-        runtime_history::HistoryWaitHead::Inline { presentation } => {
-            BridgeHistoryWaitHead::Inline {
-                presentation: thread_stream::wait_presentation(presentation),
-            }
-        }
-        runtime_history::HistoryWaitHead::Deferred {
-            intent,
-            state,
-            messages_ready,
-            presentation,
-        } => BridgeHistoryWaitHead::Deferred {
-            intent: wait_intent(intent),
-            state: match state {
-                protocol::ThreadWaitState::Waiting => BridgeHistoryWaitState::Waiting,
-                protocol::ThreadWaitState::Ready => BridgeHistoryWaitState::Ready,
-                protocol::ThreadWaitState::TimedOut => BridgeHistoryWaitState::TimedOut,
-                protocol::ThreadWaitState::Elapsed => BridgeHistoryWaitState::Elapsed,
-                protocol::ThreadWaitState::Cancelled => BridgeHistoryWaitState::Cancelled,
-                protocol::ThreadWaitState::Failed => BridgeHistoryWaitState::Failed,
-                protocol::ThreadWaitState::Interrupted => BridgeHistoryWaitState::Interrupted,
-            },
-            messages_ready,
-            presentation: body_ref(presentation),
-        },
+fn original_info(value: runtime_history::HistoryOriginalInfo) -> BridgeHistoryOriginalInfo {
+    BridgeHistoryOriginalInfo {
+        query_class: value.query_class,
+        parent_id: value.parent_id,
+        original_kind: chat::atom_kind(value.original_kind),
+        tool_name: value.tool_name,
     }
 }
 
-fn entity_head(value: runtime_history::HistoryEntityHead) -> BridgeHistoryEntityHead {
-    BridgeHistoryEntityHead {
-        entity_id: value.entity_id,
+pub(crate) fn event_record(value: runtime_history::HistoryEventRecord) -> BridgeHistoryEventRecord {
+    BridgeHistoryEventRecord {
+        seq: value.seq,
+        event_id: value.event_id,
+        kind: value.kind.as_str().to_owned(),
+        timeline_role: timeline_role(value.timeline_role),
+        occurred_at: value.occurred_at,
+        recorded_at: value.recorded_at,
         run_id: value.run_id,
+        turn_id: value.turn_id,
         attempt_id: value.attempt_id,
-        source: chat::source_id(value.source),
-        kind: chat::atom_kind(value.kind),
-        delivery: chat::delivery(value.delivery),
-        state: entity_state(value.state),
-        started_at: value.started_at,
-        finished_at: value.finished_at,
-        text_channel: value.text_channel.map(chat::text_channel),
-        tool: value.tool.map(|tool| BridgeChatToolIdentity {
-            call_id: tool.call_id,
-            name: tool.name,
-        }),
-        wait: value.wait.map(wait),
-        content_present: value.content_present,
-        single_visibility: value.single_visibility.map(|visibility| match visibility {
-            runtime_history::HistorySingleVisibility::Content => BridgeSingleVisibility::Content,
-            runtime_history::HistorySingleVisibility::FinalEmptyAfterContent => {
-                BridgeSingleVisibility::FinalEmptyAfterContent
-            }
-        }),
-        observation: match value.observation {
-            runtime_history::HistoryObservation::Original => BridgeHistoryObservation::Original,
-            runtime_history::HistoryObservation::Boundary { captured_at } => {
-                BridgeHistoryObservation::Boundary { captured_at }
-            }
-            runtime_history::HistoryObservation::UnavailableLegacy { captured_at } => {
-                BridgeHistoryObservation::UnavailableLegacy { captured_at }
-            }
-        },
-        presentation_contract: value.presentation_contract,
-        detail_event_id: value.detail_event_id,
-        input_manifest_event_id: value.input_manifest_event_id,
-        body_manifest_event_id: value.body_manifest_event_id,
+        call_id: value.call_id,
+        entity_id: value.entity_id,
+        message_id: value.message_id,
+        tool_name: value.tool_name,
+        source: value.source.map(chat::source_id),
+        original: value.original.map(original_info),
+        row_scope: value.row_scope.map(business_row_scope),
+        row_key: value.row_key,
+        payload_schema: value.payload_schema,
+        payload_json: value.payload_json,
     }
 }
 
-fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
+fn work_range(value: runtime_history::HistoryWorkRange) -> BridgeHistoryWorkRange {
+    BridgeHistoryWorkRange {
+        range_id: value.range_id,
+        after_seq: value.after_seq,
+        before_seq: value.before_seq,
+        first_seq: value.first_seq,
+        last_seq: value.last_seq,
+        started_at: value.started_at,
+        ended_at: value.ended_at,
+        run_id: value.run_id,
+        event_count: value.event_count,
+    }
+}
+
+fn timeline_item(value: runtime_history::HistoryTimelineItem) -> BridgeHistoryTimelineItem {
     match value {
-        runtime_history::HistoryRowHead::Work(value) => {
-            BridgeHistoryRowHead::Work(BridgeHistoryWorkHead {
-                group_id: value.group_id,
-                run_id: value.run_id,
-                started_at: value.started_at,
-                boundary_at: value.boundary_at,
-                closed: value.closed,
-                member_count: value.member_count,
-                unfinished_count: value.unfinished_count,
-                execution_present: value.execution_present,
-                summary: value.summary,
-            })
+        runtime_history::HistoryTimelineItem::Divider(record) => {
+            BridgeHistoryTimelineItem::Divider(event_record(record))
         }
-        runtime_history::HistoryRowHead::Single(value) => {
-            BridgeHistoryRowHead::Single(entity_head(value))
+        runtime_history::HistoryTimelineItem::WorkRange(range) => {
+            BridgeHistoryTimelineItem::WorkRange(work_range(range))
         }
-        runtime_history::HistoryRowHead::Member(value) => {
-            BridgeHistoryRowHead::Member(entity_head(value))
-        }
-        runtime_history::HistoryRowHead::Turn(value) => {
-            BridgeHistoryRowHead::Turn(BridgeHistoryTurnHead {
+    }
+}
+
+pub(crate) fn timeline_page(
+    value: runtime_history::HistoryTimelinePage,
+) -> BridgeHistoryTimelinePage {
+    BridgeHistoryTimelinePage {
+        cut: cut(value.cut),
+        items: value.items.into_iter().map(timeline_item).collect(),
+        next: value.next,
+    }
+}
+
+pub(crate) fn work_range_page(
+    value: runtime_history::HistoryWorkRangePage,
+) -> BridgeHistoryWorkRangePage {
+    BridgeHistoryWorkRangePage {
+        cut: cut(value.cut),
+        after_seq: value.after_seq,
+        before_seq: value.before_seq,
+        events: value.events.into_iter().map(event_record).collect(),
+        next: value.next,
+    }
+}
+
+fn business_row_head(
+    value: runtime_history::HistoryBusinessRowHead,
+) -> BridgeHistoryBusinessRowHead {
+    match value {
+        runtime_history::HistoryBusinessRowHead::Turn(value) => {
+            BridgeHistoryBusinessRowHead::Turn(BridgeHistoryTurnHead {
                 turn_id: value.turn_id,
                 input_id: value.input_id,
                 run_id: value.run_id,
@@ -267,8 +248,8 @@ fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
                 detail_event_id: value.detail_event_id,
             })
         }
-        runtime_history::HistoryRowHead::Source(value) => {
-            BridgeHistoryRowHead::Source(BridgeHistorySourceHead {
+        runtime_history::HistoryBusinessRowHead::Source(value) => {
+            BridgeHistoryBusinessRowHead::Source(BridgeHistorySourceHead {
                 source: chat::source_id(value.source),
                 lifecycle: match value.lifecycle {
                     protocol::ChatSourceLifecycle::Unknown => BridgeHistorySourceLifecycle::Unknown,
@@ -285,8 +266,8 @@ fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
                 detail_event_id: value.detail_event_id,
             })
         }
-        runtime_history::HistoryRowHead::Cost(value) => {
-            BridgeHistoryRowHead::Cost(BridgeHistoryCostHead {
+        runtime_history::HistoryBusinessRowHead::Cost(value) => {
+            BridgeHistoryBusinessRowHead::Cost(BridgeHistoryCostHead {
                 purpose: value.purpose,
                 currency: value.currency,
                 cost_delta: value.cost_delta,
@@ -297,8 +278,8 @@ fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
                 detail_event_id: value.detail_event_id,
             })
         }
-        runtime_history::HistoryRowHead::Accounting(value) => {
-            BridgeHistoryRowHead::Accounting(BridgeHistoryAccountingHead {
+        runtime_history::HistoryBusinessRowHead::Accounting(value) => {
+            BridgeHistoryBusinessRowHead::Accounting(BridgeHistoryAccountingHead {
                 prompt_tokens: value.prompt_tokens,
                 completion_tokens: value.completion_tokens,
                 cached_prompt_tokens: value.cached_prompt_tokens,
@@ -316,72 +297,31 @@ fn row_head(value: runtime_history::HistoryRowHead) -> BridgeHistoryRowHead {
     }
 }
 
-fn timeline_entry(value: runtime_history::HistoryTimelineEntry) -> BridgeHistoryTimelineEntry {
-    BridgeHistoryTimelineEntry {
+fn business_row_entry(
+    value: runtime_history::HistoryBusinessRowEntry,
+) -> BridgeHistoryBusinessRowEntry {
+    BridgeHistoryBusinessRowEntry {
         row_key: value.row_key,
         anchor_seq: value.anchor_seq,
         head_seq: value.head_seq,
-        head: row_head(value.head),
+        head: business_row_head(value.head),
     }
 }
 
-pub(crate) fn timeline_page(
-    value: runtime_history::HistoryTimelinePage,
-) -> BridgeHistoryTimelinePage {
-    BridgeHistoryTimelinePage {
+pub(crate) fn business_page(
+    value: runtime_history::HistoryBusinessPage,
+) -> BridgeHistoryBusinessPage {
+    BridgeHistoryBusinessPage {
         cut: cut(value.cut),
-        entries: value.entries.into_iter().map(timeline_entry).collect(),
+        entries: value.entries.into_iter().map(business_row_entry).collect(),
         next: value.next,
-    }
-}
-
-pub(crate) fn group_page(value: runtime_history::HistoryGroupPage) -> BridgeHistoryGroupPage {
-    BridgeHistoryGroupPage {
-        cut: cut(value.cut),
-        group_id: value.group_id,
-        members: value.members.into_iter().map(timeline_entry).collect(),
-        next: value.next,
-    }
-}
-
-fn event_header(value: runtime_history::HistoryEventHeader) -> BridgeHistoryEventHeader {
-    BridgeHistoryEventHeader {
-        seq: value.seq,
-        event_id: value.event_id,
-        kind: value.kind.as_str().to_owned(),
-        run_id: value.run_id,
-        attempt_id: value.attempt_id,
-        entity_id: value.entity_id,
-        turn_id: value.turn_id,
-        source: value.source.map(chat::source_id),
-        call_id: value.call_id,
-        message_id: value.message_id,
-        group_id: value.group_id,
-        row_key: value.row_key,
-        original: value.original.map(|original| BridgeHistoryOriginalInfo {
-            query_class: original.query_class,
-            parent_id: original.parent_id,
-            original_kind: chat::atom_kind(original.original_kind),
-            tool_name: original.tool_name,
-        }),
-        occurred_at: value.occurred_at,
-        recorded_at: value.recorded_at,
-    }
-}
-
-pub(crate) fn event_detail(value: runtime_history::HistoryEventDetail) -> BridgeHistoryEventDetail {
-    BridgeHistoryEventDetail {
-        header: event_header(value.header),
-        head: value.head.map(row_head),
-        payload_ref: value.payload_ref.map(body_ref),
-        owned_manifest_event_id: value.owned_manifest_event_id,
     }
 }
 
 pub(crate) fn events_page(value: runtime_history::HistoryEventsPage) -> BridgeHistoryEventsPage {
     BridgeHistoryEventsPage {
         cut: cut(value.cut),
-        entries: value.entries.into_iter().map(event_detail).collect(),
+        entries: value.entries.into_iter().map(event_record).collect(),
         next: value.next,
     }
 }
@@ -443,8 +383,8 @@ pub(crate) fn body_page(value: runtime_history::HistoryBodyPage) -> BridgeHistor
 
 pub(crate) fn accounting(value: runtime_history::HistoryAccountingHead) -> BridgeHistoryAccounting {
     BridgeHistoryAccounting {
-        head: match row_head(runtime_history::HistoryRowHead::Accounting(value)) {
-            BridgeHistoryRowHead::Accounting(head) => head,
+        head: match business_row_head(runtime_history::HistoryBusinessRowHead::Accounting(value)) {
+            BridgeHistoryBusinessRowHead::Accounting(head) => head,
             _ => unreachable!("accounting row mapping"),
         },
     }

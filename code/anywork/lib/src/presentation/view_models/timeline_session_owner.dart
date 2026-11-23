@@ -19,9 +19,9 @@ import '../../features/conversation/timeline/state/timeline_image_resources.dart
 import '../../features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import '../../features/conversation/timeline/state/timeline_display_unit.dart';
 import '../../features/conversation/timeline/state/timeline_history_projection.dart';
-import '../../features/conversation/timeline/state/timeline_current_projection.dart';
 import '../../features/conversation/timeline/state/timeline_view_state.dart';
 import '../../features/conversation/timeline/state/timeline_ui_controllers.dart';
+import '../../features/conversation/timeline/state/work_group_event_folder.dart';
 import '../../features/conversation/timeline/view_models/timeline_message_controller.dart';
 
 export '../../features/conversation/timeline/state/timeline_view_state.dart';
@@ -93,6 +93,11 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   /// Published only by this display's serial admission, never directly by the transport.
   final ValueNotifier<CurrentAtomSnapshot?> live = ValueNotifier(null);
+
+  /// Live, still-executing tail WorkRange routed to LiveStatusBar instead of
+  /// mutating the immutable main Timeline.
+  final ValueNotifier<DisplayBlock?> liveOpenWork = ValueNotifier(null);
+  ({HistoryWorkRange range, HistoryCut cut})? _heldTailWork;
   final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<Object> _ownedQueries = {};
   final Map<Object, Future<void>> _closingQueries = {};
@@ -186,57 +191,26 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     if (_retired) throw StateError('Timeline display is retired');
     _mode = TimelineDisplayMode.history;
     _liveReturnPending = false;
-    _renderedCurrentAtomIds.clear();
-    renderedCurrentAtoms.value++;
     return ++_modeIntent;
   }
 
   int requestLiveWindow() {
     if (_retired) throw StateError('Timeline display is retired');
     _liveReturnPending = true;
-    _renderedCurrentAtomIds.clear();
-    renderedCurrentAtoms.value++;
     return ++_modeIntent;
   }
 
-  Future<void> freezeForHistory() async {
-    if (_retired || _mode != TimelineDisplayMode.history) return;
-    final blocks = <DisplayBlock>[];
-    for (final message in _controller?.messages ?? const <Message>[]) {
-      final unit =
-          message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit?;
-      if (unit == null) continue;
-      final body = unit.body;
-      final frozen = switch (body) {
-        SingleDisplayBlock(:final record, :final visibility) =>
-          record.immutableRecord == null
-              ? body
-              : SingleDisplayBlock(
-                  record: record.immutableRecord!,
-                  visibility: visibility,
-                ),
-        WorkDisplayBlock() => body,
-      };
-      blocks.add(
-        DisplayBlock(id: unit.id, blockOrder: unit.blockOrder, body: frozen),
-      );
+  void _setLiveOpenWork(DisplayBlock? next) {
+    final current = liveOpenWork.value;
+    if (current == null && next == null) return;
+    if (current != null && next != null && sameDisplayBlock(current, next)) {
+      return;
     }
-    if (blocks.isNotEmpty) {
-      await _mutate(() => _presentation!.replaceBlocks(blocks));
-    }
-    if (_retired) return;
-    for (final intent in _expansions.values) {
-      final unit = intent.current;
-      final body = unit?.body;
-      if (body is WorkDisplayBlock) {
-        intent.members?.rebase(
-          body.members,
-          groupClosed: body.groupClosed,
-          force: true,
-        );
-      }
-    }
+    liveOpenWork.value = next;
   }
+
+  bool _isCommittedInController(String blockId) =>
+      _controller?.messages.any((message) => message.id == blockId) ?? false;
 
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
@@ -247,18 +221,34 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     if (scope == null || _retired) {
       throw const StaleConversationScope();
     }
-    return HistoryGroupMembers.open(
+    return HistoryWorkRangeMembers.open(
       scope,
       reference: reference,
-      groupClosed: groupClosed,
+      groupClosed: true,
+      demand: demand,
+      currentAtoms: () => const <CurrentAtom>[],
+      currentOwnerId: () => null,
+    );
+  }
+
+  Future<DisplayMembers> openLiveWorkMembers({
+    required DisplayBlockRef reference,
+    required ReadDemand demand,
+  }) async {
+    final scope = _historyQueries;
+    if (scope == null || _retired) {
+      throw const StaleConversationScope();
+    }
+    return HistoryWorkRangeMembers.open(
+      scope,
+      reference: reference,
+      groupClosed: false,
       demand: demand,
       currentAtoms: () {
         final direct = _latestCurrentProjection?.atoms ?? const <CurrentAtom>[];
         return direct.isNotEmpty ? direct : _loadedCurrentAtoms;
       },
-      currentOwnerId: () => _mode == TimelineDisplayMode.live
-          ? _latestCurrentRevision?.ownerId
-          : null,
+      currentOwnerId: () => _latestCurrentRevision?.ownerId,
     );
   }
 
@@ -266,8 +256,34 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       ? const []
       : _groupDisplays.where((display) => display.isCurrent);
 
-  void _bindUnit(TimelineDisplayUnit unit) {
-    final intent = unit.expansion;
+  void bindLiveWorkIntent(TimelineExpansionIntent intent) =>
+      _bindExpansionIntent(
+        intent,
+        requireLiveMode: false,
+        openMembers: (reference, demand, _) =>
+            openLiveWorkMembers(reference: reference, demand: demand),
+      );
+
+  void _bindUnit(TimelineDisplayUnit unit) => _bindExpansionIntent(
+    unit.expansion,
+    requireLiveMode: true,
+    openMembers: (reference, demand, groupClosed) => openDisplayMembers(
+      reference: reference,
+      groupClosed: groupClosed,
+      demand: demand,
+    ),
+  );
+
+  void _bindExpansionIntent(
+    TimelineExpansionIntent intent, {
+    required bool requireLiveMode,
+    required Future<DisplayMembers> Function(
+      DisplayBlockRef reference,
+      ReadDemand demand,
+      bool groupClosed,
+    )
+    openMembers,
+  }) {
     // The same disclosure capability crosses live/history parents. Its queries
     // and callbacks are installed once, independent of header replacements.
     if (intent.isDisplayActive != null) return;
@@ -298,7 +314,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     intent.readCurrentBody = (generation, reference, range) async {
       final scope = _currentQueries;
       if (_retired ||
-          _mode != TimelineDisplayMode.live ||
+          (requireLiveMode && _mode != TimelineDisplayMode.live) ||
           intent.current == null ||
           !intent.bodyActive ||
           !identical(generation, intent.bodyGeneration) ||
@@ -308,7 +324,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       }
       final value = await scope.readBody(reference: reference, range: range);
       if (_retired ||
-          _mode != TimelineDisplayMode.live ||
+          (requireLiveMode && _mode != TimelineDisplayMode.live) ||
           intent.current == null ||
           !intent.bodyActive ||
           !identical(generation, intent.bodyGeneration) ||
@@ -320,7 +336,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     intent.watchCurrentBody = (generation, reference, range) {
       final scope = _currentQueries;
       if (_retired ||
-          _mode != TimelineDisplayMode.live ||
+          (requireLiveMode && _mode != TimelineDisplayMode.live) ||
           intent.current == null ||
           !intent.bodyActive ||
           !identical(generation, intent.bodyGeneration) ||
@@ -340,11 +356,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openDisplayMembers(
-        reference: reference,
-        groupClosed: groupClosed,
-        demand: demand,
-      );
+      return openMembers(reference, demand, groupClosed);
     };
   }
 
@@ -524,6 +536,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     _presentation = null;
     imageResources.release();
     live.dispose();
+    liveOpenWork.dispose();
     currentCollectionError.dispose();
     renderedCurrentAtoms.dispose();
     _expansions.clear();
@@ -614,7 +627,6 @@ final class TimelineSessionOwner {
     if (_closed ||
         !identical(_current, lease) ||
         lease.isRetired ||
-        lease._mode != TimelineDisplayMode.live ||
         lease.live.value?.currentAtoms.any((atom) => atom.id == itemId) !=
             true) {
       return;
@@ -628,9 +640,7 @@ final class TimelineSessionOwner {
     TimelineDisplayLease lease,
     String itemId,
   ) {
-    if (!identical(_current, lease) ||
-        lease.isRetired ||
-        lease._mode != TimelineDisplayMode.live) {
+    if (!identical(_current, lease) || lease.isRetired) {
       return;
     }
     if (lease._renderedCurrentAtomIds.remove(itemId)) {
@@ -816,15 +826,34 @@ final class TimelineSessionOwner {
         ),
       );
       if (!_ownsRead(read)) return;
-      final content = await _prepareInitialHistoryItem(read, initial);
+      if (_hasOpenTailWork(initial)) {
+        try {
+          await read.currentOpening;
+        } catch (_) {
+          // Proceed with session activity facts if Current fails to open.
+        }
+        if (!_ownsRead(read)) return;
+      }
+      final initialCurrent = read.current?.initialView;
+      final initialPartition = _partitionTimelinePage(
+        read.session,
+        initial,
+        projection: initialCurrent?.projection,
+        ownerId: initialCurrent?.revision.ownerId,
+      );
+      final content = await _prepareInitialHistoryItem(
+        read,
+        initialPartition.timelineBlocks,
+      );
       if (!_ownsRead(read)) return;
       await _serialize(
         () => _set(
           read,
-          initial.entries,
+          initialPartition,
           cut: initial.cut,
           olderCursor: initial.next,
           initialContent: content,
+          initialCurrent: initialCurrent,
         ),
       );
       unawaited(_connectCurrent(read, demand));
@@ -873,11 +902,9 @@ final class TimelineSessionOwner {
 
   Future<TimelinePreparedHistoryItem?> _prepareInitialHistoryItem(
     _TimelineRead read,
-    HistoryTimelinePage page,
+    List<DisplayBlock> blocks,
   ) async {
-    for (final entry in page.entries) {
-      final block = TimelineHistoryProjection.block(entry, cut: page.cut);
-      if (block == null) continue;
+    for (final block in blocks.reversed) {
       final body = block.body;
       if (body is! SingleDisplayBlock ||
           body.visibility != HistorySingleVisibility.content ||
@@ -886,7 +913,7 @@ final class TimelineSessionOwner {
         continue;
       }
       final item = ChatItemPresentation.forRecord(body.record, id: block.id);
-      if (item.observationUnavailable || item.historyEventId == null) continue;
+      if (item.observationUnavailable || !item.needsHistoryBodyLoad) continue;
       final scope = HistoryReadScope(
         threadId: read.session.threadId,
         generation: read.selection,
@@ -1062,16 +1089,19 @@ final class TimelineSessionOwner {
 extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
   CurrentAtomSnapshot _snapshotCurrent(
     CurrentRevision revision,
-    CurrentProjection projection,
-  ) {
+    CurrentProjection projection, {
+    required bool executionActive,
+  }) {
     final atoms = projection.atoms.isNotEmpty
         ? projection.atoms
         : _loadedCurrentAtoms;
-    final snapshot = CurrentAtomSnapshot(
+    return CurrentAtomSnapshot(
       revision: revision.revision,
       currentAtoms: atoms,
+      ownerId: revision.ownerId,
+      executionPresent: projection.executionPresent,
+      executionActive: executionActive,
     );
-    return snapshot;
   }
 
   Future<void> _applyCurrentRows(
@@ -1082,25 +1112,61 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
     final atoms = projection.atoms.isNotEmpty
         ? projection.atoms
         : _loadedCurrentAtoms;
-    final history = [
-      for (final message in _controller?.messages ?? const <Message>[])
-        (message.metadata?[timelineDisplayUnitKey] as TimelineDisplayUnit)
-            .block,
-    ];
-    final overlay = TimelineCurrentProjection.overlayHistory(
-      history,
-      atoms: atoms,
-      ownerId: revision.ownerId,
+    final executionActive = _read.owner._isExecutionActive(
+      _read.session,
+      projection: projection,
+      loadedAtoms: _loadedCurrentAtoms,
     );
-    final snapshot = _snapshotCurrent(revision, projection);
+    final snapshot = _snapshotCurrent(
+      revision,
+      projection,
+      executionActive: executionActive,
+    );
+    final settledTail = !executionActive ? _heldTailWork : null;
+    if (settledTail != null) _heldTailWork = null;
+    final DisplayBlock? settledBlock =
+        settledTail != null &&
+            _mode == TimelineDisplayMode.live &&
+            !_isCommittedInController(settledTail.range.rangeId)
+        ? TimelineHistoryProjection.block(
+            WorkRangeTimelineItem(settledTail.range),
+            cut: settledTail.cut,
+          )
+        : null;
+    DisplayBlock? updatedLiveWork;
+    if (executionActive && _heldTailWork != null) {
+      final tail = _heldTailWork!;
+      updatedLiveWork = TimelineHistoryProjection.liveOpenWorkBlock(
+        tail.range,
+        cut: tail.cut,
+        unfinishedCount: atoms
+            .where((atom) => atom.lifecycle is ActiveChatAtom)
+            .length,
+        summary: liveOpenWork.value?.body is WorkDisplayBlock
+            ? (liveOpenWork.value!.body as WorkDisplayBlock).summary
+            : null,
+      );
+    }
     await _mutate(() async {
       if (_retired) return;
-      if (_mode == TimelineDisplayMode.live && overlay.isNotEmpty) {
-        await _presentation!.replaceBlocks(overlay);
+      if (settledBlock != null) {
+        await _presentation!.applyBlocks([
+          settledBlock,
+        ], TimelineApplyPlacement.append);
+        if (_retired) return;
+        _firstOrder ??= settledBlock.blockOrder;
+        _recordBatch(TimelineApplyPlacement.append);
       }
       if (_retired) return;
+      _setLiveOpenWork(updatedLiveWork);
       live.value = snapshot;
     });
+    if (!_retired &&
+        settledTail != null &&
+        settledBlock == null &&
+        _mode == TimelineDisplayMode.history) {
+      _read.owner._publishState(hasNewOutput: true);
+    }
   }
 
   Future<void> _admitCurrentProject(CurrentView view) async {
@@ -1284,6 +1350,92 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
 }
 
 extension TimelineSessionAccess on TimelineSessionOwner {
+  bool _hasOpenTailWork(HistoryTimelinePage page) =>
+      switch (page.items.firstOrNull) {
+        WorkRangeTimelineItem(:final range) => range.beforeSeq == null,
+        _ => false,
+      };
+
+  bool _isExecutionActive(
+    ConversationSession session, {
+    CurrentProjection? projection,
+    List<CurrentAtom> loadedAtoms = const [],
+  }) {
+    if (projection != null) {
+      if (!projection.executionPresent) return false;
+      return projection.logicalStatus != ThreadStatusView.idle ||
+          projection.activeTurn != null ||
+          projection.sources.any(
+            (source) => source.lifecycle is ActiveChatSource,
+          ) ||
+          projection.atoms.any((atom) => atom.lifecycle is ActiveChatAtom) ||
+          loadedAtoms.any((atom) => atom.lifecycle is ActiveChatAtom);
+    }
+    return session.state.activeTurn != null || session.state.activity != null;
+  }
+
+  ({
+    List<DisplayBlock> timelineBlocks,
+    ({HistoryWorkRange range, HistoryCut cut})? heldTail,
+    DisplayBlock? liveWorkBlock,
+  })
+  _partitionTimelinePage(
+    ConversationSession session,
+    HistoryTimelinePage page, {
+    CurrentProjection? projection,
+    String? ownerId,
+    TimelineDisplayLease? existingLease,
+  }) {
+    final loadedAtoms =
+        existingLease?._loadedCurrentAtoms ?? const <CurrentAtom>[];
+    final active = _isExecutionActive(
+      session,
+      projection: projection,
+      loadedAtoms: loadedAtoms,
+    );
+    final first = page.items.firstOrNull;
+    final heldRange =
+        first is WorkRangeTimelineItem &&
+            first.range.beforeSeq == null &&
+            active &&
+            (first.range.runId == null ||
+                ownerId == null ||
+                first.range.runId == ownerId) &&
+            !(existingLease?._isCommittedInController(first.range.rangeId) ??
+                false)
+        ? first.range
+        : null;
+    if (heldRange == null) {
+      return (
+        timelineBlocks: TimelineHistoryProjection.blocks(
+          page.items.reversed,
+          cut: page.cut,
+        ),
+        heldTail: null,
+        liveWorkBlock: null,
+      );
+    }
+    final timelineItems = page.items.skip(1).toList(growable: false);
+    final sourceAtoms = (projection?.atoms.isNotEmpty ?? false)
+        ? projection!.atoms
+        : loadedAtoms;
+    final unfinished = sourceAtoms
+        .where((atom) => atom.lifecycle is ActiveChatAtom)
+        .length;
+    return (
+      timelineBlocks: TimelineHistoryProjection.blocks(
+        timelineItems.reversed,
+        cut: page.cut,
+      ),
+      heldTail: (range: heldRange, cut: page.cut),
+      liveWorkBlock: TimelineHistoryProjection.liveOpenWorkBlock(
+        heldRange,
+        cut: page.cut,
+        unfinishedCount: unfinished,
+      ),
+    );
+  }
+
   Future<void> _applyLatestHistory(
     _TimelineRead read,
     HistoryTimelinePage page,
@@ -1297,10 +1449,6 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         !identical(current.history, read.history)) {
       return;
     }
-    final blocks = TimelineHistoryProjection.blocks(
-      page.entries.reversed,
-      cut: page.cut,
-    );
     if (current._mode == TimelineDisplayMode.history) {
       if (current._liveReturnPending && current._modeIntent == modeIntent) {
         await _applyAcceptedLiveWindow(
@@ -1308,13 +1456,24 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           current,
           page,
           view,
-          blocks,
           modeIntent: modeIntent,
           transitionFromHistory: true,
           clearPaging: false,
         );
         return;
       }
+      final activeView = view;
+      final partition = _partitionTimelinePage(
+        read.session,
+        page,
+        projection: activeView?.projection ?? current._latestCurrentProjection,
+        ownerId:
+            activeView?.revision.ownerId ??
+            current._latestCurrentRevision?.ownerId,
+        existingLease: current,
+      );
+      current._heldTailWork = partition.heldTail;
+      current._setLiveOpenWork(partition.liveWorkBlock);
       if (view != null) await current._admitCurrentProject(view);
       if (!_ownsRead(read)) return;
       _publishState(
@@ -1333,7 +1492,6 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       current,
       page,
       view,
-      blocks,
       modeIntent: modeIntent,
       transitionFromHistory: false,
       clearPaging: false,
@@ -1344,8 +1502,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     _TimelineRead read,
     TimelineDisplayLease current,
     HistoryTimelinePage page,
-    CurrentView? view,
-    List<DisplayBlock> blocks, {
+    CurrentView? view, {
     required int modeIntent,
     required bool transitionFromHistory,
     required bool clearPaging,
@@ -1357,16 +1514,35 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         transitionFromHistory && !current._liveReturnPending) {
       return;
     }
+    final activeProjection =
+        view?.projection ?? current._latestCurrentProjection;
+    final activeOwnerId =
+        view?.revision.ownerId ?? current._latestCurrentRevision?.ownerId;
+    final partition = _partitionTimelinePage(
+      read.session,
+      page,
+      projection: activeProjection,
+      ownerId: activeOwnerId,
+      existingLease: current,
+    );
+    final executionActive = _isExecutionActive(
+      read.session,
+      projection: activeProjection,
+      loadedAtoms: current._loadedCurrentAtoms,
+    );
     await current._mutate(() async {
       try {
-        await current._presentation!.reconcileBlocks(blocks);
+        await current._presentation!.reconcileBlocks(partition.timelineBlocks);
       } catch (error) {
         throw _TimelineApplyFailure(error);
       }
+      current._heldTailWork = partition.heldTail;
+      current._setLiveOpenWork(partition.liveWorkBlock);
       if (view != null) {
         current.live.value = current._snapshotCurrent(
           view.revision,
           view.projection,
+          executionActive: executionActive,
         );
       }
       current._historyCut = page.cut;
@@ -1394,8 +1570,8 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     }
     _markPresentedInputs(
       read.session.threadId,
-      blocks,
-      current.live.value?.currentAtoms ?? const [],
+      partition.timelineBlocks,
+      const [],
     );
     _publishState(
       connection: TimelineConnectionPhase.ready,
@@ -1408,10 +1584,16 @@ extension TimelineSessionAccess on TimelineSessionOwner {
 
   Future<void> _set(
     _TimelineRead read,
-    List<HistoryTimelineEntry> entries, {
+    ({
+      List<DisplayBlock> timelineBlocks,
+      ({HistoryWorkRange range, HistoryCut cut})? heldTail,
+      DisplayBlock? liveWorkBlock,
+    })
+    partition, {
     required HistoryCut cut,
     required String? olderCursor,
     TimelinePreparedHistoryItem? initialContent,
+    CurrentView? initialCurrent,
   }) async {
     final session = read.session;
     final next = TimelineDisplayLease._(
@@ -1428,15 +1610,27 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           : null,
       initialHistoryContent: initialContent,
     );
+    next._heldTailWork = partition.heldTail;
+    next._setLiveOpenWork(partition.liveWorkBlock);
+    if (initialCurrent != null) {
+      next._latestCurrentRevision = initialCurrent.revision;
+      next._latestCurrentProjection = initialCurrent.projection;
+      next.live.value = next._snapshotCurrent(
+        initialCurrent.revision,
+        initialCurrent.projection,
+        executionActive: _isExecutionActive(
+          session,
+          projection: initialCurrent.projection,
+        ),
+      );
+    }
+    final blocks = partition.timelineBlocks;
     _preparingDisplays.add(next);
     try {
       final presentation = next._presentation!;
       await next._mutate(() async {
         try {
-          await presentation.applyBlocks(
-            TimelineHistoryProjection.blocks(entries.reversed, cut: cut),
-            TimelineApplyPlacement.set,
-          );
+          await presentation.applyBlocks(blocks, TimelineApplyPlacement.set);
         } catch (error) {
           throw _TimelineApplyFailure(error);
         }
@@ -1451,7 +1645,6 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       _retire(next);
       return;
     }
-    final blocks = TimelineHistoryProjection.blocks(entries.reversed, cut: cut);
     next._historyCut = cut;
     next._before = olderCursor;
     next._firstOrder = blocks.firstOrNull?.blockOrder;
@@ -1560,7 +1753,6 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         current.enterHistoryMode();
         if (freezeCurrent) {
           _publishState(hasNewOutput: false);
-          await current.freezeForHistory();
         }
       });
     } catch (error) {
@@ -1653,16 +1845,11 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         }
         // A newer accepted live page wins over this older return query.
         if (current._liveWindowGeneration != requestedGeneration) return;
-        final blocks = TimelineHistoryProjection.blocks(
-          page.entries.reversed,
-          cut: page.cut,
-        );
         await _applyAcceptedLiveWindow(
           read,
           current,
           page,
           view,
-          blocks,
           modeIntent: requestedIntent,
           transitionFromHistory: requestedMode == TimelineDisplayMode.history,
           clearPaging: true,
@@ -1821,7 +2008,13 @@ extension TimelineSessionAccess on TimelineSessionOwner {
             current._mode != TimelineDisplayMode.history) {
           return;
         }
-        if (page.next == before || page.entries.any((e) => e.rowKey.isEmpty)) {
+        if (page.next == before ||
+            page.items.any(
+              (item) => switch (item) {
+                DividerTimelineItem(:final event) => event.eventId.isEmpty,
+                WorkRangeTimelineItem(:final range) => range.rangeId.isEmpty,
+              },
+            )) {
           throw const ConversationContinuityError('Invalid history page');
         }
         if (page.cut != cut) {
@@ -1830,7 +2023,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           );
         }
         final blocks = TimelineHistoryProjection.blocks(
-          page.entries.reversed,
+          page.items.reversed,
           cut: cut,
         );
         var order = 0;
@@ -2165,8 +2358,8 @@ final class _TimelineRead {
   }
 }
 
-final class HistoryGroupMembers implements DisplayMembers {
-  HistoryGroupMembers._(
+final class HistoryWorkRangeMembers implements DisplayMembers {
+  HistoryWorkRangeMembers._(
     this.scope,
     this.reference,
     this.groupClosed,
@@ -2175,7 +2368,7 @@ final class HistoryGroupMembers implements DisplayMembers {
     this.currentOwnerId,
   );
 
-  static Future<HistoryGroupMembers> open(
+  static Future<HistoryWorkRangeMembers> open(
     HistoryReadScope scope, {
     required DisplayBlockRef reference,
     required bool groupClosed,
@@ -2186,7 +2379,7 @@ final class HistoryGroupMembers implements DisplayMembers {
     if (reference.blockId.isEmpty || !scope.isActive) {
       throw const StaleConversationScope();
     }
-    return HistoryGroupMembers._(
+    return HistoryWorkRangeMembers._(
       scope,
       reference,
       groupClosed,
@@ -2202,7 +2395,7 @@ final class HistoryGroupMembers implements DisplayMembers {
   final ReadDemand demand;
   final List<CurrentAtom> Function() currentAtoms;
   final String? Function() currentOwnerId;
-  String? _cursor;
+  List<DisplayMemberHead>? _folded;
   int _offset = 0;
   bool _done = false;
   bool _closed = false;
@@ -2212,81 +2405,164 @@ final class HistoryGroupMembers implements DisplayMembers {
     if (_closed || !scope.isActive || _done) {
       return null;
     }
-    final previousCursor = _cursor;
-    final page = await scope.groupPage(
-      groupId: reference.blockId,
-      cut: reference.cut,
-      cursor: _cursor,
-      demand: HistoryDemand(
-        maxRows: demand.maxItems,
-        maxBytes: demand.maxBytes,
-      ),
-    );
-    if (page.cut != reference.cut || page.groupId != reference.blockId) {
-      throw const ConversationContinuityError(
-        'History member page changed its fixed cut or group identity',
+    var folded = _folded;
+    if (folded == null) {
+      final rangeEvents = await _loadAllRangeEvents();
+      if (_closed || !scope.isActive) return null;
+      final backfilledByCall = <String, List<HistoryEventRecord>>{};
+      final attemptedBackfills = <String>{};
+      var result = WorkGroupEventFolder.fold(
+        rangeEvents: rangeEvents,
+        backfilledCallEvents: backfilledByCall,
+        attemptedCallBackfills: attemptedBackfills,
+        currentAtoms: groupClosed ? const [] : currentAtoms(),
+        currentOwnerId: groupClosed ? null : currentOwnerId(),
+        groupClosed: groupClosed,
+        workRangeRunId: reference.runId,
       );
-    }
-    if (page.next?.isEmpty ?? false) {
-      throw const ConversationContinuityError(
-        'History member page returned an empty cursor',
-      );
-    }
-    if (page.next != null &&
-        (page.next == previousCursor || page.members.isEmpty)) {
-      throw const ConversationContinuityError(
-        'History member page made no bounded cursor progress',
-      );
-    }
-    final memberKeys = <String>{};
-    if (page.members.any(
-      (member) => member.rowKey.isEmpty || !memberKeys.add(member.rowKey),
-    )) {
-      throw const ConversationContinuityError(
-        'History member page returned duplicate or empty row identities',
-      );
-    }
-    _cursor = page.next;
-    _done = page.next == null;
-    final members = page.members.reversed.toList();
-    final entries = <DisplayMemberHead>[];
-    for (final member in members) {
-      if (member.head is! MemberHistoryRow) {
-        throw const ConversationContinuityError(
-          'History group returned a non-member head',
-        );
+      if (result.missingCallIds.isNotEmpty) {
+        var added = false;
+        for (final callId in result.missingCallIds) {
+          attemptedBackfills.add(callId);
+          final fetched = await _loadCallEvents(callId);
+          if (_closed || !scope.isActive) return null;
+          if (fetched.isNotEmpty) {
+            backfilledByCall[callId] = fetched;
+            added = true;
+          }
+        }
+        if (added) {
+          result = WorkGroupEventFolder.fold(
+            rangeEvents: rangeEvents,
+            backfilledCallEvents: backfilledByCall,
+            attemptedCallBackfills: attemptedBackfills,
+            currentAtoms: groupClosed ? const [] : currentAtoms(),
+            currentOwnerId: groupClosed ? null : currentOwnerId(),
+            groupClosed: groupClosed,
+            workRangeRunId: reference.runId,
+          );
+        }
       }
-      final ownerId = groupClosed ? null : currentOwnerId();
-      final projected = TimelineHistoryProjection.block(member, cut: page.cut);
-      final block = projected == null || ownerId == null
-          ? projected
-          : TimelineCurrentProjection.overlayHistory(
-              [projected],
-              atoms: currentAtoms(),
-              ownerId: ownerId,
-            ).single;
-      if (block?.body case final SingleDisplayBlock single) {
-        entries.add(
-          DisplayMemberHead(
-            memberKey: member.rowKey,
-            memberOrder: member.anchorSeq,
-            record: single.record,
-          ),
-        );
-      } else {
-        throw const ConversationContinuityError(
-          'History member has no readable entity head',
-        );
-      }
+      folded = _folded = result.entries;
     }
-    final offset = _offset;
-    _offset += entries.length;
+
+    if (folded.isEmpty) {
+      _done = true;
+      return DisplayMemberBatch(
+        block: reference,
+        offset: _offset,
+        complete: true,
+        entries: const [],
+      );
+    }
+    final limit = demand.maxItems > 0 ? demand.maxItems : 1;
+    final start = _offset;
+    final end = min(start + limit, folded.length);
+    final entries = folded.sublist(start, end);
+    _offset = end;
+    _done = end >= folded.length;
     return DisplayMemberBatch(
       block: reference,
-      offset: offset,
+      offset: start,
       complete: _done,
       entries: entries,
     );
+  }
+
+  Future<List<HistoryEventRecord>> _loadAllRangeEvents() async {
+    final collected = <HistoryEventRecord>[];
+    final seenEventIds = <String>{};
+    final seenCursors = <String>{};
+    String? cursor;
+    while (true) {
+      if (_closed) return collected;
+      if (!scope.isActive) throw const StaleConversationScope();
+      final previousCursor = cursor;
+      final page = await scope.workRangePage(
+        afterSeq: reference.afterSeq,
+        beforeSeq: reference.beforeSeq,
+        cut: reference.cut,
+        cursor: cursor,
+        demand: HistoryDemand(
+          maxRows: demand.maxItems,
+          maxBytes: demand.maxBytes,
+        ),
+      );
+      if (page.cut != reference.cut ||
+          page.afterSeq != reference.afterSeq ||
+          page.beforeSeq != reference.beforeSeq) {
+        throw const ConversationContinuityError(
+          'History work range page changed its fixed cut or bounds',
+        );
+      }
+      if (page.next?.isEmpty ?? false) {
+        throw const ConversationContinuityError(
+          'History work range page returned an empty cursor',
+        );
+      }
+      if (page.next != null &&
+          (page.next == previousCursor ||
+              !seenCursors.add(page.next!) ||
+              page.events.isEmpty)) {
+        throw const ConversationContinuityError(
+          'History work range page made no bounded cursor progress',
+        );
+      }
+      // workRangePage returns raw work events in ascending seq order.
+      for (final event in page.events) {
+        if (event.eventId.isEmpty) {
+          throw const ConversationContinuityError(
+            'History work range returned an empty event identity',
+          );
+        }
+        if (seenEventIds.add(event.eventId)) {
+          collected.add(event);
+        }
+      }
+      cursor = page.next;
+      if (cursor == null) return collected;
+    }
+  }
+
+  Future<List<HistoryEventRecord>> _loadCallEvents(String callId) async {
+    final collected = <HistoryEventRecord>[];
+    final seenEventIds = <String>{};
+    final seenCursors = <String>{};
+    String? cursor;
+    try {
+      while (true) {
+        if (_closed) return collected;
+        if (!scope.isActive) throw const StaleConversationScope();
+        final page = await scope.eventsPage(
+          query: CallHistoryEvents(callId),
+          cut: reference.cut,
+          cursor: cursor,
+          demand: HistoryDemand(
+            maxRows: demand.maxItems,
+            maxBytes: demand.maxBytes,
+          ),
+        );
+        if (page.cut != reference.cut) return collected;
+        for (final event in page.entries) {
+          if (event.eventId.isNotEmpty && seenEventIds.add(event.eventId)) {
+            collected.add(event);
+          }
+        }
+        final next = page.next;
+        if (next == null || next.isEmpty || !seenCursors.add(next)) {
+          return collected;
+        }
+        if (page.entries.isEmpty) return collected;
+        cursor = next;
+      }
+    } on StaleConversationScope {
+      rethrow;
+    } on ClientResourceClosed {
+      rethrow;
+    } catch (_) {
+      // Single missing/failed call backfill falls back gracefully to in-range events.
+      return collected;
+    }
   }
 
   @override

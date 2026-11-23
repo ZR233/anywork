@@ -9,7 +9,9 @@ use crate::{
 use crate::{ExecutionItem, ExecutionShape};
 mod history;
 use anyhow::{Result, ensure};
-pub(in crate::studio) use history::{freeze_history_observation, freeze_history_original};
+pub(in crate::studio) use history::{
+    build_active_state_event, build_active_tool_event, build_event_from_draft,
+};
 use pl_core::{
     chat::{
         ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatKey, ContentData,
@@ -201,21 +203,6 @@ struct CompletionStamp<'a> {
     id: &'a str,
     source_effect_seq: u64,
     sealed_at: i64,
-}
-
-pub(in crate::studio) fn validate_observation(
-    state: &ExecutionShape,
-    atom: &crate::ChatAtom,
-    thread_id: &str,
-) -> Result<()> {
-    ensure!(
-        matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
-            && atom.completion_item_id.is_none()
-            && atom.finished_at.is_none(),
-        "observation is not an active execution cut"
-    );
-    serde_json::to_value(descriptor::observation_descriptor(state, thread_id)?)?;
-    Ok(())
 }
 
 fn body_envelope(

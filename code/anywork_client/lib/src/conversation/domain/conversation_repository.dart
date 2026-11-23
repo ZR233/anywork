@@ -39,18 +39,30 @@ abstract interface class HistoryQueryScope {
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryGroupPage> groupPage({
-    required String groupId,
+  Future<HistoryWorkRangePage> workRangePage({
+    int? afterSeq,
+    int? beforeSeq,
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryTimelinePage> turnsPage({
+  Future<HistoryBusinessPage> turnsPage({
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
   });
-  Future<HistoryEventDetail> readEvent({
+  Future<HistoryBusinessPage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryEventRecord> readEvent({
     required String eventId,
     required HistoryDemand demand,
   });

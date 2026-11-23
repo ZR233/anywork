@@ -29,11 +29,11 @@ pub use types::{
     BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
     EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
     ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
-    ExportedContentV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION,
-    ResultOutcome, ResultV3, RunExportOptions, RunExportReport, RunInvocationV3, RunManifestV3,
-    SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
-    UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
-    format_utc_rfc3339,
+    ExportedContentV3, ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION,
+    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV3, RunExportOptions, RunExportReport,
+    RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3,
+    TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3, UsageKnownTotalsV3,
+    UsageMetricKey, UsageTotalsV3, format_utc_rfc3339,
 };
 use writer::{
     BoundedExportQueue, ExportCommand, FinalizeWriterOutcome, MemberFinalCut, MemberSnapshot,
@@ -42,7 +42,7 @@ use writer::{
 };
 
 use crate::StudioStore;
-use crate::history::{HistoryCut, HistoryEntityChange, HistoryReader};
+use crate::history::{HistoryCut, HistoryEvent, HistoryReader};
 use crate::studio::thread_projection::CurrentState;
 use crate::studio::thread_projection::PreparedAccounting;
 
@@ -450,7 +450,7 @@ impl RunExportCoordinator {
         &self,
         thread_id: &str,
         accounting: &PreparedAccounting,
-        changes: &Arc<[HistoryEntityChange]>,
+        events: &Arc<[HistoryEvent]>,
         latest_usage: &UsageSummary,
         current: &CurrentState,
         history: &HistoryReader,
@@ -468,7 +468,24 @@ impl RunExportCoordinator {
                 return;
             }
         }
-        let lifecycle: Arc<[ExecutionLifecycleExportV3]> = changes.iter().map(Into::into).collect();
+        let lifecycle: Arc<[ExecutionLifecycleExportV3]> = match events
+            .iter()
+            .filter_map(|event| ExecutionLifecycleExportV3::from_history_event(event).transpose())
+            .collect::<std::result::Result<Vec<_>, _>>()
+        {
+            Ok(facts) => facts.into(),
+            Err(error) => {
+                self.queue.fail_permanently(ExecutionErrorV3 {
+                    stage: ExecutionErrorStage::Export,
+                    code: "lifecycleExportFailed".to_string(),
+                    message: format!(
+                        "failed to decode History lifecycle export for thread {thread_id}: {error}"
+                    ),
+                    turn_failure: None,
+                });
+                return;
+            }
+        };
         let lifecycle_bytes = match serde_json::to_vec(&lifecycle) {
             Ok(bytes) => bytes.len(),
             Err(error) => {

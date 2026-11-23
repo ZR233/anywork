@@ -1,13 +1,13 @@
 //! Current RAM projection and immutable History facts owned by the Thread observation worker.
 //!
 //! Current is derived directly from the latest Core snapshot and never reads History for previews.
-//! Each admitted HistoryExport supplies its original producer cut; the classifier freezes canonical
-//! originals and boundary observations from that cut, and the archive writer consumes the same
-//! prepared immutable batch. Current publication and JSON saving do not wait for its commit.
+//! Each admitted HistoryExport produces stateless atomic Schema 26 events, and the archive writer
+//! consumes the same prepared immutable batch. Current publication and JSON saving do not wait
+//! for its commit.
 //!
 //! Bounded Runtime tables retain active identities, report facts and original bodies still needed
-//! for reliable handoff. Every effect resolves from those RAM facts and its own producer cut;
-//! neither Current streaming nor restart reads or replays History into a new runtime epoch.
+//! for reliable handoff. Every effect resolves from those RAM facts and its own snapshot; neither
+//! Current streaming nor restart reads or replays History into a new runtime epoch.
 
 use crate::{ExecutionItem, ExecutionShape};
 use std::{
@@ -35,10 +35,7 @@ use pl_core::{
 };
 
 use super::ProjectionError;
-use crate::history::{
-    HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead, HistoryTurnHead,
-    HistoryTurnState,
-};
+use crate::history::{HistoryEvent, HistorySourceHead, HistoryTurnHead, HistoryTurnState};
 use crate::studio::runtime::chat_item::{
     BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
 };
@@ -304,9 +301,8 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) committed_at: i64,
     pub(in crate::studio) run_id: RuntimeEpoch,
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
-    /// Visibility/group changes accepted from the independent HistoryClassifier.
-    pub(in crate::studio) boundary_inputs: Arc<BTreeMap<String, observations::Observation>>,
-    pub(in crate::studio) history_changes: Arc<[HistoryEntityChange]>,
+    /// Stateless atomic History events produced by the projection for this effect.
+    pub(in crate::studio) history_events: Arc<[HistoryEvent]>,
     pub(in crate::studio) history_turns: Arc<[HistoryTurnHead]>,
     pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
@@ -376,77 +372,6 @@ fn prepared_turns(
         );
     }
     Ok((heads, details))
-}
-
-fn history_entity_change(
-    atom: &crate::ChatAtom,
-    drafts: &[ChatDraft],
-    run: RuntimeEpoch,
-    effect: &ThreadEffectBatch,
-    database_id: &str,
-) -> Result<HistoryEntityChange, ProjectionError> {
-    let millis = |at| {
-        crate::history::milliseconds_from_seconds(at)
-            .map_err(|error| ProjectionError::History(error.to_string()))
-    };
-    let draft_id = atom.completion_item_id.as_deref().unwrap_or(&atom.id);
-    let draft = matches!(atom.lifecycle, crate::ChatAtomLifecycle::Terminal { .. })
-        .then(|| drafts.iter().find(|draft| draft.item_id == draft_id))
-        .flatten();
-    let mut event = HistoryEvent::new(
-        draft.map_or_else(
-            || format!("entity:{run}:{}:{}", effect.sequence, atom.id),
-            |draft| draft.item_id.clone(),
-        ),
-        match atom.lifecycle {
-            crate::ChatAtomLifecycle::Active { .. } => HistoryEventKind::EntityStarted,
-            crate::ChatAtomLifecycle::Terminal { .. } => HistoryEventKind::EntityEnded,
-        },
-        millis(effect.committed_at)?,
-    );
-    event.header.occurred_at = atom
-        .finished_at
-        .or(atom.started_at)
-        .map(millis)
-        .transpose()?;
-    if let Some(draft) = draft {
-        event.header.original = Some(crate::history::HistoryOriginalInfo {
-            query_class: draft.query_class.clone(),
-            parent_id: draft
-                .parent_id
-                .as_ref()
-                .map(|parent| parent.as_str().to_owned()),
-            original_kind: atom.kind,
-            tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
-        });
-    }
-    let mut change = HistoryEntityChange::from_atom(event, atom, run)
-        .map_err(|error| ProjectionError::History(error.to_string()))?;
-    if let Some(draft) = draft {
-        crate::studio::runtime::chat_item::freeze_history_original(
-            &mut change.event,
-            &mut change.entity,
-            draft,
-            database_id,
-        )
-        .map_err(|error| ProjectionError::History(error.to_string()))?;
-        if let Some(tool) = &atom.tool
-            && let Some(task) = effect
-                .tasks
-                .iter()
-                .find(|task| task.call_id == tool.call_id)
-            && let Some(delivery) = effect
-                .deliveries
-                .iter()
-                .find(|delivery| delivery.call_id == tool.call_id)
-        {
-            change.event.bodies.push(
-                crate::studio::storage::tool_task::body(task, delivery)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?,
-            );
-        }
-    }
-    Ok(change)
 }
 
 fn history_sources(sources: &[crate::ChatSourceState]) -> Vec<HistorySourceHead> {
@@ -600,14 +525,15 @@ impl PreparedEffect {
                 .saturating_add(fact.message.id.len() as u64)
                 .saturating_add(256)
         });
-        self.history_changes
+        self.history_events
             .iter()
-            .fold(0_u64, |bytes, change| {
-                bytes.saturating_add(RETAINED_ITEM_OVERHEAD).saturating_add(
-                    change.event.bodies.iter().fold(0_u64, |bodies, body| {
+            .fold(0_u64, |bytes, event| {
+                bytes
+                    .saturating_add(RETAINED_ITEM_OVERHEAD)
+                    .saturating_add(event.payload_json.len() as u64)
+                    .saturating_add(event.bodies.iter().fold(0_u64, |bodies, body| {
                         bodies.saturating_add(body.bytes.len() as u64)
-                    }),
-                )
+                    }))
             })
             .saturating_add(
                 (self.history_turns.len() as u64)
@@ -628,12 +554,6 @@ impl PreparedEffect {
             .saturating_add(self.accounting.retained_bytes())
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
-            .saturating_add(
-                self.boundary_inputs
-                    .values()
-                    .map(observations::Observation::retained_bytes)
-                    .sum::<u64>(),
-            )
     }
 }
 
@@ -1297,8 +1217,6 @@ impl Fact {
 }
 
 /// Folds admitted writes into the live product facts and yields the changes each one made.
-mod observations;
-pub(in crate::studio) use observations::Observation as HistoryObservationInput;
 mod current;
 mod provenance;
 
@@ -1306,6 +1224,7 @@ pub(in crate::studio) struct LiveProjection {
     #[cfg(test)]
     pub(in crate::studio) fail_after_project: bool,
     atom_starts: BTreeMap<String, crate::ChatAtom>,
+    emitted_tool_stages: BTreeMap<String, provenance::EmittedToolStage>,
     source_states: BTreeMap<crate::ChatSourceId, crate::ChatSourceState>,
     provenance_restored: bool,
     /// Canonical payloads of identities that can still change.
@@ -1419,6 +1338,7 @@ impl LiveProjection {
             #[cfg(test)]
             fail_after_project: false,
             atom_starts: BTreeMap::new(),
+            emitted_tool_stages: BTreeMap::new(),
             source_states: BTreeMap::new(),
             provenance_restored: false,
             items: BTreeMap::new(),
@@ -1519,6 +1439,15 @@ impl LiveProjection {
                 serde_json::to_vec(&self.atom_starts).map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
+                (self.emitted_tool_stages.len() as u64)
+                    .saturating_mul(RETAINED_ENTRY_OVERHEAD)
+                    .saturating_add(
+                        self.emitted_tool_stages
+                            .keys()
+                            .fold(0_u64, |sum, id| sum.saturating_add(id.len() as u64)),
+                    ),
+            )
+            .saturating_add(
                 serde_json::to_vec(&self.source_states.values().collect::<Vec<_>>())
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             );
@@ -1572,18 +1501,15 @@ impl LiveProjection {
         let run = self
             .run
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
-        let before = self
-            .observation_inputs(&thread.id, state)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.stage_history_model_previews(thread, state, effect.committed_at)?;
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
-        let mut provenance = self.begin_provenance(effect)?;
+        let provenance = self.begin_provenance(effect, run)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
         let ProjectedContent {
             items,
             review_delivery,
-            mut completion_drafts,
+            completion_drafts,
         } = self.project(thread, effect, state)?;
         #[cfg(test)]
         if std::mem::take(&mut self.fail_after_project) {
@@ -1591,52 +1517,29 @@ impl LiveProjection {
                 "injected failure after materialization".into(),
             ));
         }
-        self.complete_provenance(
-            effect,
-            state,
-            &items,
-            &mut completion_drafts,
-            &mut provenance,
-        )
-        .await?;
+        let (history_events, history_sources_raw) = self
+            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
+            .await?;
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let boundary_inputs = self
-            .retain_boundary_inputs(&thread.id, state, before)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
             run_id: run,
             accounting,
-            boundary_inputs,
-            history_changes: provenance
-                .0
-                .iter()
-                .map(|atom| {
-                    history_entity_change(
-                        atom,
-                        &completion_drafts,
-                        run,
-                        effect,
-                        self.database_id
-                            .as_deref()
-                            .expect("bound database identity"),
-                    )
-                })
-                .collect::<Result<Vec<_>, ProjectionError>>()?
-                .into(),
+            history_events: history_events.into(),
             history_turns: history_turns.into(),
             history_turn_details: Arc::new(history_turn_details),
-            history_sources: history_sources(&provenance.1).into(),
+            history_sources: history_sources(&history_sources_raw).into(),
             retained_resources: retained_resources(effect)?.into(),
             parent_report: None,
             parent_finish: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
         });
+        self.mark_completed_drafts(&completion_drafts);
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
         {
@@ -1670,64 +1573,46 @@ impl LiveProjection {
         let run = self
             .run
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
-        let before = self
-            .observation_inputs(&thread.id, state)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         self.stage_history_model_previews(thread, state, effect.committed_at)?;
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
-        let mut provenance = self.begin_provenance(effect)?;
+        let provenance = self.begin_provenance(effect, run)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let ProjectedContent {
             items,
             review_delivery,
-            mut completion_drafts,
+            completion_drafts,
         } = self.project(thread, effect, state)?;
-        self.complete_provenance(
-            effect,
-            state,
-            &items,
-            &mut completion_drafts,
-            &mut provenance,
-        )
-        .await?;
+        let (history_events, history_sources_raw) = self
+            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
+            .await?;
         self.retire_effect_source(effect)?;
-        let boundary_inputs = self
-            .retain_boundary_inputs(&thread.id, state, before)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
             run_id: run,
             accounting,
-            boundary_inputs,
-            history_changes: provenance
-                .0
-                .iter()
-                .map(|atom| {
-                    history_entity_change(
-                        atom,
-                        &completion_drafts,
-                        run,
-                        effect,
-                        self.database_id
-                            .as_deref()
-                            .expect("bound database identity"),
-                    )
-                })
-                .collect::<Result<Vec<_>, ProjectionError>>()?
-                .into(),
+            history_events: history_events.into(),
             history_turns: history_turns.into(),
             history_turn_details: Arc::new(history_turn_details),
-            history_sources: history_sources(&provenance.1).into(),
+            history_sources: history_sources(&history_sources_raw).into(),
             retained_resources: retained_resources(effect)?.into(),
             parent_report: None,
             parent_finish: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
         });
+        self.mark_completed_drafts(&completion_drafts);
         self.retain(state);
         Ok(prepared)
+    }
+
+    fn mark_completed_drafts(&self, drafts: &[ChatDraft]) {
+        if let Ok(index) = self.order_index_of() {
+            for draft in drafts {
+                index.mark_completion(&draft.item_id, true);
+            }
+        }
     }
 
     fn retire_effect_source(&self, effect: &ThreadEffectBatch) -> Result<(), ProjectionError> {
@@ -3285,6 +3170,12 @@ impl LiveProjection {
         // an identity evicted here recovers its baseline from the canonical fact
         // ([`LiveProjection::adopt_revisions`]) instead of restarting at 1.
         self.previews.retain(|id, _| self.facts.contains_key(id));
+        self.emitted_tool_stages.retain(|call_id, _| {
+            let tool_id = super::order::tool_id(call_id);
+            self.facts.contains_key(&tool_id)
+                || referenced.contains(&tool_id)
+                || state.tasks.values().any(|task| task.call_id == *call_id)
+        });
         self.revisions
             .retain(|id, _| self.items.contains_key(id) || self.previews.contains_key(id));
         if let Some(index) = &self.order_index {
@@ -3469,7 +3360,7 @@ fn fields_equal(
 mod append_only_history_tests {
     use super::*;
     use crate::{
-        history::{HistoryBody, HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore},
+        history::{HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore},
         studio::storage::thread_writer::HistoryChannel,
     };
     use anyhow::{Context, Result};
@@ -3493,8 +3384,7 @@ mod append_only_history_tests {
     }
 
     #[tokio::test]
-    async fn terminal_effect_freezes_the_older_boundary_cut_before_its_final_receipt() -> Result<()>
-    {
+    async fn stateless_projection_emits_atomic_events_without_boundary_cuts() -> Result<()> {
         use pl_core::model::{
             ActiveModelProgress, ModelProgress, ObservedPart, ObservedPartIdentity,
             ObservedPartKind, ProviderPartIdentity,
@@ -3507,7 +3397,7 @@ mod append_only_history_tests {
         use pl_model::runtime::{ModelMemberReceipt, ModelMemberState};
 
         let directory = tempfile::tempdir()?;
-        let thread = crate::Thread::placeholder("boundary-owner");
+        let thread = crate::Thread::placeholder("stateless-owner");
         let history = HistoryStore::open(
             directory.path().join("history.sqlite"),
             &thread.id,
@@ -3523,7 +3413,7 @@ mod append_only_history_tests {
         projection.bind_execution(channel.order_index(), run, history.database_id().to_owned())?;
 
         let turn = TurnRecord {
-            turn_id: "boundary-turn".into(),
+            turn_id: "stateless-turn".into(),
             input_id: None,
             state: TurnState::Running,
             elapsed_ms: None,
@@ -3532,8 +3422,8 @@ mod append_only_history_tests {
         let mut state = ThreadSnapshot {
             turns: Arc::from([turn.clone()]),
             attempts: Arc::from([RequestAttempt::new(
-                "boundary-turn".into(),
-                "boundary-attempt".into(),
+                "stateless-turn".into(),
+                "stateless-attempt".into(),
                 0,
                 AttemptStatus::Running,
             )]),
@@ -3557,12 +3447,13 @@ mod append_only_history_tests {
         let mut opening = effect(1);
         opening.turn = Some(turn);
         opening.model_member_starts = Arc::from([opening_member]);
-        projection.prepare(&thread, &opening, &state, false).await?;
+        let (_, prepared_open) = projection.prepare(&thread, &opening, &state, false).await?;
+        history.accept_batch(&prepared_open.history_events).await?;
 
         let observed = started("A").identity;
-        let part = ObservedPart::new(observed).appended("BOUNDARY_PREFIX");
+        let part = ObservedPart::new(observed).appended("STREAM_PREFIX");
         state.model_progress = Some(ActiveModelProgress {
-            attempt_id: "boundary-attempt".into(),
+            attempt_id: "stateless-attempt".into(),
             progress: ModelProgress::new(0, vec![part]),
         });
         projection.stream(&thread, &state).await?;
@@ -3603,14 +3494,14 @@ mod append_only_history_tests {
                     kind: CompletionPresentationPartKind::ReasoningText,
                     content_index: 0,
                     provider_part_id: None,
-                    text: "FUTURE_ORIGINAL".into(),
+                    text: "REASONING_BODY".into(),
                 }],
             },
             state: ModelMemberState::Completed,
         };
         terminal.model_members = Arc::from([pl_core::model::ModelCompletedMember {
-            turn_id: "boundary-turn".into(),
-            attempt_id: "boundary-attempt".into(),
+            turn_id: "stateless-turn".into(),
+            attempt_id: "stateless-attempt".into(),
             generation: 0,
             member_id: "A".into(),
             payload: pl_core::context::OpaquePayload::new(
@@ -3623,34 +3514,81 @@ mod append_only_history_tests {
         let (_, prepared) = projection
             .prepare(&thread, &terminal, &state, false)
             .await?;
-        let (_, boundary_input) = prepared
-            .boundary_inputs
-            .iter()
-            .find(|(id, _)| id.as_str() == boundary_id)
-            .context("the retired producer must retain its pre-terminal cut")?;
-        let boundary_event = prepared
-            .history_changes
-            .iter()
-            .find(|change| change.entity.entity_id == final_id)
-            .context("the final text is the visible boundary")?;
-        let boundary = boundary_input.freeze(&boundary_event.event, history.database_id())?;
-        assert_eq!(
-            boundary.event.header.kind,
-            crate::history::HistoryEventKind::BoundaryObserved
-        );
-        assert_eq!(boundary.entity.entity_id, boundary_id);
-        let frozen = boundary
-            .event
-            .bodies
-            .iter()
-            .flat_map(|body| body.bytes.iter().copied())
-            .collect::<Vec<_>>();
-        let frozen = String::from_utf8_lossy(&frozen);
-        assert!(frozen.contains("BOUNDARY_PREFIX"));
         assert!(
-            !frozen.contains("FUTURE_ORIGINAL"),
-            "a later canonical final must not replace the accepted boundary observation"
+            prepared
+                .history_events
+                .iter()
+                .all(|event| { event.kind != crate::history::HistoryEventKind::LegacyObserved })
         );
+        let text_start = prepared
+            .history_events
+            .iter()
+            .find(|event| event.entity_id.as_deref() == Some(final_id.as_str()))
+            .context("final text start event")?;
+        assert_eq!(
+            text_start.timeline_role,
+            crate::history::HistoryTimelineRole::Hidden,
+            "active non-terminal text start must not emit a duplicate Divider"
+        );
+        let terminal_reasoning_id = super::super::order::presentation_id(
+            "stateless-attempt",
+            0,
+            "A",
+            Some(super::super::order::PresentationPart::ReasoningText(0)),
+        );
+        let reasoning_done = prepared
+            .history_events
+            .iter()
+            .find(|event| {
+                event.entity_id.as_deref() == Some(terminal_reasoning_id.as_str())
+                    && event.kind == crate::history::HistoryEventKind::ReasoningCompleted
+            })
+            .context("terminal reasoning event")?;
+        assert_eq!(
+            reasoning_done.timeline_role,
+            crate::history::HistoryTimelineRole::Work
+        );
+        history.accept_batch(&prepared.history_events).await?;
+        history.flush().await?;
+
+        let reader = history.reader();
+        let timeline = reader
+            .timeline_page(
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: 16,
+                    max_bytes: 128 * 1024,
+                },
+            )
+            .await?;
+        assert_eq!(timeline.items.len(), 1);
+        let crate::history::HistoryTimelineItem::WorkRange(range) = &timeline.items[0] else {
+            anyhow::bail!("expected WorkRange in timeline");
+        };
+        let work_page = reader
+            .work_range_page(
+                range.after_seq,
+                range.before_seq,
+                Some(timeline.cut),
+                None,
+                HistoryDemand {
+                    max_rows: 16,
+                    max_bytes: 128 * 1024,
+                },
+            )
+            .await?;
+        assert_eq!(work_page.events.len(), 1);
+        let text = crate::history::read_event_body_bytes(
+            &reader,
+            &work_page.events[0],
+            "part.reasoningText.0",
+            Some(16 * 1024),
+        )
+        .await?
+        .context("reasoning body bytes")?;
+        assert_eq!(text, b"REASONING_BODY");
+
         state.model_progress = None;
         projection.stream(&thread, &state).await?;
         assert!(projection.current_state().as_ref().is_some_and(|current| {
@@ -3660,6 +3598,360 @@ mod append_only_history_tests {
                 .iter()
                 .all(|atom| atom.id != boundary_id)
         }));
+        reader.close().await;
+        channel.stop_and_join().await?;
+        history.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_exec_stop_and_late_completion_emit_unified_call_id_events() -> Result<()> {
+        use pl_core::context::{ContextContent, ContextRecord, ContextSource, OpaquePayload};
+        use pl_core::model::ModelToolCall;
+        use pl_core::thread::{
+            ToolDelivery, ToolDeliveryTarget, ToolOutcome, TurnRecord,
+            inbox::{InboxRecord, ThreadMessage},
+            journal::ContextChange,
+            task::{TaskAcknowledgement, TaskRecord, TaskStatus},
+        };
+        use pl_core::tool::ToolOutput;
+
+        let directory = tempfile::tempdir()?;
+        let thread = crate::Thread::placeholder("exec-stop-bg");
+        let history = HistoryStore::open(
+            directory.path().join("exec-stop.sqlite"),
+            &thread.id,
+            HistoryLimits {
+                pending_events: 64,
+                pending_bytes: 1024 * 1024,
+            },
+        )
+        .await?;
+        let run = RuntimeEpoch::new();
+        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        let mut projection = LiveProjection::new();
+        projection.bind_execution(channel.order_index(), run, history.database_id().to_owned())?;
+
+        let call_id = "call_43c813e84870403b8727b7f9".to_owned();
+        let expected_entity_id = super::super::order::tool_id(&call_id);
+        let invocation = ModelToolCall {
+            call_id: call_id.clone(),
+            tool_id: "exec".into(),
+            arguments: OpaquePayload::new(
+                "application/json",
+                1,
+                r#"{"command":"git fetch origin"}"#,
+            )?,
+            presentation_contract: Some(pl_core::model::ToolPresentationContract::new(
+                "terminal@1",
+            )),
+            rejection: None,
+        };
+        let turn_running = TurnRecord {
+            turn_id: "turn-bg".into(),
+            input_id: None,
+            state: TurnState::Running,
+            elapsed_ms: None,
+            model_steps: 1,
+        };
+        let mut task = TaskRecord {
+            id: "task:exec:1".into(),
+            parent_call_id: None,
+            invocation: Some(invocation.clone()),
+            call_id: call_id.clone(),
+            tool_id: "exec".into(),
+            turn_id: turn_running.turn_id.clone(),
+            revision: 1,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        let call_record = ContextRecord {
+            id: "ctx-call-1".into(),
+            turn_id: Some(turn_running.turn_id.clone()),
+            source: ContextSource::Assistant,
+            content: vec![],
+            tool_calls: vec![invocation.clone()],
+        };
+        let mut state = ThreadSnapshot {
+            turns: Arc::from([turn_running.clone()]),
+            ..Default::default()
+        };
+        state.context.revision = 1;
+        state.context.records = Arc::from([call_record.clone()]);
+        state.tasks.insert(task.id.clone(), task.clone());
+
+        // Effect 1: exec tool starts running -> emits ToolCalled.
+        let effect1 = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 1,
+            committed_at: 100,
+            turn: Some(turn_running.clone()),
+            tasks: Arc::from([task.clone()]),
+            context: Some(ContextChange::Append {
+                revision: 1,
+                records: Arc::from([call_record.clone()]),
+            }),
+            ..Default::default()
+        };
+        let (_, p1) = projection.prepare(&thread, &effect1, &state, false).await?;
+        assert!(p1.history_events.iter().any(|ev| {
+            ev.kind == crate::history::HistoryEventKind::ToolCalled
+                && ev.call_id.as_deref() == Some(call_id.as_str())
+                && ev.entity_id.as_deref() == Some(expected_entity_id.as_str())
+                && ev.timeline_role == crate::history::HistoryTimelineRole::Work
+        }));
+        history.accept_batch(&p1.history_events).await?;
+
+        // Effect 2: task hands off to background -> emits ToolBackgrounded and seals background_started_draft.
+        task.revision = 2;
+        task.acknowledgement = Some(TaskAcknowledgement {
+            record_id: "ctx-ack-2".into(),
+            context_revision: 2,
+        });
+        let ack_record = ContextRecord {
+            id: "ctx-ack-2".into(),
+            turn_id: Some(turn_running.turn_id.clone()),
+            source: ContextSource::ToolResult {
+                call_id: call_id.clone(),
+                tool_id: "exec".into(),
+            },
+            content: vec![ContextContent::Text {
+                text: "backgrounded".into(),
+            }],
+            tool_calls: vec![],
+        };
+        state.context.revision = 2;
+        state.context.records = Arc::from([call_record, ack_record.clone()]);
+        state.tasks.insert(task.id.clone(), task.clone());
+        let effect2 = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 2,
+            committed_at: 105,
+            tasks: Arc::from([task.clone()]),
+            context: Some(ContextChange::Append {
+                revision: 2,
+                records: Arc::from([ack_record]),
+            }),
+            ..Default::default()
+        };
+        let (_, p2) = projection.prepare(&thread, &effect2, &state, false).await?;
+        let bg_count = p2
+            .history_events
+            .iter()
+            .filter(|ev| ev.kind == crate::history::HistoryEventKind::ToolBackgrounded)
+            .count();
+        assert_eq!(bg_count, 1);
+        history.accept_batch(&p2.history_events).await?;
+
+        // Effect 3: subsequent non-cancelling effect must NOT re-emit ToolBackgrounded (#488).
+        let effect3 = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 3,
+            committed_at: 106,
+            tasks: Arc::from([task.clone()]),
+            ..Default::default()
+        };
+        let (_, p3) = projection.prepare(&thread, &effect3, &state, false).await?;
+        assert!(
+            p3.history_events.is_empty(),
+            "sealed background_started must not repeat"
+        );
+
+        // Effect 4: user clicks Stop (cancel_requested = true, TurnState::Cancelled) while task is still running.
+        task.revision = 3;
+        task.cancel_requested = true;
+        state.tasks.insert(task.id.clone(), task.clone());
+        let turn_cancelled = TurnRecord {
+            turn_id: "turn-bg".into(),
+            input_id: None,
+            state: TurnState::Cancelled,
+            elapsed_ms: Some(10),
+            model_steps: 1,
+        };
+        state.turns = Arc::from([turn_cancelled.clone()]);
+        let effect4 = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 4,
+            committed_at: 110,
+            turn: Some(turn_cancelled),
+            tasks: Arc::from([task.clone()]),
+            ..Default::default()
+        };
+        let (_, p4) = projection.prepare(&thread, &effect4, &state, false).await?;
+        let cancel_ev = p4
+            .history_events
+            .iter()
+            .find(|ev| ev.kind == crate::history::HistoryEventKind::ToolCancelRequested)
+            .context("ToolCancelRequested must be emitted when Stop is clicked")?;
+        assert_eq!(cancel_ev.call_id.as_deref(), Some(call_id.as_str()));
+        assert_eq!(
+            cancel_ev.entity_id.as_deref(),
+            Some(expected_entity_id.as_str())
+        );
+        assert_eq!(
+            cancel_ev.timeline_role,
+            crate::history::HistoryTimelineRole::Work
+        );
+        let cancel_env = crate::history::decode_event_envelope(&cancel_ev.to_record())?;
+        assert_eq!(cancel_env.data["cancelRequested"], serde_json::json!(true));
+        history.accept_batch(&p4.history_events).await?;
+
+        // Effect 5: late background delivery completes the task via inbox -> emits ToolCompleted with SAME call_id & entity_id!
+        task.revision = 4;
+        task.status = TaskStatus::Cancelled;
+        state.tasks.remove(&task.id);
+        state.terminal_tasks = Arc::from([task.clone()]);
+        let inbox_msg = ThreadMessage {
+            id: "msg-bg-finish-1".into(),
+            source_id: task.id.clone(),
+            kind: pl_core::context::AgentMessageKind::Unclassified,
+            payload: OpaquePayload::new("pl.tool.background-result", 1, r#"{"exitCode":143}"#)?,
+            context: vec![],
+        };
+        let inbox_rec = InboxRecord {
+            sequence: 5,
+            message: inbox_msg,
+        };
+        let output = ToolOutput::new(
+            OpaquePayload::new(
+                "pl.tool.exec-result",
+                1,
+                r#"{"stdout":"","stderr":"terminated","exitCode":143}"#,
+            )?,
+            vec![],
+        );
+        let delivery = ToolDelivery {
+            target: ToolDeliveryTarget::Inbox {
+                message_id: inbox_rec.message.id.clone(),
+            },
+            call_id: call_id.clone(),
+            tool_id: "exec".into(),
+            output,
+            delivered_context: vec![],
+            outcome: ToolOutcome::Cancelled,
+        };
+        state.inbox = Arc::from([inbox_rec.clone()]);
+        let effect5 = ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence: 5,
+            committed_at: 120,
+            tasks: Arc::from([task]),
+            inbox: Arc::from([inbox_rec]),
+            deliveries: Arc::from([delivery]),
+            ..Default::default()
+        };
+        let (_, p5) = projection.prepare(&thread, &effect5, &state, false).await?;
+        let completed_ev = p5
+            .history_events
+            .iter()
+            .find(|ev| ev.kind == crate::history::HistoryEventKind::ToolCompleted)
+            .context("ToolCompleted must be emitted when background delivery arrives")?;
+        assert_eq!(completed_ev.call_id.as_deref(), Some(call_id.as_str()));
+        assert_eq!(
+            completed_ev.entity_id.as_deref(),
+            Some(expected_entity_id.as_str()),
+            "background completion must NOT rename entity_id to message:..."
+        );
+        assert_eq!(completed_ev.message_id.as_deref(), Some("msg-bg-finish-1"));
+        assert_eq!(
+            completed_ev.timeline_role,
+            crate::history::HistoryTimelineRole::Work
+        );
+        history.accept_batch(&p5.history_events).await?;
+        history.flush().await?;
+
+        let reader = history.reader();
+        let timeline = reader
+            .timeline_page(
+                None,
+                None,
+                HistoryDemand {
+                    max_rows: 16,
+                    max_bytes: 128 * 1024,
+                },
+            )
+            .await?;
+        let work_ranges: Vec<_> = timeline
+            .items
+            .iter()
+            .rev()
+            .filter_map(|item| match item {
+                crate::history::HistoryTimelineItem::WorkRange(r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            work_ranges.len(),
+            2,
+            "cancelled turn receipt divider splits pre-cancel and post-cancel work ranges"
+        );
+        let mut work_events = Vec::new();
+        for work_range in work_ranges {
+            let work_page = reader
+                .work_range_page(
+                    work_range.after_seq,
+                    work_range.before_seq,
+                    Some(timeline.cut.clone()),
+                    None,
+                    HistoryDemand {
+                        max_rows: 32,
+                        max_bytes: 128 * 1024,
+                    },
+                )
+                .await?;
+            work_events.extend(work_page.events);
+        }
+        let kinds: Vec<_> = work_events
+            .iter()
+            .filter(|ev| ev.call_id.as_deref() == Some(call_id.as_str()))
+            .map(|ev| ev.kind.clone())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                crate::history::HistoryEventKind::ToolCalled,
+                crate::history::HistoryEventKind::ToolBackgrounded,
+                crate::history::HistoryEventKind::ToolCancelRequested,
+                crate::history::HistoryEventKind::ToolCompleted,
+            ]
+        );
+        let by_call = reader
+            .events_page(
+                crate::history::HistoryEventsQuery::Call {
+                    call_id: call_id.clone(),
+                },
+                Some(timeline.cut.clone()),
+                None,
+                HistoryDemand {
+                    max_rows: 32,
+                    max_bytes: 128 * 1024,
+                },
+            )
+            .await?;
+        let call_kinds: Vec<_> = by_call
+            .entries
+            .iter()
+            .rev()
+            .map(|ev| ev.kind.clone())
+            .collect();
+        assert_eq!(call_kinds, kinds);
+        for ev in &work_events {
+            let env = crate::history::decode_event_envelope(ev)?;
+            assert_eq!(env.contract, "anywork.event/1");
+        }
+        let args = crate::history::read_event_body_bytes(
+            &reader,
+            &work_events[0],
+            "tool.arguments",
+            Some(16 * 1024),
+        )
+        .await?
+        .context("exec arguments")?;
+        assert!(String::from_utf8_lossy(&args).contains("git fetch origin"));
+
+        reader.close().await;
         channel.stop_and_join().await?;
         history.close().await?;
         Ok(())
@@ -3685,9 +3977,10 @@ mod append_only_history_tests {
                     let mut event = HistoryEvent::new(
                         format!("event-{group}-{offset}"),
                         crate::history::HistoryEventKind::RunStarted,
+                        crate::history::HistoryTimelineRole::Hidden,
                         sequence as i64,
                     );
-                    event.header.run_id = Some(format!("run-{group}-{offset}"));
+                    event.run_id = Some(format!("run-{group}-{offset}"));
                     event
                 })
                 .collect();
@@ -3715,7 +4008,7 @@ mod append_only_history_tests {
             );
             pages += 1;
             for entry in page.entries {
-                assert!(seen.insert(entry.header.seq));
+                assert!(seen.insert(entry.seq));
             }
             cursor = page.next;
             if cursor.is_none() {
@@ -3748,18 +4041,27 @@ mod append_only_history_tests {
         )
         .await?;
         let payload: Vec<u8> = (0..65_536).map(|index| (index % 251) as u8).collect();
-        let body = HistoryBody::new(
-            "canonical",
-            crate::history::HistoryBodyRole::CanonicalPayload,
-            payload.clone(),
-        );
         let mut event = HistoryEvent::new(
             "one-large-original",
             crate::history::HistoryEventKind::BackgroundDeliveryRecorded,
+            crate::history::HistoryTimelineRole::Hidden,
             1,
         );
-        event.payload_body_id = Some(body.body_id.clone());
-        event.bodies.push(body);
+        let manifest = crate::history::pack_bodies(
+            &mut event,
+            vec![crate::history::PendingBody::new(
+                "canonical",
+                crate::history::HistoryBodyRole::CanonicalPayload,
+                Some("application/octet-stream".into()),
+                payload.clone(),
+            )],
+            store.database_id(),
+        )?;
+        event.payload_schema = "anywork.business/1".into();
+        event.payload_json = serde_json::to_string(&serde_json::json!({
+            "type": "background_delivery",
+            "bodies": manifest,
+        }))?;
         store.accept_batch(&[event]).await?;
         store.flush().await?;
 
@@ -3773,11 +4075,12 @@ mod append_only_history_tests {
                 },
             )
             .await?;
-        let reference = original.payload_ref.context("payload original")?;
-        let window = reader.read_body(reference, 0, 64 * 1024).await?;
-        assert_eq!(window.total_length, 65_536);
-        assert_eq!(window.bytes.len(), 65_536);
-        assert_eq!(window.bytes, payload);
+        let body =
+            crate::history::read_event_body_bytes(&reader, &original, "canonical", Some(64 * 1024))
+                .await?
+                .context("canonical large body")?;
+        assert_eq!(body.len(), 65_536);
+        assert_eq!(body, payload);
         reader.close().await;
         store.close().await?;
         Ok(())

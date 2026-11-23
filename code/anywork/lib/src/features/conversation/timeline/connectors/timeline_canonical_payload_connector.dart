@@ -159,7 +159,7 @@ class _TimelineCanonicalPayloadConnectorState
         return;
       }
     }
-    final needsOwnedBody = widget.item.historyEventId != null;
+    final needsOwnedBody = widget.item.needsHistoryBodyLoad;
     if (widget.item.observationUnavailable ||
         !needsOwnedBody ||
         _scheduled ||
@@ -235,6 +235,10 @@ class _TimelineCanonicalPayloadConnectorState
       return widget.render(widget.item);
     }
     if (widget.item.historyEventId != null) {
+      if (!widget.item.needsHistoryBodyLoad &&
+          widget.item.displayRecord?.predecodedPresentation != null) {
+        return widget.render(widget.item);
+      }
       if (_resolved case final item?) {
         return TimelineInitialBodyReads(
           results: _initialBodyReads,

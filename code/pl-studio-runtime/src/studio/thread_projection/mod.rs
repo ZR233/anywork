@@ -117,8 +117,6 @@ pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::T
     }
 }
 
-pub(in crate::studio) use live::HistoryObservationInput;
-
 pub(crate) use tool_media::{resource_references, resource_references_for_deliveries};
 
 mod history_facts;

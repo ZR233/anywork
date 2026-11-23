@@ -203,8 +203,8 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
             let mut after = 0i64;
             let mut originals = Vec::new();
             loop {
-                let rows: Vec<String> = sea_orm::sqlx::query_scalar(
-                    "SELECT event_id FROM history_events
+                let rows: Vec<(i64, String, String, String)> = sea_orm::sqlx::query_as(
+                    "SELECT seq,event_id,payload_schema,payload_json FROM history_events
                      WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
                 )
                 .bind(after)
@@ -213,29 +213,37 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
                 if rows.is_empty() {
                     break;
                 }
-                for id in rows {
-                    let seq: i64 = sea_orm::sqlx::query_scalar(
-                        "SELECT seq FROM history_events WHERE event_id=?1",
-                    )
-                    .bind(&id)
-                    .fetch_one(&mut connection)
-                    .await?;
+                for (seq, id, payload_schema, payload_json) in rows {
                     after = seq;
-                    let head = history_canonical_head(&mut connection, &id).await?;
-                    let directories: Vec<(String, String, i64)> = sea_orm::sqlx::query_as(
-                        "SELECT body_id,body_key,byte_length FROM history_bodies
-                         WHERE owner_event_id=?1 AND role='body' ORDER BY ordinal",
-                    )
-                    .bind(&id)
-                    .fetch_all(&mut connection)
-                    .await?;
+                    ensure!(
+                        payload_schema == "anywork.event/1",
+                        "unexpected history payload schema {payload_schema} for {id}"
+                    );
+                    let envelope: pl_studio_runtime::history::EventPayloadEnvelope =
+                        serde_json::from_str(&payload_json)?;
+                    let head = envelope.meta;
                     let mut bodies = Vec::new();
-                    for (body_id, key, length) in directories {
-                        let bytes =
-                            history_body_bytes(&mut connection, &body_id, u64::try_from(length)?)
-                                .await?;
+                    for entry in &envelope.bodies {
+                        if entry.role != "body" {
+                            continue;
+                        }
+                        let bytes = if let Some(inline) = &entry.inline_text {
+                            inline.as_bytes().to_vec()
+                        } else if let Some(reference) = &entry.reference {
+                            history_body_bytes(
+                                &mut connection,
+                                &reference.body_id,
+                                reference.byte_length,
+                            )
+                            .await?
+                        } else {
+                            bail!(
+                                "history body {} on {id} has neither inlineText nor reference",
+                                entry.key
+                            );
+                        };
                         bodies.push(json!({
-                            "key": key,
+                            "key": entry.key,
                             "bytes": bytes,
                             "text": String::from_utf8(bytes.clone())?
                         }));
@@ -337,7 +345,7 @@ fn validate_history(history: &Value, native: bool) -> Result<()> {
         let matching = items
             .iter()
             .filter(|item| {
-                item["metadata"]["kind"] == "text"
+                item["metadata"]["entityKind"] == "text"
                     && item["metadata"]["state"]["kind"] == "knownTerminal"
                     && item["bodies"]
                         .as_array()

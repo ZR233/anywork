@@ -352,21 +352,19 @@ impl ConversationStore {
                 }
             };
         }
-        for change in prepared
-            .history_changes
+        for event in prepared
+            .history_events
             .iter()
-            .filter(|change| change.event.header.original.is_some())
+            .filter(|event| event.original.is_some())
         {
-            channel
-                .order_index()
-                .mark_completion(&change.event.header.event_id, true);
+            channel.order_index().mark_completion(&event.event_id, true);
         }
         pending.prepared = prepared.clone();
         pending.admitted = true;
         tracing::debug!(target: "conversation_work", current_revision = prepared.sequence,
             admission_wait_us = locked.duration_since(admission_started).as_micros() as u64,
             admission_locked_us = locked.elapsed().as_micros() as u64,
-            history_changes = prepared.history_changes.len(),
+            history_events = prepared.history_events.len(),
             prepared_bytes = prepared.retained_bytes(),
             queued_bytes = channel.subscribe().borrow().queued_bytes,
             "conversation memory admission");

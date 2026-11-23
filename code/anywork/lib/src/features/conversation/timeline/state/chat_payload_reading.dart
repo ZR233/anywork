@@ -80,29 +80,32 @@ final class DecodedToolCard extends ToolCardReading {
 final class UnavailableToolCard extends ToolCardReading {
   const UnavailableToolCard(
     this.reason, {
-    this.kind = ToolCardUnavailableKind.unknownContract,
+    this.kind = ToolCardUnavailableKind.malformed,
   });
   final String reason;
   final ToolCardUnavailableKind kind;
 }
 
-enum ToolCardUnavailableKind { unknownContract, malformed, deferred }
+enum ToolCardUnavailableKind { malformed, deferred }
+
+const _fallbackToolContract = 'generic@1';
 
 ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
   final marker = item.presentationContract;
-  final spec = toolDisplayRegistry[marker];
-  if (spec == null) {
-    return UnavailableToolCard(
-      marker == null
-          ? '未提供 presentationContract'
-          : '不支持的 presentationContract：$marker',
-    );
-  }
+  final resolvedContract =
+      marker != null && toolDisplayRegistry.containsKey(marker)
+      ? marker
+      : _fallbackToolContract;
+  final spec = toolDisplayRegistry[resolvedContract]!;
   try {
     final invocation = chatObject(item.data['invocation'], 'invocation');
     final state = chatObject(item.data['state'], 'state');
     final status = chatString(state['kind'], 'state.kind');
     if (!const {
+      'running',
+      'waiting',
+      'waitingApproval',
+      'cancelling',
       'backgroundStarted',
       'interrupted',
       'succeeded',
@@ -110,23 +113,20 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
       'denied',
       'cancelled',
     }.contains(status)) {
-      throw FormatException('未知工具终态: $status');
+      throw FormatException('未知工具状态: $status');
     }
     final argumentsBody = item.body('tool.arguments');
-    if (argumentsBody == null) {
-      throw const FormatException('缺少 tool.arguments 正文');
-    }
-    if (argumentsBody.hasReference && arguments == null) {
+    if (argumentsBody != null &&
+        argumentsBody.hasReference &&
+        arguments == null) {
       return const UnavailableToolCard(
         '参数按需读取，尚未取得完整业务内容',
         kind: ToolCardUnavailableKind.deferred,
       );
     }
-    arguments ??= item.inlineText('tool.arguments');
-    if (arguments == null) {
-      throw const FormatException('缺少 tool.arguments 内联内容');
-    }
-    if (spec.category != ToolDisplayCategory.generic &&
+    arguments ??= item.inlineText('tool.arguments') ?? '';
+    if (arguments.isNotEmpty &&
+        spec.category != ToolDisplayCategory.generic &&
         spec.inputBody != ToolInputBody.patch) {
       chatObject(jsonDecode(arguments), '工具参数');
     }
@@ -142,7 +142,11 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
       'denied' => state['deniedAt'],
       'cancelled' => state['cancelledAt'],
       'interrupted' => state['interruptedAt'],
-      'backgroundStarted' => null,
+      'backgroundStarted' ||
+      'running' ||
+      'waiting' ||
+      'waitingApproval' ||
+      'cancelling' => null,
       _ => null,
     };
     final artifacts = item.inlineText('tool.output-artifacts');
@@ -154,7 +158,7 @@ ToolCardReading readToolCard(ChatItemPresentation item, {String? arguments}) {
           'invocation.toolCallId',
         ),
         name: chatString(invocation['name'], 'invocation.name'),
-        presentationContract: marker!,
+        presentationContract: resolvedContract,
         statusString: status,
         frozenObservation:
             item.displayRecord?.contentSource is FrozenObservation,

@@ -21,9 +21,10 @@ use super::usage::{UsageAccumulator, fold_next_accounting};
 use super::writer::{ExportCommand, FsContentBlobSink};
 use super::{NewMemberRegistration, RetiredThreadCut, RunExporter};
 use crate::history::{
-    HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEntityChange, HistoryEntityHead,
-    HistoryEntityState, HistoryEvent, HistoryEventKind, HistoryLimits, HistoryOriginalInfo,
-    HistoryPlacement, HistoryRowHead, HistorySingleVisibility, HistoryStore,
+    EventPayloadEnvelope, HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEntityState,
+    HistoryEvent, HistoryEventKind, HistoryEventMeta, HistoryLimits, HistoryOriginalInfo,
+    HistorySingleVisibility, HistoryStore, HistoryTimelineRole, PendingBody, decode_event_envelope,
+    pack_bodies,
 };
 use crate::studio::thread_projection::{AuxiliaryBillingReceipt, CurrentState, PreparedAccounting};
 
@@ -74,6 +75,7 @@ fn text_original(
     index: u64,
     channel: crate::ThreadTextChannel,
     text: &str,
+    database_id: &str,
 ) -> Result<HistoryEvent> {
     let event_id = format!("event-{index}");
     let entity_id = format!("msg-{index}");
@@ -84,12 +86,9 @@ fn text_original(
     };
     let turn_id = format!("turn-{index}");
     let query_class = serde_json::to_string(&crate::ChatClassFilter::All {})?;
-    let head = HistoryEntityHead {
+    let meta = HistoryEventMeta {
         entity_id: entity_id.clone(),
-        run_id: Some("fixture-runtime".into()),
-        attempt_id: None,
-        source: source.clone(),
-        kind: crate::ChatAtomKind::Text,
+        entity_kind: crate::ChatAtomKind::Text,
         delivery: crate::ChatDeliveryKind::Foreground,
         state: HistoryEntityState::KnownTerminal {
             outcome: crate::ChatTerminalOutcome::Completed,
@@ -97,61 +96,56 @@ fn text_original(
         started_at: None,
         finished_at: None,
         text_channel: Some(channel),
-        tool: None,
-        wait: None,
-        content_present: Some(true),
         single_visibility: Some(HistorySingleVisibility::Content),
-        observation: crate::history::HistoryObservation::Original,
         presentation_contract: None,
-        detail_event_id: Some(event_id.clone()),
-        input_manifest_event_id: None,
-        body_manifest_event_id: Some(event_id.clone()),
+        source_order: None,
+        content_present: Some(true),
+        wait: None,
+        tool: None,
     };
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "contract": "anywork.chat/1",
-        "type": "text",
-        "data": {
-            "channel": channel,
-            "inputId": input_id,
-        },
-        "turnId": turn_id.clone(),
-        "bodies": [{"key": "body", "byteLength": text.len()}],
-    }))?;
-    let payload_body = HistoryBody::new(
-        "canonical_payload",
-        HistoryBodyRole::CanonicalPayload,
-        payload,
-    );
     let mut event = HistoryEvent::new(
-        event_id.clone(),
-        HistoryEventKind::EntityEnded,
+        event_id,
+        HistoryEventKind::TextCompleted,
+        HistoryTimelineRole::Divider,
         index as i64,
     );
-    event.header.entity_id = Some(entity_id.clone());
-    event.header.run_id = head.run_id.clone();
-    event.header.turn_id = Some(turn_id);
-    event.header.source = Some(source);
-    event.header.message_id = Some(format!("om_{index}"));
-    event.header.row_key = Some(format!("single:{entity_id}"));
-    event.header.original = Some(HistoryOriginalInfo {
+    event.entity_id = Some(entity_id);
+    event.run_id = Some("fixture-runtime".into());
+    event.turn_id = Some(turn_id.clone());
+    event.source = Some(source);
+    event.message_id = Some(format!("om_{index}"));
+    event.original = Some(HistoryOriginalInfo {
         query_class,
         parent_id: None,
         original_kind: crate::ChatAtomKind::Text,
         tool_name: None,
     });
-    event.header.occurred_at = Some(index as i64);
-    event.is_anchor = true;
-    event.head = Some(HistoryRowHead::Single(head.clone()));
-    event.payload_body_id = Some(payload_body.body_id.clone());
-    event.bodies = vec![
-        payload_body,
-        HistoryBody::new(
-            "canonical_metadata",
-            HistoryBodyRole::CanonicalMetadata,
-            serde_json::to_vec(&head)?,
-        ),
-        HistoryBody::new("item:body", HistoryBodyRole::Body, text.as_bytes().to_vec()),
-    ];
+    event.occurred_at = Some(index as i64);
+    let manifest = pack_bodies(
+        &mut event,
+        vec![PendingBody::new(
+            "body",
+            HistoryBodyRole::Body,
+            Some("text/plain".into()),
+            text.as_bytes().to_vec(),
+        )],
+        database_id,
+    )?;
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "text".into(),
+        meta,
+        data: serde_json::json!({
+            "channel": channel,
+            "inputId": input_id,
+        }),
+        bodies: manifest,
+        source_order: None,
+        turn_id: Some(turn_id),
+        captured_at: None,
+    };
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
     Ok(event)
 }
 
@@ -160,33 +154,63 @@ fn history_change(
     kind: HistoryEventKind,
     atom: &crate::ChatAtom,
     recorded_at: i64,
-) -> Result<HistoryEntityChange> {
-    let entity = HistoryEntityHead::from_atom(atom, None)?;
-    let mut event = HistoryEvent::new(event_id, kind, recorded_at);
-    event.header.entity_id = Some(entity.entity_id.clone());
-    event.header.turn_id = atom.turn_id.clone();
-    Ok(HistoryEntityChange {
-        event,
-        entity,
-        placement: HistoryPlacement::Hidden,
-        boundary_observations: Vec::new(),
-        public_summary: None,
-    })
+) -> Result<HistoryEvent> {
+    let state = match &atom.lifecycle {
+        crate::ChatAtomLifecycle::Active { status, .. } => {
+            HistoryEntityState::KnownActive { status: *status }
+        }
+        crate::ChatAtomLifecycle::Terminal { outcome, .. } => {
+            HistoryEntityState::KnownTerminal { outcome: *outcome }
+        }
+    };
+    let meta = HistoryEventMeta {
+        entity_id: atom.id.clone(),
+        entity_kind: atom.kind,
+        delivery: atom.delivery,
+        state,
+        started_at: atom.started_at,
+        finished_at: atom.finished_at,
+        text_channel: atom.text_channel,
+        single_visibility: None,
+        presentation_contract: None,
+        source_order: atom.source_order,
+        content_present: atom.content_present,
+        wait: atom
+            .wait
+            .clone()
+            .map(|presentation| crate::history::HistoryWaitHead::Inline { presentation }),
+        tool: atom.tool.clone(),
+    };
+    let envelope = EventPayloadEnvelope {
+        contract: "anywork.event/1".into(),
+        item_type: "contextCompaction".into(),
+        meta,
+        data: serde_json::json!({}),
+        bodies: Vec::new(),
+        source_order: atom.source_order,
+        turn_id: atom.turn_id.clone(),
+        captured_at: None,
+    };
+    let mut event = HistoryEvent::new(event_id, kind, HistoryTimelineRole::Hidden, recorded_at);
+    event.entity_id = Some(atom.id.clone());
+    event.turn_id = atom.turn_id.clone();
+    event.payload_schema = "anywork.event/1".into();
+    event.payload_json = serde_json::to_string(&envelope)?;
+    Ok(event)
 }
 
 #[test]
 fn event_v3_writer_reader_is_independent_of_object_field_order() -> Result<()> {
-    let history = text_original(1, crate::ThreadTextChannel::Final, "original")?;
-    let Some(HistoryRowHead::Single(head)) = history.head.clone() else {
-        anyhow::bail!("representative completion head");
-    };
+    let history = text_original(1, crate::ThreadTextChannel::Final, "original", "fixture-db")?;
+    let record = history.to_record();
+    let envelope = decode_event_envelope(&record)?;
     let event = EventV3 {
         schema_version: super::types::EVENTS_SCHEMA_VERSION,
         run_id: "field-order-run".into(),
         event_seq: 1,
         body: EventBodyV3::Completion {
-            header: Box::new(ChatItemHeaderExportV3::from_history(&history.header)),
-            atom: Box::new(head),
+            header: Box::new(ChatItemHeaderExportV3::from_history(&record)),
+            atom: Box::new(envelope.meta),
             payload: ExportedBlobV3 {
                 path: "contents/payload.bin".into(),
                 byte_length: 7,
@@ -236,7 +260,12 @@ async fn history_export_streams_body_directories_larger_than_one_page() -> Resul
     )
     .await?;
     let reader = history.reader();
-    let mut event = text_original(1, crate::ThreadTextChannel::Final, "manifest original")?;
+    let mut event = text_original(
+        1,
+        crate::ThreadTextChannel::Final,
+        "manifest original",
+        reader.database_id(),
+    )?;
     for index in 0..260 {
         event.bodies.push(HistoryBody::new(
             format!("item:part.outputText.{index}"),
@@ -256,16 +285,16 @@ async fn history_export_streams_body_directories_larger_than_one_page() -> Resul
         &temp.path().join("manifest-export"),
         &page.records[0].contents_manifest,
     )?;
-    assert_eq!(manifest.len(), 263);
+    assert_eq!(manifest.len(), 261);
     assert!(
         manifest
             .iter()
-            .any(|entry| { entry.history_role == HistoryBodyRole::CanonicalPayload })
+            .any(|entry| entry.body_key == "body" && entry.native_ref.is_none())
     );
     assert!(
         manifest
             .iter()
-            .any(|entry| { entry.history_role == HistoryBodyRole::CanonicalMetadata })
+            .any(|entry| entry.body_key == "item:part.outputText.259" && entry.native_ref.is_some())
     );
     assert!(!cut.token.is_empty());
     Ok(())
@@ -930,7 +959,12 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         contents: vec![],
         payload: None,
     };
-    let start = history_change("lifecycle-start", HistoryEventKind::EntityStarted, &atom, 1)?;
+    let start = history_change(
+        "lifecycle-start",
+        HistoryEventKind::CompactionStarted,
+        &atom,
+        1,
+    )?;
     atom.lifecycle = crate::ChatAtomLifecycle::Terminal {
         started: Some(crate::ChatFactPosition {
             effect_seq: 1,
@@ -942,7 +976,12 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         }),
         outcome: crate::ChatTerminalOutcome::Cancelled,
     };
-    let end = history_change("lifecycle-end", HistoryEventKind::EntityEnded, &atom, 2)?;
+    let end = history_change(
+        "lifecycle-end",
+        HistoryEventKind::CompactionCompleted,
+        &atom,
+        2,
+    )?;
     let start: Arc<[_]> = Arc::from([start]);
     let end: Arc<[_]> = Arc::from([end]);
     coord
@@ -1364,6 +1403,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
             idx,
             crate::ThreadTextChannel::ParentAgent,
             &content,
+            history_reader.database_id(),
         )?);
     }
     history.accept_batch(&events).await?;
@@ -1371,6 +1411,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
     let huge_original = history_reader
         .original_for_entity(
             "msg-257".into(),
+            None,
             HistoryDemand {
                 max_rows: 1,
                 max_bytes: 1024 * 1024,
@@ -1380,7 +1421,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
         .context("History original msg-257 missing")?;
     let huge_body = history_reader
         .list_bodies(
-            huge_original.header.event_id,
+            huge_original.event_id,
             None,
             HistoryDemand {
                 max_rows: 128,
@@ -1390,7 +1431,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
         .await?
         .entries
         .into_iter()
-        .find(|body| body.body_key == "item:body")
+        .find(|body| body.body_key == "body")
         .context("huge History body directory entry missing")?
         .reference;
     let mut offset = 0_u64;
@@ -1445,7 +1486,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
             .iter()
             .all(|(event, atom, ..)| event.source.history_event_id.is_some()
                 && event.source.history_event_seq.is_some()
-                && atom.kind == crate::ChatAtomKind::Text
+                && atom.entity_kind == crate::ChatAtomKind::Text
                 && atom.started_at.is_none()
                 && atom.finished_at.is_none())
     );
@@ -1473,7 +1514,7 @@ async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -
     );
     let payload_bytes = std::fs::read(out_dir.join(&payload.path))?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
-    assert_eq!(payload["contract"], "anywork.chat/1");
+    assert_eq!(payload["contract"], "anywork.event/1");
     Ok(())
 }
 

@@ -16,7 +16,6 @@ use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 const MAX_READ_SCOPES: usize = 16;
-const WINDOW: u32 = 32 * 1024;
 
 pub(super) struct ReadOwners {
     readers: Mutex<BTreeMap<String, Arc<ReadResource>>>,
@@ -572,7 +571,7 @@ pub(super) async fn search(
             {
                 matches.push(Match {
                     session_id: session.clone(),
-                    event_id: detail.header.event_id.clone(),
+                    event_id: detail.event_id.clone(),
                     snippet,
                 });
             }
@@ -603,66 +602,23 @@ pub(super) async fn search(
 
 async fn search_text(
     reader: &crate::history::HistoryReader,
-    detail: &crate::history::HistoryEventDetail,
+    detail: &crate::history::HistoryEventRecord,
 ) -> Result<Option<String>> {
-    let Some(reference) = detail.payload_ref.as_ref() else {
-        return Ok(None);
-    };
-    let payload = read_window(reader, reference).await?;
-    let value: serde_json::Value = serde_json::from_slice(&payload)?;
-    if value["contract"] != "anywork.chat/1" || value["type"] != "text" {
+    if detail.payload_schema != "anywork.event/1" {
         return Ok(None);
     }
-    let Some(body) = value["bodies"]
-        .as_array()
-        .and_then(|bodies| bodies.iter().find(|body| body["key"] == "body"))
+    let Ok(envelope) = crate::history::decode_event_envelope(detail) else {
+        return Ok(None);
+    };
+    if envelope.item_type != "text" {
+        return Ok(None);
+    }
+    let Some(bytes) =
+        crate::history::read_event_body_bytes(reader, detail, "body", Some(800_000)).await?
     else {
         return Ok(None);
     };
-    if let Some(inline) = body["inline"].as_array() {
-        let bytes = inline
-            .iter()
-            .map(|value| value.as_u64().and_then(|value| u8::try_from(value).ok()))
-            .collect::<Option<Vec<_>>>()
-            .context("invalid inline search body")?;
-        return Ok(Some(String::from_utf8(bytes)?));
-    }
-    let reference: crate::history::HistoryEventBodyRef =
-        serde_json::from_value(body["reference"].clone())?;
-    Ok(Some(String::from_utf8(
-        read_window(reader, &reference).await?,
-    )?))
-}
-
-async fn read_window(
-    reader: &crate::history::HistoryReader,
-    reference: &crate::history::HistoryEventBodyRef,
-) -> Result<Vec<u8>> {
-    ensure!(
-        reference.byte_length <= 800_000,
-        "search body exceeds its budget"
-    );
-    let mut bytes = Vec::new();
-    loop {
-        let offset = bytes.len() as u64;
-        let window = reader
-            .read_body(
-                reference.clone(),
-                offset,
-                WINDOW.min((reference.byte_length - offset).max(1) as u32),
-            )
-            .await?;
-        ensure!(
-            window.offset == offset
-                && offset + window.bytes.len() as u64 <= reference.byte_length
-                && (!window.bytes.is_empty() || offset == reference.byte_length),
-            "history body window did not advance"
-        );
-        bytes.extend(window.bytes);
-        if bytes.len() as u64 == reference.byte_length {
-            return Ok(bytes);
-        }
-    }
+    Ok(Some(String::from_utf8(bytes)?))
 }
 
 fn matched_snippet(text: &str, needle: &str) -> Option<String> {

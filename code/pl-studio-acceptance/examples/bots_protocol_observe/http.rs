@@ -4,9 +4,9 @@ use futures::{StreamExt, stream::BoxStream};
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use pl_studio_runtime::WorkspaceRecord;
 use pl_studio_runtime::history::{
-    HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryBodyWindow, HistoryCut, HistoryDemand,
-    HistoryEventBodyRef, HistoryEventDetail, HistoryEventsPage, HistoryEventsQuery,
-    HistoryGroupPage, HistoryTimelinePage,
+    HISTORY_PROTOCOL_VERSION, HistoryBodyWindow, HistoryBusinessPage, HistoryCut, HistoryDemand,
+    HistoryEventBodyRef, HistoryEventRecord, HistoryEventsPage, HistoryEventsQuery,
+    HistoryTimelinePage, HistoryWorkRangePage,
 };
 use pl_studio_runtime::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
@@ -106,17 +106,18 @@ impl HistoryRead {
         )
         .await
     }
-    pub async fn group_page(
+    pub async fn work_range_page(
         &self,
-        group_id: String,
+        after_seq: Option<u64>,
+        before_seq: Option<u64>,
         cut: Option<HistoryCut>,
         cursor: Option<String>,
         demand: HistoryDemand,
-    ) -> Result<HistoryGroupPage> {
+    ) -> Result<HistoryWorkRangePage> {
         self.post(
-            "history/group",
+            "history/work-range",
             &serde_json::json!({
-                "groupId": group_id, "cut": cut, "cursor": cursor, "demand": demand
+                "afterSeq": after_seq, "beforeSeq": before_seq, "cut": cut, "cursor": cursor, "demand": demand
             }),
         )
         .await
@@ -126,7 +127,7 @@ impl HistoryRead {
         cut: Option<HistoryCut>,
         cursor: Option<String>,
         demand: HistoryDemand,
-    ) -> Result<HistoryTimelinePage> {
+    ) -> Result<HistoryBusinessPage> {
         self.post(
             "history/turns",
             &serde_json::json!({ "cut": cut, "cursor": cursor, "demand": demand }),
@@ -148,22 +149,10 @@ impl HistoryRead {
         )
         .await
     }
-    pub async fn event(&self, event_id: &str, demand: HistoryDemand) -> Result<HistoryEventDetail> {
+    pub async fn event(&self, event_id: &str, demand: HistoryDemand) -> Result<HistoryEventRecord> {
         self.post(
             "history/event",
             &serde_json::json!({ "eventId": event_id, "demand": demand }),
-        )
-        .await
-    }
-    pub async fn bodies(
-        &self,
-        event_id: &str,
-        cursor: Option<String>,
-        demand: HistoryDemand,
-    ) -> Result<HistoryBodyPage> {
-        self.post(
-            "history/bodies",
-            &serde_json::json!({ "eventId": event_id, "cursor": cursor, "demand": demand }),
         )
         .await
     }

@@ -193,33 +193,21 @@ void main() {
     () async {
       final reader = TestHistoryReader();
       final cut = HistoryCut('cut-7');
-      final entry = HistoryTimelineEntry(
-        rowKey: 'single:entity-1',
-        anchorSeq: 7,
-        headSeq: 7,
-        head: SingleHistoryRow(
-          HistoryEntityHead(
-            entityId: 'entity-1',
-            source: const ForegroundTurnChatSource(turnId: 'turn'),
-            kind: ChatAtomKind.text,
-            delivery: ChatDeliveryKind.foreground,
-            state: const HistoryEntityState(
-              kind: HistoryEntityStateKind.knownTerminal,
-              outcome: ChatTerminalOutcome.completed,
-            ),
-            observation: const HistoryObservation(
-              kind: HistoryObservationKind.original,
-            ),
-            contentPresent: true,
-            detailEventId: 'event-1',
-          ),
+      final item = DividerTimelineItem(
+        HistoryEventRecord(
+          seq: 7,
+          eventId: 'event-1',
+          kind: 'text_completed',
+          timelineRole: HistoryTimelineRole.divider,
+          recordedAt: 100,
+          turnId: 'turn',
+          entityId: 'entity-1',
+          source: const ForegroundTurnChatSource(turnId: 'turn'),
+          payloadSchema: 'anywork.chat/1',
+          payloadJson: '{"version":1}',
         ),
       );
-      final page = HistoryTimelinePage(
-        cut: cut,
-        entries: [entry],
-        next: 'older',
-      );
+      final page = HistoryTimelinePage(cut: cut, items: [item], next: 'older');
       var reads = 0;
       reader.onTimeline = (actualCut, cursor, demand) async {
         reads++;

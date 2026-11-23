@@ -48,6 +48,7 @@ pub(super) trait HistoryDemandValidation {
     fn validate(self) -> Result<()>;
     fn fits(&self, value: &impl Serialize) -> Result<bool>;
 }
+
 impl HistoryDemandValidation for HistoryDemand {
     fn validate(self) -> Result<()> {
         if !(1..=512).contains(&self.max_rows) || !(1..=1024 * 1024).contains(&self.max_bytes) {
@@ -57,10 +58,12 @@ impl HistoryDemandValidation for HistoryDemand {
         }
         Ok(())
     }
+
     fn fits(&self, value: &impl Serialize) -> Result<bool> {
         Ok(serde_json::to_vec(value)?.len() <= self.max_bytes as usize)
     }
 }
+
 /// Immutable bytes supplied by the producer. Reuse this object when retrying an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryBody {
@@ -70,6 +73,7 @@ pub struct HistoryBody {
     pub media_type: Option<String>,
     pub bytes: Arc<[u8]>,
 }
+
 impl HistoryBody {
     pub fn new(key: impl Into<String>, role: HistoryBodyRole, bytes: impl Into<Arc<[u8]>>) -> Self {
         Self {
@@ -80,46 +84,96 @@ impl HistoryBody {
             bytes: bytes.into(),
         }
     }
+
     pub(super) fn digest(&self) -> Vec<u8> {
         Sha256::digest(&self.bytes).to_vec()
     }
 }
 
-/// The owner assigns `header.seq`; callers submit zero. The full semantic batch becomes visible
-/// together. Bodies and header references are validated before acceptance.
+/// Write-side atomic history event submitted to `HistoryStore`.
+///
+/// The owner assigns `seq`; callers leave it at zero. `payload_schema` and `payload_json` hold
+/// the open event/business document (with `<= 16 KiB` UTF-8 text inlined under `bodies[].inlineText`
+/// and larger/binary payloads attached in `bodies` for `history_bodies` chunk storage).
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoryEvent {
-    pub header: HistoryEventHeader,
-    pub head: Option<HistoryRowHead>,
+    pub seq: u64,
+    pub event_id: String,
+    pub kind: HistoryEventKind,
+    pub timeline_role: HistoryTimelineRole,
+    pub occurred_at: Option<i64>,
+    pub recorded_at: i64,
+    pub run_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub call_id: Option<String>,
+    pub entity_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub source: Option<HistorySource>,
+    pub original: Option<HistoryOriginalInfo>,
+    pub row_scope: Option<HistoryBusinessRowScope>,
+    pub row_key: Option<String>,
     pub is_anchor: bool,
-    pub payload_body_id: Option<String>,
+    pub payload_schema: String,
+    pub payload_json: String,
     pub bodies: Vec<HistoryBody>,
 }
+
 impl HistoryEvent {
     /// Builds an unaccepted event; `recorded_at` is UTC epoch milliseconds.
-    pub fn new(event_id: impl Into<String>, kind: HistoryEventKind, recorded_at: i64) -> Self {
+    pub fn new(
+        event_id: impl Into<String>,
+        kind: HistoryEventKind,
+        timeline_role: HistoryTimelineRole,
+        recorded_at: i64,
+    ) -> Self {
         Self {
-            header: HistoryEventHeader {
-                seq: 0,
-                event_id: event_id.into(),
-                kind,
-                run_id: None,
-                attempt_id: None,
-                entity_id: None,
-                turn_id: None,
-                source: None,
-                call_id: None,
-                message_id: None,
-                group_id: None,
-                row_key: None,
-                original: None,
-                occurred_at: None,
-                recorded_at,
-            },
-            head: None,
+            seq: 0,
+            event_id: event_id.into(),
+            kind,
+            timeline_role,
+            occurred_at: None,
+            recorded_at,
+            run_id: None,
+            turn_id: None,
+            attempt_id: None,
+            call_id: None,
+            entity_id: None,
+            message_id: None,
+            tool_name: None,
+            source: None,
+            original: None,
+            row_scope: None,
+            row_key: None,
             is_anchor: false,
-            payload_body_id: None,
+            payload_schema: "anywork.business/1".into(),
+            payload_json: "{}".into(),
             bodies: Vec::new(),
+        }
+    }
+
+    pub fn to_record(&self) -> HistoryEventRecord {
+        HistoryEventRecord {
+            seq: self.seq,
+            event_id: self.event_id.clone(),
+            kind: self.kind.clone(),
+            timeline_role: self.timeline_role,
+            occurred_at: self.occurred_at,
+            recorded_at: self.recorded_at,
+            run_id: self.run_id.clone(),
+            turn_id: self.turn_id.clone(),
+            attempt_id: self.attempt_id.clone(),
+            call_id: self.call_id.clone(),
+            entity_id: self.entity_id.clone(),
+            message_id: self.message_id.clone(),
+            tool_name: self.tool_name.clone(),
+            source: self.source.clone(),
+            original: self.original.clone(),
+            row_scope: self.row_scope,
+            row_key: self.row_key.clone(),
+            payload_schema: self.payload_schema.clone(),
+            payload_json: self.payload_json.clone(),
         }
     }
 }
@@ -129,6 +183,7 @@ pub struct HistoryLimits {
     pub pending_events: u32,
     pub pending_bytes: u32,
 }
+
 impl Default for HistoryLimits {
     fn default() -> Self {
         Self {
@@ -160,21 +215,4 @@ pub(super) fn source_key(source: &HistorySource) -> Result<(String, String)> {
         HistorySource::Receipt { .. } => "receipt",
     };
     Ok((kind.into(), serde_json::to_string(source)?))
-}
-
-pub(super) trait HistoryHeadScope {
-    fn scope(&self) -> &'static str;
-}
-impl HistoryHeadScope for HistoryRowHead {
-    fn scope(&self) -> &'static str {
-        match self {
-            Self::Work(_) => "work",
-            Self::Single(_) => "single",
-            Self::Member(_) => "member",
-            Self::Turn(_) => "turn",
-            Self::Source(_) => "source",
-            Self::Cost(_) => "cost",
-            Self::Accounting(_) => "accounting",
-        }
-    }
 }

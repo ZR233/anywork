@@ -4,8 +4,35 @@ import '../../interactions/state/interaction_payload.dart';
 import '../state/timeline_display_unit.dart';
 import 'live_status_state.dart';
 
-/// Current 活动、Atoms 与独立业务状态的纯展示投影；不保存事件账本、不执行 I/O。
+/// Current 活动、Atoms、开放工作组与独立业务状态的纯展示投影；不保存事件账本、不执行 I/O。
 abstract final class LiveStatusProjection {
+  static bool _isLiveWorkKind(ChatAtomKind kind) => switch (kind) {
+    ChatAtomKind.reasoning ||
+    ChatAtomKind.toolCall ||
+    ChatAtomKind.fileChange ||
+    ChatAtomKind.skill ||
+    ChatAtomKind.agent => true,
+    _ => false,
+  };
+
+  static bool _suppressedByLiveWork(
+    LiveStatusNotice notice, {
+    required bool hasLiveWork,
+  }) {
+    if (!hasLiveWork ||
+        notice is! ExecutionLiveNotice ||
+        notice.view.errorMessage != null) {
+      return false;
+    }
+    return switch (notice.view.kind) {
+      ConversationActivityKind.preparing ||
+      ConversationActivityKind.thinking ||
+      ConversationActivityKind.planning ||
+      ConversationActivityKind.runningTool => true,
+      _ => false,
+    };
+  }
+
   /// 当前轮次正文或压缩记录已承担展示时，接管并抑制对应的普通同类状态提示。
   static bool hasCurrentOutputRenderer({
     required CurrentAtomSnapshot? current,
@@ -71,25 +98,53 @@ abstract final class LiveStatusProjection {
     deferred: activity.deferred,
   );
 
-  /// Current itself never creates Work rows. The bar is the projection of the
-  /// authoritative activity/interaction/storage notices only.
   static LiveStatusNoticeSurface? projectSurface({
     required CurrentAtomSnapshot? current,
+    required DisplayBlock? liveOpenWork,
     required Set<String> renderedCurrentAtomIds,
     required String? activeTurnId,
     required List<LiveStatusNotice> rawNotices,
   }) {
+    final executionPresent = current?.executionPresent ?? false;
+    final liveAtoms = executionPresent
+        ? current?.currentAtoms ?? const <CurrentAtom>[]
+        : const <CurrentAtom>[];
+    final liveWorkAtoms = <CurrentAtom>[
+      for (final atom in liveAtoms)
+        if (atom.lifecycle is ActiveChatAtom && _isLiveWorkKind(atom.kind))
+          atom,
+    ];
+    final liveResponseAtoms = <CurrentAtom>[
+      for (final atom in liveAtoms)
+        if (atom.lifecycle is ActiveChatAtom &&
+            atom.kind == ChatAtomKind.text &&
+            atom.contents.isNotEmpty)
+          atom,
+    ];
+    final hasLiveWork = liveOpenWork != null || liveWorkAtoms.isNotEmpty;
     final notices = <LiveStatusNotice>[
       for (final notice in rawNotices)
         if (!hasCurrentOutputRenderer(
-          current: current,
-          renderedCurrentAtomIds: renderedCurrentAtomIds,
-          activeTurnId: activeTurnId,
-          notice: notice,
-        ))
+              current: current,
+              renderedCurrentAtomIds: renderedCurrentAtomIds,
+              activeTurnId: activeTurnId,
+              notice: notice,
+            ) &&
+            !_suppressedByLiveWork(notice, hasLiveWork: hasLiveWork))
           notice,
     ];
-    return notices.isEmpty ? null : LiveStatusNoticeSurface(notices: notices);
+    if (notices.isEmpty &&
+        liveOpenWork == null &&
+        liveWorkAtoms.isEmpty &&
+        liveResponseAtoms.isEmpty) {
+      return null;
+    }
+    return LiveStatusNoticeSurface(
+      notices: notices,
+      liveOpenWork: liveOpenWork,
+      liveWorkAtoms: liveWorkAtoms,
+      liveResponseAtoms: liveResponseAtoms,
+    );
   }
 
   static LiveStatusView project({
@@ -135,6 +190,7 @@ abstract final class LiveStatusProjection {
 
     final surface = projectSurface(
       current: observation.current,
+      liveOpenWork: observation.liveOpenWork,
       renderedCurrentAtomIds: observation.renderedCurrentAtomIds,
       activeTurnId: observation.activeTurnId,
       rawNotices: rawNotices,

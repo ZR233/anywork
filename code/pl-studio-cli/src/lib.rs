@@ -11,8 +11,8 @@ pub use signals::SignalListener;
 
 use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::history::{
-    BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryCut, HistoryDemand,
-    HistoryEventBodyRef, HistoryReader, HistoryRowHead, HistoryTurnState,
+    HISTORY_PROTOCOL_VERSION, HistoryBusinessRowHead, HistoryCut, HistoryDemand, HistoryReader,
+    HistoryTurnState, read_event_body_bytes,
 };
 use pl_studio_runtime::{
     BuildInfoV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION,
@@ -692,7 +692,7 @@ async fn terminal_turn_for_input(
             .turns_page(Some(cut.clone()), page_cursor.clone(), history_demand())
             .await?;
         for entry in page.entries {
-            let HistoryRowHead::Turn(head) = entry.head else {
+            let HistoryBusinessRowHead::Turn(head) = entry.head else {
                 continue;
             };
             if head.input_id.as_deref() != Some(input_id)
@@ -730,62 +730,13 @@ async fn terminal_turn_for_input(
 }
 
 async fn read_history_turn(history: &HistoryReader, event_id: &str) -> Result<Turn> {
-    let mut cursor = None;
-    let mut selected = None;
-    loop {
-        let page = history
-            .list_bodies(event_id.to_owned(), cursor.clone(), history_demand())
-            .await?;
-        let HistoryBodyPage {
-            owner_event_id,
-            entries,
-            next,
-        } = page;
-        ensure!(
-            owner_event_id == event_id,
-            "History Turn detail belongs to another event"
-        );
-        for entry in entries {
-            if entry.body_key == "turn_detail" {
-                ensure!(selected.is_none(), "duplicate History Turn detail body");
-                selected = Some(entry.reference);
-            }
-        }
-        let Some(next) = next else {
-            break;
-        };
-        ensure!(
-            cursor.as_deref() != Some(next.as_str()),
-            "History Turn body cursor did not advance"
-        );
-        cursor = Some(next);
-    }
-    let reference = selected.context("terminal History Turn omitted its typed detail body")?;
-    serde_json::from_slice(&read_history_body(history, &reference).await?)
-        .context("History Turn detail is not a typed Turn")
-}
-
-async fn read_history_body(
-    history: &HistoryReader,
-    reference: &HistoryEventBodyRef,
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while (bytes.len() as u64) < reference.byte_length {
-        let offset = bytes.len() as u64;
-        let max_bytes = (reference.byte_length - offset).min(BODY_CHUNK_BYTES as u64) as u32;
-        let window = history
-            .read_body(reference.clone(), offset, max_bytes)
-            .await?;
-        ensure!(
-            window.offset == offset
-                && !window.bytes.is_empty()
-                && window.bytes.len() <= max_bytes as usize
-                && window.total_length == reference.byte_length,
-            "History Turn detail range did not advance"
-        );
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
+    let detail = history
+        .read_event(event_id.to_owned(), history_demand())
+        .await?;
+    let bytes = read_event_body_bytes(history, &detail, "turn_detail", None)
+        .await?
+        .context("terminal History Turn omitted its typed detail body")?;
+    serde_json::from_slice(&bytes).context("History Turn detail is not a typed Turn")
 }
 
 fn history_demand() -> HistoryDemand {

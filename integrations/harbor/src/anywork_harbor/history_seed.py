@@ -212,13 +212,13 @@ def _inspect_data_unchecked(data: Path) -> dict:
                 }
                 if (
                     meta is None
-                    or meta[0] != 25
+                    or meta[0] != 26
                     or not meta[1]
                     or not meta[2]
                     or meta[2] != session_record["threadId"]
                     or "history_meta" in tables
                 ):
-                    raise ValueError("种子历史数据库不是当前 schema 25 格式")
+                    raise ValueError("种子历史数据库不是当前 schema 26 格式")
             if path.name == "calls.sqlite":
                 row = db.execute(
                     "SELECT schema_version,pending_cleanup FROM calls_meta WHERE id=1"

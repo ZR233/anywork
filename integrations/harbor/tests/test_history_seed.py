@@ -31,7 +31,7 @@ def source_home(tmp_path, archive):
     with sqlite3.connect(session / "history.sqlite") as db:
         db.executescript(
             "CREATE TABLE history_store_meta(singleton,schema_version,database_id,thread_id); "
-            "INSERT INTO history_store_meta VALUES(1,25,'db-thread','thread');"
+            "INSERT INTO history_store_meta VALUES(1,26,'db-thread','thread');"
         )
     state = {
         "lifecycle": {"kind": "closed"},

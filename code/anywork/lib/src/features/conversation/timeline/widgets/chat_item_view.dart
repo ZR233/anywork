@@ -605,7 +605,6 @@ class _ChatItemViewState extends State<ChatItemView> {
           ? invocation['name'] as String
           : '工具调用';
       final label = switch (unavailable.kind) {
-        ToolCardUnavailableKind.unknownContract => '$name · 未知展示格式',
         ToolCardUnavailableKind.malformed => '$name · 内容格式错误',
         ToolCardUnavailableKind.deferred => '$name · 正文按需读取',
       };
@@ -669,9 +668,11 @@ class _ChatItemViewState extends State<ChatItemView> {
     final answers = state['answers'] is List
         ? state['answers'] as List
         : const [];
-    final title = state['kind'] == 'cancelled'
-        ? context.l10n.timelineUserInputCancelled
-        : context.l10n.timelineUserInputAnswered;
+    final title = switch (state['kind']) {
+      'pending' => '等待用户回答',
+      'cancelled' => context.l10n.timelineUserInputCancelled,
+      _ => context.l10n.timelineUserInputAnswered,
+    };
     return KeyedSubtree(
       key: StudioDriverKeys.timelineUserInput(item.id),
       child: _disclosure(
@@ -949,7 +950,8 @@ class _ChatItemViewState extends State<ChatItemView> {
         ? StudioCodeBlock(text: text, horizontalScroll: false)
         : widget.bodyBuilder?.call(id, text) ??
               TimelinePlainText(id: id, text: text);
-    if (body.historyReference != null || body.currentReference != null) {
+    if (!body.hasInline &&
+        (body.historyReference != null || body.currentReference != null)) {
       return TimelineOwnedBodyConnector(
         itemId: item.id,
         contentKey: body.key,
@@ -962,16 +964,21 @@ class _ChatItemViewState extends State<ChatItemView> {
         witness: (text, child) => _contentWitness(text, render(text)),
       );
     }
-    final bytes = body.inline;
     Widget inline;
-    if (bytes == null) {
-      inline = Text('${body.key} · 未提供内容或引用');
+    final decoded = body.inlineText;
+    if (decoded != null) {
+      inline = _contentWitness(decoded, render(decoded));
     } else {
-      try {
-        final text = utf8.decode(bytes);
-        inline = _contentWitness(text, render(text));
-      } on FormatException catch (error) {
-        inline = Text('${body.key} · ${error.message}');
+      final bytes = body.inline;
+      if (bytes == null) {
+        inline = Text('${body.key} · 未提供内容或引用');
+      } else {
+        try {
+          final text = utf8.decode(bytes);
+          inline = _contentWitness(text, render(text));
+        } on FormatException catch (error) {
+          inline = Text('${body.key} · ${error.message}');
+        }
       }
     }
     return frameBody?.call(inline) ?? inline;

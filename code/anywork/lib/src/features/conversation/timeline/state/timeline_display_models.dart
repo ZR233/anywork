@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:anywork_client/models.dart';
 
+import 'chat_item_presentation.dart';
+
 const presentationVersion = 6;
 
 final class DisplayBlockRef {
@@ -10,6 +12,9 @@ final class DisplayBlockRef {
     required this.cut,
     required this.anchorSeq,
     required this.headSeq,
+    this.afterSeq,
+    this.beforeSeq,
+    this.runId,
   });
   final String blockId;
 
@@ -18,6 +23,9 @@ final class DisplayBlockRef {
   final HistoryCut cut;
   final int anchorSeq;
   final int headSeq;
+  final int? afterSeq;
+  final int? beforeSeq;
+  final String? runId;
 
   @override
   bool operator ==(Object other) =>
@@ -25,9 +33,13 @@ final class DisplayBlockRef {
       blockId == other.blockId &&
       cut == other.cut &&
       anchorSeq == other.anchorSeq &&
-      headSeq == other.headSeq;
+      headSeq == other.headSeq &&
+      afterSeq == other.afterSeq &&
+      beforeSeq == other.beforeSeq &&
+      runId == other.runId;
   @override
-  int get hashCode => Object.hash(blockId, cut, anchorSeq, headSeq);
+  int get hashCode =>
+      Object.hash(blockId, cut, anchorSeq, headSeq, afterSeq, beforeSeq, runId);
 }
 
 /// Wall-clock interval owned by the Work block, in Unix milliseconds.
@@ -75,8 +87,10 @@ final class DisplayRecord {
     this.historyEventId,
     this.historyDetailEventId,
     this.runId,
-    this.historyState,
-    this.historyObservation,
+    this.isTerminalHistory = false,
+    this.isFrozenHistory = false,
+    this.callId,
+    this.predecodedPresentation,
     this.immutableRecord,
     this.currentContents = const [],
   });
@@ -89,8 +103,10 @@ final class DisplayRecord {
   final String? historyEventId;
   final String? historyDetailEventId;
   final String? runId;
-  final HistoryEntityStateKind? historyState;
-  final HistoryObservationKind? historyObservation;
+  final bool isTerminalHistory;
+  final bool isFrozenHistory;
+  final String? callId;
+  final ChatItemPresentation? predecodedPresentation;
 
   /// The bounded row head retained while Current owns the same entity.
   final DisplayRecord? immutableRecord;
@@ -138,6 +154,39 @@ bool sameDisplayBlock(DisplayBlock first, DisplayBlock second) =>
     first.blockOrder == second.blockOrder &&
     sameDisplayBlockBody(first.body, second.body);
 
+/// Checks whether [existing] in the immutable main Timeline already represents
+/// the exact same historical entry or sealed Work interval as [incoming].
+///
+/// Sealed History Work blocks keep their original `cut` and identity once
+/// admitted so advancing `HistoryCut` or adding trailing `divider`s never
+/// triggers in-place message replacement or resets expanded Work groups.
+bool sameImmutableTimelineBlock(DisplayBlock existing, DisplayBlock incoming) {
+  if (sameDisplayBlock(existing, incoming)) return true;
+  if (existing.id != incoming.id ||
+      existing.blockOrder != incoming.blockOrder) {
+    return false;
+  }
+  final a = existing.body;
+  final b = incoming.body;
+  if (a is! WorkDisplayBlock || b is! WorkDisplayBlock) return false;
+  return a.groupClosed &&
+      b.groupClosed &&
+      !a.executionPresent &&
+      !b.executionPresent &&
+      a.unfinishedCount == b.unfinishedCount &&
+      a.memberCount == b.memberCount &&
+      a.summary == b.summary &&
+      a.timing.startedAtMillis == b.timing.startedAtMillis &&
+      a.timing.finishedAtMillis == b.timing.finishedAtMillis &&
+      a.members.blockId == b.members.blockId &&
+      a.members.anchorSeq == b.members.anchorSeq &&
+      a.members.headSeq == b.members.headSeq &&
+      a.members.afterSeq == b.members.afterSeq &&
+      a.members.runId == b.members.runId &&
+      (a.members.beforeSeq == b.members.beforeSeq ||
+          a.members.beforeSeq == null);
+}
+
 bool sameDisplayBlockBody(DisplayBlockBody first, DisplayBlockBody second) {
   if (first is WorkDisplayBlock && second is WorkDisplayBlock) {
     return first.members == second.members &&
@@ -179,8 +228,12 @@ bool sameDisplayRecord(DisplayRecord first, DisplayRecord second) {
       first.historyEventId == second.historyEventId &&
       first.historyDetailEventId == second.historyDetailEventId &&
       first.runId == second.runId &&
-      first.historyState == second.historyState &&
-      first.historyObservation == second.historyObservation &&
+      first.isTerminalHistory == second.isTerminalHistory &&
+      first.isFrozenHistory == second.isFrozenHistory &&
+      first.callId == second.callId &&
+      first.predecodedPresentation?.raw == second.predecodedPresentation?.raw &&
+      first.predecodedPresentation?.compatibility ==
+          second.predecodedPresentation?.compatibility &&
       _sameOptionalRecord(first.immutableRecord, second.immutableRecord) &&
       _sameContentSource(first.contentSource, second.contentSource) &&
       _sameCurrentContents(first.currentContents, second.currentContents);
@@ -285,10 +338,16 @@ final class CurrentAtomSnapshot {
   CurrentAtomSnapshot({
     required this.revision,
     List<CurrentAtom> currentAtoms = const [],
+    this.ownerId,
+    this.executionPresent = false,
+    this.executionActive = false,
   }) : currentAtoms = List.unmodifiable(currentAtoms);
   final int revision;
+  final String? ownerId;
+  final bool executionPresent;
+  final bool executionActive;
 
-  /// The bounded Current run facts used to enrich matching History rows.
-  /// They are not a second timeline row collection.
+  /// The bounded Current run facts rendered inside LiveStatusBar and open live Work.
+  /// They are never overlaid onto immutable main-Timeline rows.
   final List<CurrentAtom> currentAtoms;
 }

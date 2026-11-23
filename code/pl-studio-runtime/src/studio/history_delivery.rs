@@ -1,6 +1,7 @@
 //! Immutable delivery originals. Query positions belong to History, never to Current admission.
 use crate::history::{
-    HistoryDemand, HistoryEventDetail, HistoryEventsQuery, HistoryReader, HistorySource,
+    HistoryDemand, HistoryEventRecord, HistoryEventsQuery, HistoryReader, HistorySource,
+    read_event_body_bytes,
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::{context::OpaquePayload, thread::inbox::ThreadMessage};
@@ -10,48 +11,47 @@ pub(crate) fn source(thread_id: &str, kind: &str) -> HistorySource {
         operation_id: format!("studio.{kind}:{thread_id}"),
     }
 }
-async fn body(reader: &HistoryReader, detail: &HistoryEventDetail) -> Result<Vec<u8>> {
-    let reference = detail
-        .payload_ref
-        .clone()
-        .context("delivery original has no body")?;
-    let mut bytes = Vec::new();
-    let mut offset = 0;
-    while offset < reference.byte_length {
-        let window = reader
-            .read_body(reference.clone(), offset, 64 * 1024)
-            .await?;
-        ensure!(
-            !window.bytes.is_empty(),
-            "delivery original did not advance"
-        );
-        offset += window.bytes.len() as u64;
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
+
+fn manifest_byte_length(event: &HistoryEventRecord) -> Option<u64> {
+    let value: serde_json::Value = serde_json::from_str(&event.payload_json).ok()?;
+    let bodies = value.get("bodies")?.as_array()?;
+    let entry = bodies
+        .iter()
+        .find(|item| item.get("key").and_then(serde_json::Value::as_str) == Some("business_fact"))
+        .or_else(|| bodies.first())?;
+    entry.get("byteLength").and_then(serde_json::Value::as_u64)
 }
+
 async fn decode<T: serde::de::DeserializeOwned>(
     reader: &HistoryReader,
-    detail: &HistoryEventDetail,
+    record: &HistoryEventRecord,
     format: &str,
-) -> Result<T> {
-    let payload: OpaquePayload = serde_json::from_slice(&body(reader, detail).await?)?;
+    max_bytes: usize,
+) -> Result<(T, usize)> {
+    let bytes = read_event_body_bytes(reader, record, "business_fact", Some(max_bytes))
+        .await?
+        .context("delivery original has no body")?;
+    let len = bytes.len();
+    let payload: OpaquePayload = serde_json::from_slice(&bytes)?;
     ensure!(
         payload.format() == format && payload.version() == 1,
         "unsupported delivery producer contract"
     );
-    Ok(serde_json::from_str(payload.content())?)
+    Ok((serde_json::from_str(payload.content())?, len))
 }
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportIdentity {
     child_id: String,
     commit_sequence: u64,
 }
+
 pub(crate) struct Report {
     pub event_seq: u64,
     pub message: ThreadMessage,
 }
+
 /// A bounded page of one Thread's actual parent-report producer facts.
 pub(crate) async fn reports(
     reader: &HistoryReader,
@@ -81,12 +81,25 @@ pub(crate) async fn reports(
     let mut page = Vec::new();
     let mut bytes: usize = 0;
     for event in events {
-        let size = event
-            .payload_ref
-            .as_ref()
-            .context("report original body is missing")?
-            .byte_length;
-        let size = usize::try_from(size).context("report size exceeds addressable memory")?;
+        if let Some(declared) = manifest_byte_length(&event) {
+            let size =
+                usize::try_from(declared).context("report size exceeds addressable memory")?;
+            if bytes.checked_add(size).is_none_or(|total| total > budget) {
+                ensure!(
+                    !page.is_empty(),
+                    "report cannot fit the requested byte budget"
+                );
+                break;
+            }
+        }
+        let remaining = budget.saturating_sub(bytes);
+        let max_read = if page.is_empty() { budget } else { remaining };
+        let (message, size): (ThreadMessage, usize) =
+            match decode(reader, &event, "pl.studio.parent-report", max_read).await {
+                Ok(result) => result,
+                Err(_) if !page.is_empty() && bytes.saturating_add(1) > budget => break,
+                Err(error) => return Err(error),
+            };
         if bytes.checked_add(size).is_none_or(|total| total > budget) {
             ensure!(
                 !page.is_empty(),
@@ -94,7 +107,6 @@ pub(crate) async fn reports(
             );
             break;
         }
-        let message: ThreadMessage = decode(reader, &event, "pl.studio.parent-report").await?;
         ensure!(
             message.payload.format() == "pl.studio.turn-report",
             "parent report has another producer"
@@ -111,7 +123,7 @@ pub(crate) async fn reports(
         );
         bytes += size;
         page.push(Report {
-            event_seq: event.header.seq,
+            event_seq: event.seq,
             message,
         });
     }

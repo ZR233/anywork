@@ -228,6 +228,7 @@ pub(super) struct QuestionDescriptor {
     rename_all_fields = "camelCase"
 )]
 pub(super) enum UserInputState {
+    Pending,
     Cancelled,
     Resolved { answers: Vec<AnswerDescriptor> },
 }

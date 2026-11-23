@@ -16,7 +16,7 @@ Native 自有领域与 ACP 等外部协议的能力边界见[可观察查询](ob
 | 可变当前态与查询结果 | 按[可观察查询](observable-queries.md)选择完整可替换快照或确需连续的 delta；SDK 接纳一次，Flutter 只读投影 |
 | 一次性详情与检查 | 普通类型化查询，结果归原请求；无需建立永久观察 |
 | 不可变完成事实 | 原事实 owner 按稳定身份可靠发布，按完成序号读取；保留真实保存义务 |
-| Native 时间线 | HistoryClassifier 维护 Work／Single／member 小头及真实边界观察；Current 独立提供本 run 活动内容，Flutter 不重做领域分类 |
+| Native 时间线 | 历史写入侧无状态追加原子事件；`HistoryReader` 由覆盖索引切分 `divider` 与 `WorkRange`；Flutter 工作组 ViewModel 按 `call_id`/`entity_id` 折叠最新态，Current 独立提供本 run 实时叠加 |
 | 历史页与不可变详情 | 按需查询，绑定请求身份、游标与预算，不借实时流的 credit 完成查询 |
 | 展示选择与资源 | 由实际呈现或资源 owner 管理，不冒充业务事实 |
 
@@ -26,7 +26,7 @@ Native 自有领域与 ACP 等外部协议的能力边界见[可观察查询](ob
 HistoryReader 提供纯分页及不可变正文；不消费 Current、不隐藏 apply，也没有 next／ACK 或 tail。
 Flutter 保留 Flyer，由一个有界 History 窗口与当前 run overlay 按 row_key／entity_id 组成画面。
 它们的保存与通知独立，不承诺共同切面；缺少终态时保留最后已见小头，不伪造成功。
-具体分类与边界观察规则以 design/26 为准，不在客户端重做分组。
+具体区间切分与视图折叠规则以 design/26 为准，客户端不自造主时间线分段边界。
 迁移内容活动流时，逐一核对原领域阶段摘要的消费者；“没有未完成正文”不等于
 “没有执行活动”。已有类型化阶段仍须从原 owner 经首基线和后续通知交付，不能丢弃后
 再让界面凭执行句柄存在猜测思考、等待或停止。阶段摘要也不能越过内容屏障退休正文。
@@ -142,7 +142,7 @@ producer、sink、query、consumer 和底层句柄真实退出。迟到打开的
 
 ## 分组与内容证据
 
-HistoryClassifier 是 Native 唯一可见性／分组 owner。真实开始、首次公开内容、边界观察和结束各自保真。
-旧组的 BoundaryObserved 保留当时实际已见 bytes；后来内容增长、replace 或终稿都不能覆盖它。
-Current 只说明本 run 当下的执行资格与内容，不携带完成序号或历史资格；主列表折叠头不读取成员正文。
+历史写入只记录互不等待的原子事件（携带 `timeline_role = 'divider' | 'work' | 'hidden'` 与混合正文引用），不再维护 `HistoryClassifier`、`BoundaryObserved` 或持久组锚点。
+主时间线的 `WorkRange` 区间边界完全由 `seq` 上的覆盖索引决定，展开后由工作组 ViewModel 将区间内同 `call_id` 原子事件折叠为一条最新态行（跨区间完成时通过 `call_id` 索引补拉 `tool_called`），单条未知或损坏事件按单行降级展示。
+Current 只说明本 run 当下的实时活动与流式输出，不携带完成序号或历史资格；主列表折叠工作头不预读成员细节。
 正文、媒体与展开任务分别按实际 Current scope 或 History reader 取消和回收，不保留 display lease。

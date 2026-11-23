@@ -8,27 +8,12 @@ use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ThreadWorkspaceMode,
     history::{
-        HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
+        HistoryBusinessRowHead, HistoryDemand, HistoryEventsQuery, decode_event_envelope,
+        read_event_body_bytes,
     },
 };
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use support::{Environment, completed_prompt, current_demand, prompt_step, text_reply};
-
-async fn body(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    while bytes.len() as u64 != reference.byte_length {
-        let window = reader
-            .read_body(
-                reference.clone(),
-                bytes.len() as u64,
-                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
-            )
-            .await?;
-        ensure!(!window.bytes.is_empty(), "history body did not advance");
-        bytes.extend(window.bytes);
-    }
-    Ok(bytes)
-}
 
 #[tokio::test]
 async fn durable_reopen_uses_original_records_without_execution_or_run_copies() -> Result<()> {
@@ -91,44 +76,35 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
         let mut text_identity = None;
         let mut saw_inference = false;
         for event in originals.entries {
-            let Some(original) = &event.header.original else {
+            let Some(original) = &event.original else {
                 continue;
             };
             saw_inference |= original.original_kind == ChatAtomKind::Inference;
-            let Some(payload_ref) = &event.payload_ref else {
-                continue;
-            };
-            let payload = body(&reader, payload_ref).await?;
-            let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
-            ensure!(envelope["contract"] == "anywork.chat/1");
+            let envelope = decode_event_envelope(&event)?;
+            ensure!(envelope.contract == "anywork.event/1");
             if original.original_kind != ChatAtomKind::Text {
                 continue;
             }
-            let entries = reader
-                .list_bodies(event.header.event_id.clone(), None, demand)
-                .await?;
-            let reference = entries
-                .entries
-                .into_iter()
-                .find(|entry| entry.role == HistoryBodyRole::Body)
-                .context("text original has no body")?;
-            if body(&reader, &reference.reference).await? == "真实原件与恢复🧭".as_bytes() {
+            let Some(bytes) = read_event_body_bytes(&reader, &event, "body", None).await? else {
+                anyhow::bail!("text original has no body");
+            };
+            if bytes == "真实原件与恢复🧭".as_bytes() {
                 ensure!(text_identity.is_none(), "text original was duplicated");
-                text_identity = Some(event.header.event_id.clone());
+                text_identity = Some(event.event_id.clone());
             }
         }
         ensure!(saw_inference, "history lost the inference diagnostic");
         let text_identity = text_identity.context("real model text original")?;
         let page = reader.turns_page(None, None, demand).await?;
         ensure!(page.entries.iter().any(|entry| matches!(
-            &entry.head, pl_studio_runtime::history::HistoryRowHead::Turn(head)
-                if head.turn_id == turn.id
+            &entry.head,
+            HistoryBusinessRowHead::Turn(head) if head.turn_id == turn.id
         )));
         let events = reader.events_page(
             HistoryEventsQuery::Turn { turn_id: turn.id.clone() },
             Some(page.cut), None, demand,
         ).await?;
-        ensure!(events.entries.iter().any(|entry| entry.header.event_id == text_identity));
+        ensure!(events.entries.iter().any(|entry| entry.event_id == text_identity));
         reader.close().await;
 
         let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
@@ -147,7 +123,7 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
                 ))
                 .await?
                 .context("history identity")?;
-            ensure!(identity.try_get::<i64>("", "schema_version")? == 25);
+            ensure!(identity.try_get::<i64>("", "schema_version")? == 26);
             ensure!(identity.try_get::<String>("", "thread_id")?.as_str() == id.as_str());
             Ok(())
         }

@@ -131,25 +131,27 @@ impl BridgeHistoryReader {
         Ok(presentation::timeline_page(page))
     }
 
-    pub async fn group_page(
+    pub async fn work_range_page(
         &self,
-        group_id: String,
+        after_seq: Option<u64>,
+        before_seq: Option<u64>,
         cut: Option<BridgeHistoryCut>,
         cursor: Option<String>,
         demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryGroupPage, BridgeError> {
+    ) -> Result<BridgeHistoryWorkRangePage, BridgeError> {
         let page = self
             .managed
             .get()
             .0
-            .group_page(
-                group_id,
+            .work_range_page(
+                after_seq,
+                before_seq,
                 cut.map(presentation::bridge_to_cut),
                 cursor,
                 presentation::history_demand(demand),
             )
             .await?;
-        Ok(presentation::group_page(page))
+        Ok(presentation::work_range_page(page))
     }
 
     pub async fn turns_page(
@@ -157,7 +159,7 @@ impl BridgeHistoryReader {
         cut: Option<BridgeHistoryCut>,
         cursor: Option<String>,
         demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryTimelinePage, BridgeError> {
+    ) -> Result<BridgeHistoryBusinessPage, BridgeError> {
         let page = self
             .managed
             .get()
@@ -168,7 +170,7 @@ impl BridgeHistoryReader {
                 presentation::history_demand(demand),
             )
             .await?;
-        Ok(presentation::timeline_page(page))
+        Ok(presentation::business_page(page))
     }
 
     pub async fn events_page(
@@ -196,14 +198,14 @@ impl BridgeHistoryReader {
         &self,
         event_id: String,
         demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryEventDetail, BridgeError> {
-        let detail = self
+    ) -> Result<BridgeHistoryEventRecord, BridgeError> {
+        let record = self
             .managed
             .get()
             .0
             .read_event(event_id, presentation::history_demand(demand))
             .await?;
-        Ok(presentation::event_detail(detail))
+        Ok(presentation::event_record(record))
     }
 
     pub async fn list_bodies(
@@ -258,7 +260,7 @@ impl BridgeHistoryReader {
         cut: Option<BridgeHistoryCut>,
         cursor: Option<String>,
         demand: BridgeHistoryDemand,
-    ) -> Result<BridgeHistoryTimelinePage, BridgeError> {
+    ) -> Result<BridgeHistoryBusinessPage, BridgeError> {
         let page = self
             .managed
             .get()
@@ -269,7 +271,7 @@ impl BridgeHistoryReader {
                 presentation::history_demand(demand),
             )
             .await?;
-        Ok(presentation::timeline_page(page))
+        Ok(presentation::business_page(page))
     }
 
     pub async fn wait_changed(

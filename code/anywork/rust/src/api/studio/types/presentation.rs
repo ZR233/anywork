@@ -1,15 +1,14 @@
 //! Mechanical FRB types for the independent history and current read ports.
 
 use super::{
-    BridgeCacheUsageSummary, BridgeChatActiveStatus, BridgeChatAtomKind, BridgeChatAtomLifecycle,
-    BridgeChatContentRole, BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState,
-    BridgeChatTerminalOutcome, BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeReadDemand,
-    BridgeThreadActivityKind, BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope,
-    BridgeThreadSnapshot, BridgeThreadStatus, BridgeThreadTextChannel,
-    BridgeThreadWaitPresentation, BridgeTurnPhase,
+    BridgeCacheUsageSummary, BridgeChatAtomKind, BridgeChatAtomLifecycle, BridgeChatContentRole,
+    BridgeChatDeliveryKind, BridgeChatSourceId, BridgeChatSourceState, BridgeChatTerminalOutcome,
+    BridgeChatToolIdentity, BridgeCurrentPlanHead, BridgeReadDemand, BridgeThreadActivityKind,
+    BridgeThreadActivityToolState, BridgeThreadNotificationEnvelope, BridgeThreadSnapshot,
+    BridgeThreadStatus, BridgeThreadTextChannel, BridgeThreadWaitPresentation, BridgeTurnPhase,
 };
 
-pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 1;
+pub const BRIDGE_HISTORY_PROTOCOL_VERSION: u32 = 2;
 pub const BRIDGE_CURRENT_PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,92 +51,20 @@ pub enum BridgeHistoryEventsQuery {
     TextOriginals,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistoryEntityState {
-    Unknown,
-    KnownActive { status: BridgeChatActiveStatus },
-    KnownTerminal { outcome: BridgeChatTerminalOutcome },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistoryObservation {
-    Original,
-    Boundary { captured_at: Option<i64> },
-    UnavailableLegacy { captured_at: Option<i64> },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeHistoryTimelineRole {
+    Divider,
+    Work,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeSingleVisibility {
-    Content,
-    FinalEmptyAfterContent,
+pub enum BridgeHistoryBusinessRowScope {
+    Turn,
+    Source,
+    Cost,
+    Accounting,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeHistoryWaitIntent {
-    Events { target_count: u64, timeout_ms: u64 },
-    Timer { duration_ms: u64 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeHistoryWaitState {
-    Waiting,
-    Ready,
-    TimedOut,
-    Elapsed,
-    Cancelled,
-    Failed,
-    Interrupted,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeHistoryWaitHead {
-    Inline {
-        presentation: BridgeThreadWaitPresentation,
-    },
-    Deferred {
-        intent: BridgeHistoryWaitIntent,
-        state: BridgeHistoryWaitState,
-        messages_ready: Option<bool>,
-        presentation: BridgeHistoryEventBodyRef,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryEntityHead {
-    pub entity_id: String,
-    pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub source: BridgeChatSourceId,
-    pub kind: BridgeChatAtomKind,
-    pub delivery: BridgeChatDeliveryKind,
-    pub state: BridgeHistoryEntityState,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub text_channel: Option<BridgeThreadTextChannel>,
-    pub tool: Option<BridgeChatToolIdentity>,
-    pub wait: Option<BridgeHistoryWaitHead>,
-    pub content_present: Option<bool>,
-    pub single_visibility: Option<BridgeSingleVisibility>,
-    pub observation: BridgeHistoryObservation,
-    pub presentation_contract: Option<String>,
-    pub detail_event_id: Option<String>,
-    pub input_manifest_event_id: Option<String>,
-    pub body_manifest_event_id: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryWorkHead {
-    pub group_id: String,
-    pub run_id: Option<String>,
-    pub started_at: Option<i64>,
-    pub boundary_at: Option<i64>,
-    pub closed: bool,
-    pub member_count: u64,
-    pub unfinished_count: u64,
-    pub execution_present: bool,
-    pub summary: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeHistoryTurnHead {
     pub turn_id: String,
@@ -216,10 +143,43 @@ pub struct BridgeHistoryAccountingHead {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum BridgeHistoryRowHead {
-    Work(BridgeHistoryWorkHead),
-    Single(BridgeHistoryEntityHead),
-    Member(BridgeHistoryEntityHead),
+pub struct BridgeHistoryWorkRange {
+    pub range_id: String,
+    pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
+    pub first_seq: u64,
+    pub last_seq: u64,
+    pub started_at: Option<i64>,
+    pub ended_at: Option<i64>,
+    pub run_id: Option<String>,
+    pub event_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum BridgeHistoryTimelineItem {
+    Divider(BridgeHistoryEventRecord),
+    WorkRange(BridgeHistoryWorkRange),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeHistoryTimelinePage {
+    pub cut: BridgeHistoryCut,
+    pub items: Vec<BridgeHistoryTimelineItem>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BridgeHistoryWorkRangePage {
+    pub cut: BridgeHistoryCut,
+    pub after_seq: Option<u64>,
+    pub before_seq: Option<u64>,
+    pub events: Vec<BridgeHistoryEventRecord>,
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BridgeHistoryBusinessRowHead {
     Turn(BridgeHistoryTurnHead),
     Source(BridgeHistorySourceHead),
     Cost(BridgeHistoryCostHead),
@@ -227,25 +187,17 @@ pub enum BridgeHistoryRowHead {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryTimelineEntry {
+pub struct BridgeHistoryBusinessRowEntry {
     pub row_key: String,
     pub anchor_seq: u64,
     pub head_seq: u64,
-    pub head: BridgeHistoryRowHead,
+    pub head: BridgeHistoryBusinessRowHead,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryTimelinePage {
+pub struct BridgeHistoryBusinessPage {
     pub cut: BridgeHistoryCut,
-    pub entries: Vec<BridgeHistoryTimelineEntry>,
-    pub next: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryGroupPage {
-    pub cut: BridgeHistoryCut,
-    pub group_id: String,
-    pub members: Vec<BridgeHistoryTimelineEntry>,
+    pub entries: Vec<BridgeHistoryBusinessRowEntry>,
     pub next: Option<String>,
 }
 
@@ -255,25 +207,6 @@ pub struct BridgeHistoryOriginalInfo {
     pub parent_id: Option<String>,
     pub original_kind: BridgeChatAtomKind,
     pub tool_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeHistoryEventHeader {
-    pub seq: u64,
-    pub event_id: String,
-    pub kind: String,
-    pub run_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub entity_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub source: Option<BridgeChatSourceId>,
-    pub call_id: Option<String>,
-    pub message_id: Option<String>,
-    pub group_id: Option<String>,
-    pub row_key: Option<String>,
-    pub original: Option<BridgeHistoryOriginalInfo>,
-    pub occurred_at: Option<i64>,
-    pub recorded_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,17 +220,32 @@ pub struct BridgeHistoryEventBodyRef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryEventDetail {
-    pub header: BridgeHistoryEventHeader,
-    pub head: Option<BridgeHistoryRowHead>,
-    pub payload_ref: Option<BridgeHistoryEventBodyRef>,
-    pub owned_manifest_event_id: Option<String>,
+pub struct BridgeHistoryEventRecord {
+    pub seq: u64,
+    pub event_id: String,
+    pub kind: String,
+    pub timeline_role: BridgeHistoryTimelineRole,
+    pub occurred_at: Option<i64>,
+    pub recorded_at: i64,
+    pub run_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub call_id: Option<String>,
+    pub entity_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_name: Option<String>,
+    pub source: Option<BridgeChatSourceId>,
+    pub original: Option<BridgeHistoryOriginalInfo>,
+    pub row_scope: Option<BridgeHistoryBusinessRowScope>,
+    pub row_key: Option<String>,
+    pub payload_schema: String,
+    pub payload_json: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryEventsPage {
     pub cut: BridgeHistoryCut,
-    pub entries: Vec<BridgeHistoryEventDetail>,
+    pub entries: Vec<BridgeHistoryEventRecord>,
     pub next: Option<String>,
 }
 
@@ -341,13 +289,6 @@ pub struct BridgeHistoryBodyPage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryAccounting {
     pub head: BridgeHistoryAccountingHead,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BridgeHistoryCostPage {
-    pub cut: BridgeHistoryCut,
-    pub heads: Vec<BridgeHistoryCostHead>,
-    pub next: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

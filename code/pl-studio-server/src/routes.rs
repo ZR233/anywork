@@ -359,7 +359,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(timeline::open_history))
         .routes(routes!(timeline::capture))
         .routes(routes!(timeline::timeline))
-        .routes(routes!(timeline::group))
+        .routes(routes!(timeline::work_range))
         .routes(routes!(timeline::turns))
         .routes(routes!(timeline::events))
         .routes(routes!(timeline::event))

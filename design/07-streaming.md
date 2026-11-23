@@ -7,7 +7,7 @@
 | 观察 | 内容 | 生命周期 |
 | --- | --- | --- |
 | Current | 当前 run 的 State、projection、collection 与正文 | 由 `CurrentReader` 打开和关闭 |
-| History | 不可变事件、Work/Single/member 页面、event/body 与 change | 由 `HistoryReader` 打开和关闭 |
+| History | 不可变原子事件、`divider` 与索引派生 `WorkRange`、event/body 与 change | 由 `HistoryReader` 打开和关闭 |
 | 产品主题 | 目录、设置、账号、统计、更新器、MCP/LSP 等低频领域 | 由各领域 owner 的 typed topic 提供 |
 
 三者不建立共同游标、共同确认或共同提交。Current 可先出现尚未形成 canonical History 的正文；History 也可在冷页面中独立读取。Flutter 只按稳定业务身份组合显示，不把两个存储的可见性描述成原子。
@@ -45,9 +45,9 @@ State 只保留字段名与引用。字段序列化超过 2 KiB 才 deferred；�
 
 `HistoryReader` 提供固定 cut 的纯查询：
 
-- 主时间线与业务行页面；
-- 按 group 的 member 页面；
-- event 页、event 详情与 body 目录；
+- 主时间线与业务行页面（`divider` 与索引派生 `WorkRange`）；
+- 按 `(after_seq, before_seq)` 区间的工作组原子事件页面（`work_range_page`）；
+- event 页（含按 `call_id` 反查）、event 详情与 body 目录；
 - body 范围读取；
 - Turn、Source、Cost 与 Accounting 查询；
 - 从已有 cut 等待后续 change。
@@ -78,8 +78,8 @@ History 端点：
 | --- | --- |
 | `POST /history/open` | 检查 `historyProtocolVersion` 并建立 HistoryReader |
 | `POST /history/capture` | 捕获 opaque cut |
-| `POST /history/timeline` | Work/Single 主页面 |
-| `POST /history/group` | member 页面 |
+| `POST /history/timeline` | `divider` 与索引派生 `WorkRange` 主页面 |
+| `POST /history/work-range` | `(after_seq, before_seq)` 工作区间原子事件页面 |
 | `POST /history/turns` | Turn 页面 |
 | `POST /history/events` | 按 query 的 event 页面 |
 | `POST /history/event` | 精确 event 详情 |
@@ -136,7 +136,7 @@ ACP 使用其官方会话更新与能力协商，不转换为 Native Current/His
 
 ## 7.10 会话资源生命周期
 
-打开 Current 或 History 都不会启动模型。CurrentReader 可读取 RAM owner 或已保存 current；HistoryReader 仅读取 schema 25 数据库。页面隐藏只释放自己的 reader/watch，不停止运行中的 Thread、Current writer 或 History pending。
+打开 Current 或 History 都不会启动模型。CurrentReader 可读取 RAM owner 或已保存 current；HistoryReader 仅读取 schema 26 数据库。页面隐藏只释放自己的 reader/watch，不停止运行中的 Thread、Current writer 或 History pending。
 
 关闭顺序是先同步封闭准入，再取消等待，最后 join 该 owner 已登记资源。Current 父 reader 的关闭覆盖自己的 watch；超时或调用方取消都不能遗弃已准入 future。HistoryReader 关闭不关闭共享 store，应用全局关闭另行等待所有 reader 与 writer。
 
@@ -146,4 +146,4 @@ ACP 使用其官方会话更新与能力协商，不转换为 Native Current/His
 
 关闭同步撤销准入并唤醒等待，再 join 已准入读取。换查询或窗口创建新观察；旧结果不能补入新窗口，也不以目录事件重建第二份过滤结果。目录事实与窗口预算归 [18.7.1](./18-studio-state.md#1871-可变目录的查询观察)。
 
-展开工作组的完整轻量成员由独立 History 查询在同一固定 cut 分批交付，Flutter 原成员控制器收齐后原子发布。单批预算不限制组总成员数；成员正文仍独立读取，页面使用自然高度和唯一主滚动。业务组关闭不由分页 EOF 推导。
+展开工作组的完整原子事件集合由独立 History `work_range_page` 在同一固定 cut 分批交付，Flutter 工作组 ViewModel 收齐后按 `call_id` / `entity_id` 折叠为最新态展示行并原子发布（跨区间完成的调用按 `call_id` 索引补拉 `tool_called` 参数）。单批预算不限制工作区间的事件总数；大块正文或二进制媒体仍独立读取，页面使用自然高度和唯一主滚动。工作区间封口由后续 `divider` 到来决定，不由分页 EOF 推导。
