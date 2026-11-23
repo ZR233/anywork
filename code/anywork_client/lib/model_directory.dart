@@ -16,6 +16,8 @@ export 'src/accounts/domain/account_intents.dart'
 export 'src/models/account_models.dart'
     show
         AccountModelView,
+        ModelServiceTierView,
+        ModelServiceTierParameterView,
         ModelTypeSupportView,
         ModelType,
         ModelTypeExclusion,

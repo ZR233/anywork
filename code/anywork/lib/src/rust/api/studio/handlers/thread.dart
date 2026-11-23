@@ -95,6 +95,7 @@ Future<BridgeThreadModelRouteCommandReply> setThreadModelRoute({
   required String accountId,
   required String modelId,
   String? effort,
+  String? serviceTier,
   required BigInt expectedModelRouteRevision,
   required BigInt expectedSettingsRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersThreadSetThreadModelRoute(
@@ -103,6 +104,7 @@ Future<BridgeThreadModelRouteCommandReply> setThreadModelRoute({
   accountId: accountId,
   modelId: modelId,
   effort: effort,
+  serviceTier: serviceTier,
   expectedModelRouteRevision: expectedModelRouteRevision,
   expectedSettingsRevision: expectedSettingsRevision,
 );

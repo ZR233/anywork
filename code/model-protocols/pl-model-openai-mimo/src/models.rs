@@ -89,6 +89,7 @@ fn mimo_family(
 /// MiMo thinking 开关；官方 Chat API 只声明 `thinking.type`。
 fn mimo_effort_parameter() -> ModelParameter {
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".to_string(),
         label: Some("Thinking".to_string()),

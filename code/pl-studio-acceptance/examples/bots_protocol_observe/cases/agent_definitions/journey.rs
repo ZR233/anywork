@@ -51,6 +51,7 @@ impl Observation<'_> {
                         model_id: ROOT_MODEL.into(),
                         effort: None,
                     },
+                    service_tier: None,
                     delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                     delegation_preference: Some(pl_studio_runtime::DelegationPreference::Balanced),
                     workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Local,

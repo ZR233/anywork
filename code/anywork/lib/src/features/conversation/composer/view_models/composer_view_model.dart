@@ -292,6 +292,11 @@ class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
             accountId: accountId,
             modelId: modelId,
             effort: effort,
+            serviceTier:
+                thread.displayRoute?.accountId == accountId &&
+                    thread.displayRoute?.modelId == modelId
+                ? thread.displayRoute?.serviceTier
+                : null,
           ),
         );
       case StartComposerTarget():
@@ -317,10 +322,35 @@ class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
             accountId: route.accountId,
             modelId: route.modelId,
             effort: effort,
+            serviceTier: route.serviceTier,
           ),
         );
       case StartComposerTarget():
         _client.drafts.startDraft.setEffortIntent(current.start!.mode, effort);
+    }
+  }
+
+  void setServiceTier(String? serviceTier) {
+    final current = _current;
+    if (current == null) return;
+    switch (target) {
+      case ThreadComposerTarget(:final threadId):
+        final route = current.thread?.displayRoute;
+        if (route == null) return;
+        _run(
+          () => _client.threadCommands.setThreadModelRoute(
+            threadId: threadId,
+            accountId: route.accountId,
+            modelId: route.modelId,
+            effort: route.effort,
+            serviceTier: serviceTier,
+          ),
+        );
+      case StartComposerTarget():
+        _client.drafts.startDraft.setServiceTierIntent(
+          current.start!.mode,
+          serviceTier,
+        );
     }
   }
 

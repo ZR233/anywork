@@ -2,7 +2,7 @@ use pl_protocol::Result;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::completion::ReasoningConfig;
+use crate::completion::CompletionRequest;
 use crate::completion::ToolFormat;
 use crate::model::info::ModelInfo;
 
@@ -41,10 +41,20 @@ pub(super) fn to_object_map<T: Serialize>(value: &T) -> Result<Map<String, Value
 pub(super) fn finalize_body(
     body: &mut Map<String, Value>,
     model: &ModelInfo,
-    reasoning: &Option<ReasoningConfig>,
+    request: &CompletionRequest,
 ) {
     merge_base_body(body, &model.binding.request.body);
-    apply_parameters(body, model, reasoning);
+    apply_parameters(body, model, request);
+    if let Some(tier) = &request.service_tier
+        && let Some(wire) = model
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "service_tier")
+            .and_then(|parameter| parameter.wire_for(tier))
+    {
+        // Request validation restricts this protocol-owned wire to the exact tier assignment.
+        wire.apply_to(body);
+    }
 }
 
 /// 深合并 base body 到请求体：对象字段递归合并，其余字段覆盖。
@@ -62,14 +72,11 @@ pub(super) fn merge_base_body(target: &mut Map<String, Value>, source: &Map<Stri
 }
 
 /// 遍历模型声明的可调参数，对用户选中的值应用 wire 写入请求体。
-fn apply_parameters(
-    body: &mut Map<String, Value>,
-    model: &ModelInfo,
-    reasoning: &Option<ReasoningConfig>,
-) {
+fn apply_parameters(body: &mut Map<String, Value>, model: &ModelInfo, request: &CompletionRequest) {
     for parameter in &model.parameters {
         let selected = if parameter.name == "effort" {
-            reasoning
+            request
+                .reasoning
                 .as_ref()
                 .and_then(|config| config.effort.as_deref())
         } else {

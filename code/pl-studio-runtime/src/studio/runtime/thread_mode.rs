@@ -56,10 +56,7 @@ impl StudioRuntime {
             .mode(&mode_id)
             .context("selected Thread Mode is unavailable")?;
         let config = self.config_runtime.read()?.config;
-        let route_selector = config.mode_model_route(&mode_id)?.clone();
-        let route = config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &route_selector)?;
+        let model = config.mode_model_route(&mode_id)?.clone();
 
         let thread = self.ensure_thread_owner(thread_id).await?;
         let (gate, cancellation) = self.thread_factory.tool_operation(thread_id)?;
@@ -69,6 +66,19 @@ impl StudioRuntime {
             guard = gate.lock_owned() => guard,
         };
         let state = thread.snapshot();
+        let saved_route = crate::studio::model_route::saved(&state)?;
+        let service_tier = saved_route
+            .as_ref()
+            .filter(|saved| {
+                saved.route.model.account_id == model.account_id
+                    && saved.route.model.model_id == model.model_id
+            })
+            .and_then(|saved| saved.route.service_tier.clone());
+        let route_selector = crate::studio::model_route::ThreadModelSelection {
+            model,
+            service_tier,
+        };
+        let route = route_selector.resolve(&config)?;
         let instruction_model = model_binding::validate_context(&state, &route)?;
         let previous = state
             .extensions
@@ -82,8 +92,7 @@ impl StudioRuntime {
         let prompt_changed = mode_changed | base_changed;
         let complete = instructions.trusted_text();
         let hash = instructions.trusted_content_hash();
-        let same_route = crate::studio::model_route::saved(&state)?
-            .is_some_and(|saved| saved.route == route_selector);
+        let same_route = saved_route.is_some_and(|saved| saved.route == route_selector);
         let binding = crate::compaction::instruction_binding(&route, &instruction_model);
         let binding_record = state.extensions.get("studio.instructions.binding");
         let saved_binding = binding_record

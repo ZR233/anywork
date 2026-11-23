@@ -6,6 +6,12 @@ import '../../models/delegation_models.dart';
 AccountModelView immutableModelDescriptor(AccountModelView model) =>
     model.copyWith(
       reasoningEfforts: List.unmodifiable(model.reasoningEfforts),
+      serviceTiers: model.serviceTiers == null
+          ? null
+          : ModelServiceTierParameterView(
+              defaultCandidate: model.serviceTiers!.defaultCandidate,
+              candidates: List.unmodifiable(model.serviceTiers!.candidates),
+            ),
       typeSupport: List.unmodifiable([
         for (final support in model.typeSupport)
           ModelTypeSupportView(

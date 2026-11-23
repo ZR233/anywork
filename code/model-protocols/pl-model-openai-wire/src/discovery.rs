@@ -47,6 +47,7 @@ pub struct Record {
     pub supports_streaming: Option<bool>,
     pub supports_reasoning: Option<bool>,
     pub reasoning: ReasoningDeclaration,
+    pub service_tiers: crate::service_tiers::ServiceTierDeclaration,
     pub binding: Option<ModelBinding>,
     pub capabilities: Option<Capabilities>,
     /// 该厂商已在响应中声明的 token 价格；`None` 表示本次没有价格声明。
@@ -98,6 +99,7 @@ impl Record {
                 ParallelToolCalls,
             ),
             (self.reasoning.declares_parameters(), Parameters),
+            (self.service_tiers.declared(), ServiceTiers),
         ] {
             if present {
                 fields.push(field);
@@ -422,6 +424,7 @@ fn normalize(
     record
         .reasoning
         .apply(&mut model, dialect, explicit_reasoning)?;
+    record.service_tiers.apply(&mut model)?;
     if record.thinking_base_body {
         model.binding.request.body.remove("thinking");
         if !model.supported_efforts().is_empty() {
@@ -527,6 +530,7 @@ pub fn effort_parameter(candidates: Vec<String>, dialect: DiscoveryPolicy) -> Mo
         "reasoning_effort"
     };
     ModelParameter {
+        candidate_display_names: Default::default(),
         default: None,
         name: "effort".into(),
         label: None,

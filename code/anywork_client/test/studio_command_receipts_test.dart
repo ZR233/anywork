@@ -257,6 +257,7 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) {
     final call = _RouteCall(
       operationId,
@@ -469,6 +470,7 @@ final class _RouteConflictTransport extends _Transport {
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     attempts.add(
       _RouteCall(

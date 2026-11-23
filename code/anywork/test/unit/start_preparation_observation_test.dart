@@ -30,6 +30,7 @@ final class _PreparingTransport extends TestDemoStudioTransport {
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,

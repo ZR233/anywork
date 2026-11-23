@@ -1227,6 +1227,7 @@ class FrbStudioTransport
     StudioPromptInput input,
     ThreadModeId mode, {
     required ModeModelRouteView route,
+    String? serviceTier,
     required DelegationMode delegationMode,
     required DelegationPreference delegationPreference,
     String? workspaceMode,
@@ -1241,6 +1242,7 @@ class FrbStudioTransport
           accountId: route.accountId,
           modelId: route.modelId,
           effort: route.effort.isEmpty ? null : route.effort,
+          serviceTier: serviceTier,
           workspaceMode: workspaceMode,
           delegationMode: _delegationModeToFrb(delegationMode),
           delegationPreference: _delegationPreferenceToFrb(
@@ -1386,6 +1388,7 @@ class FrbStudioTransport
     required String accountId,
     required String modelId,
     String? effort,
+    String? serviceTier,
   }) async {
     await _ensureReady();
     final response = await _bridgeCall(
@@ -1395,6 +1398,7 @@ class FrbStudioTransport
         accountId: accountId,
         modelId: modelId,
         effort: effort,
+        serviceTier: serviceTier,
         expectedModelRouteRevision: BigInt.from(expectedModelRouteRevision),
         expectedSettingsRevision: BigInt.from(expectedSettingsRevision),
       ),

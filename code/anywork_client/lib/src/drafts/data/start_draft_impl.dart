@@ -561,7 +561,9 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         ? previous != next
         : canonical?.accountId != accountId || canonical?.modelId != modelId;
     final efforts = {...state.effortIntents};
+    final serviceTiers = {...state.serviceTierIntents};
     if (changed) {
+      serviceTiers.remove(mode.id);
       final effort = ModelRouteQueries.effortAfterModelSelection(
         ModelRouteQueries.model(
           _dependencies.modelAccounts(),
@@ -579,6 +581,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     state = state.copyWith(
       modelIntents: {...state.modelIntents, mode.id: next},
       effortIntents: efforts,
+      serviceTierIntents: serviceTiers,
       revision: state.revision + 1,
     );
   }
@@ -588,6 +591,29 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       return;
     state = state.copyWith(
       effortIntents: {...state.effortIntents, mode.id: effort},
+      revision: state.revision + 1,
+    );
+  }
+
+  @override
+  void setServiceTierIntent(ThreadModeId mode, String? serviceTier) {
+    if (_closed || state.serviceTierIntents[mode.id] == serviceTier) return;
+    final route = resolveRoute(mode);
+    final intents = {...state.serviceTierIntents};
+    if (serviceTier == null) {
+      intents.remove(mode.id);
+    } else {
+      intents[mode.id] = serviceTier;
+    }
+    state = state.copyWith(
+      modelIntents: {
+        ...state.modelIntents,
+        mode.id: StartSessionModelIntent(
+          accountId: route.accountId,
+          modelId: route.modelId,
+        ),
+      },
+      serviceTierIntents: intents,
       revision: state.revision + 1,
     );
   }
@@ -634,6 +660,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       throw StateError('The previous submission outcome is unknown');
     }
     final route = resolveRoute(project.mode);
+    final serviceTier = state.serviceTierIntents[project.mode.id];
     final defaults = _dependencies.settings.value.canonical!.delegation;
     final delegation = project.resolveDelegation(defaults);
     final operation = _dependencies.mutations.begin(
@@ -667,6 +694,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       workspaceId: workspaceId,
       project: project,
       route: route,
+      serviceTier: serviceTier,
       delegation: delegation,
       input: input,
       attachments: attachmentViews,
@@ -1158,6 +1186,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         mode: frozen.project.mode,
         workspaceMode: frozen.project.workspaceMode.id,
         route: frozen.route,
+        serviceTier: frozen.serviceTier,
         delegationMode: frozen.delegation.mode,
         delegationPreference: frozen.delegation.preference,
         onProgress: (progress) => _progress(frozen, progress),
@@ -1664,6 +1693,7 @@ final class FrozenStartSessionSubmission {
     required this.workspaceId,
     required this.project,
     required this.route,
+    this.serviceTier,
     required this.delegation,
     required this.input,
     required this.attachments,
@@ -1674,6 +1704,7 @@ final class FrozenStartSessionSubmission {
   final String workspaceId;
   final StartSessionProjectDraft project;
   final ModeModelRouteView route;
+  final String? serviceTier;
   final DelegationSettingsView delegation;
   final StudioPromptInput input;
   final List<AttachmentDraftView> attachments;

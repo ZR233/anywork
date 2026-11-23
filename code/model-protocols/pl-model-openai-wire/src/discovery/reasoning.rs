@@ -138,11 +138,18 @@ impl ReasoningDeclaration {
             }) {
                 return Err(ModelCatalogQueryError::Protocol);
             }
+            let service_tiers = model
+                .parameters
+                .iter()
+                .filter(|p| p.name == "service_tier")
+                .cloned()
+                .collect::<Vec<_>>();
             model.parameters = parameters
                 .into_iter()
                 .map(|parameter| {
                     merge_default(&mut defaults, &parameter.name, parameter.default)?;
                     Ok(ModelParameter {
+                        candidate_display_names: Default::default(),
                         name: parameter.name,
                         label: parameter.label,
                         candidates: parameter.candidates,
@@ -151,6 +158,7 @@ impl ReasoningDeclaration {
                     })
                 })
                 .collect::<Result<_, ModelCatalogQueryError>>()?;
+            model.parameters.extend(service_tiers);
         }
         if let Some(values) = levels {
             model

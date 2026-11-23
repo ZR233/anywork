@@ -20,6 +20,9 @@ pub struct CreateThreadRequest {
     pub mode: String,
     /// Complete route frozen with the draft; does not mutate Mode defaults.
     pub route: NewThreadModelRoute,
+    /// Explicit Codex speed for this Thread. Omission requests standard speed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// 草稿同步解析后的分发模式。
     ///
     /// 省略表示创建时继承全局默认；GUI 的 StartDraft 会先解析并显式传值。落库的 Thread 与

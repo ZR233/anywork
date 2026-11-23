@@ -101,6 +101,18 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @composerSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Speed'**
+  String get composerSpeed;
+
+  /// No description provided for @composerSpeedStandard.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard'**
+  String get composerSpeedStandard;
+
   /// No description provided for @acpConnectionReconnecting.
   ///
   /// In en, this message translates to:

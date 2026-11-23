@@ -155,17 +155,18 @@ impl StudioRuntime {
             .resolve(&request.input.attachment_draft_ids)
             .await?;
         let config = self.config_runtime.read()?;
-        let selector = super::super::settings_api::validated_route(
+        let model = super::super::settings_api::validated_route(
             &config.config,
             "new Thread",
             &request.route.account_id,
             &request.route.model_id,
             request.route.effort.as_deref(),
         )?;
-        let route = config
-            .config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
+        let selector = crate::studio::model_route::ThreadModelSelection {
+            model,
+            service_tier: request.service_tier,
+        };
+        let route = selector.resolve(&config.config)?;
         crate::studio::delegation::validate_credential(&route)?;
         self.thread_modes
             .snapshot()

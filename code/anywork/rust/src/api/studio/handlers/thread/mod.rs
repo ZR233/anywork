@@ -40,6 +40,7 @@ pub async fn start_new_thread(
         account_id,
         model_id,
         effort,
+        service_tier,
         workspace_mode,
         delegation_mode,
         delegation_preference,
@@ -73,6 +74,7 @@ pub async fn start_new_thread(
                         model_id,
                         effort,
                     },
+                    service_tier,
                     workspace_mode,
                     delegation_mode: Some(delegation_mode.into()),
                     delegation_preference: Some(delegation_preference.into()),
@@ -197,6 +199,7 @@ pub async fn set_thread_model_route(
     account_id: String,
     model_id: String,
     effort: Option<String>,
+    service_tier: Option<String>,
     expected_model_route_revision: u64,
     expected_settings_revision: u64,
 ) -> Result<BridgeThreadModelRouteCommandReply, BridgeError> {
@@ -212,6 +215,7 @@ pub async fn set_thread_model_route(
                 account_id,
                 model_id,
                 effort,
+                service_tier,
             },
         )
         .await?;

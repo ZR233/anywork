@@ -64,10 +64,41 @@ pub(crate) const AGENT_PROFILE_FORMAT: &str = "pl.studio.agent-profile";
 const FORMAT_VERSION: u32 = 2;
 pub(crate) mod migration;
 
+/// Root Thread selection stored atomically with its model and effort. Global
+/// model routes and frozen Agent Profiles do not carry session speed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ThreadModelSelection {
+    #[serde(flatten)]
+    pub model: ModelRouteConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+}
+
+impl From<ModelRouteConfig> for ThreadModelSelection {
+    fn from(model: ModelRouteConfig) -> Self {
+        Self {
+            model,
+            service_tier: None,
+        }
+    }
+}
+
+impl ThreadModelSelection {
+    pub(crate) fn resolve(
+        &self,
+        config: &crate::StudioConfig,
+    ) -> pl_model::Result<pl_model::config::ResolvedModelRoute> {
+        config
+            .models
+            .resolve_route(crate::config::root_agent_route_id(), &self.model)?
+            .with_service_tier(self.service_tier.as_deref())
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SavedModelRoute {
-    pub route: ModelRouteConfig,
+    pub route: ThreadModelSelection,
     pub revision: u64,
     pub bot_id: Option<String>,
 }
@@ -76,9 +107,14 @@ impl SavedModelRoute {
     pub(crate) fn snapshot(self, available: bool) -> crate::ThreadModelRouteSnapshot {
         crate::ThreadModelRouteSnapshot {
             bot_id: self.bot_id,
-            account_id: self.route.account_id.into_string(),
-            model_id: self.route.model_id,
-            effort: self.route.effort.map(|effort| effort.as_str().to_owned()),
+            account_id: self.route.model.account_id.into_string(),
+            model_id: self.route.model.model_id,
+            effort: self
+                .route
+                .model
+                .effort
+                .map(|effort| effort.as_str().to_owned()),
+            service_tier: self.route.service_tier,
             revision: self.revision,
             available,
             unavailable_reason: (!available)
@@ -100,7 +136,7 @@ pub(crate) fn projected(state: &ThreadSnapshot) -> Result<Option<crate::ThreadMo
     }))
 }
 
-pub(crate) fn encode(route: &ModelRouteConfig) -> Result<OpaquePayload> {
+pub(crate) fn encode(route: &ThreadModelSelection) -> Result<OpaquePayload> {
     Ok(OpaquePayload::new(
         MODEL_ROUTE_FORMAT,
         FORMAT_VERSION,
@@ -108,7 +144,7 @@ pub(crate) fn encode(route: &ModelRouteConfig) -> Result<OpaquePayload> {
     )?)
 }
 
-pub(crate) fn decode(payload: &OpaquePayload) -> Result<ModelRouteConfig> {
+pub(crate) fn decode(payload: &OpaquePayload) -> Result<ThreadModelSelection> {
     decode_route_payload(payload, MODEL_ROUTE_FORMAT, "model route")
 }
 
@@ -209,20 +245,21 @@ pub(crate) fn unavailable_placeholder(
         model,
         context,
         effort,
+        service_tier: None,
     })
 }
 
 pub(crate) fn route_record(
     state: &ThreadSnapshot,
     child: bool,
-) -> Result<Option<(&ExtensionRecord, ModelRouteConfig)>> {
+) -> Result<Option<(&ExtensionRecord, ThreadModelSelection)>> {
     if child {
         let Some(record) = state.extensions.get(AGENT_PROFILE_EXTENSION) else {
             return Ok(None);
         };
         let profile: crate::AgentProfileSnapshot =
             decode_profile_payload(&record.payload, AGENT_PROFILE_FORMAT, "Agent Profile")?;
-        Ok(Some((record, profile_route(&profile)?)))
+        Ok(Some((record, profile_route(&profile)?.into())))
     } else {
         let Some(record) = state.extensions.get(MODEL_ROUTE_EXTENSION) else {
             return Ok(None);
@@ -253,13 +290,15 @@ pub(crate) fn annotate_availability(
             &selector,
         )
     } else {
-        config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &selector)
-            .and_then(|route| {
-                crate::studio::delegation::validate_credential(&route)?;
-                Ok(route)
-            })
+        ThreadModelSelection {
+            model: selector,
+            service_tier: route.service_tier.clone(),
+        }
+        .resolve(config)
+        .and_then(|route| {
+            crate::studio::delegation::validate_credential(&route)?;
+            Ok(route)
+        })
     };
     match resolved {
         Ok(_) => {
@@ -278,7 +317,7 @@ fn decode_route_payload(
     payload: &OpaquePayload,
     expected_format: &str,
     label: &str,
-) -> Result<ModelRouteConfig> {
+) -> Result<ThreadModelSelection> {
     if payload.format() != expected_format || payload.version() != FORMAT_VERSION {
         bail!(
             "unsupported saved {label} codec {} version {}; explicit recovery migration required",

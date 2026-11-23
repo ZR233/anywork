@@ -581,6 +581,116 @@ class ReasoningEffortSelector extends StatelessWidget {
   }
 }
 
+class ServiceTierSelector extends StatelessWidget {
+  const ServiceTierSelector({
+    required this.candidates,
+    required this.serviceTier,
+    this.onSelected,
+    this.enabled = true,
+    this.inMenu = false,
+    this.blockedReason,
+    this.onExplain,
+    super.key,
+  });
+
+  static const selectorKey = ValueKey('composer-service-tier');
+  static const labelKey = ValueKey('composer-service-tier-label');
+  static Key optionKey(String? id) =>
+      ValueKey(('composer-service-tier-option', id));
+
+  final List<ModelServiceTierView> candidates;
+  final String? serviceTier;
+  final ValueChanged<String?>? onSelected;
+  final bool enabled;
+  final bool inMenu;
+  final String? blockedReason;
+  final ValueChanged<String>? onExplain;
+
+  String _label(BuildContext context) {
+    if (serviceTier == null) return context.l10n.composerSpeedStandard;
+    final candidate = candidates
+        .where((item) => item.id == serviceTier)
+        .firstOrNull;
+    return candidate?.label ??
+        context.l10n.settingsAgentRouteUnavailable(serviceTier!);
+  }
+
+  bool get _selectionEnabled => enabled && blockedReason == null;
+
+  StudioMenuLabel _inlineLabel(BuildContext context) => StudioMenuLabel(
+    key: labelKey,
+    label: _label(context),
+    leading: const Icon(Icons.speed, size: 16),
+    enabled: _selectionEnabled,
+    maxWidth: 140,
+  );
+
+  double measureInlineWidth(BuildContext context) =>
+      _inlineLabel(context).measureWidth(context, leadingWidth: 16);
+
+  @override
+  Widget build(BuildContext context) {
+    final unavailable =
+        serviceTier != null &&
+        !candidates.any((item) => item.id == serviceTier);
+    final currentLabel = _label(context);
+    return _QuietSelectorMenu<String?>(
+      key: selectorKey,
+      inMenu: inMenu,
+      tooltip: blockedReason ?? context.l10n.composerSpeed,
+      enabled: _selectionEnabled,
+      onBlockedTap: blockedReason != null
+          ? () => _explainSelection(context, onExplain, blockedReason!)
+          : !enabled
+          ? () => _explainSelection(
+              context,
+              onExplain,
+              context.l10n.statusSelectorsNotReady,
+            )
+          : null,
+      menuChild: Text(
+        '${context.l10n.composerSpeed} · $currentLabel',
+        key: labelKey,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+      items: [
+        _QuietMenuItem<String?>(
+          value: null,
+          selected: serviceTier == null,
+          itemKey: optionKey(null),
+          child: Text(context.l10n.composerSpeedStandard, maxLines: 1),
+        ),
+        for (final candidate in candidates)
+          _QuietMenuItem<String?>(
+            value: candidate.id,
+            selected: candidate.id == serviceTier,
+            itemKey: optionKey(candidate.id),
+            child: Text(
+              candidate.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        if (unavailable)
+          _QuietMenuItem<String?>(
+            value: serviceTier,
+            enabled: false,
+            selected: true,
+            itemKey: optionKey(serviceTier),
+            child: Text(
+              currentLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+      onSelected: onSelected,
+      child: _inlineLabel(context),
+    );
+  }
+}
+
 IconData sessionModeIcon(ThreadModeId mode) {
   return mode == ThreadModeId.simple ? Icons.flash_on : Icons.route_outlined;
 }

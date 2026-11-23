@@ -1162,6 +1162,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_box_autoadd_bridge_model_selection_measurement(dynamic raw);
 
   @protected
+  BridgeModelServiceTierParameterDescriptor
+  dco_decode_box_autoadd_bridge_model_service_tier_parameter_descriptor(
+    dynamic raw,
+  );
+
+  @protected
   BridgeNativeAgentConfig dco_decode_box_autoadd_bridge_native_agent_config(
     dynamic raw,
   );
@@ -3089,6 +3095,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelServiceTierDescriptor
+  dco_decode_bridge_model_service_tier_descriptor(dynamic raw);
+
+  @protected
+  BridgeModelServiceTierParameterDescriptor
+  dco_decode_bridge_model_service_tier_parameter_descriptor(dynamic raw);
+
+  @protected
   BridgeModelTransportDescriptor dco_decode_bridge_model_transport_descriptor(
     dynamic raw,
   );
@@ -4289,6 +4303,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_list_bridge_model_selection_source(dynamic raw);
 
   @protected
+  List<BridgeModelServiceTierDescriptor>
+  dco_decode_list_bridge_model_service_tier_descriptor(dynamic raw);
+
+  @protected
   List<BridgeModelTypeExclusion> dco_decode_list_bridge_model_type_exclusion(
     dynamic raw,
   );
@@ -4807,6 +4825,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelSelectionMeasurement?
   dco_decode_opt_box_autoadd_bridge_model_selection_measurement(dynamic raw);
+
+  @protected
+  BridgeModelServiceTierParameterDescriptor?
+  dco_decode_opt_box_autoadd_bridge_model_service_tier_parameter_descriptor(
+    dynamic raw,
+  );
 
   @protected
   BridgeNewThreadModelRoute?
@@ -6313,6 +6337,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelSelectionMeasurement
   sse_decode_box_autoadd_bridge_model_selection_measurement(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelServiceTierParameterDescriptor
+  sse_decode_box_autoadd_bridge_model_service_tier_parameter_descriptor(
     SseDeserializer deserializer,
   );
 
@@ -8850,6 +8880,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeModelServiceTierDescriptor
+  sse_decode_bridge_model_service_tier_descriptor(SseDeserializer deserializer);
+
+  @protected
+  BridgeModelServiceTierParameterDescriptor
+  sse_decode_bridge_model_service_tier_parameter_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeModelTransportDescriptor sse_decode_bridge_model_transport_descriptor(
     SseDeserializer deserializer,
   );
@@ -10302,6 +10342,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   sse_decode_list_bridge_model_selection_source(SseDeserializer deserializer);
 
   @protected
+  List<BridgeModelServiceTierDescriptor>
+  sse_decode_list_bridge_model_service_tier_descriptor(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<BridgeModelTypeExclusion> sse_decode_list_bridge_model_type_exclusion(
     SseDeserializer deserializer,
   );
@@ -10936,6 +10982,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeModelSelectionMeasurement?
   sse_decode_opt_box_autoadd_bridge_model_selection_measurement(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeModelServiceTierParameterDescriptor?
+  sse_decode_opt_box_autoadd_bridge_model_service_tier_parameter_descriptor(
     SseDeserializer deserializer,
   );
 
@@ -12697,6 +12749,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_model_selection_measurement(
     BridgeModelSelectionMeasurement self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_model_service_tier_parameter_descriptor(
+    BridgeModelServiceTierParameterDescriptor self,
     SseSerializer serializer,
   );
 
@@ -15707,6 +15765,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_model_service_tier_descriptor(
+    BridgeModelServiceTierDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_model_service_tier_parameter_descriptor(
+    BridgeModelServiceTierParameterDescriptor self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_model_transport_descriptor(
     BridgeModelTransportDescriptor self,
     SseSerializer serializer,
@@ -17468,6 +17538,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bridge_model_service_tier_descriptor(
+    List<BridgeModelServiceTierDescriptor> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_bridge_model_type_exclusion(
     List<BridgeModelTypeExclusion> self,
     SseSerializer serializer,
@@ -18181,6 +18257,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_model_selection_measurement(
     BridgeModelSelectionMeasurement? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_opt_box_autoadd_bridge_model_service_tier_parameter_descriptor(
+    BridgeModelServiceTierParameterDescriptor? self,
     SseSerializer serializer,
   );
 

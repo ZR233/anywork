@@ -950,6 +950,7 @@ mod standalone_tests {
                 model_id: "standalone-model".into(),
                 effort: None,
             },
+            service_tier: None,
             delegation_mode: None,
             delegation_preference: None,
             workspace_mode,

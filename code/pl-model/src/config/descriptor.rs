@@ -132,11 +132,32 @@ pub struct ModelDescriptor {
     pub transport: ModelTransportDescriptor,
     pub capabilities: ModelCapabilitiesDto,
     pub reasoning: Option<ModelReasoningDescriptor>,
+    #[serde(default)]
+    pub service_tiers: Option<ModelServiceTierParameterDescriptor>,
     pub pricing: Option<ModelPricingDto>,
 }
 
 const fn enabled_by_default() -> bool {
     true
+}
+
+/// Read-only Codex tier metadata; the default never implies an active selection.
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServiceTierParameterDescriptor {
+    pub default: Option<String>,
+    pub candidates: Vec<ModelServiceTierDescriptor>,
+}
+
+#[derive(
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema, utoipa::ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelServiceTierDescriptor {
+    pub id: String,
+    pub display_name: Option<String>,
 }
 
 /// 模型选模资料的只读投影：有界短简介、适配任务、局限与可追溯来源。
