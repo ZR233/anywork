@@ -18,57 +18,6 @@ enum LiveStorageSeverity {
 /// 实时流同步连接状态。
 enum LiveConnectionStatus { connected, reconnecting, disconnected }
 
-/// 按需读取的活跃工具集合窗口（与后端 `tools.active` 字段绑定）。
-@immutable
-final class LiveActivityToolsWindow {
-  LiveActivityToolsWindow({
-    required this.reference,
-    required this.totalCount,
-    required List<ThreadActivityToolEntry> entries,
-    required this.expanded,
-    required this.loading,
-    required this.hasPrevious,
-    required this.hasNext,
-    this.error,
-  }) : entries = List.unmodifiable(entries);
-
-  final CurrentCollectionRef reference;
-  final int totalCount;
-  final List<ThreadActivityToolEntry> entries;
-  final bool expanded;
-  final bool loading;
-  final bool hasPrevious;
-  final bool hasNext;
-  final Object? error;
-
-  int get loadedCount => entries.length;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveActivityToolsWindow &&
-          reference == other.reference &&
-          totalCount == other.totalCount &&
-          listEquals(entries, other.entries) &&
-          expanded == other.expanded &&
-          loading == other.loading &&
-          hasPrevious == other.hasPrevious &&
-          hasNext == other.hasNext &&
-          error == other.error;
-
-  @override
-  int get hashCode => Object.hash(
-    reference,
-    totalCount,
-    Object.hashAll(entries),
-    expanded,
-    loading,
-    hasPrevious,
-    hasNext,
-    error,
-  );
-}
-
 /// 实时状态栏四选一主阶段。
 @immutable
 sealed class LiveStatusPrimaryPhase {
@@ -295,20 +244,15 @@ final class LiveStatusPresentation {
   LiveStatusPresentation({
     this.primary,
     List<LiveStatusAttention> attentions = const [],
-    this.activityTools,
     this.showInteractionDetails = false,
   }) : attentions = List.unmodifiable(attentions);
 
   final LiveStatusPrimaryPhase? primary;
   final List<LiveStatusAttention> attentions;
-  final LiveActivityToolsWindow? activityTools;
   final bool showInteractionDetails;
 
   bool get isEmpty =>
-      primary == null &&
-      attentions.isEmpty &&
-      activityTools == null &&
-      !showInteractionDetails;
+      primary == null && attentions.isEmpty && !showInteractionDetails;
 
   @override
   bool operator ==(Object other) =>
@@ -316,16 +260,11 @@ final class LiveStatusPresentation {
       other is LiveStatusPresentation &&
           primary == other.primary &&
           listEquals(attentions, other.attentions) &&
-          activityTools == other.activityTools &&
           showInteractionDetails == other.showInteractionDetails;
 
   @override
-  int get hashCode => Object.hash(
-    primary,
-    Object.hashAll(attentions),
-    activityTools,
-    showInteractionDetails,
-  );
+  int get hashCode =>
+      Object.hash(primary, Object.hashAll(attentions), showInteractionDetails);
 }
 
 /// 顶层门控状态机：空闲、被底部交互停靠区遮蔽，或正在呈现实时状态。
@@ -492,13 +431,11 @@ final class LiveStatusView {
     required this.threadId,
     required this.gate,
     this.primaryActivity,
-    this.activityTools,
   });
 
   final String threadId;
   final LiveStatusGateState gate;
   final ConversationActivityView? primaryActivity;
-  final LiveActivityToolsWindow? activityTools;
 
   @override
   bool operator ==(Object other) =>
@@ -506,10 +443,8 @@ final class LiveStatusView {
       other is LiveStatusView &&
           threadId == other.threadId &&
           gate == other.gate &&
-          primaryActivity == other.primaryActivity &&
-          activityTools == other.activityTools;
+          primaryActivity == other.primaryActivity;
 
   @override
-  int get hashCode =>
-      Object.hash(threadId, gate, primaryActivity, activityTools);
+  int get hashCode => Object.hash(threadId, gate, primaryActivity);
 }

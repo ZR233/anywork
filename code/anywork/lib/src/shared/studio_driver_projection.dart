@@ -166,24 +166,6 @@ StudioDriverFacts queryStudioDriverFacts(
         .lease(presentationThreadId ?? '')
         ?.liveStatus
         ?.primaryActivity,
-    liveActivityTools: switch (timeline
-        .lease(presentationThreadId ?? '')
-        ?.liveStatus
-        ?.activityTools) {
-      final tools? => LiveActivityToolsFacts(
-        ownerId: tools.reference.ownerId,
-        collection: tools.reference.collection,
-        revision: tools.reference.revision,
-        totalCount: tools.totalCount,
-        loadedCount: tools.loadedCount,
-        expanded: tools.expanded,
-        loading: tools.loading,
-        hasPrevious: tools.hasPrevious,
-        hasNext: tools.hasNext,
-        error: tools.error,
-      ),
-      null => null,
-    },
     timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)

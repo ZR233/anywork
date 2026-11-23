@@ -1,4 +1,3 @@
-import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
@@ -26,11 +25,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
     this.responseBuilder,
     this.now,
     this.interactionDetailsSlot,
-    this.onOpenActivityTools,
-    this.onCloseActivityTools,
-    this.onFirstActivityTools,
-    this.onPreviousActivityTools,
-    this.onNextActivityTools,
     this.onRetryError,
     super.key,
   });
@@ -45,11 +39,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
   responseBuilder;
   final DateTime Function()? now;
   final Widget? interactionDetailsSlot;
-  final VoidCallback? onOpenActivityTools;
-  final VoidCallback? onCloseActivityTools;
-  final VoidCallback? onFirstActivityTools;
-  final VoidCallback? onPreviousActivityTools;
-  final VoidCallback? onNextActivityTools;
   final VoidCallback? onRetryError;
 
   @override
@@ -148,24 +137,6 @@ class LiveStatusSurfaceView extends StatelessWidget {
       );
     }
 
-    if (presenting.activityTools case final tools?) {
-      barChildren.add(
-        Flexible(
-          key: const ValueKey('live-activity-tools-panel'),
-          flex: 3,
-          fit: FlexFit.loose,
-          child: _ActivityToolsPanel(
-            tools: tools,
-            onOpen: onOpenActivityTools,
-            onClose: onCloseActivityTools,
-            onFirst: onFirstActivityTools,
-            onPrevious: onPreviousActivityTools,
-            onNext: onNextActivityTools,
-          ),
-        ),
-      );
-    }
-
     final viewportChildren = <Widget>[
       if (barChildren.isNotEmpty)
         ConversationActivityBar(children: barChildren),
@@ -258,111 +229,6 @@ class _AttentionHeaderRow extends StatelessWidget {
         const SizedBox(width: 8),
         trailingAction!,
       ],
-    );
-  }
-}
-
-class _ActivityToolsPanel extends StatelessWidget {
-  const _ActivityToolsPanel({
-    required this.tools,
-    this.onOpen,
-    this.onClose,
-    this.onFirst,
-    this.onPrevious,
-    this.onNext,
-  });
-
-  final LiveActivityToolsWindow tools;
-  final VoidCallback? onOpen;
-  final VoidCallback? onClose;
-  final VoidCallback? onFirst;
-  final VoidCallback? onPrevious;
-  final VoidCallback? onNext;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    if (!tools.expanded) {
-      return Align(
-        alignment: AlignmentDirectional.centerStart,
-        child: TextButton.icon(
-          key: const ValueKey('live-activity-tools-open'),
-          onPressed: onOpen,
-          icon: const Icon(Icons.build_outlined, size: 16),
-          label: Text(l10n.liveStatusActivityToolsTitle(tools.totalCount)),
-        ),
-      );
-    }
-
-    return SingleChildScrollView(
-      primary: false,
-      child: Padding(
-        padding: const EdgeInsetsDirectional.only(top: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    l10n.liveStatusActivityToolsLoaded(
-                      tools.loadedCount,
-                      tools.totalCount,
-                    ),
-                    key: const ValueKey('live-activity-tools-count'),
-                  ),
-                ),
-                TextButton(
-                  key: const ValueKey('live-activity-tools-close'),
-                  onPressed: onClose,
-                  child: Text(l10n.liveStatusToolsCollapse),
-                ),
-              ],
-            ),
-            if (tools.error case final error?) Text(error.toString()),
-            if (tools.loading)
-              const LinearProgressIndicator()
-            else
-              for (final tool in tools.entries)
-                TimelineActivityRow(
-                  key: ValueKey(('live-activity-tool', tool.callId)),
-                  icon: Icons.build_outlined,
-                  indicatorStyle: tool.name == 'exec'
-                      ? TimelineActivityIndicatorStyle.circularProgress
-                      : TimelineActivityIndicatorStyle.restingCat,
-                  active: tool.state != ThreadActivityToolState.finished,
-                  expandable: false,
-                  label: tool.singleLineLabel,
-                  meta: context.toolStatusLabel(
-                    tool.state == ThreadActivityToolState.finished
-                        ? 'succeeded'
-                        : tool.state.name,
-                  ),
-                ),
-            Wrap(
-              spacing: 8,
-              children: [
-                TextButton(
-                  key: const ValueKey('live-activity-tools-first'),
-                  onPressed: tools.hasPrevious ? onFirst : null,
-                  child: Text(l10n.liveStatusToolsFirstPage),
-                ),
-                TextButton(
-                  key: const ValueKey('live-activity-tools-previous'),
-                  onPressed: tools.hasPrevious ? onPrevious : null,
-                  child: Text(l10n.liveStatusToolsPreviousPage),
-                ),
-                TextButton(
-                  key: const ValueKey('live-activity-tools-next'),
-                  onPressed: tools.hasNext ? onNext : null,
-                  child: Text(l10n.liveStatusToolsNextPage),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

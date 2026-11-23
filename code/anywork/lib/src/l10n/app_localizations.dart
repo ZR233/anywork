@@ -11307,12 +11307,6 @@ abstract class AppLocalizations {
   /// **'Work unfinished'**
   String get timelineGroupUnfinished;
 
-  /// No description provided for @timelineGroupWorking.
-  ///
-  /// In en, this message translates to:
-  /// **'Working'**
-  String get timelineGroupWorking;
-
   /// No description provided for @timelineGroupRecord.
   ///
   /// In en, this message translates to:
@@ -13622,42 +13616,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Reconnecting live updates'**
   String get liveStatusConnectionReconnecting;
-
-  /// No description provided for @liveStatusActivityToolsTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'{count, plural, =1{1 active tool} other{{count} active tools}}'**
-  String liveStatusActivityToolsTitle(int count);
-
-  /// No description provided for @liveStatusActivityToolsLoaded.
-  ///
-  /// In en, this message translates to:
-  /// **'Active tools {loaded}/{total}'**
-  String liveStatusActivityToolsLoaded(int loaded, int total);
-
-  /// No description provided for @liveStatusToolsCollapse.
-  ///
-  /// In en, this message translates to:
-  /// **'Collapse'**
-  String get liveStatusToolsCollapse;
-
-  /// No description provided for @liveStatusToolsFirstPage.
-  ///
-  /// In en, this message translates to:
-  /// **'First page'**
-  String get liveStatusToolsFirstPage;
-
-  /// No description provided for @liveStatusToolsPreviousPage.
-  ///
-  /// In en, this message translates to:
-  /// **'Previous'**
-  String get liveStatusToolsPreviousPage;
-
-  /// No description provided for @liveStatusToolsNextPage.
-  ///
-  /// In en, this message translates to:
-  /// **'Next'**
-  String get liveStatusToolsNextPage;
 
   /// No description provided for @liveStatusMembersUnavailable.
   ///

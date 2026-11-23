@@ -8,18 +8,15 @@ part of 'live_status_view_model.dart';
 
 // GENERATED CODE - DO NOT MODIFY BY HAND
 // ignore_for_file: type=lint, type=warning
-/// Current state and business facts are projected directly; the only local
-/// paging state is the explicitly requested activity-tools page.
+/// Current state and business facts are projected directly through [LiveStatusMachine].
 
 @ProviderFor(LiveStatusViewModel)
 final liveStatusViewModelProvider = LiveStatusViewModelFamily._();
 
-/// Current state and business facts are projected directly; the only local
-/// paging state is the explicitly requested activity-tools page.
+/// Current state and business facts are projected directly through [LiveStatusMachine].
 final class LiveStatusViewModelProvider
     extends $NotifierProvider<LiveStatusViewModel, LiveStatusView?> {
-  /// Current state and business facts are projected directly; the only local
-  /// paging state is the explicitly requested activity-tools page.
+  /// Current state and business facts are projected directly through [LiveStatusMachine].
   LiveStatusViewModelProvider._({
     required LiveStatusViewModelFamily super.from,
     required String super.argument,
@@ -65,10 +62,9 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'ac45c9223e049c4dd52d15eabc8249a02b4ea007';
+    r'3736fe124891874badab07d863e856211dba54bf';
 
-/// Current state and business facts are projected directly; the only local
-/// paging state is the explicitly requested activity-tools page.
+/// Current state and business facts are projected directly through [LiveStatusMachine].
 
 final class LiveStatusViewModelFamily extends $Family
     with
@@ -88,8 +84,7 @@ final class LiveStatusViewModelFamily extends $Family
         isAutoDispose: true,
       );
 
-  /// Current state and business facts are projected directly; the only local
-  /// paging state is the explicitly requested activity-tools page.
+  /// Current state and business facts are projected directly through [LiveStatusMachine].
 
   LiveStatusViewModelProvider call(String threadId) =>
       LiveStatusViewModelProvider._(argument: threadId, from: this);
@@ -98,8 +93,7 @@ final class LiveStatusViewModelFamily extends $Family
   String toString() => r'liveStatusViewModelProvider';
 }
 
-/// Current state and business facts are projected directly; the only local
-/// paging state is the explicitly requested activity-tools page.
+/// Current state and business facts are projected directly through [LiveStatusMachine].
 
 abstract class _$LiveStatusViewModel extends $Notifier<LiveStatusView?> {
   late final _$args = ref.$arg as String;

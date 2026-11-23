@@ -13,7 +13,6 @@ abstract final class LiveStatusMachine {
     required String threadId,
     required LiveStatusInputs inputs,
     Object? currentAtomsError,
-    LiveActivityToolsWindow? activityTools,
   }) {
     final interaction = activePendingInteraction(inputs.interactions);
     final confirmingPlan = interaction?.planConfirmation != null;
@@ -122,7 +121,6 @@ abstract final class LiveStatusMachine {
     final presentation = LiveStatusPresentation(
       primary: primary,
       attentions: attentions,
-      activityTools: questionMasked || confirmingPlan ? null : activityTools,
       showInteractionDetails: showInteractionDetails,
     );
     final visiblePresentation = presentation.isEmpty ? null : presentation;
@@ -140,7 +138,6 @@ abstract final class LiveStatusMachine {
           obscured: visiblePresentation,
         ),
         primaryActivity: null,
-        activityTools: activityTools,
       );
     }
 
@@ -153,13 +150,10 @@ abstract final class LiveStatusMachine {
           obscured: visiblePresentation,
         ),
         primaryActivity: primaryActivity,
-        activityTools: activityTools,
       );
     }
 
-    if (presentation.primary == null &&
-        presentation.attentions.isEmpty &&
-        presentation.activityTools == null) {
+    if (presentation.primary == null && presentation.attentions.isEmpty) {
       return LiveStatusView(
         threadId: threadId,
         gate: showInteractionDetails
@@ -169,7 +163,6 @@ abstract final class LiveStatusMachine {
               )
             : const LiveStatusIdle(),
         primaryActivity: primaryActivity,
-        activityTools: activityTools,
       );
     }
 
@@ -177,7 +170,6 @@ abstract final class LiveStatusMachine {
       threadId: threadId,
       gate: LiveStatusPresenting(presentation: presentation),
       primaryActivity: primaryActivity,
-      activityTools: activityTools,
     );
   }
 

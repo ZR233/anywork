@@ -6347,9 +6347,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineGroupUnfinished => 'Work unfinished';
 
   @override
-  String get timelineGroupWorking => 'Working';
-
-  @override
   String get timelineGroupRecord => 'Work record';
 
   @override
@@ -7640,34 +7637,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
-
-  @override
-  String liveStatusActivityToolsTitle(int count) {
-    String _temp0 = intl.Intl.pluralLogic(
-      count,
-      locale: localeName,
-      other: '$count active tools',
-      one: '1 active tool',
-    );
-    return '$_temp0';
-  }
-
-  @override
-  String liveStatusActivityToolsLoaded(int loaded, int total) {
-    return 'Active tools $loaded/$total';
-  }
-
-  @override
-  String get liveStatusToolsCollapse => 'Collapse';
-
-  @override
-  String get liveStatusToolsFirstPage => 'First page';
-
-  @override
-  String get liveStatusToolsPreviousPage => 'Previous';
-
-  @override
-  String get liveStatusToolsNextPage => 'Next';
 
   @override
   String get liveStatusMembersUnavailable => 'Member view unavailable';

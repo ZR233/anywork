@@ -161,12 +161,14 @@ class ConversationActivityView {
 
   bool get hasDetails => expandable || details.isNotEmpty;
 
-  /// 当前前台工具执行阶段是否正在运行 `exec` 命令。
+  /// 当前前台工具执行阶段是否正在运行 `exec` 类命令。
   bool get isRunningExecTool =>
       kind == ConversationActivityKind.runningTool &&
       activeTools.any(
         (tool) =>
-            tool.name == 'exec' &&
+            (tool.name == 'exec' ||
+                tool.name == 'exec_command' ||
+                tool.name == 'builtin.exec@2') &&
             tool.state == ThreadActivityToolState.running,
       );
 

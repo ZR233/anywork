@@ -58,7 +58,7 @@ Current 由原 State assembler 生成，`CurrentReader` 是 snapshot/watch、col
 
 state 元数据、usage、live usage、耗时和 controls 不等正文或 collection。Current 正文观察只随该 owner/generation 增长或替换；token 变化可以只发 body 更新，不推动历史事件或全 State 重建。当前正文终态也不必然已有 canonical 历史。
 
-Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `divider` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `divider` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；活动工具在用户展开后读取单页，完整 `count` 与该页条目数分别表示，opaque 游标导航最多保留 16 个返回位置。
+Flutter 不自造持久化历史分组。主时间线严格保持不可变，只展示历史 `divider` 与已封口/已结算 `WorkRange`，从不接收 `CurrentAtom` 叠加或原地行替换。所有实时/可变执行 UI——包括未封口 `WorkRange`（可按需在实时栏内局部展开查看进行中工具与思考）、正在流式输出的 `CurrentAtom`（由 `ConversationResponseView` 渲染）以及活动/审批/保存阻塞提示——统一由底部 `LiveStatusBar` 承载；只有对应 Current 正文在 `LiveStatusBar` 中已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠、遮蔽或卸载时撤销该资格。一旦后续 `divider` 写入封口或执行结束，该尾部 `WorkRange` 与终态事件再作为不可变块一次性追加进主时间线，并退出 `LiveStatusBar`。即使主时间线处于历史浏览模式（固定原 `cut`），`LiveStatusBar` 仍持续独立更新当前执行的开放工作区、流式正文与活动状态，提示存在新输出而不改写旧历史窗口。Current Atoms 保留一个有界集合页，只报告已加载数；进行中工具明细统一在实时状态栏内可展开的开放工作组中查看，不在实时状态栏外单设平行的活动工具分页列表。
 
 Current watch 发生 lag、resync 或 owner 更换时返回小型 Reset，并重新捕获完整小 State；不 replay 历史。collection cursor 固定 owner 和 revision，版本变化返回 stale；body reference 固定 owner 与 generation，replace 后旧引用失效。旧 owner 的迟到 body、collection 和 watch 结果不能写入新 owner。
 

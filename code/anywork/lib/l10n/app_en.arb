@@ -2989,7 +2989,6 @@
   "interactionDetailsReadFailed": "Failed to read the details resource.",
   "interactionDetailsInvalidFormat": "The interaction details have an invalid format.",
   "timelineGroupUnfinished": "Work unfinished",
-  "timelineGroupWorking": "Working",
   "timelineGroupRecord": "Work record",
   "timelineGroupActiveCount": "{count} running",
   "@timelineGroupActiveCount": {"placeholders": {"count": {"type": "int"}}},
@@ -3562,29 +3561,6 @@
   "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
   "liveStatusConnectionDisconnected": "Live updates disconnected",
   "liveStatusConnectionReconnecting": "Reconnecting live updates",
-  "liveStatusActivityToolsTitle": "{count, plural, =1{1 active tool} other{{count} active tools}}",
-  "@liveStatusActivityToolsTitle": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
-  "liveStatusActivityToolsLoaded": "Active tools {loaded}/{total}",
-  "@liveStatusActivityToolsLoaded": {
-    "placeholders": {
-      "loaded": {
-        "type": "int"
-      },
-      "total": {
-        "type": "int"
-      }
-    }
-  },
-  "liveStatusToolsCollapse": "Collapse",
-  "liveStatusToolsFirstPage": "First page",
-  "liveStatusToolsPreviousPage": "Previous",
-  "liveStatusToolsNextPage": "Next",
   "liveStatusMembersUnavailable": "Member view unavailable",
   "liveStatusMembersLoading": "Loading sealed members…",
   "liveStatusRetryAction": "Retry",

@@ -188,5 +188,69 @@ void main() {
       expect(inputView?.summary, 'Target branch');
       expect(inputView?.details.single.title, 'Target branch');
     });
+
+    test('isRunningExecTool matches running command tools only', () {
+      for (final name in const ['exec', 'exec_command', 'builtin.exec@2']) {
+        final running = ConversationActivityView(
+          identity: 'run-$name',
+          kind: ConversationActivityKind.runningTool,
+          activeTools: [
+            ThreadActivityToolEntry(
+              callId: 'c1',
+              name: name,
+              summary: 'cargo test',
+              arguments: ThreadActivityArgumentsKind.commandLine,
+              state: ThreadActivityToolState.running,
+            ),
+          ],
+        );
+        expect(running.isRunningExecTool, isTrue, reason: name);
+
+        final finished = ConversationActivityView(
+          identity: 'done-$name',
+          kind: ConversationActivityKind.runningTool,
+          activeTools: [
+            ThreadActivityToolEntry(
+              callId: 'c1',
+              name: name,
+              summary: 'cargo test',
+              arguments: ThreadActivityArgumentsKind.commandLine,
+              state: ThreadActivityToolState.finished,
+            ),
+          ],
+        );
+        expect(finished.isRunningExecTool, isFalse, reason: '$name finished');
+      }
+
+      const writeFile = ConversationActivityView(
+        identity: 'write-1',
+        kind: ConversationActivityKind.runningTool,
+        activeTools: [
+          ThreadActivityToolEntry(
+            callId: 'c2',
+            name: 'write_file',
+            summary: '写入 design/19-studio-ui.md',
+            arguments: ThreadActivityArgumentsKind.opaque,
+            state: ThreadActivityToolState.running,
+          ),
+        ],
+      );
+      expect(writeFile.isRunningExecTool, isFalse);
+
+      const waitTool = ConversationActivityView(
+        identity: 'wait-1',
+        kind: ConversationActivityKind.runningTool,
+        activeTools: [
+          ThreadActivityToolEntry(
+            callId: 'c3',
+            name: 'wait',
+            summary: '等待后台任务',
+            arguments: ThreadActivityArgumentsKind.opaque,
+            state: ThreadActivityToolState.running,
+          ),
+        ],
+      );
+      expect(waitTool.isRunningExecTool, isFalse);
+    });
   });
 }

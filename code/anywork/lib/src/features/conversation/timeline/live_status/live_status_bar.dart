@@ -41,7 +41,6 @@ class LiveStatusBar extends ConsumerWidget {
     final sessionState = ref.watch(threadSessionStoreProvider(threadId));
     final owner = ref.read(timelineSessionOwnerProvider);
     final detailLease = owner.lease(threadId);
-    final notifier = ref.read(liveStatusViewModelProvider(threadId).notifier);
 
     bool active() =>
         detailLease != null &&
@@ -147,11 +146,6 @@ class LiveStatusBar extends ConsumerWidget {
               ],
             ),
       interactionDetailsSlot: detailsSlot,
-      onOpenActivityTools: notifier.openActivityTools,
-      onCloseActivityTools: notifier.closeActivityTools,
-      onFirstActivityTools: notifier.loadFirstActivityTools,
-      onPreviousActivityTools: notifier.loadPreviousActivityTools,
-      onNextActivityTools: notifier.loadNextActivityTools,
     );
   }
 }

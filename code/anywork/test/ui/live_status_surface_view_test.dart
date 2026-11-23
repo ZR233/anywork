@@ -237,35 +237,18 @@ void main() {
     );
 
     testWidgets(
-      'activity tools disclosure, paging callbacks and 360px 1.6x scale work without overflow',
+      'error attention retry works at 360px 1.6x without overflow and respects header tool rules',
       (tester) async {
-        var opened = false;
-        var closed = false;
-        var nextTapped = false;
         var retried = false;
 
-        final collapsed = LiveStatusMachine.project(
+        final errorOnly = LiveStatusMachine.project(
           threadId: 'thread-1',
           inputs: LiveStatusInputs(currentAtomsError: 'Page failed'),
-          activityTools: LiveActivityToolsWindow(
-            reference: const CurrentCollectionRef(
-              ownerId: 'o1',
-              collection: 'tools.active',
-              revision: 1,
-            ),
-            totalCount: 5,
-            entries: const [],
-            expanded: false,
-            loading: false,
-            hasPrevious: false,
-            hasNext: true,
-          ),
         );
         await tester.pumpWidget(
           _host(
             LiveStatusSurfaceView(
-              gate: collapsed.gate,
-              onOpenActivityTools: () => opened = true,
+              gate: errorOnly.gate,
               onRetryError: () => retried = true,
             ),
             width: 360,
@@ -273,77 +256,135 @@ void main() {
           ),
         );
         expect(tester.takeException(), isNull);
-        await tester.tap(
-          find.byKey(const ValueKey('live-activity-tools-open')),
-        );
         await tester.tap(find.text('重试'));
-        expect(opened, isTrue);
         expect(retried, isTrue);
 
-        final expanded = LiveStatusMachine.project(
+        // 1. Running exec tool shows command summary directly with circularProgress (no "工作中").
+        final runningExec = LiveStatusMachine.project(
           threadId: 'thread-1',
-          inputs: const LiveStatusInputs.empty(),
-          activityTools: LiveActivityToolsWindow(
-            reference: const CurrentCollectionRef(
-              ownerId: 'o1',
-              collection: 'tools.active',
+          inputs: LiveStatusInputs(
+            activeTurnId: 'turn-1',
+            activity: ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'act-exec',
               revision: 1,
-            ),
-            totalCount: 5,
-            entries: const [
-              ThreadActivityToolEntry(
-                callId: 'call-1',
-                name: 'exec',
-                summary: 'cargo flutter analyze',
-                arguments: ThreadActivityArgumentsKind.commandLine,
-                state: ThreadActivityToolState.running,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.runningTool,
+              summary: '',
+              tools: ThreadActivityTools(
+                count: 1,
+                active: const [
+                  ThreadActivityToolEntry(
+                    callId: 'c-exec',
+                    name: 'exec',
+                    summary: 'cargo flutter test test/ui',
+                    arguments: ThreadActivityArgumentsKind.commandLine,
+                    state: ThreadActivityToolState.running,
+                  ),
+                ],
               ),
-            ],
-            expanded: true,
-            loading: false,
-            hasPrevious: false,
-            hasNext: true,
+            ),
           ),
         );
         await tester.pumpWidget(
-          _host(
-            LiveStatusSurfaceView(
-              gate: expanded.gate,
-              onCloseActivityTools: () => closed = true,
-              onNextActivityTools: () => nextTapped = true,
+          _host(LiveStatusSurfaceView(gate: runningExec.gate)),
+        );
+        expect(find.text('cargo flutter test test/ui'), findsOneWidget);
+        expect(find.textContaining('工作中'), findsNothing);
+        expect(
+          tester
+              .widget<TimelineActivityIndicator>(
+                find.byType(TimelineActivityIndicator),
+              )
+              .style,
+          TimelineActivityIndicatorStyle.circularProgress,
+        );
+
+        // 2. Running non-command tool shows tool summary directly with restingCat.
+        final runningWrite = LiveStatusMachine.project(
+          threadId: 'thread-1',
+          inputs: LiveStatusInputs(
+            activeTurnId: 'turn-1',
+            activity: ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'act-write',
+              revision: 1,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.runningTool,
+              summary: '',
+              tools: ThreadActivityTools(
+                count: 1,
+                active: const [
+                  ThreadActivityToolEntry(
+                    callId: 'c-write',
+                    name: 'write_file',
+                    summary: '写入 design/19-studio-ui.md',
+                    arguments: ThreadActivityArgumentsKind.opaque,
+                    state: ThreadActivityToolState.running,
+                  ),
+                ],
+              ),
             ),
-            width: 360,
-            scale: 1.6,
           ),
         );
-        expect(tester.takeException(), isNull);
+        await tester.pumpWidget(
+          _host(LiveStatusSurfaceView(gate: runningWrite.gate)),
+        );
+        expect(find.text('写入 design/19-studio-ui.md'), findsOneWidget);
+        expect(find.textContaining('工作中'), findsNothing);
         expect(
-          find.byKey(const ValueKey('live-activity-tools-count')),
-          findsOneWidget,
+          tester
+              .widget<TimelineActivityIndicator>(
+                find.byType(TimelineActivityIndicator),
+              )
+              .style,
+          TimelineActivityIndicatorStyle.restingCat,
         );
-        expect(find.text('cargo flutter analyze'), findsOneWidget);
-        await tester.tap(
-          find.byKey(const ValueKey('live-activity-tools-next')),
-        );
-        await tester.tap(
-          find.byKey(const ValueKey('live-activity-tools-close')),
-        );
-        expect(nextTapped, isTrue);
-        expect(closed, isTrue);
 
-        // Bounded height with open workgroup + error + expanded activity tools must scroll instead of overflowing.
-        final stacked = LiveStatusMachine.project(
+        // 3. RunningTool without summary falls back to "思考中" + restingCat.
+        final runningWithoutSummary = LiveStatusMachine.project(
+          threadId: 'thread-1',
+          inputs: LiveStatusInputs(
+            activeTurnId: 'turn-1',
+            activity: const ThreadActivityView(
+              threadId: 'thread-1',
+              identity: 'act-empty-tool',
+              revision: 1,
+              turnId: 'turn-1',
+              kind: ThreadActivityKind.runningTool,
+              summary: '',
+              tools: ThreadActivityTools.empty,
+            ),
+          ),
+        );
+        await tester.pumpWidget(
+          _host(LiveStatusSurfaceView(gate: runningWithoutSummary.gate)),
+        );
+        expect(find.text('思考中'), findsOneWidget);
+        expect(find.textContaining('工作中'), findsNothing);
+        expect(
+          tester
+              .widget<TimelineActivityIndicator>(
+                find.byType(TimelineActivityIndicator),
+              )
+              .style,
+          TimelineActivityIndicatorStyle.restingCat,
+        );
+
+        // 4. Open work with thinkingSummary keeps thought label + restingCat even when exec runs.
+        final workWithThought = LiveStatusMachine.project(
           threadId: 'thread-1',
           inputs: LiveStatusInputs(
             activeTurnId: 'turn-1',
             currentAtomsError: 'Paged fetch timed out',
             liveOpenWork: DisplayBlock(
-              id: 'work-stacked',
+              id: 'work-thought',
               blockOrder: 1,
-              body: WorkDisplayBlock(
-                timing: const WorkTiming(startedAtMillis: 100_000),
-                members: const DisplayBlockRef(
-                  blockId: 'work-stacked',
+              body: const WorkDisplayBlock(
+                timing: WorkTiming(startedAtMillis: 100_000),
+                summary: '优先梳理状态机投影边界',
+                members: DisplayBlockRef(
+                  blockId: 'work-thought',
                   cut: HistoryCut(''),
                   anchorSeq: 1,
                   headSeq: 1,
@@ -354,56 +395,44 @@ void main() {
                 groupClosed: false,
               ),
             ),
-            activity: const ThreadActivityView(
+            activity: ThreadActivityView(
               threadId: 'thread-1',
-              identity: 'act-stacked',
+              identity: 'act-work-exec',
               revision: 1,
               turnId: 'turn-1',
               kind: ThreadActivityKind.runningTool,
               summary: '',
-              tools: ThreadActivityTools.empty,
-            ),
-          ),
-          activityTools: LiveActivityToolsWindow(
-            reference: const CurrentCollectionRef(
-              ownerId: 'o1',
-              collection: 'tools.active',
-              revision: 2,
-            ),
-            totalCount: 8,
-            entries: const [
-              ThreadActivityToolEntry(
-                callId: 'call-1',
-                name: 'exec',
-                summary: 'cargo flutter analyze',
-                arguments: ThreadActivityArgumentsKind.commandLine,
-                state: ThreadActivityToolState.running,
+              tools: ThreadActivityTools(
+                count: 1,
+                active: const [
+                  ThreadActivityToolEntry(
+                    callId: 'c-exec-2',
+                    name: 'exec',
+                    summary: 'cargo flutter analyze',
+                    arguments: ThreadActivityArgumentsKind.commandLine,
+                    state: ThreadActivityToolState.running,
+                  ),
+                ],
               ),
-              ThreadActivityToolEntry(
-                callId: 'call-2',
-                name: 'read_file',
-                summary: 'design/19-studio-ui.md',
-                arguments: ThreadActivityArgumentsKind.opaque,
-                state: ThreadActivityToolState.finished,
-              ),
-            ],
-            expanded: true,
-            loading: false,
-            hasPrevious: false,
-            hasNext: true,
+            ),
           ),
         );
         await tester.pumpWidget(
-          _host(
-            SizedBox(
-              height: 220,
-              child: LiveStatusSurfaceView(gate: stacked.gate),
-            ),
-            width: 760,
-          ),
+          _host(LiveStatusSurfaceView(gate: workWithThought.gate), width: 760),
         );
         expect(tester.takeException(), isNull);
-        expect(find.text('已完成'), findsOneWidget);
+        expect(find.text('优先梳理状态机投影边界'), findsOneWidget);
+        expect(
+          tester
+              .widget<TimelineActivityIndicator>(
+                find.descendant(
+                  of: find.byType(CompletionRunView),
+                  matching: find.byType(TimelineActivityIndicator),
+                ),
+              )
+              .style,
+          TimelineActivityIndicatorStyle.restingCat,
+        );
       },
     );
 

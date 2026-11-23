@@ -25,8 +25,8 @@ TimelineActivityIndicatorStyle resolveLiveHeaderIndicatorStyle(
   if (displayingThinkingSummary) {
     return TimelineActivityIndicatorStyle.restingCat;
   }
-  if (view.kind == ConversationActivityKind.runningTool && view.wait == null ||
-      view.kind == ConversationActivityKind.stopping) {
+  if (view.kind == ConversationActivityKind.stopping ||
+      (view.wait == null && view.isRunningExecTool)) {
     return TimelineActivityIndicatorStyle.circularProgress;
   }
   return TimelineActivityIndicatorStyle.restingCat;
@@ -181,13 +181,26 @@ final class LiveStatusHeaderSpec {
       ),
     };
 
+    final runningToolSummary =
+        view.kind == ConversationActivityKind.runningTool &&
+            view.wait == null &&
+            view.errorMessage == null
+        ? (summary ??
+              view.activeTools
+                  .where((t) => t.state == ThreadActivityToolState.running)
+                  .map((t) => _trimmed(t.summary))
+                  .nonNulls
+                  .lastOrNull)
+        : null;
+
     final displayLabel = switch (view.kind) {
       ConversationActivityKind.thinking
           when thinkingThought != null && view.errorMessage == null =>
         thinkingThought,
+      ConversationActivityKind.runningTool when runningToolSummary != null =>
+        runningToolSummary,
       ConversationActivityKind.awaitingApproval ||
-      ConversationActivityKind.awaitingInput ||
-      ConversationActivityKind.runningTool
+      ConversationActivityKind.awaitingInput
           when summary != null &&
               view.errorMessage == null &&
               view.wait == null =>
@@ -213,7 +226,11 @@ final class LiveStatusHeaderSpec {
         : null;
 
     final tooltip =
-        view.errorMessage ?? thinkingThought ?? summary ?? baseLabel;
+        view.errorMessage ??
+        thinkingThought ??
+        runningToolSummary ??
+        summary ??
+        baseLabel;
     final headerTextColor = active || emphasized
         ? context.colors.onSurface
         : context.colors.onSurfaceVariant;

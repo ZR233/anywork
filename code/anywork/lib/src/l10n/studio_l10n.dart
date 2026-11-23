@@ -102,7 +102,7 @@ extension StudioLocalizationsX on BuildContext {
       ConversationActivityKind.planning => l10n.statusTurnPlanning,
       ConversationActivityKind.runningTool =>
         view.wait == null
-            ? l10n.timelineGroupWorking
+            ? l10n.timelineReasoningActive
             : switch (view.wait!.intent) {
                 ThreadWaitEventsIntentView(:final targets) =>
                   targets.isEmpty
