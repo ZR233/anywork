@@ -15,6 +15,7 @@ use sha2::Digest;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+#[cfg(target_os = "linux")]
 use super::prepare::{self, PrepareFailure};
 #[cfg(target_os = "linux")]
 use super::seed_synthetic_install_version;
@@ -556,7 +557,7 @@ async fn background_check_cancels_and_joins_cleanly_on_shutdown() -> Result<()> 
     let _ = wait_install_snapshot(&runtime, |snapshot| {
         matches!(
             snapshot.update_of(AcpProvider::Antigravity),
-            AcpInstallUpdateState::Checking { .. }
+            AcpInstallUpdateState::Checking
         )
     })
     .await?;
