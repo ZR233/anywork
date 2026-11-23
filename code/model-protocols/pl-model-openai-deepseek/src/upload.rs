@@ -14,16 +14,15 @@ pub async fn upload_file(
         )
         .mime_str(&request.input.media_type)
         .map_err(transport::reqwest_error_to_pure)?;
-    // DeepSeek rejects PDFs uploaded with user_data. Its parsed documents
-    // still use the standard Responses input_file.file_id representation.
+    // The Files endpoint chooses the PDF parser when it starts reading the file part.
     let purpose = if request.input.media_type == "application/pdf" {
         "text_recognition"
     } else {
         "user_data"
     };
     let form = reqwest::multipart::Form::new()
-        .part("file", part)
         .text("purpose", purpose)
+        .part("file", part)
         .text("expires_after[anchor]", "created_at")
         .text("expires_after[seconds]", "86400");
     let headers = transport::headers(

@@ -4826,13 +4826,23 @@ async fn deepseek_file_upload_precedes_responses_and_sends_only_file_reference()
         ),
     ] {
         let fixture = FixtureServer::start(vec![
-        Step::exact(Protocol::Files, json!({
-            "purpose":purpose, "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
-            "file":{"filename":name,"mime_type":mime,"sha256":hex::encode(Sha256::digest(&bytes))}
-        }), Reply::Json(json!({"id":"file-fixture"}))),
-        Step::prompt(Protocol::ResponsesHttp, "inspect", 1,
-            Reply::Sse(responses_text("uploaded", "deep-file", "deepseek-flash"))),
-    ]).await.unwrap();
+            Step::exact(
+                Protocol::Files,
+                json!({
+                    "purpose":purpose, "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
+                    "file":{"filename":name,"mime_type":mime,"sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
+                }),
+                Reply::Json(json!({"id":"file-fixture"})),
+            ),
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "inspect",
+                1,
+                Reply::Sse(responses_text("uploaded", "deep-file", "deepseek-flash")),
+            ),
+        ])
+        .await
+        .unwrap();
         let mut endpoint =
             pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
         endpoint.service_capabilities.files =
@@ -4862,7 +4872,7 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
     let bytes = tiny_png();
     let upload = json!({
         "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
-        "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes))}
+        "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
     });
     let unavailable = || Reply::HttpError {
         status: 503,

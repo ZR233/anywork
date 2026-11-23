@@ -101,7 +101,7 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 
 | 已验证的 Responses 路径 | 文件输入 | 搜索 |
 | --- | --- | --- |
-| DeepSeek Flash | UTF-8 文本以 `user_data` 上传，PDF 以 `text_recognition` 上传，两者都用 `input_file.file_id` 读取 | 独立 Search API |
+| DeepSeek Flash | UTF-8 文本以 `user_data` 上传，PDF 以 `text_recognition` 上传。multipart 的 `purpose` 在 `file` 前发送，两者都用 `input_file.file_id` 读取 | 独立 Search API |
 | GLM Coding Plan Flash | PDF 使用 `input_file.file_data` 或 `file_url`。该端点拒绝内联纯文本文件 | Responses `web_search` |
 | GPT-6.2 Sol | UTF-8 文本可使用 `input_file.file_data`。可用的上传接口取决于账号端点 | Responses `web_search` |
 
