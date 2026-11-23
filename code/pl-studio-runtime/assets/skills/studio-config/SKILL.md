@@ -23,6 +23,9 @@ its sessions and pending reconnects; see the ACP account lifecycle in the refere
 Remote workspace tools use the ordinary session execution binding through Host MCP;
 see the ACP section in the main configuration reference, not remote agent setup.
 
+An account model needs only `base.slug`. Set `base.supports_parallel_tool_calls`
+to override the catalog declaration for parallel tool calls.
+
 ## Find the correct location
 
 `<studio-home>` is the running application's configuration root, resolved in order:

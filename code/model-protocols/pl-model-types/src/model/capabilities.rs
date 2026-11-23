@@ -48,7 +48,6 @@ impl ModelCapabilities {
             output: vec![ModelModality::Text],
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: false,
                 custom_tools: false,
                 freeform_tools: false,
                 programmatic_tool_calling: false,
@@ -78,10 +77,6 @@ impl ModelCapabilities {
 
     pub fn supports_function_calling(&self) -> bool {
         self.tools.function_calling
-    }
-
-    pub fn supports_parallel_tool_calls(&self) -> bool {
-        self.tools.parallel_tool_calls
     }
 
     pub fn supports_custom_tools(&self) -> bool {
@@ -194,11 +189,10 @@ pub struct ModelInputLimits {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCapabilities {
     #[serde(default)]
     pub function_calling: bool,
-    #[serde(default)]
-    pub parallel_tool_calls: bool,
     #[serde(default)]
     pub custom_tools: bool,
     #[serde(default)]

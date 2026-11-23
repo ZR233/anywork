@@ -58,6 +58,12 @@ pub(super) fn migrate_cached_model(value: serde_json::Value) -> anyhow::Result<s
 /// Encode test inputs with the historical schema itself before exercising its forward migration.
 #[cfg(test)]
 pub(super) fn historical_model(model: &pl_model::model::ModelDefinition) -> wire::ModelInfo {
+    let mut capabilities = serde_json::json!(model.extra.capabilities);
+    capabilities["tools"]["parallel_tool_calls"] = model
+        .base
+        .supports_parallel_tool_calls
+        .unwrap_or_default()
+        .into();
     serde_json::from_value(serde_json::json!({
         "model_id": model.base.slug, "display_name": model.base.display_name,
         "description": model.base.description, "context_window":model.base.context_window,
@@ -65,6 +71,6 @@ pub(super) fn historical_model(model: &pl_model::model::ModelDefinition) -> wire
         "base_instructions":model.base.model_messages.instructions_template, "truncation_policy":model.base.truncation_policy,
         "max_output_tokens":model.extra.max_output_tokens, "default_temperature":model.extra.default_temperature,
         "pricing":model.extra.pricing,"parameters":model.parameters().collect::<Vec<_>>(),"binding":model.extra.binding,
-        "capabilities":model.extra.capabilities,"observation":model.observation,
+        "capabilities":capabilities,"observation":model.observation,
     })).unwrap()
 }

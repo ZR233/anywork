@@ -6,6 +6,8 @@ use serde_json::{Map, Value};
 pub struct CodexModel {
     pub slug: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_parallel_tool_calls: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_reasoning_level: Option<String>,

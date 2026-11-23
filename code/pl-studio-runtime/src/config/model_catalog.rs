@@ -742,6 +742,7 @@ mod migration_tests {
         value["schema"] = 1.into();
         value["normalizationRevision"] = 1.into();
         let object = value["models"][0].as_object_mut().unwrap();
+        object.get_mut("capabilities").unwrap()["tools"]["parallel_tool_calls"] = true.into();
         let model_id = object.remove("model_id").unwrap();
         object.insert("slug".into(), model_id);
         if conflict {
@@ -763,6 +764,15 @@ mod migration_tests {
             .unwrap()
             .unwrap();
         assert_eq!(cache.models[0].base.slug, "exact-Unchanged-ID");
+        assert_eq!(
+            cache.models[0].base.supports_parallel_tool_calls,
+            Some(true)
+        );
+        assert!(
+            serde_json::json!(cache.models[0])
+                .pointer("/extra/capabilities/tools/parallel_tool_calls")
+                .is_none()
+        );
         assert!(cache.models[0].observation.is_none());
         assert_eq!(cache.query_etag(), None);
         assert_eq!(cache.success_at, 123);

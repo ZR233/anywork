@@ -101,7 +101,7 @@ fn recovery_info(transport: ModelTransportProfile) -> ModelDefinition {
     ];
     info.extra.capabilities.reasoning = true;
     info.extra.capabilities.web_search = true;
-    info.extra.capabilities.tools.parallel_tool_calls = true;
+    info.base.supports_parallel_tool_calls = Some(true);
     info.extra.max_output_tokens = Some(700);
     info
 }

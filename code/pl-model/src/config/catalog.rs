@@ -558,7 +558,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             reasoning: capabilities.reasoning,
             web_search: capabilities.web_search,
             function_calling: capabilities.tools.function_calling,
-            parallel_tool_calls: capabilities.tools.parallel_tool_calls,
+            parallel_tool_calls: model.base.supports_parallel_tool_calls.unwrap_or_default(),
             custom_tools: capabilities.tools.custom_tools,
             freeform_tools: capabilities.tools.freeform_tools,
             instruction_snapshot_overrides: capabilities.instruction_snapshot_overrides,

@@ -91,10 +91,9 @@ impl ThreadModel {
             && self
                 .runtime
                 .model()
-                .extra
-                .capabilities
-                .tools
-                .parallel_tool_calls;
+                .base
+                .supports_parallel_tool_calls
+                .unwrap_or_default();
         self.runtime
             .validate_context(&encoded.input)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;

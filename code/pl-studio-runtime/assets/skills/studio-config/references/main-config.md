@@ -166,7 +166,8 @@ A compatible Responses model can declare `base.input_modalities = ["text", "file
 Use `extra.capabilities.input` only when you need to constrain sources or MIME types.
 An explicit account service policy governs which hosted tools can be used. Document
 handling also depends on the endpoint: the GLM Coding Plan Responses route accepts PDFs,
-and DeepSeek Flash accepts uploaded text by file ID.
+and DeepSeek Flash accepts uploaded text and PDFs by file ID. Parallel tool calling is
+configured in `base.supports_parallel_tool_calls` across manual, online and bundled models.
 
 ### Prompt cache hints for compatible Responses endpoints
 

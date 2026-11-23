@@ -144,6 +144,19 @@ pub fn rich_record(value: serde_json::Value) -> Result<Record, ModelCatalogQuery
     let mut normalized = serde_json::from_value::<WireRecord>(declarations)
         .map_err(|_| ModelCatalogQueryError::Protocol)?
         .into_record()?;
+    if matches!(
+        value
+            .pointer("/pricing/kind")
+            .and_then(|kind| kind.as_str()),
+        Some("rates" | "unknown")
+    ) {
+        let pricing: ModelPricing = serde_json::from_value(value["pricing"].clone())
+            .map_err(|_| ModelCatalogQueryError::Protocol)?;
+        pricing
+            .validate()
+            .map_err(|_| ModelCatalogQueryError::Protocol)?;
+        normalized.pricing = Some(pricing);
+    }
     let web_search = value
         .get("supports_web_search")
         .and_then(|v| v.as_bool())
@@ -176,7 +189,7 @@ pub fn rich_record(value: serde_json::Value) -> Result<Record, ModelCatalogQuery
     Ok(normalized)
 }
 
-pub fn codex_base(
+fn codex_base(
     mut value: serde_json::Value,
     id: &str,
 ) -> Result<CodexModel, ModelCatalogQueryError> {

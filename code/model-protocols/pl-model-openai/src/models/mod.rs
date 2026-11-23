@@ -14,6 +14,7 @@ use pl_model_openai_wire::model::{
     },
     pricing::{ModelPricing, TokenPriceTier},
 };
+use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 
 mod gpt_5_6_luna;
 mod gpt_5_6_sol;
@@ -102,7 +103,6 @@ fn family() -> ModelFamily {
         replay: vec![MediaRepresentation::DataUrl],
     };
     ModelFamily {
-        id: "openai-responses",
         capabilities: ModelCapabilities {
             temperature: false,
             reasoning: true,
@@ -123,15 +123,20 @@ fn family() -> ModelFamily {
             ],
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: true,
                 custom_tools: true,
                 freeform_tools: true,
                 programmatic_tool_calling: true,
             },
             ..ModelCapabilities::text_only()
         },
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: Vec::new(),
         transport: ModelTransportProfile::responses_websocket(),
         request_profile: ModelRequestProfile {
@@ -145,7 +150,6 @@ fn family() -> ModelFamily {
             ],
             ..Default::default()
         },
-        base_instructions: String::new(),
     }
 }
 

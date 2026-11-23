@@ -12,6 +12,7 @@ use pl_model_openai_wire::model::{
     pricing::{DailyPriceWindow, ModelPricing, TokenPriceTier, WeeklyPriceAdjustment},
     reasoning_fields::REASONING_CONTENT,
 };
+use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 use serde_json::{Map, Value};
 
 const FLASH: &str = "deepseek-flash";
@@ -52,7 +53,6 @@ fn text_family() -> ModelFamily {
         )])),
     );
     ModelFamily {
-        id: "deepseek-responses",
         capabilities: ModelCapabilities {
             temperature: false,
             reasoning: true,
@@ -62,13 +62,18 @@ fn text_family() -> ModelFamily {
             instruction_snapshot_overrides: true,
             tools: ToolCapabilities {
                 function_calling: true,
-                parallel_tool_calls: true,
                 ..Default::default()
             },
             ..ModelCapabilities::text_only()
         },
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: vec![effort_parameter(
             "reasoning_effort",
             &["low", "high", "max"],
@@ -76,7 +81,6 @@ fn text_family() -> ModelFamily {
         )],
         transport: ModelTransportProfile::responses_http(),
         request_profile,
-        base_instructions: String::new(),
     }
     .with_responses_files(
         &["text/plain", "application/pdf"],

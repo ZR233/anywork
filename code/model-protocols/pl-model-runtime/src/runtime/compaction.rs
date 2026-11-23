@@ -112,7 +112,7 @@ fn build_compaction_body(
         .with_native_custom_tools(provider.endpoint().uses_native_custom_tools());
     let projection = ToolProjection::for_endpoint(provider.endpoint(), &effective_capabilities);
     let completion = request.prefix.clone().provider_compatible(projection);
-    completion.validate_against(&model_info.base.slug, &effective_capabilities)?;
+    completion.validate_against(&model_info.base, &effective_capabilities)?;
     let instruction_role = provider
         .endpoint()
         .instruction_wire_role(WireApi::Responses);

@@ -164,7 +164,7 @@ mod tests {
         model.validate().unwrap();
         assert!(
             model.extra.capabilities.tools.function_calling
-                && model.extra.capabilities.tools.parallel_tool_calls
+                && model.base.supports_parallel_tool_calls == Some(true)
         );
         assert!(model.extra.capabilities.supports_web_search());
         assert_eq!(model.supported_efforts(), ["future"]);

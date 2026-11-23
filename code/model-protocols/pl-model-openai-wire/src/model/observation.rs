@@ -43,8 +43,7 @@ pub fn apply_field(
                 source.extra.capabilities.tools.function_calling
         }
         ParallelToolCalls => {
-            target.extra.capabilities.tools.parallel_tool_calls =
-                source.extra.capabilities.tools.parallel_tool_calls
+            target.base.supports_parallel_tool_calls = source.base.supports_parallel_tool_calls
         }
         CustomTools => {
             target.extra.capabilities.tools.custom_tools =

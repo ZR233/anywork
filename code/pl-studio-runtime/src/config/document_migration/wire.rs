@@ -1256,8 +1256,9 @@ impl From<ModelInfo> for ModelDeclaration34 {
                 };
         // Historical config used TOML's absence for None, including nested price and
         // capability fields. Encode those groups through their original TOML contract.
-        let capabilities =
-            toml::Value::try_from(&model.capabilities).expect("schema 33 capabilities");
+        let mut capabilities = serde_json::json!(
+            toml::Value::try_from(&model.capabilities).expect("schema 33 capabilities")
+        );
         let price = toml::Value::try_from(&model.pricing).expect("schema 33 pricing");
         let default_capabilities = model.capabilities == Default::default();
         let default_price = model.pricing == ModelPricing::Unknown;
@@ -1329,7 +1330,14 @@ impl From<ModelInfo> for ModelDeclaration34 {
         if default_capabilities {
             old.remove("capabilities");
         } else {
-            old.insert("capabilities".into(), serde_json::json!(capabilities));
+            if let Some(tools) = capabilities
+                .get_mut("tools")
+                .and_then(|t| t.as_object_mut())
+                && let Some(parallel) = tools.remove("parallel_tool_calls")
+            {
+                base.insert("supports_parallel_tool_calls".into(), parallel);
+            }
+            old.insert("capabilities".into(), capabilities);
         }
         if default_price {
             old.remove("pricing");

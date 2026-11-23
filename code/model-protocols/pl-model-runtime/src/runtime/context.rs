@@ -165,6 +165,6 @@ pub(super) fn project_request(
         }
     }
 
-    request.validate_against(&model.base.slug, &capabilities)?;
+    request.validate_against(&model.base, &capabilities)?;
     Ok(request)
 }

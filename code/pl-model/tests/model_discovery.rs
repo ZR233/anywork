@@ -478,7 +478,7 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     assert_eq!(a[0].base.context_window, Some(4096));
     let b = discover(
         json!({"data":[{"id":"shared", "context_length":8192,
-            "input_modalities":[], "supports_function_calling":false,
+            "input_modalities":["text"], "supports_function_calling":false,
             "effort":{"supported_levels":[]}, "prompt_text_token_price":20000,
             "completion_text_token_price":100000, "cached_prompt_text_token_price":5000
         }]}),
@@ -565,7 +565,7 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     assert_eq!(second_route.model.base.display_name, "shared");
     assert_eq!(second_route.model.base.context_window, Some(8192));
     assert_eq!(second_route.model.extra.max_output_tokens, None);
-    // xAI `/models` 不声明模态：未知模型保持 text-only，也不借用别家声明。
+    // The account explicitly declares text input and cannot borrow another account’s modalities.
     assert_eq!(
         second_route.model.extra.capabilities.input,
         [pl_model::model::ModelInputCapability::text()]
@@ -839,6 +839,19 @@ async fn later_success_wins_inside_the_observing_account_only() {
 
 #[tokio::test]
 async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates() {
+    let price = ModelPricing::published_at(
+        "USD",
+        vec![pl_model::model::TokenPriceTier::flat(1.0, 2.0, None, None)],
+        "model catalog",
+        123,
+    );
+    let models = discover(
+        json!({"models":[{"slug":"priced","pricing":price}]}),
+        pl_model::protocol::providers::mimo::ID,
+    )
+    .await;
+    assert_eq!(models[0].extra.pricing, price);
+
     for record in [
         json!({"id":"shared","prompt_text_token_price":-1,"completion_text_token_price":10}),
         json!({"id":"shared","prompt_text_token_price":1}),
@@ -1126,7 +1139,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             pl_model::protocol::providers::xai::ID,
             json!({"data":[{"id":"future-model","context_length":64000,"input_modalities":["text","image"],"output_modalities":["text"],"capabilities":{"reasoning_effort":["gentle","new-ultra"],"default_reasoning_effort":"new-ultra"}}]}),
             "reasoning",
-            false,
+            true,
             57_600,
         ),
     ] {
@@ -1283,7 +1296,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
     }
 }
 
-/// 各厂商只解释自己的 envelope、字段与价格单位；未知模态不虚构图片。
+/// 兼容目录共享 Codex 声明，仅由相应厂商解释其扩展字段与价格单位。
 #[tokio::test]
 async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices() {
     let error = |server: Server, kind: ProtocolId| async move {
@@ -1294,7 +1307,7 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
         );
         server.finish().await;
     };
-    // OpenAI/Codex `models`/`slug` 不是 DeepSeek 或 OpenAI-compatible 的合法名单。
+    // 标准 data 成员需要 id，响应不能同时声明两份名单。
     for body in [
         json!({"data":[{"slug":"x"}]}),
         json!({"models":[],"data":[]}),
@@ -1322,7 +1335,7 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     assert_eq!(deepseek.base.context_window, None);
     assert_eq!(deepseek.extra.pricing, ModelPricing::Unknown);
 
-    // xAI 用 context_length 与官方 native 价格单位（USD cents/100M）；context_window 不生效。
+    // Codex 声明优先，xAI 额外解码原生 token 价格。
     let xai = discover(
         json!({"data":[{"id":"x","context_length":4096,"context_window":9999,
             "input_modalities":["text","image"],"output_modalities":["text"],
@@ -1332,12 +1345,12 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     )
     .await
     .remove(0);
-    assert_eq!(xai.base.context_window, Some(4096));
+    assert_eq!(xai.base.context_window, Some(9999));
     assert!(
-        !xai.extra
+        xai.extra
             .capabilities
             .supports_input_modality(ModelModality::Image),
-        "xAI /models declares no modalities; extension fields are ignored"
+        "the explicit Codex image declaration must reach the runtime"
     );
     let ModelPricing::Rates {
         currency, tiers, ..
@@ -1361,15 +1374,15 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     assert_eq!(openai.base.context_window, None);
     assert_eq!(openai.extra.pricing, ModelPricing::Unknown);
 
-    // xAI 只接受自己的 reasoning_effort 声明，Codex/DeepSeek 的候选字段不生效。
-    let xai_ignored = discover(
+    // 原生推理档位和 xAI 嵌套档位各自可用。
+    let xai_codex = discover(
         json!({"data":[{"id":"x","supported_reasoning_levels":[{"effort":"low"}],
             "reasoningEfforts":[{"value":"low"}],"reasoning_effort":["low"]}]}),
         pl_model::protocol::providers::xai::ID,
     )
     .await
     .remove(0);
-    assert!(xai_ignored.supported_efforts().is_empty());
+    assert_eq!(xai_codex.supported_efforts(), ["low"]);
     let xai_effort = discover(
         json!({"data":[{"id":"x","capabilities":{
             "reasoning_effort":["low","high"],"default_reasoning_effort":"high"}}]}),

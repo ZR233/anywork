@@ -6,9 +6,7 @@
 //! `default_models` 中为每个模型重复构造完整 `ModelDefinition`。
 
 use crate::model::capabilities::ModelCapabilities;
-use crate::model::info::{
-    ModelDefinition, ModelRequestProfile, ModelTransportProfile, TruncationMode, TruncationPolicy,
-};
+use crate::model::info::{ModelDefinition, ModelRequestProfile, ModelTransportProfile};
 use crate::model::parameter::ModelParameter;
 use crate::model::pricing::ModelPricing;
 /// 同一 provider 内共享元数据的模型家族预设。
@@ -18,17 +16,13 @@ use crate::model::pricing::ModelPricing;
 /// 用差异字段派生。
 #[derive(Debug, Clone)]
 pub struct ModelFamily {
-    /// 家族标识（调试用，如 "openai-reasoning"、"zhipu-text"）。
-    pub id: &'static str,
     pub capabilities: ModelCapabilities,
-    pub truncation_mode: TruncationMode,
-    pub truncation_limit: u64,
+    pub base: super::CodexModel,
     /// 共享的可调参数声明（如 effort）。
     pub parameters: Vec<ModelParameter>,
     pub transport: ModelTransportProfile,
     /// 共享的请求 profile（含 base body，如 DeepSeek 的 `thinking.type = enabled`）。
     pub request_profile: ModelRequestProfile,
-    pub base_instructions: String,
 }
 
 /// 家族内单个具体模型的差异字段，[`ModelFamily::instantiate`] 的输入。
@@ -87,16 +81,7 @@ impl ModelFamily {
                 description: Some(description.to_string()),
                 context_window: Some(context_window),
                 max_context_window: Some(max_context_window),
-                auto_compact_token_limit: None,
-                truncation_policy: TruncationPolicy {
-                    mode: self.truncation_mode,
-                    limit: self.truncation_limit,
-                },
-                model_messages: crate::model::ModelMessages {
-                    instructions_template: self.base_instructions.clone(),
-                    ..Default::default()
-                },
-                ..Default::default()
+                ..self.base.clone()
             },
             extra: crate::model::ModelExtras {
                 default_temperature: None,

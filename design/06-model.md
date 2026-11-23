@@ -56,7 +56,7 @@ Responses 的工具输出声明与实际交给模型的内容必须一致：工�
 
 - **基础能力**：流式输出（`streaming`）、采样温度控制（`temperature`）、推理思考（`reasoning`）、联网搜索（`web_search`）。
 - **输入与输出模态**：`input` 与 `output` 集合，取值为 `text`、`image`、`audio`、`video`、`pdf`。
-- **工具调用能力**：函数调用（`function_calling`）、并行工具调用（`parallel_tool_calls`）、自定义工具（`custom_tools`）、自由格式工具（`freeform_tools`）、编程式工具调用（`programmatic_tool_calling`）。
+- **工具调用能力**：函数调用（`function_calling`）、并行工具调用（`base.supports_parallel_tool_calls`）、自定义工具（`custom_tools`）、自由格式工具（`freeform_tools`）、编程式工具调用（`programmatic_tool_calling`）。
 - **交错推理字段**：`interleaved.field`，当前支持 `reasoning`、`reasoning_content`、`reasoning_details`。
 
 Studio 读取能力矩阵用于会话装配校验与界面展示：图片输入要求目标模型声明 `image` 输入能力，工具调用需匹配工具能力，推理强度配置需匹配 `reasoning` 能力；厂商私有差异归对应协议 crate，`pl-core` 消费统一的模型契约。
@@ -207,7 +207,7 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 
 | 成员 | 内容与所有者 |
 | --- | --- |
-| `base` | Codex 订阅目录的一条模型记录。唯一必填字段是 `slug`。名称、描述、`supported_reasoning_levels[].effort`、`default_reasoning_level`、上下文字段、`model_messages`、`truncation_policy` 和供应商增加的其他 JSON 字段按原字段名保存。推理档位为字符串，顺序与描述随模型更新。 |
+| `base` | Codex 订阅目录的一条模型记录。唯一必填字段是 `slug`。名称、描述、`supported_reasoning_levels[].effort`、`default_reasoning_level`、上下文字段、`model_messages`、`truncation_policy` 和供应商增加的其他 JSON 字段按原字段名保存。推理档位为字符串，顺序与描述随模型更新。`supports_parallel_tool_calls` 直接供路由、界面和请求校验读取。 |
 | `extra` | 可选的项目扩展。包括 `pricing`、`max_output_tokens`、`default_temperature`、传输和请求绑定 `binding`、本地可实际编码的媒体和工具能力 `capabilities`、非标准推理档位编码 `effort_wire`、参数名称 `effort_label` 及其他参数 `parameters`。 |
 | `observation` | 在线缓存中记录哪些字段由服务端声明、获取顺序及独立的参数默认值。用户配置只保存声明的 `base`、`extra` 和账号上的独立覆盖。 |
 
@@ -215,7 +215,7 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 
 展示名称按「已有手动模型定义的名称 → 在线名称 → 同账号内置名称 → 原始 `model_id`」解析。手动定义复用现有 `additional_models` 或显式模型定义的 `display_name`，不新增独立的内置或在线模型改名设置；在线名称不能覆盖已有手动名称。没有手动名称时，在线 `display_name` 或其协议别名明确提供的非空白值优先，即使该值恰好等于原始 `model_id` 也原样展示；仅在在线未提供名称、为空或仅含空白时回退内置名称。字段是否由在线明确声明与解码器的默认名称须区分，不能仅凭名称与 ID 相同判定缺失。不改变有效名称的大小写、空格或标点，不根据模型 ID 猜测命名，也不得从其他账号补齐名称。此规则同时适用于新发现与既有成功缓存，直接账号查询和规范目录重建须保持一致；不重写在线观察、用户配置、路由或历史快照，模型身份与其他字段的合成规则不受影响。
 
-在线请求保留账号端点的反向代理路径、查询参数与鉴权头。发现操作总时限为 10 秒，响应体上限为 4 MiB，禁用重定向。兼容端点共用 Codex 富目录解码器，支持标准列表的协议可补充解释自己的计价单位或字段别名。缓存保留发现的全部模型，调用方按用途筛选。
+在线请求保留账号端点的反向代理路径、查询参数与鉴权头。发现操作总时限为 10 秒，响应体上限为 4 MiB，禁用重定向。兼容端点共用 Codex 富目录解码器，支持标准列表的协议可补充解释自己的计价单位或字段别名。各协议共享带币种和 token 价格区间的 `pricing.kind = "rates"` 结构。缓存保留发现的全部模型，调用方按用途筛选。
 
 ### 模型启用状态与统一选择资格
 

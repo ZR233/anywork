@@ -181,14 +181,6 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
-pub fn required_id(id: Option<String>) -> Result<String, ModelCatalogQueryError> {
-    let id = id.ok_or(ModelCatalogQueryError::Protocol)?;
-    if id.trim().is_empty() {
-        return Err(ModelCatalogQueryError::Protocol);
-    }
-    Ok(id)
-}
-
 /// 解析一份成功名单：先由该厂商 typed parser 提取声明，再复用账号内合成与校验。
 pub fn models(
     records: Vec<Record>,
@@ -251,8 +243,12 @@ fn normalize(
     let mut model = known
         .cloned()
         .unwrap_or_else(|| minimal(&model_id, &discovery.transport, dialect));
-    let declared_price = record.pricing.is_some();
-    if let Some(pricing) = record.pricing.take() {
+    let pricing = record
+        .pricing
+        .take()
+        .filter(|p| *p != ModelPricing::Unknown);
+    let declared_price = pricing.is_some();
+    if let Some(pricing) = pricing {
         model.extra.pricing = pricing;
     } else if model
         .observation
@@ -460,7 +456,7 @@ pub fn apply_capabilities(
                 model.extra.capabilities.tools.function_calling = value;
             }
             if let Some(value) = tools.parallel_tool_calls {
-                model.extra.capabilities.tools.parallel_tool_calls = value;
+                model.base.supports_parallel_tool_calls = Some(value);
             }
             if let Some(value) = tools.custom_tools {
                 model.extra.capabilities.tools.custom_tools = value;
@@ -474,7 +470,7 @@ pub fn apply_capabilities(
         }
     }
     if let Some(value) = record.supports_parallel_tool_calls {
-        model.extra.capabilities.tools.parallel_tool_calls = value;
+        model.base.supports_parallel_tool_calls = Some(value);
     }
     if let Some(value) = record.supports_function_calling {
         model.extra.capabilities.tools.function_calling = value;
