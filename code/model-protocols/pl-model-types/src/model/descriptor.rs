@@ -34,9 +34,7 @@ pub enum ModelType {
 pub enum ModelTypeExclusion {
     TextInputUnsupported,
     TextOutputUnsupported,
-    ContextWindowUnknown,
     ContextParametersInvalid,
-    InputBudgetExhausted,
 }
 
 /// Final model-owned context policy, frozen after catalog and account configuration merge.
@@ -47,7 +45,6 @@ pub enum ModelTypeExclusion {
 pub struct ModelContextResolution {
     pub unavailable: Option<ModelContextUnavailable>,
     pub context_window: Option<u64>,
-    pub input_token_limit: Option<u64>,
     pub auto_compact_limit: Option<u64>,
     pub adjustment: Option<ModelContextAdjustment>,
 }
@@ -65,9 +62,7 @@ pub struct ModelContextResolution {
 )]
 #[serde(rename_all = "camelCase")]
 pub enum ModelContextUnavailable {
-    WindowUnknown,
     InvalidParameters,
-    InputBudgetExhausted,
 }
 
 #[derive(

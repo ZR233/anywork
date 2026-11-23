@@ -518,7 +518,7 @@ pub(crate) mod bot_archive_test_host {
 
     use anyhow::Result;
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-    use pl_model::model::ModelInfo;
+    use pl_model::model::ModelDefinition;
 
     use super::StudioRuntime;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
@@ -549,22 +549,31 @@ pub(crate) mod bot_archive_test_host {
             };
             let mut config = StudioConfig::default_config()?;
             config.models.accounts.clear();
-            let mut model = ModelInfo::compatible(&route.model_id);
+            let mut model = ModelDefinition::compatible(&route.model_id);
             if file_input {
                 use pl_model::model::{
                     MediaRepresentation, MediaWireFormat, ModelInputCapability, ModelInputSource,
                     ModelMediaInputProfile, ModelModality,
                 };
-                model.capabilities.input.push(ModelInputCapability::media(
-                    ModelModality::File,
-                    vec![ModelInputSource::Local],
-                ));
-                model.binding.request.media.push(ModelMediaInputProfile {
-                    modality: ModelModality::File,
-                    wire: MediaWireFormat::ChatFileUrl,
-                    first_send: vec![MediaRepresentation::DataUrl],
-                    replay: vec![MediaRepresentation::DataUrl],
-                });
+                model
+                    .extra
+                    .capabilities
+                    .input
+                    .push(ModelInputCapability::media(
+                        ModelModality::File,
+                        vec![ModelInputSource::Local],
+                    ));
+                model
+                    .extra
+                    .binding
+                    .request
+                    .media
+                    .push(ModelMediaInputProfile {
+                        modality: ModelModality::File,
+                        wire: MediaWireFormat::ChatFileUrl,
+                        first_send: vec![MediaRepresentation::DataUrl],
+                        replay: vec![MediaRepresentation::DataUrl],
+                    });
             }
             config.models.accounts.insert(
                 account_id,

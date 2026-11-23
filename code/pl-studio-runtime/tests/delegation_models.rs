@@ -1,7 +1,7 @@
 use anyhow::Result;
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
-    model::ModelInfo,
+    model::ModelDefinition,
 };
 use pl_studio_runtime::{
     DelegationModelResult, GetDelegationModelRequest, GetDelegationModelsRequest,
@@ -17,8 +17,8 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
     let account_id = AccountId::new("inventory")?;
     let mut models: Vec<_> = (0..13)
         .map(|index| {
-            let mut model = ModelInfo::compatible(&format!("model-{index:02}"));
-            model.description = Some(if index == 12 {
+            let mut model = ModelDefinition::compatible(&format!("model-{index:02}"));
+            model.base.description = Some(if index == 12 {
                 "界".repeat(300)
             } else {
                 "Synthetic candidate description".into()
@@ -26,7 +26,7 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
             model
         })
         .collect();
-    models.push(ModelInfo::compatible("disabled"));
+    models.push(ModelDefinition::compatible("disabled"));
     let mut account = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::compatible_endpoint(
             "Inventory",
@@ -36,8 +36,8 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
     );
     account.set_model_enabled("disabled", false)?;
     config.models.accounts.insert(account_id.clone(), account);
-    let mut second = ModelInfo::compatible("model-00");
-    second.description = Some("Other account description".into());
+    let mut second = ModelDefinition::compatible("model-00");
+    second.base.description = Some("Other account description".into());
     config.models.accounts.insert(
         AccountId::new("second")?,
         AccountConfig::from_explicit_models(

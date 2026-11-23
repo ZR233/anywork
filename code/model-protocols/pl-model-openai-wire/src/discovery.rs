@@ -32,6 +32,7 @@ impl DiscoveryPolicy {
 #[derive(Debug, Clone, Default)]
 pub struct Record {
     pub id: String,
+    pub codex: Option<CodexModel>,
     pub display_name: Option<String>,
     pub description: Option<Option<String>>,
     pub context_window: Option<Option<u64>>,
@@ -53,7 +54,6 @@ pub struct Record {
     /// 该厂商已在响应中声明的 token 价格；`None` 表示本次没有价格声明。
     pub pricing: Option<ModelPricing>,
     /// 未知模型缺省输入模态；由具体厂商 parser 决定，`None` 表示保持未知骨架。
-    pub unknown_default_input: Option<Vec<ModelModality>>,
     /// 该厂商在有 effort 候选时要求启用的固定 base body（DeepSeek thinking）。
     pub thinking_base_body: bool,
 }
@@ -181,32 +181,24 @@ where
     Option::<T>::deserialize(deserializer).map(Some)
 }
 
-pub fn required_id(id: Option<String>) -> Result<String, ModelCatalogQueryError> {
-    let id = id.ok_or(ModelCatalogQueryError::Protocol)?;
-    if id.trim().is_empty() {
-        return Err(ModelCatalogQueryError::Protocol);
-    }
-    Ok(id)
-}
-
 /// 解析一份成功名单：先由该厂商 typed parser 提取声明，再复用账号内合成与校验。
 pub fn models(
     records: Vec<Record>,
     discovery: &crate::config::ModelCatalogDiscovery,
     dialect: DiscoveryPolicy,
-    previous: Option<&[ModelInfo]>,
-    defaults: &[ModelInfo],
-) -> Result<Vec<ModelInfo>, ModelCatalogQueryError> {
+    previous: Option<&[ModelDefinition]>,
+    defaults: &[ModelDefinition],
+) -> Result<Vec<ModelDefinition>, ModelCatalogQueryError> {
     let mut metadata = defaults
         .iter()
-        .map(|model| (model.model_id.clone(), model.clone()))
+        .map(|model| (model.base.slug.clone(), model.clone()))
         .collect::<HashMap<_, _>>();
     for model in previous.into_iter().flatten() {
-        let enriched = metadata.get(&model.model_id).and_then(|current| {
+        let enriched = metadata.get(&model.base.slug).and_then(|current| {
             enrich_unknown_model_fallback(model, current, &discovery.transport, dialect)
         });
         metadata.insert(
-            model.model_id.clone(),
+            model.base.slug.clone(),
             enriched.unwrap_or_else(|| model.clone()),
         );
     }
@@ -215,7 +207,7 @@ pub fn models(
     for record in records {
         let id = record.id.clone();
         let model = normalize(record, discovery, dialect, &metadata)?;
-        metadata.insert(model.model_id.clone(), model.clone());
+        metadata.insert(model.base.slug.clone(), model.clone());
         if let Some(&index) = positions.get(&id) {
             result[index] = model;
         } else {
@@ -231,8 +223,8 @@ fn normalize(
     mut record: Record,
     discovery: &crate::config::ModelCatalogDiscovery,
     dialect: DiscoveryPolicy,
-    metadata: &HashMap<String, ModelInfo>,
-) -> Result<ModelInfo, ModelCatalogQueryError> {
+    metadata: &HashMap<String, ModelDefinition>,
+) -> Result<ModelDefinition, ModelCatalogQueryError> {
     let model_id = record.id.clone();
     let declarations = record.declared_fields();
     let budgets = [
@@ -251,22 +243,26 @@ fn normalize(
     let mut model = known
         .cloned()
         .unwrap_or_else(|| minimal(&model_id, &discovery.transport, dialect));
-    let declared_price = record.pricing.is_some();
-    if let Some(pricing) = record.pricing {
-        model.pricing = pricing;
+    let pricing = record
+        .pricing
+        .take()
+        .filter(|p| *p != ModelPricing::Unknown);
+    let declared_price = pricing.is_some();
+    if let Some(pricing) = pricing {
+        model.extra.pricing = pricing;
     } else if model
         .observation
         .as_ref()
         .and_then(|o| o.price_order)
         .is_none()
     {
-        model.pricing = ModelPricing::Unknown;
+        model.extra.pricing = ModelPricing::Unknown;
     }
-    if let Some(value) = record.display_name {
-        model.display_name = value;
+    if let Some(value) = record.display_name.take() {
+        model.base.display_name = value;
     }
-    if let Some(value) = record.description {
-        model.description = value;
+    if let Some(value) = record.description.take() {
+        model.base.description = value;
     }
     // 在线预算只覆盖它实际声明的字段；缺失的配对字段按观测事实单侧收敛，
     // 不凭空补成固定预算。同时声明两者时仍由 validate 要求自身一致。
@@ -275,37 +271,45 @@ fn normalize(
         record.max_context_window.flatten(),
     ) {
         (Some(current), Some(max)) => {
-            model.context_window = Some(current);
-            model.max_context_window = Some(max);
+            model.base.context_window = Some(current);
+            model.base.max_context_window = Some(max);
         }
         (Some(current), None) => {
-            model.context_window = Some(current);
-            if model.max_context_window.is_some_and(|max| max < current) {
+            model.base.context_window = Some(current);
+            if model
+                .base
+                .max_context_window
+                .is_some_and(|max| max < current)
+            {
                 // 观测到的窗口是更新的服务端事实，抬升过时的继承上限。
-                model.max_context_window = Some(current);
+                model.base.max_context_window = Some(current);
             }
         }
         (None, Some(max)) => {
             // 在线只声明更小的上限：继承的当前窗口收敛到该上限，
             // 不能因内置当前窗口更大而拒绝名单或继续使用旧容量。
-            model.max_context_window = Some(max);
-            if model.context_window.is_some_and(|current| current > max) {
-                model.context_window = Some(max);
+            model.base.max_context_window = Some(max);
+            if model
+                .base
+                .context_window
+                .is_some_and(|current| current > max)
+            {
+                model.base.context_window = Some(max);
             }
         }
         (None, None) => {}
     }
     if let Some(value) = record.max_output_tokens.flatten() {
-        model.max_output_tokens = Some(value);
+        model.extra.max_output_tokens = Some(value);
     }
     if let Some(value) = record.auto_compact_token_limit.flatten() {
-        model.auto_compact_token_limit = Some(value);
+        model.base.auto_compact_token_limit = Some(value);
     }
     if let Some(value) = record.default_temperature.flatten() {
-        model.default_temperature = Some(value);
+        model.extra.default_temperature = Some(value);
     }
     let explicit_binding = record.binding.is_some();
-    if let Some(value) = record.binding {
+    if let Some(value) = record.binding.take() {
         // Discovery may declare transport/media, not override endpoint credentials or inject
         // product instructions.
         if value.request.api_model.is_some()
@@ -315,15 +319,16 @@ fn normalize(
         {
             return Err(ModelCatalogQueryError::Protocol);
         }
-        model.binding = value;
+        model.extra.binding = value;
         // Canonicalize ordering, never restore a connection candidate the API withdrew.
-        model.binding.transport.supported_connection_modes = discovery
+        model.extra.binding.transport.supported_connection_modes = discovery
             .transport
             .supported_connection_modes
             .iter()
             .copied()
             .filter(|mode| {
                 model
+                    .extra
                     .binding
                     .transport
                     .supported_connection_modes
@@ -331,104 +336,31 @@ fn normalize(
             })
             .collect();
     }
-    let supplied_media_profile = record
-        .capabilities
-        .as_ref()
-        .is_some_and(|c| c.input.is_some());
     let explicit_reasoning = record
         .supports_reasoning
         .or_else(|| record.capabilities.as_ref().and_then(|c| c.reasoning));
-    if let Some(capabilities) = record.capabilities {
-        if let Some(value) = capabilities.input {
-            model.capabilities.input = value;
+    apply_capabilities(&mut record, &mut model, dialect, explicit_binding);
+    let effort_policy = if record
+        .codex
+        .as_ref()
+        .is_some_and(|base| base.supported_reasoning_levels.is_some())
+    {
+        DiscoveryPolicy {
+            responses_effort: discovery.transport.protocol == crate::protocol::WireApi::Responses,
+            ..dialect
         }
-        if let Some(value) = capabilities.output {
-            model.capabilities.output = value;
-        }
-        if let Some(value) = capabilities.streaming {
-            model.capabilities.streaming = value;
-        }
-        if let Some(value) = capabilities.temperature {
-            model.capabilities.temperature = value;
-        }
-        if let Some(value) = capabilities.reasoning {
-            model.capabilities.reasoning = value;
-        }
-        if let Some(value) = capabilities.web_search {
-            model.capabilities.web_search = value;
-        }
-        if let Some(tools) = capabilities.tools {
-            if let Some(value) = tools.function_calling {
-                model.capabilities.tools.function_calling = value;
-            }
-            if let Some(value) = tools.parallel_tool_calls {
-                model.capabilities.tools.parallel_tool_calls = value;
-            }
-            if let Some(value) = tools.custom_tools {
-                model.capabilities.tools.custom_tools = value;
-            }
-            if let Some(value) = tools.freeform_tools {
-                model.capabilities.tools.freeform_tools = value;
-            }
-            if let Some(value) = tools.programmatic_tool_calling {
-                model.capabilities.tools.programmatic_tool_calling = value;
-            }
-        }
-    }
-    if let Some(value) = record.supports_parallel_tool_calls {
-        model.capabilities.tools.parallel_tool_calls = value;
-    }
-    if let Some(value) = record.supports_function_calling {
-        model.capabilities.tools.function_calling = value;
-    }
-    if let Some(value) = record.supports_temperature {
-        model.capabilities.temperature = value;
-    }
-    if let Some(value) = record.supports_streaming {
-        model.capabilities.streaming = value;
-    }
-    if let Some(value) = record.supports_reasoning {
-        model.capabilities.reasoning = value;
-    }
-    // 缺省模态只由本厂商 parser 给出（当前仅 OpenAI/Codex），且只用于未知模型。
-    let input_modalities = match record.input_modalities.take() {
-        Some(modalities) => Some(modalities),
-        None if !supplied_media_profile && known.is_none() => record.unknown_default_input.clone(),
-        None => None,
+    } else {
+        dialect
     };
-    if let Some(modalities) = input_modalities {
-        model.capabilities.input = input_capabilities(modalities);
-        if !explicit_binding {
-            model.binding.request.media = if model
-                .capabilities
-                .supports_input_modality(ModelModality::Image)
-            {
-                default_image_media(&discovery.transport, dialect)
-            } else {
-                Vec::new()
-            };
-        }
-    } else if supplied_media_profile && !explicit_binding {
-        // A complete capability declaration needs its corresponding explicit binding; never
-        // invent a video/file codec.
-        let metadata = &mut model.0;
-        metadata.binding.request.media.retain(|profile| {
-            metadata
-                .capabilities
-                .supports_input_modality(profile.modality)
-        });
-    }
-    if let Some(value) = record.output_modalities {
-        model.capabilities.output = value;
-    }
     record
         .reasoning
-        .apply(&mut model, dialect, explicit_reasoning)?;
+        .apply(&mut model, effort_policy, explicit_reasoning)?;
     record.service_tiers.apply(&mut model)?;
     if record.thinking_base_body {
-        model.binding.request.body.remove("thinking");
+        model.extra.binding.request.body.remove("thinking");
         if !model.supported_efforts().is_empty() {
             model
+                .extra
                 .binding
                 .request
                 .body
@@ -436,19 +368,37 @@ fn normalize(
         }
     }
     if clear_context {
-        model.context_window = None;
+        model.base.context_window = None;
     }
     if clear_max_context {
-        model.max_context_window = None;
+        model.base.max_context_window = None;
     }
     if clear_compact {
-        model.auto_compact_token_limit = None;
+        model.base.auto_compact_token_limit = None;
     }
     if clear_output {
-        model.max_output_tokens = None;
+        model.extra.max_output_tokens = None;
     }
     if clear_temperature {
-        model.default_temperature = None;
+        model.extra.default_temperature = None;
+    }
+    if let Some(codex) = record.codex {
+        if let Some(levels) = codex.supported_reasoning_levels {
+            if levels.is_empty() {
+                model
+                    .base
+                    .default_reasoning_level
+                    .clone_from(&codex.default_reasoning_level);
+            }
+            model.base.supported_reasoning_levels = Some(levels);
+        }
+        model.base.fields.extend(codex.fields);
+        if codex.model_messages != Default::default() {
+            model.base.model_messages = codex.model_messages;
+        }
+        if codex.truncation_policy != Default::default() {
+            model.base.truncation_policy = codex.truncation_policy;
+        }
     }
     let observation = model
         .observation
@@ -470,11 +420,137 @@ fn normalize(
     Ok(model)
 }
 
+/// Apply only explicitly declared model capabilities using the same rules for online
+/// records and sparse manual edits. Account authorization remains a separate concern.
+pub fn apply_capabilities(
+    record: &mut Record,
+    model: &mut ModelDefinition,
+    dialect: DiscoveryPolicy,
+    explicit_binding: bool,
+) {
+    let supplied_media_profile = record
+        .capabilities
+        .as_ref()
+        .is_some_and(|c| c.input.is_some());
+    if let Some(capabilities) = record.capabilities.take() {
+        if let Some(value) = capabilities.input {
+            model.extra.capabilities.input = value;
+        }
+        if let Some(value) = capabilities.output {
+            model.extra.capabilities.output = value;
+        }
+        if let Some(value) = capabilities.streaming {
+            model.extra.capabilities.streaming = value;
+        }
+        if let Some(value) = capabilities.temperature {
+            model.extra.capabilities.temperature = value;
+        }
+        if let Some(value) = capabilities.reasoning {
+            model.extra.capabilities.reasoning = value;
+        }
+        if let Some(value) = capabilities.web_search {
+            model.extra.capabilities.web_search = value;
+        }
+        if let Some(tools) = capabilities.tools {
+            if let Some(value) = tools.function_calling {
+                model.extra.capabilities.tools.function_calling = value;
+            }
+            if let Some(value) = tools.parallel_tool_calls {
+                model.base.supports_parallel_tool_calls = Some(value);
+            }
+            if let Some(value) = tools.custom_tools {
+                model.extra.capabilities.tools.custom_tools = value;
+            }
+            if let Some(value) = tools.freeform_tools {
+                model.extra.capabilities.tools.freeform_tools = value;
+            }
+            if let Some(value) = tools.programmatic_tool_calling {
+                model.extra.capabilities.tools.programmatic_tool_calling = value;
+            }
+        }
+    }
+    if let Some(value) = record.supports_parallel_tool_calls {
+        model.base.supports_parallel_tool_calls = Some(value);
+    }
+    if let Some(value) = record.supports_function_calling {
+        model.extra.capabilities.tools.function_calling = value;
+    }
+    if let Some(value) = record.supports_temperature {
+        model.extra.capabilities.temperature = value;
+    }
+    if let Some(value) = record.supports_streaming {
+        model.extra.capabilities.streaming = value;
+    }
+    if let Some(value) = record.supports_reasoning {
+        model.extra.capabilities.reasoning = value;
+    }
+    // 缺省模态只由本厂商 parser 给出（当前仅 OpenAI/Codex），且只用于未知模型。
+    if let Some(modalities) = record.input_modalities.take() {
+        // Model modalities describe the inputs a model reasons over. A separately
+        // declared document decoder can supply text to a text-capable model.
+        let file = model
+            .extra
+            .capabilities
+            .input
+            .iter()
+            .find(|c| c.modality == ModelModality::File)
+            .cloned();
+        let mut inputs = input_capabilities(modalities);
+        if !supplied_media_profile
+            && let Some(file) = file
+            && inputs.iter().any(|c| c.modality == ModelModality::Text)
+            && !inputs.iter().any(|c| c.modality == ModelModality::File)
+        {
+            inputs.push(file);
+        }
+        if !supplied_media_profile {
+            model.extra.capabilities.input = inputs;
+        }
+        if !explicit_binding {
+            let media = &mut model.extra.binding.request.media;
+            media.retain(|p| model.extra.capabilities.supports_input_modality(p.modality));
+            if model
+                .extra
+                .capabilities
+                .supports_input_modality(ModelModality::Image)
+                && !media.iter().any(|p| p.modality == ModelModality::Image)
+            {
+                media.extend(default_image_media(&model.extra.binding.transport, dialect));
+            }
+            if model
+                .extra
+                .capabilities
+                .supports_input_modality(ModelModality::File)
+                && model.extra.binding.transport.protocol == crate::protocol::WireApi::Responses
+                && !media.iter().any(|p| p.modality == ModelModality::File)
+            {
+                media.push(media_profile(
+                    ModelModality::File,
+                    MediaWireFormat::ResponsesInputFile,
+                    dialect.media_send_order,
+                ));
+            }
+        }
+    } else if supplied_media_profile && !explicit_binding {
+        // A complete capability declaration needs its corresponding explicit binding; never
+        // invent a video/file codec.
+        let metadata = &mut model.extra;
+        metadata.binding.request.media.retain(|profile| {
+            metadata
+                .capabilities
+                .supports_input_modality(profile.modality)
+        });
+    }
+    if let Some(value) = record.output_modalities.take() {
+        model.extra.capabilities.output = value;
+    }
+}
+
 fn minimal(
     model_id: &str,
     transport: &crate::model::ModelTransportProfile,
     dialect: DiscoveryPolicy,
-) -> ModelInfo {
+) -> ModelDefinition {
     // Streaming is a discovery default, not a verified provider capability or a promise of
     // tools/embedding support. Modalities come from the vendor's own default policy.
     let modalities = dialect.unknown_input.to_vec();
@@ -488,38 +564,48 @@ fn minimal(
             ..ModelRequestProfile::default()
         },
     };
-    ModelInfo(crate::model::ModelMetadata {
-        model_id: model_id.into(),
+    ModelDefinition {
         observation: None,
-        display_name: model_id.into(),
-        description: None,
-        context_window: None,
-        max_context_window: None,
-        auto_compact_token_limit: None,
-        default_temperature: None,
-        max_output_tokens: None,
-        pricing: ModelPricing::Unknown,
-        parameters: Vec::new(),
-        binding: ModelBinding {
-            transport: transport.clone(),
-            request,
+        base: crate::model::CodexModel {
+            slug: model_id.into(),
+            display_name: model_id.into(),
+            description: None,
+            context_window: None,
+            max_context_window: None,
+            auto_compact_token_limit: None,
+            truncation_policy: TruncationPolicy::default(),
+            model_messages: crate::model::ModelMessages {
+                instructions_template: String::new(),
+                ..Default::default()
+            },
+            ..Default::default()
         },
-        capabilities: ModelCapabilities {
-            streaming: true,
-            temperature: false,
-            reasoning: false,
-            web_search: false,
-            input: input_capabilities(modalities),
-            output: vec![ModelModality::Text],
-            tools: ToolCapabilities::default(),
-            interleaved: None,
-            prompt_cache: Default::default(),
-            instruction_snapshot_overrides: false,
-            native_context_family: None,
+        extra: crate::model::ModelExtras {
+            default_temperature: None,
+            max_output_tokens: None,
+            pricing: ModelPricing::Unknown,
+            parameters: Vec::new(),
+            effort_label: None,
+            effort_wire: Default::default(),
+            binding: ModelBinding {
+                transport: transport.clone(),
+                request,
+            },
+            capabilities: ModelCapabilities {
+                streaming: true,
+                temperature: false,
+                reasoning: false,
+                web_search: false,
+                input: input_capabilities(modalities),
+                output: vec![ModelModality::Text],
+                tools: ToolCapabilities::default(),
+                interleaved: None,
+                prompt_cache: Default::default(),
+                instruction_snapshot_overrides: false,
+                native_context_family: None,
+            },
         },
-        truncation_policy: TruncationPolicy::default(),
-        base_instructions: String::new(),
-    })
+    }
 }
 
 /// effort 候选的 wire 规则：Responses 写 `reasoning.effort`，其余方言写 `reasoning_effort`。
@@ -591,11 +677,11 @@ fn default_image_media(
 
 /// Presentation fields on a same-ID skeleton do not declare capabilities or budgets.
 pub fn enrich_unknown_model_fallback(
-    model: &ModelInfo,
-    current: &ModelInfo,
+    model: &ModelDefinition,
+    current: &ModelDefinition,
     transport: &crate::model::ModelTransportProfile,
     policy: DiscoveryPolicy,
-) -> Option<ModelInfo> {
+) -> Option<ModelDefinition> {
     if model
         .observation
         .as_ref()
@@ -603,16 +689,22 @@ pub fn enrich_unknown_model_fallback(
     {
         return None;
     }
-    let mut skeleton = minimal(&model.model_id, transport, policy);
-    skeleton.display_name.clone_from(&model.display_name);
-    skeleton.description.clone_from(&model.description);
+    let mut skeleton = minimal(&model.base.slug, transport, policy);
+    skeleton
+        .base
+        .display_name
+        .clone_from(&model.base.display_name);
+    skeleton
+        .base
+        .description
+        .clone_from(&model.base.description);
     skeleton.observation.clone_from(&model.observation);
     let uses_current_default = *model == skeleton;
     if !uses_current_default {
         // Only the complete historical skeleton is eligible for same-ID metadata
         // enrichment; richer explicit declarations keep their existing precedence.
-        skeleton.capabilities.input = vec![ModelInputCapability::text()];
-        skeleton.binding.request.media.clear();
+        skeleton.extra.capabilities.input = vec![ModelInputCapability::text()];
+        skeleton.extra.binding.request.media.clear();
         if *model != skeleton {
             return None;
         }
@@ -620,20 +712,28 @@ pub fn enrich_unknown_model_fallback(
     let mut enriched = current.clone();
     if uses_current_default {
         enriched
+            .extra
             .capabilities
             .input
-            .clone_from(&model.capabilities.input);
+            .clone_from(&model.extra.capabilities.input);
         enriched
+            .extra
             .binding
             .request
             .media
-            .clone_from(&model.binding.request.media);
+            .clone_from(&model.extra.binding.request.media);
     }
-    if model.display_name != model.model_id {
-        enriched.display_name.clone_from(&model.display_name);
+    if model.base.display_name != model.base.slug {
+        enriched
+            .base
+            .display_name
+            .clone_from(&model.base.display_name);
     }
-    if model.description.is_some() {
-        enriched.description.clone_from(&model.description);
+    if model.base.description.is_some() {
+        enriched
+            .base
+            .description
+            .clone_from(&model.base.description);
     }
     Some(enriched)
 }

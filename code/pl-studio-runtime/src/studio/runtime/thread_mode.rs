@@ -88,7 +88,8 @@ impl StudioRuntime {
         let mut instructions = crate::instruction::decode_snapshot(&previous.payload)?;
         let mode_changed =
             instructions.set_mode_instruction(&mode.descriptor().display_name, mode.prompt())?;
-        let base_changed = instructions.rebind_model_base(&route.model.base_instructions);
+        let base_changed =
+            instructions.rebind_model_base(&route.model.base.model_messages.instructions_template);
         let prompt_changed = mode_changed | base_changed;
         let complete = instructions.trusted_text();
         let hash = instructions.trusted_content_hash();

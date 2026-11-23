@@ -73,9 +73,9 @@ impl ModelRuntime {
             request,
         )?;
         let mut body = crate::runtime::openai::build_request(
-            self.model.binding.transport.protocol,
+            self.model.extra.binding.transport.protocol,
             self.endpoint
-                .instruction_wire_role(self.model.binding.transport.protocol),
+                .instruction_wire_role(self.model.extra.binding.transport.protocol),
             &request,
             &self.model,
             prompt_cache_key,
@@ -96,7 +96,7 @@ impl ModelRuntime {
         Ok((
             body,
             InferenceModelObservation {
-                configured_model: self.model.model_id.clone(),
+                configured_model: self.model.base.slug.clone(),
                 sent_model,
                 reported_model: None,
             },

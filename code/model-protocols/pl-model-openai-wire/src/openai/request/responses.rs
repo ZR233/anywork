@@ -81,7 +81,7 @@ pub(super) struct ResponsesRequestBody {
 impl ResponsesRequestBody {
     pub(super) fn from_request(
         request: &CompletionRequest,
-        model: &crate::model::ModelInfo,
+        model: &crate::model::ModelDefinition,
         prompt_cache_key: Option<&str>,
         instruction_role: InstructionWireRole,
         chatgpt: bool,
@@ -260,11 +260,12 @@ impl ResponsesRequestBody {
 
         Ok(Self {
             model: model
+                .extra
                 .binding
                 .request
                 .api_model
                 .clone()
-                .unwrap_or_else(|| model.model_id.clone()),
+                .unwrap_or_else(|| model.base.slug.clone()),
             input,
             stream: true,
             tool_choice: request.tool_choice.clone(),

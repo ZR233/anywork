@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
+use super::AccountModelOverride;
 use super::{
     AccountAuthenticationMethod, AccountId, AccountTemplateId, ModelCatalogId,
     builtin_model_catalog,
 };
-use crate::model::ModelInfo;
+use crate::model::ModelDefinition;
 use crate::protocol::{
     ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
     ProtocolServiceCapabilities, ToolWirePolicy, WireApi,
@@ -22,7 +23,7 @@ pub enum AccountModelCatalogConfig {
     Bundled {
         catalog: ModelCatalogId,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        additional_models: Vec<ModelInfo>,
+        additional_models: Vec<AccountModelOverride>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         connection_overrides: BTreeMap<String, ConnectionMode>,
         /// 按模型 model_id 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
@@ -31,7 +32,7 @@ pub enum AccountModelCatalogConfig {
     },
     /// 完全由产品配置提供的模型目录。
     Explicit {
-        models: Vec<ModelInfo>,
+        models: Vec<AccountModelOverride>,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         connection_overrides: BTreeMap<String, ConnectionMode>,
         /// 按模型 model_id 索引的上下文压缩阈值用户覆盖；缺省表示使用模型默认值。
@@ -65,7 +66,7 @@ pub enum AccountModelOrigin {
 /// 唯一有效目录中的一条成员，携带来源供投影与 GUI 区分。
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountModelEntry {
-    pub model: ModelInfo,
+    pub model: ModelDefinition,
     pub origin: AccountModelOrigin,
     pub context: crate::model::ModelContextResolution,
     /// 用户启用意图的投影；禁用成员仍留在目录里，只是不能被选为执行模型。
@@ -86,7 +87,7 @@ pub struct ImageGenerationService {
 }
 
 impl AccountModelEntry {
-    pub fn new(model: ModelInfo, origin: AccountModelOrigin) -> Self {
+    pub fn new(model: ModelDefinition, origin: AccountModelOrigin) -> Self {
         Self {
             context: model.resolve_context(None),
             model,
@@ -105,6 +106,7 @@ impl AccountModelEntry {
             ModelType::Text => {
                 if !self
                     .model
+                    .extra
                     .capabilities
                     .supports_input_modality(ModelModality::Text)
                 {
@@ -112,6 +114,7 @@ impl AccountModelEntry {
                 }
                 if !self
                     .model
+                    .extra
                     .capabilities
                     .supports_output_modality(ModelModality::Text)
                 {
@@ -121,14 +124,8 @@ impl AccountModelEntry {
         }
         if let Some(reason) = self.context.unavailable {
             exclusions.push(match reason {
-                crate::model::ModelContextUnavailable::WindowUnknown => {
-                    Exclusion::ContextWindowUnknown
-                }
                 crate::model::ModelContextUnavailable::InvalidParameters => {
                     Exclusion::ContextParametersInvalid
-                }
-                crate::model::ModelContextUnavailable::InputBudgetExhausted => {
-                    Exclusion::InputBudgetExhausted
                 }
             });
         }
@@ -184,7 +181,7 @@ pub struct AccountConfig {
     pub catalog: AccountModelCatalogConfig,
     /// Successful endpoint observation, never persisted as desired user configuration.
     #[serde(skip)]
-    model_catalog_overlay: Option<Vec<ModelInfo>>,
+    model_catalog_overlay: Option<Vec<ModelDefinition>>,
     /// 精确 model_id 的显式启用覆盖；缺项默认启用，撤下成员仍保留意图。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     model_enabled_overrides: BTreeMap<String, bool>,
@@ -213,13 +210,13 @@ impl AccountConfig {
     pub fn from_bundled_catalog(
         info: ProtocolEndpoint,
         catalog: ModelCatalogId,
-        additional_models: Vec<ModelInfo>,
+        additional_models: Vec<ModelDefinition>,
     ) -> Self {
         Self::from_parts(
             info,
             AccountModelCatalogConfig::Bundled {
                 catalog,
-                additional_models,
+                additional_models: additional_models.into_iter().map(Into::into).collect(),
                 connection_overrides: BTreeMap::new(),
                 auto_compact_overrides: BTreeMap::new(),
             },
@@ -227,11 +224,11 @@ impl AccountConfig {
     }
 
     /// 从完全显式的模型目录创建 account 配置。
-    pub fn from_explicit_models(info: ProtocolEndpoint, models: Vec<ModelInfo>) -> Self {
+    pub fn from_explicit_models(info: ProtocolEndpoint, models: Vec<ModelDefinition>) -> Self {
         Self::from_parts(
             info,
             AccountModelCatalogConfig::Explicit {
-                models,
+                models: models.into_iter().map(Into::into).collect(),
                 connection_overrides: BTreeMap::new(),
                 auto_compact_overrides: BTreeMap::new(),
             },
@@ -349,7 +346,7 @@ impl AccountConfig {
         let models = self
             .selectable_catalog(None)?
             .into_iter()
-            .map(|entry| entry.model.0.model_id)
+            .map(|entry| entry.model.base.slug)
             .filter(|slug| {
                 capabilities
                     .model_prefixes
@@ -376,7 +373,7 @@ impl AccountConfig {
     pub fn effective_models(
         &self,
         model_type: Option<crate::model::ModelType>,
-    ) -> Result<Vec<ModelInfo>> {
+    ) -> Result<Vec<ModelDefinition>> {
         Ok(self
             .effective_catalog(model_type)?
             .into_iter()
@@ -408,13 +405,13 @@ impl AccountConfig {
                 self.catalog_membership(registry)?,
                 self.connection_overrides(),
                 self.discovery_profile()?.is_some(),
-                self.editable_models(),
+                self.model_overrides(),
             )?
             .into_iter()
             .map(|mut entry| {
                 entry.context = entry.model.resolve_context(
                     self.auto_compact_overrides()
-                        .get(&entry.model.model_id)
+                        .get(&entry.model.base.slug)
                         .copied(),
                 );
                 entry
@@ -426,7 +423,7 @@ impl AccountConfig {
             .map(|mut entry| {
                 entry.enabled = self
                     .model_enabled_overrides
-                    .get(&entry.model.model_id)
+                    .get(&entry.model.base.slug)
                     .copied()
                     .unwrap_or(true);
                 entry
@@ -465,7 +462,7 @@ impl AccountConfig {
         if !self
             .effective_catalog(None)?
             .iter()
-            .any(|entry| entry.model.model_id == model_id)
+            .any(|entry| entry.model.base.slug == model_id)
         {
             return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
         }
@@ -542,7 +539,7 @@ impl AccountConfig {
         let Some(entry) = self
             .effective_catalog(None)?
             .into_iter()
-            .find(|entry| entry.model.model_id == model_id)
+            .find(|entry| entry.model.base.slug == model_id)
         else {
             return Ok(None);
         };
@@ -575,15 +572,30 @@ impl AccountConfig {
             .cloned()
             .map(|model| {
                 (
-                    model.model_id.clone(),
+                    model.base.slug.clone(),
                     AccountModelEntry::new(model, AccountModelOrigin::Bundled),
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let discovery = self.discovery_profile()?;
         for model in additional {
+            let mut effective = local
+                .remove(&model.base.slug)
+                .map(|entry| entry.model)
+                .unwrap_or_else(|| {
+                    let mut member = ModelDefinition::compatible(&model.base.slug);
+                    if let Some(discovery) = &discovery {
+                        member
+                            .extra
+                            .binding
+                            .set_transport(discovery.transport.clone());
+                    }
+                    member
+                });
+            model.apply(&mut effective)?;
             local.insert(
-                model.model_id.clone(),
-                AccountModelEntry::new(model.clone(), AccountModelOrigin::Manual),
+                model.base.slug.clone(),
+                AccountModelEntry::new(effective, AccountModelOrigin::Manual),
             );
         }
         // Speed is an observation of the authenticated Codex catalog, not a
@@ -591,6 +603,7 @@ impl AccountConfig {
         for entry in local.values_mut() {
             entry
                 .model
+                .extra
                 .parameters
                 .retain(|parameter| parameter.name != "service_tier");
         }
@@ -598,10 +611,9 @@ impl AccountConfig {
             return Ok(self.restrict_authentication_transport(local.into_values().collect()));
         };
         let mut entries = local.clone();
-        let discovery = self.discovery_profile()?;
         let policy = registry.resolve(&self.protocol)?.discovery;
         for observed in overlay {
-            let declared = local.get(&observed.model_id);
+            let declared = local.get(&observed.base.slug);
             let enriched = declared.and_then(|entry| {
                 discovery.as_ref().and_then(|discovery| {
                     crate::protocol::discovery::enrich_unknown_model_fallback(
@@ -615,24 +627,25 @@ impl AccountConfig {
             let observed = enriched.as_ref().unwrap_or(observed);
             let is_manual =
                 declared.is_some_and(|entry| entry.origin == AccountModelOrigin::Manual);
-            let mut model = declared
-                .filter(|entry| entry.origin == AccountModelOrigin::Manual)
-                .map(|entry| entry.model.clone())
-                .unwrap_or_else(|| observed.clone());
-            if !is_manual {
-                model.display_name = crate::model::observation::resolve_display_name(
-                    observed,
-                    declared.map(|entry| &entry.model),
-                );
+            let mut model = observed.clone();
+            model.base.display_name = crate::model::observation::resolve_display_name(
+                observed,
+                declared.map(|entry| &entry.model),
+            );
+            if !matches!(observed.extra.pricing, crate::model::ModelPricing::Unknown) {
+                model.extra.pricing = observed.extra.pricing.clone();
             }
-            if !matches!(observed.pricing, crate::model::ModelPricing::Unknown) {
-                model.pricing = observed.pricing.clone();
-            }
-            if matches!(model.pricing, crate::model::ModelPricing::Unknown) {
-                model.pricing = local
-                    .get(&model.model_id)
-                    .map(|entry| entry.model.pricing.clone())
+            if matches!(model.extra.pricing, crate::model::ModelPricing::Unknown) {
+                model.extra.pricing = local
+                    .get(&model.base.slug)
+                    .map(|entry| entry.model.extra.pricing.clone())
                     .unwrap_or_default();
+            }
+            if let Some(manual) = additional
+                .iter()
+                .find(|model| model.base.slug == observed.base.slug)
+            {
+                manual.apply(&mut model)?;
             }
             let origin = if is_manual {
                 AccountModelOrigin::Manual
@@ -640,7 +653,7 @@ impl AccountConfig {
                 AccountModelOrigin::Online
             };
             entries.insert(
-                model.model_id.clone(),
+                model.base.slug.clone(),
                 AccountModelEntry::new(model, origin),
             );
         }
@@ -652,11 +665,16 @@ impl AccountConfig {
         mut entries: Vec<AccountModelEntry>,
     ) -> Vec<AccountModelEntry> {
         if self.authentication == AccountAuthenticationMethod::ChatGpt {
-            entries.retain(|entry| entry.model.binding.transport.protocol == WireApi::Responses);
+            entries
+                .retain(|entry| entry.model.extra.binding.transport.protocol == WireApi::Responses);
             for entry in &mut entries {
-                entry.model.binding.transport.supported_connection_modes =
-                    vec![ConnectionMode::Http];
-                entry.model.binding.transport.default_connection_mode = ConnectionMode::Http;
+                entry
+                    .model
+                    .extra
+                    .binding
+                    .transport
+                    .supported_connection_modes = vec![ConnectionMode::Http];
+                entry.model.extra.binding.transport.default_connection_mode = ConnectionMode::Http;
             }
         }
         entries
@@ -666,7 +684,7 @@ impl AccountConfig {
     /// The host owns query identity/generation checks and durable publication ordering.
     /// # Errors
     /// Explicit/unsupported catalogs or any invalid declaration reject the whole observation.
-    pub fn set_model_catalog_overlay(&mut self, models: Vec<ModelInfo>) -> Result<()> {
+    pub fn set_model_catalog_overlay(&mut self, models: Vec<ModelDefinition>) -> Result<()> {
         let Some(discovery) = self.discovery_profile()? else {
             return Err(PureError::Protocol(
                 "model catalog observation is unsupported".into(),
@@ -676,7 +694,7 @@ impl AccountConfig {
             .map_err(|_| PureError::Protocol("invalid model catalog observation".into()))?;
         if models.iter().any(|model| {
             !crate::protocol::discovery::valid_discovery_transport(
-                &model.binding.transport,
+                &model.extra.binding.transport,
                 &discovery.transport,
             )
         }) {
@@ -699,7 +717,9 @@ impl AccountConfig {
             AccountModelCatalogConfig::Bundled { catalog, .. } => {
                 Ok(builtin_model_catalog(catalog)?.discovery)
             }
-            AccountModelCatalogConfig::Explicit { .. } => Ok(None),
+            AccountModelCatalogConfig::Explicit { .. } => Ok(Some(super::ModelCatalogDiscovery {
+                transport: crate::model::ModelTransportProfile::chat_completions_http(),
+            })),
         }
     }
 
@@ -710,7 +730,7 @@ impl AccountConfig {
         self.resolved_catalog = None;
     }
 
-    pub(crate) fn model_observations(&self) -> &[ModelInfo] {
+    pub(crate) fn model_observations(&self) -> &[ModelDefinition] {
         self.model_catalog_overlay.as_deref().unwrap_or_default()
     }
 
@@ -745,7 +765,7 @@ impl AccountConfig {
 
     /// 返回按模型 model_id 保存的上下文压缩阈值用户覆盖。
     ///
-    /// 覆盖值独立于 [`ModelInfo::auto_compact_token_limit`] 默认元信息，缺省表示使用模型默认值。
+    /// 覆盖值独立于 [`ModelDefinition::auto_compact_token_limit`] 默认元信息，缺省表示使用模型默认值。
     pub fn auto_compact_overrides(&self) -> &BTreeMap<String, u64> {
         match &self.catalog {
             AccountModelCatalogConfig::Bundled {
@@ -760,7 +780,22 @@ impl AccountConfig {
     }
 
     /// 返回可由产品编辑的模型列表，不包含 PL 内置只读模型。
-    pub fn editable_models(&self) -> &[ModelInfo] {
+    pub fn editable_models(&self) -> Result<Vec<ModelDefinition>> {
+        let discovery = self.discovery_profile()?;
+        self.model_overrides()
+            .iter()
+            .map(|patch| {
+                let mut model = ModelDefinition::compatible(&patch.base.slug);
+                if let Some(profile) = &discovery {
+                    model.extra.binding.set_transport(profile.transport.clone());
+                }
+                patch.apply(&mut model)?;
+                Ok(model)
+            })
+            .collect()
+    }
+
+    pub fn model_overrides(&self) -> &[AccountModelOverride] {
         match &self.catalog {
             AccountModelCatalogConfig::Bundled {
                 additional_models, ..
@@ -781,9 +816,9 @@ impl AccountConfig {
     /// 角色路由选择。非手动或不存在的 model_id 返回 `PureError::ConfigError`，且状态零修改。
     pub fn remove_manual_model(&mut self, model_id: &str) -> Result<()> {
         if !self
-            .editable_models()
+            .model_overrides()
             .iter()
-            .any(|model| model.model_id == model_id)
+            .any(|model| model.base.slug == model_id)
         {
             return Err(PureError::ConfigError(format!("unknown model: {model_id}")));
         }
@@ -794,7 +829,7 @@ impl AccountConfig {
                 auto_compact_overrides,
                 ..
             } => {
-                additional_models.retain(|model| model.model_id != model_id);
+                additional_models.retain(|model| model.base.slug != model_id);
                 connection_overrides.remove(model_id);
                 auto_compact_overrides.remove(model_id);
             }
@@ -804,7 +839,7 @@ impl AccountConfig {
                 auto_compact_overrides,
                 ..
             } => {
-                models.retain(|model| model.model_id != model_id);
+                models.retain(|model| model.base.slug != model_id);
                 connection_overrides.remove(model_id);
                 auto_compact_overrides.remove(model_id);
             }
@@ -820,10 +855,11 @@ impl AccountConfig {
         let catalog = self.catalog_membership(crate::protocol::builtin_protocols())?;
         let selected = catalog
             .iter()
-            .find(|candidate| candidate.model.model_id == model)
+            .find(|candidate| candidate.model.base.slug == model)
             .map(|candidate| &candidate.model)
             .ok_or_else(|| PureError::ConfigError(format!("unknown model: {model}")))?;
         if !selected
+            .extra
             .binding
             .transport
             .supported_connection_modes
@@ -833,7 +869,7 @@ impl AccountConfig {
                 "model {model} does not support connection mode {mode:?}"
             )));
         }
-        if selected.binding.transport.default_connection_mode == mode {
+        if selected.extra.binding.transport.default_connection_mode == mode {
             self.connection_overrides_mut().remove(model);
         } else {
             self.connection_overrides_mut()
@@ -867,7 +903,7 @@ impl AccountConfig {
         let catalog = self.effective_catalog(None)?;
         let selected = catalog
             .iter()
-            .find(|candidate| candidate.model.model_id == model)
+            .find(|candidate| candidate.model.base.slug == model)
             .map(|candidate| &candidate.model)
             .ok_or_else(|| PureError::ConfigError(format!("unknown model: {model}")))?;
         let restore_default = match limit {
@@ -877,7 +913,16 @@ impl AccountConfig {
                     "model {model} auto compact limit must be a positive integer"
                 )));
             }
-            Some(limit) => Some(limit) == selected.resolve_context(None).auto_compact_limit,
+            Some(limit) => {
+                if let Some(max) = selected.max_auto_compact_override()
+                    && limit > max
+                {
+                    return Err(PureError::ConfigError(format!(
+                        "model {model} auto compact limit must be at most {max}"
+                    )));
+                }
+                false
+            }
         };
         if restore_default {
             self.auto_compact_overrides_mut().remove(model);
@@ -891,7 +936,7 @@ impl AccountConfig {
         if let Some(catalog) = &mut self.resolved_catalog {
             for entry in catalog
                 .iter_mut()
-                .filter(|entry| entry.model.model_id == model)
+                .filter(|entry| entry.model.base.slug == model)
             {
                 entry.context = entry.model.resolve_context(override_limit);
             }
@@ -907,7 +952,6 @@ impl AccountConfig {
     ) -> Result<()> {
         let catalog = self.effective_catalog(None)?;
         let previous = self.auto_compact_overrides().clone();
-        let discovery = self.discovery_profile()?.is_some();
         let mut candidate = self.clone();
         candidate.auto_compact_overrides_mut().clear();
         for (model, limit) in overrides {
@@ -916,10 +960,10 @@ impl AccountConfig {
                     "model auto compact limit must be a positive integer".into(),
                 ));
             }
-            if catalog.iter().any(|entry| entry.model.model_id == model) {
-                candidate.set_model_auto_compact_override(&model, Some(limit))?;
-            } else if discovery && previous.get(&model) == Some(&limit) {
+            if previous.get(&model) == Some(&limit) {
                 candidate.auto_compact_overrides_mut().insert(model, limit);
+            } else if catalog.iter().any(|entry| entry.model.base.slug == model) {
+                candidate.set_model_auto_compact_override(&model, Some(limit))?;
             } else {
                 return Err(PureError::ConfigError(format!("unknown model: {model}")));
             }
@@ -929,7 +973,7 @@ impl AccountConfig {
             for entry in catalog {
                 entry.context = entry
                     .model
-                    .resolve_context(limits.get(&entry.model.model_id).copied());
+                    .resolve_context(limits.get(&entry.model.base.slug).copied());
             }
         }
         *self = candidate;
@@ -1060,7 +1104,7 @@ impl AccountConfig {
             self.catalog_membership(crate::protocol::builtin_protocols())?,
             self.connection_overrides(),
             !strict_availability && self.discovery_profile()?.is_some(),
-            self.editable_models(),
+            self.model_overrides(),
         )?
         .into_iter()
         .map(|entry| entry.model)
@@ -1078,15 +1122,15 @@ impl AccountConfig {
             model
                 .validate_media_contract()
                 .map_err(|error| PureError::ConfigError(error.to_string()))?;
-            if model.model_id.trim().is_empty() {
+            if model.base.slug.trim().is_empty() {
                 return Err(PureError::ConfigError(format!(
                     "account {account_id} contains a model with empty model_id"
                 )));
             }
-            if !model_ids.insert(model.model_id.as_str()) {
+            if !model_ids.insert(model.base.slug.as_str()) {
                 return Err(PureError::ConfigError(format!(
                     "account {account_id} contains duplicate model: {}",
-                    model.model_id
+                    model.base.slug
                 )));
             }
         }
@@ -1166,15 +1210,16 @@ fn apply_connection_overrides(
     mut entries: Vec<AccountModelEntry>,
     overrides: &BTreeMap<String, ConnectionMode>,
     allow_unavailable: bool,
-    editable_models: &[ModelInfo],
+    editable_models: &[AccountModelOverride],
 ) -> Result<Vec<AccountModelEntry>> {
     for entry in &entries {
         // A user override must never repair an invalid declared transport profile.
         entry
             .model
+            .extra
             .binding
             .transport
-            .validate(&entry.model.model_id)
+            .validate(&entry.model.base.slug)
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
     }
     for (model_id, mode) in overrides {
@@ -1185,7 +1230,7 @@ fn apply_connection_overrides(
         }
         let Some(entry) = entries
             .iter_mut()
-            .find(|entry| entry.model.model_id == *model_id)
+            .find(|entry| entry.model.base.slug == *model_id)
         else {
             if allow_unavailable {
                 continue;
@@ -1196,6 +1241,7 @@ fn apply_connection_overrides(
         };
         if !entry
             .model
+            .extra
             .binding
             .transport
             .supported_connection_modes
@@ -1204,7 +1250,7 @@ fn apply_connection_overrides(
             if allow_unavailable
                 && !editable_models
                     .iter()
-                    .any(|manual| manual.model_id == *model_id)
+                    .any(|manual| manual.base.slug == *model_id)
             {
                 // Preserve desired state, but keep the current display profile valid.
                 // Route availability/strict resolution must reject this saved selection.
@@ -1214,7 +1260,7 @@ fn apply_connection_overrides(
                 "model {model_id} does not support connection mode {mode:?}"
             )));
         }
-        entry.model.binding.transport.default_connection_mode = *mode;
+        entry.model.extra.binding.transport.default_connection_mode = *mode;
     }
     Ok(entries)
 }

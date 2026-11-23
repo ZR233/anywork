@@ -28,7 +28,7 @@ use pl_model::{
     completion::{
         ModelStreamCurrent, ModelStreamCurrentState, ModelStreamToolInputPhase, ToolSpec,
     },
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
     runtime::{ThreadModel, thread_tool_declaration},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
@@ -241,8 +241,8 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
     let mut owners = Vec::new();
     let mut turn: Option<TurnTask> = None;
     let exercise = timeout(DEADLINE, async {
-        let mut model = ModelInfo::compatible("current-model");
-        model.binding.set_transport(ModelTransportProfile::responses_http());
+        let mut model = ModelDefinition::compatible("current-model");
+        model.extra.binding.set_transport(ModelTransportProfile::responses_http());
         let factory = ModelFactory::new(ThreadModel::new(pl_model::runtime::new_with_account_id(
             "fixture", pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()), model,
         )?, None));

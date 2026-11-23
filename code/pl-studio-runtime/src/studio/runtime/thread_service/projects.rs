@@ -497,7 +497,7 @@ mod standalone_tests {
     use crate::studio::ThreadVisibility;
     use crate::{StudioHostKind, StudioRuntimeOptions};
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-    use pl_model::model::ModelInfo;
+    use pl_model::model::ModelDefinition;
 
     fn options(home: &Path) -> StudioRuntimeOptions {
         StudioRuntimeOptions {
@@ -521,7 +521,7 @@ mod standalone_tests {
         use sea_orm::ConnectionTrait;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let _endpoint = configure(&home)?;
+        let _endpoint = configure(&home).await?;
         let repository = temp.path().join("repository");
         let checkout = temp.path().join("private-worktree");
         tokio::fs::create_dir_all(&repository).await?;
@@ -744,7 +744,7 @@ mod standalone_tests {
         use pl_tool::workspace::SessionFiles;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let _endpoint = configure(&home)?;
+        let _endpoint = configure(&home).await?;
         let workspace = temp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -824,7 +824,7 @@ mod standalone_tests {
         use pl_tool::workspace::SessionFiles;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let _endpoint = configure(&home)?;
+        let _endpoint = configure(&home).await?;
         let workspace = temp.path().join("workspace");
         tokio::fs::create_dir_all(&workspace).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -902,10 +902,9 @@ mod standalone_tests {
         Ok(())
     }
 
-    fn configure(home: &Path) -> Result<std::net::TcpListener> {
-        // Activation may construct this anonymous route but these storage tests never submit a model
-        // request. Retain the listener to also detect accidental outbound network work.
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+    async fn configure(home: &Path) -> Result<pl_provider_fixture::FixtureServer> {
+        // Discovery uses the fixture catalog. The empty inference script rejects any model call.
+        let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
         let account_id = AccountId::new("standalone-fixture")?;
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
@@ -919,9 +918,9 @@ mod standalone_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Standalone fixture",
-                    format!("http://{}", endpoint.local_addr()?),
+                    endpoint.base_url(),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -1043,7 +1042,7 @@ mod standalone_tests {
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let endpoint = configure(&home)?;
+        let endpoint = configure(&home).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let root = temp.path().join("documents/anywork");
         tokio::fs::create_dir_all(&root).await?;
@@ -1111,9 +1110,9 @@ mod standalone_tests {
             dunce::canonicalize(root.join(&thread.id))?
         );
         runtime.shutdown_runtime().await?;
-        endpoint.set_nonblocking(true)?;
         assert!(
-            matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            endpoint.finish().await?.is_empty(),
+            "storage-only startup must not send inference"
         );
         Ok(())
     }
@@ -1123,7 +1122,7 @@ mod standalone_tests {
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let endpoint = configure(&home)?;
+        let endpoint = configure(&home).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let root = temp.path().join("documents/anywork");
         let project = runtime
@@ -1201,9 +1200,9 @@ mod standalone_tests {
             .await?;
         assert_eq!(tokio::fs::read(&sentinel).await?, b"keep user files");
         runtime.shutdown_runtime().await?;
-        endpoint.set_nonblocking(true)?;
         assert!(
-            matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+            endpoint.finish().await?.is_empty(),
+            "storage-only startup must not send inference"
         );
         Ok(())
     }
@@ -1213,7 +1212,7 @@ mod standalone_tests {
     -> Result<()> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let _endpoint = configure(&home)?;
+        let _endpoint = configure(&home).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let root = temp.path().join("documents/anywork");
         let project = runtime
@@ -1253,7 +1252,7 @@ mod standalone_tests {
     async fn standalone_start_directory_creation_failure_is_not_published() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
-        let _endpoint = configure(&home)?;
+        let _endpoint = configure(&home).await?;
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let root = temp.path().join("documents/anywork");
         let project = runtime
@@ -1546,7 +1545,7 @@ mod standalone_tests {
                 async fn new(servers: &[(&str, &Server, bool, &str)]) -> Result<Self> {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _unused_endpoint = configure(&home)?;
+                    let _unused_endpoint = configure(&home).await?;
                     let provider = pl_provider_fixture::FixtureServer::start(vec![
                         pl_provider_fixture::Step::prompt(
                             pl_provider_fixture::Protocol::ResponsesHttp,
@@ -1575,8 +1574,9 @@ mod standalone_tests {
                     let store = ConfigStore::new(ConfigPaths::from_config_dir(&home));
                     let mut config = store.load()?;
                     config.skills.enabled = false;
-                    let mut model = ModelInfo::compatible("standalone-model");
+                    let mut model = ModelDefinition::compatible("standalone-model");
                     model
+                        .extra
                         .binding
                         .set_transport(pl_model::model::ModelTransportProfile::responses_http());
                     config.models.accounts.insert(
@@ -2465,7 +2465,7 @@ mod standalone_tests {
             for restart in [false, true] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 git(&workspace, &["init", "--quiet"]).await?;
@@ -2944,7 +2944,7 @@ mod standalone_tests {
             for receipt in [false, true] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let evidence = crash_original_private_owner(temp.path(), receipt).await?;
@@ -3236,7 +3236,7 @@ mod standalone_tests {
                 for restart in [false, true] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let evidence = crash_original_private_owner(temp.path(), true).await?;
@@ -3417,7 +3417,7 @@ mod standalone_tests {
         {
             let temp = tempfile::tempdir()?;
             let home = temp.path().join("home");
-            let _endpoint = configure(&home)?;
+            let _endpoint = configure(&home).await?;
             let workspace = temp.path().join("workspace");
             tokio::fs::create_dir_all(&workspace).await?;
             let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -3480,7 +3480,7 @@ mod standalone_tests {
             use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
             let temp = tempfile::tempdir()?;
             let home = temp.path().join("home");
-            let _endpoint = configure(&home)?;
+            let _endpoint = configure(&home).await?;
             let workspace = temp.path().join("workspace");
             tokio::fs::create_dir_all(&workspace).await?;
             let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -3597,7 +3597,7 @@ mod standalone_tests {
             use crate::studio::store::thread_archive::ArchiveScope;
             let temp = tempfile::tempdir()?;
             let home = temp.path().join("home");
-            let _endpoint = configure(&home)?;
+            let _endpoint = configure(&home).await?;
             let workspace = temp.path().join("workspace");
             tokio::fs::create_dir_all(&workspace).await?;
             let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -3684,7 +3684,7 @@ mod standalone_tests {
 
             let temp = tempfile::tempdir()?;
             let home = temp.path().join("home");
-            let _endpoint = configure(&home)?;
+            let _endpoint = configure(&home).await?;
             let workspace = temp.path().join("workspace");
             tokio::fs::create_dir_all(&workspace).await?;
             let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -3875,7 +3875,7 @@ mod standalone_tests {
             for unreadable_history in [false, true] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -3999,7 +3999,7 @@ mod standalone_tests {
             for archived in [false, true] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -4260,7 +4260,7 @@ mod standalone_tests {
         -> Result<()> {
             let temp = tempfile::tempdir()?;
             let home = temp.path().join("home");
-            let _endpoint = configure(&home)?;
+            let _endpoint = configure(&home).await?;
             let workspace = temp.path().join("workspace");
             tokio::fs::create_dir_all(&workspace).await?;
             let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -4330,7 +4330,7 @@ mod standalone_tests {
             for host_target in [false, true] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -4506,7 +4506,7 @@ mod standalone_tests {
             for root_owned in [true, false] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let repository = temp.path().join("repository");
                 tokio::fs::create_dir(&repository).await?;
                 git_fixture(&repository, &["init", "--quiet"]).await?;
@@ -4817,7 +4817,7 @@ mod standalone_tests {
             for root_owned in [true, false] {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let repository = temp.path().join("repository");
                 tokio::fs::create_dir(&repository).await?;
                 git_fixture(&repository, &["init", "--quiet"]).await?;
@@ -5013,7 +5013,7 @@ mod standalone_tests {
                 for missing_root in [false, true] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5199,7 +5199,7 @@ mod standalone_tests {
                 for restart in [false, true] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5303,7 +5303,7 @@ mod standalone_tests {
                 use crate::studio::store::thread_archive::ArchiveScope;
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5400,7 +5400,7 @@ mod standalone_tests {
             -> Result<()> {
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5571,7 +5571,7 @@ mod standalone_tests {
                 {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5808,7 +5808,7 @@ mod standalone_tests {
                 use crate::studio::store::thread_archive::ArchiveScope;
                 let temp = tempfile::tempdir()?;
                 let home = temp.path().join("home");
-                let _endpoint = configure(&home)?;
+                let _endpoint = configure(&home).await?;
                 let workspace = temp.path().join("workspace");
                 tokio::fs::create_dir_all(&workspace).await?;
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -5967,7 +5967,7 @@ mod standalone_tests {
                 ] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -6162,7 +6162,7 @@ mod standalone_tests {
                 for flag in ["removalStarted", "cleaned"] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let repository = temp.path().join("repository");
                     repository_fixture(&repository).await?;
                     let repository = dunce::canonicalize(repository)?;
@@ -6301,7 +6301,7 @@ mod standalone_tests {
                 for corrupt in [false, true] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let workspace = temp.path().join("workspace");
                     tokio::fs::create_dir_all(&workspace).await?;
                     let runtime = StudioRuntime::initialize(options(&home)).await?;
@@ -6402,7 +6402,7 @@ mod standalone_tests {
                 for corrupt in [false, true] {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _endpoint = configure(&home)?;
+                    let _endpoint = configure(&home).await?;
                     let repository = temp.path().join("repository");
                     repository_fixture(&repository).await?;
                     let repository = dunce::canonicalize(repository)?;

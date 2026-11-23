@@ -115,13 +115,14 @@ fn build_provider(
     let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(name, base_url);
     endpoint.protocol = adapter;
     endpoint.service_capabilities = capabilities;
-    let mut model = ModelInfo::compatible(model_id);
-    model.display_name = format!("Fixture {name}");
-    model.capabilities.web_search = model_web_search;
+    let mut model = ModelDefinition::compatible(model_id);
+    model.base.display_name = format!("Fixture {name}");
+    model.extra.capabilities.web_search = model_web_search;
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    model.binding.request.api_model = None;
+    model.extra.binding.request.api_model = None;
     let mut account = AccountConfig::from_explicit_models(endpoint, vec![model]);
     account.bearer_token_env = credential_env.map(str::to_owned);
     account

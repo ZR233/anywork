@@ -6,9 +6,10 @@ use crate::{PureError, Result};
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort, StudioConfig};
 use crate::first_run::AccountTemplateKind;
 use pl_model::config::{
-    AccountConfig, AccountModelCatalogConfig, AccountTemplateId, builtin_account_catalog,
+    AccountConfig, AccountModelCatalogConfig, AccountModelOverride, AccountTemplateId,
+    builtin_account_catalog,
 };
-use pl_model::model::{ModelInfo, ModelTransportProfile};
+use pl_model::model::ModelDefinition;
 use pl_model::protocol::{ConnectionMode, ProtocolEndpoint, ProtocolId, WireApi};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,60 +51,61 @@ pub fn account_template_kind(account: &AccountConfig) -> Result<Option<AccountTe
 }
 
 impl AccountModelEdit {
-    fn to_model_info(&self, current: Option<&ModelInfo>) -> Result<ModelInfo> {
-        let model_id = non_empty_trimmed(&self.model_id, "model model_id")?;
-        let mut model = current
-            .filter(|model| model.model_id == model_id)
-            .cloned()
-            .unwrap_or_else(|| ModelInfo::compatible(&model_id));
-        if let Some(current) = current
-            && current.model_id == model_id
-            && current.display_name
-                == trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone())
-            && current.context_window == self.context_window
-            && current.max_output_tokens == self.max_output_tokens
-            && current.binding.transport.protocol == self.protocol
-        {
-            return Ok(current.clone());
-        }
-        model.display_name =
-            trim_optional(Some(&self.display_name)).unwrap_or_else(|| model_id.clone());
-        if self.context_window == Some(0)
-            || self.max_output_tokens == Some(0)
-            || self
-                .max_output_tokens
-                .zip(self.context_window)
-                .is_some_and(|(output, window)| output > window)
-        {
+    fn to_override(
+        &self,
+        current: Option<&AccountModelOverride>,
+        inherited: WireApi,
+    ) -> Result<AccountModelOverride> {
+        let id = non_empty_trimmed(&self.model_id, "model ID")?;
+        if self.context_window == Some(0) || self.max_output_tokens == Some(0) {
             return Err(PureError::ConfigError(
-                "custom model budgets must be positive and output must fit its context".into(),
+                "custom model budgets must be positive".into(),
             ));
         }
-        model.context_window = self.context_window;
-        model.max_context_window = self.context_window;
-        model.max_output_tokens = self.max_output_tokens;
-        model.binding.request.protocol = match self.protocol {
-            WireApi::Responses => {
-                pl_model::model::ModelProtocolOptions::Responses(Default::default())
+        let mut declaration = current
+            .cloned()
+            .unwrap_or_else(|| ModelDefinition::compatible(&id).into());
+        if let Some(name) = trim_optional(Some(&self.display_name)) {
+            declaration
+                .base
+                .fields
+                .insert("display_name".into(), name.into());
+        } else {
+            declaration.base.fields.remove("display_name");
+        }
+        if let Some(maximum) = self.context_window {
+            declaration
+                .base
+                .fields
+                .insert("max_context_window".into(), maximum.into());
+        } else {
+            declaration.base.fields.remove("max_context_window");
+        }
+        if let Some(limit) = self.max_output_tokens {
+            declaration
+                .extra
+                .insert("max_output_tokens".into(), limit.into());
+        } else {
+            declaration.extra.remove("max_output_tokens");
+        }
+        let existing = declaration
+            .extra
+            .get("binding")
+            .and_then(|b| b.pointer("/transport/protocol"))
+            .map(|value| serde_json::from_value(value.clone()))
+            .transpose()?
+            .unwrap_or(inherited);
+        if self.protocol != existing {
+            if self.protocol == inherited {
+                declaration.extra.remove("binding");
+            } else {
+                declaration.extra.insert(
+                    "binding".into(),
+                    serde_json::json!({"transport": {"protocol": self.protocol}}),
+                );
             }
-            WireApi::ChatCompletions => pl_model::model::ModelProtocolOptions::ChatCompletions(
-                pl_model::model::ChatRequestOptions {
-                    include_usage: true,
-                    ..Default::default()
-                },
-            ),
-        };
-        model.binding.transport = ModelTransportProfile {
-            protocol: self.protocol,
-            supported_connection_modes: vec![ConnectionMode::Http],
-            default_connection_mode: ConnectionMode::Http,
-        };
-        model
-            .binding
-            .transport
-            .validate(&model_id)
-            .map_err(|error| PureError::ConfigError(error.to_string()))?;
-        Ok(model)
+        }
+        Ok(declaration)
     }
 }
 
@@ -119,20 +121,6 @@ impl AccountEdit {
             PureError::ConfigError("account base_url must not be empty".to_string())
         })?;
         let bearer_token = trim_optional(self.bearer_token.as_deref());
-        let current_models = current
-            .map(AccountConfig::editable_models)
-            .unwrap_or_default();
-        let custom_models = self
-            .custom_models
-            .iter()
-            .map(|edit| {
-                edit.to_model_info(
-                    current_models
-                        .iter()
-                        .find(|model| model.model_id.trim() == edit.model_id.trim()),
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
         let template = match &self.template {
             Some(template_id) => Some(
                 builtin_account_catalog()?
@@ -176,12 +164,6 @@ impl AccountEdit {
                     config.apply_patch_tool_type = current.apply_patch_tool_type;
                     config.capabilities = current.capabilities.clone();
                 }
-                match &mut config.catalog {
-                    AccountModelCatalogConfig::Bundled {
-                        additional_models, ..
-                    } => *additional_models = custom_models,
-                    AccountModelCatalogConfig::Explicit { models, .. } => *models = custom_models,
-                }
                 config
             }
             None => {
@@ -205,7 +187,7 @@ impl AccountEdit {
                         .and_then(|account| account.service_capabilities().ok())
                         .unwrap_or_default(),
                 };
-                let fresh = AccountConfig::from_explicit_models(info, custom_models);
+                let fresh = AccountConfig::from_explicit_models(info, Vec::new());
                 let mut config = match current {
                     Some(current) => {
                         let mut config = current.clone();
@@ -223,6 +205,29 @@ impl AccountEdit {
                 config
             }
         };
+        let default_protocol = config
+            .discovery_profile()?
+            .map(|discovery| discovery.transport.protocol)
+            .unwrap_or_default();
+        let previous = current
+            .map(AccountConfig::model_overrides)
+            .unwrap_or_default();
+        let declarations = self
+            .custom_models
+            .iter()
+            .map(|edit| {
+                let existing = previous
+                    .iter()
+                    .find(|model| model.base.slug == edit.model_id.trim());
+                edit.to_override(existing, default_protocol)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        match &mut config.catalog {
+            AccountModelCatalogConfig::Bundled {
+                additional_models, ..
+            } => *additional_models = declarations,
+            AccountModelCatalogConfig::Explicit { models, .. } => *models = declarations,
+        }
         config.replace_model_auto_compact_overrides(self.model_auto_compact_limits.clone())?;
         match &mut config.catalog {
             AccountModelCatalogConfig::Bundled {
@@ -333,7 +338,7 @@ pub fn remove_account(
         let models = replacement.effective_models(None)?;
         let model = models
             .iter()
-            .find(|model| model.model_id == route.model_id)
+            .find(|model| model.base.slug == route.model_id)
             .or_else(|| models.first())
             .ok_or_else(|| {
                 PureError::ConfigError(format!(
@@ -352,7 +357,7 @@ pub fn remove_account(
             .cloned()
             .or_else(|| model.default_effort().map(ReasoningEffort::new));
         route.account_id = replacement_id.clone();
-        route.model_id = model.model_id.clone();
+        route.model_id = model.base.slug.clone();
         route.effort = effort;
         Ok(())
     };
@@ -401,18 +406,18 @@ fn validate_account_key(key: &str) -> Result<String> {
 
 /// 只校验模型声明的结构完整性；具体模型选择属于角色/Mode/Thread 路由，
 /// 账号不保存第二份默认模型。
-fn validate_models(account_key: &str, models: &[ModelInfo]) -> Result<()> {
+fn validate_models(account_key: &str, models: &[ModelDefinition]) -> Result<()> {
     let mut model_ids = BTreeSet::new();
     for model in models {
-        if model.model_id.trim().is_empty() {
+        if model.base.slug.trim().is_empty() {
             return Err(PureError::ConfigError(format!(
                 "account {account_key} has a model with empty model_id"
             )));
         }
-        if !model_ids.insert(model.model_id.clone()) {
+        if !model_ids.insert(model.base.slug.clone()) {
             return Err(PureError::ConfigError(format!(
                 "account {account_key} has duplicate model model_id: {}",
-                model.model_id
+                model.base.slug
             )));
         }
     }

@@ -194,7 +194,7 @@ mod startup_fault_tests {
         use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
         use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
 
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
@@ -202,7 +202,7 @@ mod startup_fault_tests {
         tokio::fs::create_dir_all(&workspace).await?;
         // This storage scenario creates a real Thread on the second startup. Give all three
         // startups one durable anonymous route, not a vendor default that needs external credentials.
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
         let account_id = AccountId::new("storage-fixture")?;
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
@@ -216,9 +216,9 @@ mod startup_fault_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Storage fixture",
-                    format!("http://{}", endpoint.local_addr()?),
+                    endpoint.base_url(),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -273,13 +273,9 @@ mod startup_fault_tests {
         );
         assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
         runtime.shutdown_runtime().await?;
-        endpoint.set_nonblocking(true)?;
         assert!(
-            matches!(
-                endpoint.accept(),
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
-            ),
-            "storage-only startup must not discover or invoke the model endpoint"
+            endpoint.finish().await?.is_empty(),
+            "storage-only startup must not send inference"
         );
         Ok(())
     }
@@ -290,12 +286,12 @@ mod startup_fault_tests {
         use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
         use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let original = temp.path().join("original-project");
         tokio::fs::create_dir_all(&original).await?;
-        let endpoint = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
         let account = AccountId::new("recovery-fixture")?;
         let route = ModelRouteConfig {
             account_id: account.clone(),
@@ -309,9 +305,9 @@ mod startup_fault_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Recovery fixture",
-                    format!("http://{}", endpoint.local_addr()?),
+                    endpoint.base_url(),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -440,10 +436,9 @@ mod startup_fault_tests {
         assert!(runtime.ensure_thread_owner(bot_root_id).await.is_err());
         assert!(runtime.thread_snapshot(bot_root_id).await.is_ok());
         runtime.shutdown_runtime().await?;
-        endpoint.set_nonblocking(true)?;
         assert!(
-            matches!(endpoint.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
-            "workspace admission must not call the model endpoint"
+            endpoint.finish().await?.is_empty(),
+            "storage-only startup must not send inference"
         );
         Ok(())
     }
@@ -947,7 +942,8 @@ mod startup_fault_tests {
             additional_models, ..
         } = &mut provider.catalog
         {
-            additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+            additional_models
+                .push(pl_model::model::ModelDefinition::compatible("current-id").into());
         }
         crate::config::ConfigStore::new(paths.config_paths()).save(&config)?;
         let path = home.join("config.toml");

@@ -17,7 +17,7 @@ use pl_protocol::{PureError, Result};
 
 use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
 use super::{AccountModelEntry, AccountModelOrigin};
-use crate::model::{ModelInfo, ModelModality};
+use crate::model::{ModelDefinition, ModelModality};
 use crate::protocol::{
     ConnectionMode, ProtocolEndpoint, ProtocolServiceCapabilities, WireApi,
     wire_transport_profile_revision,
@@ -30,7 +30,7 @@ const MIMO_TOKEN_PLAN_BASE_URL: &str = "https://token-plan-cn.xiaomimimo.com/v1"
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelCatalog {
     pub id: ModelCatalogId,
-    pub models: Vec<ModelInfo>,
+    pub models: Vec<ModelDefinition>,
     pub discovery: Option<ModelCatalogDiscovery>,
 }
 
@@ -214,16 +214,17 @@ impl AccountCatalogRegistry {
                 })?;
             for model in &catalog.models {
                 model
+                    .extra
                     .binding
                     .transport
-                    .validate(&model.model_id)
+                    .validate(&model.base.slug)
                     .map_err(|error| PureError::ConfigError(error.to_string()))?;
             }
             if !template.suggested_model_id.is_empty()
                 && !catalog
                     .models
                     .iter()
-                    .any(|model| model.model_id == template.suggested_model_id)
+                    .any(|model| model.base.slug == template.suggested_model_id)
             {
                 return Err(PureError::ConfigError(format!(
                     "account template {} references missing suggested model: {}",
@@ -253,7 +254,7 @@ impl AccountCatalogRegistry {
                     catalog
                         .models
                         .iter()
-                        .any(|model| model.model_id == bundled.model_id)
+                        .any(|model| model.base.slug == bundled.model_id)
                 }) {
                     return Err(PureError::ConfigError(format!(
                         "selection guide references unknown model: {catalog_id}/{}",
@@ -324,11 +325,14 @@ impl AccountCatalogRegistry {
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
         for catalog in self.model_catalogs.values() {
             for model in &catalog.models {
-                for mode in &model.binding.transport.supported_connection_modes {
+                for mode in &model.extra.binding.transport.supported_connection_modes {
                     canonical.push(0);
                     canonical.extend_from_slice(
-                        wire_transport_profile_revision(model.binding.transport.protocol, *mode)
-                            .as_bytes(),
+                        wire_transport_profile_revision(
+                            model.extra.binding.transport.protocol,
+                            *mode,
+                        )
+                        .as_bytes(),
                     );
                 }
             }
@@ -351,15 +355,21 @@ pub fn builtin_model_catalog(id: &ModelCatalogId) -> Result<ModelCatalog> {
         .ok_or_else(|| PureError::ConfigError(format!("unknown model catalog: {id}")))
 }
 
-fn model_catalog(id: &str, models: Vec<ModelInfo>, model_ids: &[&str]) -> Result<ModelCatalog> {
+fn model_catalog(
+    id: &str,
+    models: Vec<ModelDefinition>,
+    model_ids: &[&str],
+) -> Result<ModelCatalog> {
     let models = models
         .into_iter()
-        .filter(|model| model_ids.contains(&model.model_id.as_str()))
+        .filter(|model| model_ids.contains(&model.base.slug.as_str()))
         .collect();
     Ok(ModelCatalog {
         id: ModelCatalogId::new(id).expect("static model catalog id is valid"),
         models,
-        discovery: None,
+        discovery: Some(ModelCatalogDiscovery {
+            transport: crate::model::ModelTransportProfile::chat_completions_http(),
+        }),
     })
 }
 
@@ -376,12 +386,14 @@ fn zhipu_responses_catalog() -> ModelCatalog {
     let model_ids = zhipu_responses_default_model_ids();
     let models = zhipu_responses_models()
         .into_iter()
-        .filter(|model| model_ids.contains(&model.model_id.as_str()))
+        .filter(|model| model_ids.contains(&model.base.slug.as_str()))
         .collect();
     ModelCatalog {
         id: ModelCatalogId::new("zhipu-responses").expect("static model catalog id is valid"),
         models,
-        discovery: None,
+        discovery: Some(ModelCatalogDiscovery {
+            transport: crate::model::ModelTransportProfile::responses_http(),
+        }),
     }
 }
 
@@ -485,7 +497,7 @@ fn connection_mode_label(mode: ConnectionMode) -> &'static str {
 /// runtime binding details. Unknown budgets and pricing remain `None`.
 pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
     let model = &entry.model;
-    let capabilities = &model.capabilities;
+    let capabilities = &model.extra.capabilities;
     let reasoning = model
         .effort_parameter()
         .map(|parameter| ModelReasoningDescriptor {
@@ -497,9 +509,9 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             default: parameter.default_candidate(None),
             candidates: parameter.candidates.clone(),
         });
-    let pricing = model.pricing.catalog_pricing();
+    let pricing = model.extra.pricing.catalog_pricing();
     ModelDescriptor {
-        model_id: model.model_id.clone(),
+        model_id: model.base.slug.clone(),
         type_support: vec![entry.type_support(crate::model::ModelType::Text)],
         origin: match entry.origin {
             AccountModelOrigin::Bundled => crate::config::ModelOriginDto::Bundled,
@@ -507,15 +519,20 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             AccountModelOrigin::Manual => crate::config::ModelOriginDto::Manual,
         },
         enabled: entry.enabled,
-        display_name: model.display_name.clone(),
-        description: model.description.clone(),
-        context_window: model.context_window,
-        max_context_window: model.max_context_window,
+        display_name: if model.base.display_name.is_empty() {
+            model.base.slug.clone()
+        } else {
+            model.base.display_name.clone()
+        },
+        description: model.base.description.clone(),
+        context_window: model.base.context_window,
+        max_context_window: entry.context.context_window,
         context: entry.context.clone(),
-        max_output_tokens: model.max_output_tokens,
+        max_output_tokens: model.extra.max_output_tokens,
         transport: ModelTransportDescriptor {
-            protocol: protocol_label(model.binding.transport.protocol).to_string(),
+            protocol: protocol_label(model.extra.binding.transport.protocol).to_string(),
             connection_modes: model
+                .extra
                 .binding
                 .transport
                 .supported_connection_modes
@@ -524,7 +541,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
                 .map(connection_mode_descriptor)
                 .collect(),
             default_connection_mode: connection_mode_label(
-                model.binding.transport.default_connection_mode,
+                model.extra.binding.transport.default_connection_mode,
             )
             .to_string(),
         },
@@ -541,7 +558,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
             reasoning: capabilities.reasoning,
             web_search: capabilities.web_search,
             function_calling: capabilities.tools.function_calling,
-            parallel_tool_calls: capabilities.tools.parallel_tool_calls,
+            parallel_tool_calls: model.base.supports_parallel_tool_calls.unwrap_or_default(),
             custom_tools: capabilities.tools.custom_tools,
             freeform_tools: capabilities.tools.freeform_tools,
             instruction_snapshot_overrides: capabilities.instruction_snapshot_overrides,
@@ -549,6 +566,7 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
         },
         reasoning,
         service_tiers: model
+            .extra
             .parameters
             .iter()
             .find(|parameter| parameter.name == "service_tier" && !parameter.candidates.is_empty())

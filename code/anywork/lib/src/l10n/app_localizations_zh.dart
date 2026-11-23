@@ -3492,7 +3492,7 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsModelAutoCompactInvalid => '请输入正整数词元数。';
 
   @override
-  String get settingsModelAutoCompactHelp => '实际阈值不超过上下文容量的 90%，并预留最大输出预算。';
+  String get settingsModelAutoCompactHelp => '留空使用模型默认值。自定义阈值最多为最大上下文的 90%。';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity => '上下文容量未知，无法计算自动压缩阈值。';
@@ -4026,9 +4026,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get modelTextOutputUnsupported => '不支持文本输出';
-
-  @override
-  String get modelContextWindowUnknown => '上下文大小未知';
 
   @override
   String get modelTextFilterEmpty => '没有符合文本条件的模型，请在账号设置中查看参数';
@@ -4782,13 +4779,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get conversationActivityWaitingTimer => '计时器';
 
   @override
-  String get settingsModelAutoCompactAdjusted => '已根据模型上下文容量与输出预留调整生效阈值。';
+  String get settingsModelAutoCompactAdjusted => '已按模型最新的最大上下文调整生效阈值。';
 
   @override
   String get modelContextParametersInvalid => '上下文参数不一致';
-
-  @override
-  String get modelInputBudgetExhausted => '预留输出后没有可用输入容量';
 
   @override
   String get statusCompactNow => '立即压缩';
@@ -6357,7 +6351,59 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get acpProcessGroupRunning => '执行中';
+  String acpProcessGroupToolsOnly(int toolCount) {
+    return '执行了 $toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupThoughtsOnly(int count) {
+    return '思考了 $count 段';
+  }
+
+  @override
+  String acpProcessGroupActivitiesOnly(int count) {
+    return '过程 · $count 项活动';
+  }
+
+  @override
+  String acpProcessGroupRunningToolsMeta(int toolCount) {
+    return '$toolCount 个工具';
+  }
+
+  @override
+  String acpProcessGroupRunningActivitiesMeta(int count) {
+    return '$count 项活动';
+  }
+
+  @override
+  String get acpToolKindRead => '读取';
+
+  @override
+  String get acpToolKindEdit => '编辑';
+
+  @override
+  String get acpToolKindDelete => '删除';
+
+  @override
+  String get acpToolKindMove => '移动';
+
+  @override
+  String get acpToolKindSearch => '搜索';
+
+  @override
+  String get acpToolKindExecute => '执行';
+
+  @override
+  String get acpToolKindThink => '思考';
+
+  @override
+  String get acpToolKindFetch => '获取';
+
+  @override
+  String get acpToolKindSwitchMode => '切换模式';
+
+  @override
+  String get acpToolKindOther => '工具';
 
   @override
   String get acpContentAudioLabel => '音频内容';

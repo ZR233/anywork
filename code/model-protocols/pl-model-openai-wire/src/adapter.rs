@@ -1,6 +1,6 @@
 use crate::{
     discovery::{DiscoveryPolicy, ModelCatalogQueryError, Record},
-    model::{ModelInfo, ModelRequestProfile},
+    model::{ModelDefinition, ModelRequestProfile},
     protocol::{
         HostedWebSearchDialect, InstructionWireRole, ProtocolEndpoint, ProtocolId,
         ProtocolServiceCapabilities,
@@ -23,10 +23,10 @@ pub struct Adapter {
 
 impl Adapter {
     /// Freezes the provider's defaults before model validation and wire encoding.
-    pub fn bind(&self, endpoint: &mut ProtocolEndpoint, model: &mut ModelInfo) {
+    pub fn bind(&self, endpoint: &mut ProtocolEndpoint, model: &mut ModelDefinition) {
         endpoint.responses_instruction_role = self.responses_instruction_role;
         if let Some(prepare) = self.prepare_request {
-            prepare(endpoint, &mut model.binding.request);
+            prepare(endpoint, &mut model.extra.binding.request);
         }
     }
 }

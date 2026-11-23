@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::completion::CompletionRequest;
 use crate::completion::ToolFormat;
-use crate::model::info::ModelInfo;
+use crate::model::info::ModelDefinition;
 
 use super::protocol_error;
 #[derive(Debug, Clone, Serialize)]
@@ -40,13 +40,14 @@ pub(super) fn to_object_map<T: Serialize>(value: &T) -> Result<Map<String, Value
 /// 注入 base body 后应用 parameter wire，完成请求体动态字段组装。
 pub(super) fn finalize_body(
     body: &mut Map<String, Value>,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     request: &CompletionRequest,
 ) {
-    merge_base_body(body, &model.binding.request.body);
+    merge_base_body(body, &model.extra.binding.request.body);
     apply_parameters(body, model, request);
     if let Some(tier) = &request.service_tier
         && let Some(wire) = model
+            .extra
             .parameters
             .iter()
             .find(|parameter| parameter.name == "service_tier")
@@ -72,8 +73,12 @@ pub(super) fn merge_base_body(target: &mut Map<String, Value>, source: &Map<Stri
 }
 
 /// 遍历模型声明的可调参数，对用户选中的值应用 wire 写入请求体。
-fn apply_parameters(body: &mut Map<String, Value>, model: &ModelInfo, request: &CompletionRequest) {
-    for parameter in &model.parameters {
+fn apply_parameters(
+    body: &mut Map<String, Value>,
+    model: &ModelDefinition,
+    request: &CompletionRequest,
+) {
+    for parameter in model.parameters() {
         let selected = if parameter.name == "effort" {
             request
                 .reasoning

@@ -438,6 +438,7 @@ class VmModels implements ModelsRepository {
                     reasoningEfforts: [],
                     maxOutputTokens: 4096,
                     outputModalities: [ModelModalityView.text],
+                    maxContextWindow: 2000,
                     context: ModelContextView(
                       unavailable: null,
                       contextWindow: 2000,
@@ -1264,8 +1265,11 @@ void main() {
     expect(h.models.compactCalls, isEmpty);
     expect(
       (current().raw, current().dirty, current().canSave),
-      ('9999999', true, true),
+      ('9999999', true, false),
     );
+    await owner.saveCompact('model');
+    expect(h.models.compactCalls, isEmpty);
+    owner.changeCompact('model', '1800');
     await owner.saveCompact('model');
     expect(
       h.models.compactCalls.single.$1,
@@ -1276,7 +1280,7 @@ void main() {
     );
     expect(
       (h.models.compactCalls.single.$2 as SetAutoCompactLimit).limit,
-      9999999,
+      1800,
     );
     expect(current().dirty, isFalse);
     editWithoutTimer(() => owner.presetCompact('model', 25));
@@ -2468,7 +2472,6 @@ void main() {
         context: const ModelContextView(
           unavailable: null,
           contextWindow: 2000,
-          inputTokenLimit: 1500,
           autoCompactLimit: 1000,
         ),
         wireApi: 'responses',
@@ -2546,9 +2549,7 @@ void main() {
         ),
       ]);
       expect(facts.context, [
-        AccountDisplayFact(label: strings['context'], value: '2000'),
         AccountDisplayFact(label: strings['maxContext'], value: '4000'),
-        AccountDisplayFact(label: strings['inputBudget'], value: '1500'),
         AccountDisplayFact(label: l10n.settingsOutputBudget, value: '4096'),
       ]);
       expect(facts.connection, [
@@ -2561,10 +2562,13 @@ void main() {
         ...facts.context,
         ...facts.connection,
       ];
-      expect(allFacts, hasLength(10));
-      expect(allFacts.toSet(), hasLength(10));
+      expect(allFacts, hasLength(8));
+      expect(allFacts.toSet(), hasLength(8));
     }
-    for (final unavailable in [ModelContextUnavailable.windowUnknown, null]) {
+    for (final unavailable in [
+      ModelContextUnavailable.invalidParameters,
+      null,
+    ]) {
       publishDescriptor(
         AccountModelView(
           modelId: 'model',
@@ -2582,17 +2586,7 @@ void main() {
       final facts = projected.specificationFacts;
       final strings = accountStrings(AppLocalizationsZh());
       expect(facts.modalityCapabilities, isEmpty);
-      expect(
-        facts.context,
-        unavailable == null
-            ? <AccountDisplayFact>[]
-            : [
-                AccountDisplayFact(
-                  label: strings['context'],
-                  value: strings['contextUnavailable.windowUnknown'],
-                ),
-              ],
-      );
+      expect(facts.context, isEmpty);
       expect(facts.connection, [
         AccountDisplayFact(label: strings['modelId'], value: 'model'),
         AccountDisplayFact(

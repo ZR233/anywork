@@ -5,7 +5,9 @@ use pl_model::{
         AgentModelConfig, AgentRoleId, ModelCatalogId, ModelRouteConfig, builtin_account_catalog,
         builtin_model_catalog, model_descriptor,
     },
-    model::{ModelInfo, ModelPricing, ModelTransportProfile, ModelType, bundled_model_definition},
+    model::{
+        ModelDefinition, ModelPricing, ModelTransportProfile, ModelType, bundled_model_definition,
+    },
     protocol::{
         ProtocolId,
         discovery::{ModelCatalogQuery, ModelCatalogQueryResult},
@@ -79,7 +81,7 @@ fn mimo_provider(url: &str) -> AccountConfig {
     )
 }
 
-fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
+fn updated(result: ModelCatalogQueryResult) -> Vec<ModelDefinition> {
     match result {
         ModelCatalogQueryResult::Updated { models, .. } => models,
         _ => panic!("expected updated catalog"),
@@ -114,7 +116,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
             .effective_models(None)
             .unwrap()
             .iter()
-            .any(|model| model.model_id == descriptor.suggested_model_id)
+            .any(|model| model.base.slug == descriptor.suggested_model_id)
     );
 
     // Metadata is projected from the owned account/catalog, not inferred from its template ID.
@@ -161,17 +163,18 @@ async fn overlay_keeps_models_enabled_by_default_and_keeps_exact_price_join() {
     let withdrawn = definition
         .models
         .iter()
-        .find(|model| model.model_id != known.model_id)
+        .find(|model| model.base.slug != known.base.slug)
         .unwrap();
-    let server = Server::json(json!({"data":[{"id": known.model_id}, {"id":"online-only"}]})).await;
+    let server =
+        Server::json(json!({"data":[{"id": known.base.slug}, {"id":"online-only"}]})).await;
     let mut config = openai_provider(&server.url);
-    let mut manual = ModelInfo::compatible("manual");
-    manual.pricing = known.pricing.clone();
+    let mut manual = ModelDefinition::compatible("manual");
+    manual.extra.pricing = known.extra.pricing.clone();
     if let AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(manual.clone());
+        additional_models.push(manual.clone().into());
     }
     let observed = updated(
         ModelCatalogQuery::for_account(&config)
@@ -184,28 +187,32 @@ async fn overlay_keeps_models_enabled_by_default_and_keeps_exact_price_join() {
     let catalog = config.effective_catalog(None).unwrap();
     let missing = catalog
         .iter()
-        .find(|entry| entry.model.model_id == withdrawn.model_id)
+        .find(|entry| entry.model.base.slug == withdrawn.base.slug)
         .unwrap();
     assert_eq!(missing.origin, AccountModelOrigin::Bundled);
     assert!(missing.enabled);
     assert!(catalog.iter().all(|entry| entry.enabled));
     let known_entry = catalog
         .iter()
-        .find(|entry| entry.model.model_id == known.model_id)
+        .find(|entry| entry.model.base.slug == known.base.slug)
         .unwrap();
     assert_eq!(known_entry.origin, AccountModelOrigin::Online);
-    assert_eq!(known_entry.model.pricing, known.pricing);
+    assert_eq!(known_entry.model.extra.pricing, known.extra.pricing);
     let unknown = catalog
         .iter()
-        .find(|entry| entry.model.model_id == "online-only")
+        .find(|entry| entry.model.base.slug == "online-only")
         .unwrap();
     assert_eq!(unknown.origin, AccountModelOrigin::Online);
-    assert_eq!(unknown.model.pricing, ModelPricing::Unknown);
+    assert_eq!(unknown.model.extra.pricing, ModelPricing::Unknown);
     let manual_entry = catalog
         .iter()
-        .find(|entry| entry.model.model_id == "manual")
+        .find(|entry| entry.model.base.slug == "manual")
         .unwrap();
     assert_eq!(manual_entry.origin, AccountModelOrigin::Manual);
+    manual
+        .extra
+        .binding
+        .set_transport(ModelTransportProfile::responses_websocket());
     assert_eq!(manual_entry.model, manual);
     assert_eq!(
         model_descriptor(manual_entry).origin,
@@ -217,12 +224,12 @@ async fn overlay_keeps_models_enabled_by_default_and_keeps_exact_price_join() {
 #[test]
 fn bundled_without_overlay_keeps_bundled_origin_and_manual_members() {
     let mut config = openai_provider("http://127.0.0.1:1");
-    let manual = ModelInfo::compatible("manual");
+    let manual = ModelDefinition::compatible("manual");
     if let AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(manual.clone());
+        additional_models.push(manual.clone().into());
     }
     let catalog = config.effective_catalog(None).unwrap();
     assert!(
@@ -231,7 +238,7 @@ fn bundled_without_overlay_keeps_bundled_origin_and_manual_members() {
             .any(|entry| entry.origin == AccountModelOrigin::Bundled)
     );
     assert!(catalog.iter().any(|entry| {
-        entry.origin == AccountModelOrigin::Manual && entry.model.model_id == "manual"
+        entry.origin == AccountModelOrigin::Manual && entry.model.base.slug == "manual"
     }));
     assert!(
         catalog
@@ -246,13 +253,13 @@ async fn same_id_manual_model_hides_online_entry() {
     let server =
         Server::json(json!({"data":[{"id": model_id, "display_name":"Provider display"}]})).await;
     let mut config = openai_provider(&server.url);
-    let mut manual = ModelInfo::compatible(model_id);
-    manual.display_name = "Authoritative manual".into();
+    let mut manual = ModelDefinition::compatible(model_id);
+    manual.base.display_name = "Authoritative manual".into();
     if let AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(manual.clone());
+        additional_models.push(manual.clone().into());
     }
     let observed = updated(
         ModelCatalogQuery::for_account(&config)
@@ -265,11 +272,11 @@ async fn same_id_manual_model_hides_online_entry() {
     let catalog = config.effective_catalog(None).unwrap();
     let matches: Vec<_> = catalog
         .iter()
-        .filter(|entry| entry.model.model_id == model_id)
+        .filter(|entry| entry.model.base.slug == model_id)
         .collect();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, AccountModelOrigin::Manual);
-    assert_eq!(matches[0].model.display_name, "Authoritative manual");
+    assert_eq!(matches[0].model.base.display_name, "Authoritative manual");
 
     let account_id = pl_model::config::AccountId::new("manual-display").unwrap();
     let mut canonical = AgentModelConfig {
@@ -281,9 +288,9 @@ async fn same_id_manual_model_hides_online_entry() {
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .unwrap();
-    assert_eq!(canonical_model.display_name, "Authoritative manual");
+    assert_eq!(canonical_model.base.display_name, "Authoritative manual");
     server.finish().await;
 }
 
@@ -295,18 +302,18 @@ async fn removing_same_id_manual_restores_online_entry() {
     let server = Server::json(json!({
         "data":[
             {"id": model_id, "display_name":"Restored provider name"},
-            {"id": known.model_id}
+            {"id": known.base.slug}
         ]
     }))
     .await;
     let mut config = openai_provider(&server.url);
-    let mut manual = ModelInfo::compatible(model_id);
-    manual.display_name = "Temporary manual".into();
+    let mut manual = ModelDefinition::compatible(model_id);
+    manual.base.display_name = "Temporary manual".into();
     if let AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(manual);
+        additional_models.push(manual.into());
     }
     let observed = updated(
         ModelCatalogQuery::for_account(&config)
@@ -319,7 +326,7 @@ async fn removing_same_id_manual_restores_online_entry() {
     let before = config.effective_catalog(None).unwrap();
     let matches: Vec<_> = before
         .iter()
-        .filter(|entry| entry.model.model_id == model_id)
+        .filter(|entry| entry.model.base.slug == model_id)
         .collect();
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].origin, AccountModelOrigin::Manual);
@@ -335,7 +342,7 @@ async fn removing_same_id_manual_restores_online_entry() {
     let after = account.effective_catalog(None).unwrap();
     let restored = after
         .iter()
-        .filter(|entry| entry.model.model_id == model_id)
+        .filter(|entry| entry.model.base.slug == model_id)
         .collect::<Vec<_>>();
     // Restored same-model_id overlay members are not in the bundled membership/price
     // table, so pricing is Unknown. A bundled priced model_id cannot be used as the
@@ -344,20 +351,26 @@ async fn removing_same_id_manual_restores_online_entry() {
     // bundled priced model_id below.
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].origin, AccountModelOrigin::Online);
-    assert_eq!(restored[0].model.display_name, "Restored provider name");
-    assert_eq!(restored[0].model.pricing, ModelPricing::Unknown);
+    assert_eq!(
+        restored[0].model.base.display_name,
+        "Restored provider name"
+    );
+    assert_eq!(restored[0].model.extra.pricing, ModelPricing::Unknown);
     let priced = after
         .iter()
-        .find(|entry| entry.model.model_id == known.model_id)
+        .find(|entry| entry.model.base.slug == known.base.slug)
         .unwrap();
     assert_eq!(priced.origin, AccountModelOrigin::Online);
-    assert_eq!(priced.model.pricing, known.pricing);
+    assert_eq!(priced.model.extra.pricing, known.extra.pricing);
     server.finish().await;
 }
 
 #[test]
 fn explicit_catalog_is_entirely_manual() {
-    let models = vec![ModelInfo::compatible("one"), ModelInfo::compatible("two")];
+    let models = vec![
+        ModelDefinition::compatible("one"),
+        ModelDefinition::compatible("two"),
+    ];
     let config = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::endpoint(None),
         models.clone(),
@@ -366,14 +379,14 @@ fn explicit_catalog_is_entirely_manual() {
     assert_eq!(
         catalog
             .iter()
-            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
+            .map(|entry| (entry.model.base.slug.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("one", AccountModelOrigin::Manual),
             ("two", AccountModelOrigin::Manual)
         ]
     );
-    assert!(config.discovery_profile().unwrap().is_none());
+    assert!(config.discovery_profile().unwrap().is_some());
 
     // An unfinished account can be saved and reconstructed, but never supplies a route.
     let account_id = AccountId::new("unfinished").unwrap();
@@ -403,7 +416,7 @@ fn explicit_catalog_is_entirely_manual() {
             .unwrap()
             .is_empty()
     );
-    assert!(account.discovery_profile().unwrap().is_none());
+    assert!(account.discovery_profile().unwrap().is_some());
     assert!(matches!(
         restored.validate(),
         Err(pl_protocol::PureError::ConfigError(_))
@@ -417,17 +430,14 @@ fn explicit_catalog_is_entirely_manual() {
     };
     assert!(matches!(
         restored.route_availability(&route),
-        Err(pl_protocol::PureError::ConfigError(_))
+        Ok(pl_model::config::ModelRouteAvailability::ModelUnavailable { .. })
     ));
     assert!(matches!(
         restored.resolve_route(role.clone(), &route),
         Err(pl_protocol::PureError::ConfigError(_))
     ));
     restored.routes.insert(role.clone(), route);
-    assert!(matches!(
-        restored.validate_declarations(),
-        Err(pl_protocol::PureError::ConfigError(_))
-    ));
+    restored.validate_declarations().unwrap();
     assert!(matches!(
         restored.resolve(&role),
         Err(pl_protocol::PureError::ConfigError(_))
@@ -437,11 +447,11 @@ fn explicit_catalog_is_entirely_manual() {
 #[test]
 fn remove_manual_model_clears_overrides_and_rejects_non_manual_ids() {
     let mut config = openai_provider("http://127.0.0.1:1");
-    let bundled_slug = config.effective_models(None).unwrap()[0].model_id.clone();
-    let mut keep = ModelInfo::compatible("keep-manual");
-    keep.display_name = "Keep".into();
-    let mut remove = ModelInfo::compatible("remove-manual");
-    remove.display_name = "Remove".into();
+    let bundled_slug = config.effective_models(None).unwrap()[0].base.slug.clone();
+    let mut keep = ModelDefinition::compatible("keep-manual");
+    keep.base.display_name = "Keep".into();
+    let mut remove = ModelDefinition::compatible("remove-manual");
+    remove.base.display_name = "Remove".into();
     if let AccountModelCatalogConfig::Bundled {
         additional_models,
         connection_overrides,
@@ -449,7 +459,7 @@ fn remove_manual_model_clears_overrides_and_rejects_non_manual_ids() {
         ..
     } = &mut config.catalog
     {
-        additional_models.extend([keep.clone(), remove.clone()]);
+        additional_models.extend([keep.clone().into(), remove.clone().into()]);
         connection_overrides.insert(
             "remove-manual".into(),
             pl_model::protocol::ConnectionMode::Http,
@@ -467,10 +477,10 @@ fn remove_manual_model_clears_overrides_and_rejects_non_manual_ids() {
     assert!(
         catalog
             .iter()
-            .all(|entry| entry.model.model_id != "remove-manual")
+            .all(|entry| entry.model.base.slug != "remove-manual")
     );
     assert!(catalog.iter().any(|entry| {
-        entry.origin == AccountModelOrigin::Manual && entry.model.model_id == "keep-manual"
+        entry.origin == AccountModelOrigin::Manual && entry.model.base.slug == "keep-manual"
     }));
     assert!(!config.connection_overrides().contains_key("remove-manual"));
     assert!(
@@ -504,8 +514,8 @@ fn remove_manual_model_clears_overrides_and_rejects_non_manual_ids() {
 
 #[test]
 fn remove_manual_model_applies_to_explicit_catalog() {
-    let keep = ModelInfo::compatible("keep");
-    let remove = ModelInfo::compatible("remove");
+    let keep = ModelDefinition::compatible("keep");
+    let remove = ModelDefinition::compatible("remove");
     let mut config = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::endpoint(None),
         vec![keep.clone(), remove.clone()],
@@ -525,7 +535,7 @@ fn remove_manual_model_applies_to_explicit_catalog() {
     assert_eq!(
         catalog
             .iter()
-            .map(|entry| entry.model.model_id.as_str())
+            .map(|entry| entry.model.base.slug.as_str())
             .collect::<Vec<_>>(),
         vec!["keep"]
     );
@@ -539,11 +549,12 @@ fn remove_manual_model_applies_to_explicit_catalog() {
     ));
 }
 
-fn manual_model(model_id: &str) -> ModelInfo {
-    let mut model = ModelInfo::compatible(model_id);
-    model.context_window = None;
-    model.max_output_tokens = None;
+fn manual_model(model_id: &str) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(model_id);
+    model.base.context_window = None;
+    model.extra.max_output_tokens = None;
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
     model
@@ -566,7 +577,7 @@ fn historical_cache_preserves_complete_membership() {
         .unwrap()
         .into_iter()
         .filter(|entry| entry.origin == AccountModelOrigin::Online)
-        .map(|entry| entry.model.0.model_id)
+        .map(|entry| entry.model.base.slug)
         .collect::<Vec<_>>();
     assert_eq!(
         ids,
@@ -598,7 +609,7 @@ fn online_and_manual_members_share_one_route() {
             .unwrap()
             .iter()
             .filter(|entry| entry.origin != AccountModelOrigin::Bundled)
-            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
+            .map(|entry| (entry.model.base.slug.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("gpt-6-astra", AccountModelOrigin::Online),
@@ -608,40 +619,33 @@ fn online_and_manual_members_share_one_route() {
 }
 
 #[test]
-fn explicit_catalogs_do_not_acquire_discovery() {
-    // 智谱目录不声明发现能力，不可能持有在线缓存；其手工图像类模型保留。
+fn discovery_preserves_manual_members_of_all_compatible_accounts() {
     let mut zhipu = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::glm::endpoint(None),
         ModelCatalogId::new("zhipu").unwrap(),
-        vec![ModelInfo::compatible("gpt-image-manual")],
+        vec![ModelDefinition::compatible("gpt-image-manual")],
     );
-    assert!(zhipu.discovery_profile().unwrap().is_none());
-    assert!(matches!(
-        zhipu.set_model_catalog_overlay(Vec::new()),
-        Err(pl_protocol::PureError::Protocol(_))
-    ));
+    assert!(zhipu.discovery_profile().unwrap().is_some());
+    zhipu.set_model_catalog_overlay(Vec::new()).unwrap();
     assert!(zhipu.effective_catalog(None).unwrap().iter().any(|entry| {
-        entry.model.model_id == "gpt-image-manual" && entry.origin == AccountModelOrigin::Manual
+        entry.model.base.slug == "gpt-image-manual" && entry.origin == AccountModelOrigin::Manual
     }));
     // openai-compatible 是用户完全自定义的显式目录，同样不排除任何条目。
     let mut compatible = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::compatible_endpoint("Custom", "http://127.0.0.1:1"),
         vec![
-            ModelInfo::compatible("gpt-image-2"),
-            ModelInfo::compatible("text-embedding-3-large"),
+            ModelDefinition::compatible("gpt-image-2"),
+            ModelDefinition::compatible("text-embedding-3-large"),
         ],
     );
-    assert!(compatible.discovery_profile().unwrap().is_none());
-    assert!(matches!(
-        compatible.set_model_catalog_overlay(Vec::new()),
-        Err(pl_protocol::PureError::Protocol(_))
-    ));
+    assert!(compatible.discovery_profile().unwrap().is_some());
+    compatible.set_model_catalog_overlay(Vec::new()).unwrap();
     assert_eq!(
         compatible
             .effective_catalog(None)
             .unwrap()
             .iter()
-            .map(|entry| entry.model.model_id.as_str())
+            .map(|entry| entry.model.base.slug.as_str())
             .collect::<Vec<_>>(),
         vec!["gpt-image-2", "text-embedding-3-large"]
     );
@@ -681,7 +685,7 @@ async fn discovery_keeps_all_model_families_and_exact_case() {
     assert_eq!(
         models
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|model| model.base.slug.as_str())
             .collect::<Vec<_>>(),
         vec![
             "gpt-6-astra",
@@ -722,7 +726,7 @@ async fn discovery_keeps_manual_members_and_complete_online_inventory() {
         bundled.models.len()
     );
     assert!(defaults.iter().any(|entry| {
-        entry.origin == AccountModelOrigin::Manual && entry.model.model_id == "gpt-image-manual"
+        entry.origin == AccountModelOrigin::Manual && entry.model.base.slug == "gpt-image-manual"
     }));
     let models = updated(
         ModelCatalogQuery::for_account(&config)
@@ -737,7 +741,7 @@ async fn discovery_keeps_manual_members_and_complete_online_inventory() {
         catalog
             .iter()
             .filter(|entry| entry.origin != AccountModelOrigin::Bundled)
-            .map(|entry| (entry.model.model_id.as_str(), entry.origin))
+            .map(|entry| (entry.model.base.slug.as_str(), entry.origin))
             .collect::<Vec<_>>(),
         vec![
             ("gpt-6-astra", AccountModelOrigin::Online),
@@ -778,7 +782,7 @@ async fn discovery_keeps_mimo_media_models() {
     assert_eq!(
         models
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|model| model.base.slug.as_str())
             .collect::<Vec<_>>(),
         vec![
             "mimo-v2.5-pro",
@@ -828,7 +832,7 @@ async fn chat_discovery_profile_accepts_chat_transport_and_joins_exact_prices() 
     let priced = catalog
         .models
         .iter()
-        .find(|model| model.model_id == "mimo-v2.5-pro")
+        .find(|model| model.base.slug == "mimo-v2.5-pro")
         .unwrap();
     let server =
         Server::json(json!({"data":[{"id":"mimo-v2.5-pro"},{"id":"mimo-chat-only"}]})).await;
@@ -841,42 +845,43 @@ async fn chat_discovery_profile_accepts_chat_transport_and_joins_exact_prices() 
             .unwrap(),
     );
     assert_eq!(
-        models[0].binding.transport,
+        models[0].extra.binding.transport,
         ModelTransportProfile::chat_completions_http()
     );
     config.set_model_catalog_overlay(models).unwrap();
     let catalog = config.effective_catalog(None).unwrap();
     let joined = catalog
         .iter()
-        .find(|entry| entry.model.model_id == "mimo-v2.5-pro")
+        .find(|entry| entry.model.base.slug == "mimo-v2.5-pro")
         .unwrap();
     assert_eq!(joined.origin, AccountModelOrigin::Online);
-    assert_eq!(joined.model.pricing, priced.pricing);
+    assert_eq!(joined.model.extra.pricing, priced.extra.pricing);
     let unknown = catalog
         .iter()
-        .find(|entry| entry.model.model_id == "mimo-chat-only")
+        .find(|entry| entry.model.base.slug == "mimo-chat-only")
         .unwrap();
-    assert_eq!(unknown.model.pricing, ModelPricing::Unknown);
+    assert_eq!(unknown.model.extra.pricing, ModelPricing::Unknown);
     server.finish().await;
 }
 
 #[test]
 fn unknown_online_price_is_not_zero_and_descriptor_keeps_origin() {
     let mut config = openai_provider("http://127.0.0.1:1");
-    let mut observed = ModelInfo::compatible("online-only");
+    let mut observed = ModelDefinition::compatible("online-only");
     observed
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
-    observed.context_window = None;
-    observed.max_output_tokens = None;
+    observed.base.context_window = None;
+    observed.extra.max_output_tokens = None;
     config.set_model_catalog_overlay(vec![observed]).unwrap();
     let catalog = config.effective_catalog(None).unwrap();
     let entry = catalog
         .iter()
-        .find(|entry| entry.model.model_id == "online-only")
+        .find(|entry| entry.model.base.slug == "online-only")
         .unwrap();
     assert_eq!(entry.origin, AccountModelOrigin::Online);
-    assert_eq!(entry.model.pricing, ModelPricing::Unknown);
+    assert_eq!(entry.model.extra.pricing, ModelPricing::Unknown);
     let descriptor = model_descriptor(entry);
     assert_eq!(descriptor.origin, pl_model::config::ModelOriginDto::Online);
     assert_eq!(descriptor.pricing, None);

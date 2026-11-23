@@ -561,8 +561,8 @@ struct Document32 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document33 {
-    models: Models<Account30<wire::ModelInfo>>,
+struct Document33<M> {
+    models: Models<Account30<M>>,
     #[serde(default)]
     delegation: wire::DelegationSettings,
     #[serde(default)]
@@ -629,7 +629,8 @@ version!(MainV29, "29.0.0", BeforeCodex);
 version!(MainV30, "30.0.0", BeforeMcpSplit);
 version!(MainV31, "31.0.0", Document31);
 version!(MainV32, "32.0.0", Document32);
-version!(MainV33, "33.0.0", Document33);
+version!(MainV33, "33.0.0", Document33<wire::ModelInfo>);
+version!(MainV34, "34.0.0", Document33<wire::ModelDeclaration34>);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -1084,19 +1085,65 @@ impl IntoDomain<MainV32> for MainV32 {
     }
 }
 
-impl IntoDomain<MainV33> for MainV33 {
+impl MigratesTo<MainV34> for MainV33 {
+    fn migrate(self) -> MainV34 {
+        let doc = self.0;
+        let accounts = doc
+            .models
+            .accounts
+            .into_iter()
+            .map(|(id, account)| {
+                let account = Account30 {
+                    catalog: account.catalog.map(wire::ModelDeclaration34::from),
+                    protocol: account.protocol,
+                    template: account.template,
+                    name: account.name,
+                    base_url: account.base_url,
+                    bearer_token: account.bearer_token,
+                    bearer_token_env: account.bearer_token_env,
+                    http_headers: account.http_headers,
+                    tool_wire_policy: account.tool_wire_policy,
+                    apply_patch_tool_type: account.apply_patch_tool_type,
+                    capabilities: account.capabilities,
+                    billing_kind: account.billing_kind,
+                    authentication: account.authentication,
+                    chatgpt_account: account.chatgpt_account,
+                    model_enabled_overrides: account.model_enabled_overrides,
+                };
+                (id, account)
+            })
+            .collect();
+        MainV34(Document33 {
+            models: Models {
+                accounts,
+                routes: doc.models.routes,
+            },
+            delegation: doc.delegation,
+            mode_model_routes: doc.mode_model_routes,
+            disabled_system_agents: doc.disabled_system_agents,
+            web_search: doc.web_search,
+            deepseek_web_search: doc.deepseek_web_search,
+            runtime: doc.runtime,
+            instructions: doc.instructions,
+            skills: doc.skills,
+            ui: doc.ui,
+        })
+    }
+}
+
+impl IntoDomain<MainV34> for MainV34 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl MainV33 {
+impl MainV34 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 33.into());
+            .insert(VERSION_KEY.into(), 34.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -1171,18 +1218,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV31>()
                 .step::<MainV32>()
                 .step::<MainV33>()
-                .into::<MainV33>(),
+                .step::<MainV34>()
+                .into::<MainV34>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV33>> {
-    toml_schema::load::<MainV18, MainV33>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV34>> {
+    toml_schema::load::<MainV18, MainV34>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV33> {
-    toml_schema::load::<MainV33, MainV33>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV34> {
+    toml_schema::load::<MainV34, MainV34>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -1399,8 +1447,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 33);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 33);
+        assert_eq!(loaded.migrated, version != 34);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 34);
     }
 
     #[test]
@@ -1468,7 +1516,7 @@ enabled = false
         });
         let id = pl_model::config::AccountId::new("saved-oauth").unwrap();
         config.models.accounts.insert(id.clone(), account);
-        let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
         let current = load_current_main(Path::new("codex.toml"), &encoded)
             .unwrap()
             .into_config()
@@ -1480,7 +1528,7 @@ enabled = false
         assert!(
             load_main(
                 Path::new("invalid29.toml"),
-                &encoded.replacen("schema_version = 33", "schema_version = 29", 1)
+                &encoded.replacen("schema_version = 34", "schema_version = 29", 1)
             )
             .is_err()
         );
@@ -1491,11 +1539,11 @@ enabled = false
         info.client_id = "old-issued-client".into();
         info.plan_usage_enabled = true;
         info.codex = None;
-        let historical = MainV33::from_config(&config)
+        let historical = MainV34::from_config(&config)
             .unwrap()
             .encode()
             .unwrap()
-            .replacen("schema_version = 33", "schema_version = 29", 1);
+            .replacen("schema_version = 34", "schema_version = 29", 1);
         let loaded = load_main(Path::new("siwc29.toml"), &historical).unwrap();
         assert!(loaded.migrated);
         let migrated = loaded.document.into_config().unwrap();
@@ -1524,7 +1572,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1700,7 +1748,7 @@ enabled = false
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 33);
+        assert_eq!(migrated.schema_version, 34);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);
@@ -1716,7 +1764,7 @@ enabled = false
     #[test]
     fn historical_acp_name_validation_keeps_trimmed_length_and_control_boundaries() {
         let config = crate::config::StudioConfig::default_config().unwrap();
-        let encoded = MainV33::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
         let mut main: toml::Value = toml::from_str(&encoded).unwrap();
         main[VERSION_KEY] = 32.into();
         for (name, historical_ok, current_ok) in [

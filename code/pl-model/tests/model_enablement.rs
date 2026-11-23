@@ -9,8 +9,8 @@ use pl_model::config::{
     model_descriptor, selection_guide_descriptor,
 };
 use pl_model::model::{
-    ModelInfo, ModelSelectionGuide, ModelSelectionSource, ModelSelectionSourceKind, ModelType,
-    bundled_selection_guide,
+    ModelDefinition, ModelSelectionGuide, ModelSelectionSource, ModelSelectionSourceKind,
+    ModelType, bundled_selection_guide,
 };
 use pretty_assertions::assert_eq;
 
@@ -27,7 +27,7 @@ fn member(account: &AccountConfig, model_id: &str) -> pl_model::config::AccountM
         .effective_catalog(None)
         .unwrap()
         .into_iter()
-        .find(|entry| entry.model.model_id == model_id)
+        .find(|entry| entry.model.base.slug == model_id)
         .unwrap_or_else(|| panic!("{model_id} must stay in the effective catalog"))
 }
 
@@ -36,7 +36,7 @@ fn selectable_ids(account: &AccountConfig) -> Vec<String> {
         .selectable_catalog(Some(ModelType::Text))
         .unwrap()
         .into_iter()
-        .map(|entry| entry.model.0.model_id)
+        .map(|entry| entry.model.base.slug)
         .collect()
 }
 
@@ -206,9 +206,9 @@ fn disabled_member_survives_withdrawal_and_reappearance() {
 
     let withdrawn = inventory
         .iter()
-        .filter(|model| model.model_id != "gpt-6-luna")
+        .filter(|model| model.base.slug != "gpt-6-luna")
         .cloned()
-        .collect::<Vec<ModelInfo>>();
+        .collect::<Vec<ModelDefinition>>();
     account.set_model_catalog_overlay(withdrawn).unwrap();
     assert_eq!(
         account.model_enabled_overrides().get("gpt-6-luna"),
@@ -240,7 +240,7 @@ fn disabled_route_is_unavailable_but_declarations_stay_intact() {
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == "gpt-6-astra")
+        .find(|model| model.base.slug == "gpt-6-astra")
         .unwrap()
         .default_effort()
         .map(ReasoningEffort::new);
@@ -287,7 +287,7 @@ fn disabled_route_is_unavailable_but_declarations_stay_intact() {
     );
     config.validate().unwrap();
     let resolved = config.resolve(&role).unwrap();
-    assert_eq!(resolved.model.model_id, "gpt-6-astra");
+    assert_eq!(resolved.model.base.slug, "gpt-6-astra");
 }
 
 /// 已解析目录缓存不能把禁用成员重新投影成可用。
@@ -312,7 +312,7 @@ fn resolved_catalog_cache_keeps_disabled_members_unselectable() {
             .selectable_catalog(None)
             .unwrap()
             .iter()
-            .any(|entry| entry.model.model_id == "gpt-6-astra")
+            .any(|entry| entry.model.base.slug == "gpt-6-astra")
     );
 
     // 目录 overlay 更新同样不复活禁用成员。
@@ -337,41 +337,42 @@ fn resolved_catalog_cache_keeps_disabled_members_unselectable() {
 
 /// 显式开启不修复未知上下文，撤下的线上独有成员也不能靠覆盖变成库存。
 #[test]
-fn explicit_enablement_does_not_create_inventory_or_bypass_context() {
+fn models_with_unknown_context_are_selectable_until_withdrawn() {
     let mut account = openai_account();
-    let mut online = ModelInfo::compatible("online-unknown-context");
-    online.context_window = None;
-    online.max_context_window = None;
+    let mut online = ModelDefinition::compatible("online-unknown-context");
+    online.base.context_window = None;
+    online.base.max_context_window = None;
     online
+        .extra
         .binding
         .set_transport(pl_model::model::ModelTransportProfile::responses_websocket());
     account
         .set_model_catalog_overlay(vec![online.clone()])
         .unwrap();
-    account.set_model_enabled(&online.model_id, true).unwrap();
-    assert!(member(&account, &online.model_id).enabled);
-    assert!(!selectable_ids(&account).contains(&online.model_id));
+    account.set_model_enabled(&online.base.slug, true).unwrap();
+    assert!(member(&account, &online.base.slug).enabled);
+    assert!(selectable_ids(&account).contains(&online.base.slug));
     account.set_model_catalog_overlay(Vec::new()).unwrap();
     assert!(
         account
             .effective_catalog(None)
             .unwrap()
             .iter()
-            .all(|entry| entry.model.model_id != online.model_id)
+            .all(|entry| entry.model.base.slug != online.base.slug)
     );
-    assert!(account.set_model_enabled(&online.model_id, true).is_err());
+    assert!(account.set_model_enabled(&online.base.slug, true).is_err());
     assert!(
         account
-            .model_selection_guide(&online.model_id)
+            .model_selection_guide(&online.base.slug)
             .unwrap()
             .is_none()
     );
     account
         .set_model_catalog_overlay(vec![online.clone()])
         .unwrap();
-    assert!(member(&account, &online.model_id).enabled);
+    assert!(member(&account, &online.base.slug).enabled);
     assert_eq!(
-        member(&account, &online.model_id).origin,
+        member(&account, &online.base.slug).origin,
         pl_model::config::AccountModelOrigin::Online
     );
 }
@@ -460,16 +461,16 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
     use pl_model::model::{InferenceAccounting, PricingOutcome, UsageReport};
     use pl_model::model::{ModelPricing, TokenPriceTier};
 
-    let mut model = ModelInfo::compatible("priced-model");
-    model.context_window = Some(64_000);
-    model.max_context_window = Some(64_000);
-    model.pricing = ModelPricing::published_at(
+    let mut model = ModelDefinition::compatible("priced-model");
+    model.base.context_window = Some(64_000);
+    model.base.max_context_window = Some(64_000);
+    model.extra.pricing = ModelPricing::published_at(
         "USD",
         vec![TokenPriceTier::flat(2.0, 8.0, Some(0.5), Some(3.0))],
         "https://example.test/prices",
         1,
     );
-    let reference = model.pricing.catalog_pricing();
+    let reference = model.extra.pricing.catalog_pricing();
     let mut account = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::compatible_endpoint(
             "Synthetic",
@@ -509,10 +510,12 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
     ] {
         config.accounts.get_mut(&account_id).unwrap().billing_kind = Some(kind);
         let current = config.resolve_route(role.clone(), &selector).unwrap();
-        let estimated = current
-            .model
-            .pricing
-            .account(usage.clone(), current.pricing_mode, 100);
+        let estimated =
+            current
+                .model
+                .extra
+                .pricing
+                .account(usage.clone(), current.pricing_mode, 100);
         assert!(matches!(
             estimated.pricing,
             PricingOutcome::Estimated { .. }
@@ -526,6 +529,7 @@ fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
     }
     let no_charge = frozen
         .model
+        .extra
         .pricing
         .account(usage.clone(), frozen.pricing_mode, 100);
     assert_eq!(
@@ -603,7 +607,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
         .set_model_catalog_overlay(
             inventory
                 .iter()
-                .filter(|model| model.model_id != "gpt-6-luna")
+                .filter(|model| model.base.slug != "gpt-6-luna")
                 .cloned()
                 .collect(),
         )
@@ -618,10 +622,10 @@ fn account_selection_guide_requires_current_non_manual_member() {
     // 同 ID 的手工覆盖由用户定义语义，不附内置资料。
     let mut manual = inventory
         .iter()
-        .find(|model| model.model_id == "gpt-6-astra")
+        .find(|model| model.base.slug == "gpt-6-astra")
         .unwrap()
         .clone();
-    manual.display_name = "Astra (local proxy)".into();
+    manual.base.display_name = "Astra (local proxy)".into();
     let overridden = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),
@@ -653,10 +657,15 @@ fn account_selection_guide_requires_current_non_manual_member() {
     // 目录读取失败上报错误，而不是返回 None。
     let mut broken = inventory
         .iter()
-        .find(|model| model.model_id == "gpt-6-astra")
+        .find(|model| model.base.slug == "gpt-6-astra")
         .unwrap()
         .clone();
-    broken.binding.transport.supported_connection_modes.clear();
+    broken
+        .extra
+        .binding
+        .transport
+        .supported_connection_modes
+        .clear();
     let broken = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),

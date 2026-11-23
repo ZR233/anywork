@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, AgentRoleId, ModelRouteConfig},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
 };
 use pl_provider_fixture::agent_definitions::{
     CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
@@ -37,11 +37,11 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     let root = AccountId::new(ROOT_ACCOUNT)?;
     let child = AccountId::new(CHILD_ACCOUNT)?;
     let mut compact = model(COMPACT_MODEL);
-    compact.auto_compact_token_limit = Some(1);
+    compact.base.auto_compact_token_limit = Some(1);
     let future = model(FUTURE_MODEL);
     config.models.accounts.clear();
     let mut root_model = model(ROOT_MODEL);
-    root_model.base_instructions =
+    root_model.base.model_messages.instructions_template =
         "Synthetic model-owned base: MODEL_BASE_MUST_NOT_REPLACE_AGENT.".into();
     config.models.accounts.insert(
         root.clone(),
@@ -66,7 +66,7 @@ pub(crate) fn prepare(home: &Path, base_url: &str) -> Result<()> {
     match &mut child_config.catalog {
         pl_model::config::AccountModelCatalogConfig::Bundled {
             additional_models, ..
-        } => *additional_models = child_models(true),
+        } => *additional_models = child_models(true).into_iter().map(Into::into).collect(),
         _ => anyhow::bail!("built-in discovery account is not bundled"),
     }
     config.models.accounts.insert(child.clone(), child_config);
@@ -189,13 +189,13 @@ pub(super) fn account_models_patch(
             models: models
                 .into_iter()
                 .map(|model| {
-                    let metadata = model.0;
+                    let metadata = model;
                     AccountModelUpdate {
-                        model_id: metadata.model_id,
-                        display_name: metadata.display_name,
+                        model_id: metadata.base.slug,
+                        display_name: metadata.base.display_name,
                         wire_api: "responses".into(),
-                        context_window: metadata.context_window,
-                        max_output_tokens: metadata.max_output_tokens,
+                        context_window: metadata.base.context_window,
+                        max_output_tokens: metadata.extra.max_output_tokens,
                     }
                 })
                 .collect(),
@@ -208,23 +208,24 @@ fn child_base_url(base_url: &str) -> String {
     format!("{}/openai", base_url.trim_end_matches('/'))
 }
 
-fn model(id: &str) -> ModelInfo {
-    let mut model = ModelInfo::compatible(id);
-    model.capabilities.tools.function_calling = true;
-    model.context_window = Some(256_000);
-    model.max_context_window = Some(256_000);
+fn model(id: &str) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(id);
+    model.extra.capabilities.tools.function_calling = true;
+    model.base.context_window = Some(256_000);
+    model.base.max_context_window = Some(256_000);
     // The real list_agent_profiles result includes full system role bodies.
     // Keep that real tool result intact rather than accepting a truncated JSON
     // preview as an executable-catalog observation.
-    model.truncation_policy.limit = 512_000;
+    model.base.truncation_policy.limit = 512_000;
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    model.binding.request.api_model = None;
+    model.extra.binding.request.api_model = None;
     model
 }
 
-fn child_models(include_withdrawn: bool) -> Vec<ModelInfo> {
+fn child_models(include_withdrawn: bool) -> Vec<ModelDefinition> {
     let mut models = [CHILD_MODEL, USER_MODEL_OLD, USER_MODEL_NEW, SPARE_MODEL]
         .into_iter()
         .map(model)

@@ -1,12 +1,15 @@
 //! Endpoint-owned model discovery, independent of inference/model selection.
 
 pub(crate) use pl_model_openai_wire::discovery::enrich_unknown_model_fallback;
+
+/// Version of the Codex model catalog contract decoded by this client.
+const CATALOG_CLIENT_VERSION: &str = "0.170.0";
 use pl_model_openai_wire::{adapter::Adapter, discovery::models};
 
 use super::{ProtocolEndpoint, ProtocolId};
 use crate::{
     config::{AccountConfig, AccountModelCatalogConfig},
-    model::ModelInfo,
+    model::ModelDefinition,
 };
 use pl_model_openai_wire::transport;
 use reqwest::Url;
@@ -23,7 +26,7 @@ pub struct ModelCatalogQueryCache {
     pub identity: String,
     pub etag: Option<String>,
     /// Successful route declarations, including supported online token pricing.
-    pub models: Vec<ModelInfo>,
+    pub models: Vec<ModelDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,7 +34,7 @@ pub enum ModelCatalogQueryResult {
     Updated {
         identity: String,
         etag: Option<String>,
-        models: Vec<ModelInfo>,
+        models: Vec<ModelDefinition>,
     },
     NotModified {
         identity: String,
@@ -43,10 +46,12 @@ pub enum ModelCatalogQueryResult {
 pub struct ModelCatalogQuery {
     endpoint: ProtocolEndpoint,
     url: Url,
+    standard_url: Url,
+    previous_identity: String,
     identity: String,
     /// 上一版查询身份，仅用于配置迁移定位旧缓存文件。
     legacy_v1_identity: String,
-    defaults: Vec<ModelInfo>,
+    defaults: Vec<ModelDefinition>,
     adapter: &'static Adapter,
     discovery: crate::config::ModelCatalogDiscovery,
 }
@@ -60,8 +65,7 @@ impl std::fmt::Debug for ModelCatalogQuery {
 }
 
 impl ModelCatalogQuery {
-    /// Prepare a bundled discovery request from the current endpoint, without choosing a model.
-    /// Explicit catalogs and unsupported adapters never automatically acquire discovery.
+    /// Prepare the account’s compatible model-list request without selecting an inference model.
     /// # Errors
     /// Unsupported source/adapter, malformed URL/header or bundled packaging failure.
     pub fn for_account(account: &AccountConfig) -> Result<Self, ModelCatalogQueryError> {
@@ -72,15 +76,19 @@ impl ModelCatalogQuery {
         account: &AccountConfig,
         registry: super::ProtocolRegistry<'_>,
     ) -> Result<Self, ModelCatalogQueryError> {
-        let AccountModelCatalogConfig::Bundled { catalog, .. } = &account.catalog else {
-            return Err(ModelCatalogQueryError::Unsupported);
-        };
-        let bundled = crate::config::builtin_model_catalog(catalog)
-            .map_err(|_| ModelCatalogQueryError::Configuration)?;
-        let discovery = bundled
-            .discovery
+        let discovery = account
+            .discovery_profile()
+            .map_err(|_| ModelCatalogQueryError::Configuration)?
             .ok_or(ModelCatalogQueryError::Unsupported)?;
-        let defaults = bundled.models;
+        let (catalog_id, defaults) = match &account.catalog {
+            AccountModelCatalogConfig::Bundled { catalog, .. } => (
+                catalog.as_str(),
+                crate::config::builtin_model_catalog(catalog)
+                    .map_err(|_| ModelCatalogQueryError::Configuration)?
+                    .models,
+            ),
+            AccountModelCatalogConfig::Explicit { .. } => ("", Vec::new()),
+        };
         let endpoint = account
             .to_endpoint_with_registry(registry)
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
@@ -97,6 +105,7 @@ impl ModelCatalogQuery {
             .map_err(|_| ModelCatalogQueryError::Configuration)?
             .pop_if_empty()
             .push("models");
+        let standard_url = url.clone();
         if endpoint
             .authorization
             .as_ref()
@@ -116,7 +125,7 @@ impl ModelCatalogQuery {
         let identity = query_identity(
             b"model-catalog-query-v2",
             Some(&endpoint.protocol),
-            catalog.as_str(),
+            catalog_id,
             discovery_transport_id(&discovery.transport),
             url.as_str(),
             &headers,
@@ -132,17 +141,26 @@ impl ModelCatalogQuery {
         let legacy_v1_identity = query_identity(
             b"model-catalog-query-v1",
             None,
-            catalog.as_str(),
+            catalog_id,
             discovery_transport_id(&discovery.transport),
             url.as_str(),
             &headers,
         );
+        let previous_identity = identity;
+        let identity = hex::encode(Sha256::digest(format!(
+            "model-catalog-query-v3:{CATALOG_CLIENT_VERSION}:{previous_identity}"
+        )));
+        url = standard_url.clone();
+        url.query_pairs_mut()
+            .append_pair("client_version", CATALOG_CLIENT_VERSION);
         let adapter = registry
             .resolve(&endpoint.protocol)
             .map_err(|_| ModelCatalogQueryError::Unsupported)?;
         Ok(Self {
             adapter,
             endpoint,
+            standard_url,
+            previous_identity,
             url,
             identity,
             legacy_v1_identity,
@@ -151,11 +169,13 @@ impl ModelCatalogQuery {
         })
     }
 
-    /// Stable SHA-256 (v2) of vendor protocol + catalog id + discovery transport + URL +
-    /// effective query headers/credential.
-    ///
-    /// Account identity is an additional outer namespace owned by the host and never enters this
-    /// in-query hash. Endpoint display names are not identity either.
+    /// Retired v2 fingerprint, used only to locate the last successful snapshot.
+    pub fn previous_identity_for_migration(&self) -> &str {
+        &self.previous_identity
+    }
+
+    /// SHA-256 of the request version and the endpoint, protocol and credential identity.
+    /// The account ID is a separate outer cache namespace.
     pub fn identity(&self) -> &str {
         &self.identity
     }
@@ -163,12 +183,13 @@ impl ModelCatalogQuery {
     /// 上一版查询身份，仅供配置迁移定位该查询身份的旧缓存文件。
     ///
     /// 旧算法不含厂商协议；它不能用于当前 `execute`/缓存比较，也不是第二种正常身份。
-    /// 迁移必须把定位到的旧快照交给当前 v2 身份，并遵守 design/17 的缓存 3 迁移合同。
+    /// 迁移只在缓存升级边界使用这一身份定位历史快照。
     pub fn legacy_v1_identity_for_migration(&self) -> &str {
         &self.legacy_v1_identity
     }
 
-    /// Execute exactly one GET, no redirects/retries, bounded to 10 seconds including body reads.
+    /// Query the versioned catalog and retry a rejected version using the standard endpoint.
+    /// Both attempts share one ten-second deadline.
     /// Dropping this future releases the request; it never spawns a detached task or mutates a cache.
     /// # Errors
     /// Typed/redacted transport, HTTP, envelope, declaration or conditional-cache failure.
@@ -184,7 +205,10 @@ impl ModelCatalogQuery {
             crate::model::validate_inventory(&cache.models)
                 .map_err(|_| ModelCatalogQueryError::Protocol)?;
             if cache.models.iter().any(|model| {
-                !valid_discovery_transport(&model.binding.transport, &self.discovery.transport)
+                !valid_discovery_transport(
+                    &model.extra.binding.transport,
+                    &self.discovery.transport,
+                )
             }) {
                 return Err(ModelCatalogQueryError::Protocol);
             }
@@ -215,10 +239,31 @@ impl ModelCatalogQuery {
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
         let response = pl_model_openai_wire::catalog_http::fetch(
             self.url.clone(),
-            headers,
+            headers.clone(),
             previous.and_then(|cache| cache.etag.as_deref()),
         )
-        .await?;
+        .await;
+        let response = match response {
+            Err(ModelCatalogQueryError::Http { status: 400 | 422 }) => {
+                // Different representation: neither send nor retain a conditional ETag.
+                match pl_model_openai_wire::catalog_http::fetch(
+                    self.standard_url.clone(),
+                    headers,
+                    None,
+                )
+                .await?
+                {
+                    pl_model_openai_wire::catalog_http::CatalogResponse::Updated {
+                        bytes, ..
+                    } => pl_model_openai_wire::catalog_http::CatalogResponse::Updated {
+                        bytes,
+                        etag: None,
+                    },
+                    _ => return Err(ModelCatalogQueryError::UnexpectedNotModified),
+                }
+            }
+            result => result?,
+        };
         use pl_model_openai_wire::catalog_http::CatalogResponse;
         let (bytes, etag) = match response {
             CatalogResponse::Updated { bytes, etag } => (bytes, etag),

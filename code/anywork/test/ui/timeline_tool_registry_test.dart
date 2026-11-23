@@ -5,6 +5,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_owned_body_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/items/acp/acp_tool_details_scope.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_adapter.dart';
@@ -773,7 +774,7 @@ void main() {
       'builtin.deepseek_web_fetch@1',
     };
     expect(timelineToolItemRegistry.exactContracts, expectedContracts);
-    expect(timelineToolItemRegistry.adapters, hasLength(37));
+    expect(timelineToolItemRegistry.adapters, hasLength(38));
 
     final nonFallbackAdapters = timelineToolItemRegistry.adapters
         .where((adapter) => adapter.id != 'generic@1')
@@ -1564,4 +1565,115 @@ void main() {
       expect(find.textContaining('1.2 秒'), findsOneWidget);
     },
   );
+
+  testWidgets('AcpToolItem resolves all 10 ToolKinds and peer payloads', (
+    tester,
+  ) async {
+    expect(
+      timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool(
+              'acp.tool.edit',
+              'raw text arg',
+              'raw text out',
+              name: '编辑样本',
+            ),
+          )
+          .id,
+      'acp.tool',
+    );
+    expect(
+      timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool('acp.tool', 'raw text arg', 'raw text out', name: '旧契约样本'),
+          )
+          .id,
+      'acp.tool',
+    );
+
+    const kinds = [
+      (kind: 'read', zh: '读取', en: 'Read', icon: Icons.article_outlined),
+      (kind: 'edit', zh: '编辑', en: 'Edit', icon: Icons.edit_note_rounded),
+      (
+        kind: 'delete',
+        zh: '删除',
+        en: 'Delete',
+        icon: Icons.delete_outline_rounded,
+      ),
+      (kind: 'move', zh: '移动', en: 'Move', icon: Icons.drive_file_move_outline),
+      (
+        kind: 'search',
+        zh: '搜索',
+        en: 'Search',
+        icon: Icons.travel_explore_rounded,
+      ),
+      (kind: 'execute', zh: '执行', en: 'Execute', icon: Icons.terminal_rounded),
+      (kind: 'think', zh: '思考', en: 'Think', icon: Icons.psychology_outlined),
+      (kind: 'fetch', zh: '获取', en: 'Fetch', icon: Icons.public_rounded),
+      (
+        kind: 'switchMode',
+        zh: '切换模式',
+        en: 'Switch mode',
+        icon: Icons.swap_horiz_rounded,
+      ),
+      (kind: 'other', zh: '工具', en: 'Tool', icon: Icons.handyman_outlined),
+    ];
+
+    for (final spec in kinds) {
+      await tester.pumpWidget(
+        _host(
+          AcpToolDetailsScope(
+            kind: spec.kind,
+            locations: const ['lib/main.dart:10'],
+            child: TimelineToolItemView(
+              item: _tool(
+                'acp.tool.${spec.kind}',
+                'plain peer input',
+                '',
+                status: spec.kind == 'edit' ? 'failed' : 'succeeded',
+                name: 'Peer ${spec.kind}',
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.byIcon(spec.icon), findsOneWidget, reason: spec.kind);
+      expect(find.byIcon(Icons.error_outline), findsNothing);
+      final row = _row(tester);
+      if (spec.kind == 'edit') {
+        expect(row.meta, '${spec.zh} · 失败');
+        expect(row.isIssue, isFalse);
+      } else {
+        expect(row.meta, spec.zh);
+      }
+
+      await tester.pumpWidget(
+        _host(
+          locale: const Locale('en'),
+          AcpToolDetailsScope(
+            kind: spec.kind,
+            child: TimelineToolItemView(
+              item: _tool(
+                'acp.tool.${spec.kind}',
+                'plain peer input',
+                'plain peer output',
+                status: 'succeeded',
+                name: 'Peer ${spec.kind}',
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(_row(tester).meta, spec.en);
+    }
+
+    expect(
+      () => timelineToolItemRegistry
+          .resolveForPresentation(
+            _tool('acp.tool.execute', 'plain string args', ''),
+          )
+          .decodeInput(_zh, 'plain string args'),
+      returnsNormally,
+    );
+  });
 }

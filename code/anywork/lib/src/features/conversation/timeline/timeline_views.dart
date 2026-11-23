@@ -25,6 +25,8 @@ export 'widgets/completion_run_view.dart';
 export 'widgets/conversation_activity_bar.dart';
 export 'widgets/conversation_current_views.dart';
 export 'widgets/timeline_activity_row.dart';
+export 'widgets/timeline_reasoning_view.dart';
+export 'widgets/timeline_work_group_shell.dart';
 export 'widgets/timeline_attachments_view.dart';
 export 'widgets/timeline_children_view.dart';
 export 'widgets/timeline_compacting_zip_icon.dart';

@@ -43,8 +43,8 @@ impl std::fmt::Debug for ModelRuntime {
         formatter
             .debug_struct("ModelRuntime")
             .field("account", &self.account_id)
-            .field("model", &self.model.model_id)
-            .field("transport", &self.model.binding.transport)
+            .field("model", &self.model.base.slug)
+            .field("transport", &self.model.extra.binding.transport)
             .field("pricing_mode", &self.pricing_mode)
             .finish_non_exhaustive()
     }
@@ -157,7 +157,7 @@ impl ModelRuntime {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
-    use crate::model::ModelInfo;
+    use crate::model::ModelDefinition;
     use crate::model::{ModelParameter, ModelTransportProfile, ParameterWire, WireAssignment};
     use crate::protocol::PromptCacheDialect;
 
@@ -170,8 +170,9 @@ mod cache_tests {
         if enabled {
             endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::ExplicitKey;
         }
-        let mut model = ModelInfo::compatible("cache-model");
+        let mut model = ModelDefinition::compatible("cache-model");
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_http());
         ModelRuntime::bind("cache-account", endpoint, model, None).unwrap()
@@ -201,6 +202,7 @@ mod cache_tests {
                 let mut fixed = runner(true);
                 fixed
                     .model
+                    .extra
                     .binding
                     .request
                     .body
@@ -217,7 +219,7 @@ mod cache_tests {
                 );
 
                 let mut parameter = runner(true);
-                parameter.model.parameters = vec![ModelParameter {
+                parameter.model.set_parameters(vec![ModelParameter {
                     candidate_display_names: Default::default(),
                     name: "effort".into(),
                     label: None,
@@ -233,7 +235,7 @@ mod cache_tests {
                             remove: vec![],
                         },
                     )]),
-                }];
+                }]);
                 let request = CompletionRequest::builder()
                     .reasoning(Some(crate::completion::ReasoningConfig {
                         effort: Some("low".into()),
@@ -249,7 +251,7 @@ mod cache_tests {
             }
         }
         let mut removed = runner(true);
-        removed.model.parameters = vec![ModelParameter {
+        removed.model.set_parameters(vec![ModelParameter {
             candidate_display_names: Default::default(),
             name: "effort".into(),
             label: None,
@@ -262,7 +264,7 @@ mod cache_tests {
                     remove: vec!["prompt_cache_key".into()],
                 },
             )]),
-        }];
+        }]);
         let request = CompletionRequest::builder()
             .reasoning(Some(crate::completion::ReasoningConfig {
                 effort: Some("low".into()),
@@ -349,13 +351,13 @@ pub(in crate::runtime) mod chatgpt_tests {
                 .unwrap(),
             ),
         );
-        let mut info = crate::model::ModelInfo::compatible("fixture-model");
-        info.binding.transport = crate::model::ModelTransportProfile::responses_http();
-        info.binding.request = crate::model::ModelRequestProfile::responses();
-        info.capabilities.tools.function_calling = true;
-        info.capabilities.tools.custom_tools = true;
-        info.capabilities.tools.freeform_tools = true;
-        info.capabilities.reasoning = true;
+        let mut info = crate::model::ModelDefinition::compatible("fixture-model");
+        info.extra.binding.transport = crate::model::ModelTransportProfile::responses_http();
+        info.extra.binding.request = crate::model::ModelRequestProfile::responses();
+        info.extra.capabilities.tools.function_calling = true;
+        info.extra.capabilities.tools.custom_tools = true;
+        info.extra.capabilities.tools.freeform_tools = true;
+        info.extra.capabilities.reasoning = true;
         (
             temp,
             ModelRuntime::bind("wire", endpoint, info, None).unwrap(),
@@ -377,9 +379,9 @@ pub(in crate::runtime) mod chatgpt_tests {
     pub(in crate::runtime) fn catalog(
         runner: &ModelRuntime,
         entry: serde_json::Value,
-        previous: Option<&[crate::model::ModelInfo]>,
-    ) -> Vec<crate::model::ModelInfo> {
-        let mut records = pl_model_openai::openai_catalog::records(
+        previous: Option<&[crate::model::ModelDefinition]>,
+    ) -> Vec<crate::model::ModelDefinition> {
+        let mut records = pl_model_openai_wire::generic_catalog::openai_records(
             &serde_json::to_vec(&json!({"models":[entry]})).unwrap(),
         )
         .unwrap();
@@ -445,6 +447,7 @@ pub(in crate::runtime) mod chatgpt_tests {
                 None,
             );
             let tier = models[0]
+                .extra
                 .parameters
                 .iter()
                 .find(|p| p.name == "service_tier");
@@ -479,6 +482,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         );
         assert!(
             missing[0]
+                .extra
                 .parameters
                 .iter()
                 .all(|p| p.name != "service_tier")
@@ -501,6 +505,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         assert_eq!(reasoning[0].supported_efforts(), ["low"]);
         assert!(
             reasoning[0]
+                .extra
                 .parameters
                 .iter()
                 .any(|p| p.name == "service_tier")
@@ -513,26 +518,42 @@ pub(in crate::runtime) mod chatgpt_tests {
         assert_eq!(cleared[0].supported_efforts(), ["low"]);
         assert!(
             cleared[0]
+                .extra
                 .parameters
                 .iter()
                 .all(|p| p.name != "service_tier")
         );
         let mut merged = initial[0].clone();
         let mut reasoning_only = reasoning[0].clone();
-        reasoning_only.parameters.retain(|p| p.name == "effort");
+        reasoning_only
+            .extra
+            .parameters
+            .retain(|p| p.name == "effort");
         crate::model::observation::apply_field(
             &mut merged,
             &reasoning_only,
             crate::model::ModelMetadataField::Parameters,
         );
-        assert!(merged.parameters.iter().any(|p| p.name == "service_tier"));
+        assert!(
+            merged
+                .extra
+                .parameters
+                .iter()
+                .any(|p| p.name == "service_tier")
+        );
         crate::model::observation::apply_field(
             &mut merged,
             &cleared[0],
             crate::model::ModelMetadataField::ServiceTiers,
         );
         assert_eq!(merged.supported_efforts(), ["low"]);
-        assert!(merged.parameters.iter().all(|p| p.name != "service_tier"));
+        assert!(
+            merged
+                .extra
+                .parameters
+                .iter()
+                .all(|p| p.name != "service_tier")
+        );
     }
 
     #[test]
@@ -556,6 +577,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             );
             assert!(
                 models[0]
+                    .extra
                     .parameters
                     .iter()
                     .all(|p| p.name != "service_tier")
@@ -570,7 +592,13 @@ pub(in crate::runtime) mod chatgpt_tests {
             ));
         }
         let other = catalog(&codex, json!({"slug":"fixture-model"}), None);
-        assert!(other[0].parameters.iter().all(|p| p.name != "service_tier"));
+        assert!(
+            other[0]
+                .extra
+                .parameters
+                .iter()
+                .all(|p| p.name != "service_tier")
+        );
     }
 
     #[test]
@@ -598,7 +626,8 @@ pub(in crate::runtime) mod chatgpt_tests {
             ));
         }
         let mut ws = runner.clone();
-        ws.model.binding.transport = crate::model::ModelTransportProfile::responses_websocket();
+        ws.model.extra.binding.transport =
+            crate::model::ModelTransportProfile::responses_websocket();
         let mut selected = request();
         selected.service_tier = Some("priority".into());
         assert!(matches!(
@@ -622,6 +651,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         assert!(body(&runner, summary).get("service_tier").is_none());
         runner
             .model
+            .extra
             .binding
             .request
             .body
@@ -630,6 +660,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         let mut forged = runner.clone();
         let tier = forged
             .model
+            .extra
             .parameters
             .iter_mut()
             .find(|p| p.name == "service_tier")
@@ -784,7 +815,7 @@ pub(in crate::runtime) mod chatgpt_tests {
         for value in overrides {
             let overlay = value.as_object().unwrap().clone();
             let mut fixed = runner.clone();
-            fixed.model.binding.request.body = overlay.clone();
+            fixed.model.extra.binding.request.body = overlay.clone();
             assert!(
                 fixed
                     .prepare_request_body(request(), None, &InvocationPurpose::Completion)
@@ -799,14 +830,16 @@ pub(in crate::runtime) mod chatgpt_tests {
                     .collect(),
                 remove: vec![],
             };
-            parameter.model.parameters = vec![crate::model::ModelParameter {
-                candidate_display_names: Default::default(),
-                name: "effort".into(),
-                label: None,
-                default: Some("low".into()),
-                candidates: vec!["low".into()],
-                wire: std::collections::BTreeMap::from([("low".into(), wire)]),
-            }];
+            parameter
+                .model
+                .set_parameters(vec![crate::model::ModelParameter {
+                    candidate_display_names: Default::default(),
+                    name: "effort".into(),
+                    label: None,
+                    default: Some("low".into()),
+                    candidates: vec!["low".into()],
+                    wire: std::collections::BTreeMap::from([("low".into(), wire)]),
+                }]);
             let mut selected = request();
             selected.reasoning = Some(crate::completion::ReasoningConfig {
                 effort: Some("low".into()),
@@ -820,33 +853,35 @@ pub(in crate::runtime) mod chatgpt_tests {
             );
         }
         let mut supported = runner.clone();
-        supported.model.parameters = vec![crate::model::ModelParameter {
-            candidate_display_names: Default::default(),
-            name: "effort".into(),
-            label: None,
-            default: Some("low".into()),
-            candidates: vec!["low".into()],
-            wire: std::collections::BTreeMap::from([(
-                "low".into(),
-                crate::model::ParameterWire {
-                    set: vec![
-                        crate::model::WireAssignment {
-                            path: "reasoning.effort".into(),
-                            value: json!("low"),
-                        },
-                        crate::model::WireAssignment {
-                            path: "store".into(),
-                            value: json!(false),
-                        },
-                        crate::model::WireAssignment {
-                            path: "stream".into(),
-                            value: json!(true),
-                        },
-                    ],
-                    remove: vec![],
-                },
-            )]),
-        }];
+        supported
+            .model
+            .set_parameters(vec![crate::model::ModelParameter {
+                candidate_display_names: Default::default(),
+                name: "effort".into(),
+                label: None,
+                default: Some("low".into()),
+                candidates: vec!["low".into()],
+                wire: std::collections::BTreeMap::from([(
+                    "low".into(),
+                    crate::model::ParameterWire {
+                        set: vec![
+                            crate::model::WireAssignment {
+                                path: "reasoning.effort".into(),
+                                value: json!("low"),
+                            },
+                            crate::model::WireAssignment {
+                                path: "store".into(),
+                                value: json!(false),
+                            },
+                            crate::model::WireAssignment {
+                                path: "stream".into(),
+                                value: json!(true),
+                            },
+                        ],
+                        remove: vec![],
+                    },
+                )]),
+            }]);
         let mut selected = request();
         selected.reasoning = Some(crate::completion::ReasoningConfig {
             effort: Some("low".into()),
@@ -859,8 +894,18 @@ pub(in crate::runtime) mod chatgpt_tests {
     fn siwc_rejects_unsupported_tools_without_downgrading_callers_or_native_history() {
         let (_temp, runner) = fixture();
         let mut unsupported_custom = runner.clone();
-        unsupported_custom.model.capabilities.tools.custom_tools = false;
-        unsupported_custom.model.capabilities.tools.freeform_tools = false;
+        unsupported_custom
+            .model
+            .extra
+            .capabilities
+            .tools
+            .custom_tools = false;
+        unsupported_custom
+            .model
+            .extra
+            .capabilities
+            .tools
+            .freeform_tools = false;
         let mut selected = request();
         selected.tools = vec![crate::completion::tool_definition_to_spec(
             &pl_agent_tool::ToolDefinition::grammar("edit", "edit", "lark", "start: WORD").unwrap(),
@@ -883,7 +928,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             },
         }];
         let mut search = runner.clone();
-        search.model.capabilities.web_search = true;
+        search.model.extra.capabilities.web_search = true;
         search
             .endpoint
             .service_capabilities
@@ -995,9 +1040,9 @@ pub(in crate::runtime) mod chatgpt_tests {
             model::{Model, ModelRequest, ToolCallMode},
         };
         let (_temp, mut runner) = fixture();
-        runner.model.max_output_tokens = Some(4096);
+        runner.model.extra.max_output_tokens = Some(4096);
         if let crate::model::ModelProtocolOptions::Responses(options) =
-            &mut runner.model.binding.request.protocol
+            &mut runner.model.extra.binding.request.protocol
         {
             options.max_tokens_field = crate::model::ResponsesMaxTokensField::MaxOutputTokens;
         }
@@ -1008,7 +1053,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             None,
         )
         .unwrap();
-        assert_eq!(runtime.model().max_output_tokens, Some(4096));
+        assert_eq!(runtime.model().extra.max_output_tokens, Some(4096));
         let model = crate::runtime::ThreadModel::new(runtime, None);
         let mut session = model.open_session().await.unwrap();
         let prepared = session

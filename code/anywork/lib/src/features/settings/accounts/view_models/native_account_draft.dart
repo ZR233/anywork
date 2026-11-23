@@ -357,7 +357,7 @@ final class ManualModelDraft {
 
   AccountModelCommand get command => AccountModelCommand(
     modelId: id.trim(),
-    displayName: name.trim().isEmpty ? id.trim() : name.trim(),
+    displayName: name.trim(),
     wireApi: wireApi == AccountWireApi.responses
         ? 'responses'
         : 'chat_completions',

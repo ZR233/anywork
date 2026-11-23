@@ -239,9 +239,10 @@ impl CompletionRequest {
 
     pub fn validate_against(
         &self,
-        model: &str,
+        base: &crate::model::CodexModel,
         capabilities: &ModelCapabilities,
     ) -> pl_protocol::Result<()> {
+        let model = &base.slug;
         let declared = self
             .attachments
             .iter()
@@ -305,7 +306,7 @@ impl CompletionRequest {
         }
         if has_function_tools
             && self.parallel_tool_calls
-            && !capabilities.supports_parallel_tool_calls()
+            && base.supports_parallel_tool_calls != Some(true)
         {
             return Err(PureError::ConfigError(format!(
                 "model {} does not support parallel tool calls",

@@ -507,10 +507,6 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
                   ModelTypeExclusion.textOutputUnsupported,
                 frb.BridgeModelTypeExclusion.contextParametersInvalid =>
                   ModelTypeExclusion.contextParametersInvalid,
-                frb.BridgeModelTypeExclusion.inputBudgetExhausted =>
-                  ModelTypeExclusion.inputBudgetExhausted,
-                frb.BridgeModelTypeExclusion.contextWindowUnknown =>
-                  ModelTypeExclusion.contextWindowUnknown,
               },
           ],
         ),
@@ -522,15 +518,10 @@ AccountModelView accountModelFromCatalog(frb.BridgeModelDescriptor model) {
     context: ModelContextView(
       unavailable: switch (model.context.unavailable) {
         null => null,
-        frb.BridgeModelContextUnavailable.windowUnknown =>
-          ModelContextUnavailable.windowUnknown,
         frb.BridgeModelContextUnavailable.invalidParameters =>
           ModelContextUnavailable.invalidParameters,
-        frb.BridgeModelContextUnavailable.inputBudgetExhausted =>
-          ModelContextUnavailable.inputBudgetExhausted,
       },
       contextWindow: model.context.contextWindow?.toInt(),
-      inputTokenLimit: model.context.inputTokenLimit?.toInt(),
       autoCompactLimit: model.context.autoCompactLimit?.toInt(),
       adjustment: model.context.adjustment == null
           ? null

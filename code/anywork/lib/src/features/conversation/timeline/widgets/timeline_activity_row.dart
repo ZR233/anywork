@@ -701,9 +701,13 @@ class TimelineActivityTileTheme extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTileTheme(
-      data: ListTileTheme.of(context).copyWith(minVerticalPadding: 0),
-      child: child,
+    final theme = Theme.of(context);
+    return ExpansionTileTheme(
+      data: theme.expansionTileTheme,
+      child: ListTileTheme(
+        data: theme.listTileTheme.copyWith(minVerticalPadding: 0),
+        child: child,
+      ),
     );
   }
 }

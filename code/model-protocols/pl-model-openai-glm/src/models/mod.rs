@@ -2,6 +2,7 @@
 //! Coding Plan 的 OpenAI Response 协议端点走 Responses HTTP（effort 透传 `reasoning.effort`）。
 
 use pl_model_openai_wire::model::pricing::{ModelPricing, TokenPriceTier};
+use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 use std::collections::BTreeMap;
 
 use serde_json::Value;
@@ -12,7 +13,7 @@ use pl_model_openai_wire::model::capabilities::{
 };
 use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
 use pl_model_openai_wire::model::info::{
-    MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile, TruncationMode,
+    MediaWireFormat, ModelDefinition, ModelRequestProfile, ModelTransportProfile, TruncationMode,
 };
 use pl_model_openai_wire::model::parameter::{ModelParameter, ParameterWire, WireAssignment};
 
@@ -69,7 +70,7 @@ struct Definition {
 }
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let pricing = if self.tiers.is_empty() {
             ModelPricing::Unknown
         } else {
@@ -125,7 +126,7 @@ const fn context_output_tiers(
     ]
 }
 
-pub fn models() -> Vec<ModelInfo> {
+pub fn models() -> Vec<ModelDefinition> {
     let zhipu_glm53 = zhipu_glm53_family();
     let zhipu_glm53_flash = zhipu_glm53_flash_family();
     let zhipu_glm52 = zhipu_glm52_family();
@@ -159,27 +160,15 @@ pub fn models() -> Vec<ModelInfo> {
 // ---- 家族预设 ----
 
 fn zhipu_text_family() -> ModelFamily {
-    zhipu_chat_family(
-        "zhipu-text",
-        zhipu_text_capabilities(),
-        zhipu_plain_effort_parameter(),
-    )
+    zhipu_chat_family(zhipu_text_capabilities(), zhipu_plain_effort_parameter())
 }
 
 fn zhipu_glm52_family() -> ModelFamily {
-    zhipu_chat_family(
-        "zhipu-glm52",
-        zhipu_text_capabilities(),
-        zhipu_glm52_effort_parameter(),
-    )
+    zhipu_chat_family(zhipu_text_capabilities(), zhipu_glm52_effort_parameter())
 }
 
 fn zhipu_glm53_family() -> ModelFamily {
-    let mut family = zhipu_chat_family(
-        "zhipu-glm53",
-        zhipu_text_capabilities(),
-        zhipu_glm53_effort_parameter(),
-    );
+    let mut family = zhipu_chat_family(zhipu_text_capabilities(), zhipu_glm53_effort_parameter());
     if let pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(options) =
         &mut family.request_profile.protocol
     {
@@ -190,11 +179,7 @@ fn zhipu_glm53_family() -> ModelFamily {
 
 /// GLM-5.3-Flash 与 GLM-5.3 共用 effort wire，但官方归类为原生多模态模型。
 fn zhipu_glm53_flash_family() -> ModelFamily {
-    let mut family = zhipu_chat_family(
-        "zhipu-glm53-flash",
-        zhipu_vision_capabilities(),
-        zhipu_glm53_effort_parameter(),
-    );
+    let mut family = zhipu_chat_family(zhipu_vision_capabilities(), zhipu_glm53_effort_parameter());
     if let pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(options) =
         &mut family.request_profile.protocol
     {
@@ -208,11 +193,7 @@ fn zhipu_glm53_flash_family() -> ModelFamily {
 }
 
 fn zhipu_vision_family() -> ModelFamily {
-    let mut family = zhipu_chat_family(
-        "zhipu-vision",
-        zhipu_vision_capabilities(),
-        zhipu_plain_effort_parameter(),
-    );
+    let mut family = zhipu_chat_family(zhipu_vision_capabilities(), zhipu_plain_effort_parameter());
     family.request_profile = family.request_profile.with_image_media(
         MediaWireFormat::ChatImageUrl,
         pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
@@ -222,19 +203,22 @@ fn zhipu_vision_family() -> ModelFamily {
 
 /// Zhipu Chat 家族共享骨架：Chat Completions HTTP + parallel tool calls base profile。
 fn zhipu_chat_family(
-    id: &'static str,
     capabilities: ModelCapabilities,
     effort_parameter: ModelParameter,
 ) -> ModelFamily {
     ModelFamily {
-        id,
         capabilities,
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: vec![effort_parameter],
         transport: ModelTransportProfile::chat_completions_http(),
         request_profile: chat_parallel_request_profile(),
-        base_instructions: String::new(),
     }
 }
 
@@ -379,7 +363,6 @@ fn zhipu_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
         output: vec![ModelModality::Text],
         tools: ToolCapabilities {
             function_calling: true,
-            parallel_tool_calls: true,
             custom_tools: false,
             freeform_tools: false,
             programmatic_tool_calling: false,
@@ -396,7 +379,7 @@ fn zhipu_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
 // ---- Coding Plan Responses 目录 ----
 
 /// Coding Plan 的 OpenAI Response 协议端点当前按官方文档只承载 GLM-5.3 与 GLM-5.3-Flash。
-pub fn responses_models() -> Vec<ModelInfo> {
+pub fn responses_models() -> Vec<ModelDefinition> {
     vec![
         glm_5_3::MODEL.instantiate(&zhipu_responses_text_family()),
         glm_5_3_flash::MODEL.instantiate(&zhipu_responses_flash_family()),
@@ -404,25 +387,18 @@ pub fn responses_models() -> Vec<ModelInfo> {
 }
 
 fn zhipu_responses_text_family() -> ModelFamily {
-    zhipu_responses_family("zhipu-glm53-responses", zhipu_text_capabilities(), false)
+    zhipu_responses_family(zhipu_text_capabilities(), false)
 }
 
 fn zhipu_responses_flash_family() -> ModelFamily {
-    zhipu_responses_family(
-        "zhipu-glm53-flash-responses",
-        zhipu_vision_capabilities(),
-        true,
-    )
+    zhipu_responses_family(zhipu_vision_capabilities(), true)
 }
 
 /// Coding Plan Responses 家族骨架：Responses HTTP + `reasoning.effort` wire。
-fn zhipu_responses_family(
-    id: &'static str,
-    capabilities: ModelCapabilities,
-    image: bool,
-) -> ModelFamily {
+fn zhipu_responses_family(capabilities: ModelCapabilities, image: bool) -> ModelFamily {
     let mut capabilities = capabilities;
     capabilities.interleaved = None;
+    capabilities.web_search = true;
     let mut request_profile = ModelRequestProfile::responses();
     if image {
         request_profile = request_profile.with_image_media(
@@ -431,10 +407,15 @@ fn zhipu_responses_family(
         );
     }
     ModelFamily {
-        id,
         capabilities,
-        truncation_mode: TruncationMode::Tokens,
-        truncation_limit: 10_000,
+        base: CodexModel {
+            supports_parallel_tool_calls: Some(true),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Tokens,
+                limit: 10_000,
+            },
+            ..Default::default()
+        },
         parameters: vec![pl_model_openai_wire::model::effort_parameter(
             "reasoning.effort",
             &["low", "high", "max"],
@@ -442,6 +423,9 @@ fn zhipu_responses_family(
         )],
         transport: ModelTransportProfile::responses_http(),
         request_profile,
-        base_instructions: String::new(),
     }
+    .with_responses_files(
+        &["application/pdf"],
+        pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
+    )
 }

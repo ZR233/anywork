@@ -1892,12 +1892,12 @@ return generic(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage)?  compaction,TResult Function( List<({String description, String name,})> commands)?  availableCommands,TResult Function()?  sessionInfo,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult Function( List<({String description, String name,})> commands)?  availableCommands,TResult Function()?  sessionInfo,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation() when compaction != null:
-return compaction(_that.statusLabel,_that.errorMessage);case AcpCommandsUpdatePresentation() when availableCommands != null:
+return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation() when availableCommands != null:
 return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
 return sessionInfo();case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded();case AcpGenericUpdatePresentation() when generic != null:
@@ -1919,12 +1919,12 @@ return generic();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage)  compaction,required TResult Function( List<({String description, String name,})> commands)  availableCommands,required TResult Function()  sessionInfo,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)  compaction,required TResult Function( List<({String description, String name,})> commands)  availableCommands,required TResult Function()  sessionInfo,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation():
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation():
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation():
-return compaction(_that.statusLabel,_that.errorMessage);case AcpCommandsUpdatePresentation():
+return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation():
 return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation():
 return sessionInfo();case AcpSupersededUpdatePresentation():
 return superseded();case AcpGenericUpdatePresentation():
@@ -1942,12 +1942,12 @@ return generic();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage)?  compaction,TResult? Function( List<({String description, String name,})> commands)?  availableCommands,TResult? Function()?  sessionInfo,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult? Function( List<({String description, String name,})> commands)?  availableCommands,TResult? Function()?  sessionInfo,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
 return usage(_that.usedFormatted,_that.sizeFormatted,_that.costLabel);case AcpCompactionUpdatePresentation() when compaction != null:
-return compaction(_that.statusLabel,_that.errorMessage);case AcpCommandsUpdatePresentation() when availableCommands != null:
+return compaction(_that.statusLabel,_that.errorMessage,_that.inProgress);case AcpCommandsUpdatePresentation() when availableCommands != null:
 return availableCommands(_that.commands);case AcpSessionInfoUpdatePresentation() when sessionInfo != null:
 return sessionInfo();case AcpSupersededUpdatePresentation() when superseded != null:
 return superseded();case AcpGenericUpdatePresentation() when generic != null:
@@ -2105,11 +2105,12 @@ as String?,
 
 
 class AcpCompactionUpdatePresentation implements AcpUpdatePresentation {
-  const AcpCompactionUpdatePresentation({required this.statusLabel, this.errorMessage});
+  const AcpCompactionUpdatePresentation({required this.statusLabel, this.errorMessage, this.inProgress = false});
 
 
  final  String statusLabel;
  final  String? errorMessage;
+@JsonKey() final  bool inProgress;
 
 /// Create a copy of AcpUpdatePresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -2121,18 +2122,18 @@ $AcpCompactionUpdatePresentationCopyWith<AcpCompactionUpdatePresentation> get co
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpCompactionUpdatePresentation&&(identical(other.statusLabel, statusLabel) || other.statusLabel == statusLabel)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpCompactionUpdatePresentation&&(identical(other.statusLabel, statusLabel) || other.statusLabel == statusLabel)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage)&&(identical(other.inProgress, inProgress) || other.inProgress == inProgress));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,statusLabel,errorMessage);
+    return Object.hash(runtimeType,statusLabel,errorMessage,inProgress);
 }
 
 @override
 String toString() {
-    return 'AcpUpdatePresentation.compaction(statusLabel: $statusLabel, errorMessage: $errorMessage)';
+    return 'AcpUpdatePresentation.compaction(statusLabel: $statusLabel, errorMessage: $errorMessage, inProgress: $inProgress)';
 }
 
 
@@ -2143,7 +2144,7 @@ abstract mixin class $AcpCompactionUpdatePresentationCopyWith<$Res> implements $
   factory $AcpCompactionUpdatePresentationCopyWith(AcpCompactionUpdatePresentation value, $Res Function(AcpCompactionUpdatePresentation) _then) = _$AcpCompactionUpdatePresentationCopyWithImpl;
 @useResult
 $Res call({
- String statusLabel, String? errorMessage
+ String statusLabel, String? errorMessage, bool inProgress
 });
 
 
@@ -2160,11 +2161,12 @@ class _$AcpCompactionUpdatePresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpUpdatePresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? statusLabel = null,Object? errorMessage = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? statusLabel = null,Object? errorMessage = freezed,Object? inProgress = null,}) {
   return _then(AcpCompactionUpdatePresentation(
 statusLabel: null == statusLabel ? _self.statusLabel : statusLabel // ignore: cast_nullable_to_non_nullable
 as String,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
-as String?,
+as String?,inProgress: null == inProgress ? _self.inProgress : inProgress // ignore: cast_nullable_to_non_nullable
+as bool,
   ));
 }
 
@@ -2494,13 +2496,13 @@ return sessionUpdate(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String id,  List<AcpContentBlockPresentation> blocks)?  userMessage,TResult Function( String id,  List<AcpContentBlockPresentation> blocks)?  assistantMessage,TResult Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)?  thought,TResult Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)?  toolCall,TResult Function( String id,  AcpUpdatePresentation update)?  sessionUpdate,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String id,  List<AcpContentBlockPresentation> blocks)?  userMessage,TResult Function( String id,  List<AcpContentBlockPresentation> blocks)?  assistantMessage,TResult Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)?  thought,TResult Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  String? rawName,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)?  toolCall,TResult Function( String id,  AcpUpdatePresentation update)?  sessionUpdate,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AcpTimelineUserMessage() when userMessage != null:
 return userMessage(_that.id,_that.blocks);case AcpTimelineAssistantMessage() when assistantMessage != null:
 return assistantMessage(_that.id,_that.blocks);case AcpTimelineThoughtItem() when thought != null:
 return thought(_that.id,_that.summary,_that.blocks,_that.active);case AcpTimelineToolCallItem() when toolCall != null:
-return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem() when sessionUpdate != null:
+return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.rawName,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem() when sessionUpdate != null:
 return sessionUpdate(_that.id,_that.update);case _:
   return orElse();
 
@@ -2519,13 +2521,13 @@ return sessionUpdate(_that.id,_that.update);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String id,  List<AcpContentBlockPresentation> blocks)  userMessage,required TResult Function( String id,  List<AcpContentBlockPresentation> blocks)  assistantMessage,required TResult Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)  thought,required TResult Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)  toolCall,required TResult Function( String id,  AcpUpdatePresentation update)  sessionUpdate,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String id,  List<AcpContentBlockPresentation> blocks)  userMessage,required TResult Function( String id,  List<AcpContentBlockPresentation> blocks)  assistantMessage,required TResult Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)  thought,required TResult Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  String? rawName,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)  toolCall,required TResult Function( String id,  AcpUpdatePresentation update)  sessionUpdate,}) {final _that = this;
 switch (_that) {
 case AcpTimelineUserMessage():
 return userMessage(_that.id,_that.blocks);case AcpTimelineAssistantMessage():
 return assistantMessage(_that.id,_that.blocks);case AcpTimelineThoughtItem():
 return thought(_that.id,_that.summary,_that.blocks,_that.active);case AcpTimelineToolCallItem():
-return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem():
+return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.rawName,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem():
 return sessionUpdate(_that.id,_that.update);}
 }
 /// A variant of `when` that fallback to returning `null`
@@ -2540,13 +2542,13 @@ return sessionUpdate(_that.id,_that.update);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String id,  List<AcpContentBlockPresentation> blocks)?  userMessage,TResult? Function( String id,  List<AcpContentBlockPresentation> blocks)?  assistantMessage,TResult? Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)?  thought,TResult? Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)?  toolCall,TResult? Function( String id,  AcpUpdatePresentation update)?  sessionUpdate,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String id,  List<AcpContentBlockPresentation> blocks)?  userMessage,TResult? Function( String id,  List<AcpContentBlockPresentation> blocks)?  assistantMessage,TResult? Function( String id,  String summary,  List<AcpContentBlockPresentation> blocks,  bool active)?  thought,TResult? Function( String id,  String toolCallId,  TimelineToolPresentation tool,  AcpToolStatusKind status,  String? kindLabel,  String? rawName,  List<String> locations,  List<String> terminals,  List<TimelinePatchDocument> diffs,  List<AcpContentBlockPresentation> contentBlocks)?  toolCall,TResult? Function( String id,  AcpUpdatePresentation update)?  sessionUpdate,}) {final _that = this;
 switch (_that) {
 case AcpTimelineUserMessage() when userMessage != null:
 return userMessage(_that.id,_that.blocks);case AcpTimelineAssistantMessage() when assistantMessage != null:
 return assistantMessage(_that.id,_that.blocks);case AcpTimelineThoughtItem() when thought != null:
 return thought(_that.id,_that.summary,_that.blocks,_that.active);case AcpTimelineToolCallItem() when toolCall != null:
-return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem() when sessionUpdate != null:
+return toolCall(_that.id,_that.toolCallId,_that.tool,_that.status,_that.kindLabel,_that.rawName,_that.locations,_that.terminals,_that.diffs,_that.contentBlocks);case AcpTimelineSessionUpdateItem() when sessionUpdate != null:
 return sessionUpdate(_that.id,_that.update);case _:
   return null;
 
@@ -2791,7 +2793,7 @@ as bool,
 
 
 class AcpTimelineToolCallItem implements AcpTimelineItemPresentation {
-  const AcpTimelineToolCallItem({required this.id, required this.toolCallId, required this.tool, required this.status, this.kindLabel,  List<String> locations = const <String>[],  List<String> terminals = const <String>[],  List<TimelinePatchDocument> diffs = const <TimelinePatchDocument>[],  List<AcpContentBlockPresentation> contentBlocks = const <AcpContentBlockPresentation>[]}): _locations = locations,_terminals = terminals,_diffs = diffs,_contentBlocks = contentBlocks;
+  const AcpTimelineToolCallItem({required this.id, required this.toolCallId, required this.tool, required this.status, this.kindLabel, this.rawName,  List<String> locations = const <String>[],  List<String> terminals = const <String>[],  List<TimelinePatchDocument> diffs = const <TimelinePatchDocument>[],  List<AcpContentBlockPresentation> contentBlocks = const <AcpContentBlockPresentation>[]}): _locations = locations,_terminals = terminals,_diffs = diffs,_contentBlocks = contentBlocks;
 
 
 @override final  String id;
@@ -2799,6 +2801,7 @@ class AcpTimelineToolCallItem implements AcpTimelineItemPresentation {
  final  TimelineToolPresentation tool;
  final  AcpToolStatusKind status;
  final  String? kindLabel;
+ final  String? rawName;
  final  List<String> _locations;
 @JsonKey() List<String> get locations {
   if (_locations is EqualUnmodifiableListView) return _locations;
@@ -2838,18 +2841,18 @@ $AcpTimelineToolCallItemCopyWith<AcpTimelineToolCallItem> get copyWith => _$AcpT
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineToolCallItem&&(identical(other.id, id) || other.id == id)&&(identical(other.toolCallId, toolCallId) || other.toolCallId == toolCallId)&&(identical(other.tool, tool) || other.tool == tool)&&(identical(other.status, status) || other.status == status)&&(identical(other.kindLabel, kindLabel) || other.kindLabel == kindLabel)&&const DeepCollectionEquality().equals(other.locations, _locations)&&const DeepCollectionEquality().equals(other.terminals, _terminals)&&const DeepCollectionEquality().equals(other.diffs, _diffs)&&const DeepCollectionEquality().equals(other.contentBlocks, _contentBlocks));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineToolCallItem&&(identical(other.id, id) || other.id == id)&&(identical(other.toolCallId, toolCallId) || other.toolCallId == toolCallId)&&(identical(other.tool, tool) || other.tool == tool)&&(identical(other.status, status) || other.status == status)&&(identical(other.kindLabel, kindLabel) || other.kindLabel == kindLabel)&&(identical(other.rawName, rawName) || other.rawName == rawName)&&const DeepCollectionEquality().equals(other.locations, _locations)&&const DeepCollectionEquality().equals(other.terminals, _terminals)&&const DeepCollectionEquality().equals(other.diffs, _diffs)&&const DeepCollectionEquality().equals(other.contentBlocks, _contentBlocks));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,id,toolCallId,tool,status,kindLabel,const DeepCollectionEquality().hash(_locations),const DeepCollectionEquality().hash(_terminals),const DeepCollectionEquality().hash(_diffs),const DeepCollectionEquality().hash(_contentBlocks));
+    return Object.hash(runtimeType,id,toolCallId,tool,status,kindLabel,rawName,const DeepCollectionEquality().hash(_locations),const DeepCollectionEquality().hash(_terminals),const DeepCollectionEquality().hash(_diffs),const DeepCollectionEquality().hash(_contentBlocks));
 }
 
 @override
 String toString() {
-    return 'AcpTimelineItemPresentation.toolCall(id: $id, toolCallId: $toolCallId, tool: $tool, status: $status, kindLabel: $kindLabel, locations: $locations, terminals: $terminals, diffs: $diffs, contentBlocks: $contentBlocks)';
+    return 'AcpTimelineItemPresentation.toolCall(id: $id, toolCallId: $toolCallId, tool: $tool, status: $status, kindLabel: $kindLabel, rawName: $rawName, locations: $locations, terminals: $terminals, diffs: $diffs, contentBlocks: $contentBlocks)';
 }
 
 
@@ -2860,7 +2863,7 @@ abstract mixin class $AcpTimelineToolCallItemCopyWith<$Res> implements $AcpTimel
   factory $AcpTimelineToolCallItemCopyWith(AcpTimelineToolCallItem value, $Res Function(AcpTimelineToolCallItem) _then) = _$AcpTimelineToolCallItemCopyWithImpl;
 @override @useResult
 $Res call({
- String id, String toolCallId, TimelineToolPresentation tool, AcpToolStatusKind status, String? kindLabel, List<String> locations, List<String> terminals, List<TimelinePatchDocument> diffs, List<AcpContentBlockPresentation> contentBlocks
+ String id, String toolCallId, TimelineToolPresentation tool, AcpToolStatusKind status, String? kindLabel, String? rawName, List<String> locations, List<String> terminals, List<TimelinePatchDocument> diffs, List<AcpContentBlockPresentation> contentBlocks
 });
 
 
@@ -2877,13 +2880,14 @@ class _$AcpTimelineToolCallItemCopyWithImpl<$Res>
 
 /// Create a copy of AcpTimelineItemPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? toolCallId = null,Object? tool = null,Object? status = null,Object? kindLabel = freezed,Object? locations = null,Object? terminals = null,Object? diffs = null,Object? contentBlocks = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? id = null,Object? toolCallId = null,Object? tool = null,Object? status = null,Object? kindLabel = freezed,Object? rawName = freezed,Object? locations = null,Object? terminals = null,Object? diffs = null,Object? contentBlocks = null,}) {
   return _then(AcpTimelineToolCallItem(
 id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
 as String,toolCallId: null == toolCallId ? _self.toolCallId : toolCallId // ignore: cast_nullable_to_non_nullable
 as String,tool: null == tool ? _self.tool : tool // ignore: cast_nullable_to_non_nullable
 as TimelineToolPresentation,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as AcpToolStatusKind,kindLabel: freezed == kindLabel ? _self.kindLabel : kindLabel // ignore: cast_nullable_to_non_nullable
+as String?,rawName: freezed == rawName ? _self.rawName : rawName // ignore: cast_nullable_to_non_nullable
 as String?,locations: null == locations ? _self._locations : locations // ignore: cast_nullable_to_non_nullable
 as List<String>,terminals: null == terminals ? _self._terminals : terminals // ignore: cast_nullable_to_non_nullable
 as List<String>,diffs: null == diffs ? _self._diffs : diffs // ignore: cast_nullable_to_non_nullable

@@ -25,7 +25,7 @@ pub(crate) fn resolve_saved(
 
 pub(crate) fn validate_media(
     state: &ThreadSnapshot,
-    model: &pl_model::model::ModelInfo,
+    model: &pl_model::model::ModelDefinition,
     additional: &[ContextContent],
 ) -> Result<()> {
     let history = state
@@ -87,7 +87,7 @@ pub(crate) fn configured_model(
 ) -> Result<RuntimeModel> {
     // The key has the existing model-binding identity domain. It never enters model context/logs.
     let mut identity = serde_json::json!({
-        "account": route.account_id, "endpoint": route.endpoint, "model": route.model.model_id,
+        "account": route.account_id, "endpoint": route.endpoint, "model": route.model.base.slug,
         "effort": route.effort, "pricing": route.pricing_mode, "contextPolicy": route.context,
         "modelDefinition": route.model, "compaction": config.runtime.openai_compaction_mode,
         "hosted": hosted.iter().map(|tool| match tool {

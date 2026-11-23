@@ -32,6 +32,14 @@ pub fn image_media_profiles(
     wire: MediaWireFormat,
     send_order: MediaSendOrder,
 ) -> Vec<ModelMediaInputProfile> {
+    vec![media_profile(ModelModality::Image, wire, send_order)]
+}
+
+pub fn media_profile(
+    modality: ModelModality,
+    wire: MediaWireFormat,
+    send_order: MediaSendOrder,
+) -> ModelMediaInputProfile {
     let (first_send, replay) = match send_order {
         MediaSendOrder::ProviderFileFirst => (
             vec![
@@ -53,12 +61,12 @@ pub fn image_media_profiles(
             vec![MediaRepresentation::DataUrl],
         ),
     };
-    vec![ModelMediaInputProfile {
-        modality: ModelModality::Image,
+    ModelMediaInputProfile {
+        modality,
         wire,
         first_send,
         replay,
-    }]
+    }
 }
 
 /// 构造「把单个字段设为字符串值」的 wire。

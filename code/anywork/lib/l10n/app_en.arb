@@ -1755,7 +1755,7 @@
   "settingsModelAutoCompactUsingDefault": "Automatic",
   "settingsModelAutoCompactInputLabel": "Threshold (tokens)",
   "settingsModelAutoCompactInvalid": "Enter a positive integer token count.",
-  "settingsModelAutoCompactHelp": "The effective threshold is capped at 90% of the context window and reserves the maximum output budget.",
+  "settingsModelAutoCompactHelp": "Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.",
   "settingsModelAutoCompactUnknownCapacity": "Context capacity is unknown, so an automatic compaction threshold cannot be calculated.",
   "settingsPriceInput": "Input",
   "settingsPriceOutput": "Output",
@@ -2012,7 +2012,6 @@
   },
   "modelTextInputUnsupported": "Text input unsupported",
   "modelTextOutputUnsupported": "Text output unsupported",
-  "modelContextWindowUnknown": "Context window unknown",
   "modelTextFilterEmpty": "No matching text models. Check model parameters in account settings.",
   "modeEditorTitle": "Work modes",
   "modeEditorNewMode": "New mode",
@@ -2380,9 +2379,8 @@
   "conversationActivityWaitingTools": "Waiting for tools",
   "conversationActivityWaitingMessages": "Waiting for a subagent or new message",
   "conversationActivityWaitingTimer": "Timer",
-  "settingsModelAutoCompactAdjusted": "The effective limit was adjusted for context capacity and output reserve.",
+  "settingsModelAutoCompactAdjusted": "The effective threshold was adjusted to fit the latest maximum context window.",
   "modelContextParametersInvalid": "Inconsistent context parameters",
-  "modelInputBudgetExhausted": "No input capacity after reserving output",
   "statusCompactNow": "Compact now",
   "statusCompacting": "Compacting…",
   "statusCompactionFailed": "Compaction failed. Try again.",
@@ -3159,8 +3157,66 @@
   "acpComposerBlockerRunning": "Response in progress",
   "acpContentThoughtLabel": "Thinking",
   "acpProcessGroupSummary": "Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
-  "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
-  "acpProcessGroupRunning": "Running",
+  "@acpProcessGroupSummary": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupToolsOnly": "{toolCount, plural, =1{Ran 1 tool} other{Ran {toolCount} tools}}",
+  "@acpProcessGroupToolsOnly": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupThoughtsOnly": "{count, plural, =1{Thought once} other{{count} thoughts}}",
+  "@acpProcessGroupThoughtsOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupActivitiesOnly": "Process · {count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupActivitiesOnly": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningToolsMeta": "{toolCount, plural, =1{1 tool} other{{toolCount} tools}}",
+  "@acpProcessGroupRunningToolsMeta": {
+    "placeholders": {
+      "toolCount": {
+        "type": "int"
+      }
+    }
+  },
+  "acpProcessGroupRunningActivitiesMeta": "{count, plural, =1{1 activity} other{{count} activities}}",
+  "@acpProcessGroupRunningActivitiesMeta": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpToolKindRead": "Read",
+  "acpToolKindEdit": "Edit",
+  "acpToolKindDelete": "Delete",
+  "acpToolKindMove": "Move",
+  "acpToolKindSearch": "Search",
+  "acpToolKindExecute": "Execute",
+  "acpToolKindThink": "Think",
+  "acpToolKindFetch": "Fetch",
+  "acpToolKindSwitchMode": "Switch mode",
+  "acpToolKindOther": "Tool",
   "acpContentAudioLabel": "Audio content",
   "acpContentResourceLabel": "Embedded resource",
   "acpContentBinarySummary": "{mimeType} · {byteCount} bytes",

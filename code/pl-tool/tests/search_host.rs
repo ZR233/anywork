@@ -9,7 +9,7 @@ use pl_agent_tool::Tool;
 use pl_core::{context::OpaquePayload, tool::opaque::CallContext};
 use pl_model::{
     config::{AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelRouteConfig},
-    model::ModelInfo,
+    model::ModelDefinition,
 };
 use pl_model_openai_deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_tool::{binding::prepare_native_tool, search::*};
@@ -174,18 +174,18 @@ async fn standalone_openai_search_sends_the_current_gpt_model_or_luna() {
     let fallback_id = AccountId::new("a-search").unwrap();
     let current_id = AccountId::new("b-conversation").unwrap();
     let external_id = AccountId::new("c-compatible").unwrap();
-    let mut gpt = ModelInfo::compatible("gpt-6.1-sol");
-    gpt.capabilities.tools.function_calling = true;
-    let mut alias = ModelInfo::compatible("custom-alias");
-    alias.binding.request.api_model = Some("gpt-6.2-sol".into());
-    alias.capabilities.tools.function_calling = true;
-    let mut other = ModelInfo::compatible("other-gpt-model");
-    other.capabilities.tools.function_calling = true;
+    let mut gpt = ModelDefinition::compatible("gpt-6.1-sol");
+    gpt.extra.capabilities.tools.function_calling = true;
+    let mut alias = ModelDefinition::compatible("custom-alias");
+    alias.extra.binding.request.api_model = Some("gpt-6.2-sol".into());
+    alias.extra.capabilities.tools.function_calling = true;
+    let mut other = ModelDefinition::compatible("other-gpt-model");
+    other.extra.capabilities.tools.function_calling = true;
     let models = AgentModelConfig {
         accounts: [
             (
                 fallback_id.clone(),
-                openai_account(vec![ModelInfo::compatible("gpt-6-sol")]),
+                openai_account(vec![ModelDefinition::compatible("gpt-6-sol")]),
             ),
             (current_id.clone(), openai_account(vec![gpt, alias])),
             (

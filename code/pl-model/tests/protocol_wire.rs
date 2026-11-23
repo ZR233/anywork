@@ -14,7 +14,7 @@ use pl_model::{
         ReasoningConfig, ReasoningSummary, ToolCallKind, ToolSpec,
     },
     config::builtin_account_catalog,
-    model::{ModelInfo, ModelTransportProfile, default_models},
+    model::{ModelDefinition, ModelTransportProfile, default_models},
     protocol::{ApplyPatchToolType, PromptCacheDialect, ToolWirePolicy},
     runtime::{CancellationToken, ModelInvocationContext, ModelSession, PromptCacheScope},
 };
@@ -61,8 +61,8 @@ fn assert_frozen_tool_bindings(
 
 #[test]
 fn selectable_models_still_reject_unsupported_tools_before_io() {
-    let mut model = ModelInfo::compatible("selectable-text-model");
-    model.capabilities.tools.function_calling = false;
+    let mut model = ModelDefinition::compatible("selectable-text-model");
+    model.extra.capabilities.tools.function_calling = false;
     let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", "http://127.0.0.1:1"),
@@ -105,22 +105,27 @@ fn retained_media_is_validated_before_model_admission() {
         AttachmentModality::Image,
     )
     .unwrap();
-    let mut model = ModelInfo::compatible("media-admission");
+    let mut model = ModelDefinition::compatible("media-admission");
     assert!(validate_attachment_content([&content], &model).is_err());
     let mut capability =
         ModelInputCapability::media(ModelModality::Image, vec![ModelInputSource::Local]);
     capability.limits.max_count = Some(1);
-    model.capabilities.input.push(capability);
-    model.binding.request.media.push(ModelMediaInputProfile {
-        modality: ModelModality::Image,
-        wire: MediaWireFormat::ChatImageUrl,
-        first_send: vec![MediaRepresentation::DataUrl],
-        replay: vec![MediaRepresentation::DataUrl],
-    });
+    model.extra.capabilities.input.push(capability);
+    model
+        .extra
+        .binding
+        .request
+        .media
+        .push(ModelMediaInputProfile {
+            modality: ModelModality::Image,
+            wire: MediaWireFormat::ChatImageUrl,
+            first_send: vec![MediaRepresentation::DataUrl],
+            replay: vec![MediaRepresentation::DataUrl],
+        });
     validate_attachment_content([&content], &model).unwrap();
     // One historical reference plus the new input counts twice even with shared bytes.
     assert!(validate_attachment_content([&content, &content], &model).is_err());
-    model.binding.request.media[0].replay = vec![MediaRepresentation::RemoteUrl];
+    model.extra.binding.request.media[0].replay = vec![MediaRepresentation::RemoteUrl];
     assert!(validate_attachment_content([&content], &model).is_err());
 }
 
@@ -135,7 +140,7 @@ async fn context_preview_includes_frozen_hosted_solo_tools_and_pending_input() {
         pl_model::protocol::providers::openai::compatible_endpoint("preview", "http://127.0.0.1:1");
     endpoint.service_capabilities.web_search.hosted_responses = true;
     let mut info = model("preview-model", ModelTransportProfile::responses_http());
-    info.capabilities.web_search = true;
+    info.extra.capabilities.web_search = true;
     let plain = ThreadModel::new(
         pl_model::runtime::new_with_account_id("preview", endpoint, info).unwrap(),
         None,
@@ -237,19 +242,19 @@ fn request(prompt: &str) -> CompletionRequest {
         .build()
 }
 
-fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
-    let mut model = ModelInfo::compatible(model_id);
-    model.binding.set_transport(profile);
+fn model(model_id: &str, profile: ModelTransportProfile) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(model_id);
+    model.extra.binding.set_transport(profile);
     model
 }
 
-fn custom_tool_model() -> ModelInfo {
+fn custom_tool_model() -> ModelDefinition {
     let mut info = model(
         "custom-tool-fixture",
         ModelTransportProfile::responses_http(),
     );
-    info.capabilities.tools.custom_tools = true;
-    info.capabilities.tools.freeform_tools = true;
+    info.extra.capabilities.tools.custom_tools = true;
+    info.extra.capabilities.tools.freeform_tools = true;
     info
 }
 
@@ -286,17 +291,17 @@ fn head_native_binding(current: &Value) -> Value {
     })
 }
 
-fn bundled(model_id: &str) -> ModelInfo {
+fn bundled(model_id: &str) -> ModelDefinition {
     default_models()
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .unwrap()
 }
 
 async fn complete(
     fixture: &FixtureServer,
-    model: ModelInfo,
+    model: ModelDefinition,
     request: CompletionRequest,
     session: ModelSession,
 ) -> pl_model::completion::CompletionResponse {
@@ -322,6 +327,22 @@ fn chat_events(text: &str, model: &str) -> Vec<Value> {
 }
 
 fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
+    attachment_request(
+        prompt,
+        bytes,
+        AttachmentModality::Image,
+        "tiny.png",
+        "image/png",
+    )
+}
+
+fn attachment_request(
+    prompt: &str,
+    bytes: Vec<u8>,
+    modality: AttachmentModality,
+    name: &str,
+    mime: &str,
+) -> CompletionRequest {
     let message = Message {
         content: MessageContent::new(vec![
             ContentPart::Text {
@@ -329,9 +350,9 @@ fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
             },
             ContentPart::Attachment {
                 attachment_id: "image-1".into(),
-                modality: AttachmentModality::Image,
-                media_type: "image/png".into(),
-                filename: Some("tiny.png".into()),
+                modality,
+                media_type: mime.into(),
+                filename: Some(name.into()),
             },
         ]),
         ..user("")
@@ -340,9 +361,9 @@ fn image_request(prompt: &str, bytes: Vec<u8>) -> CompletionRequest {
         .messages(vec![message])
         .attachments(vec![AttachmentInput {
             attachment_id: "image-1".into(),
-            modality: AttachmentModality::Image,
-            media_type: "image/png".into(),
-            filename: Some("tiny.png".into()),
+            modality,
+            media_type: mime.into(),
+            filename: Some(name.into()),
             source: AttachmentSource::Bytes {
                 bytes: Arc::from(bytes),
             },
@@ -383,12 +404,13 @@ async fn responses_files_use_native_file_parts_and_preserve_the_reliable_bytes()
                 .await
                 .unwrap();
         let mut info = bundled("gpt-6.1-terra");
-        info.binding.set_transport(transport);
+        info.extra.binding.set_transport(transport);
         assert!(
-            info.capabilities
+            info.extra
+                .capabilities
                 .supports_input_modality(ModelModality::File)
         );
-        assert!(info.binding.request.media.iter().any(|media| {
+        assert!(info.extra.binding.request.media.iter().any(|media| {
             media.modality == ModelModality::File
                 && media.wire == MediaWireFormat::ResponsesInputFile
                 && media.first_send.contains(&MediaRepresentation::DataUrl)
@@ -706,7 +728,7 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
         .await
         .unwrap();
         let mut replay_model = model("replay-fixture", profile);
-        replay_model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
+        replay_model.extra.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
             field: pl_model::model::reasoning_fields::REASONING_CONTENT,
         });
         let runtime = pl_model::runtime::new_with_account_id(
@@ -943,9 +965,9 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     let endpoint =
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", server.base_url());
     let mut source_model = model("source-model", ModelTransportProfile::responses_http());
-    source_model.max_output_tokens = Some(123);
+    source_model.extra.max_output_tokens = Some(123);
     if let pl_model::model::ModelProtocolOptions::Responses(options) =
-        &mut source_model.binding.request.protocol
+        &mut source_model.extra.binding.request.protocol
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
@@ -973,9 +995,9 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     let saved = thread.capture_current(Default::default()).await.unwrap();
     thread.close().await.unwrap();
     let mut target_model = model("target-model", ModelTransportProfile::responses_http());
-    target_model.max_output_tokens = Some(456);
+    target_model.extra.max_output_tokens = Some(456);
     if let pl_model::model::ModelProtocolOptions::Responses(options) =
-        &mut target_model.binding.request.protocol
+        &mut target_model.extra.binding.request.protocol
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
@@ -1043,7 +1065,7 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
             server.base_url(),
         );
         let mut source_model = model("source-model", ModelTransportProfile::responses_http());
-        source_model.capabilities.native_context_family = source_family.map(str::to_owned);
+        source_model.extra.capabilities.native_context_family = source_family.map(str::to_owned);
         let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
             pl_model::runtime::new_with_account_id("fixture", endpoint.clone(), source_model)
                 .unwrap(),
@@ -1074,7 +1096,7 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
         .unwrap();
         thread.close().await.unwrap();
         let mut target_model = model("target-model", ModelTransportProfile::responses_http());
-        target_model.capabilities.native_context_family = target_family.map(str::to_owned);
+        target_model.extra.capabilities.native_context_family = target_family.map(str::to_owned);
         let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
             pl_model::runtime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
             None,
@@ -1332,7 +1354,7 @@ async fn responses_functions_keep_optional_role_specific_arguments() {
         .await
         .unwrap();
         let mut info = bundled("gpt-6.2-sol");
-        info.binding.set_transport(transport);
+        info.extra.binding.set_transport(transport);
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url())),
@@ -1394,7 +1416,8 @@ async fn responses_schema_projection_preserves_content_and_program_caller() {
         .responses_tools
         .programmatic_tool_calling = true;
     let mut info = bundled("gpt-6-luna");
-    info.binding
+    info.extra
+        .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let cases = [
@@ -1988,7 +2011,7 @@ async fn thread_custom_fallback_rejection_keeps_conversion_reason_and_raw_protoc
         .await
         .unwrap();
         let mut info = model("fixture-model", profile);
-        info.capabilities.tools.custom_tools = false;
+        info.extra.capabilities.tools.custom_tools = false;
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
             pl_model::runtime::new_with_account_id(
                 "fixture",
@@ -2127,9 +2150,10 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
         ),
     ] {
         let mut fixture_model = model("fixture-model", profile);
-        fixture_model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
-            field: pl_model::model::reasoning_fields::REASONING_CONTENT,
-        });
+        fixture_model.extra.capabilities.interleaved =
+            Some(pl_model::model::ReasoningInterleaved {
+                field: pl_model::model::reasoning_fields::REASONING_CONTENT,
+            });
         let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
             "fixture",
             fixture.base_url(),
@@ -3723,8 +3747,8 @@ async fn apply_patch_falls_back_to_function_without_required_model_capabilities(
             pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url()));
         endpoint.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
         let mut info = custom_tool_model();
-        info.capabilities.tools.custom_tools = custom_tools;
-        info.capabilities.tools.freeform_tools = freeform_tools;
+        info.extra.capabilities.tools.custom_tools = custom_tools;
+        info.extra.capabilities.tools.freeform_tools = freeform_tools;
         let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
         runtime
             .complete(
@@ -3747,8 +3771,8 @@ async fn apply_patch_falls_back_to_function_without_required_model_capabilities(
 #[tokio::test]
 async fn xai_responses_preserves_effort_cache_scope_and_function_schema() {
     let mut info = model("xai-fixture", ModelTransportProfile::responses_http());
-    info.capabilities.reasoning = true;
-    info.parameters.push(
+    info.extra.capabilities.reasoning = true;
+    info.extra.parameters.push(
         serde_json::from_value(json!({
             "name":"effort",
             "candidates":["high"],
@@ -4579,7 +4603,8 @@ async fn openai_hosted_search_and_native_custom_programmatic_tools_use_responses
         .responses_tools
         .programmatic_tool_calling = true;
     let mut info = bundled("gpt-6-luna");
-    info.binding
+    info.extra
+        .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let tools = vec![
@@ -4663,7 +4688,7 @@ async fn explicitly_enabled_deepseek_hosted_search_has_its_own_minimal_wire_dial
     .unwrap();
     let endpoint = pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
     let mut model = bundled("deepseek-v4-pro");
-    model.capabilities.web_search = true;
+    model.extra.capabilities.web_search = true;
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
     let result = runtime
         .complete(
@@ -4695,7 +4720,7 @@ async fn coding_plan_uses_responses_http_and_model_effort_not_chat_thinking() {
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == "glm-5.3")
+        .find(|model| model.base.slug == "glm-5.3")
         .unwrap();
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
@@ -4747,7 +4772,8 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
     let mut endpoint = pl_model::protocol::providers::openai::endpoint(Some(fixture.base_url()));
     endpoint.service_capabilities.prompt_cache.dialect = PromptCacheDialect::ExplicitKey;
     let mut info = bundled("gpt-6-luna");
-    info.binding
+    info.extra
+        .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap();
     let result = runtime
@@ -4783,34 +4809,62 @@ async fn openai_image_is_sent_as_replayable_input_image_and_cache_usage_is_bille
 
 #[tokio::test]
 async fn deepseek_file_upload_precedes_responses_and_sends_only_file_reference() {
-    let bytes = tiny_png();
-    let fixture = FixtureServer::start(vec![
-        Step::exact(Protocol::Files, json!({
-            "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
-            "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes))}
-        }), Reply::Json(json!({"id":"file-fixture"}))),
-        Step::prompt(Protocol::ResponsesHttp, "inspect", 1,
-            Reply::Sse(responses_text("uploaded", "deep-file", "deepseek-flash"))),
-    ]).await.unwrap();
-    let mut endpoint = pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
-    endpoint.service_capabilities.files = pl_model_openai_deepseek::upload::FILE_UPLOAD.id.clone();
-    let runtime =
-        pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
-            .unwrap();
-    let result = runtime
-        .complete(
-            image_request("inspect", bytes),
-            ModelInvocationContext::default(),
-        )
+    for (bytes, modality, name, mime, purpose) in [
+        (
+            tiny_png(),
+            AttachmentModality::Image,
+            "tiny.png",
+            "image/png",
+            "user_data",
+        ),
+        (
+            b"%PDF-1.4\nfixture".to_vec(),
+            AttachmentModality::File,
+            "check.pdf",
+            "application/pdf",
+            "text_recognition",
+        ),
+    ] {
+        let fixture = FixtureServer::start(vec![
+            Step::exact(
+                Protocol::Files,
+                json!({
+                    "purpose":purpose, "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
+                    "file":{"filename":name,"mime_type":mime,"sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
+                }),
+                Reply::Json(json!({"id":"file-fixture"})),
+            ),
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "inspect",
+                1,
+                Reply::Sse(responses_text("uploaded", "deep-file", "deepseek-flash")),
+            ),
+        ])
         .await
         .unwrap();
-    assert_eq!(result.content.as_deref(), Some("uploaded"));
-    let records = fixture.finish().await.unwrap();
-    assert_eq!(records[0].path, "/v1/files");
-    assert_eq!(
-        records[1].body["input"][0]["content"][1]["file_id"],
-        "file-fixture"
-    );
+        let mut endpoint =
+            pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url()));
+        endpoint.service_capabilities.files =
+            pl_model_openai_deepseek::upload::FILE_UPLOAD.id.clone();
+        let runtime =
+            pl_model::runtime::new_with_account_id("fixture", endpoint, bundled("deepseek-flash"))
+                .unwrap();
+        let result = runtime
+            .complete(
+                attachment_request("inspect", bytes, modality, name, mime),
+                ModelInvocationContext::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content.as_deref(), Some("uploaded"));
+        let records = fixture.finish().await.unwrap();
+        assert_eq!(records[0].path, "/v1/files");
+        assert_eq!(
+            records[1].body["input"][0]["content"][1]["file_id"],
+            "file-fixture"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4818,7 +4872,7 @@ async fn attachment_preparation_and_inference_share_retry_budget_and_keep_succes
     let bytes = tiny_png();
     let upload = json!({
         "purpose":"user_data", "expires_after[anchor]":"created_at", "expires_after[seconds]":"86400",
-        "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes))}
+        "file":{"filename":"tiny.png","mime_type":"image/png","sha256":hex::encode(Sha256::digest(&bytes)),"purpose_precedes_file":true}
     });
     let unavailable = || Reply::HttpError {
         status: 503,
@@ -5067,7 +5121,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url());
     endpoint.service_capabilities.remote_compaction = true;
     let mut info = model("source-model", ModelTransportProfile::responses_http());
-    info.capabilities.native_context_family = Some("explicit-fixture-family".into());
+    info.extra.capabilities.native_context_family = Some("explicit-fixture-family".into());
     let source = ThreadModel::new(
         pl_model::runtime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
         None,
@@ -5194,6 +5248,7 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
     assert!(vendor.validate_context_origin(&legacy_context).is_err());
     let mut wire_info = info.clone();
     wire_info
+        .extra
         .binding
         .set_transport(ModelTransportProfile::chat_completions_http());
     let wire = ThreadModel::new(
@@ -5225,14 +5280,14 @@ async fn native_checkpoint_replay_requires_bound_origin_and_explicit_model_famil
         None,
     );
     assert!(other_account.validate_context_origin(&context).is_err());
-    info.model_id = "target-model".into();
-    info.capabilities.native_context_family = None;
+    info.base.slug = "target-model".into();
+    info.extra.capabilities.native_context_family = None;
     let unproven = ThreadModel::new(
         pl_model::runtime::new_with_account_id("source", endpoint.clone(), info.clone()).unwrap(),
         None,
     );
     assert!(unproven.validate_context_origin(&context).is_err());
-    info.capabilities.native_context_family = Some("explicit-fixture-family".into());
+    info.extra.capabilities.native_context_family = Some("explicit-fixture-family".into());
     let explicit = ThreadModel::new(
         pl_model::runtime::new_with_account_id("source", endpoint, info).unwrap(),
         None,
@@ -5338,7 +5393,7 @@ async fn instruction_snapshots_use_only_jointly_declared_endpoint_and_model_sema
             HistoryInstructionRole::None
         };
         let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
-        info.capabilities.instruction_snapshot_overrides = model_support;
+        info.extra.capabilities.instruction_snapshot_overrides = model_support;
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
             pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
             None,
@@ -5545,7 +5600,7 @@ async fn appended_full_snapshot_keeps_tool_scheduling_rules_and_stable_prefix() 
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url());
     endpoint.service_capabilities.history_instruction_role = HistoryInstructionRole::Developer;
     let mut info = model("snapshot-model", ModelTransportProfile::responses_http());
-    info.capabilities.instruction_snapshot_overrides = true;
+    info.extra.capabilities.instruction_snapshot_overrides = true;
     let factory = ModelFactory::new(ThreadModel::new(
         pl_model::runtime::new_with_account_id("fixture", endpoint, info).unwrap(),
         None,
@@ -5722,7 +5777,8 @@ async fn reserved_top_level_instructions_channel_is_rejected_before_network() {
     for with_system_prompt in [true, false] {
         let fixture = FixtureServer::start(vec![]).await.unwrap();
         let mut info = model("role-model", ModelTransportProfile::responses_http());
-        info.binding
+        info.extra
+            .binding
             .request
             .body
             .insert("instructions".into(), json!("sneaky"));
@@ -5889,7 +5945,8 @@ async fn chat_reasoning_replay_uses_target_capability_and_rejects_untyped_detail
             "target-model",
             ModelTransportProfile::chat_completions_http(),
         );
-        info.capabilities.interleaved = field.clone().map(|field| ReasoningInterleaved { field });
+        info.extra.capabilities.interleaved =
+            field.clone().map(|field| ReasoningInterleaved { field });
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             pl_model::protocol::providers::openai::compatible_endpoint(
@@ -6283,13 +6340,15 @@ async fn native_capacity_preview_keeps_measured_lower_bound_and_requires_bound_p
         pl_model::protocol::providers::openai::compatible_endpoint("capacity", fixture.base_url());
     endpoint.service_capabilities.remote_compaction = true;
     let mut info = model("capacity-model", ModelTransportProfile::responses_http());
-    info.capabilities
+    info.extra
+        .capabilities
         .input
         .push(pl_model::model::ModelInputCapability::media(
             pl_model::model::ModelModality::Image,
             vec![pl_model::model::ModelInputSource::Local],
         ));
-    info.binding
+    info.extra
+        .binding
         .request
         .media
         .push(pl_model::model::ModelMediaInputProfile {
