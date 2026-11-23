@@ -148,6 +148,8 @@ AccountSummary vmSummary(
   String? displayEndpoint,
   int? acpRevision = 1,
   bool? credentialReady,
+  bool acpEnabled = true,
+  bool queryUsage = false,
 }) => AccountSummary(
   identity: identity,
   name: name ?? identity.accountId,
@@ -156,14 +158,15 @@ AccountSummary vmSummary(
   billingKind: identity is NativeAccountIdentity ? BillingKind.metered : null,
   usageQueryRevision: 1,
   acpConnectionRevision: identity is AcpAccountIdentity ? acpRevision : null,
+  acpEnabled: identity is AcpAccountIdentity ? acpEnabled : null,
   credentialReady: credentialReady,
   capabilities: identity is NativeAccountIdentity
       ? vmCapabilities
-      : const AccountCapabilities(
+      : AccountCapabilities(
           setDefault: false,
           edit: true,
           remove: true,
-          queryUsage: false,
+          queryUsage: acpEnabled && queryUsage,
           syncModels: false,
           editModels: false,
           acpAuth: true,
@@ -918,6 +921,7 @@ void publishVmAcp(
   AcpAccountSettingsView? account,
   AcpUsageObservationView? usage,
   AcpConnectionStateView connection = const AcpConnectionReadyState(),
+  AcpAuthActiveOperationView? activeOperation,
 }) {
   account ??= vmAcpAccount;
   h.accounts.state.publish(
@@ -928,6 +932,8 @@ void publishVmAcp(
         vmSummary(
           AcpAccountIdentity(account.accountId),
           acpRevision: account.connectionRevision,
+          acpEnabled: account.enabled,
+          queryUsage: account.enabled && account.template != null,
         ),
       ],
       templates: h.accounts.state.value.templates,
@@ -947,6 +953,7 @@ void publishVmAcp(
             connectionRevision: account.connectionRevision,
             state: auth,
             usage: usage,
+            activeOperation: activeOperation,
           ),
         ],
       ),
@@ -3955,4 +3962,115 @@ void main() {
       expect(h.models.compactCalls, hasLength(1));
     },
   );
+
+  test('AcpAccountViewModel preserves Connected during QueryUsage and hides usage on generic or disabled ACP accounts', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    publishVmAcp(h, const AcpVerifiedState(checkedAt: 1, server: null));
+    final owner = await listenVmAcp(h, vmAcpKey);
+    var state = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue;
+    expect(state.panel.supportsUsage, isTrue);
+    expect(state.panel.phase, AcpPresentationPhase.connected);
+    expect(state.panel.availableActions, contains(AcpAccountAction.queryUsage));
+
+    publishVmAcp(
+      h,
+      const AcpVerifiedState(checkedAt: 1, server: null),
+      activeOperation: const AcpAuthActiveOperationView(
+        operationId: 'usage-op-1',
+        connectionRevision: 1,
+        action: AcpQueryUsageActionView(),
+      ),
+    );
+    await h.container.pump();
+    state = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue;
+    expect(state.panel.phase, AcpPresentationPhase.connected);
+    expect(state.panel.usage.busy, isTrue);
+    expect(
+      state.panel.availableActions,
+      contains(AcpAccountAction.cancelAuthentication),
+    );
+    expect(
+      state.panel.availableActions,
+      isNot(contains(AcpAccountAction.queryUsage)),
+    );
+    final cancelling = owner.cancelAuthentication();
+    expect(h.acp.authCancels, hasLength(1));
+    h.acp.authCancels.single.complete(const AcpAuthSnapshotView.empty());
+    await cancelling;
+
+    // Generic (no templateId) and disabled ACP accounts hide usage and auth actions.
+    const genericKey = AccountAcpKey(
+      target: AccountDisplayKey(kind: AccountKind.acp, id: 'generic'),
+      templateId: null,
+      connectionRevision: 1,
+    );
+    final genericAccount = AcpAccountSettingsView(
+      accountId: 'generic',
+      name: 'agy',
+      documentRevision: BigInt.one,
+      command: 'agy',
+      args: ['acp'],
+      enabled: true,
+      connectionRevision: 1,
+    );
+    publishVmAcp(
+      h,
+      const AcpVerifiedState(checkedAt: 2, server: null),
+      account: genericAccount,
+    );
+    final genericOwner = await listenVmAcp(h, genericKey);
+    final genericState = h.container
+        .read(acpAccountViewModelProvider(genericKey))
+        .requireValue;
+    expect(genericState.panel.supportsUsage, isFalse);
+    expect(genericState.panel.usage.busy, isFalse);
+    expect(
+      genericState.panel.availableActions,
+      isNot(contains(AcpAccountAction.queryUsage)),
+    );
+    await genericOwner.queryUsage();
+    expect(h.acp.usageQueries, isEmpty);
+
+    final disabledAccount = AcpAccountSettingsView(
+      accountId: vmAcpAccount.accountId,
+      name: vmAcpAccount.name,
+      documentRevision: BigInt.two,
+      template: AcpProviderView.antigravity,
+      enabled: false,
+      connectionRevision: 2,
+    );
+    const disabledKey = AccountAcpKey(
+      target: AccountDisplayKey(kind: AccountKind.acp, id: 'acp'),
+      templateId: 'antigravity',
+      connectionRevision: 2,
+    );
+    publishVmAcp(
+      h,
+      const AcpUncheckedState(),
+      account: disabledAccount,
+      connection: const AcpConnectionStoppedState(),
+    );
+    final disabledOwner = await listenVmAcp(h, disabledKey);
+    final disabledState = h.container
+        .read(acpAccountViewModelProvider(disabledKey))
+        .requireValue;
+    expect(disabledState.panel.supportsUsage, isFalse);
+    expect(
+      disabledState.panel.availableActions,
+      isNot(contains(AcpAccountAction.queryUsage)),
+    );
+    expect(
+      disabledState.panel.availableActions,
+      isNot(contains(AcpAccountAction.check)),
+    );
+    await disabledOwner.authenticate();
+    await disabledOwner.queryUsage();
+    expect(h.acp.authStarts, isEmpty);
+    expect(h.acp.usageQueries, isEmpty);
+  });
 }

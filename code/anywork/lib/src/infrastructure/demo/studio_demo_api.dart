@@ -611,11 +611,11 @@ class DemoStudioTransport extends StudioTransport
                 isDefault: false,
                 acpEnabled: account.enabled,
                 acpConnectionRevision: account.connectionRevision,
-                capabilities: const AccountCapabilities(
+                capabilities: AccountCapabilities(
                   setDefault: false,
                   edit: true,
                   remove: true,
-                  queryUsage: false,
+                  queryUsage: account.enabled && account.template != null,
                   syncModels: false,
                   editModels: false,
                   acpAuth: true,

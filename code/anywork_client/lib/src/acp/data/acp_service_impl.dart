@@ -313,16 +313,18 @@ final class AcpServiceImpl implements AcpService {
         connectionRevision: business.connectionRevision!,
       );
       if (row == null) continue; // Absence is not configuration deletion proof.
-      final stateOperation = row.state.operationId;
+      final stateOperation =
+          row.activeOperation?.operationId ?? row.state.operationId;
+      final isBusy = row.activeOperation != null || row.state.isBusy;
       if (stateOperation == business.operation.id.value) {
         business.witness = stamp;
-        if (!row.state.isBusy) _releaseAuth(business.operation.id);
+        if (!isBusy) _releaseAuth(business.operation.id);
       } else {
         final proof = business.witness ?? business.admitted;
         if (proof == null || !stamp.covers(proof)) continue;
         // Auth terminal DTOs do not retain operationId. A matching busy frame
         // or this start's authoritative receipt must precede that terminal.
-        if (!row.state.isBusy ||
+        if (!isBusy ||
             stamp.revision > proof.revision && stateOperation != null)
           _releaseAuth(business.operation.id);
       }
@@ -524,16 +526,53 @@ final class AcpServiceImpl implements AcpService {
       final snapshot = operation.state.value;
       if (snapshot.failurePhase != null)
         return AcpSaveAndConnectResult(operation: snapshot);
+      final savedAccount = detail.account;
+      final savedRevision = savedAccount.connectionRevision;
+      if (!savedAccount.enabled) {
+        return AcpSaveAndConnectResult(
+          operation: snapshot,
+          saved: savedAccount,
+        );
+      }
+      final currentRow = _auth.value.loaded && !_auth.value.stale
+          ? _auth.value.value?.account(
+              identity.accountId,
+              connectionRevision: savedRevision,
+            )
+          : null;
+      if (currentRow != null &&
+          (currentRow.state is AcpVerifiedState ||
+              (currentRow.activeOperation?.connectionRevision ==
+                      savedRevision &&
+                  currentRow.activeOperation?.action is AcpCheckActionView))) {
+        return AcpSaveAndConnectResult(
+          operation: snapshot,
+          saved: savedAccount,
+        );
+      }
       try {
         await check(identity);
         return AcpSaveAndConnectResult(
           operation: snapshot,
-          saved: detail.account,
+          saved: savedAccount,
         );
       } catch (error) {
+        if (error is StudioFailure && error.code == StudioFailureCode.busy) {
+          final facet = _decodeAcpAuthBusyFacet(error.detailsJson);
+          if (facet != null &&
+              facet.accountId == identity.accountId &&
+              facet.connectionRevision == savedRevision &&
+              facet.activeConnectionRevision == savedRevision &&
+              facet.activeAction is AcpCheckActionView) {
+            return AcpSaveAndConnectResult(
+              operation: snapshot,
+              saved: savedAccount,
+            );
+          }
+        }
         return AcpSaveAndConnectResult(
           operation: snapshot,
-          saved: detail.account,
+          saved: savedAccount,
           checkFailure: typedCommandFailure(
             error,
             correlationId: 'acp-connect',
@@ -1499,10 +1538,11 @@ final class AcpServiceImpl implements AcpService {
         ),
       );
     final revision = detail.account.connectionRevision;
-    final target = _auth.value.value
-        ?.account(identity.accountId, connectionRevision: revision)
-        ?.state
-        .operationId;
+    final row = _auth.value.value?.account(
+      identity.accountId,
+      connectionRevision: revision,
+    );
+    final target = row?.activeOperation?.operationId ?? row?.state.operationId;
     if (target == null)
       return Future.error(
         const StudioFailure(

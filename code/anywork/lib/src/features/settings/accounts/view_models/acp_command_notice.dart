@@ -14,6 +14,7 @@ final class AcpCommandNotice {
     required this.accountId,
     required this.connectionRevision,
     this.operationId,
+    this.clearOnVerified = true,
   });
   final AcpCommandNoticeKind kind;
   final String summary;
@@ -21,23 +22,29 @@ final class AcpCommandNotice {
   final String accountId;
   final int connectionRevision;
   final String? operationId;
+  final bool clearOnVerified;
 }
 
 AcpCommandNotice? visibleAcpCommandNotice(
   AcpCommandNotice? notice,
   AcpAccountSettingsView account,
-  AcpAuthStateView auth,
-) {
+  AcpAuthStateView auth, {
+  AcpAuthActiveOperationView? activeOperation,
+}) {
   if (notice == null ||
       notice.accountId != account.accountId ||
       notice.connectionRevision != account.connectionRevision) {
     return null;
   }
   if (notice.kind != AcpCommandNoticeKind.authentication) return notice;
+  final activeId = activeOperation?.operationId ?? auth.operationId;
   if (notice.operationId != null) {
-    return notice.operationId == auth.operationId ? notice : null;
+    return notice.operationId == activeId ? notice : null;
   }
-  return auth.isBusy || auth is AcpVerifiedState ? null : notice;
+  final busy = activeOperation != null || auth.isBusy;
+  return busy || (notice.clearOnVerified && auth is AcpVerifiedState)
+      ? null
+      : notice;
 }
 
 bool isAcpAuthDuplicateWhileInFlight({
@@ -46,9 +53,10 @@ bool isAcpAuthDuplicateWhileInFlight({
   required int requestConnectionRevision,
   required AcpAccountSettingsView? account,
   required AcpAuthStateView auth,
+  AcpAuthActiveOperationView? activeOperation,
 }) =>
     error is StudioFailure &&
     error.code == StudioFailureCode.busy &&
     account?.accountId == accountId &&
     account?.connectionRevision == requestConnectionRevision &&
-    auth.isBusy;
+    (activeOperation != null || auth.isBusy);

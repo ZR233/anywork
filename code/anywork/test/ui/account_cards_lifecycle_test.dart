@@ -38,7 +38,11 @@ void main() {
           accounts: [
             vmSummary(const NativeAccountIdentity('alpha'), name: 'Alpha'),
             vmSummary(const NativeAccountIdentity('beta'), name: 'Beta'),
-            vmSummary(const AcpAccountIdentity('gamma'), name: 'Gamma'),
+            vmSummary(
+              const AcpAccountIdentity('gamma'),
+              name: 'Gamma',
+              queryUsage: true,
+            ),
           ],
         ),
       );

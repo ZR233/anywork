@@ -7701,7 +7701,7 @@ as bool,
 /// @nodoc
 mixin _$AcpAccountPresentation {
 
- AcpPresentationPhase get phase; String get status; String? get subtitle; AcpUsagePresentation get usage; String? get message; String? get error; double? get progress; String? get progressLabel; List<AccountDisplayFact> get facts; List<AcpAccountAction> get availableActions;/// Optional emphasis chosen by the VM, never inferred from [phase].
+ AcpPresentationPhase get phase; String get status; String? get subtitle; AcpUsagePresentation get usage; bool get supportsUsage; String? get message; String? get error; double? get progress; String? get progressLabel; List<AccountDisplayFact> get facts; List<AcpAccountAction> get availableActions;/// Optional emphasis chosen by the VM, never inferred from [phase].
 /// Must be an available operation, not cancellation or a documentation link.
  AcpAccountAction? get primaryAction; List<AcpLoginMethodPresentation> get loginMethods; String? get selectedLoginMethod; bool get canSelectLoginMethod;
 /// Create a copy of AcpAccountPresentation
@@ -7715,20 +7715,20 @@ $AcpAccountPresentationCopyWith<AcpAccountPresentation> get copyWith => _$AcpAcc
 @override
 bool operator ==(Object other) {
   final _this = this as AcpAccountPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.subtitle, _this.subtitle) || other.subtitle == _this.subtitle)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.subtitle, _this.subtitle) || other.subtitle == _this.subtitle)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.supportsUsage, _this.supportsUsage) || other.supportsUsage == _this.supportsUsage)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpAccountPresentation;
-  return Object.hash(runtimeType,_this.phase,_this.status,_this.subtitle,_this.usage,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod);
+  return Object.hash(runtimeType,_this.phase,_this.status,_this.subtitle,_this.usage,_this.supportsUsage,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod);
 }
 
 @override
 String toString() {
   final _this = this as AcpAccountPresentation;
-  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, subtitle: ${_this.subtitle}, usage: ${_this.usage}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod})';
+  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, subtitle: ${_this.subtitle}, usage: ${_this.usage}, supportsUsage: ${_this.supportsUsage}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod})';
 }
 
 
@@ -7739,7 +7739,7 @@ abstract mixin class $AcpAccountPresentationCopyWith<$Res>  {
   factory $AcpAccountPresentationCopyWith(AcpAccountPresentation value, $Res Function(AcpAccountPresentation) _then) = _$AcpAccountPresentationCopyWithImpl;
 @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
 });
 
 
@@ -7756,13 +7756,14 @@ class _$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
   return _then(AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,subtitle: freezed == subtitle ? _self.subtitle : subtitle // ignore: cast_nullable_to_non_nullable
 as String?,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
-as AcpUsagePresentation,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as AcpUsagePresentation,supportsUsage: null == supportsUsage ? _self.supportsUsage : supportsUsage // ignore: cast_nullable_to_non_nullable
+as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
 as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
@@ -7866,10 +7867,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   return orElse();
 
 }
@@ -7887,10 +7888,10 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.messag
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation():
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -7907,10 +7908,10 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.messag
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
   return null;
 
 }
@@ -7922,13 +7923,14 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.messag
 
 
 class _AcpAccountPresentation extends AcpAccountPresentation {
-  const _AcpAccountPresentation({required this.phase, required this.status, this.subtitle, this.usage = const AcpUsagePresentation(), this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
+  const _AcpAccountPresentation({required this.phase, required this.status, this.subtitle, this.usage = const AcpUsagePresentation(), this.supportsUsage = false, this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
 
 
 @override final  AcpPresentationPhase phase;
 @override final  String status;
 @override final  String? subtitle;
 @override@JsonKey() final  AcpUsagePresentation usage;
+@override@JsonKey() final  bool supportsUsage;
 @override final  String? message;
 @override final  String? error;
 @override final  double? progress;
@@ -7970,18 +7972,18 @@ _$AcpAccountPresentationCopyWith<_AcpAccountPresentation> get copyWith => __$Acp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.subtitle, subtitle) || other.subtitle == subtitle)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.subtitle, subtitle) || other.subtitle == subtitle)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.supportsUsage, supportsUsage) || other.supportsUsage == supportsUsage)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,status,subtitle,usage,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod);
+    return Object.hash(runtimeType,phase,status,subtitle,usage,supportsUsage,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod);
 }
 
 @override
 String toString() {
-    return 'AcpAccountPresentation(phase: $phase, status: $status, subtitle: $subtitle, usage: $usage, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod)';
+    return 'AcpAccountPresentation(phase: $phase, status: $status, subtitle: $subtitle, usage: $usage, supportsUsage: $supportsUsage, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod)';
 }
 
 
@@ -7992,7 +7994,7 @@ abstract mixin class _$AcpAccountPresentationCopyWith<$Res> implements $AcpAccou
   factory _$AcpAccountPresentationCopyWith(_AcpAccountPresentation value, $Res Function(_AcpAccountPresentation) _then) = __$AcpAccountPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
 });
 
 
@@ -8009,13 +8011,14 @@ class __$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
   return _then(_AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
 as String,subtitle: freezed == subtitle ? _self.subtitle : subtitle // ignore: cast_nullable_to_non_nullable
 as String?,usage: null == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
-as AcpUsagePresentation,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
+as AcpUsagePresentation,supportsUsage: null == supportsUsage ? _self.supportsUsage : supportsUsage // ignore: cast_nullable_to_non_nullable
+as bool,message: freezed == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
 as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
 as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
 as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
