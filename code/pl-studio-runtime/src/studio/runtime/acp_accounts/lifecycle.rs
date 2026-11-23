@@ -36,6 +36,11 @@ impl ConnectionLifecycle {
     pub(super) fn reset(&mut self) {
         *self = Self::default();
     }
+
+    #[cfg(test)]
+    pub(super) fn seed_attempts_for_test(&mut self, attempts: u32) {
+        self.attempts = attempts;
+    }
 }
 
 fn retry_delay(attempt: u32) -> Duration {
@@ -83,6 +88,12 @@ impl AcpAccountInner {
             }
             if matches!(state, AcpConnectionState::Starting) {
                 slot.lifecycle.retry_at = None;
+            }
+            if matches!(state, AcpConnectionState::Ready)
+                && slot.operation.is_none()
+                && matches!(slot.state, AcpAuthState::Failed { .. })
+            {
+                slot.state = AcpAuthState::Unchecked;
             }
             if matches!(state, AcpConnectionState::Stopping) {
                 // Measure healthy uptime when the connection stops. Physical cleanup can

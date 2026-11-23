@@ -202,7 +202,13 @@ AcpUsagePresentation projectAcpUsage({
   final auth = account?.state;
   // Required retains the connection owner but waits for a user choice; there is
   // no quota request progressing while the login picker is displayed.
-  final busy = auth != null && auth is! AcpRequiredState && auth.isBusy;
+  final busy =
+      account != null &&
+      auth is! AcpRequiredState &&
+      (account.activeOperation?.action is AcpQueryUsageActionView ||
+          (auth != null &&
+              auth.isBusy &&
+              account.activeOperation?.action is! AcpCheckActionView));
   final usage = observation?.state;
   final status = switch (usage) {
     null => strings['acpUsage.notQueried'],
