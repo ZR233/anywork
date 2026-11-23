@@ -13,7 +13,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_disp
 import 'timeline_preview_fixtures.dart';
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 
 /// 官方预览只装配生产组件，不装配 Client、原生桥或第二套状态投影。
 Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(

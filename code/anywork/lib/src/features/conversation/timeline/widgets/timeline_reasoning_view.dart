@@ -139,7 +139,9 @@ class TimelineReasoningSummary extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: effectiveStyle,
-        inlineCodeBackgroundColor: inlineCodeBackgroundColor,
+        inlineCodeBackgroundColor:
+            inlineCodeBackgroundColor ??
+            context.colors.surfaceContainerHigh.withValues(alpha: .75),
         onLink: (_) {},
         isSafeLink: (_) => false,
         imageBuilder: (_, url) => Text(

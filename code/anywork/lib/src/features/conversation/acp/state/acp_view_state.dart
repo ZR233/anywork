@@ -201,6 +201,7 @@ sealed class AcpUpdatePresentation with _$AcpUpdatePresentation {
   const factory AcpUpdatePresentation.compaction({
     required String statusLabel,
     String? errorMessage,
+    @Default(false) bool inProgress,
   }) = AcpCompactionUpdatePresentation;
 
   const factory AcpUpdatePresentation.availableCommands({
@@ -241,6 +242,7 @@ sealed class AcpTimelineItemPresentation with _$AcpTimelineItemPresentation {
     required TimelineToolPresentation tool,
     required AcpToolStatusKind status,
     String? kindLabel,
+    String? rawName,
     @Default(<String>[]) List<String> locations,
     @Default(<String>[]) List<String> terminals,
     @Default(<TimelinePatchDocument>[]) List<TimelinePatchDocument> diffs,

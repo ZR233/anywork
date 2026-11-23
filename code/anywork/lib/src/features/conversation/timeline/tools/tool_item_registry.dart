@@ -2,6 +2,7 @@ import 'dart:collection';
 
 import '../state/chat_item_presentation.dart';
 import '../state/tool_presentation.dart';
+import 'items/acp/acp_tool_item.dart';
 import 'items/collaboration/send_message_tool_item.dart';
 import 'items/collaboration/spawn_agent_tool_item.dart';
 import 'items/command/exec_tool_item.dart';
@@ -117,7 +118,8 @@ class TimelineToolItemRegistry {
       resolve(TimelineToolMatchContext.fromChatItem(item));
 }
 
-/// Default application registry of all 36 built-in tools plus `generic@1`.
+/// Default application registry of all 36 built-in tools, ACP peer tools,
+/// plus `generic@1`.
 final TimelineToolItemRegistry timelineToolItemRegistry =
     TimelineToolItemRegistry(
       adapters: const [
@@ -176,5 +178,8 @@ final TimelineToolItemRegistry timelineToolItemRegistry =
         WebSearchToolItem(),
         DeepseekWebSearchToolItem(),
         DeepseekWebFetchToolItem(),
+
+        // ACP protocol peer tools
+        AcpToolItem(),
       ],
     );

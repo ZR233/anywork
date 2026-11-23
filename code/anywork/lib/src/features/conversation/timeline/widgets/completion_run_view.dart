@@ -5,11 +5,12 @@ import '../live_status/live_status_header_spec.dart';
 import '../state/timeline_display_models.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_work_group_shell.dart';
 
 enum WorkDisplayLocation { live, history }
 
 /// One producer-defined Work header with naturally sized complete members.
-class CompletionRunView extends StatefulWidget {
+class CompletionRunView extends StatelessWidget {
   const CompletionRunView({
     required this.id,
     required this.timing,
@@ -43,80 +44,32 @@ class CompletionRunView extends StatefulWidget {
   final ValueChanged<bool>? onExpandedChanged;
 
   @override
-  State<CompletionRunView> createState() => _CompletionRunViewState();
-}
-
-class _CompletionRunViewState extends State<CompletionRunView> {
-  final ExpansibleController _disclosure = ExpansibleController();
-  @override
-  void initState() {
-    super.initState();
-    if (widget.initiallyExpanded) _disclosure.expand();
-    _disclosure.addListener(_changed);
-  }
-
-  void _changed() {
-    widget.onExpandedChanged?.call(_disclosure.isExpanded);
-    setState(() {});
-  }
-
-  @override
-  void dispose() {
-    _disclosure.removeListener(_changed);
-    _disclosure.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final live = widget.state == DisplayBlockState.open;
-    return Expansible(
-      key: ValueKey('completion-run-disclosure:${widget.id}'),
-      controller: _disclosure,
-      maintainState: false,
-      animationStyle: MediaQuery.disableAnimationsOf(context)
-          ? AnimationStyle.noAnimation
-          : null,
-      headerBuilder: (context, animation) => Semantics(
-        button: true,
-        expanded: _disclosure.isExpanded,
-        child: InkWell(
-          onTap: _disclosure.toggle,
-          borderRadius: BorderRadius.circular(8),
-          child: TimelineActivityClock(
-            startedAtMillis: widget.timing.startedAtMillis,
-            finishedAtMillis: widget.timing.finishedAtMillis,
-            running: live,
-            now: widget.now,
-            builder: (context, seconds) => _WorkHeader(
-              key: ValueKey('completion-run-header:${widget.id}'),
-              hasUnfinishedMembers: widget.hasUnfinishedMembers,
-              thinkingSummary: widget.thinkingSummary,
-              location: widget.location,
-              executionPresent: widget.executionPresent,
-              state: widget.state,
-              activity: widget.activity,
-              seconds: seconds,
-              expanded: _disclosure.isExpanded,
-            ),
-          ),
+    final live = state == DisplayBlockState.open;
+    return TimelineWorkGroupShell(
+      disclosureKey: ValueKey('completion-run-disclosure:$id'),
+      initiallyExpanded: initiallyExpanded,
+      onExpandedChanged: onExpandedChanged,
+      railInset: live ? 15.5 : 9.5,
+      railContentInset: live ? 25.5 : 17.5,
+      headerBuilder: (context, expanded) => TimelineActivityClock(
+        startedAtMillis: timing.startedAtMillis,
+        finishedAtMillis: timing.finishedAtMillis,
+        running: live,
+        now: now,
+        builder: (context, seconds) => _WorkHeader(
+          key: ValueKey('completion-run-header:$id'),
+          hasUnfinishedMembers: hasUnfinishedMembers,
+          thinkingSummary: thinkingSummary,
+          location: location,
+          executionPresent: executionPresent,
+          state: state,
+          activity: activity,
+          seconds: seconds,
+          expanded: expanded,
         ),
       ),
-      bodyBuilder: (context, animation) => !_disclosure.isExpanded
-          ? const SizedBox.shrink()
-          : Padding(
-              padding: const EdgeInsets.only(top: 5, bottom: 3),
-              child: TimelineActivityRail(
-                inset: live ? 15.5 : 9.5,
-                contentInset: live ? 25.5 : 17.5,
-                child: Builder(builder: widget.childBuilder),
-              ),
-            ),
-      expansibleBuilder: (context, header, body, animation) => Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [header, body],
-      ),
+      bodyBuilder: childBuilder,
     );
   }
 }

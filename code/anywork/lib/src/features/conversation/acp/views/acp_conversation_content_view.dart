@@ -4,6 +4,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../timeline/widgets/timeline_activity_row.dart';
+import '../../timeline/widgets/timeline_reasoning_view.dart';
 import '../state/acp_view_state.dart';
 import '../widgets/acp_content_block_view.dart';
 import '../widgets/acp_tool_card.dart';
@@ -174,11 +175,13 @@ class _AcpConversationContentViewState
         header.itemCount == 0 && widget.planCard == null && notices.isEmpty;
 
     if (showEmptyCenter) {
-      return SelectionArea(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: _EmptySessionState(header: header),
+      return LiveStatusMotionHost(
+        child: SelectionArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: _EmptySessionState(header: header),
+            ),
           ),
         ),
       );
@@ -193,63 +196,65 @@ class _AcpConversationContentViewState
     final trailingCount = showTrailingWelcome ? 1 : 0;
     final totalCount = leadingCount + header.itemCount + trailingCount;
 
-    return Stack(
-      children: [
-        SelectionArea(
-          child: ListView.builder(
-            controller: _scrollController,
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-            itemCount: totalCount,
-            itemBuilder: (context, rawIndex) {
-              if (hasLeadingSlot && rawIndex == 0) {
+    return LiveStatusMotionHost(
+      child: Stack(
+        children: [
+          SelectionArea(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+              itemCount: totalCount,
+              itemBuilder: (context, rawIndex) {
+                if (hasLeadingSlot && rawIndex == 0) {
+                  return _CenteredReadingConstraint(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (var i = 0; i < notices.length; i++) ...[
+                          if (i > 0) const SizedBox(height: 8),
+                          notices[i],
+                        ],
+                        if (widget.planCard case final plan?) ...[
+                          if (notices.isNotEmpty) const SizedBox(height: 12),
+                          plan,
+                        ],
+                        if (header.itemCount > 0) const SizedBox(height: 16),
+                      ],
+                    ),
+                  );
+                }
+                if (showTrailingWelcome && rawIndex == totalCount - 1) {
+                  return Padding(
+                    padding: const EdgeInsets.only(top: 56, bottom: 24),
+                    child: Center(child: _EmptySessionState(header: header)),
+                  );
+                }
+                final itemIndex = rawIndex - leadingCount;
                 return _CenteredReadingConstraint(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      for (var i = 0; i < notices.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 8),
-                        notices[i],
-                      ],
-                      if (widget.planCard case final plan?) ...[
-                        if (notices.isNotEmpty) const SizedBox(height: 12),
-                        plan,
-                      ],
-                      if (header.itemCount > 0) const SizedBox(height: 16),
-                    ],
+                  key: ValueKey(
+                    AcpViewKeyValues.timelineItem(widget.threadId, itemIndex),
                   ),
+                  child: widget.itemBuilder(context, itemIndex),
                 );
-              }
-              if (showTrailingWelcome && rawIndex == totalCount - 1) {
-                return Padding(
-                  padding: const EdgeInsets.only(top: 56, bottom: 24),
-                  child: Center(child: _EmptySessionState(header: header)),
-                );
-              }
-              final itemIndex = rawIndex - leadingCount;
-              return _CenteredReadingConstraint(
-                key: ValueKey(
-                  AcpViewKeyValues.timelineItem(widget.threadId, itemIndex),
-                ),
-                child: widget.itemBuilder(context, itemIndex),
-              );
-            },
-          ),
-        ),
-        if (_showJumpToLatest)
-          Positioned(
-            bottom: 12,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: FilledButton.tonalIcon(
-                onPressed: _jumpToLatest,
-                icon: const Icon(Icons.arrow_downward_rounded, size: 16),
-                label: Text(context.l10n.timelineJumpToLatest),
-              ),
+              },
             ),
           ),
-      ],
+          if (_showJumpToLatest)
+            Positioned(
+              bottom: 12,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: FilledButton.tonalIcon(
+                  onPressed: _jumpToLatest,
+                  icon: const Icon(Icons.arrow_downward_rounded, size: 16),
+                  label: Text(context.l10n.timelineJumpToLatest),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }
@@ -322,14 +327,14 @@ class AcpTimelineEntryView extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
-    this.fullDetails = false,
+    this.padding = const EdgeInsets.only(bottom: 14),
   });
 
   final AcpTimelineItemPresentation item;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
-  final bool fullDetails;
+  final EdgeInsetsGeometry padding;
 
   @override
   Widget build(BuildContext context) {
@@ -351,26 +356,53 @@ class AcpTimelineEntryView extends StatelessWidget {
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
       ),
-      final AcpTimelineThoughtItem thought => _ThoughtActivityBlock(
-        item: thought,
-        fullDetails: fullDetails,
-        isSafeLink: isSafeLink,
-        onOpenLink: onOpenLink,
-        imageBuilder: imageBuilder,
+      final AcpTimelineThoughtItem thought => _buildThoughtView(
+        context,
+        thought,
       ),
       final AcpTimelineToolCallItem tool => AcpToolCard(
         item: tool,
-        fullDetails: fullDetails,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
       ),
       final AcpTimelineSessionUpdateItem update => _SessionUpdateBlock(
         item: update,
-        fullDetails: fullDetails,
       ),
     };
-    return Padding(padding: const EdgeInsets.only(bottom: 14), child: child);
+    return Padding(padding: padding, child: child);
+  }
+
+  Widget _buildThoughtView(BuildContext context, AcpTimelineThoughtItem item) {
+    final summary = item.summary.trim().isNotEmpty ? item.summary : null;
+    final textStyle = context.text.bodySmall?.copyWith(
+      color: context.colors.onSurfaceVariant,
+      height: 1.55,
+    );
+    final body = item.blocks.isEmpty
+        ? null
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < item.blocks.length; i++) ...[
+                if (i > 0) const SizedBox(height: 8),
+                AcpContentBlockView(
+                  id: '${item.id}:$i',
+                  block: item.blocks[i],
+                  isSafeLink: isSafeLink ?? _defaultSafeLink,
+                  onOpenLink: onOpenLink,
+                  imageBuilder: imageBuilder,
+                  textStyle: textStyle,
+                ),
+              ],
+            ],
+          );
+    return TimelineReasoningView(
+      summary: summary,
+      running: item.active,
+      body: body,
+    );
   }
 }
 
@@ -464,110 +496,10 @@ class _AssistantProseBlock extends StatelessWidget {
   }
 }
 
-class _ThoughtActivityBlock extends StatefulWidget {
-  const _ThoughtActivityBlock({
-    required this.item,
-    this.isSafeLink,
-    this.onOpenLink,
-    this.imageBuilder,
-    this.fullDetails = false,
-  });
-
-  final AcpTimelineThoughtItem item;
-  final bool Function(String url)? isSafeLink;
-  final ValueChanged<String>? onOpenLink;
-  final AcpImageWidgetBuilder? imageBuilder;
-  final bool fullDetails;
-
-  @override
-  State<_ThoughtActivityBlock> createState() => _ThoughtActivityBlockState();
-}
-
-class _ThoughtActivityBlockState extends State<_ThoughtActivityBlock> {
-  bool _expanded = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    final summary = widget.item.summary.trim();
-    final label = summary.isEmpty
-        ? l10n.acpContentThoughtLabel
-        : '${l10n.acpContentThoughtLabel} · $summary';
-    final expandable = widget.item.blocks.isNotEmpty;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: expandable && !widget.fullDetails
-              ? () => setState(() => _expanded = !_expanded)
-              : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: TimelineActivityRow(
-              icon: Icons.psychology_outlined,
-              label: label,
-              active: widget.item.active,
-              expanded: expandable && (_expanded || widget.fullDetails),
-              expandable: expandable && !widget.fullDetails,
-              tooltip: summary.isEmpty ? l10n.acpContentThoughtLabel : summary,
-            ),
-          ),
-        ),
-        if (expandable && (_expanded || widget.fullDetails))
-          Padding(
-            padding: const EdgeInsets.only(
-              left: TimelineActivityRow.contentIndent,
-              top: 6,
-              bottom: 6,
-            ),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(
-                    color: context.colors.outlineVariant,
-                    width: 2,
-                  ),
-                ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.only(left: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    for (var i = 0; i < widget.item.blocks.length; i++) ...[
-                      if (i > 0) const SizedBox(height: 8),
-                      AcpContentBlockView(
-                        id: '${widget.item.id}:$i',
-                        block: widget.item.blocks[i],
-                        isSafeLink: widget.isSafeLink ?? _defaultSafeLink,
-                        onOpenLink: widget.onOpenLink,
-                        imageBuilder: widget.imageBuilder,
-                        fullDetails: widget.fullDetails,
-                        textStyle: context.text.bodySmall?.copyWith(
-                          color: context.colors.onSurfaceVariant,
-                          height: 1.55,
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
 class _SessionUpdateBlock extends StatelessWidget {
-  const _SessionUpdateBlock({required this.item, this.fullDetails = false});
+  const _SessionUpdateBlock({required this.item});
 
   final AcpTimelineSessionUpdateItem item;
-  final bool fullDetails;
 
   @override
   Widget build(BuildContext context) {
@@ -594,6 +526,7 @@ class _SessionUpdateBlock extends StatelessWidget {
       AcpCompactionUpdatePresentation(
         :final statusLabel,
         :final errorMessage,
+        :final inProgress,
       ) =>
         Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -601,6 +534,8 @@ class _SessionUpdateBlock extends StatelessWidget {
           children: [
             TimelineActivityRow(
               icon: Icons.compress_rounded,
+              indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
+              active: inProgress && errorMessage == null,
               label: l10n.acpUpdateCompaction(statusLabel),
               isIssue: errorMessage != null,
               expandable: false,
@@ -621,10 +556,7 @@ class _SessionUpdateBlock extends StatelessWidget {
           ],
         ),
       AcpCommandsUpdatePresentation(:final commands) =>
-        _AvailableCommandsActivityBlock(
-          commands: commands,
-          fullDetails: fullDetails,
-        ),
+        _AvailableCommandsActivityBlock(commands: commands),
       AcpSessionInfoUpdatePresentation() => TimelineActivityRow(
         icon: Icons.info_outline_rounded,
         label: l10n.acpUpdateSessionInfo,
@@ -640,85 +572,40 @@ class _SessionUpdateBlock extends StatelessWidget {
   }
 }
 
-class _AvailableCommandsActivityBlock extends StatefulWidget {
-  const _AvailableCommandsActivityBlock({
-    required this.commands,
-    this.fullDetails = false,
-  });
+class _AvailableCommandsActivityBlock extends StatelessWidget {
+  const _AvailableCommandsActivityBlock({required this.commands});
 
   final List<({String name, String description})> commands;
-  final bool fullDetails;
-
-  @override
-  State<_AvailableCommandsActivityBlock> createState() =>
-      _AvailableCommandsActivityBlockState();
-}
-
-class _AvailableCommandsActivityBlockState
-    extends State<_AvailableCommandsActivityBlock> {
-  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final l10n = context.l10n;
-    final commands = widget.commands;
     final preview = commands.take(4).map((cmd) => '/${cmd.name}').join(' · ');
     final suffix = commands.length > 4 ? ' …' : '';
     final label =
         '${l10n.acpCommandsSummary(commands.length)} · $preview$suffix';
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      mainAxisSize: MainAxisSize.min,
+    return TimelineActivityDisclosure(
+      childrenPadding: const EdgeInsetsDirectional.only(top: 4, bottom: 4),
+      titleBuilder: (context, expanded) => TimelineActivityRow(
+        icon: Icons.terminal_rounded,
+        label: label,
+        expanded: expanded,
+        expandable: true,
+        tooltip: l10n.acpCommandsSummary(commands.length),
+      ),
       children: [
-        InkWell(
-          borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: widget.fullDetails
-              ? null
-              : () => setState(() => _expanded = !_expanded),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 3),
-            child: TimelineActivityRow(
-              icon: Icons.terminal_rounded,
-              label: label,
-              expanded: _expanded || widget.fullDetails,
-              expandable: !widget.fullDetails,
-              tooltip: l10n.acpCommandsSummary(commands.length),
-            ),
-          ),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final cmd in commands)
+              Text(
+                '/${cmd.name} — ${cmd.description}',
+                style: context.text.bodySmall,
+              ),
+          ],
         ),
-        if (_expanded || widget.fullDetails)
-          Padding(
-            padding: const EdgeInsets.only(
-              left: TimelineActivityRow.contentIndent,
-              top: 6,
-              bottom: 4,
-            ),
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                border: Border(
-                  left: BorderSide(
-                    color: context.colors.outlineVariant,
-                    width: 2,
-                  ),
-                ),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.only(left: 12),
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: [
-                    for (final cmd in commands)
-                      Text(
-                        '/${cmd.name} — ${cmd.description}',
-                        style: context.text.bodySmall,
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
       ],
     );
   }

@@ -6738,7 +6738,89 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get acpProcessGroupRunning => 'Running';
+  String acpProcessGroupToolsOnly(int toolCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      toolCount,
+      locale: localeName,
+      other: 'Ran $toolCount tools',
+      one: 'Ran 1 tool',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupThoughtsOnly(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count thoughts',
+      one: 'Thought once',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupActivitiesOnly(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count activities',
+      one: '1 activity',
+    );
+    return 'Process · $_temp0';
+  }
+
+  @override
+  String acpProcessGroupRunningToolsMeta(int toolCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      toolCount,
+      locale: localeName,
+      other: '$toolCount tools',
+      one: '1 tool',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String acpProcessGroupRunningActivitiesMeta(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count activities',
+      one: '1 activity',
+    );
+    return '$_temp0';
+  }
+
+  @override
+  String get acpToolKindRead => 'Read';
+
+  @override
+  String get acpToolKindEdit => 'Edit';
+
+  @override
+  String get acpToolKindDelete => 'Delete';
+
+  @override
+  String get acpToolKindMove => 'Move';
+
+  @override
+  String get acpToolKindSearch => 'Search';
+
+  @override
+  String get acpToolKindExecute => 'Execute';
+
+  @override
+  String get acpToolKindThink => 'Think';
+
+  @override
+  String get acpToolKindFetch => 'Fetch';
+
+  @override
+  String get acpToolKindSwitchMode => 'Switch mode';
+
+  @override
+  String get acpToolKindOther => 'Tool';
 
   @override
   String get acpContentAudioLabel => 'Audio content';

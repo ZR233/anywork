@@ -43,11 +43,17 @@ class TimelinePatchDiffView extends StatelessWidget {
   const TimelinePatchDiffView({
     required this.document,
     this.softWrap = false,
+    this.margin = const EdgeInsets.only(top: 8),
+    this.backgroundColor,
+    this.border,
     super.key,
   });
 
   final TimelinePatchDocument document;
   final bool softWrap;
+  final EdgeInsetsGeometry margin;
+  final Color? backgroundColor;
+  final BoxBorder? border;
 
   @override
   Widget build(BuildContext context) {
@@ -106,11 +112,12 @@ class TimelinePatchDiffView extends StatelessWidget {
     }
     return Container(
       width: double.infinity,
-      margin: const EdgeInsets.only(top: 8),
+      margin: margin,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: context.colors.surfaceContainerLow,
+        color: backgroundColor ?? context.colors.surfaceContainerLow,
         borderRadius: const BorderRadius.all(Radius.circular(8)),
+        border: border,
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
