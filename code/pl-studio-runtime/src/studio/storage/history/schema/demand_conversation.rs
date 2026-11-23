@@ -999,19 +999,22 @@ mod tests {
         };
         let mut first = ThreadCheckpoint::capture(THREAD.into(), 1, first_state)?;
         let mut second = ThreadCheckpoint::capture(THREAD.into(), 2, second_state)?;
-        for (checkpoint, revision, model) in [
-            (&mut first, 1, "first-model"),
-            (&mut second, 2, "second-model"),
+        for (checkpoint, revision, model, tier) in [
+            (&mut first, 1, "first-model", None),
+            (&mut second, 2, "second-model", Some("ultrafast")),
         ] {
             checkpoint.state.extensions.insert(
                 crate::studio::model_route::MODEL_ROUTE_EXTENSION.into(),
                 pl_core::thread::extensions::ExtensionRecord {
                     revision,
                     payload: crate::studio::model_route::encode(
-                        &pl_model::config::ModelRouteConfig {
-                            account_id: pl_model::config::AccountId::new("batch-account")?,
-                            model_id: model.into(),
-                            effort: None,
+                        &crate::studio::model_route::ThreadModelSelection {
+                            model: pl_model::config::ModelRouteConfig {
+                                account_id: pl_model::config::AccountId::new("batch-account")?,
+                                model_id: model.into(),
+                                effort: None,
+                            },
+                            service_tier: tier.map(str::to_owned),
                         },
                     )?,
                 },
@@ -1113,24 +1116,20 @@ mod tests {
             .execute_unprepared("DROP TRIGGER reject_second")
             .await?;
         assert_eq!(store.commit_checkpoint_effects(&effects).await?.len(), 2);
+        drop(store);
+        let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
         assert_eq!(store.watermark().await?, 2);
         let head = checkpoint::read_model_route_head(&store.reader().await?.unwrap().db)
             .await?
             .unwrap();
         assert_eq!(head.revision, 2);
-        assert_eq!(head.route.model_id, "second-model");
+        assert_eq!(head.route.model.model_id, "second-model");
+        assert_eq!(head.route.service_tier.as_deref(), Some("ultrafast"));
         assert_eq!(store.publication_seed().await?.head_seq, 2);
-        assert_eq!(
-            store
-                .checkpoint()
-                .await?
-                .unwrap()
-                .state
-                .context
-                .records
-                .len(),
-            2
-        );
+        let restored = store.checkpoint().await?.unwrap();
+        let selection = crate::studio::model_route::saved(&restored.state)?.unwrap();
+        assert_eq!(selection.route, head.route);
+        assert_eq!(restored.state.context.records.len(), 2);
         assert_eq!(store.commit_checkpoint_effects(&effects).await?.len(), 2);
         Ok(())
     }

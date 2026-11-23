@@ -31,6 +31,16 @@ Widget composerInputPreview() =>
     _composerPreviewHost(const _PreviewInput(key: ValueKey('native-editable')));
 
 @Preview(
+  name: 'Composer / Speed · Demo GPT-6.2 Sol',
+  group: 'Composer',
+  size: Size(900, 340),
+)
+Widget composerSpeedPreview() => _composerPreviewHost(
+  const _PreviewInput(key: ValueKey('native-speed'), newConversation: true),
+  locale: const Locale('en'),
+);
+
+@Preview(
   name: 'Composer / Native 新会话 · 宽窗',
   group: 'Composer',
   size: Size(760, 340),
@@ -135,10 +145,13 @@ Widget composerSubmissionPreview() => _composerPreviewHost(
   const _PreviewInput(key: ValueKey('native-submission'), showSubmission: true),
 );
 
-Widget _composerPreviewHost(Widget child) => MaterialApp(
+Widget _composerPreviewHost(
+  Widget child, {
+  Locale locale = const Locale('zh'),
+}) => MaterialApp(
   debugShowCheckedModeBanner: false,
-  locale: const Locale('zh'),
-  theme: pureStudioTheme(locale: const Locale('zh')),
+  locale: locale,
+  theme: pureStudioTheme(locale: locale),
   localizationsDelegates: [
     AppLocalizations.delegate,
     ...GlobalMaterialLocalizations.delegates,
@@ -174,6 +187,7 @@ class _PreviewInput extends StatefulWidget {
 class _PreviewInputState extends State<_PreviewInput>
     implements ComposerActions {
   late String _text = widget.initialText;
+  String? _serviceTier;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -239,6 +253,14 @@ class _PreviewInputState extends State<_PreviewInput>
                     .measureInlineWidth,
                 menuItem: _startEffortSelector(true),
               ),
+              ?serviceTierConfigurationEntry(
+                accounts: _previewAccounts,
+                accountId: 'preview-account',
+                modelId: 'preview-model',
+                serviceTier: _serviceTier,
+                enabled: true,
+                onSelected: (value) => setState(() => _serviceTier = value),
+              ),
             ] else
               ...modelRouteConfigurationEntries(
                 accounts: _previewAccounts,
@@ -246,6 +268,7 @@ class _PreviewInputState extends State<_PreviewInput>
                 accountId: 'preview-account',
                 modelId: 'preview-model',
                 effort: 'high',
+                serviceTier: _serviceTier,
                 blockedReason: widget.execution == null
                     ? null
                     : context.l10n.statusModelSwitchWhileRunning,
@@ -253,6 +276,8 @@ class _PreviewInputState extends State<_PreviewInput>
                     context.l10n.statusModelRouteUnavailableFallback,
                 onModelSelected: (_, _) {},
                 onEffortSelected: (_) {},
+                onServiceTierSelected: (value) =>
+                    setState(() => _serviceTier = value),
               ),
           ],
         ),
@@ -323,8 +348,14 @@ final _previewAccounts = [
     models: const [
       AccountModelView(
         modelId: 'preview-model',
-        displayName: '预览模型',
+        displayName: 'Demo GPT-6.2 Sol',
         reasoningEfforts: ['low', 'high'],
+        serviceTiers: ModelServiceTierParameterView(
+          candidates: [
+            ModelServiceTierView(id: 'priority', displayName: 'Fast'),
+            ModelServiceTierView(id: 'ultrafast', displayName: 'Ultrafast'),
+          ],
+        ),
         typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
       ),
     ],

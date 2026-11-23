@@ -25,6 +25,7 @@ pub enum ModelMetadataField {
     FreeformTools,
     ProgrammaticToolCalling,
     Parameters,
+    ServiceTiers,
     Interleaved,
     PromptCache,
     InstructionSnapshotOverrides,

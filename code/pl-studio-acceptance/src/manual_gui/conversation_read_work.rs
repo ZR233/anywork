@@ -446,6 +446,7 @@ async fn create_seed_thread(
                     model_id: MODEL.into(),
                     effort: None,
                 },
+                service_tier: None,
                 delegation_mode: None,
                 delegation_preference: None,
                 workspace_mode: ThreadWorkspaceMode::Local,

@@ -53,7 +53,7 @@ final class ComposerViewModelProvider
   }
 }
 
-String _$composerViewModelHash() => r'5ac635b73b2a0f77a93d90d00f37b49b45746b62';
+String _$composerViewModelHash() => r'dd9d0edec2170356bdd3e56f66d4d5b40db00346';
 
 /// One target-bound presentation owner, not a second draft or submission owner.
 

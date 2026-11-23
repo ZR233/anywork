@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import '../../../../l10n/app_localizations.dart';
 import '../../../../shared/typed_json.dart';
-import 'tool_display.dart';
 import 'tool_presentation.dart';
 
 /// 操作枚举的本地化短名称。
@@ -351,24 +350,20 @@ TimelineLspOperation timelineLspQueryOperation(TimelineToolPresentation item) {
   return TimelineLspOperation.fromWire(jsonStringValue(args['operation']));
 }
 
-/// 解析 LSP 工具卡片的请求上下文与有界输出文本。
-TimelineLspPresentation? parseTimelineLspPresentation(
-  TimelineToolPresentation tool, {
-  required ToolDetailKind? kind,
-  String? outputOverride,
-}) {
-  final output = outputOverride ?? tool.output;
-  return switch (kind) {
-    ToolDetailKind.lspQuery => _parseQuery(tool.arguments, output),
-    ToolDetailKind.lspCapabilities => _parseCapabilities(output),
-    ToolDetailKind.lspStatus => _parseStatus(output),
-    ToolDetailKind.standard ||
-    ToolDetailKind.patch ||
-    ToolDetailKind.web ||
-    ToolDetailKind.image ||
-    null => null,
-  };
-}
+/// 解析 `builtin.lsp_query@1` 工具卡片的请求上下文与有界输出文本。
+TimelineLspQueryPresentation parseTimelineLspQuery(
+  String arguments,
+  String rawOutput,
+) => _parseQuery(arguments, rawOutput);
+
+/// 解析 `builtin.lsp_capabilities@1` 工具卡片的有界输出文本。
+TimelineLspCapabilitiesPresentation parseTimelineLspCapabilities(
+  String rawOutput,
+) => _parseCapabilities(rawOutput);
+
+/// 解析 `builtin.lsp_status@1` 工具卡片的有界输出文本。
+TimelineLspStatusPresentation parseTimelineLspStatus(String rawOutput) =>
+    _parseStatus(rawOutput);
 
 final _previewTruncationPattern = RegExp(
   r'\n?\[LSP preview omitted (\d+) bytes; full result retained in history\.\]\s*$',

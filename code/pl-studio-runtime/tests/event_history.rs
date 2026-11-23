@@ -63,6 +63,7 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
                         model_id: support::MODEL.into(),
                         effort: None,
                     },
+                    service_tier: None,
                     delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                     delegation_preference: None,
                     workspace_mode: ThreadWorkspaceMode::Local,

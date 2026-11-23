@@ -22,11 +22,15 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
   }
 
   @override
-  Future<void> commitDraft(acp_business.AcpSessionTargetView target) async {
+  Future<void> commitDraft(
+    acp_business.AcpSessionTargetView target, {
+    required String firstPromptText,
+  }) async {
     await ensureReady();
     await _acpBusinessCall(
       () => frb_acp_business.commitAcpDraft(
         target: acp_mapper.acpTargetToFrb(target),
+        firstPromptText: firstPromptText,
       ),
       command: 'commitDraft',
     );

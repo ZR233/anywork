@@ -161,6 +161,7 @@ fn model(id: &str) -> ModelInfo {
             label: None,
             default: Some("low".into()),
             candidates: vec!["low".into(), "high".into()],
+            candidate_display_names: Default::default(),
             wire: ["low", "high"]
                 .into_iter()
                 .map(|effort| {

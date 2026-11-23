@@ -569,6 +569,7 @@ class BridgeThreadModelRouteSnapshot {
   final String accountId;
   final String modelId;
   final String? effort;
+  final String? serviceTier;
   final BigInt revision;
   final bool available;
   final String? unavailableReason;
@@ -578,6 +579,7 @@ class BridgeThreadModelRouteSnapshot {
     required this.accountId,
     required this.modelId,
     this.effort,
+    this.serviceTier,
     required this.revision,
     required this.available,
     this.unavailableReason,
@@ -589,6 +591,7 @@ class BridgeThreadModelRouteSnapshot {
       accountId.hashCode ^
       modelId.hashCode ^
       effort.hashCode ^
+      serviceTier.hashCode ^
       revision.hashCode ^
       available.hashCode ^
       unavailableReason.hashCode;
@@ -602,6 +605,7 @@ class BridgeThreadModelRouteSnapshot {
           accountId == other.accountId &&
           modelId == other.modelId &&
           effort == other.effort &&
+          serviceTier == other.serviceTier &&
           revision == other.revision &&
           available == other.available &&
           unavailableReason == other.unavailableReason;

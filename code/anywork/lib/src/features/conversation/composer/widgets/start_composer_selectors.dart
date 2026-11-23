@@ -8,6 +8,7 @@ import '../../../status/session_selectors.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
 import 'start_model_selector.dart';
+import '../views/composer_route_selectors.dart';
 
 class StartComposerSelectors extends ConsumerWidget {
   const StartComposerSelectors({required this.workspaceId, super.key});
@@ -70,6 +71,14 @@ class StartComposerSelectors extends ConsumerWidget {
           inline: inlineEffort,
           measureInlineWidth: inlineEffort.measureInlineWidth,
           menuItem: effortSelector(true),
+        ),
+        ?serviceTierConfigurationEntry(
+          accounts: start.accounts,
+          accountId: route?.accountId ?? '',
+          modelId: route?.modelId ?? '',
+          serviceTier: start.sessionDraft.serviceTierIntents[mode.id],
+          enabled: enabled,
+          onSelected: actions.setServiceTier,
         ),
       ],
     );

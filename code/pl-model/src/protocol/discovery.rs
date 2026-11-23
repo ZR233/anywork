@@ -230,7 +230,10 @@ impl ModelCatalogQuery {
                 });
             }
         };
-        let records = (self.adapter.parse_catalog)(&bytes)?;
+        let mut records = (self.adapter.parse_catalog)(&bytes)?;
+        for record in &mut records {
+            record.service_tiers.authorize(&self.endpoint);
+        }
         let models = models(
             records,
             &self.discovery,

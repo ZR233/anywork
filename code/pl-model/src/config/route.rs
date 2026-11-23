@@ -358,6 +358,7 @@ impl AgentModelConfig {
             context,
             model,
             effort: route.effort.clone(),
+            service_tier: None,
         })
     }
 }

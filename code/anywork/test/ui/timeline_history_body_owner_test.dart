@@ -12,7 +12,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -162,7 +161,10 @@ void main() {
       find.byKey(const ValueKey('completion-run-header:work-row')),
     );
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineWaitPanel), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.waitingCard('wait-row')),
+      findsOneWidget,
+    );
     expect(reads, ['tool.arguments']);
     await tester.tap(find.byKey(StudioDriverKeys.waitingCard('wait-row')));
     await tester.pumpAndSettle();
@@ -184,7 +186,7 @@ void main() {
     );
     expect(unit.expansion.bodyActive, isFalse);
     await tester.pumpAndSettle();
-    expect(find.byType(TimelineWaitPanel), findsNothing);
+    expect(find.byKey(StudioDriverKeys.waitingCard('wait-row')), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     expect(unit.expansion.bodyActive, isFalse);
     expect(tester.takeException(), isNull);

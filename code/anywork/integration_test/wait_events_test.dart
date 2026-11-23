@@ -9,11 +9,11 @@ import 'package:anywork/src/features/conversation/composer/state/composer_view_s
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/tool_display.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_panel.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/support/tool_detail_values.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_content_range_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -184,13 +184,13 @@ void main() {
       () => observed.mountedMembers.any(isObservedWait),
       'historical wait tool member',
     );
-    late TimelineWaitPanel panel;
+    late TimelineToolItemView panel;
     late ChatItemPresentation waitItem;
     await _until(tester, () {
       final matches = tester
-          .widgetList<TimelineWaitPanel>(find.byType(TimelineWaitPanel))
+          .widgetList<TimelineToolItemView>(find.byType(TimelineToolItemView))
           .where(
-            (value) => switch (value.presentation.intent) {
+            (value) => switch (value.item.wait?.intent) {
               ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
               _ => false,
             },
@@ -199,19 +199,19 @@ void main() {
       if (matches.length != 1) return false;
       panel = matches.single;
       waitItem = tester
-          .widget<ChatItemView>(observed.itemRow(panel.identity))
+          .widget<ChatItemView>(observed.itemRow(panel.item.id))
           .item;
       expect(isObservedWait(waitItem.atom), isTrue);
       return waitItem.compatibility == ChatItemCompatibility.current;
     }, 'wait tool canonical original');
     expect(waitItem.atom!.lifecycle, isA<TerminalChatAtom>());
-    expect(panel.presentation.state, ThreadWaitStateView.ready);
+    expect(panel.item.wait!.state, ThreadWaitStateView.ready);
     expect(waitItem.displayRecord?.contentSource, isA<CompletedOriginal>());
-    final card = find.byKey(StudioDriverKeys.waitingCard(panel.identity));
+    final card = find.byKey(StudioDriverKeys.waitingCard(panel.item.id));
     await observed.tap(card);
     await observed.until(
       () => find
-          .byKey(StudioDriverKeys.waitingDetails(panel.identity))
+          .byKey(StudioDriverKeys.waitingDetails(panel.item.id))
           .evaluate()
           .isNotEmpty,
       'wait details visible',
@@ -219,7 +219,7 @@ void main() {
     final details = tester.widget<TimelineWaitDetails>(
       find.byWidgetPredicate(
         (widget) =>
-            widget is TimelineWaitDetails && widget.identity == panel.identity,
+            widget is TimelineWaitDetails && widget.identity == panel.item.id,
       ),
     );
     expect(details.presentation.state, ThreadWaitStateView.ready);
@@ -228,7 +228,7 @@ void main() {
       hasLength(2),
     );
     final diagnostics = find.byKey(
-      StudioDriverKeys.waitingDiagnostics(panel.identity),
+      StudioDriverKeys.waitingDiagnostics(panel.item.id),
     );
     await observed.tap(diagnostics);
     String? rawResult;
@@ -245,14 +245,6 @@ void main() {
           return true;
         }
       }
-      final detailWidgets = tester
-          .widgetList<TimelineToolDetails>(
-            find.descendant(
-              of: diagnostics,
-              matching: find.byType(TimelineToolDetails),
-            ),
-          )
-          .toList();
       final semanticBodies = tester
           .widgetList<TimelineToolSemanticBody>(
             find.descendant(
@@ -261,22 +253,21 @@ void main() {
             ),
           )
           .toList();
-      if (detailWidgets.length == 1 &&
-          detailWidgets.single.item.output.isNotEmpty &&
+      if (panel.item.output.isNotEmpty &&
           semanticBodies.isNotEmpty &&
           semanticBodies.every(
             (body) =>
                 body.values.isNotEmpty &&
                 !body.values.any((value) => value is ToolDetailUnavailable),
           )) {
-        rawResult = detailWidgets.single.item.output;
+        rawResult = panel.item.output;
         return true;
       }
       return false;
     }, 'historical tool result');
     final result = jsonDecode(rawResult!) as Map;
     expect(result['timedOut'], isFalse);
-    expect(result['messagesReady'], panel.presentation.messagesReady);
+    expect(result['messagesReady'], panel.item.wait!.messagesReady);
 
     expect(completed.state, HistoryTurnState.completed);
     graph.setConversationPageVisible(false);

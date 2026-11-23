@@ -390,6 +390,7 @@ async fn execute_observed(
                         },
                         mode: request.mode,
                         route: request.route,
+                        service_tier: None,
                         delegation_mode: None,
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,

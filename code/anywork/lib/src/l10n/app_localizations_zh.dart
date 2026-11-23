@@ -13,6 +13,12 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get composerSpeed => '速度';
+
+  @override
+  String get composerSpeedStandard => '标准';
+
+  @override
   String get acpConnectionReconnecting => '重连中';
 
   @override
@@ -1925,9 +1931,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineGroupClosing => '正在收束';
-
-  @override
-  String get timelineGroupUnrestored => '上次执行未收束，尚未恢复';
 
   @override
   String get timelineReasoningSummary => '概要';
@@ -7202,50 +7205,53 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
 
   @override
-  String get liveStatusConnectionDisconnected => '实时同步已断开';
-
-  @override
-  String get liveStatusConnectionReconnecting => '正在重连实时同步';
-
-  @override
-  String liveStatusActivityToolsTitle(int count) {
-    return '活动工具 $count';
-  }
-
-  @override
-  String liveStatusActivityToolsLoaded(int loaded, int total) {
-    return '活动工具 $loaded/$total';
-  }
-
-  @override
-  String get liveStatusToolsCollapse => '收起';
-
-  @override
-  String get liveStatusToolsFirstPage => '第一页';
-
-  @override
-  String get liveStatusToolsPreviousPage => '上一页';
-
-  @override
-  String get liveStatusToolsNextPage => '下一页';
-
-  @override
-  String get liveStatusMembersUnavailable => '成员读取尚未就绪';
-
-  @override
-  String get liveStatusMembersLoading => '正在读取封存观察…';
-
-  @override
-  String get liveStatusRetryAction => '重试';
-
-  @override
-  String liveStatusContentRangeWindow(int start, int end, int total) {
-    return '字节 $start–$end / $total';
-  }
-
-  @override
   String get liveStatusContentFirstSegment => '第一段';
 
   @override
   String get liveStatusContentNextSegment => '下一段';
+
+  @override
+  String get timelinePatchUnavailableHint => '补丁片段不可用：内容不完整或无法完整解析';
+
+  @override
+  String get timelinePatchFileAdd => '新增';
+
+  @override
+  String get timelinePatchFileUpdate => '更新';
+
+  @override
+  String get timelinePatchFileDelete => '删除';
+
+  @override
+  String get timelineToolCallFallback => '工具调用';
+
+  @override
+  String get timelineToolArgumentsIncompleteTitle => '工具参数不完整';
+
+  @override
+  String get timelineToolArgumentsIncompleteDetail => '参数窗口未包含完整正文';
+
+  @override
+  String get timelineToolIdentityMismatchTitle => '工具内容身份不一致';
+
+  @override
+  String get timelineToolIdentityMismatchDetail => '声明的调用身份与完成载荷不同';
+
+  @override
+  String timelineToolMalformedLabel(String name) {
+    return '$name · 内容格式错误';
+  }
+
+  @override
+  String timelineToolDeferredLabel(String name) {
+    return '$name · 正文按需读取';
+  }
+
+  @override
+  String get timelineToolDeferredReason => '参数按需读取，尚未取得完整业务内容';
+
+  @override
+  String timelineToolParseFailed(String reason) {
+    return '当前工具内容无法解析：$reason';
+  }
 }

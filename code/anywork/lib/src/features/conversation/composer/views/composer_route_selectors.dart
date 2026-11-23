@@ -13,12 +13,14 @@ List<ComposerConfigurationEntry> modelRouteConfigurationEntries({
   String? accountId,
   String? modelId,
   String? effort,
+  String? serviceTier,
   bool available = true,
   String? routeUnavailableReason,
   String? blockedReason,
   ValueChanged<String>? onExplain,
   ModelSelectionChanged? onModelSelected,
   EffortSelectionChanged? onEffortSelected,
+  ValueChanged<String?>? onServiceTierSelected,
 }) {
   final hasRoute =
       accountId != null &&
@@ -84,7 +86,53 @@ List<ComposerConfigurationEntry> modelRouteConfigurationEntries({
       menuItem: model(true),
     ),
     effortEntry,
+    ?serviceTierConfigurationEntry(
+      accounts: accounts,
+      accountId: accountId ?? '',
+      modelId: modelId ?? '',
+      serviceTier: serviceTier,
+      enabled: enabled,
+      blockedReason: blockedReason,
+      onExplain: onExplain,
+      onSelected: onServiceTierSelected,
+    ),
   ];
+}
+
+ComposerConfigurationEntry? serviceTierConfigurationEntry({
+  required List<ModelSelectionAccount> accounts,
+  required String accountId,
+  required String modelId,
+  required String? serviceTier,
+  required bool enabled,
+  String? blockedReason,
+  ValueChanged<String>? onExplain,
+  ValueChanged<String?>? onSelected,
+}) {
+  final candidates =
+      modelForRoute(
+        accounts,
+        accountId,
+        modelId,
+      )?.descriptor.serviceTiers?.candidates ??
+      const <ModelServiceTierView>[];
+  if (candidates.isEmpty && serviceTier == null) return null;
+  ServiceTierSelector selector(bool inMenu) => ServiceTierSelector(
+    candidates: candidates,
+    serviceTier: serviceTier,
+    enabled: enabled,
+    inMenu: inMenu,
+    blockedReason: blockedReason,
+    onExplain: onExplain,
+    onSelected: onSelected,
+  );
+  final inline = selector(false);
+  return ComposerConfigurationEntry(
+    id: 'native-speed',
+    inline: inline,
+    measureInlineWidth: inline.measureInlineWidth,
+    menuItem: selector(true),
+  );
 }
 
 class UnavailableEffortSelector extends StatelessWidget {

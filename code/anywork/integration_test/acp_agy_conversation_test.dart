@@ -19,6 +19,7 @@ import 'package:path/path.dart' as p;
 import 'support/agy_remote_workspace.dart';
 import 'support/agy_phase_runner.dart';
 import 'support/agy_load_only.dart';
+import 'support/agy_title_only.dart';
 import 'support/observed.dart';
 import 'support/presentation_capture.dart';
 import 'support/production_studio_harness.dart';
@@ -36,6 +37,16 @@ void main() {
     (tester) async {
       if (Platform.environment['ANYWORK_AGY_LIVE'] != '1') {
         throw StateError('Explicit live opt-in requires ANYWORK_AGY_LIVE=1');
+      }
+      final titleOnly = Platform.environment['ANYWORK_AGY_TITLE_ONLY'] == '1';
+      if (titleOnly &&
+          (!Platform.isLinux ||
+              Platform.environment['ANYWORK_AGY_MANAGED'] == '1' ||
+              Platform.environment.containsKey('ANYWORK_AGY_SSH_ALIAS') ||
+              Platform.environment.containsKey('ANYWORK_AGY_SSH_TARGET') ||
+              Platform.environment.containsKey('ANYWORK_AGY_LOAD_THREAD') ||
+              Platform.environment.containsKey('ANYWORK_AGY_LOAD_SESSION'))) {
+        throw StateError('Title-only requires local, non-managed Linux New');
       }
       final load = AgyLoadRequest.fromEnvironment(Platform.environment);
       if (load != null) {
@@ -81,7 +92,7 @@ void main() {
       // Managed acceptance uses the product template and a verified installation
       // prepared under this isolated home's studio directory, never a raw command.
       final managed = Platform.environment['ANYWORK_AGY_MANAGED'] == '1';
-      final verifySpeed = remote == null && !managed;
+      final verifySpeed = remote == null && !managed && !titleOnly;
       if (remote != null && managed) {
         throw StateError(
           'Remote process evidence requires an explicit local '
@@ -99,6 +110,10 @@ void main() {
           Platform.environment['ANYWORK_AGY_ARGS'] ?? '["acp"]',
         ) as List<dynamic>;
         commandArgs = arguments.cast<String>();
+        if (titleOnly) {
+          // No login, permission bypass, alternate config or other CLI actions.
+          expect(commandArgs, orderedEquals(['acp']));
+        }
         if (remote != null) {
           expect(commandArgs.first, 'acp');
           expect(commandArgs, isNot(contains('--login')));
@@ -120,26 +135,36 @@ void main() {
       final graph = harness.graph;
       final accounts = graph.accounts.observeSummaries();
       addTearDown(accounts.release);
-      final evidence = <String, Object?>{
-        'platform': Platform.operatingSystem,
-        'launchKind': managed ? 'managedAntigravityTemplate' : 'agyCli',
-        'workspaceKind': remote == null ? 'local' : 'ssh',
-        if (remote != null) 'remoteProjectPath': remote.path,
-        if (remote != null) 'sshAlias': remote.alias,
-        'coverage': remote == null
-            ? 'text-only conversation'
-            : 'remote file/command/STDIN/cancel/ACP child/process closure',
-        'verdict': 'running',
-        'overallAcceptance': 'Native mixed-direction regression is separate',
-        'guiPid': pid,
-        'promptCount': 0,
-        'permission': remote == null
-            ? 'not requested by the text-only prompt; not covered'
-            : 'no auto-approval; unexpected permission requests fail',
-        'cancellation': remote == null ? 'not attempted' : 'pending evidence',
-        'preparation':
-            'public Client save/openProject; all business controls UI',
-      };
+      final evidence = titleOnly
+          ? <String, Object?>{
+              'kind': 'agy-title-only',
+              'platform': Platform.operatingSystem,
+              'startedUtc': DateTime.now().toUtc().toIso8601String(),
+              'promptCount': 0,
+              'verdict': 'running',
+              'shutdown': 'notAttempted',
+            }
+          : <String, Object?>{
+              'platform': Platform.operatingSystem,
+              'launchKind': managed ? 'managedAntigravityTemplate' : 'agyCli',
+              'workspaceKind': remote == null ? 'local' : 'ssh',
+              if (remote != null) 'remoteProjectPath': remote.path,
+              if (remote != null) 'sshAlias': remote.alias,
+              'coverage': remote == null ? 'text-only conversation' : 'remote file/command/STDIN/cancel/ACP child/process closure',
+              'verdict': 'running',
+              'overallAcceptance':
+                  'Native mixed-direction regression is separate',
+              'guiPid': pid,
+              'promptCount': 0,
+              'permission': remote == null
+                  ? 'not requested by the text-only prompt; not covered'
+                  : 'no auto-approval; unexpected permission requests fail',
+              'cancellation': remote == null
+                  ? 'not attempted'
+                  : 'pending evidence',
+              'preparation':
+                  'public Client save/openProject; all business controls UI',
+            };
       Future<void> record(String stage) async {
         evidence['stage'] = stage;
         await File(p.join(harness.artifacts.path, 'agy-live-report.json'))
@@ -154,15 +179,17 @@ void main() {
       if (remote != null) {
         await remote.verifyServer(await graph.client.remote.listSshServers());
       }
-      evidence['geometry'] = await configurePresentationWindow(
-        tester,
-        logicalWidth: 1440,
-        logicalHeight: 1000,
-        // The local speed assertion uses the produced widget values and works
-        // at the current viewport, including a native integration runner on Xvfb.
-        requireNativeResize: !verifySpeed,
-      );
-      await record('native-viewport-ready');
+      if (!titleOnly) {
+        evidence['geometry'] = await configurePresentationWindow(
+          tester,
+          logicalWidth: 1440,
+          logicalHeight: 1000,
+          // The local speed assertion uses the produced widget values and works
+          // at the current viewport, including a native integration runner on Xvfb.
+          requireNativeResize: !verifySpeed,
+        );
+        await record('native-viewport-ready');
+      }
       const serviceId = 'agy-live-acceptance';
       const serviceName = 'AGY live acceptance';
       const childProfileId = 'agy-live-acceptance-child';
@@ -250,7 +277,7 @@ void main() {
       }).timeout(const Duration(seconds: 90));
       await backgroundReady();
       evidence['backgroundPreparedWithoutExplicitCheck'] = true;
-      final accountProcesses = !managed && Platform.isLinux
+      final accountProcesses = !titleOnly && !managed && Platform.isLinux
           ? AgyLocalProcesses()
           : null;
       LinuxProcessIdentity? sharedInstance;
@@ -292,7 +319,7 @@ void main() {
         'project start page exposes the unified model selector',
       );
       await record('project-model-selector-visible');
-      await scene.capture('ordinary-start-card');
+      if (!titleOnly) await scene.capture('ordinary-start-card');
       await tester.tap(
         find.descendant(
           of: find.byType(StartModelSelectorView),
@@ -324,6 +351,17 @@ void main() {
         initialPreparation.threadId,
       )!;
       expect(owner.state.lastCompleted, isNull);
+      if (titleOnly) {
+        await runAgyTitleOnly(
+          scene: scene,
+          owner: owner,
+          project: project,
+          evidence: evidence,
+          record: record,
+          closeHarness: closeHarness,
+        );
+        return;
+      }
       evidence['initialConfig'] = _configuration(owner.state);
       await scene.capture('agy-draft-ready');
       if (accountProcesses != null) {

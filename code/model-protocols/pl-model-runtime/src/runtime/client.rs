@@ -22,6 +22,7 @@ pub struct ModelRuntime {
     pub(super) pricing_mode: PricingMode,
     pub(super) upload: Option<&'static FileUploadService>,
     context: crate::model::ModelContextResolution,
+    pub(super) service_tier: Option<String>,
 }
 
 impl ModelRuntime {
@@ -33,6 +34,11 @@ impl ModelRuntime {
         route: crate::config::ResolvedModelRoute,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
+        pl_model_openai_wire::service_tiers::validate(
+            &route.endpoint,
+            &route.model,
+            route.service_tier.as_deref(),
+        )?;
         let runtime = Self::bind(
             route.account_id.as_str(),
             route.endpoint,
@@ -42,6 +48,7 @@ impl ModelRuntime {
         .with_pricing_mode(route.pricing_mode);
         Ok(Self {
             context: route.context,
+            service_tier: route.service_tier,
             ..runtime
         })
     }
@@ -83,6 +90,7 @@ impl ModelRuntime {
         context.auto_compact_limit = None;
         Ok(Self {
             context,
+            service_tier: None,
             account_id,
             endpoint,
             http_client,

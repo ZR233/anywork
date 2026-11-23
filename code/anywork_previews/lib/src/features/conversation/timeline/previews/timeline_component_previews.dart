@@ -26,7 +26,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_disp
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 
 import 'timeline_preview_fixtures.dart';
@@ -674,7 +674,7 @@ Widget timelineActivityRowPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 参数与结果', group: 'Timeline · 历史组件', size: Size(760, 400))
 Widget timelineToolDetailsPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.tool.toolCard as DecodedToolCard).value,
     ),
   ),
@@ -692,7 +692,7 @@ Widget timelineToolDetailsPreview() => _timelinePreviewHost(
 )
 Widget timelineApplyPatchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item: (TimelinePreviewFixtures.applyPatchTool.toolCard as DecodedToolCard)
           .value,
       initiallyExpanded: true,
@@ -703,7 +703,7 @@ Widget timelineApplyPatchPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 网页搜索', group: 'Timeline · 历史组件', size: Size(720, 320))
 Widget timelineWebSearchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineToolDetails(
+    child: TimelineToolItemView(
       item:
           (TimelinePreviewFixtures.webSearch.toolCard as DecodedToolCard).value,
     ),

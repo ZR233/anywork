@@ -76,6 +76,7 @@ impl StudioRuntime {
             input: request.input,
             mode,
             route: request.route,
+            service_tier: request.service_tier,
             delegation_mode: request.delegation_mode,
             delegation_preference: request.delegation_preference,
             workspace_mode: request.workspace_mode,

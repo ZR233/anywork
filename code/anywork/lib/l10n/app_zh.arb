@@ -1,4 +1,6 @@
 {
+  "composerSpeed": "速度",
+  "composerSpeedStandard": "标准",
   "acpConnectionReconnecting": "重连中",
   "studioFailureConversationResyncRequired": "会话内容需要重新同步，请重试。",
   "conversationDirectoryUnavailable": "无法获取会话信息。请重试。",
@@ -720,7 +722,6 @@
   "timelineGroupExecutingUnderSecond": "执行了不到 1 秒",
   "timelineGroupExecutingDuration": "执行了 {duration}",
   "timelineGroupClosing": "正在收束",
-  "timelineGroupUnrestored": "上次执行未收束，尚未恢复",
   "timelineReasoningSummary": "概要",
   "timelineReasoningContent": "完整内容",
   "timelineReasoningBudgetLimited": "已达思考预算",
@@ -3028,5 +3029,18 @@
   "liveStatusRetryAction": "重试",
   "liveStatusContentRangeWindow": "字节 {start}–{end} / {total}",
   "liveStatusContentFirstSegment": "第一段",
-  "liveStatusContentNextSegment": "下一段"
+  "liveStatusContentNextSegment": "下一段",
+  "timelinePatchUnavailableHint": "补丁片段不可用：内容不完整或无法完整解析",
+  "timelinePatchFileAdd": "新增",
+  "timelinePatchFileUpdate": "更新",
+  "timelinePatchFileDelete": "删除",
+  "timelineToolCallFallback": "工具调用",
+  "timelineToolArgumentsIncompleteTitle": "工具参数不完整",
+  "timelineToolArgumentsIncompleteDetail": "参数窗口未包含完整正文",
+  "timelineToolIdentityMismatchTitle": "工具内容身份不一致",
+  "timelineToolIdentityMismatchDetail": "声明的调用身份与完成载荷不同",
+  "timelineToolMalformedLabel": "{name} · 内容格式错误",
+  "timelineToolDeferredLabel": "{name} · 正文按需读取",
+  "timelineToolDeferredReason": "参数按需读取，尚未取得完整业务内容",
+  "timelineToolParseFailed": "当前工具内容无法解析：{reason}"
 }

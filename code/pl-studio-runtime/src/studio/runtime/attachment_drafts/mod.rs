@@ -67,7 +67,7 @@ impl StudioRuntime {
                 } else {
                     crate::config::root_agent_route_id()
                 };
-                config.config.models.resolve_route(role, &selector)?
+                config.config.models.resolve_route(role, &selector.model)?
             }
             StudioAttachmentAdmissionContext::NewThread { route } => {
                 let selector = super::settings_api::validated_route(

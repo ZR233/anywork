@@ -50,6 +50,7 @@ impl WireRecord {
     fn into_record(self) -> Result<Record, ModelCatalogQueryError> {
         let id = required_id(self.id)?;
         Ok(Record {
+            service_tiers: Default::default(),
             id,
             display_name: presentation_name(self.display_name, self.name),
             description: self.description,

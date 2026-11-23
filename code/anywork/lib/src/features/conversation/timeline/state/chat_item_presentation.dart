@@ -6,6 +6,7 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import 'chat_payload_reading.dart';
 import 'timeline_display_unit.dart';
+import '../tools/tool_item_registry.dart';
 
 const chatItemPresentationKey = 'chatItemPresentation';
 
@@ -135,14 +136,9 @@ final class ChatItemPresentation {
         displayRecord: displayRecord,
       );
 
-  bool get presentsFiles {
-    if (type != 'tool' || presentationContract != 'builtin.show_files@1') {
-      return false;
-    }
-    final state = chatObject(data['state'], 'state');
-    return state['kind'] == 'succeeded' ||
-        (state['kind'] == 'failed' && body('tool.output-artifacts') != null);
-  }
+  bool get presentsFiles => timelineToolItemRegistry
+      .resolveForChatItem(this)
+      .presentsStandaloneMedia(this);
 
   /// Structural empty text still exists in owner metadata. Deferred/unknown
   /// content is never assumed empty.

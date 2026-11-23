@@ -679,17 +679,22 @@ impl StudioRuntime {
         crate::mode::saved_registered_mode(&state)?
             .or_else(|| self.thread_modes.snapshot().mode(&mode))
             .context("current Thread Mode is unavailable")?;
-        let selector = validated_route(
+        let model = validated_route(
             &settings.config,
             &format!("Thread {thread_id}"),
             &request.account_id,
             &request.model_id,
             request.effort.as_deref(),
         )?;
-        let route = settings
-            .config
-            .models
-            .resolve_route(crate::config::root_agent_route_id(), &selector)?;
+        let selector = crate::studio::model_route::ThreadModelSelection {
+            model,
+            service_tier: request.service_tier,
+        };
+        // The session owns speed. Preserve the existing preference write only
+        // when the user changes the model or effort, not on speed-only edits.
+        let update_mode_default =
+            crate::studio::model_route::decode(&previous.payload)?.model != selector.model;
+        let route = selector.resolve(&settings.config)?;
 
         crate::studio::model_binding::validate_context(&state, &route)?;
         let committed = match thread
@@ -725,50 +730,52 @@ impl StudioRuntime {
         let mut default_changed = false;
         let mut mode_default_saved = false;
         let mut warning = None;
-        for _ in 0..3 {
-            let latest = self.config_runtime.read()?;
-            let mut config = latest.canonical_config().clone();
-            let candidate = match validated_route(
-                &latest.config,
-                &format!("Thread Mode {mode}"),
-                &request.account_id,
-                &request.model_id,
-                request.effort.as_deref(),
-            ) {
-                Ok(candidate) => candidate,
-                Err(error) => {
-                    warning = Some(format!(
-                        "current Thread was updated, but its Mode default was not saved: {error}"
-                    ));
-                    break;
-                }
-            };
-            config.mode_model_routes.insert(mode.clone(), candidate);
-            match self.config_runtime.replace(latest.revision, config) {
-                Ok(updated) => {
-                    default_changed = latest.canonical_config() != updated.canonical_config();
-                    confirmed_settings = updated.clone();
-                    if let Err(error) = self.publish_settings_state() {
+        if update_mode_default {
+            for _ in 0..3 {
+                let latest = self.config_runtime.read()?;
+                let mut config = latest.canonical_config().clone();
+                let candidate = match validated_route(
+                    &latest.config,
+                    &format!("Thread Mode {mode}"),
+                    &request.account_id,
+                    &request.model_id,
+                    request.effort.as_deref(),
+                ) {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
                         warning = Some(format!(
-                            "current Thread and Mode default were saved, but the Settings event was not published: {error}"
+                            "current Thread was updated, but its Mode default was not saved: {error}"
                         ));
+                        break;
                     }
-                    mode_default_saved = true;
-                    break;
-                }
-                Err(crate::ConfigRuntimeError::StaleRevision { .. }) => continue,
-                Err(error) => {
-                    warning = Some(format!(
-                        "current Thread was updated, but its Mode default was not saved: {error}"
-                    ));
-                    break;
+                };
+                config.mode_model_routes.insert(mode.clone(), candidate);
+                match self.config_runtime.replace(latest.revision, config) {
+                    Ok(updated) => {
+                        default_changed = latest.canonical_config() != updated.canonical_config();
+                        confirmed_settings = updated.clone();
+                        if let Err(error) = self.publish_settings_state() {
+                            warning = Some(format!(
+                                "current Thread and Mode default were saved, but the Settings event was not published: {error}"
+                            ));
+                        }
+                        mode_default_saved = true;
+                        break;
+                    }
+                    Err(crate::ConfigRuntimeError::StaleRevision { .. }) => continue,
+                    Err(error) => {
+                        warning = Some(format!(
+                            "current Thread was updated, but its Mode default was not saved: {error}"
+                        ));
+                        break;
+                    }
                 }
             }
-        }
-        if !mode_default_saved && warning.is_none() {
-            warning = Some(
-                "current Thread was updated, but its Mode default conflicted repeatedly".into(),
-            );
+            if !mode_default_saved && warning.is_none() {
+                warning = Some(
+                    "current Thread was updated, but its Mode default conflicted repeatedly".into(),
+                );
+            }
         }
         let snapshot = self.thread_snapshot(thread_id).await?;
         let runtime = snapshot
@@ -888,6 +895,98 @@ mod tests {
     use crate::StudioUiLanguage;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
     use crate::{StudioHostKind, StudioRuntimeOptions};
+
+    #[tokio::test]
+    async fn withdrawn_thread_speed_can_be_cleared_without_writing_mode_defaults() -> Result<()> {
+        use crate::studio::model_route::{self, MODEL_ROUTE_EXTENSION};
+        use pl_core::thread::extensions::ExtensionMutation;
+
+        // A model without speed candidates represents the catalog after withdrawal.
+        // No requests are expected to either fixture supplier.
+        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let runtime = &env.runtime;
+            let id = runtime
+                .create_thread(&env.project.id, "Speed recovery")
+                .await?
+                .id;
+            let thread = runtime.ensure_thread_owner(&id).await?;
+            let state = thread.snapshot();
+            let previous = &state.extensions[MODEL_ROUTE_EXTENSION];
+            let mut selector = model_route::decode(&previous.payload)?;
+            let settings = runtime.read_settings()?.config;
+            let update = runtime
+                .apply_settings_field(UpdateSettingsFieldRequest {
+                    operation_id: "change-mode-default".into(),
+                    expected_revision: settings.revision,
+                    update: SettingsFieldUpdate::ModeModel {
+                        mode_id: crate::mode::ThreadModeId::simple().to_string(),
+                        account_id: "child-fixture".into(),
+                        model_id: selector.model.model_id.clone(),
+                    },
+                })
+                .await?;
+            let settings = update.snapshot.config;
+            let request =
+                |operation: &str, revision, tier: Option<&str>| SetThreadModelRouteRequest {
+                    operation_id: operation.into(),
+                    expected_model_route_revision: revision,
+                    expected_settings_revision: settings.revision,
+                    account_id: "root-fixture".into(),
+                    model_id: crate::runtime_test_support::MODEL.into(),
+                    effort: None,
+                    service_tier: tier.map(str::to_owned),
+                };
+            let error = runtime
+                .save_thread_model_route(
+                    &id,
+                    request("reject", previous.revision, Some("ultrafast")),
+                )
+                .await
+                .expect_err("unsupported tier is rejected before writing the route");
+            assert!(error.to_string().contains("service_tier"));
+            assert_eq!(
+                thread.snapshot().extensions[MODEL_ROUTE_EXTENSION],
+                *previous
+            );
+
+            // Simulate a selection legitimately saved before the catalog removed it.
+            selector.service_tier = Some("ultrafast".into());
+            let committed = thread
+                .mutate_extensions(vec![ExtensionMutation::Put {
+                    id: MODEL_ROUTE_EXTENSION.into(),
+                    expected_revision: Some(previous.revision),
+                    payload: model_route::encode(&selector)?,
+                }])
+                .await?;
+            let revision = committed[MODEL_ROUTE_EXTENSION].revision;
+            thread.flush().await?;
+            runtime.thread_observations.synchronize(Some(&id)).await?;
+            let unavailable = runtime
+                .thread_snapshot(&id)
+                .await?
+                .model_route
+                .context("withdrawn route")?;
+            assert_eq!(unavailable.service_tier.as_deref(), Some("ultrafast"));
+            assert!(!unavailable.available);
+
+            let reply = runtime
+                .save_thread_model_route(&id, request("standard", revision, None))
+                .await?;
+            assert_eq!(reply.receipt.effect, CommandEffectPoint::NextTurn);
+            assert!(!reply.mode_default_saved);
+            assert!(reply.warning.is_none());
+            assert_eq!(reply.settings.config, settings);
+            assert_eq!(runtime.read_settings()?.config, settings);
+            let saved = model_route::saved(&thread.snapshot())?.context("restored route")?;
+            assert_eq!(saved.route.model, selector.model);
+            assert_eq!(saved.route.service_tier, None);
+            assert!(saved.revision > revision);
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
 
     #[tokio::test]
     async fn ui_language_commands_publish_persist_and_survive_restart() -> Result<()> {

@@ -1,4 +1,6 @@
 {
+  "composerSpeed": "Speed",
+  "composerSpeedStandard": "Standard",
   "acpConnectionReconnecting": "Reconnecting",
   "studioFailureConversationResyncRequired": "Conversation content needs to be synchronized again. Please retry.",
   "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",
@@ -873,7 +875,6 @@
     }
   },
   "timelineGroupClosing": "Finishing work",
-  "timelineGroupUnrestored": "Previous work is unfinished and has not resumed",
   "timelineReasoningSummary": "Summary",
   "timelineReasoningContent": "Content",
   "timelineReasoningBudgetLimited": "Reasoning budget reached",
@@ -3559,48 +3560,40 @@
   "timelineToolNameWebSearch": "Web query",
   "timelineToolNameDeepseekWebSearch": "DeepSeek web search",
   "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
-  "liveStatusConnectionDisconnected": "Live updates disconnected",
-  "liveStatusConnectionReconnecting": "Reconnecting live updates",
-  "liveStatusActivityToolsTitle": "{count, plural, =1{1 active tool} other{{count} active tools}}",
-  "@liveStatusActivityToolsTitle": {
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
-  "liveStatusActivityToolsLoaded": "Active tools {loaded}/{total}",
-  "@liveStatusActivityToolsLoaded": {
-    "placeholders": {
-      "loaded": {
-        "type": "int"
-      },
-      "total": {
-        "type": "int"
-      }
-    }
-  },
-  "liveStatusToolsCollapse": "Collapse",
-  "liveStatusToolsFirstPage": "First page",
-  "liveStatusToolsPreviousPage": "Previous",
-  "liveStatusToolsNextPage": "Next",
-  "liveStatusMembersUnavailable": "Member view unavailable",
-  "liveStatusMembersLoading": "Loading sealed members…",
-  "liveStatusRetryAction": "Retry",
-  "liveStatusContentRangeWindow": "Bytes {start}–{end} / {total}",
-  "@liveStatusContentRangeWindow": {
-    "placeholders": {
-      "start": {
-        "type": "int"
-      },
-      "end": {
-        "type": "int"
-      },
-      "total": {
-        "type": "int"
-      }
-    }
-  },
   "liveStatusContentFirstSegment": "First chunk",
-  "liveStatusContentNextSegment": "Next chunk"
+  "liveStatusContentNextSegment": "Next chunk",
+  "timelinePatchUnavailableHint": "Patch hunk unavailable: content is incomplete or cannot be parsed",
+  "timelinePatchFileAdd": "Add",
+  "timelinePatchFileUpdate": "Update",
+  "timelinePatchFileDelete": "Delete",
+  "timelineToolCallFallback": "Tool call",
+  "timelineToolArgumentsIncompleteTitle": "Tool arguments incomplete",
+  "timelineToolArgumentsIncompleteDetail": "The argument window did not include the complete body",
+  "timelineToolIdentityMismatchTitle": "Tool identity mismatch",
+  "timelineToolIdentityMismatchDetail": "Declared call identity differs from completion payload",
+  "timelineToolMalformedLabel": "{name} · Malformed content",
+  "@timelineToolMalformedLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredLabel": "{name} · Body loaded on demand",
+  "@timelineToolDeferredLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredReason": "Arguments are loaded on demand; full content has not been retrieved yet",
+  "timelineToolParseFailed": "Current tool content cannot be parsed: {reason}",
+  "@timelineToolParseFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  }
 }

@@ -101,6 +101,18 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @composerSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Speed'**
+  String get composerSpeed;
+
+  /// No description provided for @composerSpeedStandard.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard'**
+  String get composerSpeedStandard;
+
   /// No description provided for @acpConnectionReconnecting.
   ///
   /// In en, this message translates to:
@@ -3718,12 +3730,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Finishing work'**
   String get timelineGroupClosing;
-
-  /// No description provided for @timelineGroupUnrestored.
-  ///
-  /// In en, this message translates to:
-  /// **'Previous work is unfinished and has not resumed'**
-  String get timelineGroupUnrestored;
 
   /// No description provided for @timelineReasoningSummary.
   ///
@@ -13605,78 +13611,6 @@ abstract class AppLocalizations {
   /// **'DeepSeek web fetch'**
   String get timelineToolNameDeepseekWebFetch;
 
-  /// No description provided for @liveStatusConnectionDisconnected.
-  ///
-  /// In en, this message translates to:
-  /// **'Live updates disconnected'**
-  String get liveStatusConnectionDisconnected;
-
-  /// No description provided for @liveStatusConnectionReconnecting.
-  ///
-  /// In en, this message translates to:
-  /// **'Reconnecting live updates'**
-  String get liveStatusConnectionReconnecting;
-
-  /// No description provided for @liveStatusActivityToolsTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'{count, plural, =1{1 active tool} other{{count} active tools}}'**
-  String liveStatusActivityToolsTitle(int count);
-
-  /// No description provided for @liveStatusActivityToolsLoaded.
-  ///
-  /// In en, this message translates to:
-  /// **'Active tools {loaded}/{total}'**
-  String liveStatusActivityToolsLoaded(int loaded, int total);
-
-  /// No description provided for @liveStatusToolsCollapse.
-  ///
-  /// In en, this message translates to:
-  /// **'Collapse'**
-  String get liveStatusToolsCollapse;
-
-  /// No description provided for @liveStatusToolsFirstPage.
-  ///
-  /// In en, this message translates to:
-  /// **'First page'**
-  String get liveStatusToolsFirstPage;
-
-  /// No description provided for @liveStatusToolsPreviousPage.
-  ///
-  /// In en, this message translates to:
-  /// **'Previous'**
-  String get liveStatusToolsPreviousPage;
-
-  /// No description provided for @liveStatusToolsNextPage.
-  ///
-  /// In en, this message translates to:
-  /// **'Next'**
-  String get liveStatusToolsNextPage;
-
-  /// No description provided for @liveStatusMembersUnavailable.
-  ///
-  /// In en, this message translates to:
-  /// **'Member view unavailable'**
-  String get liveStatusMembersUnavailable;
-
-  /// No description provided for @liveStatusMembersLoading.
-  ///
-  /// In en, this message translates to:
-  /// **'Loading sealed members…'**
-  String get liveStatusMembersLoading;
-
-  /// No description provided for @liveStatusRetryAction.
-  ///
-  /// In en, this message translates to:
-  /// **'Retry'**
-  String get liveStatusRetryAction;
-
-  /// No description provided for @liveStatusContentRangeWindow.
-  ///
-  /// In en, this message translates to:
-  /// **'Bytes {start}–{end} / {total}'**
-  String liveStatusContentRangeWindow(int start, int end, int total);
-
   /// No description provided for @liveStatusContentFirstSegment.
   ///
   /// In en, this message translates to:
@@ -13688,6 +13622,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Next chunk'**
   String get liveStatusContentNextSegment;
+
+  /// No description provided for @timelinePatchUnavailableHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Patch hunk unavailable: content is incomplete or cannot be parsed'**
+  String get timelinePatchUnavailableHint;
+
+  /// No description provided for @timelinePatchFileAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add'**
+  String get timelinePatchFileAdd;
+
+  /// No description provided for @timelinePatchFileUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Update'**
+  String get timelinePatchFileUpdate;
+
+  /// No description provided for @timelinePatchFileDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get timelinePatchFileDelete;
+
+  /// No description provided for @timelineToolCallFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool call'**
+  String get timelineToolCallFallback;
+
+  /// No description provided for @timelineToolArgumentsIncompleteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool arguments incomplete'**
+  String get timelineToolArgumentsIncompleteTitle;
+
+  /// No description provided for @timelineToolArgumentsIncompleteDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'The argument window did not include the complete body'**
+  String get timelineToolArgumentsIncompleteDetail;
+
+  /// No description provided for @timelineToolIdentityMismatchTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool identity mismatch'**
+  String get timelineToolIdentityMismatchTitle;
+
+  /// No description provided for @timelineToolIdentityMismatchDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Declared call identity differs from completion payload'**
+  String get timelineToolIdentityMismatchDetail;
+
+  /// No description provided for @timelineToolMalformedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} · Malformed content'**
+  String timelineToolMalformedLabel(String name);
+
+  /// No description provided for @timelineToolDeferredLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{name} · Body loaded on demand'**
+  String timelineToolDeferredLabel(String name);
+
+  /// No description provided for @timelineToolDeferredReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Arguments are loaded on demand; full content has not been retrieved yet'**
+  String get timelineToolDeferredReason;
+
+  /// No description provided for @timelineToolParseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Current tool content cannot be parsed: {reason}'**
+  String timelineToolParseFailed(String reason);
 }
 
 class _AppLocalizationsDelegate
