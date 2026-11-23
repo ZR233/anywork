@@ -390,6 +390,28 @@ void main() {
       );
       expect(find.byType(ConversationActivityStatus), findsNothing);
 
+      const appendedBody = '$_bodyText\nmore streamed text';
+      final appendedBytes = utf8.encode(appendedBody);
+      firstBody.add(
+        ContentWindow(
+          offset: 0,
+          bytes: appendedBytes,
+          generation: _bodyRef(ownerId).generation,
+          availableThrough: appendedBytes.length,
+          sealed: false,
+        ),
+      );
+      await pumpClientUntil(
+        tester,
+        () => find.text(appendedBody).evaluate().isNotEmpty,
+        'same Current window displays appended text',
+      );
+      expect(find.byType(ConversationActivityStatus), findsNothing);
+      expect(
+        graph.timeline.lease(_threadId)!.renderedCurrentAtomIds,
+        contains(_atomId),
+      );
+
       // Hiding Timeline does not interrupt LiveStatusBar streaming or suppression.
       showTimeline = false;
       rebuildRoot(() {});
