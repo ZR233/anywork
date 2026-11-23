@@ -160,6 +160,10 @@ pub struct InferenceBillingRecord {
     pub model_observation: Option<InferenceModelObservation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Frozen request grouping key: `standard`, `notApplicable`, or `tier:<exact id>`.
+    /// Absence means the prepared request did not record this fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     pub accounting: InferenceAccounting,

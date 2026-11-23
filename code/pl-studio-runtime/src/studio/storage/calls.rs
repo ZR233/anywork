@@ -55,7 +55,7 @@ pub(crate) use summary::{PurposeUsageProjection, SessionUsageProjection};
 use event::CallLogRecord;
 use log::{CallLog, LOG_CLEANUP_INTERVAL};
 
-pub(crate) const CALLS_SCHEMA_VERSION: i64 = 9;
+pub(crate) const CALLS_SCHEMA_VERSION: i64 = 10;
 /// `calls` 目录下日志段所在子目录名。
 const CALL_LOG_DIR_NAME: &str = "logs";
 /// 一天对应的秒数；日志轮转/保留期以 UTC 自然日为准。
@@ -149,6 +149,7 @@ pub(crate) struct PerformanceSampleRow {
     pub(crate) sent_model: String,
     pub(crate) reported_model: Option<String>,
     pub(crate) effort: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
     pub(crate) completion_tokens: Option<u64>,
     pub(crate) usage_status: pl_core::usage::UsageStatus,
     pub(crate) first_output_source: crate::FirstOutputSource,
@@ -158,9 +159,9 @@ pub(crate) struct PerformanceSampleRow {
     pub(crate) has_throughput_sample: bool,
 }
 
-/// 按（账号、冻结的目录配置模型、推理强度）的数据库聚合分组。
+/// 按（账号、冻结的目录配置模型、推理强度、请求档位）的数据库聚合分组。
 ///
-/// 顶层统计身份是 (account_id, model_id)；`effort` 是组内二级细分。发送/返回模型
+/// 顶层统计身份是 (account_id, model_id)；推理强度与请求档位是组内二级细分。发送/返回模型
 /// 只是冻结诊断，不参与归组。
 #[derive(Debug, Clone)]
 pub(crate) struct PerformanceSummaryRow {
@@ -168,6 +169,7 @@ pub(crate) struct PerformanceSummaryRow {
     pub(crate) account_display_name: String,
     pub(crate) model_id: String,
     pub(crate) effort: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
     pub(crate) sample_count: u64,
     pub(crate) completion_tokens: u64,
     /// 只有真正测得首字的样本才累加，因此它同时是平均首字的独立分母。
@@ -863,6 +865,7 @@ impl CallsStore {
             sent_model: None,
             reported_model: None,
             effort: sample.effort,
+            requested_service_tier: Some("notApplicable".into()),
             output_tokens: opt_i64(sample.performance.estimated_output_tokens),
             ttft_millis: None,
             decode_millis: None,
@@ -1803,6 +1806,7 @@ fn performance_summary_row(row: &QueryResult) -> Result<PerformanceSummaryRow> {
         account_display_name: row.try_get("", "account_display_name")?,
         model_id: row.try_get("", "model_id")?,
         effort: row.try_get("", "effort")?,
+        requested_service_tier: row.try_get("", "requested_service_tier")?,
         sample_count: required_u64(row, "sample_count")?,
         completion_tokens: required_u64(row, "completion_tokens")?,
         total_ttft_millis: required_u64(row, "total_ttft_millis")?,

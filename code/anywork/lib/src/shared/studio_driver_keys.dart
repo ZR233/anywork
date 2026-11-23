@@ -315,6 +315,9 @@ abstract final class StudioDriverKeys {
   static const statisticsEffortFilter = ValueKey<String>(
     'statistics-effort-filter',
   );
+  static const statisticsServiceTierFilter = ValueKey<String>(
+    'statistics-service-tier-filter',
+  );
   static const statisticsMismatchOnly = ValueKey<String>(
     'statistics-mismatch-only',
   );
@@ -327,13 +330,14 @@ abstract final class StudioDriverKeys {
     'statistics-summary-row:${jsonEncode(<Object?>[accountId, modelId])}',
   );
 
-  /// 组内 effort 细分行；`null` 与显式 `none` 由元组编码区分。
+  /// 组内请求组合；未记录档位保留既有 key，已记录档位加入复合身份。
   static ValueKey<String> statisticsSummaryEffortRow(
     String accountId,
     String modelId,
-    String? effort,
-  ) => ValueKey<String>(
-    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort])}',
+    String? effort, {
+    String? requestedServiceTier,
+  }) => ValueKey<String>(
+    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort, ?requestedServiceTier])}',
   );
 
   static ValueKey<String> statisticsHistoryCall(String callKey) =>

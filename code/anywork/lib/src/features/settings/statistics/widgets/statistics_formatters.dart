@@ -44,6 +44,21 @@ String formatStatisticsReasoningEffort(BuildContext context, String? effort) {
   return effort ?? context.l10n.statisticsReasoningEffortUnspecified;
 }
 
+String formatStatisticsRequestedServiceTier(
+  BuildContext context,
+  String? tier,
+) {
+  return switch (tier) {
+    null => context.l10n.statisticsServiceTierUnrecorded,
+    'standard' => context.l10n.statisticsServiceTierStandard,
+    'notApplicable' => context.l10n.statisticsServiceTierNotApplicable,
+    'tier:priority' => 'Fast',
+    'tier:ultrafast' => 'Ultrafast',
+    final String value when value.startsWith('tier:') => value.substring(5),
+    final String value => value,
+  };
+}
+
 String describeStatisticsModelIdentity(
   BuildContext context,
   StatisticsSample sample,

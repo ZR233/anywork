@@ -271,7 +271,8 @@ impl CoreModelSession for ThreadModelSession {
         )
         .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?
         .or_else(|| self.prompt.slots.get(&self.purpose).cloned());
-        let request_metadata = receipt::request_metadata(&binding, &encoded, prompt.as_ref())?;
+        let request_metadata =
+            receipt::request_metadata(&runtime, &binding, &encoded, prompt.as_ref())?;
         if let Some(prompt) = &prompt {
             self.prompt.active_scope = self.purpose.clone();
             self.prompt
@@ -437,33 +438,23 @@ mod contract_tests {
             ModelRuntime::bind_route(route.with_service_tier(None).unwrap(), None).unwrap(),
             None,
         );
-        for (model, expected) in [
-            (&frozen, Some("priority")),
-            (&newer, Some("ultrafast")),
-            (&standard, None),
-        ] {
-            let encoded = model
-                .encode_request(&ModelRequest {
-                    thread_id: "tier-thread".into(),
-                    turn_id: "tier-turn".into(),
-                    attempt_id: "tier-attempt".into(),
-                    context: pl_core::context::ContextSnapshot {
-                        revision: 0,
-                        records: Arc::from([]),
-                    },
-                    tools: Arc::from([]),
-                    tool_call_mode: pl_core::model::ToolCallMode::Parallel,
-                    solo_tool_ids: Arc::from([]),
-                    committed_private_context: None,
-                    resources: None,
-                    cancellation: pl_core::model::CancellationToken::new(),
-                    progress: None,
-                    members: None,
-                })
-                .await
-                .unwrap();
-            assert_eq!(encoded.completion.service_tier.as_deref(), expected);
-        }
+        let request = || ModelRequest {
+            thread_id: "tier-thread".into(),
+            turn_id: "tier-turn".into(),
+            attempt_id: "tier-attempt".into(),
+            context: pl_core::context::ContextSnapshot {
+                revision: 0,
+                records: Arc::from([]),
+            },
+            tools: Arc::from([]),
+            tool_call_mode: pl_core::model::ToolCallMode::Parallel,
+            solo_tool_ids: Arc::from([]),
+            committed_private_context: None,
+            resources: None,
+            cancellation: pl_core::model::CancellationToken::new(),
+            progress: None,
+            members: None,
+        };
         let (_temp, legacy) = fixture_for(false);
         let unsupported = ResolvedModelRoute {
             pricing_mode: legacy.pricing_mode,
@@ -477,9 +468,29 @@ mod contract_tests {
         };
         assert!(unsupported.clone().with_service_tier(None).is_ok());
         assert!(matches!(
-            unsupported.with_service_tier(Some("priority")),
+            unsupported.clone().with_service_tier(Some("priority")),
             Err(pl_protocol::PureError::ConfigError(_))
         ));
+        let unsupported =
+            ThreadModel::new(ModelRuntime::bind_route(unsupported, None).unwrap(), None);
+        for (model, sent, recorded) in [
+            (&frozen, Some("priority"), "tier:priority"),
+            (&newer, Some("ultrafast"), "tier:ultrafast"),
+            (&standard, None, "standard"),
+            (&unsupported, None, "notApplicable"),
+        ] {
+            let encoded = model.encode_request(&request()).await.unwrap();
+            assert_eq!(encoded.completion.service_tier.as_deref(), sent);
+            let call = model
+                .open_session()
+                .await
+                .unwrap()
+                .prepare(request())
+                .await
+                .unwrap();
+            let receipt = receipt::model_request_receipt(call.request_metadata().unwrap()).unwrap();
+            assert_eq!(receipt.requested_service_tier.as_deref(), Some(recorded));
+        }
     }
 
     #[tokio::test]

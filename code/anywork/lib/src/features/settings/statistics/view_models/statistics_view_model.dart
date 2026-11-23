@@ -13,11 +13,13 @@ class StatisticsViewModel extends _$StatisticsViewModel {
   StatisticsVisibilityLease? _visibleDemand;
   String? _modelFilter;
   String? _effortFilter;
+  String? _serviceTierFilter;
   bool _mismatchesOnly = false;
   StatisticsSnapshot? _reconciledSnapshot;
   StatisticsSnapshot? _filteredSnapshot;
   String? _filteredModel;
   String? _filteredEffort;
+  String? _filteredServiceTier;
   bool _filteredMismatches = false;
   List<StatisticsSample> _filteredHistory = StatisticsMaterial.freeze(
     const <StatisticsSample>[],
@@ -65,6 +67,13 @@ class StatisticsViewModel extends _$StatisticsViewModel {
     state = _derive(_repository.state);
   }
 
+  void selectServiceTier(String? filter) {
+    if (_serviceTierFilter == filter) return;
+    _serviceTierFilter = filter;
+    _reconciledSnapshot = null;
+    state = _derive(_repository.state);
+  }
+
   void retry() => _repository.retry();
 
   void _repositoryChanged(StatisticsRepositoryState next) {
@@ -103,6 +112,13 @@ class StatisticsViewModel extends _$StatisticsViewModel {
         !snapshot.history.any((item) => item.effortKey == effortFilter)) {
       _effortFilter = null;
     }
+    final serviceTierFilter = _serviceTierFilter;
+    if (serviceTierFilter != null &&
+        !snapshot.history.any(
+          (item) => item.serviceTierKey == serviceTierFilter,
+        )) {
+      _serviceTierFilter = null;
+    }
   }
 
   StatisticsViewState _derive(StatisticsRepositoryState repository) {
@@ -115,11 +131,15 @@ class StatisticsViewModel extends _$StatisticsViewModel {
         identical(previous?.history, snapshot?.history) &&
         _filteredModel == _modelFilter &&
         _filteredEffort == _effortFilter &&
+        _filteredServiceTier == _serviceTierFilter &&
         _filteredMismatches == _mismatchesOnly;
     if (!reuse) {
       final history = snapshot?.history ?? const <StatisticsSample>[];
       _filteredHistory =
-          _modelFilter == null && _effortFilter == null && !_mismatchesOnly
+          _modelFilter == null &&
+              _effortFilter == null &&
+              _serviceTierFilter == null &&
+              !_mismatchesOnly
           ? StatisticsMaterial.freeze(history)
           : StatisticsMaterial.freeze(
               history.where(
@@ -127,6 +147,8 @@ class StatisticsViewModel extends _$StatisticsViewModel {
                     (_modelFilter == null || item.filterKey == _modelFilter) &&
                     (_effortFilter == null ||
                         item.effortKey == _effortFilter) &&
+                    (_serviceTierFilter == null ||
+                        item.serviceTierKey == _serviceTierFilter) &&
                     (!_mismatchesOnly ||
                         item.modelMatchState ==
                             StatisticsModelMatchState.mismatched),
@@ -135,12 +157,14 @@ class StatisticsViewModel extends _$StatisticsViewModel {
       _filteredSnapshot = snapshot;
       _filteredModel = _modelFilter;
       _filteredEffort = _effortFilter;
+      _filteredServiceTier = _serviceTierFilter;
       _filteredMismatches = _mismatchesOnly;
     }
     return StatisticsViewState(
       repository: repository,
       modelFilter: _modelFilter,
       effortFilter: _effortFilter,
+      serviceTierFilter: _serviceTierFilter,
       mismatchesOnly: _mismatchesOnly,
       filteredHistory: _filteredHistory,
     );

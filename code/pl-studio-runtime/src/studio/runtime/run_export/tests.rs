@@ -349,6 +349,7 @@ fn aux_effect(
             model_id: model_id.map(str::to_string),
             model_observation: None,
             effort: None,
+            requested_service_tier: None,
             context_window: None,
             accounting: InferenceAccounting {
                 usage,

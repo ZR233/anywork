@@ -11,6 +11,8 @@ import 'package:anywork/src/features/settings/statistics/views/statistics_view.d
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/statistics.dart';
+import 'package:anywork_previews/src/features/settings/statistics/previews/statistics_preview_fixtures.dart';
+import 'package:anywork_previews/src/features/settings/statistics/previews/statistics_previews.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +23,239 @@ import 'package:flutter_test/flutter_test.dart';
 /// bootstrap fixture 构造 GUI 数据。它保护 view model 到纯 View 的筛选与身份映射。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final locale in [const Locale('en'), const Locale('zh')]) {
+    for (final compact in [false, true]) {
+      testWidgets(
+        'request tiers stay distinct in ${locale.languageCode} ${compact ? 'cards' : 'table'}',
+        (tester) async {
+          final snapshot = _serviceTierSnapshot();
+          await _pumpStatistics(
+            tester,
+            _FixtureStatisticsRepository(snapshot),
+            logicalSize: Size(compact ? 420 : 1320, 2400),
+            locale: locale,
+          );
+          await tester.pumpAndSettle();
+          final l10n = AppLocalizations.of(
+            tester.element(find.byType(StatisticsConnector)),
+          );
+          final summary = find.byKey(StudioDriverKeys.statisticsSummary);
+          expect(
+            find.descendant(
+              of: summary,
+              matching: find.text(l10n.statisticsRequestedServiceTier),
+            ),
+            compact ? findsNothing : findsOneWidget,
+          );
+          const tiers = [
+            null,
+            'standard',
+            'tier:priority',
+            'tier:ultrafast',
+            'notApplicable',
+            'tier:experimental',
+          ];
+          final labels = [
+            l10n.statisticsServiceTierUnrecorded,
+            l10n.statisticsServiceTierStandard,
+            'Fast',
+            'Ultrafast',
+            l10n.statisticsServiceTierNotApplicable,
+            'experimental',
+          ];
+          for (var index = 0; index < tiers.length; index++) {
+            final key = StudioDriverKeys.statisticsSummaryEffortRow(
+              'account-a',
+              'shared-model',
+              'high',
+              requestedServiceTier: tiers[index],
+            );
+            expect(find.byKey(key), findsOneWidget);
+            expect(
+              find.descendant(
+                of: summary,
+                matching: find.textContaining(labels[index]),
+              ),
+              findsWidgets,
+            );
+          }
+          if (!compact) {
+            final table = tester.widget<DataTable>(find.byType(DataTable));
+            expect(
+              table.rows,
+              hasLength(8),
+            ); // One total plus seven independent combinations.
+            expect((table.rows.first.cells[4].child as Text).data, '7');
+          }
+          expect(
+            find.byKey(StudioDriverKeys.statisticsServiceTierFilter),
+            findsOneWidget,
+          );
+          final history = compact
+              ? find.byType(StatisticsCompactHistoryCard)
+              : find.byType(StatisticsWideHistoryRow);
+          expect(
+            find.descendant(
+              of: history,
+              matching: find.text(l10n.statisticsServiceTierStandard),
+            ),
+            findsWidgets,
+          );
+          expect(
+            find.descendant(of: history, matching: find.text('Fast')),
+            findsWidgets,
+          );
+          expect(
+            find.descendant(of: history, matching: find.text('Ultrafast')),
+            findsWidgets,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
+
+  testWidgets(
+    'request tier composes with model effort and mismatch filters and survives failed publication',
+    (tester) async {
+      final snapshot = _serviceTierSnapshot();
+      final repository = _FixtureStatisticsRepository(snapshot);
+      await _pumpStatistics(
+        tester,
+        repository,
+        logicalSize: const Size(1320, 2000),
+      );
+      await tester.pumpAndSettle();
+      final context = tester.element(find.byType(StatisticsConnector));
+      final container = ProviderScope.containerOf(context);
+      final vm = container.read(statisticsViewModelProvider.notifier);
+      vm.selectModel(snapshot.summaries.first.filterKey);
+      vm.selectEffort(snapshot.history.first.effortKey);
+      await tester.pumpAndSettle();
+      await _selectStatisticsFilter(
+        tester,
+        StudioDriverKeys.statisticsServiceTierFilter,
+        'Fast',
+      );
+      var state = container.read(statisticsViewModelProvider);
+      expect(state.filteredHistory.map((sample) => sample.callId), [
+        'window-call-2',
+      ]);
+      expect(state.modelFilter, snapshot.summaries.first.filterKey);
+      expect(state.effortFilter, snapshot.history.first.effortKey);
+      expect(state.serviceTierFilter, '["tier:priority"]');
+      expect(
+        tester
+            .widget<StatisticsSummarySection>(
+              find.byType(StatisticsSummarySection),
+            )
+            .summaries,
+        same(snapshot.summaries),
+      );
+      await tester.tap(find.byKey(StudioDriverKeys.statisticsMismatchOnly));
+      await tester.pumpAndSettle();
+      expect(
+        container.read(statisticsViewModelProvider).filteredHistory,
+        isEmpty,
+      );
+      repository.fail();
+      await tester.pumpAndSettle();
+      state = container.read(statisticsViewModelProvider);
+      expect(state.serviceTierFilter, '["tier:priority"]');
+      expect(state.modelFilter, snapshot.summaries.first.filterKey);
+      expect(state.effortFilter, snapshot.history.first.effortKey);
+      expect(state.mismatchesOnly, isTrue);
+      vm.setMismatchesOnly(false);
+      vm.selectEffort(null);
+      vm.selectModel(null);
+      await tester.pumpAndSettle();
+      expect(
+        container
+            .read(statisticsViewModelProvider)
+            .filteredHistory
+            .map((sample) => sample.callId),
+        ['window-call-2', 'window-call-6', 'window-call-7'],
+      );
+      await _selectStatisticsFilter(
+        tester,
+        StudioDriverKeys.statisticsServiceTierFilter,
+        'Not recorded',
+      );
+      expect(
+        container
+            .read(statisticsViewModelProvider)
+            .filteredHistory
+            .single
+            .callId,
+        'window-call-0',
+      );
+      await _selectStatisticsFilter(
+        tester,
+        StudioDriverKeys.statisticsServiceTierFilter,
+        'Not applicable',
+      );
+      expect(
+        container
+            .read(statisticsViewModelProvider)
+            .filteredHistory
+            .single
+            .callId,
+        'window-call-4',
+      );
+      await _selectStatisticsFilter(
+        tester,
+        StudioDriverKeys.statisticsServiceTierFilter,
+        'All request tiers',
+      );
+      expect(
+        container.read(statisticsViewModelProvider).filteredHistory,
+        same(snapshot.history),
+      );
+      vm.selectServiceTier('["tier:priority"]');
+      repository.publish(
+        _snapshot(),
+      ); // Only a complete authoritative replacement clears stale tiers.
+      await tester.pumpAndSettle();
+      expect(
+        container.read(statisticsViewModelProvider).serviceTierFilter,
+        isNull,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'permanent three-tier preview uses the production view and fixture',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1320, 1000);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(statisticsServiceTiersEnWidePreview());
+      await tester.pumpAndSettle();
+      final view = tester.widget<StatisticsView>(find.byType(StatisticsView));
+      expect(
+        view.state.snapshot!.history,
+        statisticsServiceTierSnapshot().history,
+      );
+      expect(find.byType(StatisticsWideHistoryRow), findsNWidgets(3));
+      await _selectStatisticsFilter(
+        tester,
+        StudioDriverKeys.statisticsServiceTierFilter,
+        'Ultrafast',
+      );
+      expect(
+        tester
+            .widget<StatisticsView>(find.byType(StatisticsView))
+            .state
+            .filteredHistory
+            .single
+            .requestedServiceTier,
+        'tier:ultrafast',
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets(
     'View reuses options, overview and scroll body for status-only publications',
@@ -729,10 +964,104 @@ void main() {
   });
 }
 
+Future<void> _selectStatisticsFilter(
+  WidgetTester tester,
+  Key key,
+  String label,
+) async {
+  final field = find.descendant(
+    of: find.byKey(key),
+    matching: find.byType(TextField),
+  );
+  await tester.ensureVisible(field);
+  await tester.tap(field);
+  await tester.pumpAndSettle();
+  await tester.tap(
+    find.descendant(
+      of: find.byType(MenuItemButton),
+      matching: find.text(label),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
+StatisticsSnapshot _serviceTierSnapshot() {
+  const tiers = [
+    null,
+    'standard',
+    'tier:priority',
+    'tier:ultrafast',
+    'notApplicable',
+    'tier:experimental',
+  ];
+  final source = _snapshot().history.first;
+  return StatisticsSnapshot(
+    ownerEpoch: 'owner-tiers',
+    feedId: 'feed-tiers',
+    publicationRevision: 1,
+    summariesRevision: 1,
+    historyRevision: 1,
+    summaries: [
+      StatisticsSummary(
+        accountId: 'account-a',
+        accountDisplayName: 'Alpha',
+        modelId: 'shared-model',
+        sampleCount: 7,
+        completionTokens: 700,
+        totalTtftMillis: 2100,
+        ttftSampleCount: 7,
+        totalResponseMillis: 9100,
+        tokensPerSecond: 100,
+        averageTtftMillis: 300,
+        averageResponseMillis: 1300,
+        effortBreakdowns: [
+          for (var index = 0; index < 7; index++)
+            StatisticsEffortSummary(
+              effort: index == 6 ? 'low' : 'high',
+              requestedServiceTier: index == 6 ? 'tier:priority' : tiers[index],
+              sampleCount: 1,
+              completionTokens: 100,
+              totalTtftMillis: 300,
+              ttftSampleCount: 1,
+              totalResponseMillis: 1300,
+              tokensPerSecond: 100,
+              averageTtftMillis: 300,
+              averageResponseMillis: 1300,
+            ),
+        ],
+      ),
+    ],
+    history: [
+      for (var index = 0; index < tiers.length; index++)
+        _windowSample(index, source, requestedServiceTier: tiers[index]),
+      _windowSample(
+        6,
+        source,
+        requestedServiceTier: 'tier:priority',
+        effort: 'low',
+      ),
+      _windowSample(
+        7,
+        source,
+        requestedServiceTier: 'tier:priority',
+        accountId: 'account-b',
+        mismatched: true,
+      ),
+    ],
+    statisticsPending: false,
+    statisticsGap: false,
+    readFailed: false,
+  );
+}
+
 StatisticsSample _windowSample(
   int index,
   StatisticsSample source, {
   FirstOutputSource? firstOutputSource,
+  String? requestedServiceTier,
+  String? effort,
+  String? accountId,
+  bool mismatched = false,
 }) => StatisticsSample(
   threadId: source.threadId,
   callId: 'window-call-$index',
@@ -742,13 +1071,16 @@ StatisticsSample _windowSample(
   ttftAvailability: source.ttftAvailability,
   throughputAvailability: source.throughputAvailability,
   completedAt: source.completedAt,
-  accountId: source.accountId,
+  accountId: accountId ?? source.accountId,
   accountDisplayName: source.accountDisplayName,
   modelId: source.modelId,
   sentModel: source.sentModel,
-  reportedModel: source.reportedModel,
-  modelMatchState: source.modelMatchState,
-  effort: source.effort,
+  reportedModel: mismatched ? 'other-upstream-model' : source.reportedModel,
+  modelMatchState: mismatched
+      ? StatisticsModelMatchState.mismatched
+      : source.modelMatchState,
+  effort: effort ?? source.effort,
+  requestedServiceTier: requestedServiceTier ?? source.requestedServiceTier,
   completionTokens: source.completionTokens,
   ttftMillis: source.ttftMillis,
   decodeMillis: source.decodeMillis,
@@ -760,6 +1092,7 @@ Future<void> _pumpStatistics(
   WidgetTester tester,
   _FixtureStatisticsRepository repository, {
   Size? logicalSize,
+  Locale locale = const Locale('en'),
 }) async {
   if (logicalSize != null) {
     tester.view.devicePixelRatio = 1.0;
@@ -775,7 +1108,7 @@ Future<void> _pumpStatistics(
     UncontrolledProviderScope(
       container: container,
       child: MaterialApp(
-        locale: const Locale('en'),
+        locale: locale,
         theme: pureStudioTheme(),
         localizationsDelegates: [
           AppLocalizations.delegate,
@@ -941,6 +1274,24 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
       snapshot: snapshot,
       connection: const StatisticsConnectionState(
         phase: StatisticsConnectionPhase.ready,
+      ),
+    );
+    for (final listener in _listeners.toList()) {
+      listener(_state);
+    }
+  }
+
+  void fail() {
+    _state = StatisticsRepositoryState(
+      snapshot: _state.snapshot,
+      connection: StatisticsConnectionState(
+        phase: StatisticsConnectionPhase.failed,
+        failure: StatisticsFailure.local(
+          category: StatisticsFailureCategory.connection,
+          code: StudioFailureCode.unavailable,
+          message: 'Fixture read failed; retaining last complete material',
+          retryable: true,
+        ),
       ),
     );
     for (final listener in _listeners.toList()) {

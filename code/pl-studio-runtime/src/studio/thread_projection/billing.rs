@@ -71,6 +71,7 @@ pub(in crate::studio) fn billing_facts(commit: &ThreadEffectBatch) -> Result<Vec
                 model_id: Some(receipt.binding.model_id.clone()),
                 model_observation: receipt.model_observation,
                 effort: receipt.reasoning_effort,
+                requested_service_tier: receipt.requested_service_tier,
                 context_window: receipt.context_window,
                 accounting: receipt.accounting,
                 prompt_generation: None,
@@ -220,6 +221,7 @@ mod tests {
         // 配置模型只来自冻结观察；旧 `model`（发送模型）不得冒充。
         assert_eq!(record.model_id.as_deref(), Some("deepseek-flash"));
         assert_eq!(record.effort.as_deref(), Some("high"));
+        assert_eq!(record.requested_service_tier, None);
         assert_eq!(record.context_window, Some(128_000));
         assert_eq!(record.prompt_generation, Some(3));
         assert_eq!(
@@ -311,6 +313,7 @@ mod tests {
         // binding.requestedModel 是冻結的目录配置模型。
         assert_eq!(record.model_id.as_deref(), Some("deepseek-flash"));
         assert_eq!(record.effort.as_deref(), Some("high"));
+        assert_eq!(record.requested_service_tier, None);
         assert_eq!(record.context_window, Some(128_000));
         assert_eq!(record.accounting.usage.output_tokens, Some(2));
         assert!(facts[0].auxiliary);
