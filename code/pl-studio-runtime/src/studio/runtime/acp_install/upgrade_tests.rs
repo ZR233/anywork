@@ -15,9 +15,9 @@ use sha2::Digest;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use super::prepare::{self, PrepareFailure};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use super::seed_synthetic_install_version;
 use super::source::{self, RegistryLookup, SourcePolicy, TestSourceOverride};
 use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
@@ -506,10 +506,12 @@ async fn mock_http_install_and_upgrade_from_1_4_5_to_1_5_2() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[tokio::test]
 async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_latest() -> Result<()> {
     let (_home, runtime) = test_runtime().await?;
+    let retired =
+        seed_synthetic_install_version(&runtime.store, "1.4.1", b"#!/bin/sh\necho 1.4.1\n");
     seed_synthetic_install_version(&runtime.store, "1.4.5", b"#!/bin/sh\necho 1.4.5\n");
     seed_synthetic_install_version(&runtime.store, "1.5.2", b"#!/bin/sh\necho 1.5.2\n");
 
@@ -522,9 +524,10 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
     .await
     .expect("selects highest installed 1.x version");
     assert_eq!(verified.release.version, "1.5.2");
+    assert!(retired.is_file(), "retired installation stays on disk");
 
     // Corrupt highest version: must fail closed rather than silently falling back to 1.4.5
-    std::fs::write(&verified.program, b"#!/bin/sh\necho tampered\n")?;
+    std::fs::write(&verified.program, b"#!/bin/sh\necho x.y.z\n")?;
     let error = prepare::verified_install(
         &runtime.store,
         crate::config::AcpProvider::Antigravity,
@@ -532,6 +535,41 @@ async fn offline_scan_prefers_highest_supported_and_fails_closed_on_corrupt_late
     )
     .await
     .expect_err("corrupt highest install must fail closed");
+    assert_eq!(error, PrepareFailure::InstallationInvalid);
+
+    runtime.shutdown_runtime().await?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[tokio::test]
+async fn offline_scan_distinguishes_unsupported_versions_from_invalid_receipts() -> Result<()> {
+    let (_home, runtime) = test_runtime().await?;
+    let retired = seed_synthetic_install_version(&runtime.store, "1.4.1", b"retired");
+    for version in ["0.9.0", "1.6.0-beta.1", "1.6.0+build.1", "2.0.0"] {
+        seed_synthetic_install_version(&runtime.store, version, b"unsupported");
+    }
+    let cancel = CancellationToken::new();
+    let provider = crate::config::AcpProvider::Antigravity;
+
+    let error = prepare::verified_install(&runtime.store, provider, &cancel)
+        .await
+        .expect_err("unsupported versions cannot be started");
+    assert_eq!(error, PrepareFailure::PreparationRequired);
+
+    let retired_dir = retired.parent().unwrap();
+    let mismatched_dir = retired_dir.with_file_name("0".repeat(64));
+    std::fs::rename(retired_dir, &mismatched_dir)?;
+    let error = prepare::verified_install(&runtime.store, provider, &cancel)
+        .await
+        .expect_err("a retired receipt still has to match its storage key");
+    assert_eq!(error, PrepareFailure::InstallationInvalid);
+
+    std::fs::rename(mismatched_dir, retired_dir)?;
+    seed_synthetic_install_version(&runtime.store, "malformed", b"invalid");
+    let error = prepare::verified_install(&runtime.store, provider, &cancel)
+        .await
+        .expect_err("a malformed version still fails verification");
     assert_eq!(error, PrepareFailure::InstallationInvalid);
 
     runtime.shutdown_runtime().await?;
