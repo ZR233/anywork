@@ -41,14 +41,13 @@ pub(in crate::studio::runtime) fn seed_synthetic_install(
     seed_synthetic_install_version(store, source::MINIMUM_SUPPORTED_VERSION, program);
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", windows)))]
 pub(in crate::studio::runtime) fn seed_synthetic_install_version(
     store: &crate::studio::StudioStore,
     version: &str,
     program: &[u8],
-) {
+) -> std::path::PathBuf {
     use sha2::Digest;
-    use std::os::unix::fs::PermissionsExt;
     let base = source::resolve_bundled(crate::AcpProvider::Antigravity).unwrap();
     let release = source::ResolvedRelease {
         release: crate::AcpInstallRelease {
@@ -79,7 +78,14 @@ pub(in crate::studio::runtime) fn seed_synthetic_install_version(
         .unwrap();
     let path = installed.join(&release.command);
     std::fs::write(&path, program).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Some(0o700)
+    };
+    #[cfg(windows)]
+    let mode = None;
     archive::write_receipt(
         &root,
         &installed,
@@ -94,10 +100,11 @@ pub(in crate::studio::runtime) fn seed_synthetic_install_version(
                 path: release.command,
                 size: program.len() as u64,
                 sha256: hex::encode(sha2::Sha256::digest(program)),
-                mode: Some(0o700),
+                mode,
             }],
             directories: Vec::new(),
         },
     )
     .unwrap();
+    path
 }

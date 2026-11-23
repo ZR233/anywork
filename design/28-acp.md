@@ -83,7 +83,9 @@ Studio 装配完成及有效配置提交后，为每个已启用的 ACP 账户�
 | `darwin-x86_64` | 仅在线 `1.5.x+` 官方注册表提供 | `agy_acp_server.par` | `[]` |
 | `darwin-aarch64` | 仅在线 `1.5.x+` 官方注册表提供 | `agy_acp_server.par` | `[]` |
 
-运行时初始化时首先以离线方式只读扫描本地已发布目录，对候选 `1.x` 安装完整校验回执与成员并择优选择最高语义化版本；同时在后台并行触发非阻塞的 `check_update` 网络检查（不阻塞启动、配置加载与账号登录），并将每个受管供应商的最近版本状态（`Idle` / `Checking` / `UpToDate` / `UpdateAvailable` / `IncompatibleMajor` / `Failed`）随 `acpInstall` 快照发布。手动检查更新通过 `check_acp_install_update`（HTTP `POST /api/v1/runtime/acp-install/check-update`）显式触发。显式准备或升级按目标安装生成包含来源描述符、版本号、目标平台、SHA-256、入口及固定 `argv` 的确定安装身份与存储键，不同版本隔离存放，不覆盖正在被活跃会话使用的旧安装目录。
+运行时初始化与账户连接准备共用本地已发布目录的离线只读扫描。扫描校验目录、回执身份与发行来源，跳过版本号有效但不在支持范围内的安装，并完整校验最高受支持版本的所有成员。连接准备找不到受支持的候选时提示准备组件，遇到目录、回执或所选安装异常时报告相应错误。
+
+运行时初始化同时在后台触发非阻塞的 `check_update` 网络检查（不阻塞启动、配置加载与账号登录），并将每个受管供应商的最近版本状态（`Idle` / `Checking` / `UpToDate` / `UpdateAvailable` / `IncompatibleMajor` / `Failed`）随 `acpInstall` 快照发布。手动检查更新通过 `check_acp_install_update`（HTTP `POST /api/v1/runtime/acp-install/check-update`）显式触发。显式准备或升级按目标安装生成包含来源描述符、版本号、目标平台、SHA-256、入口及固定 `argv` 的确定安装身份与存储键，不同版本隔离存放，不覆盖正在被活跃会话使用的旧安装目录。
 
 分发包下载仅接受 `https://dl.google.com/agy-extensions/releases/` 下的 HTTPS ZIP 归档（注册表请求限定 `https://cdn.agentclientprotocol.com/registry/v1/`）；每次 HTTP 重定向均重新校验来源域名与路径前缀，拒绝携带用户凭据、非默认端口、越权来源或非 ZIP 格式的响应。包内可执行入口必须为普通文件，固定 `argv` 直接作为进程参数数组传递而不经过 Shell 字符串拼接；禁止将下载元数据注入子进程环境变量，启动环境遵循 28.1 的平台白名单。
 

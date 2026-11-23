@@ -195,7 +195,8 @@ pub(super) struct ResolvedRelease {
 pub(super) enum VersionClassification {
     Supported(semver::Version),
     IncompatibleMajor(semver::Version),
-    Rejected,
+    Unsupported,
+    Malformed,
 }
 
 /// 从官方注册表解析一次最新发行查找结果。
@@ -230,14 +231,11 @@ pub(crate) fn availability() -> AcpInstallAvailability {
 
 /// 严格校验语义化版本号并按大版本 1 兼容性归类（`>= 1.4.5, < 2.0.0`）。
 pub(super) fn classify_version(raw: &str) -> VersionClassification {
-    if raw.trim() != raw || raw.is_empty() {
-        return VersionClassification::Rejected;
-    }
     let Ok(version) = semver::Version::parse(raw) else {
-        return VersionClassification::Rejected;
+        return VersionClassification::Malformed;
     };
     if !version.pre.is_empty() || !version.build.is_empty() {
-        return VersionClassification::Rejected;
+        return VersionClassification::Unsupported;
     }
     let min = semver::Version::parse(MINIMUM_SUPPORTED_VERSION).expect("valid minimum version");
     if version.major == SUPPORTED_MAJOR_VERSION && version >= min {
@@ -245,7 +243,7 @@ pub(super) fn classify_version(raw: &str) -> VersionClassification {
     } else if version.major > SUPPORTED_MAJOR_VERSION {
         VersionClassification::IncompatibleMajor(version)
     } else {
-        VersionClassification::Rejected
+        VersionClassification::Unsupported
     }
 }
 
@@ -560,7 +558,7 @@ pub(super) fn parse_registry_payload(
                 version: version.to_string(),
             });
         }
-        VersionClassification::Rejected => {
+        VersionClassification::Unsupported | VersionClassification::Malformed => {
             return Err(failure(AcpInstallFailureCode::SourceRejected, stage, false));
         }
     };

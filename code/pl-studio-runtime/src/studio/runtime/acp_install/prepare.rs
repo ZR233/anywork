@@ -2,11 +2,11 @@
 //!
 //! 认证只能用受管大版本 `1` 范围内（`>= 1.4.5, < 2.0.0`）、且经**完整验证**的已安装版本启动：
 //! 这里离线扫描 `<Studio home>/studio/acp-servers/installed/<provider>/<target>/` 下的受管安装目录，
-//! 校验每个候选的回执身份与来源政策并选出最高语义化 `1.x` 版本，再使用安装器自己的完整验证边界
-//! （完整成员集合、mode/size/SHA-256、入口执行位）核对实际磁盘内容。
+//! 校验每个安装的回执身份与发行来源，跳过不受支持的版本，并用安装器的完整性校验核对最高
+//! 受支持版本的成员集合、权限、大小、SHA-256 和入口执行位。
 //!
-//! 只验证，不联网、不下载、不修复、不创建目录、不写回执：缺失是"需要准备"，任一候选项损坏或
-//! 不合规是"安装无效"，绝不静默降级或绕过（design/28 §28.3、§28.7、§28.8）。
+//! 扫描只读。没有受支持的候选是"需要准备"；
+//! 目录或回执身份异常、所选版本完整性校验失败是"安装无效"（design/28 §28.3、§28.7、§28.8）。
 //!
 //! 与安装资产锁的关系：本模块只读取**已发布**安装。发布是不可被业务取消回滚的原子 rename，安装器
 //! 从不修改已发布树，因此认证验证既不获取跨进程资产锁，也不会与安装器形成锁序死锁。
@@ -198,10 +198,6 @@ pub(super) fn verify(
             return Err(PrepareFailure::InstallationInvalid);
         }
         let receipt = archive::read_receipt(&root, &entry_path).map_err(map_install_failure)?;
-        let version = match source::classify_version(&receipt.release.version) {
-            VersionClassification::Supported(version) => version,
-            _ => return Err(PrepareFailure::InstallationInvalid),
-        };
         if receipt.release.target != target {
             return Err(PrepareFailure::InstallationInvalid);
         }
@@ -229,7 +225,13 @@ pub(super) fn verify(
         {
             return Err(PrepareFailure::InstallationInvalid);
         }
-        candidates.push((version, dir_name.to_string(), entry_path, receipt));
+        match source::classify_version(&receipt.release.version) {
+            VersionClassification::Supported(version) => {
+                candidates.push((version, dir_name.to_string(), entry_path, receipt));
+            }
+            VersionClassification::Unsupported | VersionClassification::IncompatibleMajor(_) => {}
+            VersionClassification::Malformed => return Err(PrepareFailure::InstallationInvalid),
+        }
     }
 
     let Some((_, _, best_path, expected_receipt)) = candidates
