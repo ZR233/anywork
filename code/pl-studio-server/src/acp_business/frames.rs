@@ -33,6 +33,7 @@ impl OpenFrames {
             accepted: Some(AcpSessionFrame::Accepted {
                 target: open.target,
                 has_observation,
+                info_snapshot: open.info_snapshot.map(Box::new),
             }),
             events,
             events_ended: false,
@@ -99,6 +100,7 @@ mod tests {
                     instance: 41,
                 },
                 has_observation,
+                info_snapshot: None,
             }),
             events,
             events_ended: false,
@@ -134,6 +136,7 @@ mod tests {
         let Some(AcpSessionFrame::Accepted {
             target,
             has_observation,
+            ..
         }) = frames.next().await
         else {
             panic!("Accepted must be first");

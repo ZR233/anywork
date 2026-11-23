@@ -13742,6 +13742,192 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Current tool content cannot be parsed: {reason}'**
   String timelineToolParseFailed(String reason);
+
+  /// No description provided for @acpContextWindowTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Context window'**
+  String get acpContextWindowTitle;
+
+  /// No description provided for @acpSnapshotLiveBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Live'**
+  String get acpSnapshotLiveBadge;
+
+  /// No description provided for @acpSnapshotRetainedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Last snapshot'**
+  String get acpSnapshotRetainedBadge;
+
+  /// No description provided for @acpContextRemainingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{tokens} remaining'**
+  String acpContextRemainingLabel(String tokens);
+
+  /// No description provided for @acpContextOverCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Over capacity by {tokens}'**
+  String acpContextOverCapacityLabel(String tokens);
+
+  /// No description provided for @acpContextNotReported.
+  ///
+  /// In en, this message translates to:
+  /// **'Context usage not reported by agent'**
+  String get acpContextNotReported;
+
+  /// No description provided for @acpContextExactTokens.
+  ///
+  /// In en, this message translates to:
+  /// **'{used} / {size} exact tokens'**
+  String acpContextExactTokens(String used, String size);
+
+  /// No description provided for @acpMetricSpeedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Est. output speed'**
+  String get acpMetricSpeedTitle;
+
+  /// No description provided for @acpMetricSpeedDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'≈ {tokens} tokens · {duration}'**
+  String acpMetricSpeedDetail(String tokens, String duration);
+
+  /// No description provided for @acpMetricCostTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session cost'**
+  String get acpMetricCostTitle;
+
+  /// No description provided for @acpMetricCostSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reported by agent'**
+  String get acpMetricCostSubtitle;
+
+  /// No description provided for @acpMetricTurnsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed turns'**
+  String get acpMetricTurnsTitle;
+
+  /// No description provided for @acpMetricTurnsValue.
+  ///
+  /// In en, this message translates to:
+  /// **'{count}'**
+  String acpMetricTurnsValue(int count);
+
+  /// No description provided for @acpDetailSessionSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Session & configuration'**
+  String get acpDetailSessionSection;
+
+  /// No description provided for @acpDetailLastStopReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Last finish'**
+  String get acpDetailLastStopReason;
+
+  /// No description provided for @acpDetailUpdatedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Updated'**
+  String get acpDetailUpdatedAt;
+
+  /// No description provided for @acpDetailCapabilitiesSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Capabilities & identity'**
+  String get acpDetailCapabilitiesSection;
+
+  /// No description provided for @acpDetailSessionId.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote session'**
+  String get acpDetailSessionId;
+
+  /// No description provided for @acpContextDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Context breakdown'**
+  String get acpContextDetailSection;
+
+  /// No description provided for @acpContextUsedLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Used tokens'**
+  String get acpContextUsedLabel;
+
+  /// No description provided for @acpContextCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Window capacity'**
+  String get acpContextCapacityLabel;
+
+  /// No description provided for @acpContextDeltaLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Delta vs previous'**
+  String get acpContextDeltaLabel;
+
+  /// No description provided for @acpThroughputDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest sample'**
+  String get acpThroughputDetailSection;
+
+  /// No description provided for @acpThroughputFormulaNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated at ~1 token per 4 chars, including initial wait'**
+  String get acpThroughputFormulaNote;
+
+  /// No description provided for @acpThroughputTokensLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Est. output tokens'**
+  String get acpThroughputTokensLabel;
+
+  /// No description provided for @acpThroughputDurationLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Response time'**
+  String get acpThroughputDurationLabel;
+
+  /// No description provided for @acpCostDetailSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Cost breakdown'**
+  String get acpCostDetailSection;
+
+  /// No description provided for @acpCostCurrencyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Currency'**
+  String get acpCostCurrencyLabel;
+
+  /// No description provided for @acpCostRawLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Raw reading'**
+  String get acpCostRawLabel;
+
+  /// No description provided for @acpCostScopeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get acpCostScopeLabel;
+
+  /// No description provided for @acpSessionDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session info'**
+  String get acpSessionDetailTitle;
 }
 
 class _AppLocalizationsDelegate

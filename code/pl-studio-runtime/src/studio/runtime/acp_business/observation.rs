@@ -51,7 +51,13 @@ impl AcpSessionObservation {
         }
         let event = self.observer.recv().await;
         Some(match event {
-            Some(Event::Initialized(capabilities)) => AcpSessionEvent::Initialized { capabilities },
+            Some(Event::Initialized {
+                capabilities,
+                server_info,
+            }) => AcpSessionEvent::Initialized {
+                capabilities,
+                server_info: server_info.map(projection::server_info),
+            },
             Some(Event::Ready(response)) => match self.completion.wait().await {
                 Ok(()) => AcpSessionEvent::Ready { response },
                 Err(error) => {

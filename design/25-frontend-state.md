@@ -72,7 +72,7 @@ open 操作的观察入口与 Ready/Failed 属于同一次操作，load 完成�
 
 每个 Client 按产品成员持有唯一 `AcpConversationSession`，持续消费同次 open 的原观察入口，将消息、思考、工具、Plan、权限及配置归约成不可变临时呈现值；工具按原 `toolCallId` 更新。打开相同成员复用原 owner，组件重建、隐藏和页面切换不重新 new/load，也不关闭成员。原 owner 丢失后仅按真实 load/resume 能力显式打开，不把观察终止、resume 或缺口解释为完整历史。协议运行资格、控制和有序配置规则见 [28.11](./28-acp.md#2811-acp-业务会话与原生内容通路)。
 
-ACP 状态栏外层只装配稳定成员身份与布局；连接／运行状态、上下文、费用及外部历史入口各由所属组件和 ViewModel 选择其实际依赖的数据并独立刷新，新增有可靠来源的指标也遵循相同边界。上下文和费用来自同一 `usage_update` 时分别选择所需字段；无关的消息流或其他读数变化不得驱动该组件重建，观察缺口、断开等共同依赖变化则分别使受影响读数失效。需要最新用量投影时仅由原 Client 会话 owner 在接纳同一有序协议事件时维护，不能由组件复制第二份业务状态、另开协议观察或轮询；新实例不继承旧实例值，费用缺失随新通知清除。圆环、未知值和单行呈现见 [19](./19-studio-ui.md#markdown-排版与上下文状态栏)。
+ACP 状态栏外层只装配稳定成员身份与布局；连接／运行状态、上下文、估算速度、累计费用及外部历史入口各由所属组件和 ViewModel 独立选择与刷新。常驻触发控件均只订阅各自极窄读数（如 `AcpContextUsageConnector` 只订阅 `(used, size, isLive)`），确保未悬停时的文本流式增量零重建；对应详情弹层（`AcpContextDetailView`、`AcpThroughputDetailView`、`AcpCostDetailView`、`AcpSessionDetailView`）分别经由 `acpContextDetailViewModel`、`acpThroughputDetailViewModel`、`acpCostDetailViewModel`、`acpSessionDetailViewModel` 在各自浮层打开时按需挂载并订阅所属投影。会话持有层 `AcpConversationSession` 在重新附着驻留会话时从 `Accepted.infoSnapshot` 水合内存快照，并在新一轮发送、工具/权限调用、非文本完成、后续省略 `cost` 字段的 `usage_update`、观察缺口或断开后保持最近一次有效的用量、费用与估算速度供状态栏展示，同时将实时标记降级为非实时（`metricsLive = false`），各指标最近更新时间随对应实测事件独立推进；快照仅驻留内存而不持久化，新会话或冷恢复不继承其他实例的历史数值。圆环分级视觉、独立悬停弹层职责与单行呈现见 [19](./19-studio-ui.md#markdown-排版与上下文状态栏)。
 
 发送时可即时展示本次输入，但该本地项只是当前 prompt 的临时回显，不是第二份历史。当前 prompt 尚未产生 Agent 正文、思考或工具内容时，首组正式 `user_message_chunk` 取代该临时项，再按原 message ID 和流顺序归约；对端不回显时保留本地项。资格随 prompt 结束、发送失败或观察丢失退役，不匹配旧发送，不按文本全局去重；load 回放、后续独立用户消息和连续两次相同输入均须保留。配置及命令目录等旁路通知不把同次回显变成第二条用户消息。
 

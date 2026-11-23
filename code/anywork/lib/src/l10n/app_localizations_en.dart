@@ -7728,4 +7728,108 @@ class AppLocalizationsEn extends AppLocalizations {
   String timelineToolParseFailed(String reason) {
     return 'Current tool content cannot be parsed: $reason';
   }
+
+  @override
+  String get acpContextWindowTitle => 'Context window';
+
+  @override
+  String get acpSnapshotLiveBadge => 'Live';
+
+  @override
+  String get acpSnapshotRetainedBadge => 'Last snapshot';
+
+  @override
+  String acpContextRemainingLabel(String tokens) {
+    return '$tokens remaining';
+  }
+
+  @override
+  String acpContextOverCapacityLabel(String tokens) {
+    return 'Over capacity by $tokens';
+  }
+
+  @override
+  String get acpContextNotReported => 'Context usage not reported by agent';
+
+  @override
+  String acpContextExactTokens(String used, String size) {
+    return '$used / $size exact tokens';
+  }
+
+  @override
+  String get acpMetricSpeedTitle => 'Est. output speed';
+
+  @override
+  String acpMetricSpeedDetail(String tokens, String duration) {
+    return '≈ $tokens tokens · $duration';
+  }
+
+  @override
+  String get acpMetricCostTitle => 'Session cost';
+
+  @override
+  String get acpMetricCostSubtitle => 'Reported by agent';
+
+  @override
+  String get acpMetricTurnsTitle => 'Completed turns';
+
+  @override
+  String acpMetricTurnsValue(int count) {
+    return '$count';
+  }
+
+  @override
+  String get acpDetailSessionSection => 'Session & configuration';
+
+  @override
+  String get acpDetailLastStopReason => 'Last finish';
+
+  @override
+  String get acpDetailUpdatedAt => 'Updated';
+
+  @override
+  String get acpDetailCapabilitiesSection => 'Capabilities & identity';
+
+  @override
+  String get acpDetailSessionId => 'Remote session';
+
+  @override
+  String get acpContextDetailSection => 'Context breakdown';
+
+  @override
+  String get acpContextUsedLabel => 'Used tokens';
+
+  @override
+  String get acpContextCapacityLabel => 'Window capacity';
+
+  @override
+  String get acpContextDeltaLabel => 'Delta vs previous';
+
+  @override
+  String get acpThroughputDetailSection => 'Latest sample';
+
+  @override
+  String get acpThroughputFormulaNote =>
+      'Estimated at ~1 token per 4 chars, including initial wait';
+
+  @override
+  String get acpThroughputTokensLabel => 'Est. output tokens';
+
+  @override
+  String get acpThroughputDurationLabel => 'Response time';
+
+  @override
+  String get acpCostDetailSection => 'Cost breakdown';
+
+  @override
+  String get acpCostCurrencyLabel => 'Currency';
+
+  @override
+  String get acpCostRawLabel => 'Raw reading';
+
+  @override
+  String get acpCostScopeLabel => 'Source';
+
+  @override
+  String get acpSessionDetailTitle => 'Session info';
 }

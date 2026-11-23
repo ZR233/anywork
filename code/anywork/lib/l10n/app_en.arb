@@ -3670,5 +3670,77 @@
         "type": "String"
       }
     }
-  }
+  },
+  "acpContextWindowTitle": "Context window",
+  "acpSnapshotLiveBadge": "Live",
+  "acpSnapshotRetainedBadge": "Last snapshot",
+  "acpContextRemainingLabel": "{tokens} remaining",
+  "@acpContextRemainingLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextOverCapacityLabel": "Over capacity by {tokens}",
+  "@acpContextOverCapacityLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextNotReported": "Context usage not reported by agent",
+  "acpContextExactTokens": "{used} / {size} exact tokens",
+  "@acpContextExactTokens": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricSpeedTitle": "Est. output speed",
+  "acpMetricSpeedDetail": "≈ {tokens} tokens · {duration}",
+  "@acpMetricSpeedDetail": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricCostTitle": "Session cost",
+  "acpMetricCostSubtitle": "Reported by agent",
+  "acpMetricTurnsTitle": "Completed turns",
+  "acpMetricTurnsValue": "{count}",
+  "@acpMetricTurnsValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpDetailSessionSection": "Session & configuration",
+  "acpDetailLastStopReason": "Last finish",
+  "acpDetailUpdatedAt": "Updated",
+  "acpDetailCapabilitiesSection": "Capabilities & identity",
+  "acpDetailSessionId": "Remote session",
+  "acpContextDetailSection": "Context breakdown",
+  "acpContextUsedLabel": "Used tokens",
+  "acpContextCapacityLabel": "Window capacity",
+  "acpContextDeltaLabel": "Delta vs previous",
+  "acpThroughputDetailSection": "Latest sample",
+  "acpThroughputFormulaNote": "Estimated at ~1 token per 4 chars, including initial wait",
+  "acpThroughputTokensLabel": "Est. output tokens",
+  "acpThroughputDurationLabel": "Response time",
+  "acpCostDetailSection": "Cost breakdown",
+  "acpCostCurrencyLabel": "Currency",
+  "acpCostRawLabel": "Raw reading",
+  "acpCostScopeLabel": "Source",
+  "acpSessionDetailTitle": "Session info"
 }

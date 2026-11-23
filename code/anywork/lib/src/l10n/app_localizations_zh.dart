@@ -7291,4 +7291,107 @@ class AppLocalizationsZh extends AppLocalizations {
   String timelineToolParseFailed(String reason) {
     return '当前工具内容无法解析：$reason';
   }
+
+  @override
+  String get acpContextWindowTitle => '上下文窗口';
+
+  @override
+  String get acpSnapshotLiveBadge => '实时';
+
+  @override
+  String get acpSnapshotRetainedBadge => '上次快照';
+
+  @override
+  String acpContextRemainingLabel(String tokens) {
+    return '剩余可用 $tokens';
+  }
+
+  @override
+  String acpContextOverCapacityLabel(String tokens) {
+    return '超出容量 $tokens';
+  }
+
+  @override
+  String get acpContextNotReported => '对端暂未报告上下文占用';
+
+  @override
+  String acpContextExactTokens(String used, String size) {
+    return '精确 $used / $size 词元';
+  }
+
+  @override
+  String get acpMetricSpeedTitle => '正文估算速度';
+
+  @override
+  String acpMetricSpeedDetail(String tokens, String duration) {
+    return '≈ $tokens 词元 · $duration';
+  }
+
+  @override
+  String get acpMetricCostTitle => '累计费用';
+
+  @override
+  String get acpMetricCostSubtitle => '对端累计报告';
+
+  @override
+  String get acpMetricTurnsTitle => '已完成轮次';
+
+  @override
+  String acpMetricTurnsValue(int count) {
+    return '$count 轮';
+  }
+
+  @override
+  String get acpDetailSessionSection => '会话与运行配置';
+
+  @override
+  String get acpDetailLastStopReason => '上次结束';
+
+  @override
+  String get acpDetailUpdatedAt => '最近更新';
+
+  @override
+  String get acpDetailCapabilitiesSection => '协议能力与标识';
+
+  @override
+  String get acpDetailSessionId => '远端会话';
+
+  @override
+  String get acpContextDetailSection => '上下文明细';
+
+  @override
+  String get acpContextUsedLabel => '已用词元';
+
+  @override
+  String get acpContextCapacityLabel => '窗口容量';
+
+  @override
+  String get acpContextDeltaLabel => '较上次变化';
+
+  @override
+  String get acpThroughputDetailSection => '最近样本';
+
+  @override
+  String get acpThroughputFormulaNote => '按每 4 个字符约计 1 词元估算，含首段等待耗时';
+
+  @override
+  String get acpThroughputTokensLabel => '估算输出词元';
+
+  @override
+  String get acpThroughputDurationLabel => '响应耗时';
+
+  @override
+  String get acpCostDetailSection => '费用明细';
+
+  @override
+  String get acpCostCurrencyLabel => '币种';
+
+  @override
+  String get acpCostRawLabel => '原始读数';
+
+  @override
+  String get acpCostScopeLabel => '统计口径';
+
+  @override
+  String get acpSessionDetailTitle => '会话信息';
 }

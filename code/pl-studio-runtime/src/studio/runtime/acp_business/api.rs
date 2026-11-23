@@ -20,6 +20,7 @@ pub struct AcpSessionOpen {
     pub target: AcpSessionTarget,
     pub observation: Option<AcpSessionObservation>,
     pub completion: AcpSessionCompletion,
+    pub info_snapshot: Option<AcpSessionInfoSnapshot>,
 }
 
 /// Immutable leases of existing service owners; never holds a StudioRuntime or SessionTable.
@@ -67,6 +68,7 @@ impl PendingOpen {
                 self.resources.completion.clone(),
             )),
             completion: self.resources.completion.clone(),
+            info_snapshot: None,
         })
     }
 }
@@ -600,12 +602,21 @@ impl StudioRuntime {
             // registration, not protocol open or product publication.
             _admission = Some(owner.agent_operation(&agent.thread_id).await);
             if let Some(acp) = owner.resident_acp(&agent.thread_id)? {
+                let info_snapshot = match acp.session() {
+                    Ok(session) => session
+                        .snapshot()
+                        .await
+                        .ok()
+                        .and_then(|snapshot| projection::info_snapshot(&snapshot)),
+                    Err(_) => None,
+                };
                 return Ok(AcpSessionOpen {
                     target: target(&session, &agent, &acp),
                     observation: acp.take_observation().await.map(|observer| {
                         AcpSessionObservation::new(observer, acp.completion.clone())
                     }),
                     completion: acp.completion.clone(),
+                    info_snapshot,
                 });
             }
             let id = match &request.intent {

@@ -3,10 +3,10 @@ import 'package:material_ui/material_ui.dart';
 import '../../app/theme/studio_tokens.dart';
 import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
+import '../../shared/status_detail_panel.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/studio_context_usage_ring.dart';
 import '../../shared/studio_hover_detail.dart';
-import 'status_detail_panel.dart';
 
 /// 状态栏上下文读数。
 ///

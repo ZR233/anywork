@@ -319,6 +319,7 @@ async fn run_session<S: Future<Output = CancellationSignal>>(
         match event {
             AcpSessionEvent::Initialized {
                 capabilities: value,
+                ..
             } => capabilities = Some(value),
             AcpSessionEvent::Ready { .. } => break,
             event => check_event(runtime, &target, event).await?,

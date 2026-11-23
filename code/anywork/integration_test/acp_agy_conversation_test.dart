@@ -6,7 +6,7 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_co
 import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork/src/features/status/thread_status_bar.dart';
+import 'package:anywork/src/features/status/status_bar_item.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/statistics.dart' show StatisticsSample;

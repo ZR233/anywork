@@ -145,6 +145,26 @@ pub struct TextPerformance {
     pub response_millis: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsageSnapshot {
+    pub used: u64,
+    pub size: u64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CostSnapshot {
+    pub amount: f64,
+    pub currency: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimedTextPerformance {
+    pub performance: TextPerformance,
+    pub updated_at: i64,
+}
+
 /// 只读当前态，不包含 transcript；配置和模式保持官方类型及 None/空列表差异。
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -160,6 +180,11 @@ pub struct Snapshot {
     pub observation_gap: Option<Gap>,
     pub server_info: Option<Implementation>,
     pub auth_methods: Vec<crate::auth::AuthMethod>,
+    pub latest_usage: Option<UsageSnapshot>,
+    pub latest_cost: Option<CostSnapshot>,
+    pub latest_text_performance: Option<TimedTextPerformance>,
+    pub completed_turns: u64,
+    pub updated_at: Option<i64>,
 }
 
 /// driver 的协议结果与本地退出事实；不证明子进程/租约已回收。
@@ -334,6 +359,16 @@ impl Drop for DriverLifetime {
     }
 }
 
+fn unix_seconds() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 /// 必须先取得 Observer，再启动 driver，才能看到 Load 响应前的历史回放。
 pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
     let (tx, commands) = mpsc::channel(16);
@@ -379,6 +414,11 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         wake: Arc::new(Notify::new()),
         server_info: None,
         auth_methods: Vec::new(),
+        latest_usage: None,
+        latest_cost: None,
+        latest_text_performance: None,
+        completed_turns: 0,
+        updated_at: None,
     }));
     (
         Session {
@@ -470,6 +510,11 @@ pub(crate) struct State {
     wake: Arc<Notify>,
     server_info: Option<Implementation>,
     auth_methods: Vec<crate::auth::AuthMethod>,
+    latest_usage: Option<UsageSnapshot>,
+    latest_cost: Option<CostSnapshot>,
+    latest_text_performance: Option<TimedTextPerformance>,
+    completed_turns: u64,
+    updated_at: Option<i64>,
 }
 
 impl State {
@@ -532,6 +577,11 @@ impl State {
             observation_gap: self.events.gap(),
             server_info: self.server_info.clone(),
             auth_methods: self.auth_methods.clone(),
+            latest_usage: self.latest_usage,
+            latest_cost: self.latest_cost.clone(),
+            latest_text_performance: self.latest_text_performance,
+            completed_turns: self.completed_turns,
+            updated_at: self.updated_at,
         }
     }
 
@@ -563,11 +613,32 @@ impl State {
             }
             SessionUpdate::ConfigOptionUpdate(update) => {
                 self.config_options = Some(update.config_options.clone());
+                self.updated_at = Some(unix_seconds());
             }
             SessionUpdate::CurrentModeUpdate(update) if self.config_options.is_none() => {
                 if let Some(modes) = &mut self.modes {
                     modes.current_mode_id = update.current_mode_id.clone();
+                    self.updated_at = Some(unix_seconds());
                 }
+            }
+            SessionUpdate::UsageUpdate(usage) => {
+                let now = unix_seconds();
+                self.latest_usage = Some(UsageSnapshot {
+                    used: usage.used,
+                    size: usage.size,
+                    updated_at: now,
+                });
+                if let Some(cost) = &usage.cost
+                    && cost.amount.is_finite()
+                    && cost.amount >= 0.0
+                {
+                    self.latest_cost = Some(CostSnapshot {
+                        amount: cost.amount,
+                        currency: cost.currency.clone(),
+                        updated_at: now,
+                    });
+                }
+                self.updated_at = Some(now);
             }
             SessionUpdate::AgentMessageChunk(chunk) => {
                 if let Some(run) = &mut self.active {
@@ -584,6 +655,14 @@ impl State {
                                 count.checked_add(text.text.chars().count() as u64)
                             });
                             text_performance = run.text_performance();
+                            if let Some(performance) = text_performance {
+                                let now = unix_seconds();
+                                self.latest_text_performance = Some(TimedTextPerformance {
+                                    performance,
+                                    updated_at: now,
+                                });
+                                self.updated_at = Some(now);
+                            }
                         }
                         ContentBlock::Text(_) => {}
                         _ => run.text_characters = None,
@@ -630,6 +709,7 @@ impl State {
                 self.config_options = response.config_options.clone();
                 self.modes = response.modes.clone();
                 self.ready = true;
+                self.updated_at = Some(unix_seconds());
                 if self.closing {
                     self.settle_open(Err(Error::Closed));
                     self.wake.notify_one();
@@ -893,6 +973,7 @@ impl Driver {
                                 crate::auth::declared_methods(&initialize.auth_methods);
                             owner.server_info = initialize.agent_info;
                             owner.capabilities = initialize.agent_capabilities;
+                            owner.updated_at = Some(unix_seconds());
                             if self.request.expected_server_version.as_ref().is_some_and(
                                 |expected| {
                                     owner.server_info.as_ref().map(|info| &info.version)
@@ -902,8 +983,14 @@ impl Driver {
                                 owner.fail_open(Error::ServerVersionMismatch);
                             } else if !owner.closing {
                                 let capabilities = owner.capabilities.clone();
-                                owner
-                                    .emit(Event::Initialized(Box::new(capabilities.clone())), size);
+                                let server_info = owner.server_info.clone();
+                                owner.emit(
+                                    Event::Initialized {
+                                        capabilities: Box::new(capabilities.clone()),
+                                        server_info,
+                                    },
+                                    size,
+                                );
                                 prepare_capabilities = Some(capabilities);
                             } else {
                                 owner.close_done = true;
@@ -1271,6 +1358,17 @@ fn start_prompt(
                 {
                     report(id, performance, active.model, active.effort);
                 }
+                let now = unix_seconds();
+                if let Some(performance) = text_performance {
+                    owner.latest_text_performance = Some(TimedTextPerformance {
+                        performance,
+                        updated_at: now,
+                    });
+                }
+                if result.is_ok() {
+                    owner.completed_turns = owner.completed_turns.saturating_add(1);
+                }
+                owner.updated_at = Some(now);
                 let completed = Completed {
                     run: id,
                     completion_sequence: owner
@@ -1450,6 +1548,7 @@ impl Driver {
                 owner.config_pending = false;
                 if let Ok(response) = &result {
                     owner.config_options = Some(response.config_options.clone());
+                    owner.updated_at = Some(unix_seconds());
                     let size = response
                         .clone()
                         .into_json("session/set_config_option")
@@ -1514,6 +1613,7 @@ impl Driver {
                     && let Some(modes) = &mut owner.modes
                 {
                     modes.current_mode_id = id.clone();
+                    owner.updated_at = Some(unix_seconds());
                     let size = Ok(id.to_string().len());
                     owner.emit(Event::ModeSet(id), size);
                 }
@@ -1908,7 +2008,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
-            if matches!(event, Event::Initialized(_)) {
+            if matches!(event, Event::Initialized { .. }) {
                 assert!(
                     !self.initialized,
                     "initialize must be published exactly once"
@@ -1920,7 +2020,7 @@ mod tests {
 
         async fn ready(&mut self) -> NewSessionResponse {
             let event = self.event().await;
-            let event = if matches!(event, Event::Initialized(_)) {
+            let event = if matches!(event, Event::Initialized { .. }) {
                 self.event().await
             } else {
                 event
@@ -2413,7 +2513,7 @@ mod tests {
                 ..Scenario::default()
             },
         );
-        assert!(matches!(harness.event().await, Event::Initialized(_)));
+        assert!(matches!(harness.event().await, Event::Initialized { .. }));
         harness
             .updates(vec![update(
                 "business",
@@ -2721,7 +2821,7 @@ mod tests {
                     ..Scenario::default()
                 },
             );
-            let Event::Initialized(capabilities) = harness.event().await else {
+            let Event::Initialized { capabilities, .. } = harness.event().await else {
                 panic!("initialize must precede every setup or replay event");
             };
             assert_eq!(*capabilities, Scenario::default().capabilities);
@@ -3120,7 +3220,7 @@ mod tests {
                     ..Scenario::default()
                 },
             );
-            assert!(matches!(harness.event().await, Event::Initialized(_)));
+            assert!(matches!(harness.event().await, Event::Initialized { .. }));
             assert!(matches!(
                 harness.event().await,
                 Event::Failed(Error::Unsupported)
@@ -3788,7 +3888,7 @@ mod tests {
                 ..Scenario::default()
             },
         );
-        assert!(matches!(harness.event().await, Event::Initialized(_)));
+        assert!(matches!(harness.event().await, Event::Initialized { .. }));
         assert!(
             matches!(harness.event().await, Event::Failed(Error::Rpc(error)) if error.code == agent_client_protocol::ErrorCode::AUTH_REQUIRED)
         );
@@ -4132,5 +4232,108 @@ mod tests {
             }
             harness.finish().await;
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn snapshot_retains_latest_usage_cost_speed_server_info_and_turns() {
+        let mut harness = Harness::new(
+            Open::New,
+            Scenario {
+                server_info: Some(Implementation::new("claude-code", "1.4.5").title("Claude Code")),
+                ..Scenario::default()
+            },
+        );
+        let Event::Initialized { server_info, .. } = harness.event().await else {
+            panic!("expected Initialized event");
+        };
+        let server_info = server_info.expect("server_info must be published on Initialized");
+        assert_eq!(server_info.name, "claude-code");
+        assert_eq!(server_info.version, "1.4.5");
+        assert_eq!(server_info.title.as_deref(), Some("Claude Code"));
+        let Event::Ready(_) = harness.event().await else {
+            panic!("expected Ready event");
+        };
+
+        // Turn 1: pure text + usage with cost
+        harness.session.submit(input("first")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 1).await;
+        tokio::time::advance(Duration::from_millis(250)).await;
+        harness
+            .updates(vec![
+                update("business", text("hello world")),
+                update(
+                    "business",
+                    SessionUpdate::UsageUpdate(
+                        UsageUpdate::new(1_200, 200_000).cost(Cost::new(0.42, "USD")),
+                    ),
+                ),
+            ])
+            .await;
+        assert!(matches!(harness.event().await, Event::Update(_, Some(_))));
+        assert!(matches!(harness.event().await, Event::Update(_, _)));
+        tokio::time::advance(Duration::from_millis(250)).await;
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+
+        let snap1 = harness.session.snapshot().await.unwrap();
+        assert_eq!(snap1.completed_turns, 1);
+        assert_eq!(
+            snap1.latest_usage.map(|u| (u.used, u.size)),
+            Some((1_200, 200_000))
+        );
+        assert_eq!(
+            snap1
+                .latest_cost
+                .as_ref()
+                .map(|c| (c.amount, c.currency.as_str())),
+            Some((0.42, "USD"))
+        );
+        let perf1 = snap1.latest_text_performance.expect("retained speed");
+        assert_eq!(perf1.performance.characters, 11);
+        assert_eq!(perf1.performance.response_millis, 500);
+
+        // Turn 2: permission disqualifies benchmark speed, usage omits cost -> retains previous speed & cost
+        harness.session.submit(input("second")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 2).await;
+        harness.control.send(PeerCommand::Permission).await.unwrap();
+        let Event::Permission { id, .. } = harness.event().await else {
+            panic!("expected permission");
+        };
+        harness.session.answer_permission(id, None).await.unwrap();
+        harness
+            .updates(vec![update(
+                "business",
+                SessionUpdate::UsageUpdate(UsageUpdate::new(3_400, 200_000)),
+            )])
+            .await;
+        assert!(matches!(harness.event().await, Event::Update(_, None)));
+        harness.complete(StopReason::EndTurn).await;
+        let Event::Completed(completed2) = harness.event().await else {
+            panic!("expected second completion");
+        };
+        assert!(completed2.text_performance.is_none());
+
+        let snap2 = harness.session.snapshot().await.unwrap();
+        assert_eq!(snap2.completed_turns, 2);
+        assert_eq!(
+            snap2.latest_usage.map(|u| (u.used, u.size)),
+            Some((3_400, 200_000))
+        );
+        assert_eq!(
+            snap2
+                .latest_cost
+                .as_ref()
+                .map(|c| (c.amount, c.currency.as_str())),
+            Some((0.42, "USD")),
+            "cost omitted on subsequent usage_update must keep last valid cost"
+        );
+        assert_eq!(
+            snap2.latest_text_performance.map(|p| p.performance),
+            Some(perf1.performance),
+            "tool/permission turn without text_performance must retain last valid speed"
+        );
+        assert!(snap2.updated_at.is_some());
+
+        harness.finish().await;
     }
 }
