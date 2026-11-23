@@ -133,31 +133,95 @@ fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelDefinit
 }
 
 #[tokio::test]
-async fn service_tiers_are_ignored_for_api_key_and_other_vendor_catalogs() {
-    for adapter in [
+async fn online_service_tiers_follow_the_account_catalog() {
+    let payload = json!({"models":[{
+        "slug":"gpt-6.2-sol",
+        "prefer_websockets":true,
+        "service_tiers":[{"id":"priority","name":"Fast"},{"id":"ultrafast","name":"Ultrafast"}],
+        "default_service_tier":null,
+        "additional_speed_tiers":["fast","ultrafast"]
+    }]});
+    let server = Server::json(payload).await;
+    let mut account = provider(&server.url, pl_model::protocol::providers::openai::ID);
+    let query = ModelCatalogQuery::for_account(&account).unwrap();
+    let models = updated(query.execute(None).await.unwrap());
+    server.finish().await;
+    accept_observation(&mut account, models, 1);
+    let model = account
+        .effective_catalog(None)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.model.base.slug == "gpt-6.2-sol")
+        .unwrap();
+    assert_eq!(
+        model.model.extra.binding.transport.default_connection_mode,
+        ConnectionMode::WebSocket
+    );
+    let tiers = model_descriptor(&model).service_tiers.unwrap();
+    assert_eq!(tiers.default, None);
+    assert_eq!(
+        tiers
+            .candidates
+            .iter()
+            .map(|tier| (tier.id.as_str(), tier.display_name.as_deref()))
+            .collect::<Vec<_>>(),
+        [("priority", Some("Fast")), ("ultrafast", Some("Ultrafast"))]
+    );
+
+    let other = provider(
+        "http://127.0.0.1:1",
         pl_model::protocol::providers::openai::ID,
-        pl_model::protocol::providers::deepseek::ID,
-        pl_model::protocol::providers::xai::ID,
-        pl_model::protocol::providers::mimo::ID,
+    );
+    let other_model = other
+        .effective_catalog(None)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.model.base.slug == "gpt-6.2-sol")
+        .unwrap();
+    assert!(model_descriptor(&other_model).service_tiers.is_none());
+}
+
+#[tokio::test]
+async fn invalid_service_tier_declarations_reject_the_catalog() {
+    for declarations in [
+        json!({"unrelated":true}),
+        json!([{"id":"   "}]),
+        json!([{"id":"priority"},{"id":"priority"}]),
     ] {
-        let models = discover(
-            json!({"data":[{
-                "id":"unknown-service-tier-model",
-                "service_tiers":{"unrelated":"not-a-Codex-list"},
-                "default_service_tier":[42]
-            }]}),
-            adapter,
-        )
+        let server = Server::json(json!({"data":[{
+            "id":"invalid-tier-model",
+            "service_tiers":declarations
+        }]}))
         .await;
-        assert_eq!(models.len(), 1);
-        assert!(
-            models[0]
-                .extra
-                .parameters
-                .iter()
-                .all(|p| p.name != "service_tier")
-        );
+        let account = provider(&server.url, pl_model::protocol::providers::openai::ID);
+        let query = ModelCatalogQuery::for_account(&account).unwrap();
+        assert!(matches!(
+            query.execute(None).await,
+            Err(ModelCatalogQueryError::Protocol)
+        ));
+        server.finish().await;
     }
+}
+
+#[tokio::test]
+async fn compatible_catalog_accepts_declared_tiers_in_the_models_api_envelope() {
+    let server = Server::json(json!({"data":[
+        {"id":"standard-model"},
+        {"id":"compatible-model","service_tiers":[{"id":"regional-priority"}]}
+    ]}))
+    .await;
+    let account = AccountConfig::from_explicit_models(
+        pl_model::protocol::providers::openai::compatible_endpoint("test", &server.url),
+        Vec::new(),
+    );
+    let query = ModelCatalogQuery::for_account(&account).unwrap();
+    let models = updated(query.execute(None).await.unwrap());
+    server.finish().await;
+    assert!(models[0].extra.parameters.is_empty());
+    assert_eq!(
+        models[1].extra.parameters[0].candidates,
+        ["regional-priority"]
+    );
 }
 
 #[test]

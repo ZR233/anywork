@@ -413,7 +413,6 @@ mod contract_tests {
         use crate::runtime::invocation::chatgpt_tests::{catalog, fixture_for};
         let (_temp, mut runtime) = fixture_for(true);
         runtime.model = catalog(
-            &runtime,
             serde_json::json!({
                 "slug":"fixture-model", "service_tiers":[{"id":"priority"},{"id":"ultrafast"}],
                 "default_service_tier":"ultrafast"

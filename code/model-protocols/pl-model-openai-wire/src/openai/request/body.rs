@@ -45,16 +45,8 @@ pub(super) fn finalize_body(
 ) {
     merge_base_body(body, &model.extra.binding.request.body);
     apply_parameters(body, model, request);
-    if let Some(tier) = &request.service_tier
-        && let Some(wire) = model
-            .extra
-            .parameters
-            .iter()
-            .find(|parameter| parameter.name == "service_tier")
-            .and_then(|parameter| parameter.wire_for(tier))
-    {
-        // Request validation restricts this protocol-owned wire to the exact tier assignment.
-        wire.apply_to(body);
+    if let Some(tier) = &request.service_tier {
+        body.insert("service_tier".into(), Value::String(tier.clone()));
     }
 }
 

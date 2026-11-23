@@ -341,11 +341,7 @@ pub(super) fn request_metadata(
         max_tokens: request.max_tokens,
         requested_service_tier: match request.service_tier.as_deref() {
             Some(id) => format!("tier:{id}"),
-            None if pl_model_openai_wire::service_tiers::has_selectable_tier(
-                runtime.endpoint(),
-                runtime.model(),
-            ) =>
-            {
+            None if pl_model_openai_wire::service_tiers::has_selectable_tier(runtime.model()) => {
                 "standard".into()
             }
             None => "notApplicable".into(),

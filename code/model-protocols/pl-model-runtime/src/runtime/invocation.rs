@@ -377,17 +377,13 @@ pub(in crate::runtime) mod chatgpt_tests {
     }
 
     pub(in crate::runtime) fn catalog(
-        runner: &ModelRuntime,
         entry: serde_json::Value,
         previous: Option<&[crate::model::ModelDefinition]>,
     ) -> Vec<crate::model::ModelDefinition> {
-        let mut records = pl_model_openai_wire::generic_catalog::openai_records(
+        let records = pl_model_openai_wire::generic_catalog::openai_records(
             &serde_json::to_vec(&json!({"models":[entry]})).unwrap(),
         )
         .unwrap();
-        for record in &mut records {
-            record.service_tiers.authorize(runner.endpoint());
-        }
         pl_model_openai_wire::discovery::models(
             records,
             &crate::config::ModelCatalogDiscovery {
@@ -402,7 +398,6 @@ pub(in crate::runtime) mod chatgpt_tests {
 
     #[test]
     fn codex_service_tiers_catalog_presence_names_and_defaults() {
-        let (_temp, runner) = fixture_for(true);
         for (tiers, default, candidates, names, expected_default) in [
             (
                 json!([{"id":"priority","name":"Fast","description":{"ignored":true},"wire":{"set":[{"path":"model","value":"must-not-apply"}]}}, {"id":"ultrafast","name":"Ultrafast"}]),
@@ -442,7 +437,6 @@ pub(in crate::runtime) mod chatgpt_tests {
             (json!([]), "priority", vec![], vec![], None),
         ] {
             let models = catalog(
-                &runner,
                 json!({"slug":"fixture-model","service_tiers":tiers,"default_service_tier":default}),
                 None,
             );
@@ -476,7 +470,6 @@ pub(in crate::runtime) mod chatgpt_tests {
             }
         }
         let missing = catalog(
-            &runner,
             json!({"slug":"fixture-model","additional_speed_tiers":["priority"]}),
             None,
         );
@@ -491,14 +484,11 @@ pub(in crate::runtime) mod chatgpt_tests {
 
     #[test]
     fn codex_service_tiers_are_independent_from_reasoning_and_withdraw_explicitly() {
-        let (_temp, runner) = fixture_for(true);
         let initial = catalog(
-            &runner,
-            json!({"slug":"fixture-model","service_tiers":[{"id":"priority"}],"supported_reasoning_levels":[{"effort":"high"}]}),
+            json!({"slug":"fixture-model","service_tiers":[{"id":"priority"}],"default_service_tier":"priority","supported_reasoning_levels":[{"effort":"high"}]}),
             None,
         );
         let reasoning = catalog(
-            &runner,
             json!({"slug":"fixture-model","parameters":[{"name":"effort","candidates":["low"],"wire":{"low":{"set":[{"path":"reasoning.effort","value":"low"}]}}}]}),
             Some(&initial),
         );
@@ -510,8 +500,19 @@ pub(in crate::runtime) mod chatgpt_tests {
                 .iter()
                 .any(|p| p.name == "service_tier")
         );
+        let default_cleared = catalog(
+            json!({"slug":"fixture-model","default_service_tier":null}),
+            Some(&reasoning),
+        );
+        let tier = default_cleared[0]
+            .extra
+            .parameters
+            .iter()
+            .find(|p| p.name == "service_tier")
+            .unwrap();
+        assert_eq!(tier.candidates, ["priority"]);
+        assert_eq!(tier.default, None);
         let cleared = catalog(
-            &runner,
             json!({"slug":"fixture-model","service_tiers":[]}),
             Some(&reasoning),
         );
@@ -557,56 +558,11 @@ pub(in crate::runtime) mod chatgpt_tests {
     }
 
     #[test]
-    fn service_tiers_do_not_parse_unrelated_endpoint_fields_or_borrow_another_account() {
-        let (_temp, codex) = fixture_for(true);
-        let declared = catalog(
-            &codex,
-            json!({"slug":"fixture-model","service_tiers":[{"id":"priority"}]}),
-            None,
-        );
-        let (_temp, legacy) = fixture();
-        let mut api_key = legacy.clone();
-        api_key.endpoint.authorization = None;
-        let mut compatible = codex.clone();
-        compatible.endpoint.protocol = pl_model_openai::endpoint::COMPATIBLE_ID;
-        for runner in [&legacy, &api_key, &compatible] {
-            let models = catalog(
-                runner,
-                json!({"slug":"fixture-model","service_tiers":{"unrelated":true},"default_service_tier":[42]}),
-                None,
-            );
-            assert!(
-                models[0]
-                    .extra
-                    .parameters
-                    .iter()
-                    .all(|p| p.name != "service_tier")
-            );
-            let mut runner = runner.clone();
-            runner.model = declared[0].clone();
-            let mut selected = request();
-            selected.service_tier = Some("priority".into());
-            assert!(matches!(
-                runner.prepare_request(selected),
-                Err(PureError::ConfigError(_))
-            ));
-        }
-        let other = catalog(&codex, json!({"slug":"fixture-model"}), None);
-        assert!(
-            other[0]
-                .extra
-                .parameters
-                .iter()
-                .all(|p| p.name != "service_tier")
-        );
-    }
-
-    #[test]
-    fn codex_service_tiers_request_body_is_exact_optional_and_validated_before_io() {
+    fn service_tier_request_is_exact_optional_and_validated_before_io() {
         let (_temp, mut runner) = fixture_for(true);
-        runner.model = catalog(&runner, json!({"slug":"fixture-model","service_tiers":[{"id":"priority"},{"id":"ultrafast"}],"default_service_tier":"ultrafast","supported_reasoning_levels":[{"effort":"high"}]}), None).remove(0);
+        runner.model = catalog(json!({"slug":"fixture-model","service_tiers":[{"id":"priority"},{"id":"ultrafast"},{"id":"custom-tier"}],"default_service_tier":"ultrafast","supported_reasoning_levels":[{"effort":"high"}]}), None).remove(0);
         assert!(body(&runner, request()).get("service_tier").is_none());
-        for tier in ["priority", "ultrafast"] {
+        for tier in ["priority", "ultrafast", "custom-tier"] {
             let mut request = request();
             request.service_tier = Some(tier.into());
             request.reasoning = Some(crate::completion::ReasoningConfig {
@@ -625,15 +581,8 @@ pub(in crate::runtime) mod chatgpt_tests {
                 Err(PureError::ConfigError(_))
             ));
         }
-        let mut ws = runner.clone();
-        ws.model.extra.binding.transport =
-            crate::model::ModelTransportProfile::responses_websocket();
         let mut selected = request();
         selected.service_tier = Some("priority".into());
-        assert!(matches!(
-            ws.prepare_request(selected.clone()),
-            Err(PureError::ConfigError(_))
-        ));
         assert!(matches!(
             runner.prepare_request_body(
                 selected,
