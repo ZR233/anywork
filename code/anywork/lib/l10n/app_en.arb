@@ -3634,5 +3634,64 @@
   "timelineToolNameWorkflowRestart": "Restart workflow",
   "timelineToolNameWebSearch": "Web query",
   "timelineToolNameDeepseekWebSearch": "DeepSeek web search",
-  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch"
+  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
+  "acpContextWindowTitle": "Context window",
+  "acpSnapshotLiveBadge": "Live",
+  "acpSnapshotRetainedBadge": "Last snapshot",
+  "acpContextRemainingLabel": "{tokens} remaining",
+  "@acpContextRemainingLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextOverCapacityLabel": "Over capacity by {tokens}",
+  "@acpContextOverCapacityLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextNotReported": "Context usage not reported by agent",
+  "acpContextExactTokens": "{used} / {size} exact tokens",
+  "@acpContextExactTokens": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricSpeedTitle": "Est. output speed",
+  "acpMetricSpeedDetail": "≈ {tokens} tokens · {duration}",
+  "@acpMetricSpeedDetail": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricCostTitle": "Session cost",
+  "acpMetricCostSubtitle": "Reported by agent",
+  "acpMetricTurnsTitle": "Completed turns",
+  "acpMetricTurnsValue": "{count}",
+  "@acpMetricTurnsValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpDetailSessionSection": "Session & configuration",
+  "acpDetailLastStopReason": "Last finish",
+  "acpDetailUpdatedAt": "Updated",
+  "acpDetailCapabilitiesSection": "Capabilities & identity",
+  "acpDetailSessionId": "Remote session"
 }

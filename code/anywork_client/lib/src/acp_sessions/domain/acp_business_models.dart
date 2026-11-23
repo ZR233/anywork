@@ -208,6 +208,177 @@ typedef AcpTextPerformanceView = ({
   int responseMillis,
 });
 
+final class AcpUsageSnapshotView {
+  const AcpUsageSnapshotView({
+    required this.used,
+    required this.size,
+    required this.updatedAt,
+  });
+
+  final BigInt used;
+  final BigInt size;
+  final int updatedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpUsageSnapshotView &&
+      used == other.used &&
+      size == other.size &&
+      updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode => Object.hash(used, size, updatedAt);
+}
+
+final class AcpCostSnapshotView {
+  const AcpCostSnapshotView({
+    required this.amount,
+    required this.currency,
+    required this.updatedAt,
+  });
+
+  final double amount;
+  final String currency;
+  final int updatedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpCostSnapshotView &&
+      amount == other.amount &&
+      currency == other.currency &&
+      updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode => Object.hash(amount, currency, updatedAt);
+}
+
+final class AcpTextPerformanceSnapshotView {
+  const AcpTextPerformanceSnapshotView({
+    required this.estimatedOutputTokens,
+    required this.responseMillis,
+    required this.updatedAt,
+  });
+
+  final int estimatedOutputTokens;
+  final int responseMillis;
+  final int updatedAt;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpTextPerformanceSnapshotView &&
+      estimatedOutputTokens == other.estimatedOutputTokens &&
+      responseMillis == other.responseMillis &&
+      updatedAt == other.updatedAt;
+
+  @override
+  int get hashCode =>
+      Object.hash(estimatedOutputTokens, responseMillis, updatedAt);
+}
+
+final class AcpServerInfoView {
+  const AcpServerInfoView({
+    required this.name,
+    required this.version,
+    this.title,
+  });
+
+  final String name;
+  final String version;
+  final String? title;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpServerInfoView &&
+      name == other.name &&
+      version == other.version &&
+      title == other.title;
+
+  @override
+  int get hashCode => Object.hash(name, version, title);
+}
+
+final class AcpConfigItemSnapshotView {
+  const AcpConfigItemSnapshotView({
+    required this.id,
+    required this.name,
+    this.category,
+    required this.valueId,
+    required this.valueLabel,
+  });
+
+  final String id;
+  final String name;
+  final String? category;
+  final String valueId;
+  final String valueLabel;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AcpConfigItemSnapshotView &&
+      id == other.id &&
+      name == other.name &&
+      category == other.category &&
+      valueId == other.valueId &&
+      valueLabel == other.valueLabel;
+
+  @override
+  int get hashCode => Object.hash(id, name, category, valueId, valueLabel);
+}
+
+final class AcpSessionInfoSnapshotView {
+  AcpSessionInfoSnapshotView({
+    this.usage,
+    this.cost,
+    this.textPerformance,
+    this.lastStopReason,
+    this.serverInfo,
+    Iterable<AcpConfigItemSnapshotView> activeConfig = const [],
+    this.completedTurns,
+    required this.updatedAt,
+  }) : activeConfig = List.unmodifiable(activeConfig);
+
+  final AcpUsageSnapshotView? usage;
+  final AcpCostSnapshotView? cost;
+  final AcpTextPerformanceSnapshotView? textPerformance;
+  final String? lastStopReason;
+  final AcpServerInfoView? serverInfo;
+  final List<AcpConfigItemSnapshotView> activeConfig;
+  final int? completedTurns;
+  final int updatedAt;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! AcpSessionInfoSnapshotView) return false;
+    if (usage != other.usage ||
+        cost != other.cost ||
+        textPerformance != other.textPerformance ||
+        lastStopReason != other.lastStopReason ||
+        serverInfo != other.serverInfo ||
+        completedTurns != other.completedTurns ||
+        updatedAt != other.updatedAt ||
+        activeConfig.length != other.activeConfig.length) {
+      return false;
+    }
+    for (var i = 0; i < activeConfig.length; i++) {
+      if (activeConfig[i] != other.activeConfig[i]) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    usage,
+    cost,
+    textPerformance,
+    lastStopReason,
+    serverInfo,
+    Object.hashAll(activeConfig),
+    completedTurns,
+    updatedAt,
+  );
+}
+
 final class AcpCompletedRunView {
   AcpCompletedRunView({
     required this.run,
@@ -252,8 +423,9 @@ final class AcpAgentCapabilitiesView {
 }
 
 final class AcpInitializedEventView extends AcpSessionEventView {
-  const AcpInitializedEventView(this.capabilities);
+  const AcpInitializedEventView(this.capabilities, {this.serverInfo});
   final AcpAgentCapabilitiesView capabilities;
+  final AcpServerInfoView? serverInfo;
 }
 
 final class AcpUpdateEventView extends AcpSessionEventView {
@@ -306,9 +478,11 @@ final class AcpAcceptedFrameView extends AcpSessionFrameView {
   const AcpAcceptedFrameView({
     required this.target,
     required this.hasObservation,
+    this.infoSnapshot,
   });
   final AcpSessionTargetView target;
   final bool hasObservation;
+  final AcpSessionInfoSnapshotView? infoSnapshot;
 }
 
 final class AcpSettledFrameView extends AcpSessionFrameView {
@@ -333,6 +507,7 @@ final class AcpBusinessSnapshotView {
     this.activeRun,
     this.lastCompleted,
     this.observationGap,
+    this.infoSnapshot,
     Iterable<AcpBusinessAuthMethodView> authMethods = const [],
   }) : configOptions = configOptions == null
            ? null
@@ -348,6 +523,7 @@ final class AcpBusinessSnapshotView {
   final AcpRunIdView? activeRun;
   final AcpCompletedRunView? lastCompleted;
   final AcpObservationGapView? observationGap;
+  final AcpSessionInfoSnapshotView? infoSnapshot;
   final List<AcpBusinessAuthMethodView> authMethods;
 }
 

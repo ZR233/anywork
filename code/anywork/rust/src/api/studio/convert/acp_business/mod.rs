@@ -186,6 +186,49 @@ fn text_performance(v: p::AcpTextPerformance) -> BridgeAcpTextPerformance {
         response_millis: v.response_millis,
     }
 }
+fn server_info(v: p::AcpServerInfoSnapshot) -> BridgeAcpServerInfoSnapshot {
+    BridgeAcpServerInfoSnapshot {
+        name: v.name,
+        version: v.version,
+        title: v.title,
+    }
+}
+fn info_snapshot(v: p::AcpSessionInfoSnapshot) -> BridgeAcpSessionInfoSnapshot {
+    BridgeAcpSessionInfoSnapshot {
+        usage: v.usage.map(|u| BridgeAcpUsageSnapshot {
+            used: u.used,
+            size: u.size,
+            updated_at: u.updated_at,
+        }),
+        cost: v.cost.map(|c| BridgeAcpCostSnapshot {
+            amount: c.amount,
+            currency: c.currency,
+            updated_at: c.updated_at,
+        }),
+        text_performance: v
+            .text_performance
+            .map(|p| BridgeAcpTextPerformanceSnapshot {
+                estimated_output_tokens: p.estimated_output_tokens,
+                response_millis: p.response_millis,
+                updated_at: p.updated_at,
+            }),
+        last_stop_reason: v.last_stop_reason,
+        server_info: v.server_info.map(server_info),
+        active_config: v
+            .active_config
+            .into_iter()
+            .map(|item| BridgeAcpConfigItemSnapshot {
+                id: item.id,
+                name: item.name,
+                category: item.category,
+                value_id: item.value_id,
+                value_label: item.value_label,
+            })
+            .collect(),
+        completed_turns: v.completed_turns,
+        updated_at: v.updated_at,
+    }
+}
 fn completed(v: p::AcpCompletedRun) -> R<BridgeAcpCompletedRun> {
     Ok(BridgeAcpCompletedRun {
         run: v.run.into(),
@@ -243,6 +286,7 @@ pub(crate) fn snapshot(v: p::AcpBusinessSnapshot) -> R<BridgeAcpBusinessSnapshot
             .into_iter()
             .map(super::acp::bridge_acp_auth_method)
             .collect(),
+        info_snapshot: v.info_snapshot.map(info_snapshot),
     })
 }
 pub(crate) fn close(v: p::AcpBusinessClose) -> R<BridgeAcpBusinessClose> {
@@ -272,9 +316,11 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
         p::AcpSessionFrame::Accepted {
             target,
             has_observation,
+            info_snapshot: info,
         } => BridgeAcpSessionFrame::Accepted {
             target: target.into(),
             has_observation,
+            info_snapshot: info.map(|v| Box::new(info_snapshot(*v))),
         },
         p::AcpSessionFrame::Settled { result } => BridgeAcpSessionFrame::Settled {
             result: match result {
@@ -286,22 +332,24 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
         },
         p::AcpSessionFrame::Event { event } => BridgeAcpSessionFrame::Event {
             event: Box::new(match *event {
-                p::AcpSessionEvent::Initialized { capabilities: v } => {
-                    BridgeAcpSessionEvent::Initialized {
-                        capabilities: BridgeAcpAgentCapabilities {
-                            image: v.prompt_capabilities.image,
-                            audio: v.prompt_capabilities.audio,
-                            embedded_context: v.prompt_capabilities.embedded_context,
-                            load_session: v.load_session,
-                            list_sessions: v.session_capabilities.list.is_some(),
-                            resume_session: v.session_capabilities.resume.is_some(),
-                            close_session: v.session_capabilities.close.is_some(),
-                            mcp_http: v.mcp_capabilities.http,
-                            mcp_sse: v.mcp_capabilities.sse,
-                            meta: json::opt_meta(v.meta)?,
-                        },
-                    }
-                }
+                p::AcpSessionEvent::Initialized {
+                    capabilities: v,
+                    server_info: info,
+                } => BridgeAcpSessionEvent::Initialized {
+                    capabilities: BridgeAcpAgentCapabilities {
+                        image: v.prompt_capabilities.image,
+                        audio: v.prompt_capabilities.audio,
+                        embedded_context: v.prompt_capabilities.embedded_context,
+                        load_session: v.load_session,
+                        list_sessions: v.session_capabilities.list.is_some(),
+                        resume_session: v.session_capabilities.resume.is_some(),
+                        close_session: v.session_capabilities.close.is_some(),
+                        mcp_http: v.mcp_capabilities.http,
+                        mcp_sse: v.mcp_capabilities.sse,
+                        meta: json::opt_meta(v.meta)?,
+                    },
+                    server_info: info.map(server_info),
+                },
                 p::AcpSessionEvent::Update {
                     update,
                     text_performance: performance,
@@ -381,13 +429,14 @@ mod tests {
             let mapped = frame(p::AcpSessionFrame::Event {
                 event: Box::new(p::AcpSessionEvent::Initialized {
                     capabilities: Box::new(capabilities),
+                    server_info: None,
                 }),
             })
             .unwrap();
             let BridgeAcpSessionFrame::Event { event } = mapped else {
                 panic!("{mapped:?}");
             };
-            let BridgeAcpSessionEvent::Initialized { capabilities } = *event else {
+            let BridgeAcpSessionEvent::Initialized { capabilities, .. } = *event else {
                 panic!("{event:?}");
             };
             assert_eq!(capabilities.image, supported);
@@ -566,6 +615,7 @@ mod tests {
             last_completed: None,
             observation_gap: None,
             auth_methods: vec![],
+            info_snapshot: None,
         };
         let mapped = snapshot(source.clone()).unwrap();
         assert_eq!(mapped.target.instance, 41);
@@ -943,5 +993,83 @@ mod tests {
             std::path::PathBuf::from("/a literal path")
         );
         assert_eq!(request.cursor.as_deref(), Some("literal-cursor"));
+    }
+
+    #[test]
+    fn info_snapshot_and_initialized_server_info_round_trip_fields() {
+        let snap = p::AcpSessionInfoSnapshot {
+            usage: Some(p::AcpUsageSnapshot {
+                used: 48_000,
+                size: 200_000,
+                updated_at: 1_700_000_010,
+            }),
+            cost: Some(p::AcpCostSnapshot {
+                amount: 0.42,
+                currency: "USD".into(),
+                updated_at: 1_700_000_010,
+            }),
+            text_performance: Some(p::AcpTextPerformanceSnapshot {
+                estimated_output_tokens: 40,
+                response_millis: 1_000,
+                updated_at: 1_700_000_012,
+            }),
+            last_stop_reason: Some("endTurn".into()),
+            server_info: Some(p::AcpServerInfoSnapshot {
+                name: "claude-code".into(),
+                version: "1.4.5".into(),
+                title: Some("Claude Code".into()),
+            }),
+            active_config: vec![p::AcpConfigItemSnapshot {
+                id: "model".into(),
+                name: "Model".into(),
+                category: Some("model".into()),
+                value_id: "sonnet".into(),
+                value_label: "Claude Sonnet".into(),
+            }],
+            completed_turns: Some(3),
+            updated_at: 1_700_000_012,
+        };
+        let accepted = frame(p::AcpSessionFrame::Accepted {
+            target: target(),
+            has_observation: false,
+            info_snapshot: Some(Box::new(snap.clone())),
+        })
+        .unwrap();
+        let BridgeAcpSessionFrame::Accepted {
+            has_observation: false,
+            info_snapshot: Some(mapped),
+            ..
+        } = accepted
+        else {
+            panic!("expected Accepted with info_snapshot");
+        };
+        let mapped = *mapped;
+        assert_eq!(mapped.usage.unwrap().used, 48_000);
+        assert_eq!(mapped.cost.unwrap().currency, "USD");
+        assert_eq!(mapped.text_performance.unwrap().estimated_output_tokens, 40);
+        assert_eq!(mapped.last_stop_reason.as_deref(), Some("endTurn"));
+        assert_eq!(mapped.server_info.unwrap().version, "1.4.5");
+        assert_eq!(mapped.active_config[0].value_label, "Claude Sonnet");
+        assert_eq!(mapped.completed_turns, Some(3));
+        assert_eq!(mapped.updated_at, 1_700_000_012);
+
+        let initialized = frame(p::AcpSessionFrame::Event {
+            event: Box::new(p::AcpSessionEvent::Initialized {
+                capabilities: Box::new(s::AgentCapabilities::default()),
+                server_info: snap.server_info,
+            }),
+        })
+        .unwrap();
+        let BridgeAcpSessionFrame::Event { event } = initialized else {
+            panic!("expected Event");
+        };
+        let BridgeAcpSessionEvent::Initialized {
+            server_info: Some(info),
+            ..
+        } = *event
+        else {
+            panic!("expected Initialized server_info");
+        };
+        assert_eq!(info.title.as_deref(), Some("Claude Code"));
     }
 }

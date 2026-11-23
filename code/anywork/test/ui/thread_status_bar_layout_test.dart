@@ -1,7 +1,6 @@
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork_previews/src/features/status/previews/thread_status_bar_previews.dart';
 import 'package:anywork/src/features/status/status_bar_item.dart';
-import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:flutter_test/flutter_test.dart';

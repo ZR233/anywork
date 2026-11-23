@@ -470,6 +470,7 @@ mod tests {
             last_completed: None,
             observation_gap: None,
             auth_methods: vec![],
+            info_snapshot: None,
         };
         let value = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(value["configOptions"], configs);
@@ -703,6 +704,7 @@ mod tests {
             let Some(AcpSessionFrame::Accepted {
                 target,
                 has_observation,
+                ..
             }) = stream.next().await?
             else {
                 anyhow::bail!("first HTTP frame was not Accepted");
@@ -716,7 +718,7 @@ mod tests {
             let Some(AcpSessionFrame::Event { event }) = stream.next().await? else {
                 anyhow::bail!("missing initialization event");
             };
-            let AcpSessionEvent::Initialized { capabilities } = *event else {
+            let AcpSessionEvent::Initialized { capabilities, .. } = *event else {
                 anyhow::bail!("initialize must precede replay and publication");
             };
             ensure!(capabilities.load_session);

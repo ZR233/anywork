@@ -41,6 +41,10 @@ abstract final class AcpViewKeyValues {
   static (String, String) planCard(String threadId) => ('acp-plan', threadId);
   static (String, String) toolCard(String toolCallId) =>
       ('acp-tool', toolCallId);
+  static (String, String) contextUsage(String threadId) =>
+      ('acp-context-usage', threadId);
+  static (String, String) contextUsageDetail(String threadId) =>
+      ('acp-context-usage-detail', threadId);
   static (String, String) externalHistoryButton(String threadId) =>
       ('acp-external-history-button', threadId);
   static (String, String) externalHistoryLoad(String sessionId) =>
@@ -443,7 +447,7 @@ enum AcpStopReasonKind {
   other,
 }
 
-typedef AcpContextUsageViewState = ({BigInt used, BigInt size});
+typedef AcpContextUsageViewState = ({BigInt? used, BigInt? size, bool isLive});
 
 typedef AcpCostViewState = ({double amount, String currency});
 
@@ -455,6 +459,41 @@ abstract class AcpStatusBarViewState with _$AcpStatusBarViewState {
     String? stopReasonRaw,
     AcpHistoryOriginKind? provenance,
   }) = _AcpStatusBarViewState;
+}
+
+@freezed
+abstract class AcpConfigReadoutItem with _$AcpConfigReadoutItem {
+  const factory AcpConfigReadoutItem({
+    required String label,
+    required String value,
+    bool? booleanValue,
+    @Default(false) bool useModeFallbackLabel,
+  }) = _AcpConfigReadoutItem;
+}
+
+@freezed
+abstract class AcpContextDetailViewState with _$AcpContextDetailViewState {
+  const factory AcpContextDetailViewState({
+    BigInt? used,
+    BigInt? size,
+    BigInt? previousUsed,
+    @Default(false) bool isLive,
+    double? tokensPerSecond,
+    int? estimatedOutputTokens,
+    int? responseMillis,
+    AcpCostViewState? cost,
+    String? serviceName,
+    String? serverName,
+    String? serverVersion,
+    String? remoteSessionId,
+    required AcpSessionStatusPhase phase,
+    AcpStopReasonKind? lastStopReason,
+    String? lastStopReasonRaw,
+    int? completedTurns,
+    DateTime? updatedAt,
+    @Default(<AcpConfigReadoutItem>[]) List<AcpConfigReadoutItem> configItems,
+    @Default(<AcpCapabilityKind>[]) List<AcpCapabilityKind> capabilities,
+  }) = _AcpContextDetailViewState;
 }
 
 enum AcpExternalHistoryAvailability {

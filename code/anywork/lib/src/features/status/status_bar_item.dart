@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../app/theme/studio_tokens.dart';
+import '../../l10n/studio_l10n.dart';
 
 /// Compact readout with an optional short text and a complete explanation.
 class StatusBarItem extends StatelessWidget {
@@ -43,4 +44,27 @@ class StatusBarItem extends StatelessWidget {
       ),
     ),
   );
+}
+
+class TokenThroughputReadout extends StatelessWidget {
+  const TokenThroughputReadout({
+    required this.tokensPerSecond,
+    this.estimated = false,
+    super.key,
+  });
+
+  final double? tokensPerSecond;
+  final bool estimated;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = context.tokenThroughputLabel(tokensPerSecond);
+    final text = estimated && tokensPerSecond != null ? '≈ $value' : value;
+    return StatusBarItem(
+      icon: Icons.speed_outlined,
+      text: text,
+      label:
+          '${estimated ? context.l10n.acpEstimatedOutputSpeed : context.l10n.statusLastConfirmedAgentTokenSpeed}: $text',
+    );
+  }
 }

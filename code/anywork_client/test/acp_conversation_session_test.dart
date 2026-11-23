@@ -128,62 +128,61 @@ Future<AcpConversationSession> _open(AcpSessionClient client) async {
 }
 
 void main() {
-  test(
-    'text speed updates in flight, freezes on success and clears on gap',
-    () async {
-      final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
-      final port = _port(source);
-      final client = AcpSessionClient(port: port);
-      addTearDown(client.dispose);
-      final owner = await _open(client);
-      await owner.send(_input);
-      const live = (estimatedOutputTokens: 8, responseMillis: 500);
-      _push(
-        source,
-        _event(
-          AcpUpdateEventView(
-            const AcpSessionNotificationView(
-              sessionId: _remote,
-              update: AcpAgentMessageChunkView(
-                AcpContentChunkView(content: AcpTextContentView(text: 'hello')),
-              ),
+  test('text speed updates in flight, freezes on success and retains last valid value across sends and gaps', () async {
+    final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
+    final port = _port(source);
+    final client = AcpSessionClient(port: port);
+    addTearDown(client.dispose);
+    final owner = await _open(client);
+    await owner.send(_input);
+    const live = (estimatedOutputTokens: 8, responseMillis: 500);
+    _push(
+      source,
+      _event(
+        AcpUpdateEventView(
+          const AcpSessionNotificationView(
+            sessionId: _remote,
+            update: AcpAgentMessageChunkView(
+              AcpContentChunkView(content: AcpTextContentView(text: 'hello')),
             ),
-            textPerformance: live,
           ),
+          textPerformance: live,
         ),
-      );
-      final running = await owner.source.waitFor(
-        (state) => state.textPerformance == live,
-      );
-      expect(running.activeRun, _run);
-      const finalSample = (estimatedOutputTokens: 8, responseMillis: 800);
-      _push(
-        source,
-        _event(
-          AcpCompletedEventView(
-            _completion(_run, textPerformance: finalSample),
-          ),
-        ),
-      );
-      final finished = await owner.source.waitFor(
-        (state) => state.lastCompleted != null,
-      );
-      expect(finished.textPerformance, finalSample);
+      ),
+    );
+    final running = await owner.source.waitFor(
+      (state) => state.textPerformance == live,
+    );
+    expect(running.activeRun, _run);
+    expect(running.metricsLive, isTrue);
+    const finalSample = (estimatedOutputTokens: 8, responseMillis: 800);
+    _push(
+      source,
+      _event(
+        AcpCompletedEventView(_completion(_run, textPerformance: finalSample)),
+      ),
+    );
+    final finished = await owner.source.waitFor(
+      (state) => state.lastCompleted != null,
+    );
+    expect(finished.textPerformance, finalSample);
+    expect(finished.completedTurns, 1);
+    expect(finished.lastStopReasonRaw, 'endTurn');
 
-      port.run = _nextRun;
-      await owner.send(_input);
-      expect(owner.state.textPerformance, isNull);
-      _push(
-        source,
-        _event(AcpGapEventView(AcpObservationGapView.windowExceeded)),
-      );
-      final gap = await owner.source.waitFor((state) => state.disconnected);
-      expect(gap.textPerformance, isNull);
-    },
-  );
+    port.run = _nextRun;
+    await owner.send(_input);
+    expect(owner.state.textPerformance, finalSample);
+    _push(
+      source,
+      _event(AcpGapEventView(AcpObservationGapView.windowExceeded)),
+    );
+    final gap = await owner.source.waitFor((state) => state.disconnected);
+    expect(gap.textPerformance, finalSample);
+    expect(gap.metricsLive, isFalse);
+  });
 
   test(
-    'load replay usage stays in history but does not become a current metric',
+    'load replay usage hydrates baseline snapshot without marking metricsLive',
     () async {
       final report = AcpUsageUpdateView(
         used: BigInt.from(30),
@@ -203,70 +202,82 @@ void main() {
         owner.state.content.whereType<AcpConversationUpdateItem>(),
         hasLength(1),
       );
-      expect(owner.state.latestUsage, isNull);
-
-      _push(source, _update(report));
-      await owner.source.waitFor((state) => state.latestUsage != null);
       expect(owner.state.latestUsage?.used, BigInt.from(30));
-      expect(owner.state.latestUsage?.cost?.amount, 2);
-    },
-  );
-
-  test(
-    'latest usage replaces complete reports and survives page observers',
-    () async {
-      final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
-      final port = _port(source);
-      final client = AcpSessionClient(port: port);
-      addTearDown(client.dispose);
-      final owner = await _open(client);
-      expect(owner.state.latestUsage, isNull);
-
-      final zero = AcpUsageUpdateView(
-        used: BigInt.zero,
-        size: BigInt.from(100),
-        cost: const AcpCostView(amount: 0, currency: 'USD'),
-      );
-      _push(source, _update(zero));
-      await owner.source.waitFor((state) => state.latestUsage != null);
-      expect(owner.state.latestUsage, (
-        used: BigInt.zero,
-        size: BigInt.from(100),
-        cost: (amount: 0.0, currency: 'USD'),
-      ));
-      final page = owner.source.watch((_) {});
-      page.cancel();
-      _push(source, _text('unrelated content'));
-      await owner.source.waitFor((state) => state.content.length == 2);
-      expect(owner.state.latestUsage?.used, BigInt.zero);
-      expect(client.conversationForThread('thread'), same(owner));
-      expect(source.closeSignals, 0);
-      expect(port.calls.map((call) => call.$1), ['open']);
+      expect(owner.state.latestCost, (amount: 2.0, currency: 'USD'));
+      expect(owner.state.metricsLive, isFalse);
 
       _push(
         source,
         _update(
-          AcpUsageUpdateView(used: BigInt.from(25), size: BigInt.from(100)),
+          AcpUsageUpdateView(
+            used: BigInt.from(45),
+            size: BigInt.from(100),
+            cost: const AcpCostView(amount: 2.5, currency: 'USD'),
+          ),
         ),
       );
-      await owner.source.waitFor(
-        (state) => state.latestUsage?.used == BigInt.from(25),
-      );
-      expect(owner.state.latestUsage?.cost, isNull);
-      _push(
-        source,
-        _update(AcpUsageUpdateView(used: BigInt.from(25), size: BigInt.zero)),
-      );
-      await owner.source.waitFor(
-        (state) => state.latestUsage?.size == BigInt.zero,
-      );
-      expect(owner.state.latestUsage?.used, BigInt.from(25));
+      await owner.source.waitFor((state) => state.metricsLive);
+      expect(owner.state.latestUsage?.used, BigInt.from(45));
+      expect(owner.state.previousContextUsed, BigInt.from(30));
+      expect(owner.state.latestCost?.amount, 2.5);
     },
   );
 
+  test('latest usage replaces reports, tracks delta, retains omitted cost and survives page observers', () async {
+    final source = ControlledAcpObservation([_accepted, _ready(), _settled]);
+    final port = _port(source);
+    final client = AcpSessionClient(port: port);
+    addTearDown(client.dispose);
+    final owner = await _open(client);
+    expect(owner.state.latestUsage, isNull);
+
+    final zero = AcpUsageUpdateView(
+      used: BigInt.zero,
+      size: BigInt.from(100),
+      cost: const AcpCostView(amount: 0, currency: 'USD'),
+    );
+    _push(source, _update(zero));
+    await owner.source.waitFor((state) => state.latestUsage != null);
+    expect(owner.state.latestUsage, (
+      used: BigInt.zero,
+      size: BigInt.from(100),
+      cost: (amount: 0.0, currency: 'USD'),
+    ));
+    expect(owner.state.previousContextUsed, isNull);
+    final page = owner.source.watch((_) {});
+    page.cancel();
+    _push(source, _text('unrelated content'));
+    await owner.source.waitFor((state) => state.content.length == 2);
+    expect(owner.state.latestUsage?.used, BigInt.zero);
+    expect(client.conversationForThread('thread'), same(owner));
+    expect(source.closeSignals, 0);
+    expect(port.calls.map((call) => call.$1), ['open']);
+
+    _push(
+      source,
+      _update(
+        AcpUsageUpdateView(used: BigInt.from(25), size: BigInt.from(100)),
+      ),
+    );
+    await owner.source.waitFor(
+      (state) => state.latestUsage?.used == BigInt.from(25),
+    );
+    expect(owner.state.previousContextUsed, BigInt.zero);
+    expect(owner.state.latestUsage?.cost, (amount: 0.0, currency: 'USD'));
+    expect(owner.state.latestCost, (amount: 0.0, currency: 'USD'));
+    _push(
+      source,
+      _update(AcpUsageUpdateView(used: BigInt.from(25), size: BigInt.zero)),
+    );
+    await owner.source.waitFor(
+      (state) => state.latestUsage?.size == BigInt.zero,
+    );
+    expect(owner.state.latestUsage?.used, BigInt.from(25));
+  });
+
   for (final end in ['gap', 'eof', 'failure']) {
     test(
-      '$end invalidates latest usage without rewriting retained history',
+      '$end retains last valid usage as non-live snapshot without rewriting retained history',
       () async {
         final report = AcpUsageUpdateView(
           used: BigInt.from(30),
@@ -283,6 +294,7 @@ void main() {
         addTearDown(client.dispose);
         final owner = await _open(client);
         expect(owner.state.latestUsage, isNotNull);
+        expect(owner.state.metricsLive, isTrue);
         if (end == 'gap') {
           _push(
             source,
@@ -294,18 +306,25 @@ void main() {
           source.read!.completeError(StateError('disconnected'));
         }
         await owner.source.waitFor((state) => state.disconnected);
-        expect(owner.state.latestUsage, isNull);
+        expect(owner.state.metricsLive, isFalse);
+        expect(owner.state.latestUsage?.used, BigInt.from(30));
+        expect(owner.state.latestCost, (amount: 1.25, currency: 'USD'));
         expect(
           (owner.state.content.single as AcpConversationUpdateItem).update,
           same(report),
         );
         if (end == 'gap') {
-          _push(source, _update(report));
+          final later = AcpUsageUpdateView(
+            used: BigInt.from(88),
+            size: BigInt.from(100),
+          );
+          _push(source, _update(later));
           await owner.source.waitFor((state) => state.content.length == 2);
           expect(
-            owner.state.latestUsage,
-            isNull,
-            reason: 'A later frame cannot repair a lost observation',
+            owner.state.latestUsage?.used,
+            BigInt.from(30),
+            reason:
+                'A later frame cannot mutate metrics after lost observation',
           );
         }
       },
@@ -1081,4 +1100,72 @@ void main() {
     expect(source.closes, 1);
     expect(port.calls.map((c) => c.$1), ['open']);
   });
+
+  test(
+    'Accepted infoSnapshot hydrates initial state for resident re-attach',
+    () async {
+      final snapshot = AcpSessionInfoSnapshotView(
+        usage: AcpUsageSnapshotView(
+          used: BigInt.from(48000),
+          size: BigInt.from(200000),
+          updatedAt: 1700000010,
+        ),
+        cost: const AcpCostSnapshotView(
+          amount: 0.42,
+          currency: 'USD',
+          updatedAt: 1700000010,
+        ),
+        textPerformance: const AcpTextPerformanceSnapshotView(
+          estimatedOutputTokens: 120,
+          responseMillis: 2500,
+          updatedAt: 1700000012,
+        ),
+        lastStopReason: 'endTurn',
+        serverInfo: const AcpServerInfoView(
+          name: 'claude-code',
+          version: '1.4.5',
+          title: 'Claude Code',
+        ),
+        activeConfig: const [
+          AcpConfigItemSnapshotView(
+            id: 'model',
+            name: 'Model',
+            category: 'model',
+            valueId: 'sonnet',
+            valueLabel: 'Claude Sonnet',
+          ),
+        ],
+        completedTurns: 3,
+        updatedAt: 1700000012,
+      );
+      final source = ControlledAcpObservation([
+        AcpAcceptedFrameView(
+          target: _target,
+          hasObservation: false,
+          infoSnapshot: snapshot,
+        ),
+        _settled,
+      ])..eof = true;
+      final client = AcpSessionClient(port: _port(source));
+      addTearDown(client.dispose);
+      final owner = await client.openConversation(_request);
+      await owner.source.waitFor((s) => s.observationEnded);
+      expect(owner.state.metricsLive, isFalse);
+      expect(owner.state.latestUsage?.used, BigInt.from(48000));
+      expect(owner.state.latestUsage?.size, BigInt.from(200000));
+      expect(owner.state.latestCost, (amount: 0.42, currency: 'USD'));
+      expect(owner.state.textPerformance, (
+        estimatedOutputTokens: 120,
+        responseMillis: 2500,
+      ));
+      expect(owner.state.serverInfo?.version, '1.4.5');
+      expect(owner.state.snapshotConfig.single.valueLabel, 'Claude Sonnet');
+      expect(owner.state.lastStopReasonRaw, 'endTurn');
+      expect(owner.state.completedTurns, 3);
+      expect(
+        owner.state.snapshotUpdatedAt,
+        DateTime.fromMillisecondsSinceEpoch(1700000012 * 1000, isUtc: true),
+      );
+    },
+  );
 }

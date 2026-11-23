@@ -460,6 +460,14 @@ void main() {
       activeRun: _run,
       lastCompleted: completed,
       observationGap: AcpObservationGapView.disconnected,
+      infoSnapshot: AcpSessionInfoSnapshotView(
+        usage: AcpUsageSnapshotView(
+          used: BigInt.from(1200),
+          size: BigInt.from(10000),
+          updatedAt: 1700000000,
+        ),
+        updatedAt: 1700000000,
+      ),
       authMethods: failure.authMethods,
     );
     final list = AcpListSessionsResponseView(

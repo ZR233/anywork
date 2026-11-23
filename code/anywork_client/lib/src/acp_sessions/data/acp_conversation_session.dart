@@ -78,7 +78,15 @@ final class AcpConversationState {
     this.modes,
     this.plan,
     this.latestUsage,
+    this.previousContextUsed,
+    this.latestCost,
     this.textPerformance,
+    this.metricsLive = false,
+    this.serverInfo,
+    this.snapshotConfig = const [],
+    this.lastStopReasonRaw,
+    this.completedTurns,
+    this.snapshotUpdatedAt,
     this.pendingPermissions = const [],
   });
 
@@ -103,7 +111,15 @@ final class AcpConversationState {
   final AcpSessionModeStateView? modes;
   final AcpPlanView? plan;
   final AcpConversationUsage? latestUsage;
+  final BigInt? previousContextUsed;
+  final ({double amount, String currency})? latestCost;
   final AcpTextPerformanceView? textPerformance;
+  final bool metricsLive;
+  final AcpServerInfoView? serverInfo;
+  final List<AcpConfigItemSnapshotView> snapshotConfig;
+  final String? lastStopReasonRaw;
+  final int? completedTurns;
+  final DateTime? snapshotUpdatedAt;
   final List<AcpPermissionEventView> pendingPermissions;
 
   bool get usesLegacyModes => configOptions == null && modes != null;
@@ -172,7 +188,15 @@ final class AcpConversationSession {
   AcpSessionModeStateView? _modes;
   AcpPlanView? _plan;
   AcpConversationUsage? _latestUsage;
+  BigInt? _previousContextUsed;
+  ({double amount, String currency})? _latestCost;
   AcpTextPerformanceView? _textPerformance;
+  bool _metricsLive = false;
+  AcpServerInfoView? _serverInfo;
+  List<AcpConfigItemSnapshotView> _snapshotConfig = const [];
+  String? _lastStopReasonRaw;
+  int? _completedTurns;
+  DateTime? _snapshotUpdatedAt;
   List<AcpPermissionEventView> _permissions = const [];
 
   AcpConversationState get state => _source.value;
@@ -200,7 +224,15 @@ final class AcpConversationSession {
     modes: _modes,
     plan: _plan,
     latestUsage: _latestUsage,
+    previousContextUsed: _previousContextUsed,
+    latestCost: _latestCost,
     textPerformance: _textPerformance,
+    metricsLive: _metricsLive,
+    serverInfo: _serverInfo,
+    snapshotConfig: _snapshotConfig,
+    lastStopReasonRaw: _lastStopReasonRaw,
+    completedTurns: _completedTurns,
+    snapshotUpdatedAt: _snapshotUpdatedAt,
     pendingPermissions: _permissions,
   );
 
@@ -228,12 +260,19 @@ final class AcpConversationSession {
           break;
         }
         switch (frame) {
-          case AcpAcceptedFrameView(:final target, :final hasObservation):
+          case AcpAcceptedFrameView(
+            :final target,
+            :final hasObservation,
+            :final infoSnapshot,
+          ):
             if (_target != null) throw StateError('Duplicate ACP Accepted');
             _target = target;
             _hasObservation = hasObservation;
             if (!hasObservation) {
               _history = AcpConversationHistory.residentWithoutObservation;
+            }
+            if (infoSnapshot != null) {
+              _applyInfoSnapshot(infoSnapshot);
             }
             _accepted.complete();
           case AcpSettledFrameView(:final result):
@@ -259,9 +298,42 @@ final class AcpConversationSession {
     }
   }
 
+  void _applyInfoSnapshot(AcpSessionInfoSnapshotView snapshot) {
+    if (snapshot.cost case final cost?) {
+      _latestCost = (amount: cost.amount, currency: cost.currency);
+    }
+    if (snapshot.usage case final usage?) {
+      _latestUsage = (used: usage.used, size: usage.size, cost: _latestCost);
+    }
+    if (snapshot.textPerformance case final perf?) {
+      _textPerformance = (
+        estimatedOutputTokens: perf.estimatedOutputTokens,
+        responseMillis: perf.responseMillis,
+      );
+    }
+    if (snapshot.serverInfo case final info?) {
+      _serverInfo = info;
+    }
+    if (snapshot.activeConfig.isNotEmpty) {
+      _snapshotConfig = List.unmodifiable(snapshot.activeConfig);
+    }
+    if (snapshot.lastStopReason case final reason?) {
+      _lastStopReasonRaw = reason;
+    }
+    if (snapshot.completedTurns case final turns?) {
+      _completedTurns = turns;
+    }
+    if (snapshot.updatedAt > 0) {
+      _snapshotUpdatedAt = DateTime.fromMillisecondsSinceEpoch(
+        snapshot.updatedAt * 1000,
+        isUtc: true,
+      );
+    }
+    _metricsLive = false;
+  }
+
   void _loseObservation() {
-    _textPerformance = null;
-    _latestUsage = null;
+    _metricsLive = false;
     _pendingUserEcho = null;
     _disconnected = true;
     _history = AcpConversationHistory.incomplete;
@@ -272,16 +344,18 @@ final class AcpConversationSession {
   void _event(AcpSessionEventView event) {
     if (event is! AcpUpdateEventView) _canMergeMessage = false;
     switch (event) {
-      case AcpInitializedEventView(:final capabilities):
+      case AcpInitializedEventView(:final capabilities, :final serverInfo):
         _capabilities = capabilities;
+        if (serverInfo != null) {
+          _serverInfo = serverInfo;
+        }
       case AcpReadyEventView(:final response):
         _ready = true;
         _remoteSessionId = response.sessionId;
         _configOptions = response.configOptions;
         _modes = response.modes;
       case AcpFailedEventView(:final error):
-        _textPerformance = null;
-        _latestUsage = null;
+        _metricsLive = false;
         _pendingUserEcho = null;
         _ready = false;
         _error = error;
@@ -294,12 +368,21 @@ final class AcpConversationSession {
         _configEventSeen = true;
         _settleConfig();
       case AcpPermissionEventView():
-        _textPerformance = null;
         _permissions = List.unmodifiable([..._permissions, event]);
       case AcpCompletedEventView(:final completed):
         _lastCompleted = completed;
         if (_activeRun == null || _activeRun == completed.run) {
-          _textPerformance = completed.textPerformance;
+          if (completed.textPerformance case final perf?) {
+            _textPerformance = perf;
+            _snapshotUpdatedAt = DateTime.now().toUtc();
+          }
+          if (completed.result case AcpSuccessView<AcpPromptResponseView>(
+            :final value,
+          )) {
+            _completedTurns = (_completedTurns ?? 0) + 1;
+            _lastStopReasonRaw = value.stopReason.name;
+            _snapshotUpdatedAt = DateTime.now().toUtc();
+          }
           _pendingUserEcho = null;
           _activeRun = null;
           _sendPending = false;
@@ -311,6 +394,9 @@ final class AcpConversationSession {
       case AcpUpdateEventView(:final update, :final textPerformance):
         if (textPerformance != null) {
           _textPerformance = textPerformance;
+          _metricsLive =
+              !(_history == AcpConversationHistory.loadReplay && !_ready);
+          _snapshotUpdatedAt = DateTime.now().toUtc();
         }
         _update(update.update);
     }
@@ -330,17 +416,16 @@ final class AcpConversationSession {
     if (update case AcpUsageUpdateView(:final used, :final size, :final cost)) {
       final replaying =
           _history == AcpConversationHistory.loadReplay && !_ready;
-      if (!_disconnected &&
-          !_observationEnded &&
-          !replaying &&
-          _hasObservation == true) {
-        _latestUsage = (
-          used: used,
-          size: size,
-          cost: cost == null
-              ? null
-              : (amount: cost.amount, currency: cost.currency),
-        );
+      if (!_disconnected && !_observationEnded && _hasObservation == true) {
+        if (_latestUsage case final previous? when previous.used != used) {
+          _previousContextUsed = previous.used;
+        }
+        if (cost != null) {
+          _latestCost = (amount: cost.amount, currency: cost.currency);
+        }
+        _latestUsage = (used: used, size: size, cost: _latestCost);
+        _metricsLive = !replaying;
+        _snapshotUpdatedAt = DateTime.now().toUtc();
       }
     }
     if (update is! AcpUserMessageChunkView &&
@@ -367,13 +452,11 @@ final class AcpConversationSession {
         );
       case AcpAgentMessageChunkView(:final chunk):
         _pendingUserEcho = null;
-        if (chunk.content is! AcpTextContentView) _textPerformance = null;
         _message(AcpConversationMessageKind.assistant, chunk);
       case AcpAgentThoughtChunkView(:final chunk):
         _pendingUserEcho = null;
         _message(AcpConversationMessageKind.thought, chunk);
       case AcpToolCallSessionUpdateView(:final toolCall):
-        _textPerformance = null;
         _pendingUserEcho = null;
         _tool(
           toolCall.toolCallId,
@@ -391,7 +474,6 @@ final class AcpConversationSession {
           replace: true,
         );
       case AcpToolCallChangedView(:final toolCall):
-        _textPerformance = null;
         _pendingUserEcho = null;
         _tool(toolCall.toolCallId, toolCall.fields, toolCall.meta);
       case AcpPlanView():
@@ -519,7 +601,6 @@ final class AcpConversationSession {
     }
     final generation = ++_sendGeneration;
     _sendPending = true;
-    _textPerformance = null;
     _canMergeMessage = false;
     _pendingUserEcho = null;
     // A new submitted message cannot merge with a previous run's user message.
@@ -694,7 +775,6 @@ final class AcpConversationSession {
     if (!_disposing &&
         generation == _sendGeneration &&
         (_activeRun == run || _lastCompleted?.run == run)) {
-      if (_activeRun == run) _textPerformance = null;
       _permissions = const [];
       _publish();
     }
@@ -705,8 +785,7 @@ final class AcpConversationSession {
     final result = await _client.closeMember(target);
     if (!_disposing && result.localComplete) {
       _ready = false;
-      _latestUsage = null;
-      _textPerformance = null;
+      _metricsLive = false;
       _permissions = const [];
       _publish();
     }

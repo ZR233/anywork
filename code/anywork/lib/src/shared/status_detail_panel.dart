@@ -1,6 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../../app/theme/studio_tokens.dart';
+import '../app/theme/studio_tokens.dart';
 
 /// 详情悬浮表面的分区标题与内容容器。
 ///

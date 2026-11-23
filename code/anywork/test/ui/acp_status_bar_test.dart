@@ -2,9 +2,10 @@ import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_status_bar_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_external_history_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_status_bar_view_model.dart';
-import 'package:anywork/src/features/status/thread_status_bar.dart';
+import 'package:anywork/src/features/status/status_bar_item.dart';
 import 'package:anywork/src/shared/studio_context_usage_ring.dart';
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -30,88 +31,114 @@ const _capabilities = AcpAgentCapabilitiesView(
 );
 
 void main() {
-  testWidgets('unknown, real zero, ratio, zero capacity and missing cost', (
-    tester,
-  ) async {
-    final h = await AcpComponentHarness.create();
-    addTearDown(() => h.close(tester));
-    final semantics = tester.ensureSemantics();
-    try {
-      await tester.pumpWidget(
-        h.scope(const AcpStatusBarConnector(threadId: 'thread')),
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(ContextUsageRing), findsNothing);
-      expect(find.textContaining('USD'), findsNothing);
+  testWidgets(
+    'unknown ring shows neutral fallback, retains cost across omitted cost, and avoids u64 overflow',
+    (tester) async {
+      final h = await AcpComponentHarness.create();
+      addTearDown(() => h.close(tester));
+      final semantics = tester.ensureSemantics();
+      try {
+        await tester.pumpWidget(
+          h.scope(const AcpStatusBarConnector(threadId: 'thread')),
+        );
+        await tester.pumpAndSettle();
+        expect(find.byType(ContextUsageRing), findsOneWidget);
+        expect(
+          tester
+              .widget<ContextUsageRing>(find.byType(ContextUsageRing))
+              .progress,
+          isNull,
+        );
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          '对端暂未报告上下文占用',
+        );
+        expect(find.textContaining('USD'), findsNothing);
 
-      h.update(_usage(0, 100, amount: 0));
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
-        0,
-      );
-      expect(find.text('0.0 USD'), findsOneWidget);
-      expect(find.bySemanticsLabel('上下文'), findsOneWidget);
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('上下文')).value,
-        contains('0%'),
-      );
+        h.update(_usage(0, 100, amount: 0));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<ContextUsageRing>(find.byType(ContextUsageRing))
+              .progress,
+          0,
+        );
+        expect(find.text('0.0 USD'), findsOneWidget);
+        expect(find.bySemanticsLabel('上下文'), findsOneWidget);
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          contains('0%'),
+        );
 
-      h.update(_usage(25, 100, amount: 1.5));
-      await tester.pumpAndSettle();
-      expect(
-        tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
-        0.25,
-      );
-      expect(find.text('1.5 USD'), findsOneWidget);
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('上下文')).value,
-        contains('25%'),
-      );
+        h.update(_usage(25, 100, amount: 1.5));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<ContextUsageRing>(find.byType(ContextUsageRing))
+              .progress,
+          0.25,
+        );
+        expect(find.text('1.5 USD'), findsOneWidget);
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          contains('25%'),
+        );
 
-      h.update(_usage(1, 1000));
-      await tester.pumpAndSettle();
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('上下文')).value,
-        contains('<1%'),
-      );
-      h.update(_usage(999, 1000));
-      await tester.pumpAndSettle();
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('上下文')).value,
-        contains('<100%'),
-      );
+        h.update(_usage(1, 1000));
+        await tester.pumpAndSettle();
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          contains('<1%'),
+        );
+        h.update(_usage(999, 1000));
+        await tester.pumpAndSettle();
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          contains('<100%'),
+        );
 
-      h.update(_usage(25, 100));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('USD'), findsNothing);
-      expect(find.byType(ContextUsageRing), findsOneWidget);
+        // Omitting cost on later usage updates retains the last valid cost.
+        h.update(_usage(25, 100));
+        await tester.pumpAndSettle();
+        expect(find.text('1.5 USD'), findsOneWidget);
+        expect(find.byType(ContextUsageRing), findsOneWidget);
 
-      h.update(_usage(25, 0, amount: 2));
-      await tester.pumpAndSettle();
-      expect(find.byType(ContextUsageRing), findsNothing);
-      expect(find.bySemanticsLabel('上下文'), findsNothing);
-      expect(find.text('2.0 USD'), findsOneWidget);
-      h.update(
-        AcpUsageUpdateView(
-          used: BigInt.parse('18446744073709551615'),
-          size: BigInt.one,
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        tester.getSemantics(find.bySemanticsLabel('上下文')).value,
-        contains('1844674407370955161500%'),
-      );
-      expect(
-        tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
-        1,
-      );
-      expect(tester.takeException(), isNull);
-    } finally {
-      semantics.dispose();
-    }
-  });
+        // Zero capacity falls back to a neutral ring rather than disappearing.
+        h.update(_usage(25, 0, amount: 2));
+        await tester.pumpAndSettle();
+        expect(find.byType(ContextUsageRing), findsOneWidget);
+        expect(
+          tester
+              .widget<ContextUsageRing>(find.byType(ContextUsageRing))
+              .progress,
+          isNull,
+        );
+        expect(find.bySemanticsLabel('上下文'), findsOneWidget);
+        expect(find.text('2.0 USD'), findsOneWidget);
+
+        h.update(
+          AcpUsageUpdateView(
+            used: BigInt.parse('18446744073709551615'),
+            size: BigInt.one,
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          tester.getSemantics(find.bySemanticsLabel('上下文')).value,
+          contains('1844674407370955161500%'),
+        );
+        expect(
+          tester
+              .widget<ContextUsageRing>(find.byType(ContextUsageRing))
+              .progress,
+          1,
+        );
+        expect(tester.takeException(), isNull);
+      } finally {
+        semantics.dispose();
+      }
+    },
+  );
 
   testWidgets('independent VM notifications and component rebuilds', (
     tester,
@@ -186,6 +213,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expectChanges([0, 0, 0, 0, 0]);
+    expect(find.byType(AcpContextDetailView), findsNothing);
     h.update(_usage(25, 100, amount: 2));
     await tester.pumpAndSettle();
     expectChanges([0, 0, 1, 0, 0]);
@@ -194,10 +222,11 @@ void main() {
     expectChanges([0, 1, 0, 0, 0]);
     h.update(_usage(50, 100));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 1, 0, 0]);
+    // Cost is retained when omitted on usage update.
+    expectChanges([0, 0, 0, 0, 0]);
     h.update(_usage(50, 100, amount: 2));
     await tester.pumpAndSettle();
-    expectChanges([0, 0, 1, 0, 0]);
+    expectChanges([0, 0, 0, 0, 0]);
     h.update(_usage(50, 0, amount: 2));
     await tester.pumpAndSettle();
     expectChanges([0, 1, 0, 0, 0]);
@@ -271,8 +300,9 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expectChanges([1, 0, 0, 0, 1]);
-    expect(find.text('≈ 40 词元/秒'), findsNothing);
+    // Completing without a textPerformance override retains last valid speed.
+    expectChanges([1, 0, 0, 0, 0]);
+    expect(find.text('≈ 40 词元/秒'), findsOneWidget);
     expect(
       tester
           .widget<AcpConnectionStatusView>(find.byType(AcpConnectionStatusView))
@@ -282,14 +312,21 @@ void main() {
     );
     h.emit(const AcpGapEventView(AcpObservationGapView.windowExceeded));
     await tester.pumpAndSettle();
-    expectChanges([1, 1, 1, 1, 0]);
-    expect(find.byType(ContextUsageRing), findsNothing);
-    expect(find.textContaining('USD'), findsNothing);
+    expectChanges([1, 1, 0, 1, 0]);
+    expect(find.byType(ContextUsageRing), findsOneWidget);
+    expect(
+      tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
+      0.5,
+    );
+    expect(find.text('2.0 USD'), findsOneWidget);
+    expect(find.text('≈ 40 词元/秒'), findsOneWidget);
     expect(h.port.calls.where((call) => call.$1 == 'open'), hasLength(1));
   });
 
   for (final end in ['eof', 'failure']) {
-    testWidgets('$end hides unreliable usage', (tester) async {
+    testWidgets('$end retains last valid metrics in status bar', (
+      tester,
+    ) async {
       final h = await AcpComponentHarness.create(
         updates: [_usage(25, 100, amount: 1)],
       );
@@ -298,15 +335,34 @@ void main() {
         h.scope(const AcpStatusBarConnector(threadId: 'thread')),
       );
       await tester.pumpAndSettle();
+      h.emit(
+        const AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: acpRemoteFixture,
+            update: AcpAgentMessageChunkView(
+              AcpContentChunkView(content: AcpTextContentView(text: 'hi')),
+            ),
+          ),
+          textPerformance: (estimatedOutputTokens: 12, responseMillis: 200),
+        ),
+      );
+      await tester.pumpAndSettle();
       expect(find.byType(ContextUsageRing), findsOneWidget);
+      expect(find.text('1.0 USD'), findsOneWidget);
+      expect(find.text('≈ 60 词元/秒'), findsOneWidget);
       if (end == 'eof') {
         h.source.read!.complete(null);
       } else {
         h.source.read!.completeError(StateError('disconnected'));
       }
       await tester.pumpAndSettle();
-      expect(find.byType(ContextUsageRing), findsNothing);
-      expect(find.textContaining('USD'), findsNothing);
+      expect(find.byType(ContextUsageRing), findsOneWidget);
+      expect(
+        tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
+        0.25,
+      );
+      expect(find.text('1.0 USD'), findsOneWidget);
+      expect(find.text('≈ 60 词元/秒'), findsOneWidget);
     });
   }
 
@@ -336,7 +392,10 @@ void main() {
     );
     thread.value = 'second';
     await tester.pumpAndSettle();
-    expect(find.byType(ContextUsageRing), findsNothing);
+    expect(
+      tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
+      isNull,
+    );
     expect(find.textContaining('USD'), findsNothing);
     second.source.read!.complete(
       AcpEventFrameView(
@@ -396,7 +455,7 @@ void main() {
                 ),
               ),
               contextUsage: AcpContextUsageView(
-                state: (used: BigInt.one, size: BigInt.two),
+                state: (used: BigInt.one, size: BigInt.two, isLive: true),
               ),
               cost: const AcpCostReadoutView(
                 state: (amount: 12, currency: 'USD'),
@@ -429,4 +488,174 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'hovering ACP context ring mounts rich detail popover and switches badge on disconnect',
+    (tester) async {
+      final h = await AcpComponentHarness.create();
+      addTearDown(() => h.close(tester));
+      await tester.pumpWidget(
+        h.scope(const AcpStatusBarConnector(threadId: 'thread')),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AcpContextDetailView), findsNothing);
+
+      h.emit(
+        const AcpInitializedEventView(
+          AcpAgentCapabilitiesView(
+            image: true,
+            audio: false,
+            embeddedContext: true,
+            loadSession: true,
+            listSessions: true,
+            resumeSession: true,
+          ),
+          serverInfo: AcpServerInfoView(
+            name: 'codex-acp',
+            version: '0.9.4',
+            title: 'Codex CLI',
+          ),
+        ),
+      );
+      h.update(
+        AcpConfigOptionsUpdateView(
+          configOptions: [
+            AcpSessionConfigOptionView(
+              id: const AcpConfigId('model'),
+              name: '模型',
+              kind: AcpSelectConfigView(
+                currentValue: const AcpConfigValueId('gpt-5'),
+                options: AcpUngroupedOptionsView(const [
+                  AcpSelectOptionView(
+                    value: AcpConfigValueId('gpt-5'),
+                    name: 'GPT-5',
+                  ),
+                ]),
+              ),
+            ),
+            acpBooleanFixture,
+          ],
+        ),
+      );
+      h.update(_usage(50000, 200000, amount: 0.2));
+      h.update(_usage(64500, 200000, amount: 0.42));
+      final run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
+      h.port.run = run;
+      await h.owner.send(const [AcpTextContentView(text: 'hi')]);
+      h.emit(
+        AcpCompletedEventView(
+          AcpCompletedRunView(
+            run: run,
+            completionSequence: BigInt.one,
+            result: const AcpSuccessView(
+              AcpPromptResponseView(stopReason: AcpStopReasonView.endTurn),
+            ),
+            summary: 'ok',
+            truncated: false,
+            textPerformance: (estimatedOutputTokens: 320, responseMillis: 4000),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(AcpContextDetailView), findsNothing);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      addTearDown(mouse.removePointer);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(
+        tester.getCenter(
+          find.byKey(ValueKey(AcpViewKeyValues.contextUsage('thread'))),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 160));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(ValueKey(AcpViewKeyValues.contextUsageDetail('thread'))),
+        findsOneWidget,
+      );
+      expect(find.text('实时'), findsOneWidget);
+      expect(find.text('64.5k / 200k'), findsOneWidget);
+      expect(find.text('32%'), findsOneWidget);
+      expect(find.text('+14.5k'), findsOneWidget);
+      expect(find.text('精确 64,500 / 200,000 词元'), findsOneWidget);
+      expect(find.text('剩余可用 135.5k'), findsOneWidget);
+      expect(find.text('80 词元/秒'), findsOneWidget);
+      expect(find.text('≈ 320 词元 · 4.0s'), findsOneWidget);
+      expect(find.text(r'$0.42'), findsOneWidget);
+      expect(find.text('1 轮'), findsOneWidget);
+      expect(find.text('Codex CLI'), findsOneWidget);
+      expect(find.text('v0.9.4'), findsOneWidget);
+      expect(find.text('GPT-5'), findsOneWidget);
+      expect(find.text('关闭'), findsOneWidget);
+      expect(find.text('图片输入'), findsOneWidget);
+      expect(find.text('加载历史'), findsOneWidget);
+      expect(find.text('恢复会话'), findsOneWidget);
+      expect(find.text(acpRemoteFixture.value), findsOneWidget);
+
+      h.emit(const AcpGapEventView(AcpObservationGapView.disconnected));
+      await tester.pumpAndSettle();
+      expect(find.text('上次快照'), findsOneWidget);
+      expect(find.text('64.5k / 200k'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'AcpContextDetailView handles narrow width, 1.3x scale, over-capacity, and negative delta cleanly',
+    (tester) async {
+      await tester.pumpWidget(
+        acpTestApp(
+          MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(1.3)),
+            child: Center(
+              child: SizedBox(
+                width: 280,
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: AcpContextDetailView(
+                    state: AcpContextDetailViewState(
+                      used: BigInt.from(215000),
+                      size: BigInt.from(200000),
+                      previousUsed: BigInt.from(220000),
+                      isLive: false,
+                      tokensPerSecond: 62.5,
+                      estimatedOutputTokens: 250,
+                      responseMillis: 4000,
+                      serviceName: 'Workstation Enterprise ACP Proxy Long Name',
+                      serverName: 'claude-agent-acp',
+                      serverVersion: 'v2.4.1',
+                      remoteSessionId: 'session_01JXYZLONGIDENTIFIER99887766',
+                      phase: AcpSessionStatusPhase.disconnected,
+                      lastStopReason: AcpStopReasonKind.maxTokens,
+                      completedTurns: 6,
+                      updatedAt: DateTime.utc(2026, 11, 23, 8, 15, 30),
+                      configItems: const [
+                        AcpConfigReadoutItem(
+                          label: '',
+                          value: 'Plan Mode',
+                          useModeFallbackLabel: true,
+                        ),
+                      ],
+                      capabilities: const [
+                        AcpCapabilityKind.image,
+                        AcpCapabilityKind.loadSession,
+                        AcpCapabilityKind.resumeSession,
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('上次快照'), findsOneWidget);
+      expect(find.text('-5k'), findsOneWidget);
+      expect(find.text('超出容量 15k'), findsOneWidget);
+      expect(find.text('6 轮'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 }

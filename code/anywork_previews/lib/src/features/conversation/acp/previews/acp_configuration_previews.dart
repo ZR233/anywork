@@ -336,7 +336,11 @@ Widget acpStatusBarPreview() => _acpPreviewShell(
       ),
     ),
     contextUsage: AcpContextUsageView(
-      state: (used: BigInt.from(18400), size: BigInt.from(200000)),
+      state: (
+        used: BigInt.from(18400),
+        size: BigInt.from(200000),
+        isLive: true,
+      ),
     ),
     cost: const AcpCostReadoutView(state: (amount: 0.04, currency: 'USD')),
     externalHistory: AcpExternalHistoryButtonView(

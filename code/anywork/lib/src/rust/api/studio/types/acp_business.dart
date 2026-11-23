@@ -14,7 +14,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp_business.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 class BridgeAcpAgentCapabilities {
   final bool image;
@@ -214,6 +214,7 @@ class BridgeAcpBusinessSnapshot {
   final BridgeAcpCompletedRun? lastCompleted;
   final BridgeAcpObservationGap? observationGap;
   final List<BridgeAcpAuthMethod> authMethods;
+  final BridgeAcpSessionInfoSnapshot? infoSnapshot;
 
   const BridgeAcpBusinessSnapshot({
     required this.target,
@@ -227,6 +228,7 @@ class BridgeAcpBusinessSnapshot {
     this.lastCompleted,
     this.observationGap,
     required this.authMethods,
+    this.infoSnapshot,
   });
 
   @override
@@ -241,7 +243,8 @@ class BridgeAcpBusinessSnapshot {
       activeRun.hashCode ^
       lastCompleted.hashCode ^
       observationGap.hashCode ^
-      authMethods.hashCode;
+      authMethods.hashCode ^
+      infoSnapshot.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -258,7 +261,8 @@ class BridgeAcpBusinessSnapshot {
           activeRun == other.activeRun &&
           lastCompleted == other.lastCompleted &&
           observationGap == other.observationGap &&
-          authMethods == other.authMethods;
+          authMethods == other.authMethods &&
+          infoSnapshot == other.infoSnapshot;
 }
 
 class BridgeAcpCompletedRun {
@@ -328,6 +332,41 @@ class BridgeAcpConfigId {
       other is BridgeAcpConfigId &&
           runtimeType == other.runtimeType &&
           value == other.value;
+}
+
+class BridgeAcpConfigItemSnapshot {
+  final String id;
+  final String name;
+  final String? category;
+  final String valueId;
+  final String valueLabel;
+
+  const BridgeAcpConfigItemSnapshot({
+    required this.id,
+    required this.name,
+    this.category,
+    required this.valueId,
+    required this.valueLabel,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      name.hashCode ^
+      category.hashCode ^
+      valueId.hashCode ^
+      valueLabel.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpConfigItemSnapshot &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          name == other.name &&
+          category == other.category &&
+          valueId == other.valueId &&
+          valueLabel == other.valueLabel;
 }
 
 @freezed
@@ -430,6 +469,30 @@ class BridgeAcpConfigureRequest {
           target == other.target &&
           configId == other.configId &&
           value == other.value;
+}
+
+class BridgeAcpCostSnapshot {
+  final double amount;
+  final String currency;
+  final PlatformInt64 updatedAt;
+
+  const BridgeAcpCostSnapshot({
+    required this.amount,
+    required this.currency,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode => amount.hashCode ^ currency.hashCode ^ updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpCostSnapshot &&
+          runtimeType == other.runtimeType &&
+          amount == other.amount &&
+          currency == other.currency &&
+          updatedAt == other.updatedAt;
 }
 
 class BridgeAcpInterruptRequest {
@@ -908,12 +971,37 @@ sealed class BridgeAcpSelectOptions with _$BridgeAcpSelectOptions {
   }) = BridgeAcpSelectOptions_Grouped;
 }
 
+class BridgeAcpServerInfoSnapshot {
+  final String name;
+  final String version;
+  final String? title;
+
+  const BridgeAcpServerInfoSnapshot({
+    required this.name,
+    required this.version,
+    this.title,
+  });
+
+  @override
+  int get hashCode => name.hashCode ^ version.hashCode ^ title.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpServerInfoSnapshot &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          version == other.version &&
+          title == other.title;
+}
+
 @freezed
 sealed class BridgeAcpSessionEvent with _$BridgeAcpSessionEvent {
   const BridgeAcpSessionEvent._();
 
   const factory BridgeAcpSessionEvent.initialized({
     required BridgeAcpAgentCapabilities capabilities,
+    BridgeAcpServerInfoSnapshot? serverInfo,
   }) = BridgeAcpSessionEvent_Initialized;
   const factory BridgeAcpSessionEvent.update({
     required BridgeAcpSessionNotification update,
@@ -951,6 +1039,7 @@ sealed class BridgeAcpSessionFrame with _$BridgeAcpSessionFrame {
   const factory BridgeAcpSessionFrame.accepted({
     required BridgeAcpSessionTarget target,
     required bool hasObservation,
+    BridgeAcpSessionInfoSnapshot? infoSnapshot,
   }) = BridgeAcpSessionFrame_Accepted;
   const factory BridgeAcpSessionFrame.settled({
     required BridgeAcpSettlement result,
@@ -997,6 +1086,53 @@ class BridgeAcpSessionInfo {
           title == other.title &&
           updatedAt == other.updatedAt &&
           meta == other.meta;
+}
+
+class BridgeAcpSessionInfoSnapshot {
+  final BridgeAcpUsageSnapshot? usage;
+  final BridgeAcpCostSnapshot? cost;
+  final BridgeAcpTextPerformanceSnapshot? textPerformance;
+  final String? lastStopReason;
+  final BridgeAcpServerInfoSnapshot? serverInfo;
+  final List<BridgeAcpConfigItemSnapshot> activeConfig;
+  final BigInt? completedTurns;
+  final PlatformInt64 updatedAt;
+
+  const BridgeAcpSessionInfoSnapshot({
+    this.usage,
+    this.cost,
+    this.textPerformance,
+    this.lastStopReason,
+    this.serverInfo,
+    required this.activeConfig,
+    this.completedTurns,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      usage.hashCode ^
+      cost.hashCode ^
+      textPerformance.hashCode ^
+      lastStopReason.hashCode ^
+      serverInfo.hashCode ^
+      activeConfig.hashCode ^
+      completedTurns.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpSessionInfoSnapshot &&
+          runtimeType == other.runtimeType &&
+          usage == other.usage &&
+          cost == other.cost &&
+          textPerformance == other.textPerformance &&
+          lastStopReason == other.lastStopReason &&
+          serverInfo == other.serverInfo &&
+          activeConfig == other.activeConfig &&
+          completedTurns == other.completedTurns &&
+          updatedAt == other.updatedAt;
 }
 
 class BridgeAcpSessionTarget {
@@ -1085,6 +1221,57 @@ class BridgeAcpTextPerformance {
           runtimeType == other.runtimeType &&
           estimatedOutputTokens == other.estimatedOutputTokens &&
           responseMillis == other.responseMillis;
+}
+
+class BridgeAcpTextPerformanceSnapshot {
+  final BigInt estimatedOutputTokens;
+  final BigInt responseMillis;
+  final PlatformInt64 updatedAt;
+
+  const BridgeAcpTextPerformanceSnapshot({
+    required this.estimatedOutputTokens,
+    required this.responseMillis,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode =>
+      estimatedOutputTokens.hashCode ^
+      responseMillis.hashCode ^
+      updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpTextPerformanceSnapshot &&
+          runtimeType == other.runtimeType &&
+          estimatedOutputTokens == other.estimatedOutputTokens &&
+          responseMillis == other.responseMillis &&
+          updatedAt == other.updatedAt;
+}
+
+class BridgeAcpUsageSnapshot {
+  final BigInt used;
+  final BigInt size;
+  final PlatformInt64 updatedAt;
+
+  const BridgeAcpUsageSnapshot({
+    required this.used,
+    required this.size,
+    required this.updatedAt,
+  });
+
+  @override
+  int get hashCode => used.hashCode ^ size.hashCode ^ updatedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpUsageSnapshot &&
+          runtimeType == other.runtimeType &&
+          used == other.used &&
+          size == other.size &&
+          updatedAt == other.updatedAt;
 }
 
 enum BridgeAcpWorkspaceMode { local, worktree }

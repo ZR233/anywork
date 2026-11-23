@@ -2547,6 +2547,65 @@
       }
     }
   },
+  "acpContextWindowTitle": "上下文窗口",
+  "acpSnapshotLiveBadge": "实时",
+  "acpSnapshotRetainedBadge": "上次快照",
+  "acpContextRemainingLabel": "剩余可用 {tokens}",
+  "@acpContextRemainingLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextOverCapacityLabel": "超出容量 {tokens}",
+  "@acpContextOverCapacityLabel": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      }
+    }
+  },
+  "acpContextNotReported": "对端暂未报告上下文占用",
+  "acpContextExactTokens": "精确 {used} / {size} 词元",
+  "@acpContextExactTokens": {
+    "placeholders": {
+      "used": {
+        "type": "String"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricSpeedTitle": "正文估算速度",
+  "acpMetricSpeedDetail": "≈ {tokens} 词元 · {duration}",
+  "@acpMetricSpeedDetail": {
+    "placeholders": {
+      "tokens": {
+        "type": "String"
+      },
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "acpMetricCostTitle": "累计费用",
+  "acpMetricCostSubtitle": "对端累计报告",
+  "acpMetricTurnsTitle": "已完成轮次",
+  "acpMetricTurnsValue": "{count} 轮",
+  "@acpMetricTurnsValue": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "acpDetailSessionSection": "会话与运行配置",
+  "acpDetailLastStopReason": "上次结束",
+  "acpDetailUpdatedAt": "最近更新",
+  "acpDetailCapabilitiesSection": "协议能力与标识",
+  "acpDetailSessionId": "远端会话",
   "acpPlanTitle": "执行计划",
   "acpPlanProgress": "已完成 {completed} / {total}",
   "@acpPlanProgress": {

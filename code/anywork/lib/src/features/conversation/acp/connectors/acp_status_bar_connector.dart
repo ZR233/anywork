@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
-import '../../../status/thread_status_bar.dart';
+import '../../../status/status_bar_item.dart';
 import '../state/acp_view_state.dart';
 import '../view_models/acp_external_history_view_model.dart';
 import '../view_models/acp_status_bar_view_model.dart';
@@ -57,6 +57,19 @@ class AcpContextUsageConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) => AcpContextUsageView(
     state: ref.watch(acpContextUsageViewModelProvider(threadId)),
+    threadId: threadId,
+    detailBuilder: (_) => _AcpContextDetailConnector(threadId: threadId),
+  );
+}
+
+class _AcpContextDetailConnector extends ConsumerWidget {
+  const _AcpContextDetailConnector({required this.threadId});
+
+  final String threadId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => AcpContextDetailView(
+    state: ref.watch(acpContextDetailViewModelProvider(threadId)),
   );
 }
 

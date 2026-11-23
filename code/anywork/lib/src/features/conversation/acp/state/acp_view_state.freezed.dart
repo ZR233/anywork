@@ -6550,6 +6550,609 @@ as AcpHistoryOriginKind?,
 }
 
 /// @nodoc
+mixin _$AcpConfigReadoutItem {
+
+ String get label; String get value; bool? get booleanValue; bool get useModeFallbackLabel;
+/// Create a copy of AcpConfigReadoutItem
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpConfigReadoutItemCopyWith<AcpConfigReadoutItem> get copyWith => _$AcpConfigReadoutItemCopyWithImpl<AcpConfigReadoutItem>(this as AcpConfigReadoutItem, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpConfigReadoutItem;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpConfigReadoutItem&&(identical(other.label, _this.label) || other.label == _this.label)&&(identical(other.value, _this.value) || other.value == _this.value)&&(identical(other.booleanValue, _this.booleanValue) || other.booleanValue == _this.booleanValue)&&(identical(other.useModeFallbackLabel, _this.useModeFallbackLabel) || other.useModeFallbackLabel == _this.useModeFallbackLabel));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpConfigReadoutItem;
+  return Object.hash(runtimeType,_this.label,_this.value,_this.booleanValue,_this.useModeFallbackLabel);
+}
+
+@override
+String toString() {
+  final _this = this as AcpConfigReadoutItem;
+  return 'AcpConfigReadoutItem(label: ${_this.label}, value: ${_this.value}, booleanValue: ${_this.booleanValue}, useModeFallbackLabel: ${_this.useModeFallbackLabel})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpConfigReadoutItemCopyWith<$Res>  {
+  factory $AcpConfigReadoutItemCopyWith(AcpConfigReadoutItem value, $Res Function(AcpConfigReadoutItem) _then) = _$AcpConfigReadoutItemCopyWithImpl;
+@useResult
+$Res call({
+ String label, String value, bool? booleanValue, bool useModeFallbackLabel
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpConfigReadoutItemCopyWithImpl<$Res>
+    implements $AcpConfigReadoutItemCopyWith<$Res> {
+  _$AcpConfigReadoutItemCopyWithImpl(this._self, this._then);
+
+  final AcpConfigReadoutItem _self;
+  final $Res Function(AcpConfigReadoutItem) _then;
+
+/// Create a copy of AcpConfigReadoutItem
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? label = null,Object? value = null,Object? booleanValue = freezed,Object? useModeFallbackLabel = null,}) {
+  return _then(AcpConfigReadoutItem(
+label: null == label ? _self.label : label // ignore: cast_nullable_to_non_nullable
+as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,booleanValue: freezed == booleanValue ? _self.booleanValue : booleanValue // ignore: cast_nullable_to_non_nullable
+as bool?,useModeFallbackLabel: null == useModeFallbackLabel ? _self.useModeFallbackLabel : useModeFallbackLabel // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpConfigReadoutItem].
+extension AcpConfigReadoutItemPatterns on AcpConfigReadoutItem {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpConfigReadoutItem value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpConfigReadoutItem value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpConfigReadoutItem value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String label,  String value,  bool? booleanValue,  bool useModeFallbackLabel)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem() when $default != null:
+return $default(_that.label,_that.value,_that.booleanValue,_that.useModeFallbackLabel);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String label,  String value,  bool? booleanValue,  bool useModeFallbackLabel)  $default,) {final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem():
+return $default(_that.label,_that.value,_that.booleanValue,_that.useModeFallbackLabel);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String label,  String value,  bool? booleanValue,  bool useModeFallbackLabel)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpConfigReadoutItem() when $default != null:
+return $default(_that.label,_that.value,_that.booleanValue,_that.useModeFallbackLabel);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpConfigReadoutItem implements AcpConfigReadoutItem {
+  const _AcpConfigReadoutItem({required this.label, required this.value, this.booleanValue, this.useModeFallbackLabel = false});
+
+
+@override final  String label;
+@override final  String value;
+@override final  bool? booleanValue;
+@override@JsonKey() final  bool useModeFallbackLabel;
+
+/// Create a copy of AcpConfigReadoutItem
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpConfigReadoutItemCopyWith<_AcpConfigReadoutItem> get copyWith => __$AcpConfigReadoutItemCopyWithImpl<_AcpConfigReadoutItem>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpConfigReadoutItem&&(identical(other.label, label) || other.label == label)&&(identical(other.value, value) || other.value == value)&&(identical(other.booleanValue, booleanValue) || other.booleanValue == booleanValue)&&(identical(other.useModeFallbackLabel, useModeFallbackLabel) || other.useModeFallbackLabel == useModeFallbackLabel));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,label,value,booleanValue,useModeFallbackLabel);
+}
+
+@override
+String toString() {
+    return 'AcpConfigReadoutItem(label: $label, value: $value, booleanValue: $booleanValue, useModeFallbackLabel: $useModeFallbackLabel)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpConfigReadoutItemCopyWith<$Res> implements $AcpConfigReadoutItemCopyWith<$Res> {
+  factory _$AcpConfigReadoutItemCopyWith(_AcpConfigReadoutItem value, $Res Function(_AcpConfigReadoutItem) _then) = __$AcpConfigReadoutItemCopyWithImpl;
+@override @useResult
+$Res call({
+ String label, String value, bool? booleanValue, bool useModeFallbackLabel
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpConfigReadoutItemCopyWithImpl<$Res>
+    implements _$AcpConfigReadoutItemCopyWith<$Res> {
+  __$AcpConfigReadoutItemCopyWithImpl(this._self, this._then);
+
+  final _AcpConfigReadoutItem _self;
+  final $Res Function(_AcpConfigReadoutItem) _then;
+
+/// Create a copy of AcpConfigReadoutItem
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? label = null,Object? value = null,Object? booleanValue = freezed,Object? useModeFallbackLabel = null,}) {
+  return _then(_AcpConfigReadoutItem(
+label: null == label ? _self.label : label // ignore: cast_nullable_to_non_nullable
+as String,value: null == value ? _self.value : value // ignore: cast_nullable_to_non_nullable
+as String,booleanValue: freezed == booleanValue ? _self.booleanValue : booleanValue // ignore: cast_nullable_to_non_nullable
+as bool?,useModeFallbackLabel: null == useModeFallbackLabel ? _self.useModeFallbackLabel : useModeFallbackLabel // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
+mixin _$AcpContextDetailViewState {
+
+ BigInt? get used; BigInt? get size; BigInt? get previousUsed; bool get isLive; double? get tokensPerSecond; int? get estimatedOutputTokens; int? get responseMillis; AcpCostViewState? get cost; String? get serviceName; String? get serverName; String? get serverVersion; String? get remoteSessionId; AcpSessionStatusPhase get phase; AcpStopReasonKind? get lastStopReason; String? get lastStopReasonRaw; int? get completedTurns; DateTime? get updatedAt; List<AcpConfigReadoutItem> get configItems; List<AcpCapabilityKind> get capabilities;
+/// Create a copy of AcpContextDetailViewState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpContextDetailViewStateCopyWith<AcpContextDetailViewState> get copyWith => _$AcpContextDetailViewStateCopyWithImpl<AcpContextDetailViewState>(this as AcpContextDetailViewState, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpContextDetailViewState;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpContextDetailViewState&&(identical(other.used, _this.used) || other.used == _this.used)&&(identical(other.size, _this.size) || other.size == _this.size)&&(identical(other.previousUsed, _this.previousUsed) || other.previousUsed == _this.previousUsed)&&(identical(other.isLive, _this.isLive) || other.isLive == _this.isLive)&&(identical(other.tokensPerSecond, _this.tokensPerSecond) || other.tokensPerSecond == _this.tokensPerSecond)&&(identical(other.estimatedOutputTokens, _this.estimatedOutputTokens) || other.estimatedOutputTokens == _this.estimatedOutputTokens)&&(identical(other.responseMillis, _this.responseMillis) || other.responseMillis == _this.responseMillis)&&(identical(other.cost, _this.cost) || other.cost == _this.cost)&&(identical(other.serviceName, _this.serviceName) || other.serviceName == _this.serviceName)&&(identical(other.serverName, _this.serverName) || other.serverName == _this.serverName)&&(identical(other.serverVersion, _this.serverVersion) || other.serverVersion == _this.serverVersion)&&(identical(other.remoteSessionId, _this.remoteSessionId) || other.remoteSessionId == _this.remoteSessionId)&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.lastStopReason, _this.lastStopReason) || other.lastStopReason == _this.lastStopReason)&&(identical(other.lastStopReasonRaw, _this.lastStopReasonRaw) || other.lastStopReasonRaw == _this.lastStopReasonRaw)&&(identical(other.completedTurns, _this.completedTurns) || other.completedTurns == _this.completedTurns)&&(identical(other.updatedAt, _this.updatedAt) || other.updatedAt == _this.updatedAt)&&const DeepCollectionEquality().equals(other.configItems, _this.configItems)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpContextDetailViewState;
+  return Object.hashAll([runtimeType,_this.used,_this.size,_this.previousUsed,_this.isLive,_this.tokensPerSecond,_this.estimatedOutputTokens,_this.responseMillis,_this.cost,_this.serviceName,_this.serverName,_this.serverVersion,_this.remoteSessionId,_this.phase,_this.lastStopReason,_this.lastStopReasonRaw,_this.completedTurns,_this.updatedAt,const DeepCollectionEquality().hash(_this.configItems),const DeepCollectionEquality().hash(_this.capabilities)]);
+}
+
+@override
+String toString() {
+  final _this = this as AcpContextDetailViewState;
+  return 'AcpContextDetailViewState(used: ${_this.used}, size: ${_this.size}, previousUsed: ${_this.previousUsed}, isLive: ${_this.isLive}, tokensPerSecond: ${_this.tokensPerSecond}, estimatedOutputTokens: ${_this.estimatedOutputTokens}, responseMillis: ${_this.responseMillis}, cost: ${_this.cost}, serviceName: ${_this.serviceName}, serverName: ${_this.serverName}, serverVersion: ${_this.serverVersion}, remoteSessionId: ${_this.remoteSessionId}, phase: ${_this.phase}, lastStopReason: ${_this.lastStopReason}, lastStopReasonRaw: ${_this.lastStopReasonRaw}, completedTurns: ${_this.completedTurns}, updatedAt: ${_this.updatedAt}, configItems: ${_this.configItems}, capabilities: ${_this.capabilities})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpContextDetailViewStateCopyWith<$Res>  {
+  factory $AcpContextDetailViewStateCopyWith(AcpContextDetailViewState value, $Res Function(AcpContextDetailViewState) _then) = _$AcpContextDetailViewStateCopyWithImpl;
+@useResult
+$Res call({
+ BigInt? used, BigInt? size, BigInt? previousUsed, bool isLive, double? tokensPerSecond, int? estimatedOutputTokens, int? responseMillis, AcpCostViewState? cost, String? serviceName, String? serverName, String? serverVersion, String? remoteSessionId, AcpSessionStatusPhase phase, AcpStopReasonKind? lastStopReason, String? lastStopReasonRaw, int? completedTurns, DateTime? updatedAt, List<AcpConfigReadoutItem> configItems, List<AcpCapabilityKind> capabilities
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpContextDetailViewStateCopyWithImpl<$Res>
+    implements $AcpContextDetailViewStateCopyWith<$Res> {
+  _$AcpContextDetailViewStateCopyWithImpl(this._self, this._then);
+
+  final AcpContextDetailViewState _self;
+  final $Res Function(AcpContextDetailViewState) _then;
+
+/// Create a copy of AcpContextDetailViewState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? used = freezed,Object? size = freezed,Object? previousUsed = freezed,Object? isLive = null,Object? tokensPerSecond = freezed,Object? estimatedOutputTokens = freezed,Object? responseMillis = freezed,Object? cost = freezed,Object? serviceName = freezed,Object? serverName = freezed,Object? serverVersion = freezed,Object? remoteSessionId = freezed,Object? phase = null,Object? lastStopReason = freezed,Object? lastStopReasonRaw = freezed,Object? completedTurns = freezed,Object? updatedAt = freezed,Object? configItems = null,Object? capabilities = null,}) {
+  return _then(AcpContextDetailViewState(
+used: freezed == used ? _self.used : used // ignore: cast_nullable_to_non_nullable
+as BigInt?,size: freezed == size ? _self.size : size // ignore: cast_nullable_to_non_nullable
+as BigInt?,previousUsed: freezed == previousUsed ? _self.previousUsed : previousUsed // ignore: cast_nullable_to_non_nullable
+as BigInt?,isLive: null == isLive ? _self.isLive : isLive // ignore: cast_nullable_to_non_nullable
+as bool,tokensPerSecond: freezed == tokensPerSecond ? _self.tokensPerSecond : tokensPerSecond // ignore: cast_nullable_to_non_nullable
+as double?,estimatedOutputTokens: freezed == estimatedOutputTokens ? _self.estimatedOutputTokens : estimatedOutputTokens // ignore: cast_nullable_to_non_nullable
+as int?,responseMillis: freezed == responseMillis ? _self.responseMillis : responseMillis // ignore: cast_nullable_to_non_nullable
+as int?,cost: freezed == cost ? _self.cost : cost // ignore: cast_nullable_to_non_nullable
+as AcpCostViewState?,serviceName: freezed == serviceName ? _self.serviceName : serviceName // ignore: cast_nullable_to_non_nullable
+as String?,serverName: freezed == serverName ? _self.serverName : serverName // ignore: cast_nullable_to_non_nullable
+as String?,serverVersion: freezed == serverVersion ? _self.serverVersion : serverVersion // ignore: cast_nullable_to_non_nullable
+as String?,remoteSessionId: freezed == remoteSessionId ? _self.remoteSessionId : remoteSessionId // ignore: cast_nullable_to_non_nullable
+as String?,phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
+as AcpSessionStatusPhase,lastStopReason: freezed == lastStopReason ? _self.lastStopReason : lastStopReason // ignore: cast_nullable_to_non_nullable
+as AcpStopReasonKind?,lastStopReasonRaw: freezed == lastStopReasonRaw ? _self.lastStopReasonRaw : lastStopReasonRaw // ignore: cast_nullable_to_non_nullable
+as String?,completedTurns: freezed == completedTurns ? _self.completedTurns : completedTurns // ignore: cast_nullable_to_non_nullable
+as int?,updatedAt: freezed == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,configItems: null == configItems ? _self.configItems : configItems // ignore: cast_nullable_to_non_nullable
+as List<AcpConfigReadoutItem>,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as List<AcpCapabilityKind>,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpContextDetailViewState].
+extension AcpContextDetailViewStatePatterns on AcpContextDetailViewState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpContextDetailViewState value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpContextDetailViewState value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpContextDetailViewState value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( BigInt? used,  BigInt? size,  BigInt? previousUsed,  bool isLive,  double? tokensPerSecond,  int? estimatedOutputTokens,  int? responseMillis,  AcpCostViewState? cost,  String? serviceName,  String? serverName,  String? serverVersion,  String? remoteSessionId,  AcpSessionStatusPhase phase,  AcpStopReasonKind? lastStopReason,  String? lastStopReasonRaw,  int? completedTurns,  DateTime? updatedAt,  List<AcpConfigReadoutItem> configItems,  List<AcpCapabilityKind> capabilities)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState() when $default != null:
+return $default(_that.used,_that.size,_that.previousUsed,_that.isLive,_that.tokensPerSecond,_that.estimatedOutputTokens,_that.responseMillis,_that.cost,_that.serviceName,_that.serverName,_that.serverVersion,_that.remoteSessionId,_that.phase,_that.lastStopReason,_that.lastStopReasonRaw,_that.completedTurns,_that.updatedAt,_that.configItems,_that.capabilities);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( BigInt? used,  BigInt? size,  BigInt? previousUsed,  bool isLive,  double? tokensPerSecond,  int? estimatedOutputTokens,  int? responseMillis,  AcpCostViewState? cost,  String? serviceName,  String? serverName,  String? serverVersion,  String? remoteSessionId,  AcpSessionStatusPhase phase,  AcpStopReasonKind? lastStopReason,  String? lastStopReasonRaw,  int? completedTurns,  DateTime? updatedAt,  List<AcpConfigReadoutItem> configItems,  List<AcpCapabilityKind> capabilities)  $default,) {final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState():
+return $default(_that.used,_that.size,_that.previousUsed,_that.isLive,_that.tokensPerSecond,_that.estimatedOutputTokens,_that.responseMillis,_that.cost,_that.serviceName,_that.serverName,_that.serverVersion,_that.remoteSessionId,_that.phase,_that.lastStopReason,_that.lastStopReasonRaw,_that.completedTurns,_that.updatedAt,_that.configItems,_that.capabilities);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( BigInt? used,  BigInt? size,  BigInt? previousUsed,  bool isLive,  double? tokensPerSecond,  int? estimatedOutputTokens,  int? responseMillis,  AcpCostViewState? cost,  String? serviceName,  String? serverName,  String? serverVersion,  String? remoteSessionId,  AcpSessionStatusPhase phase,  AcpStopReasonKind? lastStopReason,  String? lastStopReasonRaw,  int? completedTurns,  DateTime? updatedAt,  List<AcpConfigReadoutItem> configItems,  List<AcpCapabilityKind> capabilities)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpContextDetailViewState() when $default != null:
+return $default(_that.used,_that.size,_that.previousUsed,_that.isLive,_that.tokensPerSecond,_that.estimatedOutputTokens,_that.responseMillis,_that.cost,_that.serviceName,_that.serverName,_that.serverVersion,_that.remoteSessionId,_that.phase,_that.lastStopReason,_that.lastStopReasonRaw,_that.completedTurns,_that.updatedAt,_that.configItems,_that.capabilities);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpContextDetailViewState implements AcpContextDetailViewState {
+  const _AcpContextDetailViewState({this.used, this.size, this.previousUsed, this.isLive = false, this.tokensPerSecond, this.estimatedOutputTokens, this.responseMillis, this.cost, this.serviceName, this.serverName, this.serverVersion, this.remoteSessionId, required this.phase, this.lastStopReason, this.lastStopReasonRaw, this.completedTurns, this.updatedAt,  List<AcpConfigReadoutItem> configItems = const <AcpConfigReadoutItem>[],  List<AcpCapabilityKind> capabilities = const <AcpCapabilityKind>[]}): _configItems = configItems,_capabilities = capabilities;
+
+
+@override final  BigInt? used;
+@override final  BigInt? size;
+@override final  BigInt? previousUsed;
+@override@JsonKey() final  bool isLive;
+@override final  double? tokensPerSecond;
+@override final  int? estimatedOutputTokens;
+@override final  int? responseMillis;
+@override final  AcpCostViewState? cost;
+@override final  String? serviceName;
+@override final  String? serverName;
+@override final  String? serverVersion;
+@override final  String? remoteSessionId;
+@override final  AcpSessionStatusPhase phase;
+@override final  AcpStopReasonKind? lastStopReason;
+@override final  String? lastStopReasonRaw;
+@override final  int? completedTurns;
+@override final  DateTime? updatedAt;
+ final  List<AcpConfigReadoutItem> _configItems;
+@override@JsonKey() List<AcpConfigReadoutItem> get configItems {
+  if (_configItems is EqualUnmodifiableListView) return _configItems;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_configItems);
+}
+
+ final  List<AcpCapabilityKind> _capabilities;
+@override@JsonKey() List<AcpCapabilityKind> get capabilities {
+  if (_capabilities is EqualUnmodifiableListView) return _capabilities;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_capabilities);
+}
+
+
+/// Create a copy of AcpContextDetailViewState
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpContextDetailViewStateCopyWith<_AcpContextDetailViewState> get copyWith => __$AcpContextDetailViewStateCopyWithImpl<_AcpContextDetailViewState>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpContextDetailViewState&&(identical(other.used, used) || other.used == used)&&(identical(other.size, size) || other.size == size)&&(identical(other.previousUsed, previousUsed) || other.previousUsed == previousUsed)&&(identical(other.isLive, isLive) || other.isLive == isLive)&&(identical(other.tokensPerSecond, tokensPerSecond) || other.tokensPerSecond == tokensPerSecond)&&(identical(other.estimatedOutputTokens, estimatedOutputTokens) || other.estimatedOutputTokens == estimatedOutputTokens)&&(identical(other.responseMillis, responseMillis) || other.responseMillis == responseMillis)&&(identical(other.cost, cost) || other.cost == cost)&&(identical(other.serviceName, serviceName) || other.serviceName == serviceName)&&(identical(other.serverName, serverName) || other.serverName == serverName)&&(identical(other.serverVersion, serverVersion) || other.serverVersion == serverVersion)&&(identical(other.remoteSessionId, remoteSessionId) || other.remoteSessionId == remoteSessionId)&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.lastStopReason, lastStopReason) || other.lastStopReason == lastStopReason)&&(identical(other.lastStopReasonRaw, lastStopReasonRaw) || other.lastStopReasonRaw == lastStopReasonRaw)&&(identical(other.completedTurns, completedTurns) || other.completedTurns == completedTurns)&&(identical(other.updatedAt, updatedAt) || other.updatedAt == updatedAt)&&const DeepCollectionEquality().equals(other.configItems, _configItems)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities));
+}
+
+
+@override
+int get hashCode {
+    return Object.hashAll([runtimeType,used,size,previousUsed,isLive,tokensPerSecond,estimatedOutputTokens,responseMillis,cost,serviceName,serverName,serverVersion,remoteSessionId,phase,lastStopReason,lastStopReasonRaw,completedTurns,updatedAt,const DeepCollectionEquality().hash(_configItems),const DeepCollectionEquality().hash(_capabilities)]);
+}
+
+@override
+String toString() {
+    return 'AcpContextDetailViewState(used: $used, size: $size, previousUsed: $previousUsed, isLive: $isLive, tokensPerSecond: $tokensPerSecond, estimatedOutputTokens: $estimatedOutputTokens, responseMillis: $responseMillis, cost: $cost, serviceName: $serviceName, serverName: $serverName, serverVersion: $serverVersion, remoteSessionId: $remoteSessionId, phase: $phase, lastStopReason: $lastStopReason, lastStopReasonRaw: $lastStopReasonRaw, completedTurns: $completedTurns, updatedAt: $updatedAt, configItems: $configItems, capabilities: $capabilities)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpContextDetailViewStateCopyWith<$Res> implements $AcpContextDetailViewStateCopyWith<$Res> {
+  factory _$AcpContextDetailViewStateCopyWith(_AcpContextDetailViewState value, $Res Function(_AcpContextDetailViewState) _then) = __$AcpContextDetailViewStateCopyWithImpl;
+@override @useResult
+$Res call({
+ BigInt? used, BigInt? size, BigInt? previousUsed, bool isLive, double? tokensPerSecond, int? estimatedOutputTokens, int? responseMillis, AcpCostViewState? cost, String? serviceName, String? serverName, String? serverVersion, String? remoteSessionId, AcpSessionStatusPhase phase, AcpStopReasonKind? lastStopReason, String? lastStopReasonRaw, int? completedTurns, DateTime? updatedAt, List<AcpConfigReadoutItem> configItems, List<AcpCapabilityKind> capabilities
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpContextDetailViewStateCopyWithImpl<$Res>
+    implements _$AcpContextDetailViewStateCopyWith<$Res> {
+  __$AcpContextDetailViewStateCopyWithImpl(this._self, this._then);
+
+  final _AcpContextDetailViewState _self;
+  final $Res Function(_AcpContextDetailViewState) _then;
+
+/// Create a copy of AcpContextDetailViewState
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? used = freezed,Object? size = freezed,Object? previousUsed = freezed,Object? isLive = null,Object? tokensPerSecond = freezed,Object? estimatedOutputTokens = freezed,Object? responseMillis = freezed,Object? cost = freezed,Object? serviceName = freezed,Object? serverName = freezed,Object? serverVersion = freezed,Object? remoteSessionId = freezed,Object? phase = null,Object? lastStopReason = freezed,Object? lastStopReasonRaw = freezed,Object? completedTurns = freezed,Object? updatedAt = freezed,Object? configItems = null,Object? capabilities = null,}) {
+  return _then(_AcpContextDetailViewState(
+used: freezed == used ? _self.used : used // ignore: cast_nullable_to_non_nullable
+as BigInt?,size: freezed == size ? _self.size : size // ignore: cast_nullable_to_non_nullable
+as BigInt?,previousUsed: freezed == previousUsed ? _self.previousUsed : previousUsed // ignore: cast_nullable_to_non_nullable
+as BigInt?,isLive: null == isLive ? _self.isLive : isLive // ignore: cast_nullable_to_non_nullable
+as bool,tokensPerSecond: freezed == tokensPerSecond ? _self.tokensPerSecond : tokensPerSecond // ignore: cast_nullable_to_non_nullable
+as double?,estimatedOutputTokens: freezed == estimatedOutputTokens ? _self.estimatedOutputTokens : estimatedOutputTokens // ignore: cast_nullable_to_non_nullable
+as int?,responseMillis: freezed == responseMillis ? _self.responseMillis : responseMillis // ignore: cast_nullable_to_non_nullable
+as int?,cost: freezed == cost ? _self.cost : cost // ignore: cast_nullable_to_non_nullable
+as AcpCostViewState?,serviceName: freezed == serviceName ? _self.serviceName : serviceName // ignore: cast_nullable_to_non_nullable
+as String?,serverName: freezed == serverName ? _self.serverName : serverName // ignore: cast_nullable_to_non_nullable
+as String?,serverVersion: freezed == serverVersion ? _self.serverVersion : serverVersion // ignore: cast_nullable_to_non_nullable
+as String?,remoteSessionId: freezed == remoteSessionId ? _self.remoteSessionId : remoteSessionId // ignore: cast_nullable_to_non_nullable
+as String?,phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
+as AcpSessionStatusPhase,lastStopReason: freezed == lastStopReason ? _self.lastStopReason : lastStopReason // ignore: cast_nullable_to_non_nullable
+as AcpStopReasonKind?,lastStopReasonRaw: freezed == lastStopReasonRaw ? _self.lastStopReasonRaw : lastStopReasonRaw // ignore: cast_nullable_to_non_nullable
+as String?,completedTurns: freezed == completedTurns ? _self.completedTurns : completedTurns // ignore: cast_nullable_to_non_nullable
+as int?,updatedAt: freezed == updatedAt ? _self.updatedAt : updatedAt // ignore: cast_nullable_to_non_nullable
+as DateTime?,configItems: null == configItems ? _self._configItems : configItems // ignore: cast_nullable_to_non_nullable
+as List<AcpConfigReadoutItem>,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as List<AcpCapabilityKind>,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AcpExternalHistoryButtonState {
 
  AcpExternalHistoryAvailability get status; bool get canLoad; bool get canResume;

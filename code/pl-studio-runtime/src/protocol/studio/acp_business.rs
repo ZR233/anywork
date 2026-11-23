@@ -124,6 +124,70 @@ pub struct AcpTextPerformance {
     pub response_millis: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpUsageSnapshot {
+    pub used: u64,
+    pub size: u64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpCostSnapshot {
+    pub amount: f64,
+    pub currency: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpTextPerformanceSnapshot {
+    pub estimated_output_tokens: u64,
+    pub response_millis: u64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpServerInfoSnapshot {
+    pub name: String,
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpConfigItemSnapshot {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    pub value_id: String,
+    pub value_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpSessionInfoSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<AcpUsageSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<AcpCostSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_performance: Option<AcpTextPerformanceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stop_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_info: Option<AcpServerInfoSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_config: Vec<AcpConfigItemSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_turns: Option<u64>,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpCompletedRun {
@@ -146,6 +210,8 @@ pub enum AcpSessionEvent {
     Initialized {
         #[schema(value_type = Object)]
         capabilities: Box<AgentCapabilities>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server_info: Option<AcpServerInfoSnapshot>,
     },
     Update {
         #[schema(value_type = Object)]
@@ -191,6 +257,8 @@ pub enum AcpSessionFrame {
     Accepted {
         target: AcpSessionTarget,
         has_observation: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        info_snapshot: Option<Box<AcpSessionInfoSnapshot>>,
     },
     Settled {
         #[schema(value_type = Object)]
@@ -217,6 +285,8 @@ pub struct AcpBusinessSnapshot {
     pub last_completed: Option<AcpCompletedRun>,
     pub observation_gap: Option<AcpObservationGap>,
     pub auth_methods: Vec<super::AcpAuthMethod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info_snapshot: Option<AcpSessionInfoSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
