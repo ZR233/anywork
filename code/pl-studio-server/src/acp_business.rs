@@ -20,6 +20,13 @@ use frames::OpenFrames;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpDraftCommitRequest {
+    pub target: AcpSessionTarget,
+    pub first_prompt_text: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AcpPromptRequest {
     pub target: AcpSessionTarget,
     #[schema(value_type = Vec<serde_json::Value>)]
@@ -93,13 +100,16 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
 }
 
 #[utoipa::path(post, path = "/api/v1/acp/sessions/commit-draft", operation_id = "acpSessions.commitDraft",
-    request_body = AcpSessionTarget,
+    request_body = AcpDraftCommitRequest,
     responses(StudioApiErrors, (status = 200), (status = 502, body = AcpBusinessFailure)))]
 async fn commit_draft(
     State(state): State<AppState>,
-    ApiJson(target): ApiJson<AcpSessionTarget>,
+    ApiJson(request): ApiJson<AcpDraftCommitRequest>,
 ) -> Result<Json<()>, AcpApiError> {
-    state.runtime.commit_acp_draft(target).await?;
+    state
+        .runtime
+        .commit_acp_draft(request.target, &request.first_prompt_text)
+        .await?;
     Ok(Json(()))
 }
 

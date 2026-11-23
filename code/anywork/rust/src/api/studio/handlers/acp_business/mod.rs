@@ -23,11 +23,12 @@ pub async fn open_acp_session(
 
 pub async fn commit_acp_draft(
     target: BridgeAcpSessionTarget,
+    first_prompt_text: String,
 ) -> Result<(), BridgeAcpBusinessError> {
     let bridge = active_bridge().await?;
     bridge
         .studio
-        .commit_acp_draft(target.into())
+        .commit_acp_draft(target.into(), &first_prompt_text)
         .await
         .map_err(convert::business_error)
 }

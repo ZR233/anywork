@@ -4,6 +4,8 @@ mod api;
 mod observation;
 mod projection;
 mod resources;
+#[cfg(all(test, target_os = "linux"))]
+mod title_tests;
 
 pub(crate) use api::AcpBusinessOwner;
 pub use api::AcpSessionOpen;
@@ -1114,16 +1116,13 @@ mod tests {
         assert_eq!(error.kind, AcpBusinessFailureKind::NotReady);
         fixture
             .runtime
-            .commit_acp_draft(open.target.clone())
+            .commit_acp_draft(open.target.clone(), "")
             .await?;
-        assert_eq!(
-            fixture
-                .runtime
-                .store
-                .directory_members_for_project(&fixture.workspace.id)?
-                .len(),
-            1
-        );
+        let members = fixture
+            .runtime
+            .store
+            .directory_members_for_project(&fixture.workspace.id)?;
+        assert_eq!(members.len(), 1);
         let committed = fixture
             .runtime
             .acp_session_snapshot(open.target.clone())
@@ -1131,6 +1130,7 @@ mod tests {
         assert_eq!(snapshot.acp_session_id, committed.acp_session_id);
         fixture.runtime.close_acp_session(open.target).await?;
         fixture.runtime.shutdown_runtime().await?;
+        assert_eq!(members[0].session.title, "New Session");
         Ok(())
     }
 
@@ -1258,7 +1258,7 @@ mod tests {
         Fixture::ready(&mut committed).await?;
         fixture
             .runtime
-            .commit_acp_draft(committed.target.clone())
+            .commit_acp_draft(committed.target.clone(), "Start work in the ACP worktree")
             .await?;
         assert!(
             !fixture

@@ -68,6 +68,7 @@ pub(crate) struct AcpResources {
     session: OnceLock<Session>,
     pub(crate) cancellation: CancellationToken,
     initial_configuration: AtomicBool,
+    initial_title_pending: AtomicBool,
     cleanup: pl_acp::auth::CleanupBudget,
     owned: Mutex<Owned>,
     association_gate: Mutex<()>,
@@ -100,6 +101,7 @@ impl AcpResources {
         workspace_id: String,
         completion: super::AcpSessionCompletion,
         draft: bool,
+        initial_title_pending: bool,
     ) -> Arc<Self> {
         let cleanup = pl_acp::auth::CleanupBudget::new(Duration::from_secs(5));
         Arc::new(Self {
@@ -110,6 +112,7 @@ impl AcpResources {
             session: OnceLock::new(),
             cancellation: CancellationToken::new(),
             initial_configuration: AtomicBool::new(false),
+            initial_title_pending: AtomicBool::new(initial_title_pending),
             cleanup,
             owned: Mutex::new(Owned {
                 draft,
@@ -163,8 +166,34 @@ impl AcpResources {
         Ok(())
     }
 
-    pub(crate) async fn is_draft(&self) -> bool {
-        self.owned.lock().await.draft
+    pub(super) async fn association_published(&self) -> bool {
+        let owned = self.owned.lock().await;
+        // `draft` ends when commit takes on publication responsibility, not
+        // when the write succeeds. A failed write still retains its association.
+        !owned.draft && owned.association.is_none()
+    }
+
+    pub(super) fn initial_title_pending(&self) -> bool {
+        self.initial_title_pending.load(Ordering::Relaxed)
+    }
+
+    /// First input acceptance and an explicit manual rename both retire this
+    /// eligibility while holding Studio's Thread lifecycle admission.
+    pub(in crate::studio::runtime) fn take_initial_title_eligibility(&self) -> bool {
+        self.initial_title_pending.swap(false, Ordering::Relaxed)
+    }
+
+    /// Order a title directory write against this exact generation's close.
+    pub(in crate::studio::runtime) async fn title_update_admission(
+        &self,
+    ) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let gate = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => return None,
+            gate = self.association_gate.lock() => gate,
+        };
+        let snapshot = self.session().ok()?.snapshot().await.ok()?;
+        (snapshot.ready && !snapshot.closing && !self.cancellation.is_cancelled()).then_some(gate)
     }
 
     pub(crate) async fn retain_draft_worktree(
@@ -441,10 +470,27 @@ impl AcpResources {
     }
 
     /// Explicit first-submission boundary; ordinary shutdown never publishes an unused draft.
-    pub(crate) async fn commit_draft(&self, events: &crate::studio::ProductEventBus) -> Result<()> {
+    pub(super) async fn commit_draft(
+        &self,
+        events: &crate::studio::ProductEventBus,
+        first_prompt_text: &str,
+    ) -> Result<()> {
         let _gate = self.association_gate.lock().await;
         ensure!(!self.cancellation.is_cancelled(), "ACP draft is closed");
-        self.owned.lock().await.draft = false;
+        {
+            let mut owned = self.owned.lock().await;
+            if owned.draft {
+                let association = owned
+                    .association
+                    .as_mut()
+                    .context("ACP draft association is missing")?;
+                association.session.title =
+                    super::super::thread_title::provisional_title(first_prompt_text);
+                // Freeze the title before the first publication attempt, including
+                // when an unsuccessful commit must settle this same association later.
+                owned.draft = false;
+            }
+        }
         self.publish_association(events).await
     }
 
@@ -676,6 +722,7 @@ mod tests {
         let resources = AcpResources::new(
             "status-workspace".into(),
             super::super::AcpSessionCompletion { publication },
+            false,
             false,
         );
         let calls = Arc::new(AtomicU64::new(7));

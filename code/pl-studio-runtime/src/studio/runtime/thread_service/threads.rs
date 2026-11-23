@@ -9,7 +9,8 @@ use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
 use super::super::StudioRuntime;
 use super::super::thread_title::{
-    ThreadTitleCancellation, ThreadTitleCancellationCause, manual_title, provisional_title,
+    ThreadTitleCancellation, ThreadTitleCancellationCause, ThreadTitleSource, manual_title,
+    provisional_title,
 };
 use super::super::{
     ArchiveThreadCommandReply, RenameThreadCommandReply, StudioArchiveThreadResult,
@@ -380,7 +381,13 @@ impl StudioRuntime {
         };
         if auto_title {
             self.title_tasks
-                .spawn(self.clone(), thread.id.clone(), provisional, title_prompt)
+                .spawn(
+                    self.clone(),
+                    thread.id.clone(),
+                    provisional,
+                    title_prompt,
+                    ThreadTitleSource::Native,
+                )
                 .await;
         }
         Ok(StudioStartNewThreadResponse { thread, submission })
@@ -411,7 +418,13 @@ impl StudioRuntime {
         }
         let baseline = session.clone();
         // A user edit is authoritative: stop the best-effort Explorer task
-        // before publishing the canonical manual title.
+        // and revoke any pending first-input eligibility before publishing.
+        if matches!(&agent.backend, crate::AgentBackend::Acp { .. })
+            && let Some(owner) = self.session_of(&thread_id)
+            && let Ok(Some(resources)) = owner.resident_acp(&thread_id)
+        {
+            resources.take_initial_title_eligibility();
+        }
         self.title_tasks
             .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
             .await;
@@ -448,13 +461,29 @@ impl StudioRuntime {
         thread_id: &str,
         expected_title: &str,
         title: &str,
+        source: &ThreadTitleSource,
         cancellation: &mut ThreadTitleCancellation,
     ) -> Result<()> {
         let _lifecycle_guard = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
             guard = self.lifecycle_lock.lock() => guard,
         };
-        if cancellation.is_cancelled() {
+        let resources = match source {
+            ThreadTitleSource::Native => None,
+            ThreadTitleSource::Acp { resources, .. } => match resources.upgrade() {
+                Some(resources) => Some(resources),
+                None => return Ok(()),
+            },
+        };
+        let _acp_admission = if let Some(resources) = &resources {
+            let Some(admission) = resources.title_update_admission().await else {
+                return Ok(());
+            };
+            Some(admission)
+        } else {
+            None
+        };
+        if self.shutdown_committed() || cancellation.is_cancelled() {
             return Ok(());
         }
         let Some((mut session, agent)) = self
@@ -465,6 +494,7 @@ impl StudioRuntime {
             return Ok(());
         };
         if session.archived
+            || agent.explicitly_closed
             || agent.parent_agent_id.is_some()
             || session.title != expected_title
             || session.title == title

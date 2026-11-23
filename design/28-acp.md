@@ -211,11 +211,13 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 ### 提交、控制与完成
 
-打开意图 `kind=draft` 显式携带 `workspaceMode` 与可空的 `delegationMode` / `delegationPreference`；它不占用远端 `sessionId` 字段。HTTP `/api/v1/acp/sessions/commit-draft`、FRB `commit_acp_draft` 和 Client `commitDraft` 接收原 target，作为首次提交前的正式目录发布边界。未提交草稿不能 prompt；提交可按同一 target 重复确认，不执行第二次 session/new。
+打开意图 `kind=draft` 显式携带 `workspaceMode` 与可空的 `delegationMode` / `delegationPreference`；它不占用远端 `sessionId` 字段。HTTP `/api/v1/acp/sessions/commit-draft`、FRB `commit_acp_draft` 和 Client `commitDraft` 接收原 target 和冻结的首条用户文本 `firstPromptText`（只有附件时为空），作为首次提交前的正式目录发布边界。Studio 只用这段文本派生目录的临时标题，不在 commit 时发送 ACP prompt 或调用标题模型。未提交草稿不能 prompt；提交可按同一 target 重复确认，不执行第二次 session/new 或覆盖已发布的标题。
 
 新会话先由选择 ACP 服务的显式意图准备草稿：以已选项目目录或立即准备的新工作树执行一次 session/new，取得真实配置但暂不发布产品目录。Draft 准备沿原 SessionRuntime 注册、观察与关闭边界执行，Ready 仍只证明协议打开，Settled 在该分支证明草稿准备已就绪；业务 New/Load/Resume 的原发布语义不变。目录、服务或冻结设置改变时旧草稿失去发送资格，收束后创建替代 session，迟到结果只结算原资源。只读目录查询与组件重建仍不启动探测。
 
 首次非空提交显式 commit 同一草稿的产品关联，再经原 prompt 通路提交一次输入；未 commit 的草稿不能 prompt。空输入可持有配置草稿但不发布正式会话。commit 与关闭通过原资源所有者串行，普通关闭不发布未使用草稿；一旦进入正式发布责任，失败仍保留同一关联供原路径结算。配置、prompt 或创建结果未知不自动重放，已发布但发送失败保留原会话。外部 session/close 按能力执行，其失败不等于本地责任未释放，也不承诺删除供应商历史。
+
+新根会话的产品目录标题遵循 [18.6](./18-studio-state.md#186-自动标题生命周期)：草稿的首次目录行即带提示词摘要；直接 `New` 在没有输入时使用通用名称。仅首条获受理的 prompt 有命名资格；若重试时文本有变，以实际受理的用户文本为准，不能覆盖手动名称。宿主只从用户 `ContentBlock::Text` 提取文本，附件及注入的宿主指令不参与命名。外部 `Load` / `Resume`、已有产品关联和子智能体不触发该机制；它不写对端标题或历史。
 
 普通 submit 消费正式 `ContentBlock`，按对端 prompt 能力校验，最多一个活动 prompt，busy 明确拒绝。独立业务驱动同时推进更新、有限命令、控制请求完成和 EOF；配置/权限 RPC 的等待不持有整个会话锁，权限只保留 SDK responder、合法选项及当前请求资格，回答后释放，cancel/close 按协议回答 Cancelled。待决权限独立受最多 64 项、保留数据合计 8 MiB 的资源上限约束，消费观察事件不会释放仍待回答的权限额度；回答后归还额度，超限请求立即回答 Cancelled。权限事件无法交付或观察已失效时，取消失去有效观察通路的待决权限，后续请求不再积存；活动 prompt 与其他控制仍按实际协议结果继续。
 

@@ -10,6 +10,7 @@ use pl_acp::session as sdk;
 use super::{AcpResources, AcpSessionCompletion, AcpSessionObservation, projection};
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
 use crate::studio::runtime::StudioRuntime;
+use crate::studio::runtime::thread_title::{ThreadTitleSource, provisional_title};
 
 /// An accepted product member and its original SDK observation. A resident
 /// member returns the same target and no second observation/connection.
@@ -233,7 +234,15 @@ impl AcpBusinessOwner {
             publication: published,
         };
         let draft = matches!(&intent, AcpOpenIntent::Draft { .. });
-        let resources = AcpResources::new(project.id.clone(), completion.clone(), draft);
+        let initial_title_pending = identity.parent_agent_id.is_none()
+            && previous.is_none()
+            && matches!(&intent, AcpOpenIntent::New | AcpOpenIntent::Draft { .. });
+        let resources = AcpResources::new(
+            project.id.clone(),
+            completion.clone(),
+            draft,
+            initial_title_pending,
+        );
         if identity.parent_agent_id.is_some() && previous.is_none() {
             resources.begin_initial_configuration();
         }
@@ -606,7 +615,12 @@ impl StudioRuntime {
             .config_runtime
             .resolve_acp_definition(&request.account_id, request.expected_connection_revision)?;
         if previous.is_none() {
-            session_record.title = definition.display_name.clone();
+            session_record.title = match &request.intent {
+                AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => provisional_title(""),
+                AcpOpenIntent::Load { .. } | AcpOpenIntent::Resume { .. } => {
+                    definition.display_name.clone()
+                }
+            };
         }
         let identity = crate::AgentThreadIdentity {
             session_id: crate::SessionId::new(session_record.session_id.clone())?,
@@ -688,14 +702,16 @@ impl StudioRuntime {
             })
     }
 
+    /// Publishes the prepared association with a provisional title from the frozen user text.
     pub async fn commit_acp_draft(
         &self,
         target: AcpSessionTarget,
+        first_prompt_text: &str,
     ) -> Result<(), AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
         resources.completion.wait().await?;
         resources
-            .commit_draft(&self.agent_facility.product_events)
+            .commit_draft(&self.agent_facility.product_events, first_prompt_text)
             .await
             .map_err(|error| projection::preparation(&error.to_string()))
     }
@@ -706,19 +722,77 @@ impl StudioRuntime {
         content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
-        resources
-            .ensure_input_ready()
-            .map_err(projection::failure)?;
-        if resources.is_draft().await {
-            return Err(projection::failure(sdk::Error::NotReady));
+        if !resources.initial_title_pending() {
+            return submit_acp_prompt(&resources, content)
+                .await
+                .map(projection::run);
         }
-        resources
-            .session()
-            .map_err(|_| projection::failure(sdk::Error::NotReady))?
-            .submit(content)
-            .await
-            .map(projection::run)
-            .map_err(projection::failure)
+
+        // Only the first potentially naming input needs the directory lifecycle
+        // worker. It owns the local SDK admission and title handoff even when the
+        // caller stops waiting. The ACP run itself never holds this admission.
+        let runtime = self.clone();
+        self.run_thread_lifecycle_operation(async move {
+            let title_prompt = resources.initial_title_pending().then(|| {
+                content.iter().filter_map(|block| match block {
+                    ContentBlock::Text(text) => Some(text.text.as_str()),
+                    _ => None,
+                }).collect::<Vec<_>>().join("\n")
+            });
+            let result = submit_acp_prompt(&resources, content).await;
+            if let (Ok(run), Some(prompt)) = (&result, title_prompt)
+                && resources.take_initial_title_eligibility()
+                && let Err(error) = runtime.finish_initial_acp_title(&target, &resources, *run, prompt).await
+            {
+                tracing::debug!(thread_id = %target.thread_id, error_bytes = error.to_string().len(),
+                    "initial ACP title could not be committed");
+            }
+            Ok(result.map(projection::run))
+        }).await.map_err(|error| {
+            if self.shutdown_committed() {
+                projection::failure(sdk::Error::Closed)
+            } else {
+                projection::preparation(&error.to_string())
+            }
+        })?
+    }
+
+    async fn finish_initial_acp_title(
+        &self,
+        target: &AcpSessionTarget,
+        resources: &Arc<AcpResources>,
+        run: sdk::RunId,
+        prompt: String,
+    ) -> Result<()> {
+        let Some(_admission) = resources.title_update_admission().await else {
+            return Ok(());
+        };
+        let events = &self.agent_facility.product_events;
+        let Some((mut session, agent)) = events.directory_facts(&target.thread_id) else {
+            return Ok(());
+        };
+        if session.archived || agent.explicitly_closed || agent.agent_id != target.agent_id {
+            return Ok(());
+        }
+        let title = provisional_title(&prompt);
+        if session.title != title {
+            let baseline = session.clone();
+            session.title = title.clone();
+            session.updated_at = crate::studio::unix_seconds();
+            events.commit_session_update(baseline, session).await?;
+        }
+        if !prompt.trim().is_empty() {
+            self.title_tasks
+                .spawn(
+                    self.clone(),
+                    target.thread_id.clone(),
+                    title,
+                    prompt,
+                    ThreadTitleSource::acp(resources, run),
+                )
+                .await;
+        }
+        Ok(())
     }
     pub async fn replace_acp_session(
         &self,
@@ -925,6 +999,24 @@ impl StudioRuntime {
             .collect();
         Ok(result)
     }
+}
+
+async fn submit_acp_prompt(
+    resources: &AcpResources,
+    content: Vec<ContentBlock>,
+) -> Result<sdk::RunId, AcpBusinessFailure> {
+    resources
+        .ensure_input_ready()
+        .map_err(projection::failure)?;
+    if !resources.association_published().await {
+        return Err(projection::failure(sdk::Error::NotReady));
+    }
+    resources
+        .session()
+        .map_err(|_| projection::failure(sdk::Error::NotReady))?
+        .submit(content)
+        .await
+        .map_err(projection::failure)
 }
 
 fn target(
