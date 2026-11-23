@@ -28,6 +28,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.icon,
     this.labelWidget,
     this.labelKey,
+    this.labelColor,
     this.leading,
     this.iconColor,
     this.isIssue = false,
@@ -36,6 +37,7 @@ class TimelineActivityRow extends StatelessWidget {
     this.expanded = false,
     this.expandable = true,
     this.tooltip,
+    this.semanticsLabel,
     this.meta,
     this.metaKey,
     this.emphasized = false,
@@ -90,6 +92,7 @@ class TimelineActivityRow extends StatelessWidget {
   final Widget? leading;
 
   /// 状态色覆盖；缺省使用次级文字色。
+  final Color? labelColor;
   final Color? iconColor;
 
   /// 该行代表真正失败、拒绝或预算限制：只替换图标，不改变文案颜色。
@@ -106,6 +109,7 @@ class TimelineActivityRow extends StatelessWidget {
   final bool expandable;
 
   final String? tooltip;
+  final String? semanticsLabel;
   final String? meta;
   final Key? metaKey;
   final bool emphasized;
@@ -117,13 +121,15 @@ class TimelineActivityRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = context.colors.onSurfaceVariant;
     final textStyle = context.text.bodySmall!.copyWith(
-      color: header
-          ? (active
-                ? (emphasized
-                      ? context.colors.onSurface
-                      : context.colors.onSurface.withValues(alpha: .92))
-                : color)
-          : color,
+      color:
+          labelColor ??
+          (header
+              ? (active
+                    ? (emphasized
+                          ? context.colors.onSurface
+                          : context.colors.onSurface.withValues(alpha: .92))
+                    : color)
+              : color),
       fontSize: header ? headerFontSize : null,
       fontWeight: header || emphasized ? FontWeight.w500 : FontWeight.w400,
       height: header ? 1.36 : 1.5,
@@ -186,9 +192,32 @@ class TimelineActivityRow extends StatelessWidget {
     Widget row = SelectionContainer.disabled(
       child: LayoutBuilder(
         builder: (context, constraints) {
-          // Prefer the primary text on narrow rows. Timing remains available in
-          // the tooltip instead of creating a second description line.
-          final showMeta = meta != null && constraints.maxWidth >= 240;
+          // Prefer the primary text on narrow rows or enlarged text scales.
+          // Measure meta against remaining title budget so the primary label is never starved.
+          final bool showMeta;
+          if (meta != null &&
+              constraints.maxWidth >= 240 &&
+              constraints.maxWidth.isFinite) {
+            final textScaler = MediaQuery.textScalerOf(context);
+            final metaPainter = TextPainter(
+              text: TextSpan(text: meta, style: metaStyle),
+              maxLines: 1,
+              textDirection: Directionality.of(context),
+              textScaler: textScaler,
+            )..layout();
+            final metaWidth = metaPainter.width;
+            metaPainter.dispose();
+            final reservedFixedWidth =
+                (showLeading ? leadingWidth + rowGap : 0) +
+                (header && expandable ? 4 + headerChevronSize : 0) +
+                8 +
+                metaWidth;
+            showMeta =
+                constraints.maxWidth - reservedFixedWidth >=
+                textScaler.scale(header ? 32 : 28);
+          } else {
+            showMeta = false;
+          }
           final content = Row(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -238,6 +267,9 @@ class TimelineActivityRow extends StatelessWidget {
     );
     final accessibleLabel = {label, ?tooltip, ?meta}.join('\n');
     row = Tooltip(message: accessibleLabel, child: row);
+    if (semanticsLabel case final semanticText?) {
+      row = Semantics(label: semanticText, excludeSemantics: true, child: row);
+    }
     return ColoredBox(color: Colors.transparent, child: row);
   }
 }

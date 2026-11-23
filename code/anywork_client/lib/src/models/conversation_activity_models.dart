@@ -312,6 +312,12 @@ ConversationActivityView? projectConversationActivity({
   // A coarse responding summary belongs to that response, not to the next
   // thinking interval. Keep a separately typed thinking summary unchanged.
   final summary = _singleLine(activity.summary);
+  final wait =
+      activity.tools.latestStarted?.wait ??
+      activity.tools.active
+          .map((tool) => tool.wait)
+          .whereType<ThreadWaitPresentationView>()
+          .firstOrNull;
   return ConversationActivityView(
     identity: activity.identity,
     kind: kind,
@@ -327,6 +333,7 @@ ConversationActivityView? projectConversationActivity({
         activity.deferred.isNotEmpty ||
         businessRefs?.plan?.document != null ||
         businessRefs?.interactions != null,
+    wait: wait,
     deferred: activity.deferred,
   );
 }

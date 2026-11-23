@@ -846,86 +846,29 @@
   "timelineReasoningFailed": "Thinking failed",
   "timelineReasoningCancelled": "Thinking cancelled",
   "timelineReasoningElapsedUnderSecond": "Thought for less than 1s",
-  "timelineReasoningElapsedSeconds": "Thought for {seconds}s",
-  "@timelineReasoningElapsedSeconds": {
+  "timelineReasoningElapsedDuration": "Thought for {duration}",
+  "@timelineReasoningElapsedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineReasoningElapsedMinutes": "Thought for {minutes}m",
-  "@timelineReasoningElapsedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineReasoningElapsedMinutesSeconds": "Thought for {minutes}m {seconds}s",
-  "@timelineReasoningElapsedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
   "timelineGroupWorkedUnderSecond": "Worked for less than 1s",
-  "timelineGroupWorkedSeconds": "Worked for {seconds}s",
-  "@timelineGroupWorkedSeconds": {
+  "timelineGroupWorkedDuration": "Worked for {duration}",
+  "@timelineGroupWorkedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupWorkedMinutes": "Worked for {minutes}m",
-  "@timelineGroupWorkedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupWorkedMinutesSeconds": "Worked for {minutes}m {seconds}s",
-  "@timelineGroupWorkedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
   "timelineGroupExecutingUnderSecond": "Running for less than 1s",
-  "timelineGroupExecutingSeconds": "Running for {seconds}s",
-  "@timelineGroupExecutingSeconds": {
+  "timelineGroupExecutingDuration": "Running for {duration}",
+  "@timelineGroupExecutingDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupExecutingMinutes": "Running for {minutes}m",
-  "@timelineGroupExecutingMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineGroupExecutingMinutesSeconds": "Running for {minutes}m {seconds}s",
-  "@timelineGroupExecutingMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
@@ -1051,30 +994,11 @@
   "timelineToolStdinRunning": "Writing input",
   "timelineToolStdinFailed": "Input not written",
   "timelineToolElapsedUnderSecond": "Took less than 1s",
-  "timelineToolElapsedSeconds": "Took {seconds}s",
-  "@timelineToolElapsedSeconds": {
+  "timelineToolElapsedDuration": "Took {duration}",
+  "@timelineToolElapsedDuration": {
     "placeholders": {
-      "seconds": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineToolElapsedMinutes": "Took {minutes}m",
-  "@timelineToolElapsedMinutes": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      }
-    }
-  },
-  "timelineToolElapsedMinutesSeconds": "Took {minutes}m {seconds}s",
-  "@timelineToolElapsedMinutesSeconds": {
-    "placeholders": {
-      "minutes": {
-        "type": "int"
-      },
-      "seconds": {
-        "type": "int"
+      "duration": {
+        "type": "String"
       }
     }
   },
@@ -3634,5 +3558,49 @@
   "timelineToolNameWorkflowRestart": "Restart workflow",
   "timelineToolNameWebSearch": "Web query",
   "timelineToolNameDeepseekWebSearch": "DeepSeek web search",
-  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch"
+  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
+  "liveStatusConnectionDisconnected": "Live updates disconnected",
+  "liveStatusConnectionReconnecting": "Reconnecting live updates",
+  "liveStatusActivityToolsTitle": "{count, plural, =1{1 active tool} other{{count} active tools}}",
+  "@liveStatusActivityToolsTitle": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "liveStatusActivityToolsLoaded": "Active tools {loaded}/{total}",
+  "@liveStatusActivityToolsLoaded": {
+    "placeholders": {
+      "loaded": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "liveStatusToolsCollapse": "Collapse",
+  "liveStatusToolsFirstPage": "First page",
+  "liveStatusToolsPreviousPage": "Previous",
+  "liveStatusToolsNextPage": "Next",
+  "liveStatusMembersUnavailable": "Member view unavailable",
+  "liveStatusMembersLoading": "Loading sealed members…",
+  "liveStatusRetryAction": "Retry",
+  "liveStatusContentRangeWindow": "Bytes {start}–{end} / {total}",
+  "@liveStatusContentRangeWindow": {
+    "placeholders": {
+      "start": {
+        "type": "int"
+      },
+      "end": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "liveStatusContentFirstSegment": "First chunk",
+  "liveStatusContentNextSegment": "Next chunk"
 }

@@ -65,7 +65,7 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'a847758e23d2d1f2b495a4cf7d0ac76e0dedd51b';
+    r'ac45c9223e049c4dd52d15eabc8249a02b4ea007';
 
 /// Current state and business facts are projected directly; the only local
 /// paging state is the explicitly requested activity-tools page.

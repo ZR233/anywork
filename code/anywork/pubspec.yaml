@@ -39,6 +39,7 @@ dependencies:
   path: 1.9.1
   material_ui: ^1.11.0
   riverpod: ^3.5.0
+  duration: ^4.0.3
 dependency_overrides:
   cross_cache:
     path: packages/cross_cache

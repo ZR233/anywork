@@ -1903,54 +1903,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineReasoningElapsedUnderSecond => '思考了不到 1 秒';
 
   @override
-  String timelineReasoningElapsedSeconds(int seconds) {
-    return '思考了 $seconds 秒';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutes(int minutes) {
-    return '思考了 $minutes 分';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
-    return '思考了 $minutes 分 $seconds 秒';
+  String timelineReasoningElapsedDuration(String duration) {
+    return '思考了 $duration';
   }
 
   @override
   String get timelineGroupWorkedUnderSecond => '工作了不到 1 秒';
 
   @override
-  String timelineGroupWorkedSeconds(int seconds) {
-    return '工作了 $seconds 秒';
-  }
-
-  @override
-  String timelineGroupWorkedMinutes(int minutes) {
-    return '工作了 $minutes 分';
-  }
-
-  @override
-  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
-    return '工作了 $minutes 分 $seconds 秒';
+  String timelineGroupWorkedDuration(String duration) {
+    return '工作了 $duration';
   }
 
   @override
   String get timelineGroupExecutingUnderSecond => '执行了不到 1 秒';
 
   @override
-  String timelineGroupExecutingSeconds(int seconds) {
-    return '执行了 $seconds 秒';
-  }
-
-  @override
-  String timelineGroupExecutingMinutes(int minutes) {
-    return '执行了 $minutes 分';
-  }
-
-  @override
-  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
-    return '执行了 $minutes 分 $seconds 秒';
+  String timelineGroupExecutingDuration(String duration) {
+    return '执行了 $duration';
   }
 
   @override
@@ -2089,18 +2059,8 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineToolElapsedUnderSecond => '用时不到 1 秒';
 
   @override
-  String timelineToolElapsedSeconds(int seconds) {
-    return '用时 $seconds 秒';
-  }
-
-  @override
-  String timelineToolElapsedMinutes(int minutes) {
-    return '用时 $minutes 分';
-  }
-
-  @override
-  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
-    return '用时 $minutes 分 $seconds 秒';
+  String timelineToolElapsedDuration(String duration) {
+    return '用时 $duration';
   }
 
   @override
@@ -7240,4 +7200,52 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
+
+  @override
+  String get liveStatusConnectionDisconnected => '实时同步已断开';
+
+  @override
+  String get liveStatusConnectionReconnecting => '正在重连实时同步';
+
+  @override
+  String liveStatusActivityToolsTitle(int count) {
+    return '活动工具 $count';
+  }
+
+  @override
+  String liveStatusActivityToolsLoaded(int loaded, int total) {
+    return '活动工具 $loaded/$total';
+  }
+
+  @override
+  String get liveStatusToolsCollapse => '收起';
+
+  @override
+  String get liveStatusToolsFirstPage => '第一页';
+
+  @override
+  String get liveStatusToolsPreviousPage => '上一页';
+
+  @override
+  String get liveStatusToolsNextPage => '下一页';
+
+  @override
+  String get liveStatusMembersUnavailable => '成员读取尚未就绪';
+
+  @override
+  String get liveStatusMembersLoading => '正在读取封存观察…';
+
+  @override
+  String get liveStatusRetryAction => '重试';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return '字节 $start–$end / $total';
+  }
+
+  @override
+  String get liveStatusContentFirstSegment => '第一段';
+
+  @override
+  String get liveStatusContentNextSegment => '下一段';
 }

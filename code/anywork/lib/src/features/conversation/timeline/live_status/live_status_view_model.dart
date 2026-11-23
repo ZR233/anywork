@@ -8,8 +8,8 @@ import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../view_models/timeline_view_model.dart';
+import 'live_status_machine.dart';
 import 'live_status_state.dart';
-import 'live_status_projection.dart';
 
 part 'live_status_view_model.g.dart';
 
@@ -90,9 +90,16 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
       _activityToolsPrevious.clear();
       _activityToolsError = null;
     }
-    final view = LiveStatusProjection.project(
+    final connectionStatus = switch (session.sync.phase) {
+      DomainSyncPhase.reconnecting => LiveConnectionStatus.reconnecting,
+      DomainSyncPhase.failed => LiveConnectionStatus.disconnected,
+      DomainSyncPhase.idle ||
+      DomainSyncPhase.connecting ||
+      DomainSyncPhase.ready => LiveConnectionStatus.connected,
+    };
+    final view = LiveStatusMachine.project(
       threadId: threadId,
-      observation: LiveStatusInputs(
+      inputs: LiveStatusInputs(
         storage: session.storage,
         interactions: session.interactions,
         businessRefs: session.businessRefs,
@@ -103,6 +110,8 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         renderedCurrentAtomIds:
             lease?.renderedCurrentAtomIds ?? const <String>{},
         hasContentOwner: active,
+        connectionStatus: connectionStatus,
+        connectionDetail: session.sync.errorMessage,
       ),
       currentAtomsError: lease?.currentCollectionError.value,
       activityTools: _activityToolsView(),
