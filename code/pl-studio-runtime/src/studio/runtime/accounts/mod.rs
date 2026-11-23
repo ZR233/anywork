@@ -135,4 +135,74 @@ mod tests {
         runtime.shutdown_runtime().await?;
         Ok(())
     }
+
+    #[tokio::test]
+    async fn acp_summaries_project_query_usage_capability_from_strategy_and_enabled_state()
+    -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let definitions = home.path().join("acp");
+        std::fs::create_dir(&definitions)?;
+        std::fs::write(
+            definitions.join("template-enabled.toml"),
+            crate::config::AcpServiceDefinition::template(
+                "template-enabled".into(),
+                "Antigravity Enabled".into(),
+                crate::config::AcpProvider::Antigravity,
+            )
+            .encode()?,
+        )?;
+        let mut template_disabled = crate::config::AcpServiceDefinition::template(
+            "template-disabled".into(),
+            "Antigravity Disabled".into(),
+            crate::config::AcpProvider::Antigravity,
+        );
+        template_disabled.enabled = false;
+        std::fs::write(
+            definitions.join("template-disabled.toml"),
+            template_disabled.encode()?,
+        )?;
+        let generic_enabled = crate::config::AcpServiceDefinition {
+            id: "generic-enabled".into(),
+            display_name: "agy".into(),
+            enabled: true,
+            launch: crate::config::AcpLaunch::Command {
+                command: "missing-acp-command".into(),
+                args: vec!["acp".into()],
+            },
+            env: Default::default(),
+        };
+        std::fs::write(
+            definitions.join("generic-enabled.toml"),
+            generic_enabled.encode()?,
+        )?;
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
+            studio_home: Some(home.path().to_owned()),
+            host: StudioHostKind::Test,
+            ..StudioRuntimeOptions::desktop()
+        })
+        .await?;
+        let AccountDomainFrame::Summaries { accounts, .. } =
+            runtime.read_account_domain(&AccountObservationTarget::Summaries)?
+        else {
+            panic!("expected summaries");
+        };
+        let query_usage_for = |id: &str| {
+            accounts
+                .iter()
+                .find(|account| {
+                    account.identity
+                        == AccountIdentity::Acp {
+                            account_id: id.into(),
+                        }
+                })
+                .unwrap_or_else(|| panic!("missing summary for {id}"))
+                .capabilities
+                .query_usage
+        };
+        assert!(query_usage_for("template-enabled"));
+        assert!(!query_usage_for("template-disabled"));
+        assert!(!query_usage_for("generic-enabled"));
+        runtime.shutdown_runtime().await?;
+        Ok(())
+    }
 }

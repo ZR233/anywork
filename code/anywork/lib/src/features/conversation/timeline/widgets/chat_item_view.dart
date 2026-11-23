@@ -388,7 +388,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     final nonemptyBodies = item.bodies.where(
       (body) =>
           body.byteLength > 0 &&
-          (body.inline == null || utf8.decode(body.inline!).trim().isNotEmpty),
+          (body.text?.trim().isNotEmpty ?? body.hasReference),
     );
     final summaries = nonemptyBodies
         .where((body) => body.key.startsWith('part.summaryText.'))
@@ -396,29 +396,21 @@ class _ChatItemViewState extends State<ChatItemView> {
     final bodies = nonemptyBodies
         .where((body) => !body.key.startsWith('part.summaryText.'))
         .toList();
-    final inlineSummary = summaries.every((body) => body.inline != null);
+    final inlineSummary = summaries.every((body) => body.hasInline);
     final summary = inlineSummary
-        ? summaries.map((body) => utf8.decode(body.inline!)).join(' ')
+        ? summaries.map((body) => body.text!).join(' ')
         : null;
     final atom = item.atom;
     return TimelineReasoningView(
       summary: summary,
-      summaryWidget: inlineSummary
+      summaryBuilder: inlineSummary
           ? null
-          : Row(
+          : (fallback) => Row(
               mainAxisSize: MainAxisSize.min,
+              spacing: 4,
               children: [
                 for (final body in summaries)
-                  Flexible(
-                    child: body.hasReference || body.inline == null
-                        ? TimelineBodyReadIntent(
-                            summary: true,
-                            child: _body(body),
-                          )
-                        : TimelineReasoningSummary(
-                            text: utf8.decode(body.inline!),
-                          ),
-                  ),
+                  Flexible(child: _reasoningSummary(body, fallback)),
               ],
             ),
       startedAt: item.displayRecord == null
@@ -444,10 +436,29 @@ class _ChatItemViewState extends State<ChatItemView> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                for (final body in bodies) _body(body, disclosed: true),
+                for (final body in bodies)
+                  _body(body, disclosed: true, showCopy: false),
                 _outcomeNotice(outcome),
               ],
             ),
+    );
+  }
+
+  Widget _reasoningSummary(ChatBodyPresentation body, String fallback) {
+    if (body.text case final text?) {
+      return TimelineReasoningSummary(text: text);
+    }
+    return TimelineBodyReadIntent(
+      key: ValueKey(body.key),
+      summary: true,
+      child: TimelineOwnedBodyConnector(
+        itemId: item.id,
+        contentKey: body.key,
+        label: fallback,
+        historyReference: body.historyReference,
+        currentReference: body.currentReference,
+        witness: _contentWitness,
+      ),
     );
   }
 

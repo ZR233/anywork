@@ -122,64 +122,68 @@ class _AcpDetails extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 24),
-          child: Card(
-            color: theme.colorScheme.surfaceContainerHigh,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 16,
-                    runSpacing: 8,
-                    children: [
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.pie_chart_outline,
-                            size: 20,
-                            color: theme.colorScheme.primary,
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            l10n.acpUsageTitle,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
+        if (value.supportsUsage ||
+            canQueryUsage ||
+            value.usage.queried ||
+            value.usage.busy)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: Card(
+              color: theme.colorScheme.surfaceContainerHigh,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Wrap(
+                      alignment: WrapAlignment.spaceBetween,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 16,
+                      runSpacing: 8,
+                      children: [
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.pie_chart_outline,
+                              size: 20,
+                              color: theme.colorScheme.primary,
                             ),
-                          ),
-                        ],
-                      ),
-                      if (canQueryUsage)
-                        OutlinedButton.icon(
-                          style: accountActionButtonStyle(context),
-                          key: ValueKey<String>(
-                            AccountViewKeyValues.acpAction(
-                              AcpAccountAction.queryUsage.name,
+                            const SizedBox(width: 10),
+                            Text(
+                              l10n.acpUsageTitle,
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                          ),
-                          onPressed: () =>
-                              onAcpAction(AcpAccountAction.queryUsage),
-                          icon: const Icon(Icons.refresh, size: 18),
-                          label: Text(
-                            value.usage.queried
-                                ? l10n.acpUsageRefresh
-                                : l10n.acpUsageQuery,
-                          ),
+                          ],
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  AcpUsageMetrics(value: value.usage),
-                ],
+                        if (canQueryUsage)
+                          OutlinedButton.icon(
+                            style: accountActionButtonStyle(context),
+                            key: ValueKey<String>(
+                              AccountViewKeyValues.acpAction(
+                                AcpAccountAction.queryUsage.name,
+                              ),
+                            ),
+                            onPressed: () =>
+                                onAcpAction(AcpAccountAction.queryUsage),
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: Text(
+                              value.usage.queried
+                                  ? l10n.acpUsageRefresh
+                                  : l10n.acpUsageQuery,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    AcpUsageMetrics(value: value.usage),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
         AccountSection(
           title: l10n.acpServiceInfoSectionTitle,
           child: Column(

@@ -263,67 +263,121 @@ impl AcpBusinessOwner {
             let mut started = Some(started);
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
-                    let draft_worktree = if draft && session_record.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
-                        resources.retain_draft_worktree(factory.clone(), thread_id.clone()).await;
-                        let lease = factory.prepare_acp_root_worktree(&thread_id, &project).await
-                            .map_err(|error| projection::preparation(&error.to_string()))?;
-                        business_root = lease.path.clone();
-                        session_record.workspace_path = business_root.clone();
-                        Some(lease)
-                    } else { None };
-                    let usage = match usage {
-                        Some(usage) => usage,
-                        None => factory
-                            .reserve_workspace_use(&thread_id, &project)
+                    let account = connections.acquire_for_business(&definition).map_err(|_| {
+                        projection::preparation("ACP account connection is closing or stale")
+                    })?;
+                    let workspace_cancel = resources.cancellation.child_token();
+                    let ready_cancel = resources.cancellation.child_token();
+                    let workspace_task = async {
+                        let draft_worktree = if draft
+                            && session_record.workspace_mode == crate::ThreadWorkspaceMode::Worktree
+                        {
+                            resources
+                                .retain_draft_worktree(factory.clone(), thread_id.clone())
+                                .await;
+                            let lease = factory
+                                .prepare_acp_root_worktree(&thread_id, &project)
+                                .await
+                                .map_err(|error| projection::preparation(&error.to_string()))?;
+                            business_root = lease.path.clone();
+                            session_record.workspace_path = business_root.clone();
+                            Some(lease)
+                        } else {
+                            None
+                        };
+                        let usage = match usage {
+                            Some(usage) => usage,
+                            None => factory
+                                .reserve_workspace_use(&thread_id, &project)
+                                .await
+                                .map_err(|_| {
+                                    projection::preparation("ACP workspace admission failed")
+                                })?,
+                        };
+                        let cwd = factory
+                            .prepare_acp_protocol_cwd(
+                                &thread_id,
+                                &project,
+                                &business_root,
+                                cwd.as_deref(),
+                            )
                             .await
-                            .map_err(|_| {
-                                projection::preparation("ACP workspace admission failed")
-                            })?,
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                        {
+                            let workspace_config = config
+                                .read()
+                                .map_err(|error| projection::preparation(&error.to_string()))?
+                                .config;
+                            let binding = factory
+                                .prepare_acp_workspace(
+                                    crate::studio::thread_factory::AcpWorkspaceRequest {
+                                        id: &thread_id,
+                                        project: &project,
+                                        business_root: &business_root,
+                                        usage: &usage,
+                                        session_mode: session_record.workspace_mode,
+                                        config: &workspace_config,
+                                        cancellation: &workspace_cancel,
+                                    },
+                                )
+                                .await
+                                .map_err(|error| projection::preparation(&error.to_string()))?;
+                            let tools = super::super::acp_workspace_tools::WorkspaceTools::new(
+                                thread_id.clone(),
+                                binding,
+                                &workspace_config,
+                            );
+                            resources
+                                .retain_workspace_tools(tools, usage.clone())
+                                .await
+                                .map_err(|error| projection::preparation(&error.to_string()))?;
+                        }
+                        if workspace_cancel.is_cancelled() {
+                            return Err(projection::preparation("ACP preparation cancelled"));
+                        }
+                        if let Some(lease) = &draft_worktree {
+                            factory
+                                .confirm_acp_worktree(lease, &usage, &preparation)
+                                .await
+                                .map_err(|error| projection::preparation(&error.to_string()))?;
+                        }
+                        Ok::<_, AcpBusinessFailure>((usage, cwd))
                     };
-                    let cwd = factory
-                        .prepare_acp_protocol_cwd(
-                            &thread_id,
-                            &project,
-                            &business_root,
-                            cwd.as_deref(),
-                        )
-                        .await
-                        .map_err(|error| projection::preparation(&error.to_string()))?;
-                    {
-                        let workspace_config = config.read()
-                            .map_err(|error| projection::preparation(&error.to_string()))?
-                            .config;
-                        let binding = factory
-                            .prepare_acp_workspace(crate::studio::thread_factory::AcpWorkspaceRequest {
-                                id: &thread_id,
-                                project: &project,
-                                business_root: &business_root,
-                                usage: &usage,
-                                session_mode: session_record.workspace_mode,
-                                config: &workspace_config,
-                                cancellation: &resources.cancellation,
-                            })
-                            .await
-                            .map_err(|error| projection::preparation(&error.to_string()))?;
-                        let tools = super::super::acp_workspace_tools::WorkspaceTools::new(
-                            thread_id.clone(),
-                            binding,
-                            &workspace_config,
-                        );
-                        resources
-                            .retain_workspace_tools(tools, usage.clone())
-                            .await
-                            .map_err(|error| projection::preparation(&error.to_string()))?;
-                    }
-                    if let Some(lease) = &draft_worktree {
-                        factory.confirm_acp_worktree(lease, &usage, &preparation).await
-                            .map_err(|error| projection::preparation(&error.to_string()))?;
-                    }
-                    let account = connections.connection(&definition).map_err(|_| projection::preparation("ACP account connection is closing or stale"))?;
-                    let prepared = tokio::select! {
-                        biased;
-                        () = resources.cancellation.cancelled() => return Err(projection::preparation("ACP preparation cancelled")),
-                        result = account.ready_business() => result?,
+                    let ready_task = async {
+                        tokio::select! {
+                            biased;
+                            () = ready_cancel.cancelled() => {
+                                Err(projection::preparation("ACP preparation cancelled"))
+                            }
+                            result = account.ready_business() => result,
+                        }
+                    };
+                    let (workspace_result, prepared_result) = tokio::join!(
+                        async {
+                            let result = workspace_task.await;
+                            if result.is_err() && !workspace_cancel.is_cancelled() {
+                                ready_cancel.cancel();
+                            }
+                            result
+                        },
+                        async {
+                            let result = ready_task.await;
+                            if result.is_err() && !ready_cancel.is_cancelled() {
+                                workspace_cancel.cancel();
+                            }
+                            result
+                        }
+                    );
+                    let (usage, cwd, prepared) = match (workspace_result, prepared_result) {
+                        (Ok((usage, cwd)), Ok(prepared)) => (usage, cwd, prepared),
+                        (Ok(_), Err(error)) => return Err(error),
+                        (Err(error), Ok(_)) => return Err(error),
+                        (Err(workspace_error), Err(prepared_error)) => {
+                            if !ready_cancel.is_cancelled() {
+                                return Err(prepared_error);
+                            }
+                            return Err(workspace_error);
+                        }
                     };
                     let intent = match intent {
                         AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => sdk::Open::New,
@@ -350,19 +404,24 @@ impl AcpBusinessOwner {
                                 .map_err(|error| projection::preparation(&error.to_string()))?,
                             ),
                             expected_server_version: prepared.expected_version,
-                            on_text_performance: Some(Arc::new(move |run, evidence, model, effort| {
-                                calls.record_acp_performance(
-                                    crate::studio::storage::calls::AcpPerformanceObservation {
-                                        thread_id: sample_thread_id.clone(),
-                                        call_id: format!("acp:{sample_generation}:{}", run.sequence),
-                                        account_id: sample_account_id.clone(),
-                                        account_name: sample_account_name.clone(),
-                                        model,
-                                        effort,
-                                        performance: projection::text_performance(evidence),
-                                    },
-                                );
-                            })),
+                            on_text_performance: Some(Arc::new(
+                                move |run, evidence, model, effort| {
+                                    calls.record_acp_performance(
+                                        crate::studio::storage::calls::AcpPerformanceObservation {
+                                            thread_id: sample_thread_id.clone(),
+                                            call_id: format!(
+                                                "acp:{sample_generation}:{}",
+                                                run.sequence
+                                            ),
+                                            account_id: sample_account_id.clone(),
+                                            account_name: sample_account_name.clone(),
+                                            model,
+                                            effort,
+                                            performance: projection::text_performance(evidence),
+                                        },
+                                    );
+                                },
+                            )),
                             cleanup: pl_acp::auth::CleanupBudget::new(
                                 std::time::Duration::from_secs(5),
                             ),

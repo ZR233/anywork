@@ -242,6 +242,7 @@ void main() {
                 content: AccountDetailsContent.acp(
                   AcpAccountPresentation(
                     phase: AcpPresentationPhase.connected,
+                    supportsUsage: true,
                     status: '已登录',
                     subtitle: '本地受管服务运行正常，已通过 Google Antigravity 登录验证。',
                     usage: AcpUsagePresentation(
@@ -334,6 +335,67 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(otherMethodFinder);
       expect(selectedMethod, 'other');
+    },
+  );
+
+  testWidgets(
+    'AccountDetailsView hides ACP usage card when supportsUsage is false',
+    (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: pureStudioTheme(),
+          locale: const Locale('zh'),
+          localizationsDelegates: [
+            AppLocalizations.delegate,
+            ...GlobalMaterialLocalizations.delegates,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: Scaffold(
+            body: AccountDetailsView(
+              value: const AccountDetailsPresentation(
+                key: AccountDisplayKey(kind: AccountKind.acp, id: 'agy-1'),
+                name: 'agy',
+                canEdit: true,
+                canDelete: true,
+                content: AccountDetailsContent.acp(
+                  AcpAccountPresentation(
+                    phase: AcpPresentationPhase.connected,
+                    supportsUsage: false,
+                    status: 'Connected',
+                    availableActions: [AcpAccountAction.check],
+                    primaryAction: AcpAccountAction.check,
+                  ),
+                ),
+              ),
+              onBack: () {},
+              onEdit: () {},
+              onDelete: () {},
+              onSetDefault: () {},
+              onRefreshUsage: () {},
+              onBillingChanged: (_) {},
+              onResetBilling: () {},
+              onSyncModels: () {},
+              modelActions: AccountModelActions(
+                onEnabledChanged: (_, _) {},
+                onConnectionChanged: (_, _) {},
+                onCompactChanged: (_, _) {},
+                onCompactPreset: (_, _) {},
+                onAction: (_, _) {},
+              ),
+              onAcpAction: (_) {},
+              onLoginMethodChanged: (_) {},
+              onRetry: () {},
+            ),
+          ),
+        ),
+      );
+      expect(find.byType(AcpUsageMetrics), findsNothing);
+      expect(
+        find.byKey(
+          ValueKey<String>(AccountViewKeyValues.acpAction('queryUsage')),
+        ),
+        findsNothing,
+      );
     },
   );
 

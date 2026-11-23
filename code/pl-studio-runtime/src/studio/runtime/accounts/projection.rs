@@ -88,6 +88,16 @@ pub(super) fn read(
                         .acp_accounts
                         .settings_view(config.revision, &config.acp)?
                     {
+                        let supports_usage = config
+                            .acp
+                            .definitions
+                            .get(&account.account_id)
+                            .is_some_and(|entry| {
+                                entry.definition.enabled
+                                    && crate::studio::runtime::acp_accounts::AcpAccountRuntime::definition_supports_usage(
+                                        &entry.definition,
+                                    )
+                            });
                         accounts.push(AccountSummary {
                             identity: AccountIdentity::Acp {
                                 account_id: account.account_id,
@@ -109,7 +119,7 @@ pub(super) fn read(
                                 set_default: false,
                                 edit: true,
                                 remove: true,
-                                query_usage: false,
+                                query_usage: supports_usage,
                                 sync_models: false,
                                 edit_models: false,
                                 acp_auth: true,
