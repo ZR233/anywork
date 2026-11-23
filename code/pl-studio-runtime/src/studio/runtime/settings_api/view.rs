@@ -10,7 +10,7 @@ use crate::{
     StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
 use anyhow::{Context, Result};
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use pl_model::protocol::{ConnectionMode, WireApi};
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
@@ -168,27 +168,28 @@ fn settings_view(
     })
 }
 
-fn custom_model_settings(model: &ModelInfo) -> StudioCustomModelSettings {
-    let reasoning_efforts = model
-        .parameters
-        .iter()
-        .find(|parameter| parameter.name == "effort")
-        .map(|parameter| parameter.candidates.as_slice())
-        .unwrap_or_default();
+fn custom_model_settings(model: &ModelDefinition) -> StudioCustomModelSettings {
     StudioCustomModelSettings {
-        input_capabilities: model.capabilities.input.iter().map(Into::into).collect(),
-        context_window: model.context_window,
-        max_output_tokens: model.max_output_tokens,
-        model_id: model.model_id.clone(),
-        display_name: model.display_name.clone(),
-        reasoning_efforts: reasoning_efforts.to_vec(),
-        base_instructions: model.base_instructions.clone(),
-        wire_api: match model.binding.transport.protocol {
+        input_capabilities: model
+            .extra
+            .capabilities
+            .input
+            .iter()
+            .map(Into::into)
+            .collect(),
+        context_window: model.base.max_context_window,
+        max_output_tokens: model.extra.max_output_tokens,
+        model_id: model.base.slug.clone(),
+        display_name: model.base.display_name.clone(),
+        reasoning_efforts: model.supported_efforts(),
+        base_instructions: model.base.model_messages.instructions_template.clone(),
+        wire_api: match model.extra.binding.transport.protocol {
             WireApi::Responses => "responses",
             WireApi::ChatCompletions => "chat_completions",
         }
         .to_string(),
         supported_connection_modes: model
+            .extra
             .binding
             .transport
             .supported_connection_modes
@@ -198,7 +199,7 @@ fn custom_model_settings(model: &ModelInfo) -> StudioCustomModelSettings {
             .map(str::to_string)
             .collect(),
         default_connection_mode: connection_mode_label(
-            model.binding.transport.default_connection_mode,
+            model.extra.binding.transport.default_connection_mode,
         )
         .to_string(),
     }
@@ -315,7 +316,7 @@ pub(crate) fn account_settings(
         .values()
         .find(|route| route.account_id == *id)
         .map(|route| route.model_id.clone())
-        .or_else(|| models.first().map(|model| model.model_id.clone()))
+        .or_else(|| models.first().map(|model| model.base.slug.clone()))
         .unwrap_or_default();
     let service_capabilities = account.service_capabilities()?;
     let catalog_id = match &account.catalog {
@@ -362,7 +363,7 @@ pub(crate) fn account_settings(
             .programmatic_tool_calling,
         default_model_id,
         custom_models: account
-            .editable_models()
+            .editable_models()?
             .iter()
             .map(custom_model_settings)
             .collect(),

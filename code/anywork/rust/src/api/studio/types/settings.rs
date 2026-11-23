@@ -729,16 +729,13 @@ pub struct BridgeModelDescriptor {
 pub struct BridgeModelContextResolution {
     pub unavailable: Option<BridgeModelContextUnavailable>,
     pub context_window: Option<u64>,
-    pub input_token_limit: Option<u64>,
     pub auto_compact_limit: Option<u64>,
     pub adjustment: Option<BridgeModelContextAdjustment>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum BridgeModelContextUnavailable {
-    WindowUnknown,
     InvalidParameters,
-    InputBudgetExhausted,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -757,9 +754,7 @@ pub enum BridgeModelType {
 pub enum BridgeModelTypeExclusion {
     TextInputUnsupported,
     TextOutputUnsupported,
-    ContextWindowUnknown,
     ContextParametersInvalid,
-    InputBudgetExhausted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -937,12 +932,6 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
                             pl_studio_runtime::ModelTypeExclusion::ContextParametersInvalid => {
                                 BridgeModelTypeExclusion::ContextParametersInvalid
                             }
-                            pl_studio_runtime::ModelTypeExclusion::InputBudgetExhausted => {
-                                BridgeModelTypeExclusion::InputBudgetExhausted
-                            }
-                            pl_studio_runtime::ModelTypeExclusion::ContextWindowUnknown => {
-                                BridgeModelTypeExclusion::ContextWindowUnknown
-                            }
                         })
                         .collect(),
                 })
@@ -954,18 +943,11 @@ impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
             max_context_window: model.max_context_window,
             context: BridgeModelContextResolution {
                 unavailable: model.context.unavailable.map(|reason| match reason {
-                    pl_studio_runtime::ModelContextUnavailable::WindowUnknown => {
-                        BridgeModelContextUnavailable::WindowUnknown
-                    }
                     pl_studio_runtime::ModelContextUnavailable::InvalidParameters => {
                         BridgeModelContextUnavailable::InvalidParameters
                     }
-                    pl_studio_runtime::ModelContextUnavailable::InputBudgetExhausted => {
-                        BridgeModelContextUnavailable::InputBudgetExhausted
-                    }
                 }),
                 context_window: model.context.context_window,
-                input_token_limit: model.context.input_token_limit,
                 auto_compact_limit: model.context.auto_compact_limit,
                 adjustment: model.context.adjustment.map(|reason| match reason {
                     pl_studio_runtime::ModelContextAdjustment::SafetyLimit => {

@@ -63,7 +63,7 @@ pub struct DelegationModelListItem {
     pub account_name: String,
     pub model_id: String,
     pub display_name: String,
-    /// 短简介：优先使用选模资料；该型号未收录资料时复用既有 `ModelInfo` 描述并按
+    /// 短简介：优先使用选模资料；该型号未收录资料时复用既有 `ModelDefinition` 描述并按
     /// 240 字符上限有界投影（投影与上限由运行时负责），两者都没有时留空，不伪造。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,

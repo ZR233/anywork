@@ -5,7 +5,7 @@ use pl_model::{
         ModelRouteAvailability, ModelRouteConfig, ReasoningEffort, model_descriptor,
     },
     model::{
-        ModelInfo, ModelModality, ModelPricing, ModelTransportProfile, ModelType,
+        ModelDefinition, ModelModality, ModelPricing, ModelTransportProfile, ModelType,
         ModelTypeExclusion, bundled_model_definition,
     },
     protocol::{
@@ -95,17 +95,18 @@ fn provider(url: &str, adapter: ProtocolId) -> AccountConfig {
     };
     AccountConfig::from_bundled_catalog(endpoint, ModelCatalogId::new(id).unwrap(), Vec::new())
 }
-fn updated(result: ModelCatalogQueryResult) -> Vec<ModelInfo> {
+fn updated(result: ModelCatalogQueryResult) -> Vec<ModelDefinition> {
     match result {
         ModelCatalogQueryResult::Updated { models, .. } => models,
         _ => panic!("expected updated catalog"),
     }
 }
-fn cached_model(model_id: &str, adapter: ProtocolId) -> ModelInfo {
-    let mut model = ModelInfo::compatible(model_id);
-    model.context_window = None;
-    model.max_output_tokens = None;
+fn cached_model(model_id: &str, adapter: ProtocolId) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(model_id);
+    model.base.context_window = None;
+    model.extra.max_output_tokens = None;
     model
+        .extra
         .binding
         .set_transport(if adapter == pl_model::protocol::providers::openai::ID {
             ModelTransportProfile::responses_websocket()
@@ -114,7 +115,7 @@ fn cached_model(model_id: &str, adapter: ProtocolId) -> ModelInfo {
         });
     model
 }
-async fn discover(body: Value, adapter: ProtocolId) -> Vec<ModelInfo> {
+async fn discover(body: Value, adapter: ProtocolId) -> Vec<ModelDefinition> {
     let server = Server::json(body).await;
     let query = ModelCatalogQuery::for_account(&provider(&server.url, adapter)).unwrap();
     let result = updated(query.execute(None).await.unwrap());
@@ -122,7 +123,7 @@ async fn discover(body: Value, adapter: ProtocolId) -> Vec<ModelInfo> {
     result
 }
 
-fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelInfo>, order: u64) {
+fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelDefinition>, order: u64) {
     for model in &mut models {
         if let Some(observation) = &mut model.observation {
             observation.commit(order);
@@ -151,6 +152,7 @@ async fn service_tiers_are_ignored_for_api_key_and_other_vendor_catalogs() {
         assert_eq!(models.len(), 1);
         assert!(
             models[0]
+                .extra
                 .parameters
                 .iter()
                 .all(|p| p.name != "service_tier")
@@ -172,16 +174,19 @@ fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
         .into_iter()
         .find(|model| {
             model
+                .extra
                 .capabilities
                 .supports_input_modality(ModelModality::File)
         })
         .unwrap();
-    let model_id = cached.model_id.clone();
+    let model_id = cached.base.slug.clone();
     cached
+        .extra
         .capabilities
         .input
         .retain(|input| input.modality != ModelModality::File);
     cached
+        .extra
         .binding
         .request
         .media
@@ -218,17 +223,19 @@ fn cached_inventory_inherits_new_media_codecs_only_from_its_own_declaration() {
         let models = config.accounts[&id].effective_models(None).unwrap();
         let model = models
             .iter()
-            .find(|model| model.model_id == model_id)
+            .find(|model| model.base.slug == model_id)
             .unwrap();
         model.validate_media_contract().unwrap();
         assert_eq!(
             model
+                .extra
                 .capabilities
                 .supports_input_modality(ModelModality::File),
             has_file
         );
         assert_eq!(
             model
+                .extra
                 .binding
                 .request
                 .media_profile(ModelModality::File)
@@ -283,9 +290,14 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
             .unwrap()
             .iter()
             .filter(|entry| entry.origin == pl_model::config::AccountModelOrigin::Online)
-            .map(|entry| entry.model.model_id.as_str())
+            .map(|entry| entry.model.base.slug.as_str())
             .collect::<Vec<_>>(),
-        ["max-only", "without-tools-or-prices"]
+        [
+            "max-only",
+            "shared",
+            "unknown-budget",
+            "without-tools-or-prices"
+        ]
     );
     assert_eq!(
         config.accounts[&b_id]
@@ -298,32 +310,36 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
     );
     let shared = all
         .iter()
-        .find(|entry| entry.model.model_id == "shared")
+        .find(|entry| entry.model.base.slug == "shared")
         .unwrap();
     // Another account's declaration for the same model_id is not this account's fact.
-    assert_eq!(shared.model.context_window, None);
-    assert_eq!(
-        model_descriptor(shared).type_support[0].exclusions,
-        [ModelTypeExclusion::ContextWindowUnknown]
+    assert_eq!(shared.model.base.context_window, None);
+    assert!(
+        model_descriptor(shared).type_support[0]
+            .exclusions
+            .is_empty()
     );
     assert_eq!(
         config.accounts[&b_id]
             .effective_catalog(None)
             .unwrap()
             .iter()
-            .find(|entry| entry.model.model_id == "shared")
+            .find(|entry| entry.model.base.slug == "shared")
             .unwrap()
             .model
+            .base
             .context_window,
         Some(8192)
     );
     for (id, reason) in [
-        ("unknown-budget", ModelTypeExclusion::ContextWindowUnknown),
         ("image-output", ModelTypeExclusion::TextOutputUnsupported),
         ("image-input", ModelTypeExclusion::TextInputUnsupported),
         ("empty-output", ModelTypeExclusion::TextOutputUnsupported),
     ] {
-        let entry = all.iter().find(|entry| entry.model.model_id == id).unwrap();
+        let entry = all
+            .iter()
+            .find(|entry| entry.model.base.slug == id)
+            .unwrap();
         assert_eq!(entry.type_support(ModelType::Text).exclusions, [reason]);
     }
     accept_observation(
@@ -336,33 +352,24 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
         30,
     );
     config.reconcile_model_catalog().unwrap();
-    for id in [a_id, b_id] {
-        let provider = &config.accounts[&id];
-        assert!(
-            provider
-                .effective_models(Some(ModelType::Text))
-                .unwrap()
-                .iter()
-                .all(|model| model.model_id != "shared")
-        );
-        assert!(
-            provider
-                .effective_models(None)
-                .unwrap()
-                .iter()
-                .any(|model| model.model_id == "shared")
-        );
-        assert!(matches!(
-            config
-                .route_availability(&ModelRouteConfig {
-                    account_id: id,
-                    model_id: "shared".into(),
-                    effort: None
-                })
-                .unwrap(),
-            ModelRouteAvailability::TypeUnsupported { .. }
-        ));
-    }
+    // Withdrawing every input modality applies only to the account that declared it.
+    let route = |account_id| ModelRouteConfig {
+        account_id,
+        model_id: "shared".into(),
+        effort: None,
+    };
+    assert_eq!(
+        config.route_availability(&route(a_id)).unwrap(),
+        ModelRouteAvailability::Available
+    );
+    assert_eq!(
+        config.route_availability(&route(b_id.clone())).unwrap(),
+        ModelRouteAvailability::TypeUnsupported {
+            account_id: b_id,
+            model_id: "shared".into(),
+            exclusions: vec![ModelTypeExclusion::TextInputUnsupported],
+        }
+    );
 }
 
 #[tokio::test]
@@ -385,7 +392,7 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .filter(|model| model.model_id == "shared-effort")
+        .filter(|model| model.base.slug == "shared-effort")
         .collect();
     let mut b = provider(
         "http://127.0.0.1:1",
@@ -417,7 +424,7 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .filter(|model| model.model_id == "shared-effort")
+            .filter(|model| model.base.slug == "shared-effort")
             .collect();
         assert_eq!(
             models[0].observation.as_ref().unwrap().parameter_defaults["effort"].order,
@@ -428,7 +435,7 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "shared-effort")
+            .find(|model| model.base.slug == "shared-effort")
             .unwrap();
         match order {
             30 => {
@@ -446,7 +453,7 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
             _ => {
                 assert!(observed.supported_efforts().is_empty());
                 assert!(
-                    observed.capabilities.reasoning,
+                    observed.extra.capabilities.reasoning,
                     "fixed reasoning survives effort withdrawal"
                 );
             }
@@ -457,11 +464,11 @@ async fn captured_camelcase_effort_defaults_keep_their_clock_and_do_not_restore_
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "shared-effort")
+            .find(|model| model.base.slug == "shared-effort")
             .unwrap();
         assert!(sibling.supported_efforts().is_empty());
         assert_eq!(sibling.default_effort(), None);
-        assert!(!sibling.capabilities.reasoning);
+        assert!(!sibling.extra.capabilities.reasoning);
     }
     server.finish().await;
 }
@@ -474,10 +481,10 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
         {"id":"shared", "display_name":"Final A", "supports_streaming":false}
     ]}), pl_model::protocol::providers::openai::ID).await;
     assert_eq!(a.len(), 1);
-    assert_eq!(a[0].context_window, Some(4096));
+    assert_eq!(a[0].base.context_window, Some(4096));
     let b = discover(
         json!({"data":[{"id":"shared", "context_length":8192,
-            "input_modalities":[], "supports_function_calling":false,
+            "input_modalities":["text"], "supports_function_calling":false,
             "effort":{"supported_levels":[]}, "prompt_text_token_price":20000,
             "completion_text_token_price":100000, "cached_prompt_text_token_price":5000
         }]}),
@@ -485,13 +492,13 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     )
     .await;
     let mut local = cached_model("shared", pl_model::protocol::providers::openai::ID);
-    local.display_name = "Manual A".into();
-    local.pricing = ModelPricing::published(
+    local.base.display_name = "Manual A".into();
+    local.extra.pricing = ModelPricing::published(
         "USD",
         vec![pl_model::model::TokenPriceTier::flat(1.0, 4.0, None, None)],
         "local-a",
     );
-    local.max_output_tokens = Some(256);
+    local.extra.max_output_tokens = Some(256);
     let mut first = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::openai::endpoint(None),
         ModelCatalogId::new("openai").unwrap(),
@@ -500,8 +507,8 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     let mut second = provider("http://127.0.0.1:1", pl_model::protocol::providers::xai::ID);
     accept_observation(&mut first, a, 1);
     accept_observation(&mut second, b, 2);
-    let mut explicit = ModelInfo::compatible("shared");
-    explicit.pricing = ModelPricing::published(
+    let mut explicit = ModelDefinition::compatible("shared");
+    explicit.extra.pricing = ModelPricing::published(
         "CNY",
         vec![pl_model::model::TokenPriceTier::flat(3.0, 6.0, None, None)],
         "local-c",
@@ -527,7 +534,7 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
                     "unrelated",
                     "http://127.0.0.1:1",
                 ),
-                vec![ModelInfo::compatible("other")],
+                vec![ModelDefinition::compatible("other")],
             ),
         ),
     ] {
@@ -550,33 +557,42 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     };
     // The observing account keeps its own manual wire/price and its own online metadata.
     let first_route = route("z-first", Some("medium"));
-    assert_eq!(first_route.model.display_name, "Manual A");
-    assert_eq!(first_route.model.context_window, Some(4096));
-    assert_eq!(first_route.model.max_output_tokens, Some(128));
+    assert_eq!(first_route.model.base.display_name, "Manual A");
+    assert_eq!(first_route.model.base.context_window, Some(4096));
+    assert_eq!(first_route.model.extra.max_output_tokens, Some(256));
     assert_eq!(first_route.model.supported_efforts(), ["medium"]);
-    assert_eq!(first_route.model.pricing, local.pricing);
-    assert_eq!(first_route.model.binding.transport, local.binding.transport);
+    assert_eq!(first_route.model.extra.pricing, local.extra.pricing);
+    assert_eq!(
+        first_route.model.extra.binding.transport,
+        local.extra.binding.transport
+    );
     // A sibling account never receives the first account's display name, limits or manual price.
     let second_route = route("a-second", None);
-    assert_eq!(second_route.model.display_name, "shared");
-    assert_eq!(second_route.model.context_window, Some(8192));
-    assert_eq!(second_route.model.max_output_tokens, None);
-    // xAI `/models` 不声明模态：未知模型保持 text-only，也不借用别家声明。
+    assert_eq!(second_route.model.base.display_name, "shared");
+    assert_eq!(second_route.model.base.context_window, Some(8192));
+    assert_eq!(second_route.model.extra.max_output_tokens, None);
+    // The account explicitly declares text input and cannot borrow another account’s modalities.
     assert_eq!(
-        second_route.model.capabilities.input,
+        second_route.model.extra.capabilities.input,
         [pl_model::model::ModelInputCapability::text()]
     );
-    assert!(!second_route.model.capabilities.supports_function_calling());
+    assert!(
+        !second_route
+            .model
+            .extra
+            .capabilities
+            .supports_function_calling()
+    );
     // The other account's explicit `streaming = false` is not inherited here.
-    assert!(second_route.model.capabilities.streaming);
+    assert!(second_route.model.extra.capabilities.streaming);
     assert!(second_route.model.supported_efforts().is_empty());
     assert_eq!(
-        second_route.model.binding.transport,
+        second_route.model.extra.binding.transport,
         ModelTransportProfile::responses_http()
     );
     let ModelPricing::Rates {
         currency, tiers, ..
-    } = &second_route.model.pricing
+    } = &second_route.model.extra.pricing
     else {
         panic!("online price missing")
     };
@@ -586,19 +602,19 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
     assert_eq!(tiers[0].cache_read_per_mtok, Some(0.5));
     // A fully explicit account resolves only its own declaration.
     let third_route = route("third", None);
-    assert_eq!(third_route.model.display_name, "shared");
+    assert_eq!(third_route.model.base.display_name, "shared");
     assert!(third_route.model.supported_efforts().is_empty());
-    assert_eq!(third_route.model.pricing, explicit.pricing);
+    assert_eq!(third_route.model.extra.pricing, explicit.extra.pricing);
     assert_eq!(
-        third_route.model.binding.transport,
-        explicit.binding.transport
+        third_route.model.extra.binding.transport,
+        explicit.extra.binding.transport
     );
     assert_eq!(
         config.accounts[&AccountId::new("unrelated").unwrap()]
             .effective_models(None)
             .unwrap()
             .iter()
-            .filter(|model| model.model_id == "other")
+            .filter(|model| model.base.slug == "other")
             .count(),
         1
     );
@@ -607,9 +623,10 @@ async fn account_catalog_resolves_own_fields_prices_and_wire_without_cross_accou
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "other")
+            .find(|model| model.base.slug == "other")
             .unwrap()
-            .model_id,
+            .base
+            .slug,
         "other"
     );
     let first_snapshot = config.clone();
@@ -704,7 +721,7 @@ async fn missing_fields_and_304_keep_original_order_within_one_account_only() {
                 "chat-route",
                 "http://127.0.0.1:1",
             ),
-            vec![ModelInfo::compatible("shared")],
+            vec![ModelDefinition::compatible("shared")],
         ),
     );
     config.reconcile_model_catalog().unwrap();
@@ -713,17 +730,20 @@ async fn missing_fields_and_304_keep_original_order_within_one_account_only() {
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "shared")
+            .find(|model| model.base.slug == "shared")
             .unwrap()
     };
     let observed = model("z-first");
-    assert_eq!(observed.context_window, Some(4096));
-    assert_eq!(observed.max_context_window, Some(4096));
-    assert_eq!(observed.description.as_deref(), Some("new description"));
+    assert_eq!(observed.base.context_window, Some(4096));
+    assert_eq!(observed.base.max_context_window, Some(4096));
+    assert_eq!(
+        observed.base.description.as_deref(),
+        Some("new description")
+    );
     assert!(observed.supported_efforts().is_empty());
     let sibling = model("a-second");
-    assert_eq!(sibling.context_window, Some(8192));
-    assert_eq!(sibling.description, None);
+    assert_eq!(sibling.base.context_window, Some(8192));
+    assert_eq!(sibling.base.description, None);
     assert_eq!(sibling.supported_efforts(), ["high"]);
     assert_eq!(
         sibling
@@ -736,8 +756,8 @@ async fn missing_fields_and_304_keep_original_order_within_one_account_only() {
         "reasoning.effort"
     );
     let chat = model("chat-route");
-    assert_eq!(chat.context_window, Some(32_000));
-    assert_eq!(chat.description, None);
+    assert_eq!(chat.base.context_window, None);
+    assert_eq!(chat.base.description, None);
     assert!(chat.supported_efforts().is_empty());
     assert!(
         server.finish().await[2]
@@ -808,23 +828,36 @@ async fn later_success_wins_inside_the_observing_account_only() {
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "shared")
+            .find(|model| model.base.slug == "shared")
             .unwrap()
     };
     // Each account only observes its own successful request; completion order is not global.
     let slow_model = model("a-slow");
-    assert_eq!(slow_model.context_window, Some(4096));
-    assert_eq!(slow_model.display_name, "shared");
-    assert_eq!(slow_model.max_output_tokens, None);
+    assert_eq!(slow_model.base.context_window, Some(4096));
+    assert_eq!(slow_model.base.display_name, "shared");
+    assert_eq!(slow_model.extra.max_output_tokens, None);
     let fast_model = model("z-fast");
-    assert_eq!(fast_model.context_window, Some(8192));
-    assert_eq!(fast_model.display_name, "Fast source");
+    assert_eq!(fast_model.base.context_window, Some(8192));
+    assert_eq!(fast_model.base.display_name, "Fast source");
     // xAI `/models` declares no output limit; an unknown model keeps it unknown.
-    assert_eq!(fast_model.max_output_tokens, None);
+    assert_eq!(fast_model.extra.max_output_tokens, None);
 }
 
 #[tokio::test]
 async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates() {
+    let price = ModelPricing::published_at(
+        "USD",
+        vec![pl_model::model::TokenPriceTier::flat(1.0, 2.0, None, None)],
+        "model catalog",
+        123,
+    );
+    let models = discover(
+        json!({"models":[{"slug":"priced","pricing":price}]}),
+        pl_model::protocol::providers::mimo::ID,
+    )
+    .await;
+    assert_eq!(models[0].extra.pricing, price);
+
     for record in [
         json!({"id":"shared","prompt_text_token_price":-1,"completion_text_token_price":10}),
         json!({"id":"shared","prompt_text_token_price":1}),
@@ -847,10 +880,13 @@ async fn recognized_invalid_prices_fail_and_unsupported_prices_keep_local_rates(
         pl_model::protocol::providers::xai::ID,
     )
     .await;
-    assert_eq!(models[0].pricing, ModelPricing::Unknown);
+    assert_eq!(models[0].extra.pricing, ModelPricing::Unknown);
     let zero_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000,"long_context_threshold":0}]}), pl_model::protocol::providers::xai::ID).await;
     let omitted_threshold = discover(json!({"data":[{"id":"priced","prompt_text_token_price":10000,"completion_text_token_price":20000}]}), pl_model::protocol::providers::xai::ID).await;
-    assert_eq!(zero_threshold[0].pricing, omitted_threshold[0].pricing);
+    assert_eq!(
+        zero_threshold[0].extra.pricing,
+        omitted_threshold[0].extra.pricing
+    );
 }
 
 #[tokio::test]
@@ -871,36 +907,37 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     assert!(!format!("{query:?}").contains("synthetic"));
     let models = updated(query.execute(None).await.unwrap());
     let headers = server.finish().await;
-    assert!(
-        headers[0].starts_with("GET /tenant/proxy/models?region=synthetic-secret HTTP/1.1\r\n")
-    );
+    assert!(headers[0].starts_with(
+        "GET /tenant/proxy/models?region=synthetic-secret&client_version=0.170.0 HTTP/1.1\r\n"
+    ));
     let lower = headers[0].to_ascii_lowercase();
     assert!(lower.contains("authorization: bearer synthetic-token\r\n"));
     assert!(lower.contains("x-account: synthetic-account\r\n"));
     let model = &models[0];
-    assert_eq!(model.model_id, "unregistered-Future-ID");
+    assert_eq!(model.base.slug, "unregistered-Future-ID");
     assert_eq!(model.resolve_context(None).context_window, None);
-    assert_eq!(model.max_output_tokens, None);
+    assert_eq!(model.extra.max_output_tokens, None);
     assert!(model.supported_efforts().is_empty());
-    assert!(!model.capabilities.temperature);
-    assert!(!model.capabilities.tools.function_calling);
+    assert!(!model.extra.capabilities.temperature);
+    assert!(!model.extra.capabilities.tools.function_calling);
     assert!(
         model
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
     assert_eq!(
-        model.binding.transport,
+        model.extra.binding.transport,
         ModelTransportProfile::responses_websocket()
     );
-    assert_eq!(model.pricing, ModelPricing::Unknown);
+    assert_eq!(model.extra.pricing, ModelPricing::Unknown);
     config.set_model_catalog_overlay(models.clone()).unwrap();
     let descriptor: pl_model::config::ModelDescriptor = model_descriptor(
         &config
             .effective_catalog(None)
             .unwrap()
             .into_iter()
-            .find(|entry| entry.model.model_id == model.model_id)
+            .find(|entry| entry.model.base.slug == model.base.slug)
             .unwrap(),
     );
     assert_eq!(descriptor.context_window, None);
@@ -937,21 +974,15 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     );
     let explicit = AccountConfig::from_explicit_models(
         pl_model::protocol::providers::openai::endpoint(None),
-        vec![ModelInfo::compatible("manual")],
+        vec![ModelDefinition::compatible("manual")],
     );
-    assert!(matches!(
-        ModelCatalogQuery::for_account(&explicit),
-        Err(ModelCatalogQueryError::Unsupported)
-    ));
+    assert!(ModelCatalogQuery::for_account(&explicit).is_ok());
     let unsupported = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::glm::endpoint(None),
         ModelCatalogId::new("zhipu").unwrap(),
         Vec::new(),
     );
-    assert!(matches!(
-        ModelCatalogQuery::for_account(&unsupported),
-        Err(ModelCatalogQueryError::Unsupported)
-    ));
+    assert!(ModelCatalogQuery::for_account(&unsupported).is_ok());
     config.http_headers = Some(HashMap::from([
         ("x-account".into(), "one".into()),
         ("X-Account".into(), "two".into()),
@@ -1023,7 +1054,8 @@ async fn query_identity_binds_vendor_protocol_and_locates_legacy_v1_only_for_mig
         &headers,
     );
     let query = ModelCatalogQuery::for_account(&config).unwrap();
-    assert_eq!(query.identity(), expected_v2);
+    assert_eq!(query.previous_identity_for_migration(), expected_v2);
+    assert_ne!(query.identity(), expected_v2);
     assert_eq!(query.legacy_v1_identity_for_migration(), expected_v1);
     assert_ne!(query.identity(), expected_v1);
 
@@ -1032,7 +1064,7 @@ async fn query_identity_binds_vendor_protocol_and_locates_legacy_v1_only_for_mig
     renamed.name = "Renamed display".into();
     assert_eq!(
         ModelCatalogQuery::for_account(&renamed).unwrap().identity(),
-        expected_v2
+        query.identity()
     );
 
     // 只切换厂商协议是合法配置；当前身份必须变化，旧 v1 locator 保持同一文件定位。
@@ -1050,7 +1082,10 @@ async fn query_identity_binds_vendor_protocol_and_locates_legacy_v1_only_for_mig
         &url,
         &headers,
     );
-    assert_eq!(switched_query.identity(), expected_switched);
+    assert_eq!(
+        switched_query.previous_identity_for_migration(),
+        expected_switched
+    );
     assert_ne!(switched_query.identity(), query.identity());
     assert_eq!(
         switched_query.legacy_v1_identity_for_migration(),
@@ -1097,7 +1132,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             json!({"data":[{"id":"future-model","name":"Future","context_window":64000,"max_output_tokens":8000,"input_modalities":["text","image"],"output_modalities":["text"],"effort":{"supported_levels":["gentle","new-ultra"],"default_level":"new-ultra"},"pricing":{"input":0},"supports_function_calling":true}]}),
             "reasoning_effort",
             true,
-            56_000,
+            57_600,
         ),
         (
             pl_model::protocol::providers::openai::ID,
@@ -1110,7 +1145,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             pl_model::protocol::providers::xai::ID,
             json!({"data":[{"id":"future-model","context_length":64000,"input_modalities":["text","image"],"output_modalities":["text"],"capabilities":{"reasoning_effort":["gentle","new-ultra"],"default_reasoning_effort":"new-ultra"}}]}),
             "reasoning",
-            false,
+            true,
             57_600,
         ),
     ] {
@@ -1118,15 +1153,16 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         let mut model = models[0].clone();
         assert_eq!(model.supported_efforts(), ["gentle", "new-ultra"]);
         assert_eq!(model.default_effort().as_deref(), Some("new-ultra"));
-        assert_eq!(model.context_window, Some(64000));
+        assert_eq!(model.base.context_window, Some(64000));
         assert_eq!(
             model
+                .extra
                 .capabilities
                 .supports_input_modality(ModelModality::Image),
             declares_image,
             "only a vendor that declared image input (or the OpenAI Codex default) exposes it"
         );
-        assert!(model.base_instructions.is_empty());
+        assert!(model.base.model_messages.instructions_template.is_empty());
         let mut config = provider("http://127.0.0.1:1", adapter.clone());
         config.set_model_catalog_overlay(models).unwrap();
         let descriptor = model_descriptor(
@@ -1134,7 +1170,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
                 .effective_catalog(None)
                 .unwrap()
                 .into_iter()
-                .find(|entry| entry.model.model_id == "future-model")
+                .find(|entry| entry.model.base.slug == "future-model")
                 .unwrap(),
         );
         assert_eq!(descriptor.context_window, Some(64000));
@@ -1172,7 +1208,8 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
             "xai" => pl_model::protocol::providers::xai::endpoint(Some(fixture.base_url())),
             _ => pl_model::protocol::providers::deepseek::endpoint(Some(fixture.base_url())),
         };
-        model.binding.transport.default_connection_mode = pl_model::protocol::ConnectionMode::Http;
+        model.extra.binding.transport.default_connection_mode =
+            pl_model::protocol::ConnectionMode::Http;
         let runtime = pl_model::runtime::new_with_account_id("fixture", endpoint, model).unwrap();
         let mut png = std::io::Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(1, 1)
@@ -1265,7 +1302,7 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
     }
 }
 
-/// 各厂商只解释自己的 envelope、字段与价格单位；未知模态不虚构图片。
+/// 兼容目录共享 Codex 声明，仅由相应厂商解释其扩展字段与价格单位。
 #[tokio::test]
 async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices() {
     let error = |server: Server, kind: ProtocolId| async move {
@@ -1276,26 +1313,19 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
         );
         server.finish().await;
     };
-    // OpenAI/Codex `models`/`slug` 不是 DeepSeek 或 OpenAI-compatible 的合法名单。
+    // 标准 data 成员需要 id，响应不能同时声明两份名单。
     for body in [
-        json!({"models":[{"slug":"x"}]}),
         json!({"data":[{"slug":"x"}]}),
         json!({"models":[],"data":[]}),
     ] {
         let server = Server::json(body).await;
         error(server, pl_model::protocol::providers::deepseek::ID).await;
     }
-    for body in [
-        json!({"models":[{"slug":"x"}]}),
-        json!({"data":[{"slug":"x"}]}),
-    ] {
+    for body in [json!({"data":[{"slug":"x"}]})] {
         let server = Server::json(body).await;
         error(server, pl_model::protocol::providers::mimo::ID).await;
     }
-    for body in [
-        json!({"models":[{"slug":"x"}]}),
-        json!({"data":[{"slug":"x"}]}),
-    ] {
+    for body in [json!({"data":[{"slug":"x"}]})] {
         let server = Server::json(body).await;
         error(server, pl_model::protocol::providers::xai::ID).await;
     }
@@ -1308,10 +1338,10 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     )
     .await
     .remove(0);
-    assert_eq!(deepseek.context_window, None);
-    assert_eq!(deepseek.pricing, ModelPricing::Unknown);
+    assert_eq!(deepseek.base.context_window, None);
+    assert_eq!(deepseek.extra.pricing, ModelPricing::Unknown);
 
-    // xAI 用 context_length 与官方 native 价格单位（USD cents/100M）；context_window 不生效。
+    // Codex 声明优先，xAI 额外解码原生 token 价格。
     let xai = discover(
         json!({"data":[{"id":"x","context_length":4096,"context_window":9999,
             "input_modalities":["text","image"],"output_modalities":["text"],
@@ -1321,15 +1351,16 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     )
     .await
     .remove(0);
-    assert_eq!(xai.context_window, Some(4096));
+    assert_eq!(xai.base.context_window, Some(9999));
     assert!(
-        !xai.capabilities
+        xai.extra
+            .capabilities
             .supports_input_modality(ModelModality::Image),
-        "xAI /models declares no modalities; extension fields are ignored"
+        "the explicit Codex image declaration must reach the runtime"
     );
     let ModelPricing::Rates {
         currency, tiers, ..
-    } = &xai.pricing
+    } = &xai.extra.pricing
     else {
         panic!("xAI native token price must be a token rate")
     };
@@ -1346,18 +1377,18 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     )
     .await
     .remove(0);
-    assert_eq!(openai.context_window, None);
-    assert_eq!(openai.pricing, ModelPricing::Unknown);
+    assert_eq!(openai.base.context_window, None);
+    assert_eq!(openai.extra.pricing, ModelPricing::Unknown);
 
-    // xAI 只接受自己的 reasoning_effort 声明，Codex/DeepSeek 的候选字段不生效。
-    let xai_ignored = discover(
+    // 原生推理档位和 xAI 嵌套档位各自可用。
+    let xai_codex = discover(
         json!({"data":[{"id":"x","supported_reasoning_levels":[{"effort":"low"}],
             "reasoningEfforts":[{"value":"low"}],"reasoning_effort":["low"]}]}),
         pl_model::protocol::providers::xai::ID,
     )
     .await
     .remove(0);
-    assert!(xai_ignored.supported_efforts().is_empty());
+    assert_eq!(xai_codex.supported_efforts(), ["low"]);
     let xai_effort = discover(
         json!({"data":[{"id":"x","capabilities":{
             "reasoning_effort":["low","high"],"default_reasoning_effort":"high"}}]}),
@@ -1387,6 +1418,7 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     .remove(0);
     assert!(
         openai_unknown
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
@@ -1400,12 +1432,13 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
             .remove(0);
         assert!(
             !unknown
+                .extra
                 .capabilities
                 .supports_input_modality(ModelModality::Image),
             "{kind:?} must not fabricate image input"
         );
         assert!(
-            unknown.binding.request.media.is_empty(),
+            unknown.extra.binding.request.media.is_empty(),
             "{kind:?} must not fabricate a media profile"
         );
         assert_eq!(unknown.resolve_context(None).context_window, None);
@@ -1419,8 +1452,8 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
     )
     .await
     .remove(0);
-    assert_eq!(mimo.context_window, Some(8192));
-    assert!(mimo.capabilities.tools.function_calling);
+    assert_eq!(mimo.base.context_window, Some(8192));
+    assert!(mimo.extra.capabilities.tools.function_calling);
 }
 
 #[tokio::test]
@@ -1431,12 +1464,14 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
         .iter()
         .find(|m| {
             !m.supported_efforts().is_empty()
-                && m.capabilities.supports_input_modality(ModelModality::Image)
+                && m.extra
+                    .capabilities
+                    .supports_input_modality(ModelModality::Image)
         })
         .unwrap();
     let server = Server::responses(vec![
-        http(200,"", &json!({"data":[{"id":known.model_id}]}).to_string()),
-        http(200,"", &json!({"models":[{"slug":known.model_id,"supported_reasoning_levels":[],"input_modalities":[],"output_modalities":[],"supports_streaming":false,"supports_function_calling":false}]}).to_string()),
+        http(200,"", &json!({"data":[{"id":known.base.slug}]}).to_string()),
+        http(200,"", &json!({"models":[{"slug":known.base.slug,"supported_reasoning_levels":[],"input_modalities":[],"output_modalities":[],"supports_streaming":false,"supports_function_calling":false}]}).to_string()),
         http(200,"", &json!({"data":[{"id":"cached-only"}]}).to_string()),
         http(200,"", &json!({"data":[{"id":"cached-only","capabilities":{"input":[{"modality":"text","sources":[]}]}}]}).to_string()),
     ]).await;
@@ -1447,39 +1482,41 @@ async fn missing_metadata_uses_exact_success_then_default_but_explicit_empty_and
     .unwrap();
     let first = updated(query.execute(None).await.unwrap());
     assert_eq!(first[0].supported_efforts(), known.supported_efforts());
-    assert_eq!(first[0].context_window, known.context_window);
+    assert_eq!(first[0].base.context_window, known.base.context_window);
     let second = updated(query.execute(None).await.unwrap());
     assert!(second[0].supported_efforts().is_empty());
-    assert!(second[0].capabilities.input.is_empty());
-    assert!(second[0].capabilities.output.is_empty());
-    assert!(second[0].binding.request.media.is_empty());
-    assert!(!second[0].capabilities.streaming);
-    assert!(!second[0].capabilities.tools.function_calling);
+    assert!(second[0].extra.capabilities.input.is_empty());
+    assert!(second[0].extra.capabilities.output.is_empty());
+    assert!(second[0].extra.binding.request.media.is_empty());
+    assert!(!second[0].extra.capabilities.streaming);
+    assert!(!second[0].extra.capabilities.tools.function_calling);
     let mut cached = first[0].clone();
-    cached.model_id = "cached-only".into();
-    cached.context_window = Some(12345);
-    cached.capabilities.input = vec![pl_model::model::ModelInputCapability::text()];
-    cached.binding.request.media.clear();
+    cached.base.slug = "cached-only".into();
+    cached.base.context_window = Some(12345);
+    cached.extra.capabilities.input = vec![pl_model::model::ModelInputCapability::text()];
+    cached.extra.binding.request.media.clear();
     let cache = ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: None,
         models: vec![cached],
     };
     let third = updated(query.execute(Some(&cache)).await.unwrap());
-    assert_eq!(third[0].context_window, Some(12345));
-    assert_eq!(third[0].pricing, ModelPricing::Unknown);
+    assert_eq!(third[0].base.context_window, Some(12345));
+    assert_eq!(third[0].extra.pricing, ModelPricing::Unknown);
     assert!(
         !third[0]
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
     let fourth = updated(query.execute(Some(&cache)).await.unwrap());
     assert!(
         !fourth[0]
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
-    assert!(fourth[0].binding.request.media.is_empty());
+    assert!(fourth[0].extra.binding.request.media.is_empty());
     server.finish().await;
 }
 
@@ -1492,9 +1529,9 @@ fn assert_direct_and_canonical_display_name(
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .unwrap();
-    assert_eq!(direct.display_name, expected);
+    assert_eq!(direct.base.display_name, expected);
 
     let account_id = AccountId::new("display-name-account").unwrap();
     let mut canonical = AgentModelConfig {
@@ -1506,17 +1543,17 @@ fn assert_direct_and_canonical_display_name(
         .effective_models(None)
         .unwrap()
         .into_iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .unwrap();
-    assert_eq!(rebuilt.display_name, expected);
+    assert_eq!(rebuilt.base.display_name, expected);
 }
 
 #[tokio::test]
 async fn display_name_presence_falls_back_within_their_account_across_live_and_cached_catalogs() {
     let definition = bundled_model_definition("openai").unwrap();
     let model = &definition.models[0];
-    let model_id = model.model_id.as_str();
-    let local_name = model.display_name.as_str();
+    let model_id = model.base.slug.as_str();
+    let local_name = model.base.display_name.as_str();
     let live_cases = [
         (json!({"data":[{"id":model_id}]}), local_name),
         (
@@ -1575,7 +1612,10 @@ async fn display_name_presence_falls_back_within_their_account_across_live_and_c
             protocol.clone(),
         )
         .await;
-        assert_eq!(decoded[0].display_name, "Provider alias", "{protocol:?}");
+        assert_eq!(
+            decoded[0].base.display_name, "Provider alias",
+            "{protocol:?}"
+        );
     }
 
     let mut cached_account = provider(
@@ -1638,15 +1678,15 @@ async fn observed_window_lifts_undeclared_inherited_budget_limit() {
             .unwrap(),
     );
     assert_eq!(models.len(), 1);
-    assert_eq!(models[0].model_id, "deepseek-flash");
-    assert_eq!(models[0].context_window, Some(1_048_576));
-    assert_eq!(models[0].max_context_window, Some(1_048_576));
+    assert_eq!(models[0].base.slug, "deepseek-flash");
+    assert_eq!(models[0].base.context_window, Some(1_048_576));
+    assert_eq!(models[0].base.max_context_window, Some(1_048_576));
     // 未违反上限的继承默认预算保持原值。
-    assert_eq!(models[0].max_output_tokens, Some(384_000));
+    assert_eq!(models[0].extra.max_output_tokens, Some(384_000));
     config.set_model_catalog_overlay(models).unwrap();
     let entry = &config.effective_catalog(None).unwrap()[0];
     assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
-    assert_eq!(entry.model.max_context_window, Some(1_048_576));
+    assert_eq!(entry.model.base.max_context_window, Some(1_048_576));
     server.finish().await;
 }
 
@@ -1658,10 +1698,10 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let builtin = definition
         .models
         .iter()
-        .find(|model| model.model_id == "gpt-6.1-sol")
+        .find(|model| model.base.slug == "gpt-6.1-sol")
         .unwrap();
     assert!(!builtin.supported_efforts().is_empty());
-    assert!(builtin.capabilities.reasoning);
+    assert!(builtin.extra.capabilities.reasoning);
     let server = Server::responses(vec![
         http(
             200,
@@ -1696,7 +1736,7 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
         pl_model::protocol::providers::openai::ID,
     ))
     .unwrap();
-    let cache = |models: &[ModelInfo]| ModelCatalogQueryCache {
+    let cache = |models: &[ModelDefinition]| ModelCatalogQueryCache {
         identity: query.identity().into(),
         etag: None,
         models: models.to_vec(),
@@ -1705,14 +1745,17 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     // 在线只声明当前窗口：观测值抬升过时的内置上限，其余内置元数据按精确 ID 补全。
     let raised = updated(query.execute(None).await.unwrap());
     assert_eq!(raised.len(), 1);
-    assert_eq!(raised[0].context_window, Some(2_000_000));
-    assert_eq!(raised[0].max_context_window, Some(2_000_000));
-    assert_eq!(raised[0].max_output_tokens, builtin.max_output_tokens);
-    assert_eq!(raised[0].display_name, builtin.display_name);
-    assert_eq!(raised[0].description, builtin.description);
-    assert_eq!(raised[0].pricing, ModelPricing::Unknown);
+    assert_eq!(raised[0].base.context_window, Some(2_000_000));
+    assert_eq!(raised[0].base.max_context_window, Some(2_000_000));
+    assert_eq!(
+        raised[0].extra.max_output_tokens,
+        builtin.extra.max_output_tokens
+    );
+    assert_eq!(raised[0].base.display_name, builtin.base.display_name);
+    assert_eq!(raised[0].base.description, builtin.base.description);
+    assert_eq!(raised[0].extra.pricing, ModelPricing::Unknown);
     assert_eq!(raised[0].supported_efforts(), builtin.supported_efforts());
-    assert!(raised[0].capabilities.reasoning);
+    assert!(raised[0].extra.capabilities.reasoning);
     let mut config = provider(
         "http://127.0.0.1:1",
         pl_model::protocol::providers::openai::ID,
@@ -1721,22 +1764,19 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     let effective = config.effective_catalog(None).unwrap();
     let entry = effective
         .iter()
-        .find(|entry| entry.model.model_id == builtin.model_id)
+        .find(|entry| entry.model.base.slug == builtin.base.slug)
         .unwrap();
     assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
     // 价格仍只按本地精确 ID 关联。
-    assert_eq!(entry.model.pricing, builtin.pricing);
-    assert_ne!(entry.model.pricing, ModelPricing::Unknown);
+    assert_eq!(entry.model.extra.pricing, builtin.extra.pricing);
+    assert_ne!(entry.model.extra.pricing, ModelPricing::Unknown);
     let descriptor = model_descriptor(entry);
     assert_eq!(descriptor.context_window, Some(2_000_000));
     assert_eq!(descriptor.max_context_window, Some(2_000_000));
-    assert_eq!(
-        descriptor.context.auto_compact_limit,
-        builtin.resolve_context(None).auto_compact_limit
-    );
+    assert_eq!(descriptor.context.auto_compact_limit, Some(1_800_000));
     assert_eq!(
         entry.model.resolve_context(None).auto_compact_limit,
-        Some(475_000)
+        Some(1_800_000)
     );
     assert!(descriptor.capabilities.reasoning);
     assert_eq!(
@@ -1749,26 +1789,29 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
 
     // 在线只声明更小的上限：继承的当前窗口收敛到在线上限，不因内置窗口更大而拒绝整份名单。
     let narrowed = updated(query.execute(Some(&cache(&raised))).await.unwrap());
-    assert_eq!(narrowed[0].context_window, Some(300_000));
-    assert_eq!(narrowed[0].max_context_window, Some(300_000));
+    assert_eq!(narrowed[0].base.context_window, Some(300_000));
+    assert_eq!(narrowed[0].base.max_context_window, Some(300_000));
     assert_eq!(
         narrowed[0].resolve_context(None).auto_compact_limit,
-        Some(300_000 - builtin.max_output_tokens.unwrap())
+        Some(270_000)
     );
 
     // 在线明确关闭 reasoning：清除继承的 effort 候选；随后的 id-only 响应不复活内置候选。
     let closed = updated(query.execute(Some(&cache(&narrowed))).await.unwrap());
-    assert!(!closed[0].capabilities.reasoning);
+    assert!(!closed[0].extra.capabilities.reasoning);
     assert!(closed[0].effort_parameter().is_none());
     let id_only = updated(query.execute(Some(&cache(&closed))).await.unwrap());
-    assert!(!id_only[0].capabilities.reasoning);
+    assert!(!id_only[0].extra.capabilities.reasoning);
     assert!(id_only[0].effort_parameter().is_none());
-    assert_eq!(id_only[0].context_window, Some(300_000));
-    assert_eq!(id_only[0].max_output_tokens, builtin.max_output_tokens);
+    assert_eq!(id_only[0].base.context_window, Some(300_000));
+    assert_eq!(
+        id_only[0].extra.max_output_tokens,
+        builtin.extra.max_output_tokens
+    );
 
     // 空 `parameters` 同样不继承内置候选，未单独声明的 reasoning 随在线候选收敛。
     let empty_parameters = updated(query.execute(Some(&cache(&id_only))).await.unwrap());
-    assert!(!empty_parameters[0].capabilities.reasoning);
+    assert!(!empty_parameters[0].extra.capabilities.reasoning);
     assert!(empty_parameters[0].effort_parameter().is_none());
 
     // 在线非空候选派生 reasoning=true，描述与候选按在线值透传。
@@ -1778,19 +1821,23 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
             .await
             .unwrap(),
     );
-    assert_eq!(online_effort[0].model_id, "unregistered-online-effort");
-    assert!(online_effort[0].capabilities.reasoning);
+    assert_eq!(online_effort[0].base.slug, "unregistered-online-effort");
+    assert!(online_effort[0].extra.capabilities.reasoning);
     assert_eq!(online_effort[0].supported_efforts(), ["low", "high"]);
     // 在线声明的 wire 规则原样透传到该模型的 effort 参数。
     assert_eq!(
         online_effort[0]
             .effort_parameter()
+            .as_ref()
             .and_then(|parameter| parameter.wire_for("high"))
             .map(|wire| wire.set[0].path.as_str()),
         Some("reasoning.effort")
     );
-    assert_eq!(online_effort[0].description.as_deref(), Some("online only"));
-    assert_eq!(online_effort[0].context_window, None);
+    assert_eq!(
+        online_effort[0].base.description.as_deref(),
+        Some("online only")
+    );
+    assert_eq!(online_effort[0].base.context_window, None);
     server.finish().await;
 
     // 在线声明自身冲突或越界时仍按无效预算/协议失败，不静默丢一方。
@@ -1893,52 +1940,54 @@ async fn captured_deepseek_inventory_decodes_metadata_and_keeps_local_pricing() 
     assert_eq!(
         models
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|model| model.base.slug.as_str())
             .collect::<Vec<_>>(),
         ["deepseek-flash", "deepseek-v4-pro"]
     );
     // 未知字段（如 `api_capabilities`）被忽略，且不使整份名单解析失败。
     let flash = models
         .iter()
-        .find(|model| model.model_id == "deepseek-flash")
+        .find(|model| model.base.slug == "deepseek-flash")
         .unwrap();
-    assert_eq!(flash.display_name, "DeepSeek-V4.1-Flash");
-    assert_eq!(flash.context_window, Some(1_048_576));
+    assert_eq!(flash.base.display_name, "DeepSeek-V4.1-Flash");
+    assert_eq!(flash.base.context_window, Some(1_048_576));
     // 观测窗口高于内置上限 1_000_000 时抬升继承上限。
-    assert_eq!(flash.max_context_window, Some(1_048_576));
+    assert_eq!(flash.base.max_context_window, Some(1_048_576));
     // API 明确声明的输出上限覆盖内置的 384_000。
-    assert_eq!(flash.max_output_tokens, Some(393_216));
+    assert_eq!(flash.extra.max_output_tokens, Some(393_216));
     assert_eq!(flash.supported_efforts(), ["low", "high", "max"]);
     assert!(
         flash
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Text)
     );
     assert!(
         flash
+            .extra
             .capabilities
             .supports_input_modality(ModelModality::Image)
     );
-    assert_eq!(flash.capabilities.output, vec![ModelModality::Text]);
+    assert_eq!(flash.extra.capabilities.output, vec![ModelModality::Text]);
     // 在线探测从不采信 API 价格。
-    assert_eq!(flash.pricing, ModelPricing::Unknown);
+    assert_eq!(flash.extra.pricing, ModelPricing::Unknown);
     config.set_model_catalog_overlay(models).unwrap();
     let definition = bundled_model_definition("deepseek").unwrap();
     let effective = config.effective_catalog(None).unwrap();
     for model_id in ["deepseek-flash", "deepseek-v4-pro"] {
         let entry = effective
             .iter()
-            .find(|entry| entry.model.model_id == model_id)
+            .find(|entry| entry.model.base.slug == model_id)
             .unwrap();
         assert_eq!(entry.origin, pl_model::config::AccountModelOrigin::Online);
         // 价格只按该 provider 绑定目录的大小写敏感精确 ID 关联。
         let local = definition
             .models
             .iter()
-            .find(|model| model.model_id == model_id)
+            .find(|model| model.base.slug == model_id)
             .unwrap();
-        assert_eq!(entry.model.pricing, local.pricing);
-        assert_ne!(entry.model.pricing, ModelPricing::Unknown);
+        assert_eq!(entry.model.extra.pricing, local.extra.pricing);
+        assert_ne!(entry.model.extra.pricing, ModelPricing::Unknown);
     }
 }
 
@@ -1955,17 +2004,17 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     let builtin = definition
         .models
         .iter()
-        .find(|model| model.model_id == "deepseek-flash")
+        .find(|model| model.base.slug == "deepseek-flash")
         .unwrap();
     let builtin_pro = definition
         .models
         .iter()
-        .find(|model| model.model_id == "deepseek-v4-pro")
+        .find(|model| model.base.slug == "deepseek-v4-pro")
         .unwrap();
     assert!(!builtin.supported_efforts().is_empty());
-    assert!(builtin.capabilities.reasoning);
+    assert!(builtin.extra.capabilities.reasoning);
     assert_eq!(
-        builtin.binding.request.body["thinking"]["type"],
+        builtin.extra.binding.request.body["thinking"]["type"],
         serde_json::json!("enabled")
     );
     let server = Server::responses(vec![
@@ -1992,30 +2041,33 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     assert_eq!(
         models
             .iter()
-            .map(|model| model.model_id.as_str())
+            .map(|model| model.base.slug.as_str())
             .collect::<Vec<_>>(),
         ["deepseek-flash", "deepseek-v4-pro"]
     );
     let flash = &models[0];
-    assert_eq!(flash.context_window, Some(1_048_576));
+    assert_eq!(flash.base.context_window, Some(1_048_576));
     // 在线只声明当前窗口时，继承的内置上限仍按观测值抬升。
-    assert_eq!(flash.max_context_window, Some(1_048_576));
-    assert_eq!(flash.max_output_tokens, Some(393_216));
-    assert!(!flash.capabilities.reasoning);
+    assert_eq!(flash.base.max_context_window, Some(1_048_576));
+    assert_eq!(flash.extra.max_output_tokens, Some(393_216));
+    assert!(!flash.extra.capabilities.reasoning);
     assert!(flash.effort_parameter().is_none());
-    assert!(flash.binding.request.body.get("thinking").is_none());
+    assert!(flash.extra.binding.request.body.get("thinking").is_none());
     // 在线探测从不采信 API 价格。
-    assert_eq!(flash.pricing, ModelPricing::Unknown);
+    assert_eq!(flash.extra.pricing, ModelPricing::Unknown);
     let pro = &models[1];
     // 在线只声明更小的上限：继承的 1_000_000 当前窗口收敛到该上限。
-    assert_eq!(pro.context_window, Some(524_288));
-    assert_eq!(pro.max_context_window, Some(524_288));
-    assert_eq!(pro.max_output_tokens, builtin_pro.max_output_tokens);
+    assert_eq!(pro.base.context_window, Some(524_288));
+    assert_eq!(pro.base.max_context_window, Some(524_288));
+    assert_eq!(
+        pro.extra.max_output_tokens,
+        builtin_pro.extra.max_output_tokens
+    );
     // 在线非空候选替换内置候选，并派生 reasoning 与 thinking 基础 body。
     assert_eq!(pro.supported_efforts(), ["max"]);
-    assert!(pro.capabilities.reasoning);
+    assert!(pro.extra.capabilities.reasoning);
     assert_eq!(
-        pro.binding.request.body["thinking"]["type"],
+        pro.extra.binding.request.body["thinking"]["type"],
         serde_json::json!("enabled")
     );
 
@@ -2024,15 +2076,15 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     let effective = config.effective_catalog(None).unwrap();
     let flash_entry = effective
         .iter()
-        .find(|entry| entry.model.model_id == "deepseek-flash")
+        .find(|entry| entry.model.base.slug == "deepseek-flash")
         .unwrap();
     assert_eq!(
         flash_entry.origin,
         pl_model::config::AccountModelOrigin::Online
     );
-    assert_eq!(flash_entry.model.pricing, builtin.pricing);
-    assert_ne!(flash_entry.model.pricing, ModelPricing::Unknown);
-    assert!(!flash_entry.model.capabilities.reasoning);
+    assert_eq!(flash_entry.model.extra.pricing, builtin.extra.pricing);
+    assert_ne!(flash_entry.model.extra.pricing, ModelPricing::Unknown);
+    assert!(!flash_entry.model.extra.capabilities.reasoning);
     assert!(flash_entry.model.effort_parameter().is_none());
     let descriptor = model_descriptor(flash_entry);
     assert!(descriptor.reasoning.is_none());
@@ -2040,10 +2092,10 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     assert_eq!(descriptor.max_context_window, Some(1_048_576));
     let pro_entry = effective
         .iter()
-        .find(|entry| entry.model.model_id == "deepseek-v4-pro")
+        .find(|entry| entry.model.base.slug == "deepseek-v4-pro")
         .unwrap();
-    assert_eq!(pro_entry.model.pricing, builtin_pro.pricing);
-    assert_eq!(pro_entry.model.context_window, Some(524_288));
+    assert_eq!(pro_entry.model.extra.pricing, builtin_pro.extra.pricing);
+    assert_eq!(pro_entry.model.base.context_window, Some(524_288));
     assert_eq!(
         model_descriptor(pro_entry)
             .reasoning
@@ -2061,12 +2113,12 @@ async fn deepseek_online_reasoning_closure_drops_thinking_body_and_narrows_inher
     let roundtrip = updated(query.execute(Some(&cache)).await.unwrap());
     server.finish().await;
     let flash = &roundtrip[0];
-    assert_eq!(flash.context_window, Some(1_048_576));
-    assert!(!flash.capabilities.reasoning);
+    assert_eq!(flash.base.context_window, Some(1_048_576));
+    assert!(!flash.extra.capabilities.reasoning);
     assert!(flash.effort_parameter().is_none());
-    assert!(flash.binding.request.body.get("thinking").is_none());
+    assert!(flash.extra.binding.request.body.get("thinking").is_none());
     let pro = &roundtrip[1];
-    assert_eq!(pro.context_window, Some(524_288));
+    assert_eq!(pro.base.context_window, Some(524_288));
     assert_eq!(pro.supported_efforts(), ["max"]);
 
     // 必要运行时 wire：清除结果在真实请求体里既无 thinking 也无 reasoning_effort。
@@ -2131,7 +2183,7 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
     };
     let error = query.execute(Some(&cache)).await.unwrap_err();
     assert_eq!(error, ModelCatalogQueryError::Protocol);
-    assert_eq!(cache.models[0].model_id, "last-good");
+    assert_eq!(cache.models[0].base.slug, "last-good");
     server.finish().await;
 }
 
@@ -2139,23 +2191,24 @@ async fn explicit_inconsistent_window_pair_fails_without_lifting_or_caching() {
 async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_ids() {
     let definition = bundled_model_definition("openai").unwrap();
     let known = &definition.models[0];
-    let model_id = known.model_id.clone();
+    let model_id = known.base.slug.clone();
     let foreign = bundled_model_definition("deepseek").unwrap().models[0]
-        .model_id
+        .base
+        .slug
         .clone();
     let api = discover(json!({"data":[{"id":model_id},{"id":model_id.to_uppercase()},{"id":format!("{model_id}-variant")},{"id":foreign},{"id":"manual"}]}), pl_model::protocol::providers::openai::ID).await;
     let mut config = provider(
         "http://127.0.0.1:1",
         pl_model::protocol::providers::openai::ID,
     );
-    let mut manual = ModelInfo::compatible("manual");
-    manual.display_name = "Authoritative manual model".into();
-    manual.pricing = known.pricing.clone();
+    let mut manual = ModelDefinition::compatible("manual");
+    manual.base.display_name = "Authoritative manual model".into();
+    manual.extra.pricing = known.extra.pricing.clone();
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(manual.clone());
+        additional_models.push(manual.clone().into());
     }
     config.set_model_catalog_overlay(api).unwrap();
     let effective = config
@@ -2168,29 +2221,38 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
     assert_eq!(
         effective
             .iter()
-            .find(|m| m.model_id == model_id)
+            .find(|m| m.base.slug == model_id)
             .unwrap()
+            .extra
             .pricing,
-        known.pricing
+        known.extra.pricing
     );
     for model in effective
         .iter()
-        .filter(|m| m.model_id != model_id && m.model_id != "manual")
+        .filter(|m| m.base.slug != model_id && m.base.slug != "manual")
     {
-        assert_eq!(model.pricing, ModelPricing::Unknown);
-        assert_eq!(model.context_window, None);
+        assert_eq!(model.extra.pricing, ModelPricing::Unknown);
+        assert_eq!(model.base.context_window, None);
     }
+    let resolved = effective.iter().find(|m| m.base.slug == "manual").unwrap();
+    assert_eq!(resolved.base.display_name, manual.base.display_name);
+    assert_eq!(resolved.extra.pricing, manual.extra.pricing);
     assert_eq!(
-        effective.iter().find(|m| m.model_id == "manual").unwrap(),
-        &manual
+        resolved.extra.binding.transport,
+        ModelTransportProfile::responses_websocket()
     );
+    let mut manual = manual;
+    manual
+        .extra
+        .binding
+        .set_transport(ModelTransportProfile::responses_websocket());
     let persisted = serde_json::to_value(&config).unwrap();
     let reread: AccountConfig = serde_json::from_value(persisted).unwrap();
     assert!(!reread.has_model_catalog_overlay());
     config.set_model_catalog_overlay(Vec::new()).unwrap();
     let mut expected = definition.models.clone();
     expected.push(manual);
-    expected.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+    expected.sort_by(|a, b| a.base.slug.cmp(&b.base.slug));
     assert_eq!(
         config
             .selectable_catalog(None)
@@ -2204,14 +2266,14 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
         additional_models, ..
     } = &mut config.catalog
     {
-        additional_models.push(known.clone());
+        additional_models.push(known.clone().into());
     }
     assert_eq!(
         config
             .effective_catalog(None)
             .unwrap()
             .iter()
-            .filter(|entry| entry.model.model_id == known.model_id)
+            .filter(|entry| entry.model.base.slug == known.base.slug)
             .count(),
         1
     );
@@ -2228,7 +2290,7 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
     fresh.set_model_catalog_overlay(empty).unwrap();
     assert!(!fresh.effective_catalog(None).unwrap().is_empty());
     let mut expected = bundled_model_definition("deepseek").unwrap().models;
-    expected.sort_by(|a, b| a.model_id.cmp(&b.model_id));
+    expected.sort_by(|a, b| a.base.slug.cmp(&b.base.slug));
     assert_eq!(
         fresh
             .selectable_catalog(None)
@@ -2248,15 +2310,18 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         pl_model::protocol::providers::openai::ID,
     );
     let mut selected = selected_provider.effective_models(None).unwrap()[0].clone();
-    selected.model_id = "remote-only-choice".into();
+    selected.base.slug = "remote-only-choice".into();
     selected_provider
         .set_model_catalog_overlay(vec![selected.clone()])
         .unwrap();
     selected_provider
-        .set_model_connection_mode(&selected.model_id, pl_model::protocol::ConnectionMode::Http)
+        .set_model_connection_mode(
+            &selected.base.slug,
+            pl_model::protocol::ConnectionMode::Http,
+        )
         .unwrap();
     selected_provider
-        .set_model_auto_compact_override(&selected.model_id, Some(1234))
+        .set_model_auto_compact_override(&selected.base.slug, Some(1234))
         .unwrap();
     selected_provider
         .set_model_catalog_overlay(Vec::new())
@@ -2265,7 +2330,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     let role = AgentRoleId::new("explorer").unwrap();
     let route = ModelRouteConfig {
         account_id: id.clone(),
-        model_id: selected.model_id.clone(),
+        model_id: selected.base.slug.clone(),
         effort: selected.default_effort().map(ReasoningEffort::new),
     };
     let mut config = AgentModelConfig {
@@ -2277,7 +2342,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         config.route_availability(&route).unwrap(),
         ModelRouteAvailability::ModelUnavailable {
             account_id: id.clone(),
-            model_id: selected.model_id.clone()
+            model_id: selected.base.slug.clone()
         }
     );
     assert!(config.validate().is_err());
@@ -2297,10 +2362,10 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         "connection-choice",
         pl_model::protocol::providers::openai::ID,
     );
-    narrowed.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
+    narrowed.extra.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
     let server = Server::json(json!({"models":[{
-        "slug": narrowed.model_id,
-        "binding": narrowed.binding,
+        "slug": narrowed.base.slug,
+        "binding": narrowed.extra.binding,
         "input_modalities": ["text"],
         "context_window": 64000
     }]}))
@@ -2318,7 +2383,10 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     let desired_before_observation = serde_json::to_value(&connection_provider).unwrap();
     let query = ModelCatalogQuery::for_account(&connection_provider).unwrap();
     let observed = updated(query.execute(None).await.unwrap());
-    assert_eq!(observed[0].binding.transport, narrowed.binding.transport);
+    assert_eq!(
+        observed[0].extra.binding.transport,
+        narrowed.extra.binding.transport
+    );
     connection_provider
         .set_model_catalog_overlay(observed)
         .unwrap();
@@ -2370,8 +2438,8 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     } = &mut manual_config.accounts.get_mut(&id).unwrap().catalog
     {
         let mut manual = narrowed.clone();
-        manual.binding.transport = ModelTransportProfile::responses_http();
-        additional_models.push(manual);
+        manual.extra.binding.transport = ModelTransportProfile::responses_http();
+        additional_models.push(manual.into());
     }
     // The same-ID manual declaration, not the remote WS-only one, is authoritative.
     manual_config.validate().unwrap();
@@ -2384,6 +2452,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .resolve(&role)
             .unwrap()
             .model
+            .extra
             .binding
             .transport
             .default_connection_mode,
@@ -2393,7 +2462,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         additional_models, ..
     } = &mut manual_config.accounts.get_mut(&id).unwrap().catalog
     {
-        additional_models[0] = narrowed.clone();
+        additional_models[0] = narrowed.clone().into();
     }
     assert!(manual_config.validate_declarations().is_err());
     assert!(manual_config.route_availability(&connection_route).is_err());
@@ -2407,7 +2476,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         ..
     } = &mut explicit.catalog
     {
-        connection_overrides.insert(narrowed.model_id.clone(), ConnectionMode::Http);
+        connection_overrides.insert(narrowed.base.slug.clone(), ConnectionMode::Http);
     }
     assert!(explicit.effective_models(None).is_err());
     assert!(explicit.validate_declarations(&id).is_err());
@@ -2421,7 +2490,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         connection_overrides,
         auto_compact_overrides,
     };
-    assert!(non_discovery.validate_declarations().is_err());
+    non_discovery.validate_declarations().unwrap();
     let mut bad_profile = manual_config.clone();
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models,
@@ -2430,11 +2499,9 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     } = &mut bad_profile.accounts.get_mut(&id).unwrap().catalog
     {
         // Even an otherwise valid override cannot repair a contradictory declared default.
-        additional_models[0]
-            .binding
-            .transport
-            .default_connection_mode = ConnectionMode::Http;
-        connection_overrides.insert(narrowed.model_id.clone(), ConnectionMode::WebSocket);
+        additional_models[0].extra["binding"]["transport"]["default_connection_mode"] =
+            json!("http");
+        connection_overrides.insert(narrowed.base.slug.clone(), ConnectionMode::WebSocket);
     }
     assert!(bad_profile.validate_declarations().is_err());
     let instance = connection_config.accounts.get_mut(&id).unwrap();
@@ -2462,6 +2529,7 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
             .resolve(&role)
             .unwrap()
             .model
+            .extra
             .binding
             .transport
             .default_connection_mode,
@@ -2470,11 +2538,11 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
     // Only discovery was sent: rejected resolution cannot construct a fallback inference request.
     let requests = server.finish().await;
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].starts_with("GET /models HTTP/1.1\r\n"));
+    assert!(requests[0].starts_with("GET /models?client_version=0.170.0 HTTP/1.1\r\n"));
 
     let mut current = selected.clone();
-    current.parameters.clear();
-    current.binding.request.body.clear();
+    current.set_parameters(Vec::new());
+    current.extra.binding.request.body.clear();
     config
         .accounts
         .get_mut(&id)
@@ -2485,13 +2553,13 @@ async fn availability_preserves_removed_choice_without_weakening_strict_edits_or
         config.route_availability(&route).unwrap(),
         ModelRouteAvailability::EffortUnavailable { .. }
     ));
-    let mut manual = ModelInfo::compatible("manual-choice");
-    manual.parameters.clear();
+    let mut manual = ModelDefinition::compatible("manual-choice");
+    manual.set_parameters(Vec::new());
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
     } = &mut config.accounts.get_mut(&id).unwrap().catalog
     {
-        additional_models.push(manual);
+        additional_models.push(manual.into());
     }
     let manual_route = ModelRouteConfig {
         account_id: id.clone(),
@@ -2547,7 +2615,7 @@ async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_
     ] {
         let mut binding = serde_json::to_value(
             cached_model("invalid-profile", pl_model::protocol::providers::openai::ID)
-                .0
+                .extra
                 .binding,
         )
         .unwrap();
@@ -2574,7 +2642,7 @@ async fn invalid_declaration_rejects_whole_response_without_leaking_response_or_
         let error = query.execute(Some(&cache)).await.unwrap_err();
         assert_eq!(error, ModelCatalogQueryError::Protocol);
         assert!(!format!("{error:?}: {error}").contains("synthetic-secret-response"));
-        assert_eq!(cache.models[0].model_id, "last-good");
+        assert_eq!(cache.models[0].base.slug, "last-good");
         server.finish().await;
     }
 }
@@ -2616,7 +2684,7 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
     );
     let mut corrupt = cache.clone();
     let mut priced = cached_model("cached-price", pl_model::protocol::providers::openai::ID);
-    priced.pricing = ModelPricing::published(
+    priced.extra.pricing = ModelPricing::published(
         "USD",
         vec![pl_model::model::TokenPriceTier::flat(-1.0, 2.0, None, None)],
         "https://synthetic.invalid/pricing",
@@ -2644,14 +2712,19 @@ async fn conditional_304_requires_same_identity_success_and_returns_etag() {
 #[tokio::test]
 async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
     let mut model = cached_model("profile-order", pl_model::protocol::providers::openai::ID);
-    model.binding.transport.supported_connection_modes.reverse();
+    model
+        .extra
+        .binding
+        .transport
+        .supported_connection_modes
+        .reverse();
     let models = discover(
-        json!({"data":[{"id":model.model_id,"binding":model.binding,"input_modalities":["text"]}]}),
+        json!({"data":[{"id":model.base.slug,"binding":model.extra.binding,"input_modalities":["text"]}]}),
         pl_model::protocol::providers::openai::ID,
     )
     .await;
     assert_eq!(
-        models[0].binding.transport,
+        models[0].extra.binding.transport,
         ModelTransportProfile::responses_websocket()
     );
     let mut config = provider(
@@ -2669,23 +2742,24 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
             .effective_models(None)
             .unwrap()
             .into_iter()
-            .find(|model| model.model_id == "profile-order")
+            .find(|model| model.base.slug == "profile-order")
             .unwrap()
+            .extra
             .binding
             .transport
             .default_connection_mode,
         pl_model::protocol::ConnectionMode::Http
     );
 
-    model.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
+    model.extra.binding.transport.supported_connection_modes = vec![ConnectionMode::WebSocket];
     let server = Server::responses(vec![
         http(
             200,
             "ETag: \"narrowed\"\r\n",
-            &json!({"models":[{"slug":model.model_id,"binding":model.binding,"input_modalities":["text"]}]}).to_string(),
+            &json!({"models":[{"slug":model.base.slug,"binding":model.extra.binding,"input_modalities":["text"]}]}).to_string(),
         ),
         http(304, "", ""),
-        http(200, "", &json!({"data":[{"id":model.model_id}]}).to_string()),
+        http(200, "", &json!({"data":[{"id":model.base.slug}]}).to_string()),
     ])
     .await;
     let query = ModelCatalogQuery::for_account(&provider(
@@ -2698,20 +2772,26 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         etag: Some("\"narrowed\"".into()),
         models: updated(query.execute(None).await.unwrap()),
     };
-    assert_eq!(cache.models[0].binding.transport, model.binding.transport);
+    assert_eq!(
+        cache.models[0].extra.binding.transport,
+        model.extra.binding.transport
+    );
     assert!(matches!(
         query.execute(Some(&cache)).await.unwrap(),
         ModelCatalogQueryResult::NotModified { .. }
     ));
     let inherited = updated(query.execute(Some(&cache)).await.unwrap());
-    assert_eq!(inherited[0].binding.transport, model.binding.transport);
+    assert_eq!(
+        inherited[0].extra.binding.transport,
+        model.extra.binding.transport
+    );
     config.set_model_catalog_overlay(inherited.clone()).unwrap();
     let descriptor = model_descriptor(
         &config
             .effective_catalog(None)
             .unwrap()
             .into_iter()
-            .find(|entry| entry.model.model_id == model.model_id)
+            .find(|entry| entry.model.base.slug == model.base.slug)
             .unwrap(),
     );
     assert_eq!(descriptor.transport.connection_modes.len(), 1);
@@ -2722,7 +2802,11 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         vec![ConnectionMode::Http],
     ] {
         let mut invalid = inherited.clone();
-        invalid[0].binding.transport.supported_connection_modes = modes;
+        invalid[0]
+            .extra
+            .binding
+            .transport
+            .supported_connection_modes = modes;
         assert!(config.set_model_catalog_overlay(invalid.clone()).is_err());
         let invalid_cache = ModelCatalogQueryCache {
             models: invalid,
@@ -2756,16 +2840,17 @@ async fn discovery_profile_validity_is_independent_of_connection_mode_order() {
         pl_model::protocol::providers::deepseek::ID,
     );
     let observed = discover(
-        json!({"data":[{"id":deepseek.model_id,"binding":deepseek.binding,"input_modalities":["text"]}]}),
+        json!({"data":[{"id":deepseek.base.slug,"binding":deepseek.extra.binding,"input_modalities":["text"]}]}),
         pl_model::protocol::providers::deepseek::ID,
     )
     .await;
     assert_eq!(
-        observed[0].binding.transport,
+        observed[0].extra.binding.transport,
         ModelTransportProfile::responses_http()
     );
     let server =
-        Server::json(json!({"models":[{"slug":model.model_id,"binding":model.binding}]})).await;
+        Server::json(json!({"models":[{"slug":model.base.slug,"binding":model.extra.binding}]}))
+            .await;
     let query = ModelCatalogQuery::for_account(&provider(
         &server.url,
         pl_model::protocol::providers::deepseek::ID,
@@ -2886,6 +2971,94 @@ async fn whole_body_timeout_and_future_drop_release_borrow_without_changing_last
             "fixture connection was not reclaimed after cancel={cancel}"
         );
         assert_eq!(closed.unwrap().unwrap(), 0);
-        assert_eq!(retained_cache.models[0].model_id, "last-good");
+        assert_eq!(retained_cache.models[0].base.slug, "last-good");
     }
+}
+
+#[tokio::test]
+async fn standard_fallback_and_sparse_user_edits_preserve_codex_metadata() {
+    let server = Server::responses(vec![
+        http(422, "", "{}"),
+        http(200, "", r#"{"data":[{"id":"manual"}]}"#),
+    ])
+    .await;
+    let mut manual = ModelDefinition::compatible("manual");
+    assert_eq!(
+        serde_json::to_value(&manual).unwrap(),
+        json!({"base":{"slug":"manual"}})
+    );
+    manual.base.display_name = "Chosen name".into();
+    let mut account = AccountConfig::from_explicit_models(
+        pl_model::protocol::providers::openai::compatible_endpoint("gateway", &server.url),
+        vec![manual],
+    );
+    let desired = serde_json::to_value(&account).unwrap();
+    let result = ModelCatalogQuery::for_account(&account)
+        .unwrap()
+        .execute(None)
+        .await
+        .unwrap();
+    assert_eq!(updated(result)[0].base.slug, "manual");
+    let requests = server.finish().await;
+    assert!(requests[0].starts_with("GET /models?client_version=0.170.0 "));
+    assert!(requests[1].starts_with("GET /models "));
+    let remote = Server::json(json!({"models":[{
+        "slug":"manual","display_name":"Remote name","context_window":272000,"max_context_window":872000,
+        "future_field":{"nested":["unchanged"]},"supported_reasoning_levels":[{"effort":"future","description":"Future tier"}],
+        "default_reasoning_level":"future"
+    },{"slug":"model-without-controls","supported_reasoning_levels":[],"default_reasoning_level":"max"}]})).await;
+    account.base_url = remote.url.clone();
+    let result = ModelCatalogQuery::for_account(&account)
+        .unwrap()
+        .execute(None)
+        .await
+        .unwrap();
+    account.set_model_catalog_overlay(updated(result)).unwrap();
+    let model = account.effective_models(None).unwrap().remove(0);
+    assert_eq!(model.base.display_name, "Chosen name");
+    assert_eq!(model.base.fields["future_field"]["nested"][0], "unchanged");
+    assert_eq!(model.supported_efforts(), ["future"]);
+    assert_eq!(
+        model.base.supported_reasoning_levels.as_ref().unwrap()[0].fields["description"],
+        "Future tier"
+    );
+    assert_eq!(model.resolve_context(None).auto_compact_limit, Some(244800));
+    assert_eq!(
+        serde_json::to_value(&account).unwrap()["catalog"],
+        desired["catalog"]
+    );
+}
+
+#[tokio::test]
+async fn codex_modalities_and_search_declarations_preserve_responses_document_input() {
+    use pl_model::model::{MediaWireFormat, ModelMetadataField, ModelModality};
+    let body = json!({"models":[{"slug":"gpt-6.2-sol","input_modalities":["text","image"],
+        "web_search_tool_type":"text_and_image","supports_parallel_tool_calls":true}]});
+    let model = discover(body, pl_model::protocol::providers::openai::ID)
+        .await
+        .remove(0);
+    assert!(
+        model
+            .extra
+            .capabilities
+            .supports_input_modality(ModelModality::File)
+    );
+    assert!(
+        model
+            .extra
+            .binding
+            .request
+            .media
+            .iter()
+            .any(|p| p.wire == MediaWireFormat::ResponsesInputFile)
+    );
+    assert!(model.extra.capabilities.supports_web_search());
+    assert!(
+        model
+            .observation
+            .as_ref()
+            .unwrap()
+            .fields
+            .contains_key(&ModelMetadataField::WebSearch)
+    );
 }

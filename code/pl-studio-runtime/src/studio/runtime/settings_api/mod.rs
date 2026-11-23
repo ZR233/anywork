@@ -534,7 +534,11 @@ impl StudioRuntime {
             .get(&ThreadModeId::simple())
             .filter(|route| route.account_id == account_id);
         let model = current_route
-            .and_then(|route| models.iter().find(|model| model.model_id == route.model_id))
+            .and_then(|route| {
+                models
+                    .iter()
+                    .find(|model| model.base.slug == route.model_id)
+            })
             .or_else(|| {
                 current
                     .config
@@ -542,12 +546,16 @@ impl StudioRuntime {
                     .routes
                     .values()
                     .find(|route| route.account_id == account_id)
-                    .and_then(|route| models.iter().find(|model| model.model_id == route.model_id))
+                    .and_then(|route| {
+                        models
+                            .iter()
+                            .find(|model| model.base.slug == route.model_id)
+                    })
             })
             .or_else(|| models.first())
             .ok_or_else(|| invalid_settings_argument("Default account has no usable models"))?;
         let effort = current_route
-            .and_then(|route| (route.model_id == model.model_id).then_some(route.effort.as_ref()))
+            .and_then(|route| (route.model_id == model.base.slug).then_some(route.effort.as_ref()))
             .flatten()
             .map(|effort| effort.as_str().to_string())
             .or_else(|| model.default_effort());
@@ -555,7 +563,7 @@ impl StudioRuntime {
             &current.config,
             "Default account",
             account_id.as_str(),
-            &model.model_id,
+            &model.base.slug,
             effort.as_deref(),
         )?;
         let mut next = current.config.clone();
@@ -860,7 +868,7 @@ pub(super) fn validated_route(
     let models = account.effective_models(None)?;
     let model = models
         .iter()
-        .find(|model| model.model_id == model_id)
+        .find(|model| model.base.slug == model_id)
         .ok_or_else(|| {
             crate::StudioError::invalid_argument(format!(
                 "{subject} references missing model: {account_id}.{model_id}"

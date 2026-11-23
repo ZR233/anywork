@@ -515,6 +515,7 @@ pub(super) fn request(
                         frame.compatibility_family.as_deref(),
                         runtime
                             .model()
+                            .extra
                             .capabilities
                             .native_context_family
                             .as_deref(),

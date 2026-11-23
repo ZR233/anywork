@@ -8,9 +8,7 @@ enum ModelType { text }
 enum ModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
-  contextWindowUnknown,
   contextParametersInvalid,
-  inputBudgetExhausted,
 }
 
 class ModelTypeSupportView {
@@ -63,26 +61,20 @@ class ModelPriceTierView {
   final double? cacheWrite;
 }
 
-enum ModelContextUnavailable {
-  windowUnknown,
-  invalidParameters,
-  inputBudgetExhausted,
-}
+enum ModelContextUnavailable { invalidParameters }
 
 enum ModelContextAdjustment { safetyLimit }
 
 /// Immutable backend result; this layer performs no budget or threshold arithmetic.
 class ModelContextView {
   const ModelContextView({
-    this.unavailable = ModelContextUnavailable.windowUnknown,
+    this.unavailable,
     this.contextWindow,
-    this.inputTokenLimit,
     this.autoCompactLimit,
     this.adjustment,
   });
   final ModelContextUnavailable? unavailable;
   final int? contextWindow;
-  final int? inputTokenLimit;
   final int? autoCompactLimit;
   final ModelContextAdjustment? adjustment;
   @override
@@ -90,17 +82,11 @@ class ModelContextView {
       other is ModelContextView &&
       unavailable == other.unavailable &&
       contextWindow == other.contextWindow &&
-      inputTokenLimit == other.inputTokenLimit &&
       autoCompactLimit == other.autoCompactLimit &&
       adjustment == other.adjustment;
   @override
-  int get hashCode => Object.hash(
-    unavailable,
-    contextWindow,
-    inputTokenLimit,
-    autoCompactLimit,
-    adjustment,
-  );
+  int get hashCode =>
+      Object.hash(unavailable, contextWindow, autoCompactLimit, adjustment);
 }
 
 class ModelServiceTierView {

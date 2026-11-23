@@ -1,5 +1,5 @@
 use crate::Result;
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 
 use crate::config::InstructionsConfig;
 use pl_tool::environment::{ExecutionEnvironment, ExecutionTransport, ShellDialect};
@@ -142,7 +142,7 @@ impl InstructionAssembler {
     }
 }
 
-fn base_block(config: Option<&InstructionsConfig>, model: &ModelInfo) -> InstructionBlock {
+fn base_block(config: Option<&InstructionsConfig>, model: &ModelDefinition) -> InstructionBlock {
     if let Some(base_override) = config
         .map(|config| config.base_override.trim())
         .filter(|content| !content.is_empty())
@@ -155,7 +155,7 @@ fn base_block(config: Option<&InstructionsConfig>, model: &ModelInfo) -> Instruc
             content: base_override.to_string(),
         };
     }
-    model_base_block(&model.base_instructions)
+    model_base_block(&model.base.model_messages.instructions_template)
 }
 
 pub(super) fn model_base_block(instructions: &str) -> InstructionBlock {

@@ -1546,7 +1546,7 @@ pub(crate) mod archive_tests {
         parent_id: Option<String>,
         root: &std::path::Path,
     ) -> StudioThreadSpec {
-        let info = pl_model::model::ModelInfo::compatible("archive-fixture");
+        let info = pl_model::model::ModelDefinition::compatible("archive-fixture");
         let route = pl_model::config::ResolvedModelRoute {
             pricing_mode: Default::default(),
             role: crate::config::root_agent_route_id(),

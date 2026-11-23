@@ -772,7 +772,7 @@ mod mixed_tests {
     async fn acp_root_reads_native_failed_report_from_child_history_and_closes_without_parent_ack()
     -> Result<()> {
         use pl_model::config::{AccountConfig, AccountId};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
 
         let fixture = Fixture::new("replay").await?;
@@ -792,7 +792,7 @@ mod mixed_tests {
             let mut config = config.clone();
             config.models.accounts.insert(account_id.clone(), AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint("Mixed Native fixture", provider.base_url()),
-                vec![ModelInfo::compatible("mixed-native-model")],
+                vec![ModelDefinition::compatible("mixed-native-model")],
             ));
             Ok(config)
         })?;

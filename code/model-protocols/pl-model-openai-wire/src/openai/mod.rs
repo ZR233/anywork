@@ -1,5 +1,5 @@
 use crate::completion::CompletionRequest;
-use crate::model::info::ModelInfo;
+use crate::model::info::ModelDefinition;
 use crate::protocol::{InstructionWireRole, WireApi};
 use pl_protocol::Result;
 
@@ -31,7 +31,7 @@ pub fn build_request(
     api: WireApi,
     instruction_role: InstructionWireRole,
     request: &CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {

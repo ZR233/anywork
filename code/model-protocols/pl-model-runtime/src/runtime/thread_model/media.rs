@@ -2,7 +2,7 @@
 use super::{AdapterError, failure};
 use crate::{
     completion::{AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest},
-    model::{ModelInfo, ModelInputSource, ModelModality},
+    model::{ModelDefinition, ModelInputSource, ModelModality},
 };
 use pl_core::{
     context::{ContextContent, OpaquePayload, ResourceReference},
@@ -10,9 +10,10 @@ use pl_core::{
 };
 use std::collections::{BTreeMap, HashMap};
 
-pub(super) fn tool_projection(model: &ModelInfo) -> Result<OpaquePayload, ModelError> {
+pub(super) fn tool_projection(model: &ModelDefinition) -> Result<OpaquePayload, ModelError> {
     use crate::completion::tool_projection::{ImageProjection, ToolProjection};
     let image = model
+        .extra
         .capabilities
         .input_capability(ModelModality::Image)
         .filter(|capability| {
@@ -116,14 +117,14 @@ pub(super) fn decode(payload: &OpaquePayload) -> Result<Attachment, ModelError> 
 /// Rejects unsupported modalities, replay profiles, conflicting identities and media limits.
 pub fn validate_attachment_content<'a>(
     content: impl IntoIterator<Item = &'a ContextContent>,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<(), ModelError> {
     validated_attachments(content, model).map(|_| ())
 }
 
 fn validated_attachments<'a>(
     content: impl IntoIterator<Item = &'a ContextContent>,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<BTreeMap<String, Attachment>, ModelError> {
     let mut attachments = BTreeMap::<String, Attachment>::new();
     let mut occurrences = BTreeMap::<String, u64>::new();
@@ -152,6 +153,7 @@ fn validated_attachments<'a>(
     let mut totals = HashMap::<AttachmentModality, (u64, u64)>::new();
     for attachment in attachments.values() {
         let capability = model
+            .extra
             .capabilities
             .input_capability(modality(attachment.modality))
             .ok_or_else(|| invalid("model does not support the attachment modality"))?;
@@ -194,12 +196,14 @@ fn validated_attachments<'a>(
         }
     }
     if totals.len() > 1
-        && model.binding.request.media_mix_policy == crate::model::MediaMixPolicy::SingleModality
+        && model.extra.binding.request.media_mix_policy
+            == crate::model::MediaMixPolicy::SingleModality
     {
         return Err(invalid("model rejects mixed media modalities"));
     }
     for attachment in attachments.values() {
         let profile = model
+            .extra
             .binding
             .request
             .media_profile(modality(attachment.modality))
@@ -217,7 +221,7 @@ fn validated_attachments<'a>(
 pub(super) async fn prepare(
     request: &ModelRequest,
     encoded: &mut CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<(), ModelError> {
     let attachments = validated_attachments(
         request
@@ -252,6 +256,7 @@ pub(super) async fn prepare(
             })?;
         if attachment.modality == AttachmentModality::Image {
             let limits = model
+                .extra
                 .capabilities
                 .input_capability(ModelModality::Image)
                 .ok_or_else(|| invalid("image capability changed during preparation"))?

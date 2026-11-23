@@ -1,7 +1,5 @@
 //! openai model protocol.
 
-pub mod openai_catalog;
-
 pub mod images;
 
 pub mod search;

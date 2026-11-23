@@ -6606,7 +6606,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactHelp.
   ///
   /// In en, this message translates to:
-  /// **'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.'**
+  /// **'Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.'**
   String get settingsModelAutoCompactHelp;
 
   /// No description provided for @settingsModelAutoCompactUnknownCapacity.
@@ -7628,12 +7628,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Text output unsupported'**
   String get modelTextOutputUnsupported;
-
-  /// No description provided for @modelContextWindowUnknown.
-  ///
-  /// In en, this message translates to:
-  /// **'Context window unknown'**
-  String get modelContextWindowUnknown;
 
   /// No description provided for @modelTextFilterEmpty.
   ///
@@ -9060,7 +9054,7 @@ abstract class AppLocalizations {
   /// No description provided for @settingsModelAutoCompactAdjusted.
   ///
   /// In en, this message translates to:
-  /// **'The effective limit was adjusted for context capacity and output reserve.'**
+  /// **'The effective threshold was adjusted to fit the latest maximum context window.'**
   String get settingsModelAutoCompactAdjusted;
 
   /// No description provided for @modelContextParametersInvalid.
@@ -9068,12 +9062,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Inconsistent context parameters'**
   String get modelContextParametersInvalid;
-
-  /// No description provided for @modelInputBudgetExhausted.
-  ///
-  /// In en, this message translates to:
-  /// **'No input capacity after reserving output'**
-  String get modelInputBudgetExhausted;
 
   /// No description provided for @statusCompactNow.
   ///

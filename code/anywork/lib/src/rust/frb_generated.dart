@@ -18362,17 +18362,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return BridgeModelContextResolution(
       unavailable: dco_decode_opt_box_autoadd_bridge_model_context_unavailable(
         arr[0],
       ),
       contextWindow: dco_decode_opt_box_autoadd_u_64(arr[1]),
-      inputTokenLimit: dco_decode_opt_box_autoadd_u_64(arr[2]),
-      autoCompactLimit: dco_decode_opt_box_autoadd_u_64(arr[3]),
+      autoCompactLimit: dco_decode_opt_box_autoadd_u_64(arr[2]),
       adjustment: dco_decode_opt_box_autoadd_bridge_model_context_adjustment(
-        arr[4],
+        arr[3],
       ),
     );
   }
@@ -36216,7 +36215,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           deserializer,
         );
     var var_contextWindow = sse_decode_opt_box_autoadd_u_64(deserializer);
-    var var_inputTokenLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_autoCompactLimit = sse_decode_opt_box_autoadd_u_64(deserializer);
     var var_adjustment =
         sse_decode_opt_box_autoadd_bridge_model_context_adjustment(
@@ -36225,7 +36223,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return BridgeModelContextResolution(
       unavailable: var_unavailable,
       contextWindow: var_contextWindow,
-      inputTokenLimit: var_inputTokenLimit,
       autoCompactLimit: var_autoCompactLimit,
       adjustment: var_adjustment,
     );
@@ -55103,7 +55100,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       serializer,
     );
     sse_encode_opt_box_autoadd_u_64(self.contextWindow, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.inputTokenLimit, serializer);
     sse_encode_opt_box_autoadd_u_64(self.autoCompactLimit, serializer);
     sse_encode_opt_box_autoadd_bridge_model_context_adjustment(
       self.adjustment,

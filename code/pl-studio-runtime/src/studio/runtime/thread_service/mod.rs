@@ -99,7 +99,7 @@ mod s2_delete_recovery_tests {
     use anyhow::{Context, Result};
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig},
-        model::ModelInfo,
+        model::ModelDefinition,
     };
     use std::path::Path;
 
@@ -128,7 +128,7 @@ mod s2_delete_recovery_tests {
                     "S2 deletion fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config

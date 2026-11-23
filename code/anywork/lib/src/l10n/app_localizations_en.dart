@@ -3665,7 +3665,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactHelp =>
-      'The effective threshold is capped at 90% of the context window and reserves the maximum output budget.';
+      'Leave empty to use the model default. Custom thresholds can use up to 90% of the maximum context window.';
 
   @override
   String get settingsModelAutoCompactUnknownCapacity =>
@@ -4238,9 +4238,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modelTextOutputUnsupported => 'Text output unsupported';
-
-  @override
-  String get modelContextWindowUnknown => 'Context window unknown';
 
   @override
   String get modelTextFilterEmpty =>
@@ -5050,14 +5047,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsModelAutoCompactAdjusted =>
-      'The effective limit was adjusted for context capacity and output reserve.';
+      'The effective threshold was adjusted to fit the latest maximum context window.';
 
   @override
   String get modelContextParametersInvalid => 'Inconsistent context parameters';
-
-  @override
-  String get modelInputBudgetExhausted =>
-      'No input capacity after reserving output';
 
   @override
   String get statusCompactNow => 'Compact now';

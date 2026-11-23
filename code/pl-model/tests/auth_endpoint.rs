@@ -69,15 +69,20 @@ fn chatgpt_endpoint_restricts_resource_transport_capabilities_and_authorization_
     assert!(!models.is_empty());
     for entry in models {
         assert_eq!(
-            entry.model.binding.transport.protocol,
+            entry.model.extra.binding.transport.protocol,
             pl_model::protocol::WireApi::Responses
         );
         assert_eq!(
-            entry.model.binding.transport.supported_connection_modes,
+            entry
+                .model
+                .extra
+                .binding
+                .transport
+                .supported_connection_modes,
             [pl_model::protocol::ConnectionMode::Http]
         );
         assert_eq!(
-            entry.model.binding.transport.default_connection_mode,
+            entry.model.extra.binding.transport.default_connection_mode,
             pl_model::protocol::ConnectionMode::Http
         );
     }

@@ -6,7 +6,7 @@
 //! 工具执行见 [`super::thread`]，装配见 [`super::binding`]。
 
 use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, ResolvedModelRoute};
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use pl_model::protocol::{
     HostedWebSearchDialect, ProtocolEndpoint, StandaloneWebSearchDialect, WireApi,
 };
@@ -155,7 +155,7 @@ pub fn plan_openai_web_search(
         ));
     }
     if service.resolution.availability == WebSearchAvailability::Available
-        && current.model.capabilities.supports_function_calling()
+        && current.model.extra.capabilities.supports_function_calling()
         && let Some(backend) = service.backend
     {
         return Ok(standalone_plan(configured_mode, backend));
@@ -166,14 +166,14 @@ pub fn plan_openai_web_search(
     let hosted_declared = hosted_capabilities.hosted_responses
         && hosted_capabilities.hosted_dialect == HostedWebSearchDialect::RESPONSES;
     let hosted_supported = hosted_declared
-        && current.model.binding.transport.protocol == WireApi::Responses
-        && current.model.capabilities.supports_web_search()
+        && current.model.extra.binding.transport.protocol == WireApi::Responses
+        && current.model.extra.capabilities.supports_web_search()
         && current_has_credential;
     if hosted_supported {
         return Ok(hosted_plan(
             configured_mode,
             current.account_id.clone(),
-            Some(current.model.model_id.clone()),
+            Some(current.model.base.slug.clone()),
             HostedWebSearchDialect::RESPONSES,
         ));
     }
@@ -206,7 +206,7 @@ pub fn plan_deepseek_web_search(
         ));
     }
     if service.resolution.availability == WebSearchAvailability::Available
-        && current.model.capabilities.supports_function_calling()
+        && current.model.extra.capabilities.supports_function_calling()
         && let Some(backend) = service.backend
     {
         return Ok(standalone_plan(configured_mode, backend));
@@ -333,7 +333,7 @@ fn standalone_backend(
             {
                 continue;
             }
-            entry.and_then(|entry| entry.model.max_output_tokens)
+            entry.and_then(|entry| entry.model.extra.max_output_tokens)
         } else {
             None
         };
@@ -369,13 +369,14 @@ fn candidate_order<'a>(
     ordered
 }
 
-fn request_model_id(model: &ModelInfo) -> &str {
+fn request_model_id(model: &ModelDefinition) -> &str {
     model
+        .extra
         .binding
         .request
         .api_model
         .as_deref()
-        .unwrap_or(&model.model_id)
+        .unwrap_or(&model.base.slug)
 }
 
 fn available_service(

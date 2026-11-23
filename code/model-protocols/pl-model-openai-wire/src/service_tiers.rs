@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    model::{ModelInfo, ModelParameter, ParameterWire, WireAssignment},
+    model::{ModelDefinition, ModelParameter, ParameterWire, WireAssignment},
     protocol::{ConnectionMode, ProtocolEndpoint, WireApi},
 };
 use pl_protocol::{PureError, Result};
@@ -20,9 +20,9 @@ pub fn supports_endpoint(endpoint: &ProtocolEndpoint) -> bool {
 }
 
 /// Whether a request on this route can select an explicit service tier.
-pub fn has_selectable_tier(endpoint: &ProtocolEndpoint, model: &ModelInfo) -> bool {
+pub fn has_selectable_tier(endpoint: &ProtocolEndpoint, model: &ModelDefinition) -> bool {
     supports_endpoint(endpoint)
-        && model.parameters.iter().any(|parameter| {
+        && model.extra.parameters.iter().any(|parameter| {
             parameter.name == "service_tier"
                 && parameter
                     .candidates
@@ -37,7 +37,7 @@ pub fn has_selectable_tier(endpoint: &ProtocolEndpoint, model: &ModelInfo) -> bo
 /// Returns a configuration error for an unsupported identity, transport, candidate or wire rule.
 pub fn validate(
     endpoint: &ProtocolEndpoint,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     requested: Option<&str>,
 ) -> Result<()> {
     validate_model(model, requested)?;
@@ -49,13 +49,13 @@ pub fn validate(
     Ok(())
 }
 
-pub(crate) fn validate_model(model: &ModelInfo, requested: Option<&str>) -> Result<()> {
+pub(crate) fn validate_model(model: &ModelDefinition, requested: Option<&str>) -> Result<()> {
     let Some(requested) = requested else {
         return Ok(());
     };
-    if model.binding.transport.protocol != WireApi::Responses
-        || model.binding.transport.default_connection_mode != ConnectionMode::Http
-        || !model.parameters.iter().any(|parameter| {
+    if model.extra.binding.transport.protocol != WireApi::Responses
+        || model.extra.binding.transport.default_connection_mode != ConnectionMode::Http
+        || !model.extra.parameters.iter().any(|parameter| {
             parameter.name == "service_tier"
                 && parameter.has_candidate(requested)
                 && parameter.wire_for(requested).is_some_and(|wire| {
@@ -102,17 +102,19 @@ impl ServiceTierDeclaration {
 
     pub fn apply(
         self,
-        model: &mut ModelInfo,
+        model: &mut ModelDefinition,
     ) -> std::result::Result<(), crate::discovery::ModelCatalogQueryError> {
         use crate::discovery::ModelCatalogQueryError::Protocol;
         if !self.authorized {
             model
+                .extra
                 .parameters
                 .retain(|parameter| parameter.name != "service_tier");
             return Ok(());
         }
         if let Some(value) = self.service_tiers {
             let previous_default = model
+                .extra
                 .parameters
                 .iter()
                 .find(|p| p.name == "service_tier")
@@ -130,6 +132,7 @@ impl ServiceTierDeclaration {
                 candidates.push(tier.id);
             }
             model
+                .extra
                 .parameters
                 .retain(|parameter| parameter.name != "service_tier");
             if !candidates.is_empty() {
@@ -148,7 +151,7 @@ impl ServiceTierDeclaration {
                         )
                     })
                     .collect();
-                model.parameters.push(ModelParameter {
+                model.extra.parameters.push(ModelParameter {
                     name: "service_tier".into(),
                     label: None,
                     default: previous_default.filter(|value| candidates.contains(value)),
@@ -161,6 +164,7 @@ impl ServiceTierDeclaration {
         if let Some(value) = self.default_service_tier {
             let default: String = serde_json::from_value(value).map_err(|_| Protocol)?;
             let parameter = model
+                .extra
                 .parameters
                 .iter_mut()
                 .find(|p| p.name == "service_tier");

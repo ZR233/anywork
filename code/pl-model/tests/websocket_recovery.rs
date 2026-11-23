@@ -10,7 +10,7 @@ use pl_core::{
 };
 use pl_model::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, WebSocketAction, responses_text};
@@ -39,8 +39,8 @@ fn runtime(fixture: &FixtureServer) -> ModelRuntime {
 }
 
 fn runtime_with_profile(fixture: &FixtureServer, profile: ModelTransportProfile) -> ModelRuntime {
-    let mut model = ModelInfo::compatible("recovery-model");
-    model.binding.set_transport(profile);
+    let mut model = ModelDefinition::compatible("recovery-model");
+    model.extra.binding.set_transport(profile);
     pl_model::runtime::new_with_account_id(
         "fixture",
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
@@ -96,12 +96,13 @@ async fn declared_remote_tools_with_response_events_are_not_replayed() {
         let session = ModelSession::default();
         let mut input = request("remote");
         input.tools = vec![tool];
-        let mut model = ModelInfo::compatible("recovery-model");
+        let mut model = ModelDefinition::compatible("recovery-model");
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_websocket());
-        model.capabilities.web_search = true;
-        model.capabilities.tools.programmatic_tool_calling = true;
+        model.extra.capabilities.web_search = true;
+        model.extra.capabilities.tools.programmatic_tool_calling = true;
         let runtime = pl_model::runtime::new_with_account_id(
             "fixture",
             pl_model::protocol::providers::openai::compatible_endpoint(
@@ -183,8 +184,9 @@ async fn cancellation_during_handshake_releases_admission_and_close_reaps_the_ne
             Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
         ));
     });
-    let mut model = ModelInfo::compatible("recovery-model");
+    let mut model = ModelDefinition::compatible("recovery-model");
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
     let runtime = pl_model::runtime::new_with_account_id(

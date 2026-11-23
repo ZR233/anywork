@@ -12,7 +12,7 @@ pub fn bundled_model_definition(
     }
 }
 
-pub fn default_models() -> Result<Vec<ModelInfo>, ModelDefinitionError> {
+pub fn default_models() -> Result<Vec<ModelDefinition>, ModelDefinitionError> {
     let mut models = pl_model_openai_deepseek::bundled_definition()?.models;
     models.extend(pl_model_openai::bundled_definition()?.models);
     models.extend(pl_model_openai_xai::bundled_definition()?.models);

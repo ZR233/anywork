@@ -227,11 +227,11 @@ pub(crate) fn unavailable_placeholder(
     let entry = account
         .effective_catalog(None)?
         .into_iter()
-        .find(|entry| entry.model.model_id == selector.model_id);
+        .find(|entry| entry.model.base.slug == selector.model_id);
     let (model, context) = match entry {
         Some(entry) => (entry.model, entry.context),
         None => {
-            let model = pl_model::model::ModelInfo::compatible(&selector.model_id);
+            let model = pl_model::model::ModelDefinition::compatible(&selector.model_id);
             let context = model.resolve_context(None);
             (model, context)
         }

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, ensure};
 use pl_model::{
     config::{AccountConfig, AccountId, ModelRouteConfig},
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use pl_studio_runtime::{ConfigPaths, ConfigStore, StudioConfig};
@@ -25,8 +25,9 @@ impl Environment {
         std::fs::create_dir_all(&task)?;
         let mut config = StudioConfig::default_config()?;
         config.models.accounts.clear();
-        let mut model = ModelInfo::compatible(MODEL);
+        let mut model = ModelDefinition::compatible(MODEL);
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_http());
         config.models.accounts.insert(
@@ -365,8 +366,9 @@ async fn environment_credentials_follow_native_protocol_requirements_without_key
     let environment = Environment::new(&server.base_url())?;
     let store = ConfigStore::new(ConfigPaths::from_config_dir(&environment.home));
     let mut config = store.load()?;
-    let mut model = ModelInfo::compatible(MODEL);
+    let mut model = ModelDefinition::compatible(MODEL);
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let mut account = AccountConfig::from_explicit_models(
@@ -578,10 +580,16 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
         };
         let model = models
             .iter_mut()
-            .find(|model| model.model_id == MODEL)
+            .find(|model| model.base.slug == MODEL)
             .context("fixture model")?;
-        model.context_window = Some(512_000);
-        model.max_context_window = Some(512_000);
+        model
+            .base
+            .fields
+            .insert("context_window".into(), 512_000.into());
+        model
+            .base
+            .fields
+            .insert("max_context_window".into(), 512_000.into());
     }
     let mut account = config.models.accounts[&AccountId::new("fixture")?].clone();
     account.base_url = child.base_url();

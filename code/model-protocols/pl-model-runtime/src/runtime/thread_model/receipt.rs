@@ -82,16 +82,16 @@ impl ModelCallBinding {
     pub(super) fn capture(runtime: &ModelRuntime, purpose: &str) -> Self {
         Self {
             account_id: runtime.account_id().to_owned(),
-            model_id: runtime.model().model_id.clone(),
+            model_id: runtime.model().base.slug.clone(),
             protocol: runtime.endpoint().protocol.clone(),
-            wire_api: runtime.model().binding.transport.protocol,
+            wire_api: runtime.model().extra.binding.transport.protocol,
             isolation: crate::runtime::binding_cache_namespace(
                 runtime.account_id(),
                 runtime.endpoint(),
             ),
             purpose: purpose.to_owned(),
             context_window: runtime.context().context_window,
-            max_context_window: runtime.model().max_context_window,
+            max_context_window: runtime.context().context_window,
             auto_compact_limit: runtime.context().auto_compact_limit,
         }
     }

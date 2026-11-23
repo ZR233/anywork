@@ -291,6 +291,7 @@ impl ThreadModel {
                 compatibility_family: self
                     .runtime
                     .model()
+                    .extra
                     .capabilities
                     .native_context_family
                     .clone(),
@@ -414,6 +415,7 @@ pub(super) fn decode(
         checkpoint.compatibility_family.as_deref(),
         runtime
             .model()
+            .extra
             .capabilities
             .native_context_family
             .as_deref(),

@@ -6,7 +6,7 @@ use crate::completion::{
 use pl_protocol::Result;
 
 use crate::completion::{AttachmentRepresentation, CompletionRequest, ResolvedAttachment};
-use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelInfo};
+use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelDefinition};
 
 use super::protocol_error;
 pub(super) fn message_content_text(content: &MessageContent) -> String {
@@ -20,7 +20,10 @@ pub(super) struct MediaRepresentationPlan {
 }
 
 impl MediaRepresentationPlan {
-    pub(super) fn for_request(request: &CompletionRequest, model: &ModelInfo) -> Result<Self> {
+    pub(super) fn for_request(
+        request: &CompletionRequest,
+        model: &ModelDefinition,
+    ) -> Result<Self> {
         let mut attachment_ids = HashMap::<AttachmentModality, Vec<String>>::new();
         let mut seen = HashMap::<String, AttachmentModality>::new();
 
@@ -50,7 +53,7 @@ impl MediaRepresentationPlan {
                     if existing != *modality {
                         return Err(protocol_error(format!(
                             "model={} attachment modality conflict for attachment {attachment_id}",
-                            model.model_id
+                            model.base.slug
                         )));
                     }
                     continue;
@@ -62,12 +65,12 @@ impl MediaRepresentationPlan {
             }
         }
 
-        if model.binding.request.media_mix_policy == MediaMixPolicy::SingleModality
+        if model.extra.binding.request.media_mix_policy == MediaMixPolicy::SingleModality
             && attachment_ids.len() > 1
         {
             return Err(protocol_error(format!(
                 "model={} rejects mixed media modalities",
-                model.model_id
+                model.base.slug
             )));
         }
 
@@ -79,13 +82,14 @@ impl MediaRepresentationPlan {
                 .map(|attachment_id| prepared_content(request, attachment_id, modality, model))
                 .collect::<Result<Vec<_>>>()?;
             let profile = model
+                .extra
                 .binding
                 .request
                 .media_profile(model_modality(modality))
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no media request profile",
-                        model.model_id,
+                        model.base.slug,
                         modality_label(modality),
                         media.len()
                     ))
@@ -109,13 +113,13 @@ impl MediaRepresentationPlan {
                 .ok_or_else(|| {
                     protocol_error(format!(
                         "model={} modality={} count={} has no common media representation",
-                        model.model_id,
+                        model.base.slug,
                         modality_label(modality),
                         media.len()
                     ))
                 })?;
             tracing::info!(
-                model = %model.model_id,
+                model = %model.base.slug,
                 modality = modality_label(modality),
                 representation = representation_label(representation),
                 count = media.len(),
@@ -234,7 +238,7 @@ fn prepared_content<'a>(
     request: &'a CompletionRequest,
     attachment_id: &str,
     modality: AttachmentModality,
-    model: &ModelInfo,
+    model: &ModelDefinition,
 ) -> Result<&'a ResolvedAttachment> {
     let matching = request
         .prepared_content
@@ -244,14 +248,14 @@ fn prepared_content<'a>(
     let [media] = matching.as_slice() else {
         return Err(protocol_error(format!(
             "model={} modality={} attachment {attachment_id} must have exactly one prepared payload",
-            model.model_id,
+            model.base.slug,
             modality_label(modality)
         )));
     };
     if media.modality != modality {
         return Err(protocol_error(format!(
             "model={} attachment {attachment_id} prepared modality does not match message content",
-            model.model_id
+            model.base.slug
         )));
     }
     Ok(media)

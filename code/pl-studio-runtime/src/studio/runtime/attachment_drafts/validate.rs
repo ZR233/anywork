@@ -7,7 +7,7 @@ use crate::acp_schema::PromptCapabilities;
 use crate::{StudioAttachmentDraftSource, StudioAttachmentModality, StudioError};
 use anyhow::{Context, Result, ensure};
 use pl_model::model::{
-    MediaMixPolicy, MediaRepresentation, ModelInfo, ModelInputSource, ModelModality,
+    MediaMixPolicy, MediaRepresentation, ModelDefinition, ModelInputSource, ModelModality,
 };
 use url::Url;
 
@@ -17,7 +17,7 @@ use super::normalize::{NormalizedSource, sanitize_filename};
 use super::source::{MAX_GENERIC_SOURCE_BYTES, MAX_IMAGE_SOURCE_BYTES, validate_remote_url};
 
 pub(super) enum InputPolicy {
-    Native(Box<ModelInfo>),
+    Native(Box<ModelDefinition>),
     Acp(PromptCapabilities),
 }
 
@@ -53,6 +53,7 @@ impl InputPolicy {
         };
         match self {
             Self::Native(model) => model
+                .extra
                 .capabilities
                 .input_capability(model_modality(modality))
                 .and_then(|capability| capability.limits.max_bytes)
@@ -97,7 +98,7 @@ impl InputPolicy {
 }
 
 fn validate_predicted_counts(
-    model: &ModelInfo,
+    model: &ModelDefinition,
     modalities: impl Iterator<Item = StudioAttachmentModality>,
 ) -> Result<()> {
     let mut counts = BTreeMap::new();
@@ -106,6 +107,7 @@ fn validate_predicted_counts(
     }
     for (modality, count) in counts {
         let capability = model
+            .extra
             .capabilities
             .input_capability(model_modality(modality))
             .with_context(|| unsupported_modality(modality))?;
@@ -119,7 +121,7 @@ fn validate_predicted_counts(
     Ok(())
 }
 
-fn validate_total_bytes(model: &ModelInfo, drafts: &[AttachmentDraftObject]) -> Result<()> {
+fn validate_total_bytes(model: &ModelDefinition, drafts: &[AttachmentDraftObject]) -> Result<()> {
     let mut totals = BTreeMap::new();
     for draft in drafts {
         let total = totals.entry(draft.modality).or_insert(0_u64);
@@ -129,6 +131,7 @@ fn validate_total_bytes(model: &ModelInfo, drafts: &[AttachmentDraftObject]) -> 
     }
     for (modality, total) in totals {
         let capability = model
+            .extra
             .capabilities
             .input_capability(model_modality(modality))
             .with_context(|| unsupported_modality(modality))?;
@@ -142,8 +145,12 @@ fn validate_total_bytes(model: &ModelInfo, drafts: &[AttachmentDraftObject]) -> 
     Ok(())
 }
 
-pub(super) fn validate_actual_limits(model: &ModelInfo, source: &NormalizedSource) -> Result<()> {
+pub(super) fn validate_actual_limits(
+    model: &ModelDefinition,
+    source: &NormalizedSource,
+) -> Result<()> {
     let capability = model
+        .extra
         .capabilities
         .input_capability(model_modality(source.modality))
         .with_context(|| unsupported_modality(source.modality))?;
@@ -179,7 +186,7 @@ pub(super) fn validate_actual_limits(model: &ModelInfo, source: &NormalizedSourc
 }
 
 pub(super) fn validate_draft_batch(
-    model: &ModelInfo,
+    model: &ModelDefinition,
     drafts: &[AttachmentDraftObject],
 ) -> Result<()> {
     validate_mix_policy(model, drafts.iter().map(|draft| draft.modality))?;
@@ -203,6 +210,7 @@ pub(super) fn validate_draft_batch(
             height: draft.height,
         };
         let capability = model
+            .extra
             .capabilities
             .input_capability(model_modality(draft.modality))
             .with_context(|| unsupported_modality(draft.modality))?;
@@ -310,12 +318,13 @@ fn predict_source(
 }
 
 pub(super) fn validate_model_source(
-    model: &ModelInfo,
+    model: &ModelDefinition,
     modality: StudioAttachmentModality,
     source: DraftSourceKind,
 ) -> Result<()> {
     let model_modality = model_modality(modality);
     let capability = model
+        .extra
         .capabilities
         .input_capability(model_modality)
         .with_context(|| unsupported_modality(modality))?;
@@ -328,6 +337,7 @@ pub(super) fn validate_model_source(
         StudioError::invalid_argument("当前模型不支持该附件来源。")
     );
     let profile = model
+        .extra
         .binding
         .request
         .media_profile(model_modality)
@@ -345,10 +355,10 @@ pub(super) fn validate_model_source(
 }
 
 fn validate_mix_policy(
-    model: &ModelInfo,
+    model: &ModelDefinition,
     modalities: impl Iterator<Item = StudioAttachmentModality>,
 ) -> Result<()> {
-    if model.binding.request.media_mix_policy != MediaMixPolicy::SingleModality {
+    if model.extra.binding.request.media_mix_policy != MediaMixPolicy::SingleModality {
         return Ok(());
     }
     let unique = modalities.collect::<BTreeSet<_>>();

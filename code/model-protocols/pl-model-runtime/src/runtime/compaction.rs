@@ -19,7 +19,7 @@ pub(super) async fn compact_context(
     mut context: ModelInvocationContext,
 ) -> std::result::Result<ModelCompactionResponse, CompletionFailure> {
     if !provider.endpoint().service_capabilities.remote_compaction
-        || provider.model().binding.transport.protocol != WireApi::Responses
+        || provider.model().extra.binding.transport.protocol != WireApi::Responses
     {
         return Err(PureError::ConfigError(
             "endpoint does not support native remote compaction".into(),
@@ -106,12 +106,13 @@ fn build_compaction_body(
 ) -> Result<(Map<String, Value>, HashMap<String, String>)> {
     let model_info = provider.model().clone();
     let effective_capabilities = model_info
+        .extra
         .capabilities
         .clone()
         .with_native_custom_tools(provider.endpoint().uses_native_custom_tools());
     let projection = ToolProjection::for_endpoint(provider.endpoint(), &effective_capabilities);
     let completion = request.prefix.clone().provider_compatible(projection);
-    completion.validate_against(&model_info.model_id, &effective_capabilities)?;
+    completion.validate_against(&model_info.base, &effective_capabilities)?;
     let instruction_role = provider
         .endpoint()
         .instruction_wire_role(WireApi::Responses);
@@ -131,7 +132,7 @@ fn build_compaction_body(
     for key in ["tool_choice", "store", "previous_response_id"] {
         body.remove(key);
     }
-    Ok((body, model_info.binding.request.headers.clone()))
+    Ok((body, model_info.extra.binding.request.headers.clone()))
 }
 
 fn append_beta_feature(

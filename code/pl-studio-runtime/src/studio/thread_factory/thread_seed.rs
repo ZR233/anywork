@@ -15,7 +15,7 @@ use std::path::Path;
 pub(super) struct ThreadInstructionSeed<'a> {
     pub thread_id: &'a str,
     pub config: &'a crate::config::StudioConfig,
-    pub model: &'a pl_model::model::ModelInfo,
+    pub model: &'a pl_model::model::ModelDefinition,
     pub root: &'a Path,
     pub agent: &'a ResolvedAgentDefinition,
     pub mode: Option<ModeInstructionProfile<'a>>,

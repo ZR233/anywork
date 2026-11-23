@@ -290,7 +290,7 @@ mod tests {
         use crate::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
         use crate::{
             completion::{CompletionRequest, Message, MessageContent, MessageRole},
-            model::{ModelInfo, ModelTransportProfile},
+            model::{ModelDefinition, ModelTransportProfile},
         };
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
         use std::future::{Future, poll_fn};
@@ -312,8 +312,9 @@ mod tests {
         )])
         .await
         .unwrap();
-        let mut model = ModelInfo::compatible("retry-model");
+        let mut model = ModelDefinition::compatible("retry-model");
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_websocket());
         let runner = ModelRuntime::bind(
@@ -486,7 +487,7 @@ mod tests {
         use crate::runtime::{ModelInvocationContext, ModelRuntime, ModelSession};
         use crate::{
             completion::{CompletionRequest, Message, MessageContent, MessageRole},
-            model::{ModelInfo, ModelTransportProfile},
+            model::{ModelDefinition, ModelTransportProfile},
         };
         use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
         use std::{
@@ -512,8 +513,9 @@ mod tests {
         ])
         .await
         .unwrap();
-        let mut model = ModelInfo::compatible("retry-model");
+        let mut model = ModelDefinition::compatible("retry-model");
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::responses_http());
         let runner = ModelRuntime::bind(

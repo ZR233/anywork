@@ -7,7 +7,7 @@
 use super::*;
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
-use pl_model::model::{ModelInfo, ModelTransportProfile};
+use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     CHAT_BATCH_MAX_BYTES, CurrentFrame, ReadDemand, ThreadNotification, ThreadStatus,
@@ -554,8 +554,9 @@ fn seed_script() -> Vec<Step> {
 fn write_seed_config(home: &Path, base_url: &str) -> Result<()> {
     let store = ConfigStore::new(ConfigPaths::from_config_dir(home));
     let mut config = store.load_or_default()?;
-    let mut model = ModelInfo::compatible(MODEL);
+    let mut model = ModelDefinition::compatible(MODEL);
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let account_id = AccountId::new(ACCOUNT)?;

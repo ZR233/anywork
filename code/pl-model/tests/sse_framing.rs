@@ -1,6 +1,6 @@
 //! Public model completion over deliberately fragmented HTTP/SSE framing.
 use pl_model::completion::{CompletionRequest, Message, MessageContent, MessageRole};
-use pl_model::model::{ModelInfo, ModelTransportProfile};
+use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_model::runtime::{ModelInvocationContext, ModelSession};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -55,8 +55,9 @@ async fn decoded_provider_failures_keep_the_redacted_http_request_id() {
                     .unwrap();
             };
             let client = async {
-                let mut model = ModelInfo::compatible("fixture");
+                let mut model = ModelDefinition::compatible("fixture");
                 model
+                    .extra
                     .binding
                     .set_transport(ModelTransportProfile::responses_http());
                 let mut endpoint =
@@ -169,8 +170,9 @@ async fn http_body_failures_retry_but_invalid_sse_json_does_not() {
             }
         };
         let client = async {
-            let mut model = ModelInfo::compatible("fixture");
+            let mut model = ModelDefinition::compatible("fixture");
             model
+                .extra
                 .binding
                 .set_transport(ModelTransportProfile::chat_completions_http());
             let result = pl_model::runtime::new_with_account_id(
@@ -286,8 +288,9 @@ async fn native_compaction_retries_frozen_history_only_before_receiving_checkpoi
             requests
         };
         let client = async {
-            let mut model = ModelInfo::compatible("fixture");
+            let mut model = ModelDefinition::compatible("fixture");
             model
+                .extra
                 .binding
                 .set_transport(ModelTransportProfile::responses_http());
             let mut endpoint =
@@ -383,8 +386,9 @@ async fn fragmented_sse_preserves_unicode_multiline_data_and_all_line_endings() 
         socket.write_all(b"0\r\n\r\n").await.unwrap();
     };
     let client = async {
-        let mut model = ModelInfo::compatible("fixture");
+        let mut model = ModelDefinition::compatible("fixture");
         model
+            .extra
             .binding
             .set_transport(ModelTransportProfile::chat_completions_http());
         let runtime = pl_model::runtime::new_with_account_id(

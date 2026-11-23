@@ -5,7 +5,7 @@ use pl_protocol::Result;
 use serde::Serialize;
 
 use crate::completion::CompletionRequest;
-use crate::model::info::{MaxTokensField, MediaWireFormat, ModelInfo};
+use crate::model::info::{MaxTokensField, MediaWireFormat, ModelDefinition};
 use crate::protocol::InstructionWireRole;
 
 use super::body::ToolFormatBody;
@@ -45,11 +45,11 @@ struct ChatStreamOptions {
 impl ChatRequestBody {
     pub(super) fn from_request(
         request: &CompletionRequest,
-        model: &ModelInfo,
+        model: &ModelDefinition,
         instruction_role: InstructionWireRole,
     ) -> Result<Self> {
         let crate::model::ModelProtocolOptions::ChatCompletions(options) =
-            &model.binding.request.protocol
+            &model.extra.binding.request.protocol
         else {
             return Err(protocol_error("Chat request requires Chat options"));
         };
@@ -70,6 +70,7 @@ impl ChatRequestBody {
                     return Ok((None, None));
                 };
                 match model
+                    .extra
                     .capabilities
                     .interleaved
                     .as_ref()
@@ -189,11 +190,12 @@ impl ChatRequestBody {
 
         Ok(Self {
             model: model
+                .extra
                 .binding
                 .request
                 .api_model
                 .clone()
-                .unwrap_or_else(|| model.model_id.clone()),
+                .unwrap_or_else(|| model.base.slug.clone()),
             messages,
             stream: true,
             stream_options: options.include_usage.then_some(ChatStreamOptions {
