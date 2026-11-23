@@ -125,8 +125,7 @@ class _CompletionRunViewState extends State<CompletionRunView> {
   }
 }
 
-/// Work alone has a strict single-line header. Other activity rows retain
-/// their existing wrapping policy for questions, tools and reasoning.
+/// Work has its own header geometry, independent of the compact member rows.
 class _WorkHeader extends StatelessWidget {
   const _WorkHeader({
     super.key,
