@@ -276,11 +276,11 @@ Codex 目录用 `input_modalities` 描述模型可处理的文本与图像。Res
 
 内置模型的候选值按思考强度从弱到强排列，在线发现的候选集保持服务端返回的原始顺序。内部摘要类辅助请求（如会话自动生成标题）复用探索智能体（`explorer`）路由所绑定的模型，并固定选取该模型候选列表的首项（最轻量档位）。
 
-### ChatGPT/Codex 会话速度
+### 会话速度档位
 
-速度（`service_tier`）选择同一模型的服务档位，与推理强度独立，提速可能消耗更多订阅额度。Codex 的 `models[].service_tiers` 声明有序候选：`id` 是精确选择和发送的值，`name` 是可选展示名；`default_service_tier` 仅作为目录元数据，只有命中候选时才有效。沿用模型参数的候选校验及 wire 规则；速度声明与推理声明独立合成。仅同一账号的 Codex 目录能声明该能力，未提供或显式空都不产生可选速度；不从模型名、套餐、旧 `additional_speed_tiers` 或其他账号补齐，也不信任目录指定任意请求写入规则。
+速度（`service_tier`）选择同一模型的服务档位，与推理强度独立。提速可能影响额度或费用。同一账号的在线目录通过结构化 `service_tiers` 声明有序候选，`id` 是选择和发送的精确值，`name` 是可选展示名。`default_service_tier` 只在命中候选时作为目录元数据。共享目录按记录中的声明读取，厂商专有目录由对应适配器解释。账号登录方式、厂商标识和 HTTP／WebSocket 连接方式本身不决定候选。缺失字段不创建候选，显式空列表撤回该模型的候选。模型名字、套餐、旧 `additional_speed_tiers` 和其他账号的目录不参与合成。请求层只接受该字段的固定顶层写入规则。
 
-标准速度表示不显式请求加速，不从目录默认值或候选首项自动选择。显式选择必须仍属于该账号模型的目录；失效的会话保存值保留但拒绝下一轮准入。通过准入的选择随该轮模型绑定冻结，调用沿用已有的 ChatGPT/Codex Responses HTTP 路径，将档位标识写入顶层 `service_tier`（Fast 为 `priority`，Ultrafast 为 `ultrafast`）。上游实际处理档位可能与请求值不同。该选项不改变 API Key、旧 SIWC、WebSocket、远程压缩、计费规则或子代理选模。协议依据：[OpenAI 速度说明](https://learn.chatgpt.com/docs/agent-configuration/speed)、[Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode)和 [Codex 目录](https://github.com/openai/codex/blob/e0a6d0532deefa65eb7e86287fffadebbfda7591/codex-rs/protocol/src/openai_models.rs#L419)。
+选择标准速度时，请求不携带显式档位。显式选择需要命中该账号模型的候选，并随该轮模型绑定冻结。会话保留已撤回的保存值，下一轮准入时要求重新选择。Responses HTTP、Responses WebSocket 和 Chat Completions 的完成请求将选择写入顶层 `service_tier`，例如 `priority`（Fast）或 `ultrafast`（Ultrafast）。目录升级后首次刷新获取完整正文，失败时保留上次成功快照。请求值与上游实际处理档位可能不同。[OpenAI Fast](https://developers.openai.com/api/docs/guides/fast-mode) · [Ultrafast](https://developers.openai.com/api/docs/guides/ultrafast-mode) · [Responses WebSocket](https://developers.openai.com/api/reference/resources/responses/websocket-events)
 
 模型性能统计按调用发出前冻结的**请求**速度档位归组，不读取响应的 `service_tier` 来决定样本归属。适用的请求未选择加速即为标准；不适用的调用与没有历史请求档位证据的调用均不得归入标准。实测速率和时延用于计算组内指标，不参与归组。样本保留及分组见 [17](./17-studio-storage.md)。
 

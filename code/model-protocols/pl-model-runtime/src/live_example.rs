@@ -339,10 +339,7 @@ impl CommonCommand {
                 else {
                     return Err(ModelCatalogQueryError::UnexpectedNotModified.into());
                 };
-                let mut records = (adapter.parse_catalog)(&bytes)?;
-                for record in &mut records {
-                    record.service_tiers.authorize(&endpoint);
-                }
+                let records = (adapter.parse_catalog)(&bytes)?;
                 let entries = discovery::models(
                     records,
                     &ModelCatalogDiscovery {

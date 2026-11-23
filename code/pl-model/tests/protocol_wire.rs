@@ -14,7 +14,7 @@ use pl_model::{
         ReasoningConfig, ReasoningSummary, ToolCallKind, ToolSpec,
     },
     config::builtin_account_catalog,
-    model::{ModelDefinition, ModelTransportProfile, default_models},
+    model::{ModelDefinition, ModelParameter, ModelTransportProfile, default_models, wire_set_one},
     protocol::{ApplyPatchToolType, PromptCacheDialect, ToolWirePolicy},
     runtime::{CancellationToken, ModelInvocationContext, ModelSession, PromptCacheScope},
 };
@@ -245,6 +245,19 @@ fn request(prompt: &str) -> CompletionRequest {
 fn model(model_id: &str, profile: ModelTransportProfile) -> ModelDefinition {
     let mut model = ModelDefinition::compatible(model_id);
     model.extra.binding.set_transport(profile);
+    model
+}
+
+fn tiered_model(model_id: &str, profile: ModelTransportProfile, tier: &str) -> ModelDefinition {
+    let mut model = model(model_id, profile);
+    model.extra.parameters.push(ModelParameter {
+        name: "service_tier".into(),
+        label: None,
+        default: None,
+        candidates: vec![tier.into()],
+        candidate_display_names: Default::default(),
+        wire: [(tier.into(), wire_set_one("service_tier", tier))].into(),
+    });
     model
 }
 
@@ -3352,22 +3365,28 @@ async fn websocket_keeps_session_connection_and_continuation_scoped_to_it() {
     .await
     .unwrap();
     let session = ModelSession::default();
-    let model = model("ws-fixture", ModelTransportProfile::responses_websocket());
+    let model = tiered_model(
+        "ws-fixture",
+        ModelTransportProfile::responses_websocket(),
+        "priority",
+    );
     let runtime = pl_model::runtime::new_with_account_id(
         "fixture",
         pl_model::protocol::providers::openai::compatible_endpoint("fixture", fixture.base_url()),
         model,
     )
     .unwrap();
+    let mut first_input = request("first");
+    first_input.service_tier = Some("priority".into());
     let first = runtime
         .complete(
-            request("first"),
+            first_input.clone(),
             ModelInvocationContext::new(session.clone()),
         )
         .await
         .unwrap();
     assert_eq!(first.content.as_deref(), Some("one"));
-    let mut second_input = request("first");
+    let mut second_input = first_input;
     second_input.append_response(&first).unwrap();
     second_input.input.push(user("second").into());
     let second = runtime
@@ -3379,7 +3398,9 @@ async fn websocket_keeps_session_connection_and_continuation_scoped_to_it() {
     let records = fixture.finish().await.unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].body["type"], "response.create");
+    assert_eq!(records[0].body["service_tier"], "priority");
     assert_eq!(records[1].body["type"], "response.create");
+    assert_eq!(records[1].body["service_tier"], "priority");
     assert_eq!(records[1].body["store"], false);
     assert_eq!(records[1].body["previous_response_id"], "ws-1");
     assert_eq!(records[1].body["input"].as_array().unwrap().len(), 1);
@@ -3396,13 +3417,16 @@ async fn chat_consumes_separate_usage_chunk_and_reasoning_content() {
     )])
     .await
     .unwrap();
+    let mut selected = request("chat request");
+    selected.service_tier = Some("regional-priority".into());
     let result = complete(
         &fixture,
-        model(
+        tiered_model(
             "chat-fixture",
             ModelTransportProfile::chat_completions_http(),
+            "regional-priority",
         ),
-        request("chat request"),
+        selected,
         ModelSession::default(),
     )
     .await;
@@ -3413,6 +3437,7 @@ async fn chat_consumes_separate_usage_chunk_and_reasoning_content() {
     assert_eq!(result.accounting.usage.reasoning_tokens, Some(2));
     let records = fixture.finish().await.unwrap();
     assert_eq!(records[0].body["stream_options"]["include_usage"], true);
+    assert_eq!(records[0].body["service_tier"], "regional-priority");
     assert_eq!(records[0].path, "/v1/chat/completions");
 }
 

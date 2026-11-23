@@ -14,12 +14,12 @@ pub struct ResolvedModelRoute {
 }
 
 impl ResolvedModelRoute {
-    /// Freezes an explicitly selected Codex service tier; `None` always means standard.
+    /// Freezes an explicit catalog service tier. `None` leaves the choice to the endpoint.
     ///
     /// # Errors
-    /// Rejects unsupported authentication, transport, or an exact ID outside this model's catalog.
+    /// Rejects an ID outside this model's catalog or an invalid wire assignment.
     pub fn with_service_tier(mut self, requested: Option<&str>) -> pl_protocol::Result<Self> {
-        crate::service_tiers::validate(&self.endpoint, &self.model, requested)?;
+        crate::service_tiers::validate(&self.model, requested)?;
         self.service_tier = requested.map(str::to_owned);
         Ok(self)
     }

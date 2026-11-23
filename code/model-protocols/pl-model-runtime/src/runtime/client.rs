@@ -34,11 +34,7 @@ impl ModelRuntime {
         route: crate::config::ResolvedModelRoute,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
-        pl_model_openai_wire::service_tiers::validate(
-            &route.endpoint,
-            &route.model,
-            route.service_tier.as_deref(),
-        )?;
+        pl_model_openai_wire::service_tiers::validate(&route.model, route.service_tier.as_deref())?;
         let runtime = Self::bind(
             route.account_id.as_str(),
             route.endpoint,

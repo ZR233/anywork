@@ -100,12 +100,7 @@ pub fn build_openai_request_body(
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {
-    crate::service_tiers::validate_model(model, request.service_tier.as_deref())?;
-    if request.service_tier.is_some() && (!chatgpt || endpoint != WireApi::Responses) {
-        return Err(PureError::ConfigError(
-            "service_tier requires authenticated Codex Responses HTTP".into(),
-        ));
-    }
+    crate::service_tiers::validate(model, request.service_tier.as_deref())?;
     request.validate_replay_spans()?;
     let messages = messages_after_last_compaction(&request.input);
     validate_tool_history(&messages)?;

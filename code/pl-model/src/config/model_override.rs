@@ -103,8 +103,7 @@ impl AccountModelOverride {
         merge(&mut effective, &Value::Object(self.extra.clone()));
         let mut extra: crate::model::ModelExtras = serde_json::from_value(effective)?;
         if self.extra.contains_key("parameters") {
-            // Service tier is an authenticated catalog fact. An edit to unrelated
-            // parameters must neither grant new tiers nor erase an observed tier.
+            // Preserve online service tiers when editing other model parameters.
             extra
                 .parameters
                 .retain(|parameter| parameter.name != "service_tier");

@@ -598,8 +598,7 @@ impl AccountConfig {
                 AccountModelEntry::new(effective, AccountModelOrigin::Manual),
             );
         }
-        // Speed is an observation of the authenticated Codex catalog, not a
-        // switch that a local or bundled model declaration can grant itself.
+        // Speed candidates come from this account's online catalog.
         for entry in local.values_mut() {
             entry
                 .model
