@@ -41,7 +41,6 @@ impl<B: WorkspaceFileBackend + 'static> domain::FileSource for AuthorizedFiles<B
             .map_err(ToolError::new)?;
         Ok(domain::FileStat {
             is_file: stat.is_file,
-            len: stat.len,
         })
     }
 
@@ -55,12 +54,12 @@ impl<B: WorkspaceFileBackend + 'static> domain::FileSource for AuthorizedFiles<B
             .map_err(ToolError::new)
     }
 
-    async fn read_bytes(&self, path: &str, max_bytes: usize) -> Result<Arc<[u8]>, ToolError> {
+    async fn read_bytes(&self, path: &str) -> Result<Arc<[u8]>, ToolError> {
         self.backend
             .read_bytes(WorkspaceFileReadBytesRequest {
                 path: path.into(),
                 cwd: None,
-                max_bytes,
+                max_bytes: None,
             })
             .await
             .map(Into::into)

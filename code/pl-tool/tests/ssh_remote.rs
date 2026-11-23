@@ -988,7 +988,7 @@ async fn validate_image_bytes(
             .read_bytes(WorkspaceFileReadBytesRequest {
                 path: "pixel.png".to_string(),
                 cwd: None,
-                max_bytes: 1024,
+                max_bytes: Some(1024),
             })
             .await?,
         png

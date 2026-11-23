@@ -75,7 +75,7 @@ impl<B: WorkspaceFileBackend + 'static> pl_tool_media::view_image::ImageReader
             .read_bytes(WorkspaceFileReadBytesRequest {
                 path,
                 cwd: None,
-                max_bytes,
+                max_bytes: Some(max_bytes),
             })
             .await
             .map(Into::into)

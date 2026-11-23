@@ -114,7 +114,8 @@ pub struct WorkspaceFileReadRequest {
 pub struct WorkspaceFileReadBytesRequest {
     pub path: String,
     pub cwd: Option<String>,
-    pub max_bytes: usize,
+    /// Ceiling for a bounded caller; `None` reads the entire regular file.
+    pub max_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
