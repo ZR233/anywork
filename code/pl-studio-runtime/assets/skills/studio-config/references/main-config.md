@@ -1,6 +1,6 @@
 # Main configuration
 
-`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 33`. A missing
+`<studio-home>/config.toml` is UTF-8 TOML with `schema_version = 34`. A missing
 file uses in-memory defaults in interactive hosts; `anywk exec` requires an existing
 file and fails strictly. An invalid existing file is an error. Use Settings
 to create accounts from templates and preserve their provider-specific metadata.
@@ -120,7 +120,7 @@ This minimal API-account example requires a real credential supplied through the
 environment. Do not replace an existing file wholesale with this example:
 
 ```toml
-schema_version = 33
+schema_version = 34
 
 [models.accounts.deepseek]
 template = "deepseek"
@@ -156,10 +156,17 @@ and connection settings so their typed validation remains visible.
 The built-in OpenAI template recommends `gpt-6.2-sol` with `medium` effort for new
 selections. `gpt-6.2-astra` and `gpt-6.2-sol` both default to `medium` and support
 `low`, `medium`, `high`, `xhigh` and `max`; `none` and `minimal` are not supported.
-Their built-in automatic compaction threshold is 475,000 tokens. Use the account's
+Their automatic compaction threshold follows the current model catalog. Use the account's
 model settings to override that threshold; restoring automatic mode uses the
-built-in value. These recommendations do not replace saved routes, Thread model
+current catalog default. These recommendations do not replace saved routes, Thread model
 selections or explicit compaction overrides.
+
+A compatible Responses model can declare `base.input_modalities = ["text", "file"]`,
+`base.supports_parallel_tool_calls = true`, and `base.web_search_tool_type = "text"`.
+Use `extra.capabilities.input` only when you need to constrain sources or MIME types.
+An explicit account service policy governs which hosted tools can be used. Document
+handling also depends on the endpoint: the GLM Coding Plan Responses route accepts PDFs,
+and DeepSeek Flash accepts uploaded text by file ID.
 
 ### Prompt cache hints for compatible Responses endpoints
 
@@ -211,9 +218,15 @@ Catalogs use either `source = "bundled"` plus `catalog = "<catalog-id>"`, or
 entries use `additional_models` for bundled catalogs and `models` for explicit
 catalogs; use the model editor for their full declarations. Both accept per-model
 `connection_overrides` and `auto_compact_overrides`, defaulting to empty maps.
-Online observations and prices are runtime-owned,
-not settings to copy from another account. An explicit empty catalog can exist,
-but cannot satisfy an executable model route.
+Both catalog types query the compatible account’s models endpoint by default. A failed refresh preserves existing routes. A manual model requires only its API ID. For example:
+
+```toml
+[[models.accounts.gateway.catalog.models]]
+[models.accounts.gateway.catalog.models.base]
+slug = "my-model"
+```
+
+Optional user edits such as `base.display_name`, `base.max_context_window` and `extra.pricing` apply to this account. Leave inherited fields out of the file.
 
 `[models.accounts.<id>.model_enabled_overrides]` maps exact model IDs to booleans.
 An absent key means enabled for bundled, online and manual models. An incomplete
@@ -224,10 +237,7 @@ Enablement cannot create an unknown model or bypass capability/credential
 validation. Model IDs and metadata are account-local.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
-integer thresholds. Omission uses the model layer's effective automatic threshold;
-it is not universally 90% of the context window. Remove only the desired key to
-restore automatic behavior. Observe any backend adjustment and keep unknown
-capacity unknown.
+integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value. The automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at the provider’s explicit `auto_compact_token_limit` when supplied. Unknown context and prices can be omitted.
 
 ## Credentials
 

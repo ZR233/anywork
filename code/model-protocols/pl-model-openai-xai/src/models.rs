@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use pl_model_openai_wire::model::{
-    BundledModelDefinition, MediaSendOrder, ModelDefinitionError, ModelInfo,
+    BundledModelDefinition, MediaSendOrder, ModelDefinition, ModelDefinitionError,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -95,7 +95,7 @@ const MODELS: &[Definition] = &[
 ];
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let mut model = family.instantiate(ModelInstanceSpec {
             model_id: self.id,
             display_name: self.name,
@@ -112,10 +112,12 @@ impl Definition {
             },
         });
         if !self.efforts.is_empty() {
-            model.capabilities.reasoning = true;
-            model
-                .parameters
-                .push(effort_parameter("reasoning.effort", self.efforts, None));
+            model.extra.capabilities.reasoning = true;
+            model.set_parameters(vec![effort_parameter(
+                "reasoning.effort",
+                self.efforts,
+                None,
+            )]);
         }
         model
     }

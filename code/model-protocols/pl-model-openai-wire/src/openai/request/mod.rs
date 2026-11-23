@@ -4,7 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::completion::CompletionRequest;
-use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
+use crate::model::info::{ModelDefinition, ResponsesMaxTokensField};
 use crate::protocol::InstructionWireRole;
 use crate::protocol::WireApi;
 
@@ -96,7 +96,7 @@ pub fn build_openai_request_body(
     endpoint: WireApi,
     instruction_role: InstructionWireRole,
     request: &CompletionRequest,
-    model: &ModelInfo,
+    model: &ModelDefinition,
     prompt_cache_key: Option<&str>,
     chatgpt: bool,
 ) -> Result<OpenAiRequestBody> {
@@ -112,7 +112,7 @@ pub fn build_openai_request_body(
     match endpoint {
         WireApi::Responses => {
             let crate::model::ModelProtocolOptions::Responses(options) =
-                &model.binding.request.protocol
+                &model.extra.binding.request.protocol
             else {
                 return Err(protocol_error(
                     "Responses request requires Responses options",

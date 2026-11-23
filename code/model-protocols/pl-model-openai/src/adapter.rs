@@ -17,7 +17,7 @@ pub static ADAPTER: Adapter = Adapter {
     prepare_request: None,
     hosted_search_label: None,
     on_base_url_override: None,
-    parse_catalog: crate::openai_catalog::records,
+    parse_catalog: pl_model_openai_wire::generic_catalog::openai_records,
 };
 
 pub static COMPATIBLE_ADAPTER: Adapter = Adapter {

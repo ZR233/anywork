@@ -8,7 +8,7 @@ use crate::{
     AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource, StudioError,
 };
 use anyhow::{Context, Result, ensure};
-use pl_model::model::ModelInfo;
+use pl_model::model::ModelDefinition;
 use sha2::{Digest, Sha256};
 
 use crate::studio::store::attachment::AttachmentDraftObject;
@@ -115,7 +115,7 @@ impl AttachmentDraftRuntime {
 
     pub(in crate::studio::runtime) fn validate_for_model(
         &self,
-        model: &ModelInfo,
+        model: &ModelDefinition,
         drafts: &[AttachmentDraftObject],
     ) -> Result<()> {
         validate_draft_batch(model, drafts)

@@ -18365,7 +18365,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelContextResolu
             crate::api::studio::types::settings::BridgeModelContextUnavailable,
         >>::sse_decode(deserializer);
         let mut var_contextWindow = <Option<u64>>::sse_decode(deserializer);
-        let mut var_inputTokenLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_autoCompactLimit = <Option<u64>>::sse_decode(deserializer);
         let mut var_adjustment = <Option<
             crate::api::studio::types::settings::BridgeModelContextAdjustment,
@@ -18373,7 +18372,6 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelContextResolu
         return crate::api::studio::types::settings::BridgeModelContextResolution {
             unavailable: var_unavailable,
             context_window: var_contextWindow,
-            input_token_limit: var_inputTokenLimit,
             auto_compact_limit: var_autoCompactLimit,
             adjustment: var_adjustment,
         };
@@ -18385,9 +18383,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelContextUnavai
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut inner = <i32>::sse_decode(deserializer);
         return match inner {
-            0 => crate::api::studio::types::settings::BridgeModelContextUnavailable::WindowUnknown,
-1 => crate::api::studio::types::settings::BridgeModelContextUnavailable::InvalidParameters,
-2 => crate::api::studio::types::settings::BridgeModelContextUnavailable::InputBudgetExhausted,
+            0 => crate::api::studio::types::settings::BridgeModelContextUnavailable::InvalidParameters,
             _ => unreachable!("Invalid variant for BridgeModelContextUnavailable: {}", inner),
         };
     }
@@ -18707,9 +18703,7 @@ impl SseDecode for crate::api::studio::types::settings::BridgeModelTypeExclusion
         return match inner {
             0 => crate::api::studio::types::settings::BridgeModelTypeExclusion::TextInputUnsupported,
 1 => crate::api::studio::types::settings::BridgeModelTypeExclusion::TextOutputUnsupported,
-2 => crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextWindowUnknown,
-3 => crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextParametersInvalid,
-4 => crate::api::studio::types::settings::BridgeModelTypeExclusion::InputBudgetExhausted,
+2 => crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextParametersInvalid,
             _ => unreachable!("Invalid variant for BridgeModelTypeExclusion: {}", inner),
         };
     }
@@ -40300,7 +40294,6 @@ impl flutter_rust_bridge::IntoDart
         [
             self.unavailable.into_into_dart().into_dart(),
             self.context_window.into_into_dart().into_dart(),
-            self.input_token_limit.into_into_dart().into_dart(),
             self.auto_compact_limit.into_into_dart().into_dart(),
             self.adjustment.into_into_dart().into_dart(),
         ]
@@ -40326,9 +40319,7 @@ impl flutter_rust_bridge::IntoDart
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
-            Self::WindowUnknown => 0.into_dart(),
-            Self::InvalidParameters => 1.into_dart(),
-            Self::InputBudgetExhausted => 2.into_dart(),
+            Self::InvalidParameters => 0.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -40772,9 +40763,7 @@ impl flutter_rust_bridge::IntoDart
         match self {
             Self::TextInputUnsupported => 0.into_dart(),
             Self::TextOutputUnsupported => 1.into_dart(),
-            Self::ContextWindowUnknown => 2.into_dart(),
-            Self::ContextParametersInvalid => 3.into_dart(),
-            Self::InputBudgetExhausted => 4.into_dart(),
+            Self::ContextParametersInvalid => 2.into_dart(),
             _ => unreachable!(),
         }
     }
@@ -55665,7 +55654,6 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelContextResolu
             serializer,
         );
         <Option<u64>>::sse_encode(self.context_window, serializer);
-        <Option<u64>>::sse_encode(self.input_token_limit, serializer);
         <Option<u64>>::sse_encode(self.auto_compact_limit, serializer);
         <Option<crate::api::studio::types::settings::BridgeModelContextAdjustment>>::sse_encode(
             self.adjustment,
@@ -55677,9 +55665,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelContextResolu
 impl SseEncode for crate::api::studio::types::settings::BridgeModelContextUnavailable {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(match self {crate::api::studio::types::settings::BridgeModelContextUnavailable::WindowUnknown => { 0 }
-crate::api::studio::types::settings::BridgeModelContextUnavailable::InvalidParameters => { 1 }
-crate::api::studio::types::settings::BridgeModelContextUnavailable::InputBudgetExhausted => { 2 }
+        <i32>::sse_encode(match self {crate::api::studio::types::settings::BridgeModelContextUnavailable::InvalidParameters => { 0 }
  _ => { unimplemented!(""); }}, serializer);
     }
 }
@@ -55931,9 +55917,7 @@ impl SseEncode for crate::api::studio::types::settings::BridgeModelTypeExclusion
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <i32>::sse_encode(match self {crate::api::studio::types::settings::BridgeModelTypeExclusion::TextInputUnsupported => { 0 }
 crate::api::studio::types::settings::BridgeModelTypeExclusion::TextOutputUnsupported => { 1 }
-crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextWindowUnknown => { 2 }
-crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextParametersInvalid => { 3 }
-crate::api::studio::types::settings::BridgeModelTypeExclusion::InputBudgetExhausted => { 4 }
+crate::api::studio::types::settings::BridgeModelTypeExclusion::ContextParametersInvalid => { 2 }
  _ => { unimplemented!(""); }}, serializer);
     }
 }

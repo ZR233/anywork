@@ -12,7 +12,7 @@ use pl_model_openai_wire::model::capabilities::{
 };
 use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
 use pl_model_openai_wire::model::info::{
-    MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile, TruncationMode,
+    MediaWireFormat, ModelDefinition, ModelRequestProfile, ModelTransportProfile, TruncationMode,
 };
 use pl_model_openai_wire::model::parameter::{ModelParameter, ParameterWire, WireAssignment};
 
@@ -69,7 +69,7 @@ struct Definition {
 }
 
 impl Definition {
-    fn instantiate(&self, family: &ModelFamily) -> ModelInfo {
+    fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
         let pricing = if self.tiers.is_empty() {
             ModelPricing::Unknown
         } else {
@@ -125,7 +125,7 @@ const fn context_output_tiers(
     ]
 }
 
-pub fn models() -> Vec<ModelInfo> {
+pub fn models() -> Vec<ModelDefinition> {
     let zhipu_glm53 = zhipu_glm53_family();
     let zhipu_glm53_flash = zhipu_glm53_flash_family();
     let zhipu_glm52 = zhipu_glm52_family();
@@ -396,7 +396,7 @@ fn zhipu_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
 // ---- Coding Plan Responses 目录 ----
 
 /// Coding Plan 的 OpenAI Response 协议端点当前按官方文档只承载 GLM-5.3 与 GLM-5.3-Flash。
-pub fn responses_models() -> Vec<ModelInfo> {
+pub fn responses_models() -> Vec<ModelDefinition> {
     vec![
         glm_5_3::MODEL.instantiate(&zhipu_responses_text_family()),
         glm_5_3_flash::MODEL.instantiate(&zhipu_responses_flash_family()),
@@ -423,6 +423,7 @@ fn zhipu_responses_family(
 ) -> ModelFamily {
     let mut capabilities = capabilities;
     capabilities.interleaved = None;
+    capabilities.web_search = true;
     let mut request_profile = ModelRequestProfile::responses();
     if image {
         request_profile = request_profile.with_image_media(
@@ -444,4 +445,8 @@ fn zhipu_responses_family(
         request_profile,
         base_instructions: String::new(),
     }
+    .with_responses_files(
+        &["application/pdf"],
+        pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
+    )
 }

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
-use pl_model::model::{ModelInfo, ModelTransportProfile};
+use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_studio_runtime::config::StudioConfig;
 use serde::Serialize;
 use std::fs;
@@ -116,12 +116,13 @@ pub(crate) fn prepare(output: Option<&Path>) -> Result<ObservePaths> {
 
 pub(crate) fn write_model_config(home: &Path, model_base_url: &str) -> Result<()> {
     let mut config = StudioConfig::default_config()?;
-    let mut model = ModelInfo::compatible("fixture-model");
-    model.display_name = "Bots protocol fixture".into();
+    let mut model = ModelDefinition::compatible("fixture-model");
+    model.base.display_name = "Bots protocol fixture".into();
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    model.binding.request.api_model = None;
+    model.extra.binding.request.api_model = None;
     let account_id = AccountId::new(format!("bots-observe-{}", std::process::id()))?;
     let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
         "Bots protocol fixture",

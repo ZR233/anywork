@@ -640,7 +640,7 @@ pub(crate) fn validate_user_agent_profile_id(profile_id: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::DelegationMode;
-    use pl_model::{config::AccountConfig, model::ModelInfo};
+    use pl_model::{config::AccountConfig, model::ModelDefinition};
 
     #[test]
     fn automatic_profile_diagnostics_exclude_unused_native_routes() -> anyhow::Result<()> {
@@ -656,7 +656,7 @@ mod tests {
                 "Disabled preset",
                 "http://127.0.0.1:1",
             ),
-            vec![ModelInfo::compatible("disabled")],
+            vec![ModelDefinition::compatible("disabled")],
         );
         account.set_model_enabled("disabled", false)?;
         let account_id = AccountId::new("preset")?;

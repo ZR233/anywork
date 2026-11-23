@@ -1946,7 +1946,12 @@ impl FixtureServer {
                 post(provider_usage::control).fallback(unexpected_route),
             )
         } else {
-            app
+            // Every compatible account performs background discovery. A valid empty
+            // inventory leaves a test's explicit model and inference script intact.
+            app.route(
+                "/v1/models",
+                get(|| async { Json(serde_json::json!({"data": []})) }).fallback(unexpected_route),
+            )
         };
         let app = if model_catalog_enabled {
             app.route(

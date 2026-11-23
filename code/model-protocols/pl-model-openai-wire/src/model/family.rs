@@ -3,11 +3,11 @@
 //! 参见 design/06-model.md 6.9 节。同 provider 的模型共享 capabilities、
 //! truncation_policy、effort 参数声明和 base body。具体模型实例通过差异字段
 //! （model_id、display_name、context_window 等）从 family 派生，避免在
-//! `default_models` 中为每个模型重复构造完整 `ModelInfo`。
+//! `default_models` 中为每个模型重复构造完整 `ModelDefinition`。
 
 use crate::model::capabilities::ModelCapabilities;
 use crate::model::info::{
-    ModelInfo, ModelRequestProfile, ModelTransportProfile, TruncationMode, TruncationPolicy,
+    ModelDefinition, ModelRequestProfile, ModelTransportProfile, TruncationMode, TruncationPolicy,
 };
 use crate::model::parameter::ModelParameter;
 use crate::model::pricing::ModelPricing;
@@ -44,8 +44,32 @@ pub struct ModelInstanceSpec {
 }
 
 impl ModelFamily {
-    /// 用差异字段实例化一个具体 `ModelInfo`。
-    pub fn instantiate(&self, spec: ModelInstanceSpec) -> ModelInfo {
+    /// Add document input supported by this Responses endpoint. Codex's text/image
+    /// modalities describe the model, while this profile describes its file service.
+    pub fn with_responses_files(
+        mut self,
+        media_types: &[&str],
+        order: super::MediaSendOrder,
+    ) -> Self {
+        let mut file = super::ModelInputCapability::media(
+            super::ModelModality::File,
+            vec![
+                super::ModelInputSource::Local,
+                super::ModelInputSource::RemoteUrl,
+            ],
+        );
+        file.limits.media_types = media_types.iter().copied().map(str::to_owned).collect();
+        self.capabilities.input.push(file);
+        self.request_profile.media.push(super::media_profile(
+            super::ModelModality::File,
+            super::MediaWireFormat::ResponsesInputFile,
+            order,
+        ));
+        self
+    }
+
+    /// 用差异字段实例化一个具体 `ModelDefinition`。
+    pub fn instantiate(&self, spec: ModelInstanceSpec) -> ModelDefinition {
         let ModelInstanceSpec {
             model_id,
             display_name,
@@ -55,28 +79,40 @@ impl ModelFamily {
             max_output_tokens,
             pricing,
         } = spec;
-        ModelInfo(crate::model::ModelMetadata {
+        let mut model = ModelDefinition {
             observation: None,
-            model_id: model_id.to_string(),
-            display_name: display_name.to_string(),
-            description: Some(description.to_string()),
-            context_window: Some(context_window),
-            max_context_window: Some(max_context_window),
-            auto_compact_token_limit: None,
-            default_temperature: None,
-            max_output_tokens,
-            pricing,
-            parameters: self.parameters.clone(),
-            binding: super::info::ModelBinding {
-                transport: self.transport.clone(),
-                request: self.request_profile.clone(),
+            base: crate::model::CodexModel {
+                slug: model_id.to_string(),
+                display_name: display_name.to_string(),
+                description: Some(description.to_string()),
+                context_window: Some(context_window),
+                max_context_window: Some(max_context_window),
+                auto_compact_token_limit: None,
+                truncation_policy: TruncationPolicy {
+                    mode: self.truncation_mode,
+                    limit: self.truncation_limit,
+                },
+                model_messages: crate::model::ModelMessages {
+                    instructions_template: self.base_instructions.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
             },
-            capabilities: self.capabilities.clone(),
-            truncation_policy: TruncationPolicy {
-                mode: self.truncation_mode,
-                limit: self.truncation_limit,
+            extra: crate::model::ModelExtras {
+                default_temperature: None,
+                max_output_tokens,
+                pricing,
+                parameters: Vec::new(),
+                effort_label: None,
+                effort_wire: Default::default(),
+                binding: super::info::ModelBinding {
+                    transport: self.transport.clone(),
+                    request: self.request_profile.clone(),
+                },
+                capabilities: self.capabilities.clone(),
             },
-            base_instructions: self.base_instructions.clone(),
-        })
+        };
+        model.set_parameters(self.parameters.clone());
+        model
     }
 }

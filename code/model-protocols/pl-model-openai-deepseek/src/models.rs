@@ -78,6 +78,7 @@ fn text_family() -> ModelFamily {
         request_profile,
         base_instructions: String::new(),
     }
+    .with_responses_files(&["text/plain"], MediaSendOrder::ProviderFileFirst)
 }
 
 fn image_family(mut family: ModelFamily) -> ModelFamily {
@@ -96,10 +97,13 @@ fn image_family(mut family: ModelFamily) -> ModelFamily {
                 .to_vec(),
         },
     });
-    family.request_profile = family.request_profile.with_image_media(
-        MediaWireFormat::ResponsesInputImage,
-        MediaSendOrder::ProviderFileFirst,
-    );
+    family
+        .request_profile
+        .media
+        .extend(pl_model_openai_wire::model::image_media_profiles(
+            MediaWireFormat::ResponsesInputImage,
+            MediaSendOrder::ProviderFileFirst,
+        ));
     family
 }
 

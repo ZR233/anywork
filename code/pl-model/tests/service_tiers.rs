@@ -2,14 +2,14 @@ use pl_model::{
     config::{
         AccountConfig, AccountModelEntry, AccountModelOrigin, ModelDescriptor, model_descriptor,
     },
-    model::{ModelInfo, ModelParameter},
+    model::{ModelDefinition, ModelParameter},
 };
 use serde_json::json;
 
 #[test]
 fn local_model_definition_cannot_publish_a_codex_service_tier() {
-    let mut model = ModelInfo::compatible("manual-model");
-    model.parameters.push(
+    let mut model = ModelDefinition::compatible("manual-model");
+    model.extra.parameters.push(
         serde_json::from_value(json!({
             "name": "service_tier",
             "candidates": ["priority"],
@@ -31,8 +31,8 @@ fn local_model_definition_cannot_publish_a_codex_service_tier() {
 
 #[test]
 fn service_tiers_descriptor_preserves_order_names_and_read_only_default() {
-    let mut model = ModelInfo::compatible("fixture-model");
-    model.parameters.push(
+    let mut model = ModelDefinition::compatible("fixture-model");
+    model.extra.parameters.push(
         serde_json::from_value::<ModelParameter>(json!({
             "name":"service_tier", "default":"ultrafast",
             "candidates":["ultrafast","priority","unnamed"],
@@ -81,7 +81,7 @@ fn previous_parameter_and_descriptor_payloads_remain_readable_without_tiers() {
     }))
     .unwrap();
     assert!(parameter.candidate_display_names.is_empty());
-    let model = ModelInfo::compatible("old-model");
+    let model = ModelDefinition::compatible("old-model");
     let descriptor = model_descriptor(&AccountModelEntry::new(model, AccountModelOrigin::Manual));
     let mut wire = serde_json::to_value(descriptor).unwrap();
     wire.as_object_mut().unwrap().remove("serviceTiers");

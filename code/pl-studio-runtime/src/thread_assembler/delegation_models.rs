@@ -63,7 +63,7 @@ impl DelegationModels {
                 candidates.push((
                     AccountModelKey {
                         account_id: account_id.to_string(),
-                        model_id: entry.model.model_id.clone(),
+                        model_id: entry.model.base.slug.clone(),
                     },
                     entry,
                 ));
@@ -87,7 +87,7 @@ impl DelegationModels {
                 display_name: descriptor.display_name,
                 summary: guide
                     .map(|value| value.summary)
-                    .or(entry.model.description.as_deref())
+                    .or(entry.model.base.description.as_deref())
                     .map(|value| value.chars().take(240).collect()),
                 task_suitability: guide
                     .map(|value| value.task_suitability.to_vec())
@@ -157,7 +157,7 @@ impl DelegationModels {
         let entry = account
             .effective_catalog(None)?
             .into_iter()
-            .find(|entry| entry.model.model_id == request.model_id)
+            .find(|entry| entry.model.base.slug == request.model_id)
             .ok_or_else(|| crate::StudioError::not_found("Current account model"))?;
         let availability = admission(config, &account_id, &entry);
         let key = AccountModelKey {
@@ -205,7 +205,7 @@ fn admission(
         crate::AgentRoleId::new("executor".to_string())?,
         &ModelRouteConfig {
             account_id: account_id.clone(),
-            model_id: entry.model.model_id.clone(),
+            model_id: entry.model.base.slug.clone(),
             effort: effort.map(ReasoningEffort::new),
         },
     )

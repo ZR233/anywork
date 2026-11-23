@@ -16,7 +16,6 @@ const _alpha = AccountModelView(
   context: ModelContextView(
     unavailable: null,
     contextWindow: 1000,
-    inputTokenLimit: 900,
     autoCompactLimit: 200,
   ),
 );
@@ -315,7 +314,6 @@ void main() {
       const backendPolicy = ModelContextView(
         unavailable: null,
         contextWindow: 2000,
-        inputTokenLimit: 1500,
         autoCompactLimit: 137,
         adjustment: ModelContextAdjustment.safetyLimit,
       );

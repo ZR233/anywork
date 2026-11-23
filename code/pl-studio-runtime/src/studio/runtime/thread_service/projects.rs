@@ -497,7 +497,7 @@ mod standalone_tests {
     use crate::studio::ThreadVisibility;
     use crate::{StudioHostKind, StudioRuntimeOptions};
     use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-    use pl_model::model::ModelInfo;
+    use pl_model::model::ModelDefinition;
 
     fn options(home: &Path) -> StudioRuntimeOptions {
         StudioRuntimeOptions {
@@ -921,7 +921,7 @@ mod standalone_tests {
                     "Standalone fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -1575,8 +1575,9 @@ mod standalone_tests {
                     let store = ConfigStore::new(ConfigPaths::from_config_dir(&home));
                     let mut config = store.load()?;
                     config.skills.enabled = false;
-                    let mut model = ModelInfo::compatible("standalone-model");
+                    let mut model = ModelDefinition::compatible("standalone-model");
                     model
+                        .extra
                         .binding
                         .set_transport(pl_model::model::ModelTransportProfile::responses_http());
                     config.models.accounts.insert(

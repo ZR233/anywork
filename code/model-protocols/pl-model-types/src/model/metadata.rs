@@ -1,36 +1,49 @@
-use super::{ModelCapabilities, ModelParameter, observation::ModelObservation};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelMetadata<Binding = ()> {
-    pub model_id: String,
+/// The Codex /models entry. Additional provider fields retain their native JSON structure.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CodexModel {
+    pub slug: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observation: Option<ModelObservation>,
+    pub supported_reasoning_levels: Option<Vec<ReasoningLevel>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_level: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_compact_token_limit: Option<u64>,
-
-    pub default_temperature: Option<f32>,
-    pub max_output_tokens: Option<u64>,
-    pub pricing: super::pricing::ModelPricing,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub parameters: Vec<ModelParameter>,
-
-    /// 模型使用的 API 协议、可用连接方式及默认连接方式。
-    pub binding: Binding,
-
-    #[serde(default)]
-    pub capabilities: ModelCapabilities,
-
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub model_messages: ModelMessages,
+    #[serde(default, skip_serializing_if = "is_default")]
     pub truncation_policy: TruncationPolicy,
+    #[serde(flatten)]
+    pub fields: Map<String, Value>,
+}
 
-    #[serde(default)]
-    pub base_instructions: String,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelMessages {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub instructions_template: String,
+    #[serde(flatten)]
+    pub fields: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ReasoningLevel {
+    pub effort: String,
+    #[serde(flatten)]
+    pub fields: Map<String, Value>,
+}
+
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

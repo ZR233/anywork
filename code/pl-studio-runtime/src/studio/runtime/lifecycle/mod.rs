@@ -194,7 +194,7 @@ mod startup_fault_tests {
         use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
         use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
 
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
@@ -218,7 +218,7 @@ mod startup_fault_tests {
                     "Storage fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -290,7 +290,7 @@ mod startup_fault_tests {
         use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
         use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
         use pl_model::config::{AccountConfig, AccountId, ModelRouteConfig};
-        use pl_model::model::ModelInfo;
+        use pl_model::model::ModelDefinition;
         let temp = tempfile::tempdir()?;
         let home = temp.path().join("home");
         let original = temp.path().join("original-project");
@@ -311,7 +311,7 @@ mod startup_fault_tests {
                     "Recovery fixture",
                     format!("http://{}", endpoint.local_addr()?),
                 ),
-                vec![ModelInfo::compatible(&route.model_id)],
+                vec![ModelDefinition::compatible(&route.model_id)],
             ),
         );
         for selected in config
@@ -947,7 +947,8 @@ mod startup_fault_tests {
             additional_models, ..
         } = &mut provider.catalog
         {
-            additional_models.push(pl_model::model::ModelInfo::compatible("current-id"));
+            additional_models
+                .push(pl_model::model::ModelDefinition::compatible("current-id").into());
         }
         crate::config::ConfigStore::new(paths.config_paths()).save(&config)?;
         let path = home.join("config.toml");

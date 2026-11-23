@@ -24,7 +24,7 @@ use pl_dev_support::process::OwnedChild as Child;
 use pl_dev_support::{paths, process};
 use pl_model::config::{AccountConfig, AccountId, AgentRoleId};
 use pl_model::model::{
-    MediaRepresentation, MediaWireFormat, ModelInfo, ModelInputCapability, ModelInputSource,
+    MediaRepresentation, MediaWireFormat, ModelDefinition, ModelInputCapability, ModelInputSource,
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_studio_runtime::config::{
@@ -2503,9 +2503,10 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             .into_iter()
             .map(|mut model| {
                 model
+                    .extra
                     .binding
                     .set_transport(ModelTransportProfile::responses_http());
-                model.binding.request.api_model = None;
+                model.extra.binding.request.api_model = None;
                 model
             })
             .collect();
@@ -2779,37 +2780,46 @@ fn build_fixture_executable(workspace: &Path) -> Result<PathBuf> {
 /// shares one model/account/route fact source.
 fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Result<StudioConfig> {
     let mut config = StudioConfig::default_config()?;
-    let mut model = ModelInfo::compatible("fixture-model");
-    model.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
+    let mut model = ModelDefinition::compatible("fixture-model");
+    model.extra.capabilities.interleaved = Some(pl_model::model::ReasoningInterleaved {
         field: pl_model::model::reasoning_fields::REASONING_CONTENT,
     });
-    model.display_name = "Local GUI fixture".into();
+    model.base.display_name = "Local GUI fixture".into();
     if ready.scenario == "timeline-history-20k" {
-        model.context_window = Some(1_050_000);
-        model.max_context_window = Some(1_050_000);
-        model.max_output_tokens = Some(128_000);
+        model.base.context_window = Some(1_050_000);
+        model.base.max_context_window = Some(1_050_000);
+        model.extra.max_output_tokens = Some(128_000);
     }
     if matches!(
         ready.scenario.as_str(),
         "storage-compaction" | "call-lifecycle-recovery" | "plan-recovery"
     ) {
-        model.context_window = Some(1_000_000);
-        model.max_context_window = Some(1_000_000);
-        model.auto_compact_token_limit = Some(1);
+        model.base.context_window = Some(1_000_000);
+        model.base.max_context_window = Some(1_000_000);
+        model.base.auto_compact_token_limit = Some(1);
     }
-    model.binding.set_transport(profile);
-    model.binding.request.api_model = None;
+    model.extra.binding.set_transport(profile);
+    model.extra.binding.request.api_model = None;
     if ready.scenario == "tool-scroll" {
-        model.capabilities.input.push(ModelInputCapability::media(
-            ModelModality::Image,
-            vec![ModelInputSource::Local],
-        ));
-        model.binding.request.media.push(ModelMediaInputProfile {
-            modality: ModelModality::Image,
-            wire: MediaWireFormat::ResponsesInputImage,
-            first_send: vec![MediaRepresentation::DataUrl],
-            replay: vec![MediaRepresentation::DataUrl],
-        });
+        model
+            .extra
+            .capabilities
+            .input
+            .push(ModelInputCapability::media(
+                ModelModality::Image,
+                vec![ModelInputSource::Local],
+            ));
+        model
+            .extra
+            .binding
+            .request
+            .media
+            .push(ModelMediaInputProfile {
+                modality: ModelModality::Image,
+                wire: MediaWireFormat::ResponsesInputImage,
+                first_send: vec![MediaRepresentation::DataUrl],
+                replay: vec![MediaRepresentation::DataUrl],
+            });
     }
     let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
     let mut endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
@@ -2823,37 +2833,51 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
         // Distinct metadata in the same isolated account exercises the real
         // settings projection without creating system credential accounts.
         let mut preset = models[0].clone();
-        preset.model_id = "fixture-preset".into();
-        preset.display_name = "Fixture with a model preset".into();
-        preset.context_window = Some(64_000);
-        preset.max_context_window = Some(64_000);
-        preset.auto_compact_token_limit = Some(24_000);
-        preset.capabilities.input.push(ModelInputCapability::media(
-            ModelModality::Image,
-            vec![ModelInputSource::Local],
-        ));
-        preset.binding.request.media.push(ModelMediaInputProfile {
-            modality: ModelModality::Image,
-            wire: MediaWireFormat::ResponsesInputImage,
-            first_send: vec![MediaRepresentation::DataUrl],
-            replay: vec![MediaRepresentation::DataUrl],
-        });
+        preset.base.slug = "fixture-preset".into();
+        preset.base.display_name = "Fixture with a model preset".into();
+        preset.base.context_window = Some(64_000);
+        preset.base.max_context_window = Some(64_000);
+        preset.base.auto_compact_token_limit = Some(24_000);
+        preset
+            .extra
+            .capabilities
+            .input
+            .push(ModelInputCapability::media(
+                ModelModality::Image,
+                vec![ModelInputSource::Local],
+            ));
+        preset
+            .extra
+            .binding
+            .request
+            .media
+            .push(ModelMediaInputProfile {
+                modality: ModelModality::Image,
+                wire: MediaWireFormat::ResponsesInputImage,
+                first_send: vec![MediaRepresentation::DataUrl],
+                replay: vec![MediaRepresentation::DataUrl],
+            });
         let mut file_input =
             ModelInputCapability::media(ModelModality::File, vec![ModelInputSource::Local]);
         file_input.limits.media_types = vec!["application/pdf".into()];
-        preset.capabilities.input.push(file_input);
-        preset.binding.request.media.push(ModelMediaInputProfile {
-            modality: ModelModality::File,
-            wire: MediaWireFormat::ResponsesInputFile,
-            first_send: vec![MediaRepresentation::DataUrl],
-            replay: vec![MediaRepresentation::DataUrl],
-        });
+        preset.extra.capabilities.input.push(file_input);
+        preset
+            .extra
+            .binding
+            .request
+            .media
+            .push(ModelMediaInputProfile {
+                modality: ModelModality::File,
+                wire: MediaWireFormat::ResponsesInputFile,
+                first_send: vec![MediaRepresentation::DataUrl],
+                replay: vec![MediaRepresentation::DataUrl],
+            });
         let mut unknown = models[0].clone();
-        unknown.model_id = "fixture-unknown".into();
-        unknown.display_name = "Fixture with unknown context capacity".into();
-        unknown.context_window = None;
-        unknown.max_context_window = None;
-        unknown.auto_compact_token_limit = None;
+        unknown.base.slug = "fixture-unknown".into();
+        unknown.base.display_name = "Fixture with unknown context capacity".into();
+        unknown.base.context_window = None;
+        unknown.base.max_context_window = None;
+        unknown.base.auto_compact_token_limit = None;
         models.extend([preset, unknown]);
     }
     let account = AccountConfig::from_explicit_models(endpoint, models);

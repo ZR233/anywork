@@ -35,5 +35,5 @@ pub use selection::{
 
 mod metadata;
 mod observation;
-pub use metadata::{ModelMetadata, TruncationMode, TruncationPolicy};
+pub use metadata::{CodexModel, ModelMessages, ReasoningLevel, TruncationMode, TruncationPolicy};
 pub use observation::{ModelMetadataField, ModelObservation, ModelParameterDefaultObservation};

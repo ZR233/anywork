@@ -116,7 +116,7 @@ void main() {
                   typeSupport: const [
                     ModelTypeSupportView(
                       modelType: ModelType.text,
-                      exclusions: [ModelTypeExclusion.contextWindowUnknown],
+                      exclusions: [ModelTypeExclusion.contextParametersInvalid],
                     ),
                   ],
                 ),
@@ -212,7 +212,7 @@ void main() {
         typeSupport: const [
           ModelTypeSupportView(
             modelType: ModelType.text,
-            exclusions: [ModelTypeExclusion.contextWindowUnknown],
+            exclusions: [ModelTypeExclusion.contextParametersInvalid],
           ),
         ],
       ),

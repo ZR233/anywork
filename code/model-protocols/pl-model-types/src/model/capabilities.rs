@@ -23,7 +23,11 @@ pub struct ModelCapabilities {
     pub prompt_cache: PromptCacheModelCapabilities,
     #[serde(default, rename = "instructionSnapshotOverrides")]
     pub instruction_snapshot_overrides: bool,
-    #[serde(default, rename = "nativeContextFamily")]
+    #[serde(
+        default,
+        rename = "nativeContextFamily",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub native_context_family: Option<String>,
 }
 

@@ -84,11 +84,17 @@ impl ThreadModel {
         encoded.reasoning = self.reasoning.clone();
         encoded.service_tier = self.runtime.service_tier.clone();
         if self.runtime.endpoint().authorization.is_none() {
-            encoded.max_tokens = self.runtime.model().max_output_tokens;
+            encoded.max_tokens = self.runtime.model().extra.max_output_tokens;
         }
         encoded.parallel_tool_calls = request.tool_call_mode
             == pl_core::model::ToolCallMode::Parallel
-            && self.runtime.model().capabilities.tools.parallel_tool_calls;
+            && self
+                .runtime
+                .model()
+                .extra
+                .capabilities
+                .tools
+                .parallel_tool_calls;
         self.runtime
             .validate_context(&encoded.input)
             .map_err(|error| failure(ModelFailureKind::IncompatibleContext, error))?;
@@ -205,7 +211,7 @@ impl CoreModelSession for ThreadModelSession {
         }
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
         if estimate
-            .zip(self.runtime.context().input_token_limit)
+            .zip(self.runtime.context().context_window)
             .is_some_and(|(tokens, window)| tokens >= window)
         {
             return Err(failure(
@@ -247,7 +253,7 @@ impl CoreModelSession for ThreadModelSession {
                 scope: &self.purpose,
                 account_id: runtime.account_id(),
                 account: runtime.endpoint(),
-                model: &runtime.model().model_id,
+                model: &runtime.model().base.slug,
                 instructions: instruction_text,
                 prelude_messages: &[],
                 context_hash: &context_hash,
@@ -326,6 +332,7 @@ impl CoreModelSession for ThreadModelSession {
                     binding,
                     compatibility_family: runtime
                         .model()
+                        .extra
                         .capabilities
                         .native_context_family
                         .clone(),
@@ -500,7 +507,7 @@ mod contract_tests {
         let runtime = ModelRuntime::bind(
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
-            crate::model::ModelInfo::compatible("contract-model"),
+            crate::model::ModelDefinition::compatible("contract-model"),
             None,
         )
         .expect("isolated model runtime");

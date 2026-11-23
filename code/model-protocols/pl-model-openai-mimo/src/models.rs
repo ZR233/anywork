@@ -6,7 +6,7 @@ use pl_model_openai_wire::model::capabilities::{
 };
 use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
 use pl_model_openai_wire::model::info::{
-    MaxTokensField, MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile,
+    MaxTokensField, MediaWireFormat, ModelDefinition, ModelRequestProfile, ModelTransportProfile,
     TruncationMode,
 };
 use pl_model_openai_wire::model::parameter::ModelParameter;
@@ -18,7 +18,7 @@ pub fn mimo_default_model_ids() -> &'static [&'static str] {
     MIMO_DEFAULT_MODEL_MODEL_IDS
 }
 
-pub fn models() -> Vec<ModelInfo> {
+pub fn models() -> Vec<ModelDefinition> {
     let mimo_text = mimo_text_family();
     let mimo_vision = mimo_vision_family();
     vec![

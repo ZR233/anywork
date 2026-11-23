@@ -7,14 +7,6 @@ use pl_model_openai_wire::discovery::{
 use pl_model_openai_wire::model::*;
 use serde::Deserialize;
 
-#[derive(Deserialize)]
-struct Envelope {
-    data: Option<Vec<WireRecord>>,
-    /// OpenAI/Codex 的富 envelope 名称；出现在本厂商响应中即歧义，不接受。
-    models: Option<serde::de::IgnoredAny>,
-    error: Option<serde::de::IgnoredAny>,
-}
-
 enum OnlinePricing {
     Tokens(ModelPricing),
     Other,
@@ -151,6 +143,7 @@ impl WireRecord {
             .unwrap_or_default();
         let id = required_id(self.id)?;
         Ok(Record {
+            codex: None,
             service_tiers: Default::default(),
             id,
             display_name: presentation_name(self.display_name, self.name),
@@ -158,18 +151,20 @@ impl WireRecord {
             reasoning,
             binding: self.binding,
             pricing,
-            unknown_default_input: None,
             ..Record::default()
         })
     }
 }
 
 pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
-    let envelope: Envelope =
-        serde_json::from_slice(bytes).map_err(|_| ModelCatalogQueryError::Protocol)?;
-    if envelope.error.is_some() || envelope.models.is_some() {
-        return Err(ModelCatalogQueryError::Protocol);
-    }
-    let records = envelope.data.ok_or(ModelCatalogQueryError::Protocol)?;
-    records.into_iter().map(WireRecord::into_record).collect()
+    pl_model_openai_wire::generic_catalog::with_standard_records(bytes, |value| {
+        let native: WireRecord =
+            serde_json::from_value(value.clone()).map_err(|_| ModelCatalogQueryError::Protocol)?;
+        let mut record = native.into_record()?;
+        let mut base = pl_model_openai_wire::generic_catalog::codex_base(value, &record.id)?;
+        // The xAI standard data envelope declares effort in capabilities.reasoning_effort.
+        base.supported_reasoning_levels = None;
+        record.codex = Some(base);
+        Ok(record)
+    })
 }

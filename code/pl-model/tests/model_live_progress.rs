@@ -26,7 +26,7 @@ use pl_model::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind, CompletionRequest, Message, MessageContent, MessageRole,
 };
-use pl_model::model::{ModelInfo, ModelTransportProfile};
+use pl_model::model::{ModelDefinition, ModelTransportProfile};
 use pl_model::runtime::{
     ModelInvocationContext, ModelSession, model_failure_receipt, thread_tool_declaration,
 };
@@ -34,9 +34,9 @@ use pl_protocol::PureError;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use serde_json::{Value, json};
 
-fn model(model_id: &str, profile: ModelTransportProfile) -> ModelInfo {
-    let mut model = ModelInfo::compatible(model_id);
-    model.binding.set_transport(profile);
+fn model(model_id: &str, profile: ModelTransportProfile) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(model_id);
+    model.extra.binding.set_transport(profile);
     model
 }
 

@@ -1,6 +1,6 @@
 //! Stable account cache hints, independent of execution and diagnostic identities.
 use crate::{
-    model::ModelInfo,
+    model::ModelDefinition,
     protocol::{ProtocolEndpoint, WireApi},
 };
 use sha2::{Digest, Sha256};
@@ -36,7 +36,7 @@ impl PromptCacheScope {
         &self,
         account_id: &str,
         endpoint: &ProtocolEndpoint,
-        model: &ModelInfo,
+        model: &ModelDefinition,
     ) -> pl_protocol::Result<Option<String>> {
         if self.thread_id.trim().is_empty()
             || self.purpose.as_ref().is_some_and(|p| p.trim().is_empty())
@@ -56,8 +56,8 @@ impl PromptCacheScope {
             None => cache_digest(
                 &isolation,
                 &self.thread_id,
-                &model.model_id,
-                model.binding.transport.protocol,
+                &model.base.slug,
+                model.extra.binding.transport.protocol,
             ),
             Some(purpose) => {
                 let mut hash = Sha256::new();
@@ -66,8 +66,8 @@ impl PromptCacheScope {
                     &isolation,
                     &self.thread_id,
                     purpose,
-                    &model.model_id,
-                    match model.binding.transport.protocol {
+                    &model.base.slug,
+                    match model.extra.binding.transport.protocol {
                         WireApi::Responses => "responses",
                         WireApi::ChatCompletions => "chatCompletions",
                     },

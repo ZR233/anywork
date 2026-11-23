@@ -16,7 +16,7 @@ use pl_core::{
     },
 };
 use pl_model::{
-    model::{ModelInfo, ModelTransportProfile},
+    model::{ModelDefinition, ModelTransportProfile},
     runtime::{ThreadModel, model_failure_receipt, model_member_receipt},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
@@ -37,8 +37,9 @@ fn input() -> TurnInput {
 }
 
 async fn thread(fixture: &FixtureServer) -> ThreadHandle {
-    let mut model = ModelInfo::compatible("content-fixture");
+    let mut model = ModelDefinition::compatible("content-fixture");
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_http());
     let runtime = pl_model::runtime::new_with_account_id(

@@ -7,7 +7,7 @@ use pl_model::{
         AccountCapabilitySelection, AccountConfig, AccountId, AccountTemplateId, AgentModelConfig,
         ImageGenerationBackend, ImageGenerationService, ModelCatalogId,
     },
-    model::{ModelInfo, ModelModality, ModelTransportProfile, ModelType},
+    model::{ModelDefinition, ModelModality, ModelTransportProfile, ModelType},
     protocol::{ImageGenerationCapabilities, ImageGenerationDialect, ProtocolServiceCapabilities},
 };
 use pretty_assertions::assert_eq;
@@ -16,20 +16,21 @@ fn account_id(id: &str) -> AccountId {
 }
 
 /// 一个通过在线观察校验、且符合 OpenAI 目录 transport 的在线模型。
-fn observed(slug: &str) -> ModelInfo {
-    let mut model = ModelInfo::compatible(slug);
-    model.context_window = None;
-    model.max_output_tokens = None;
+fn observed(slug: &str) -> ModelDefinition {
+    let mut model = ModelDefinition::compatible(slug);
+    model.base.context_window = None;
+    model.extra.max_output_tokens = None;
     model
+        .extra
         .binding
         .set_transport(ModelTransportProfile::responses_websocket());
     model
 }
 
 /// 只输出图像的模型：进入生图库存，但不得留在 text 类型目录。
-fn image_output(slug: &str) -> ModelInfo {
+fn image_output(slug: &str) -> ModelDefinition {
     let mut model = observed(slug);
-    model.capabilities.output = vec![ModelModality::Image];
+    model.extra.capabilities.output = vec![ModelModality::Image];
     model
 }
 
@@ -41,7 +42,11 @@ fn openai_account(url: &str) -> AccountConfig {
     )
 }
 
-fn observing_account(url: &str, token: Option<&str>, models: Vec<ModelInfo>) -> AccountConfig {
+fn observing_account(
+    url: &str,
+    token: Option<&str>,
+    models: Vec<ModelDefinition>,
+) -> AccountConfig {
     let mut account = openai_account(url);
     account.bearer_token = token.map(str::to_owned);
     account.set_model_catalog_overlay(models).unwrap();
@@ -81,7 +86,7 @@ fn selected_model(config: &AgentModelConfig) -> String {
     selected(config).model
 }
 
-fn observed_models(slugs: &[&str]) -> Vec<ModelInfo> {
+fn observed_models(slugs: &[&str]) -> Vec<ModelDefinition> {
     slugs.iter().map(|slug| observed(slug)).collect()
 }
 
@@ -195,7 +200,7 @@ fn image_generation_models_come_from_the_effective_catalog() {
     );
 
     // 手工模型与在线观察都算目录成员：命中前缀即进入库存，按字典序去重。
-    let manual = ModelInfo::compatible("gpt-image-1");
+    let manual = ModelDefinition::compatible("gpt-image-1");
     let mut account = AccountConfig::from_bundled_catalog(
         pl_model::protocol::providers::openai::endpoint(Some("http://127.0.0.1:1".into())),
         ModelCatalogId::new("openai").unwrap(),
@@ -245,12 +250,12 @@ fn image_output_models_stay_out_of_the_text_catalog() {
     assert!(
         text_models
             .iter()
-            .any(|entry| entry.model.model_id == "gpt-6-astra")
+            .any(|entry| entry.model.base.slug == "gpt-6-astra")
     );
     assert!(
         text_models
             .iter()
-            .all(|entry| entry.model.model_id != "gpt-image-2")
+            .all(|entry| entry.model.base.slug != "gpt-image-2")
     );
 }
 

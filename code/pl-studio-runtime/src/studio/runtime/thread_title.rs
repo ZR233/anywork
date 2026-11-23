@@ -296,7 +296,7 @@ async fn generate_title(
     let explorer = crate::config::system_agent_profile(&config.config, "explorer")?;
     let mut route = crate::config::resolve_profile_route(&config.config, &explorer)?;
     if let pl_model::model::ModelProtocolOptions::Responses(options) =
-        &mut route.model.binding.request.protocol
+        &mut route.model.extra.binding.request.protocol
     {
         options.max_tokens_field = ResponsesMaxTokensField::MaxOutputTokens;
     }
@@ -376,7 +376,7 @@ async fn generate_title(
         account_id: route.account_id.as_str().to_owned(),
         account_display_name: Some(route.endpoint.name.clone()),
         // 冻结的目录配置模型；发送/返回模型只留在 observation 诊断里。
-        model_id: Some(route.model.model_id.clone()),
+        model_id: Some(route.model.base.slug.clone()),
         model_observation,
         effort: reasoning_effort,
         requested_service_tier: Some("notApplicable".into()),

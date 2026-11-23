@@ -1228,3 +1228,111 @@ pub(super) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 fn is_true(value: &bool) -> bool {
     *value
 }
+
+/// Schema 34 model document. Values introduced by the provider stay inside the Codex base.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelDeclaration34 {
+    pub base: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<ModelInfo> for ModelDeclaration34 {
+    fn from(mut model: ModelInfo) -> Self {
+        let effort = model
+            .parameters
+            .iter()
+            .position(|p| p.name == "effort")
+            .map(|i| model.parameters.remove(i));
+        let default_binding = model.binding.transport == Default::default()
+            && model.binding.request
+                == ModelRequestProfile {
+                    protocol: ModelProtocolOptions::ChatCompletions(ChatRequestOptions {
+                        include_usage: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+        // Historical config used TOML's absence for None, including nested price and
+        // capability fields. Encode those groups through their original TOML contract.
+        let capabilities =
+            toml::Value::try_from(&model.capabilities).expect("schema 33 capabilities");
+        let price = toml::Value::try_from(&model.pricing).expect("schema 33 pricing");
+        let default_capabilities = model.capabilities == Default::default();
+        let default_price = model.pricing == ModelPricing::Unknown;
+        let default_truncation = model.truncation_policy == Default::default();
+        let mut old = serde_json::to_value(model).expect("schema 33 DTO supports JSON");
+        let mut old = std::mem::take(old.as_object_mut().expect("schema 33 model object"));
+        let mut base = serde_json::Map::new();
+        base.insert(
+            "slug".into(),
+            old.remove("model_id").expect("required model ID"),
+        );
+        for key in [
+            "display_name",
+            "description",
+            "context_window",
+            "max_context_window",
+            "auto_compact_token_limit",
+            "truncation_policy",
+        ] {
+            if let Some(value) = old.remove(key).filter(|v| !v.is_null()) {
+                base.insert(key.into(), value);
+            }
+        }
+        if let Some(text) = old
+            .remove("base_instructions")
+            .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+        {
+            base.insert(
+                "model_messages".into(),
+                serde_json::json!({"instructions_template": text}),
+            );
+        }
+        if let Some(parameter) = effort {
+            base.insert(
+                "supported_reasoning_levels".into(),
+                serde_json::json!(
+                    parameter
+                        .candidates
+                        .into_iter()
+                        .map(|effort| serde_json::json!({"effort": effort}))
+                        .collect::<Vec<_>>()
+                ),
+            );
+            if let Some(default) = parameter.default {
+                base.insert("default_reasoning_level".into(), default.into());
+            }
+            if let Some(label) = parameter.label {
+                old.insert("effort_label".into(), label.into());
+            }
+            if !parameter.wire.is_empty() {
+                old.insert("effort_wire".into(), serde_json::json!(parameter.wire));
+            }
+        }
+        if default_binding {
+            // A schema 33 hand-written Chat binding can belong to a Responses account.
+            old.insert(
+                "binding".into(),
+                serde_json::json!({"transport": {"protocol": "chat_completions"}}),
+            );
+        }
+        if default_capabilities {
+            old.remove("capabilities");
+        } else {
+            old.insert("capabilities".into(), serde_json::json!(capabilities));
+        }
+        if default_price {
+            old.remove("pricing");
+        } else {
+            old.insert("pricing".into(), serde_json::json!(price));
+        }
+        if default_truncation {
+            base.remove("truncation_policy");
+        }
+        old.remove("observation");
+        old.retain(|_, v| !v.is_null());
+        Self { base, extra: old }
+    }
+}

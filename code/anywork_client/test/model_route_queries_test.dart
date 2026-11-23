@@ -44,7 +44,7 @@ void main() {
         typeSupport: const [
           ModelTypeSupportView(
             modelType: ModelType.text,
-            exclusions: [ModelTypeExclusion.contextWindowUnknown],
+            exclusions: [ModelTypeExclusion.contextParametersInvalid],
           ),
         ],
       );

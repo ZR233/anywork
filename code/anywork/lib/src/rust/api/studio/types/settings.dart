@@ -872,14 +872,12 @@ enum BridgeModelContextAdjustment { safetyLimit }
 class BridgeModelContextResolution {
   final BridgeModelContextUnavailable? unavailable;
   final BigInt? contextWindow;
-  final BigInt? inputTokenLimit;
   final BigInt? autoCompactLimit;
   final BridgeModelContextAdjustment? adjustment;
 
   const BridgeModelContextResolution({
     this.unavailable,
     this.contextWindow,
-    this.inputTokenLimit,
     this.autoCompactLimit,
     this.adjustment,
   });
@@ -888,7 +886,6 @@ class BridgeModelContextResolution {
   int get hashCode =>
       unavailable.hashCode ^
       contextWindow.hashCode ^
-      inputTokenLimit.hashCode ^
       autoCompactLimit.hashCode ^
       adjustment.hashCode;
 
@@ -899,16 +896,11 @@ class BridgeModelContextResolution {
           runtimeType == other.runtimeType &&
           unavailable == other.unavailable &&
           contextWindow == other.contextWindow &&
-          inputTokenLimit == other.inputTokenLimit &&
           autoCompactLimit == other.autoCompactLimit &&
           adjustment == other.adjustment;
 }
 
-enum BridgeModelContextUnavailable {
-  windowUnknown,
-  invalidParameters,
-  inputBudgetExhausted,
-}
+enum BridgeModelContextUnavailable { invalidParameters }
 
 class BridgeModelDescriptor {
   final String modelId;
@@ -1207,9 +1199,7 @@ enum BridgeModelType { text }
 enum BridgeModelTypeExclusion {
   textInputUnsupported,
   textOutputUnsupported,
-  contextWindowUnknown,
   contextParametersInvalid,
-  inputBudgetExhausted,
 }
 
 class BridgeModelTypeSupport {
