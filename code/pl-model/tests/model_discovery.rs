@@ -352,18 +352,24 @@ async fn text_lists_and_route_admission_use_each_account_resolved_context() {
         30,
     );
     config.reconcile_model_catalog().unwrap();
-    // xAI's ID-only format has no media declaration. Both accounts may still call the text route.
-    for id in [a_id, b_id] {
-        let route = ModelRouteConfig {
-            account_id: id,
+    // Withdrawing every input modality applies only to the account that declared it.
+    let route = |account_id| ModelRouteConfig {
+        account_id,
+        model_id: "shared".into(),
+        effort: None,
+    };
+    assert_eq!(
+        config.route_availability(&route(a_id)).unwrap(),
+        ModelRouteAvailability::Available
+    );
+    assert_eq!(
+        config.route_availability(&route(b_id.clone())).unwrap(),
+        ModelRouteAvailability::TypeUnsupported {
+            account_id: b_id,
             model_id: "shared".into(),
-            effort: None,
-        };
-        assert_eq!(
-            config.route_availability(&route).unwrap(),
-            ModelRouteAvailability::Available
-        );
-    }
+            exclusions: vec![ModelTypeExclusion::TextInputUnsupported],
+        }
+    );
 }
 
 #[tokio::test]
