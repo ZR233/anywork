@@ -89,9 +89,12 @@ void main() {
       seconds = 1125;
       await tester.pump(const Duration(seconds: 1));
       expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
-      seconds += 86400;
+      seconds += 3600;
       await tester.pump(const Duration(seconds: 1));
-      expect(find.text('执行了 1442 分 5 秒'), findsOneWidget);
+      expect(find.text('执行了 1 小时 2 分 5 秒'), findsOneWidget);
+      seconds += 82800;
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('执行了 1 日 2 分 5 秒'), findsOneWidget);
       expect(
         tester
             .widget<TimelineActivityIndicator>(

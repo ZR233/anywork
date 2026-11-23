@@ -526,7 +526,7 @@ History row 保留真实原子事件 `event_id`、`kind`、`call_id`、`entity_i
 
 生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。时间线 controller 持唯一有界历史窗口：实时模式接纳最新页的 rows、cut 和 older 游标，普通更新按稳定 key 修改并裁到该页；历史浏览模式固定原 cut，older 只在同一应用队列中接纳，后台变化提示新输出而不覆盖旧窗口。回到实时位置以原 reader 的新最新页建立展示资格，同 row 只保留局部展开意图；业务提交不等待查询或绘制。组件操作成功并复核原 reader／display／mode 后，才公开 head 与 Current overlay。历史浏览不把当前 run 正文叠到旧行，Current State 与状态栏继续独立更新。具体 cut、成员与关闭合同见 [26](./26-timeline-content.md)。
 
-底部实时状态栏由 `features/conversation/timeline/live_status/` 自包含呈现，外壳只传入会话标识。其视图模型观察 Current State 和实际历史窗口，用 `LiveStatusProjection` 纯函数派生状态栏、当前活动与成员详情意图；局部请求只保留加载/错误与资格，不复制业务快照或归约状态机。诊断借用同一派生结果。保存、停止、审批和错误等业务状态独立可见，正文未加载不能推断执行结束。Current 与 History 同身份行不重复叠加；展开、滚动与跟随输出属于 UI，不进入业务摘要。
+底部实时状态栏由 `features/conversation/timeline/live_status/` 自包含呈现，外壳只传入会话标识。其视图模型（`LiveStatusViewModel`）观察 Current State、实时同步状态（`DomainSyncStatus`）和实际历史窗口，用纯状态机 `LiveStatusMachine`（零 Flutter/Riverpod/FRB 依赖）与 `projectConversationActivity` 派生互斥四相主阶段（`LiveResponsePhase`、`LiveWorkPhase`、`LiveCompactingPhase`、`LiveActivityPhase`）、正交去重的并发关注条（`LiveStatusAttention`：停止控制、审批/输入等待、五态存储严重度、连接降级、错误）与顶层交互遮蔽门控（`LiveStatusGateState`）；共享成员列表提取为 `WorkGroupMemberList`，顶行视觉规格统一由 `LiveStatusHeaderSpec` 派生，纯视图由 `LiveStatusSurfaceView` 渲染并向 `timeline_views.dart` 与官方预览导出，诊断借用同一派生结果。保存、停止、审批、连接降级和错误等业务状态独立可见，正文未加载不能推断执行结束。Current 与 History 同身份行不重复叠加；展开、滚动与跟随输出属于 UI，不进入业务摘要。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 

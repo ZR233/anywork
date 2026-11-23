@@ -828,14 +828,16 @@ void main() {
       );
       await pumpClientUntil(
         tester,
-        () => find
-            .descendant(
-              of: find.byType(LiveStatusBar),
-              matching: find.text(streamBody),
-            )
-            .evaluate()
-            .isNotEmpty,
-        'streaming body in LiveStatusBar',
+        () =>
+            lease.controller.messages.length == 2 &&
+            find
+                .descendant(
+                  of: find.byType(LiveStatusBar),
+                  matching: find.text(streamBody),
+                )
+                .evaluate()
+                .isNotEmpty,
+        'streaming body in LiveStatusBar settles preceding work group',
       );
       expect(
         find.descendant(
@@ -846,17 +848,26 @@ void main() {
       );
       expect(
         find.descendant(
+          of: find.byType(LiveStatusBar),
+          matching: find.byType(CompletionRunView),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.descendant(
           of: find.byType(TimelineConnector),
           matching: find.text(streamBody),
         ),
         findsNothing,
       );
-      expect(
-        identical(lease.controller.messages.single, input1Message),
-        isTrue,
-      );
+      expect(lease.controller.messages.map((m) => m.id), [
+        'row:input-1',
+        'work:2',
+      ]);
+      expect(identical(lease.controller.messages.first, input1Message), isTrue);
+      final streamingSettledWorkMessage = lease.controller.messages[1];
 
-      // Final divider + idle state settles WorkRange + reply once into Timeline and hides LiveStatusBar.
+      // Final divider + idle state settles reply into Timeline and hides LiveStatusBar.
       final idleWorkspace = chatWorkspace(_threadId).copyWith(revision: 4);
       final idleProjection = CurrentProjection(
         logicalStatus: ThreadStatusView.idle,
@@ -903,6 +914,10 @@ void main() {
         'row:text-1',
       ]);
       expect(identical(lease.controller.messages[0], input1Message), isTrue);
+      expect(
+        identical(settledWorkMessage, streamingSettledWorkMessage),
+        isTrue,
+      );
       expect(
         identical(lease.controller.messages[2], settledReplyMessage),
         isTrue,

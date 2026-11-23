@@ -7,7 +7,7 @@ import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
 import '../view_models/display_member_controller.dart';
-import 'timeline_member_atom.dart';
+import 'work_group_member_list.dart';
 import '../../../../presentation/view_models/timeline_session_owner.dart';
 
 /// Borrows the stable block demand from the original display lease.
@@ -116,68 +116,24 @@ class _MembersState extends State<CompletionRunConnector>
   }
 
   @override
-  Widget build(BuildContext context) {
-    final controller = _controller;
-    if (controller == null) return const Text('成员读取尚未就绪');
-    return ListenableBuilder(
-      listenable: controller,
-      builder: (_, _) => _memberList(controller),
-    );
-  }
-
-  Widget _memberList(DisplayMemberController controller) => Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      if (controller.error case final error?)
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(error.toString()),
-            TextButton(onPressed: controller.retry, child: const Text('重试')),
-          ],
-        ),
-      if (controller.loading) const LinearProgressIndicator(),
-      for (final entry in controller.entries)
-        ValueListenableBuilder<DisplayMemberHead?>(
-          key: ValueKey(entry.memberKey),
-          valueListenable: controller.member(entry.memberKey),
-          builder: (_, value, _) => value == null
-              ? const SizedBox.shrink()
-              : _member(controller, value),
-        ),
-    ],
+  Widget build(BuildContext context) => WorkGroupMemberList(
+    controller: _controller,
+    blockReference: blockReference,
+    executionPresent: widget.unit.executionPresent,
+    threadId: widget.threadId,
+    currentReader: widget.content.current,
+    retirement: widget.unit.expansion.retirement,
+    isActive: () => isCurrent && widget.unit.expansion.expanded == true,
+    images: widget.images,
+    readAttachment: widget.readAttachment,
+    monotonicMicros: widget.monotonicMicros,
+    onContentLayout: widget.onContentLayout,
+    onCurrentContentLayout: widget.onCurrentContentLayout,
+    onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
+    hideSealedCurrentPlaceholders: true,
+    registerMemberDisplay: (member) {
+      _members.add(member);
+      return () => _members.remove(member);
+    },
   );
-
-  Widget _member(DisplayMemberController controller, DisplayMemberHead entry) {
-    if (controller.awaitingSealed &&
-        entry.record.contentSource is CurrentAtomSource) {
-      return const Text('正在读取封存观察…');
-    }
-    return TimelineMemberAtom(
-      key: ValueKey((
-        blockReference,
-        entry.memberKey,
-        controller.disclosure(entry.memberKey),
-      )),
-      record: entry.record,
-      displayId: entry.memberKey,
-      disclosure: controller.disclosure(entry.memberKey),
-      executionPresent: widget.unit.executionPresent,
-      threadId: widget.threadId,
-      currentReader: widget.content.current,
-      retirement: widget.unit.expansion.retirement,
-      isActive: () => isCurrent && widget.unit.expansion.expanded == true,
-      images: widget.images,
-      readAttachment: widget.readAttachment,
-      monotonicMicros: widget.monotonicMicros,
-      onContentLayout: widget.onContentLayout,
-      onCurrentContentLayout: widget.onCurrentContentLayout,
-      onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
-      registerDisplay: (member) {
-        _members.add(member);
-        return () => _members.remove(member);
-      },
-    );
-  }
 }

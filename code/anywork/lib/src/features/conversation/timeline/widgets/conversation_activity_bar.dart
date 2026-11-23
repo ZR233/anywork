@@ -2,39 +2,17 @@ import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
-import '../../../../l10n/studio_l10n.dart';
+import '../live_status/live_status_header_spec.dart';
 import '../live_status/live_status_state.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_activity_section.dart';
 
-class ConversationRealtimeNotices extends StatelessWidget {
-  const ConversationRealtimeNotices({required this.notices, super.key});
-  final List<LiveStatusNotice> notices;
-  @override
-  Widget build(BuildContext context) => Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      for (final notice in notices)
-        switch (notice) {
-          ExecutionLiveNotice(:final view) => ConversationActivityStatus(
-            view: view,
-          ),
-        },
-    ],
-  );
-}
-
 /// 实时区唯一外壳。生产连接层和官方预览传入同一套纯呈现组件。
 class ConversationActivityBar extends StatelessWidget {
-  const ConversationActivityBar({
-    required this.children,
-    this.leading = const [],
-    super.key,
-  });
+  const ConversationActivityBar({required this.children, super.key});
+
   final List<Widget> children;
-  final List<Widget> leading;
 
   @override
   Widget build(BuildContext context) => Padding(
@@ -71,26 +49,14 @@ class ConversationActivityBar extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        if (leading.isNotEmpty)
-                          Flexible(
-                            key: const ObjectKey(ConversationActivityBar),
-                            fit: FlexFit.loose,
-                            child: SingleChildScrollView(
-                              primary: false,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: leading,
-                              ),
-                            ),
-                          ),
                         for (final child in children)
-                          Flexible(
-                            key: child.key,
-                            flex: 3,
-                            fit: FlexFit.loose,
-                            child: child,
-                          ),
+                          child is Flexible
+                              ? child
+                              : Flexible(
+                                  key: child.key,
+                                  fit: FlexFit.loose,
+                                  child: child,
+                                ),
                       ],
                     ),
                   ),
@@ -104,41 +70,51 @@ class ConversationActivityBar extends StatelessWidget {
   );
 }
 
-/// 无正文的当前状态；不创建空工作组、详情入口或本地业务状态。
+/// 无正文的当前状态；统一通过 [LiveStatusHeaderSpec] 派生图标、语义色、动画样式与耗时文案。
 class ConversationActivityStatus extends StatelessWidget {
-  const ConversationActivityStatus({required this.view, super.key});
+  const ConversationActivityStatus({
+    required this.view,
+    this.storageSeverity,
+    this.specOverride,
+    super.key,
+  });
+
   final ConversationActivityView view;
+  final LiveStorageSeverity? storageSeverity;
+  final LiveStatusHeaderSpec? specOverride;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    container: true,
-    liveRegion: true,
-    child: TimelineActivitySection(
-      header: TimelineActivityRow(
-        label: view.errorMessage ?? context.conversationActivityLabel(view),
-        icon: view.kind.icon,
-        indicatorStyle: resolveLiveHeaderIndicatorStyle(view),
-        isIssue: view.kind.isIssue,
-        active:
-            view.waits ||
-            view.kind == ConversationActivityKind.responding ||
-            view.kind == ConversationActivityKind.planning,
-        emphasized:
-            view.kind == ConversationActivityKind.responding ||
-            view.kind == ConversationActivityKind.runningTool ||
-            view.kind == ConversationActivityKind.planning,
-        expandable: false,
-        header: true,
-        tooltip: view.errorMessage ?? view.summary,
-        meta:
-            view.kind == ConversationActivityKind.thinking &&
-                view.thinkingSeconds != null
-            ? activityDurationLabel(context, view.thinkingSeconds!)
-            : null,
-        metaKey: const ValueKey('conversation-activity-trailing-meta'),
+  Widget build(BuildContext context) {
+    final spec =
+        specOverride ??
+        LiveStatusHeaderSpec.forActivity(
+          context,
+          view,
+          storageSeverity: storageSeverity,
+        );
+    return Semantics(
+      container: true,
+      liveRegion: true,
+      child: TimelineActivitySection(
+        header: TimelineActivityRow(
+          label: spec.label,
+          icon: spec.icon,
+          iconColor: spec.iconColor,
+          labelColor: spec.labelColor,
+          labelWidget: spec.labelWidget,
+          indicatorStyle: spec.indicatorStyle,
+          isIssue: spec.isIssue,
+          active: spec.active,
+          emphasized: spec.emphasized,
+          expandable: false,
+          header: true,
+          tooltip: spec.tooltip,
+          meta: spec.meta,
+          metaKey: const ValueKey('conversation-activity-trailing-meta'),
+        ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 /// 当前文本的唯一呈现入口；正文读取与窗口翻页仍由连接层负责。
@@ -148,12 +124,14 @@ class ConversationResponseView extends StatelessWidget {
     this.startedAt,
     this.finishedAt,
     this.active = true,
+    this.now,
     super.key,
   });
   final Widget child;
   final int? startedAt;
   final int? finishedAt;
   final bool active;
+  final DateTime Function()? now;
 
   @override
   Widget build(BuildContext context) => TimelineActivitySection(
@@ -163,16 +141,30 @@ class ConversationResponseView extends StatelessWidget {
       startedAt: startedAt,
       finishedAt: finishedAt,
       running: active,
-      builder: (context, seconds) => TimelineActivityRow(
-        label: context.l10n.conversationActivityResponding,
-        icon: Icons.chat_bubble_outline,
-        indicatorStyle: TimelineActivityIndicatorStyle.writing,
-        active: active,
-        emphasized: active,
-        header: true,
-        expandable: false,
-        meta: seconds == null ? null : activityDurationLabel(context, seconds),
-      ),
+      now: now,
+      builder: (context, seconds) {
+        final spec = LiveStatusHeaderSpec.forActivity(
+          context,
+          const ConversationActivityView(
+            identity: 'response',
+            kind: ConversationActivityKind.responding,
+          ),
+          seconds: seconds,
+        );
+        return TimelineActivityRow(
+          label: spec.label,
+          icon: spec.icon,
+          iconColor: spec.iconColor,
+          labelColor: spec.labelColor,
+          indicatorStyle: spec.indicatorStyle,
+          active: active,
+          emphasized: active,
+          header: true,
+          expandable: false,
+          meta: spec.meta,
+          tooltip: spec.tooltip,
+        );
+      },
     ),
     body: Padding(
       padding: const EdgeInsetsDirectional.only(

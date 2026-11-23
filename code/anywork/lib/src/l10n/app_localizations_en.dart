@@ -2026,62 +2026,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineReasoningElapsedUnderSecond => 'Thought for less than 1s';
 
   @override
-  String timelineReasoningElapsedSeconds(int seconds) {
-    return 'Thought for ${seconds}s';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutes(int minutes) {
-    return 'Thought for ${minutes}m';
-  }
-
-  @override
-  String timelineReasoningElapsedMinutesSeconds(int minutes, int seconds) {
-    return 'Thought for ${minutes}m ${seconds}s';
+  String timelineReasoningElapsedDuration(String duration) {
+    return 'Thought for $duration';
   }
 
   @override
   String get timelineGroupWorkedUnderSecond => 'Worked for less than 1s';
 
   @override
-  String timelineGroupWorkedSeconds(int seconds) {
-    return 'Worked for ${seconds}s';
-  }
-
-  @override
-  String timelineGroupWorkedMinutes(int minutes) {
-    return 'Worked for ${minutes}m';
-  }
-
-  @override
-  String timelineGroupWorkedMinutesSeconds(int minutes, int seconds) {
-    return 'Worked for ${minutes}m ${seconds}s';
+  String timelineGroupWorkedDuration(String duration) {
+    return 'Worked for $duration';
   }
 
   @override
   String get timelineGroupExecutingUnderSecond => 'Running for less than 1s';
 
   @override
-  String timelineGroupExecutingSeconds(int seconds) {
-    return 'Running for ${seconds}s';
-  }
-
-  @override
-  String timelineGroupExecutingMinutes(int minutes) {
-    return 'Running for ${minutes}m';
-  }
-
-  @override
-  String timelineGroupExecutingMinutesSeconds(int minutes, int seconds) {
-    return 'Running for ${minutes}m ${seconds}s';
+  String timelineGroupExecutingDuration(String duration) {
+    return 'Running for $duration';
   }
 
   @override
   String get timelineGroupClosing => 'Finishing work';
-
-  @override
-  String get timelineGroupUnrestored =>
-      'Previous work is unfinished and has not resumed';
 
   @override
   String get timelineReasoningSummary => 'Summary';
@@ -2225,18 +2191,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineToolElapsedUnderSecond => 'Took less than 1s';
 
   @override
-  String timelineToolElapsedSeconds(int seconds) {
-    return 'Took ${seconds}s';
-  }
-
-  @override
-  String timelineToolElapsedMinutes(int minutes) {
-    return 'Took ${minutes}m';
-  }
-
-  @override
-  String timelineToolElapsedMinutesSeconds(int minutes, int seconds) {
-    return 'Took ${minutes}m ${seconds}s';
+  String timelineToolElapsedDuration(String duration) {
+    return 'Took $duration';
   }
 
   @override
@@ -6407,9 +6363,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineGroupUnfinished => 'Work unfinished';
 
   @override
-  String get timelineGroupWorking => 'Working';
-
-  @override
   String get timelineGroupRecord => 'Work record';
 
   @override
@@ -7694,6 +7647,32 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek web fetch';
+
+  @override
+  String get liveStatusConnectionDisconnected => 'Live updates disconnected';
+
+  @override
+  String get liveStatusConnectionReconnecting => 'Reconnecting live updates';
+
+  @override
+  String get liveStatusMembersUnavailable => 'Member view unavailable';
+
+  @override
+  String get liveStatusMembersLoading => 'Loading sealed members…';
+
+  @override
+  String get liveStatusRetryAction => 'Retry';
+
+  @override
+  String liveStatusContentRangeWindow(int start, int end, int total) {
+    return 'Bytes $start–$end / $total';
+  }
+
+  @override
+  String get liveStatusContentFirstSegment => 'First chunk';
+
+  @override
+  String get liveStatusContentNextSegment => 'Next chunk';
 
   @override
   String get timelinePatchUnavailableHint =>

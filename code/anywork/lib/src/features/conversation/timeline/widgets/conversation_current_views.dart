@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+import '../../../../l10n/studio_l10n.dart';
 import 'timeline_markdown.dart';
 
 /// A bounded current-content window. The supplied text is already accepted by
@@ -92,7 +93,11 @@ class ConversationCurrentWindowView extends StatelessWidget {
                 runSpacing: 2,
                 children: [
                   Text(
-                    '字节 $offset–$end / $availableThrough',
+                    context.l10n.liveStatusContentRangeWindow(
+                      offset!,
+                      end!,
+                      availableThrough!,
+                    ),
                     style: context.text.labelSmall?.copyWith(
                       color: colors.onSurfaceVariant,
                       fontSize: 11,
@@ -104,7 +109,7 @@ class ConversationCurrentWindowView extends StatelessWidget {
                       style: TextButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                       ),
-                      child: const Text('第一段'),
+                      child: Text(context.l10n.liveStatusContentFirstSegment),
                     ),
                   if (hasLater && end! > offset! && onNext != null)
                     TextButton(
@@ -112,7 +117,7 @@ class ConversationCurrentWindowView extends StatelessWidget {
                       style: TextButton.styleFrom(
                         visualDensity: VisualDensity.compact,
                       ),
-                      child: const Text('下一段'),
+                      child: Text(context.l10n.liveStatusContentNextSegment),
                     ),
                 ],
               ),

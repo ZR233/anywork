@@ -3,12 +3,15 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:anywork_client/conversation.dart';
+import 'package:anywork_client/models.dart'
+    show ConversationActivityKind, ConversationActivityView;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
+import '../live_status/live_status_header_spec.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_image_resources.dart';
@@ -393,17 +396,27 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       return TimelineActivityClock.fromUnixSeconds(
         startedAt: widget.executionPresent ? atom.startedAt : null,
         running: widget.executionPresent && atom.startedAt != null,
-        builder: (context, seconds) => TimelineActivityRow(
-          icon: Icons.compress_outlined,
-          indicatorStyle: TimelineActivityIndicatorStyle.compactingZip,
-          label: context.l10n.conversationActivityCompacting,
-          active: widget.executionPresent,
-          header: true,
-          expandable: false,
-          meta: seconds == null
-              ? null
-              : activityDurationLabel(context, seconds),
-        ),
+        builder: (context, seconds) {
+          final spec = LiveStatusHeaderSpec.forActivity(
+            context,
+            ConversationActivityView(
+              identity: 'compaction:${atom.id}',
+              kind: ConversationActivityKind.compacting,
+            ),
+            seconds: seconds,
+          );
+          return TimelineActivityRow(
+            icon: spec.icon,
+            iconColor: spec.iconColor,
+            labelColor: spec.labelColor,
+            indicatorStyle: spec.indicatorStyle,
+            label: spec.label,
+            active: widget.executionPresent && spec.active,
+            header: true,
+            expandable: false,
+            meta: spec.meta,
+          );
+        },
       );
     }
     if (atom.payload != null || widget.record.historyEventId != null) {
