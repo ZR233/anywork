@@ -3636,5 +3636,39 @@
   "timelineToolNameWorkflowRestart": "Restart workflow",
   "timelineToolNameWebSearch": "Web query",
   "timelineToolNameDeepseekWebSearch": "DeepSeek web search",
-  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch"
+  "timelineToolNameDeepseekWebFetch": "DeepSeek web fetch",
+  "timelinePatchUnavailableHint": "Patch hunk unavailable: content is incomplete or cannot be parsed",
+  "timelinePatchFileAdd": "Add",
+  "timelinePatchFileUpdate": "Update",
+  "timelinePatchFileDelete": "Delete",
+  "timelineToolCallFallback": "Tool call",
+  "timelineToolArgumentsIncompleteTitle": "Tool arguments incomplete",
+  "timelineToolArgumentsIncompleteDetail": "The argument window did not include the complete body",
+  "timelineToolIdentityMismatchTitle": "Tool identity mismatch",
+  "timelineToolIdentityMismatchDetail": "Declared call identity differs from completion payload",
+  "timelineToolMalformedLabel": "{name} · Malformed content",
+  "@timelineToolMalformedLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredLabel": "{name} · Body loaded on demand",
+  "@timelineToolDeferredLabel": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineToolDeferredReason": "Arguments are loaded on demand; full content has not been retrieved yet",
+  "timelineToolParseFailed": "Current tool content cannot be parsed: {reason}",
+  "@timelineToolParseFailed": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  }
 }

@@ -7246,4 +7246,49 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
+
+  @override
+  String get timelinePatchUnavailableHint => '补丁片段不可用：内容不完整或无法完整解析';
+
+  @override
+  String get timelinePatchFileAdd => '新增';
+
+  @override
+  String get timelinePatchFileUpdate => '更新';
+
+  @override
+  String get timelinePatchFileDelete => '删除';
+
+  @override
+  String get timelineToolCallFallback => '工具调用';
+
+  @override
+  String get timelineToolArgumentsIncompleteTitle => '工具参数不完整';
+
+  @override
+  String get timelineToolArgumentsIncompleteDetail => '参数窗口未包含完整正文';
+
+  @override
+  String get timelineToolIdentityMismatchTitle => '工具内容身份不一致';
+
+  @override
+  String get timelineToolIdentityMismatchDetail => '声明的调用身份与完成载荷不同';
+
+  @override
+  String timelineToolMalformedLabel(String name) {
+    return '$name · 内容格式错误';
+  }
+
+  @override
+  String timelineToolDeferredLabel(String name) {
+    return '$name · 正文按需读取';
+  }
+
+  @override
+  String get timelineToolDeferredReason => '参数按需读取，尚未取得完整业务内容';
+
+  @override
+  String timelineToolParseFailed(String reason) {
+    return '当前工具内容无法解析：$reason';
+  }
 }

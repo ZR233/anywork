@@ -6,7 +6,7 @@ import 'package:anywork/src/features/conversation/timeline/state/tool_presentati
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/models.dart';
@@ -192,7 +192,7 @@ void main() {
         final changes = <bool>[];
         Widget tool(String id, {required bool initiallyExpanded}) {
           final item = _tool(id, webSearch: webSearch);
-          final Widget child = TimelineToolDetails(
+          final Widget child = TimelineToolItemView(
             item: item,
             initiallyExpanded: initiallyExpanded,
             onExpansionChanged: changes.add,
@@ -260,7 +260,7 @@ void main() {
       output: '',
     );
     await tester.pumpWidget(
-      _host(TimelineToolDetails(item: item, onExpansionChanged: changes.add)),
+      _host(TimelineToolItemView(item: item, onExpansionChanged: changes.add)),
     );
     final tile = find.byType(ExpansionTile);
     final expansion = tester.widget<ExpansionTile>(tile);

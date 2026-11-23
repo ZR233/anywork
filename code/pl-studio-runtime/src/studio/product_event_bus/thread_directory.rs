@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
 use crate::studio::records::{
-    AgentDirectoryRecord, SessionDirectoryRecord, row_projection, thread_projection,
+    AcpDirectoryTitle, AcpPeerTitle, AcpTitleLabel, AgentDirectoryRecord, SessionDirectoryRecord,
+    row_projection, thread_projection,
 };
 use crate::studio::store::directory::{DirectoryDelta, ThreadDirectoryCursor};
 use crate::{
@@ -334,7 +335,7 @@ impl ThreadDirectoryIndex {
                         task: agent
                             .title
                             .clone()
-                            .unwrap_or_else(|| entry.session.title.clone()),
+                            .unwrap_or_else(|| entry.session.display_title().to_owned()),
                         summary: native.and_then(|projection| projection.summary.clone()),
                         activity,
                         updated_at: agent.updated_at,
@@ -585,6 +586,18 @@ impl DirectoryRead {
     }
 }
 
+fn active_acp_member<'a>(
+    index: &'a ThreadDirectoryIndex,
+    thread_id: &str,
+    reference: &crate::AcpSessionReference,
+) -> Option<(&'a SessionDirectoryRecord, &'a AgentDirectoryRecord)> {
+    let (session, agent) = index.directory_facts(thread_id)?;
+    (!session.archived
+        && !agent.explicitly_closed
+        && matches!(&agent.backend, crate::AgentBackend::Acp { reference: actual } if actual == reference))
+        .then_some((session, agent))
+}
+
 fn rebase_command_session(
     mut current: SessionDirectoryRecord,
     requested: &SessionDirectoryRecord,
@@ -601,6 +614,7 @@ fn rebase_command_session(
     command_field!(root_agent_id);
     command_field!(workspace_id);
     command_field!(title);
+    command_field!(acp_title);
     command_field!(native_mode);
     command_field!(workspace_mode);
     command_field!(delegation_mode);
@@ -1048,6 +1062,8 @@ impl ProductEventBus {
         {
             return;
         }
+        let existing = index.get_session(&row.session_id);
+        let acp_title = existing.and_then(|session| session.acp_title.clone());
         let session = SessionDirectoryRecord {
             session_id: row.session_id.clone(),
             root_agent_id: if row.is_root_row() {
@@ -1059,14 +1075,13 @@ impl ProductEventBus {
                     .unwrap_or_default()
             },
             workspace_id: row.workspace_id.clone(),
-            title: if row.is_root_row() {
-                row.title.clone()
-            } else {
-                index
-                    .get_session(&row.session_id)
-                    .map(|session| session.title.clone())
-                    .unwrap_or_default()
+            // Projected rows carry the visible value, not the underlying ACP label.
+            title: match existing {
+                Some(session) if acp_title.is_some() || !row.is_root_row() => session.title.clone(),
+                _ if row.is_root_row() => row.title.clone(),
+                _ => String::new(),
             },
+            acp_title,
             native_mode: if row.is_root_row() {
                 row.mode.clone()
             } else {
@@ -1357,6 +1372,202 @@ impl ProductEventBus {
         self.emit_thread_delta_locked(&index, vec![row], Vec::new());
     }
 
+    /// An accepted input is already a fact. Update the directory and enqueue its
+    /// persistence together, so a write failure cannot re-arm the first-input label.
+    pub(in crate::studio) async fn record_acp_first_input_title(
+        &self,
+        thread_id: &str,
+        reference: &crate::AcpSessionReference,
+        title: String,
+    ) {
+        self.observe_acp_root_title(thread_id, reference, |session, metadata| {
+            if metadata.label != AcpTitleLabel::AwaitingInput {
+                return false;
+            }
+            metadata.label = AcpTitleLabel::Fallback;
+            session.title = title;
+            true
+        })
+        .await;
+    }
+
+    pub(in crate::studio) async fn record_acp_pushed_title(
+        &self,
+        thread_id: &str,
+        reference: &crate::AcpSessionReference,
+        peer: AcpPeerTitle,
+    ) {
+        self.observe_acp_root_title(thread_id, reference, |_, metadata| {
+            if metadata.peer.as_ref() == Some(&peer) {
+                return false;
+            }
+            metadata.peer = Some(peer);
+            true
+        })
+        .await;
+    }
+
+    async fn observe_acp_root_title(
+        &self,
+        thread_id: &str,
+        reference: &crate::AcpSessionReference,
+        apply: impl FnOnce(&mut SessionDirectoryRecord, &mut AcpDirectoryTitle) -> bool,
+    ) {
+        let _command = self.directory_commands.lock().await;
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let Some((session, agent)) = active_acp_member(&index, thread_id, reference) else {
+            return;
+        };
+        if !agent.is_root_agent() {
+            return;
+        }
+        let mut session = session.clone();
+        let Some(mut metadata) = session.acp_title.take() else {
+            return;
+        };
+        if apply(&mut session, &mut metadata) {
+            session.acp_title = Some(metadata);
+            self.publish_acp_title_facts(&mut index, vec![session]);
+        }
+    }
+
+    /// An explicit external-list page only supplies titles to already-associated roots.
+    /// It can neither create membership nor outrank a push, even a push that cleared it.
+    pub(in crate::studio) async fn record_acp_list_titles(
+        &self,
+        source_thread_id: &str,
+        source: &crate::AcpSessionReference,
+        listed: &[crate::acp_schema::SessionInfo],
+    ) {
+        let titles: HashMap<_, _> = listed
+            .iter()
+            .filter_map(|item| {
+                let title = item.title.as_deref()?.trim();
+                (item.cwd.to_str() == Some(source.cwd.as_str()) && !title.is_empty())
+                    .then_some((item.session_id.0.as_ref(), title))
+            })
+            .collect();
+        if titles.is_empty() {
+            return;
+        }
+        let _command = self.directory_commands.lock().await;
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        if active_acp_member(&index, source_thread_id, source).is_none() {
+            return;
+        }
+        let sessions = index
+            .sessions
+            .values()
+            .filter_map(|entry| {
+                let root = entry.root_agent()?;
+                let crate::AgentBackend::Acp { reference } = &root.backend else {
+                    return None;
+                };
+                if entry.session.archived
+                    || root.explicitly_closed
+                    || reference.account_id != source.account_id
+                    || reference.cwd != source.cwd
+                {
+                    return None;
+                }
+                let title = *titles.get(reference.acp_session_id.as_str())?;
+                let metadata = entry.session.acp_title.as_ref()?;
+                match &metadata.peer {
+                    Some(AcpPeerTitle::Pushed { .. }) => return None,
+                    Some(AcpPeerTitle::Listed { title: previous }) if previous == title => {
+                        return None;
+                    }
+                    _ => {}
+                }
+                let mut session = entry.session.clone();
+                session.acp_title.as_mut()?.peer = Some(AcpPeerTitle::Listed {
+                    title: title.to_owned(),
+                });
+                Some(session)
+            })
+            .collect::<Vec<_>>();
+        self.publish_acp_title_facts(&mut index, sessions);
+    }
+
+    /// Publish the same directory rows as other observed facts; a hidden title
+    /// update still persists but doesn't advance the visible directory revision.
+    fn publish_acp_title_facts(
+        &self,
+        index: &mut ThreadDirectoryIndex,
+        sessions: Vec<SessionDirectoryRecord>,
+    ) {
+        if sessions.is_empty() {
+            return;
+        }
+        let mut rows = Vec::new();
+        for session in &sessions {
+            if let Some(previous) = index.get_session(&session.session_id)
+                && previous.display_title() != session.display_title()
+            {
+                rows.extend(
+                    index
+                        .agents_of(&session.session_id)
+                        .into_iter()
+                        .filter(|agent| agent.title.is_none())
+                        .map(|agent| row_projection(session, &agent)),
+                );
+            }
+        }
+        let before_agents = (!rows.is_empty()).then(|| index.agent_directory_entries());
+        for session in &sessions {
+            index.insert_session(session.clone());
+        }
+        self.writer.record_directory(DirectoryDelta {
+            session_upserts: sessions,
+            ..Default::default()
+        });
+        if let Some(before_agents) = before_agents {
+            self.publish_agent_directory_locked(index, before_agents);
+            self.emit_thread_delta_locked(index, rows, Vec::new());
+        }
+    }
+
+    pub(in crate::studio) async fn rename_acp_root_title(
+        &self,
+        thread_id: &str,
+        title: String,
+    ) -> Result<(StudioProductEventEnvelope, bool)> {
+        let _command = self.directory_commands.lock().await;
+        let (mut session, agent) = self
+            .directory_facts(thread_id)
+            .context("ACP session is missing")?;
+        anyhow::ensure!(
+            agent.is_root_agent()
+                && !session.archived
+                && matches!(&agent.backend, crate::AgentBackend::Acp { .. }),
+            "ACP root cannot be renamed"
+        );
+        let metadata = session
+            .acp_title
+            .as_mut()
+            .context("ACP title metadata is missing")?;
+        let changed = session.title != title || metadata.label != AcpTitleLabel::Alias;
+        metadata.label = AcpTitleLabel::Alias;
+        session.title = title;
+        session.updated_at = crate::studio::unix_seconds();
+        let event = self
+            .commit_directory_locked(
+                DirectoryDelta {
+                    session_upserts: vec![session],
+                    ..Default::default()
+                },
+                DirectoryBaselines::default(),
+            )
+            .await?;
+        Ok((event, changed))
+    }
+
     /// Records only the Mode fact already committed by core, not an earlier whole-row copy.
     /// A failed/cancelled wait cannot reject that fact: write-behind retains the exact delta and
     /// exposes its normal PersistenceState/retry path. No core operation is replayed on retry.
@@ -1458,10 +1669,18 @@ impl ProductEventBus {
         delta: DirectoryDelta,
         bases: DirectoryBaselines,
     ) -> Result<StudioProductEventEnvelope> {
+        let _command = self.directory_commands.lock().await;
+        self.commit_directory_locked(delta, bases).await
+    }
+
+    async fn commit_directory_locked(
+        &self,
+        delta: DirectoryDelta,
+        bases: DirectoryBaselines,
+    ) -> Result<StudioProductEventEnvelope> {
         if delta.is_empty() {
             return Err(anyhow::anyhow!("directory delta is empty"));
         }
-        let _command = self.directory_commands.lock().await;
         #[cfg(test)]
         tests::pause(&self.directory_test_pauses.commit_before_persist).await;
         // Persist without holding the metadata lock. Readers continue to see the previous
@@ -1874,6 +2093,12 @@ pub(super) mod tests {
             root_agent_id: row.agent_id.clone(),
             workspace_id: row.workspace_id.clone(),
             title: row.title.clone(),
+            acp_title: matches!(&row.backend, crate::AgentBackend::Acp { .. }).then_some(
+                AcpDirectoryTitle {
+                    label: AcpTitleLabel::Legacy,
+                    peer: None,
+                },
+            ),
             native_mode: row.mode.clone(),
             workspace_mode: row.workspace_mode,
             delegation_mode: row.delegation_mode,

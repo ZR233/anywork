@@ -64,6 +64,7 @@ impl DirectoryDelta {
             root_agent_id: session_id.clone(),
             workspace_id: workspace_id.to_string(),
             title: non_empty_title(title),
+            acp_title: None,
             native_mode: Some(mode),
             workspace_mode,
             delegation_mode: Default::default(),

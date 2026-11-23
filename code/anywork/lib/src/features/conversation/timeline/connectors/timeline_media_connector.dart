@@ -12,6 +12,7 @@ import '../state/timeline_display_unit.dart';
 import 'file_reading_panel.dart';
 import '../state/timeline_image_resources.dart';
 import '../state/chat_item_presentation.dart';
+import '../tools/tool_item_registry.dart';
 import '../widgets/content_layout_witness.dart';
 import '../widgets/timeline_attachments_view.dart';
 import '../widgets/timeline_image_view.dart';
@@ -196,7 +197,9 @@ class _TimelineAttachmentsConnectorState
     _deferredBody = null;
     _deferredGeneration = null;
     _deferredStarted = false;
-    if (widget.item.presentationContract == 'builtin.show_files@1') {
+    if (timelineToolItemRegistry
+        .resolveForChatItem(widget.item)
+        .usesFileArtifactsMedia) {
       final body = widget.item.body('tool.output-artifacts');
       if (body?.inline != null) {
         try {
