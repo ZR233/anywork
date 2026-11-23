@@ -13,6 +13,22 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.47.0](https://github.com/ZR233/anywork/compare/v6.46.0...v6.47.0) (2026-11-23)
+
+
+### Features
+
+* **studio:** 增加 ACP 会话内存信息快照与状态栏独立悬停弹层 ([#534](https://github.com/ZR233/anywork/issues/534)) ([17f6a8b](https://github.com/ZR233/anywork/commit/17f6a8b5d3445782e0fef6e31fb3b312548ccf37))
+* **studio:** 按请求速度档位拆分 GPT 性能统计 ([#535](https://github.com/ZR233/anywork/issues/535)) ([b7cc447](https://github.com/ZR233/anywork/commit/b7cc44755d05a27234749a7337fbd6dd17462ade))
+* **studio:** 支持受管 Antigravity 大版本 1 升级并重构账户界面 ([#539](https://github.com/ZR233/anywork/issues/539)) ([41279be](https://github.com/ZR233/anywork/commit/41279be5ddcaf072fd2b5b17496356e3ae7b6067))
+
+
+### Refactoring
+
+* **model:** 统一兼容模型目录、能力和压缩阈值 ([#538](https://github.com/ZR233/anywork/issues/538)) ([e2a375a](https://github.com/ZR233/anywork/commit/e2a375a84b679e71927765a2d821c15aa710a973))
+* **studio:** ACP 工具与过程分组复用普通会话时间线组件 ([#540](https://github.com/ZR233/anywork/issues/540)) ([f44de77](https://github.com/ZR233/anywork/commit/f44de770813088660e19761ed6b72f076d35b0cd))
+* **studio:** 以状态机重构实时状态栏并复用工作组组件 ([#536](https://github.com/ZR233/anywork/issues/536)) ([60e7ec8](https://github.com/ZR233/anywork/commit/60e7ec8692df2aafd87154cd76db4cae1d2958a2))
+
 ## [6.46.0](https://github.com/ZR233/anywork/compare/v6.45.0...v6.46.0) (2026-11-23)
 
 
