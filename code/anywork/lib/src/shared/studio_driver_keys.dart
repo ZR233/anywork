@@ -337,7 +337,7 @@ abstract final class StudioDriverKeys {
     String? effort, {
     String? requestedServiceTier,
   }) => ValueKey<String>(
-    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort, if (requestedServiceTier != null) requestedServiceTier])}',
+    'statistics-summary-effort-row:${jsonEncode(<Object?>[accountId, modelId, effort, ?requestedServiceTier])}',
   );
 
   static ValueKey<String> statisticsHistoryCall(String callKey) =>

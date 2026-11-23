@@ -3934,10 +3934,11 @@ mod mode_migration_tests {
                             restore_pre_timeline_history_fixture(&db, 8).await?;
                         } else {
                             if family == "calls" {
-                                // v9 requires its ledger; restore the actual published v8 shape.
+                                // Restore the published v8 shape, before fence retirement and request tiers.
                                 db.execute_unprepared(
-                                    "ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
-                                 UPDATE calls_meta SET schema_version=8 WHERE id=1;",
+                                    "ALTER TABLE performance_samples DROP COLUMN requested_service_tier;
+                                     ALTER TABLE legacy_call_fences RENAME TO call_watermarks;
+                                     UPDATE calls_meta SET schema_version=8 WHERE id=1;",
                                 )
                                 .await?;
                             }
