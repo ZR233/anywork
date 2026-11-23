@@ -132,11 +132,36 @@ pub enum BridgeAcpInstallState {
     },
 }
 
+/// 受管 server 后台或手动检查新版本的状态；独立于当前准备或升级操作状态机。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BridgeAcpInstallUpdateState {
+    Idle,
+    Checking,
+    UpToDate {
+        checked_at: i64,
+        latest_version: String,
+    },
+    UpdateAvailable {
+        checked_at: i64,
+        latest: BridgeAcpInstallRelease,
+    },
+    IncompatibleMajor {
+        checked_at: i64,
+        latest_version: String,
+    },
+    Failed {
+        checked_at: i64,
+        failure: BridgeAcpInstallFailure,
+    },
+}
+
 /// 一个 provider 的安装条目。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeAcpInstallEntry {
     pub provider: BridgeAcpProvider,
     pub state: BridgeAcpInstallState,
+    pub installed: Option<BridgeAcpInstalledServer>,
+    pub update: BridgeAcpInstallUpdateState,
 }
 
 /// 安装 topic 的 canonical 快照；revision 独立于 Settings 与 `acpAuth`。

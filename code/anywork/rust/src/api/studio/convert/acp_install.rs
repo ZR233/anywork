@@ -7,7 +7,7 @@ use crate::api::studio::types::{
     BridgeAcpInstallAvailability, BridgeAcpInstallEntry, BridgeAcpInstallFailure,
     BridgeAcpInstallFailureCode, BridgeAcpInstallProgress, BridgeAcpInstallRelease,
     BridgeAcpInstallSnapshot, BridgeAcpInstallStage, BridgeAcpInstallState,
-    BridgeAcpInstalledServer, BridgeAcpProvider,
+    BridgeAcpInstallUpdateState, BridgeAcpInstalledServer, BridgeAcpProvider,
 };
 
 /// 平台可用性镜像；`target` 原样透传，不在客户端重新推断平台。
@@ -178,6 +178,43 @@ pub(crate) fn bridge_acp_install_state(
     }
 }
 
+pub(crate) fn bridge_acp_install_update_state(
+    state: pl_studio_runtime::AcpInstallUpdateState,
+) -> BridgeAcpInstallUpdateState {
+    use pl_studio_runtime::AcpInstallUpdateState as Wire;
+    match state {
+        Wire::Idle => BridgeAcpInstallUpdateState::Idle,
+        Wire::Checking => BridgeAcpInstallUpdateState::Checking,
+        Wire::UpToDate {
+            checked_at,
+            latest_version,
+        } => BridgeAcpInstallUpdateState::UpToDate {
+            checked_at,
+            latest_version,
+        },
+        Wire::UpdateAvailable { checked_at, latest } => {
+            BridgeAcpInstallUpdateState::UpdateAvailable {
+                checked_at,
+                latest: bridge_acp_install_release(latest),
+            }
+        }
+        Wire::IncompatibleMajor {
+            checked_at,
+            latest_version,
+        } => BridgeAcpInstallUpdateState::IncompatibleMajor {
+            checked_at,
+            latest_version,
+        },
+        Wire::Failed {
+            checked_at,
+            failure,
+        } => BridgeAcpInstallUpdateState::Failed {
+            checked_at,
+            failure: bridge_acp_install_failure(failure),
+        },
+    }
+}
+
 pub(crate) fn bridge_acp_install_snapshot(
     snapshot: pl_studio_runtime::AcpInstallSnapshot,
 ) -> BridgeAcpInstallSnapshot {
@@ -190,6 +227,8 @@ pub(crate) fn bridge_acp_install_snapshot(
             .map(|entry| BridgeAcpInstallEntry {
                 provider: bridge_acp_provider(entry.provider),
                 state: bridge_acp_install_state(entry.state),
+                installed: entry.installed.map(bridge_acp_installed_server),
+                update: bridge_acp_install_update_state(entry.update),
             })
             .collect(),
     }

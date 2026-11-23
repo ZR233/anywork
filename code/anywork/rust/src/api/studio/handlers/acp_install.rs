@@ -3,7 +3,9 @@
 //! 读取是纯查询，不联网、不扫描、不启动任何程序；准备与取消是显式命令，只返回受理回执与
 //! 受理时快照，长网络/文件 IO 在 runtime owner 内后台推进（见 design/25、design/28 §28.6）。
 
-use pl_studio_runtime::{CancelAcpInstallRequest, StartAcpInstallRequest};
+use pl_studio_runtime::{
+    CancelAcpInstallRequest, CheckAcpInstallUpdateRequest, StartAcpInstallRequest,
+};
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::acp_install::{
@@ -50,6 +52,24 @@ pub async fn cancel_acp_install(
         provider: protocol_acp_install_provider(provider),
         target_operation_id,
     })?;
+    Ok(BridgeAcpInstallCommandReply {
+        receipt: command_receipt(reply.receipt),
+        snapshot: bridge_acp_install_snapshot(reply.snapshot),
+    })
+}
+
+/// 触发一次受管 server 新版本检查（仅支持 `1.x` 范围；同步受理后后台执行并推送到 `acpInstall`）。
+pub async fn check_acp_install_update(
+    operation_id: String,
+    provider: BridgeAcpProvider,
+) -> Result<BridgeAcpInstallCommandReply, BridgeError> {
+    let bridge = active_bridge().await?;
+    let reply = bridge
+        .studio
+        .check_acp_install_update(CheckAcpInstallUpdateRequest {
+            operation_id,
+            provider: protocol_acp_install_provider(provider),
+        })?;
     Ok(BridgeAcpInstallCommandReply {
         receipt: command_receipt(reply.receipt),
         snapshot: bridge_acp_install_snapshot(reply.snapshot),

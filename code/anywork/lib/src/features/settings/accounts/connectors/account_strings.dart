@@ -130,4 +130,7 @@ AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
   'acp.method.oauth-business': l10n.acpMethodOauthBusinessDesc,
   'acp.method.gemini-api-key': l10n.acpMethodGeminiApiKeyDesc,
   'acp.method.agent-platform': l10n.acpMethodAgentPlatformDesc,
+  'acp.managed': l10n.acpManagedBadge,
+  'acp.local': l10n.acpLocalBadge,
+  'acp.upgrade.checkFailed': l10n.acpUpgradeCheckFailed,
 }, retryCount: l10n.acpInstallRetryValue);

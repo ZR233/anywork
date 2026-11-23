@@ -1715,6 +1715,47 @@ final class AcpServiceImpl implements AcpService {
     });
   }
 
+  @override
+  Future<AcpInstallSnapshotView> checkUpdate(AcpProviderView provider) {
+    if (_closed) return Future.error(StateError('ACP service is closed'));
+    final owner = mutations.coordinator.captureOwner();
+    final generation = observations.generation;
+    final ownerEpoch = observations.ownerEpoch;
+    final key = ('acp-install-update-check', provider);
+    final operation = _begin(
+      key,
+      'acp-install:${provider.wire}',
+      owner: owner,
+      generation: generation,
+    );
+    var issued = false;
+    return _continuations.run(() async {
+      try {
+        _requireOwner(owner, generation);
+        issued = true;
+        final reply = await port.checkAcpInstallUpdate(
+          operationId: operation.id,
+          provider: provider,
+        );
+        _validate(operation, reply.receipt);
+        if (reply.snapshot.entry(provider) == null) {
+          throw StateError('ACP update check reply identity mismatch');
+        }
+        final stamp = _stamp(reply.receipt, 'acp-install', ownerEpoch);
+        _recordReceipt(operation, reply.receipt);
+        _requireOwner(owner, generation);
+        observations.apply(AcpInstallFrame(stamp, reply.snapshot));
+        _markObserved(operation, stamp, owner, generation);
+        return _immutableInstall(reply.snapshot);
+      } catch (error) {
+        _reject(operation, error, issued: issued);
+        rethrow;
+      } finally {
+        _finish(key, operation);
+      }
+    });
+  }
+
   void _validate(OperationHandle operation, StudioCommandReceipt receipt) {
     if (receipt.operationId != operation.id)
       throw StateError('ACP receipt operation mismatch');

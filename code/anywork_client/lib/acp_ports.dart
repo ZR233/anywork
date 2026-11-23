@@ -49,4 +49,8 @@ abstract interface class AcpPort {
     required AcpProviderView provider,
     required OperationId targetOperationId,
   });
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  });
 }

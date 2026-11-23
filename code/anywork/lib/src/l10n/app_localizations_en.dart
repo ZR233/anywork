@@ -6247,7 +6247,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpEditorStepPrepareSubtitle =>
-      'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).';
+      'anywork automatically verifies or downloads the official Google Antigravity server (1.x).';
 
   @override
   String get acpEditorStepConnectTitle => '3. Save and sign in with Google';
@@ -7827,4 +7827,86 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpSessionDetailTitle => 'Session info';
+
+  @override
+  String get accountsCategoryAll => 'All';
+
+  @override
+  String get accountsCategoryAcp => 'ACP Agents';
+
+  @override
+  String get accountsCategoryNative => 'API Accounts';
+
+  @override
+  String accountsUpgradableCount(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: 's',
+      one: '',
+    );
+    return '$count update$_temp0';
+  }
+
+  @override
+  String get acpManagedBadge => 'Managed';
+
+  @override
+  String get acpLocalBadge => 'Local command';
+
+  @override
+  String acpVersionTag(String version) {
+    return 'v$version';
+  }
+
+  @override
+  String get acpUpgradeCheck => 'Check for updates';
+
+  @override
+  String get acpUpgradeChecking => 'Checking for updates…';
+
+  @override
+  String acpUpgradeUpToDate(String version) {
+    return 'Up to date · v$version';
+  }
+
+  @override
+  String get acpUpgradeAvailableTitle => 'Update available';
+
+  @override
+  String acpUpgradeAvailableVersions(String current, String latest) {
+    return 'v$current → v$latest';
+  }
+
+  @override
+  String acpUpgradeAction(String version) {
+    return 'Upgrade to v$version';
+  }
+
+  @override
+  String get acpUpgradeActionGeneric => 'Upgrade now';
+
+  @override
+  String acpUpgradeUpgrading(String version) {
+    return 'Upgrading to v$version';
+  }
+
+  @override
+  String acpUpgradePendingSwitch(String version) {
+    return 'Installed v$version; will switch once active sessions end';
+  }
+
+  @override
+  String acpUpgradeIncompatibleMajor(String version) {
+    return 'v$version available (update anywork to support major v2)';
+  }
+
+  @override
+  String get acpUpgradeCheckFailed => 'Update check failed. Try again.';
+
+  @override
+  String get acpUpgradeRetryCheck => 'Retry check';
+
+  @override
+  String get acpManagedServerTitle => 'Managed server & updates';
 }

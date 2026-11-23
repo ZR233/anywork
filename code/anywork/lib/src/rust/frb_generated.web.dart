@@ -2029,6 +2029,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAcpInstallState dco_decode_bridge_acp_install_state(dynamic raw);
 
   @protected
+  BridgeAcpInstallUpdateState dco_decode_bridge_acp_install_update_state(
+    dynamic raw,
+  );
+
+  @protected
   BridgeAcpInstalledServer dco_decode_bridge_acp_installed_server(dynamic raw);
 
   @protected
@@ -4632,6 +4637,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAcpInstallFailure?
   dco_decode_opt_box_autoadd_bridge_acp_install_failure(dynamic raw);
+
+  @protected
+  BridgeAcpInstalledServer?
+  dco_decode_opt_box_autoadd_bridge_acp_installed_server(dynamic raw);
 
   @protected
   BridgeAcpJsonValue? dco_decode_opt_box_autoadd_bridge_acp_json_value(
@@ -7566,6 +7575,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpInstallState sse_decode_bridge_acp_install_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstallUpdateState sse_decode_bridge_acp_install_update_state(
     SseDeserializer deserializer,
   );
 
@@ -10833,6 +10847,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeAcpInstallFailure?
   sse_decode_opt_box_autoadd_bridge_acp_install_failure(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpInstalledServer?
+  sse_decode_opt_box_autoadd_bridge_acp_installed_server(
     SseDeserializer deserializer,
   );
 
@@ -14252,6 +14272,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_install_state(
     BridgeAcpInstallState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_install_update_state(
+    BridgeAcpInstallUpdateState self,
     SseSerializer serializer,
   );
 
@@ -18203,6 +18229,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_acp_install_failure(
     BridgeAcpInstallFailure? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_acp_installed_server(
+    BridgeAcpInstalledServer? self,
     SseSerializer serializer,
   );
 

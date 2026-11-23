@@ -268,3 +268,179 @@ AcpUsagePresentation projectAcpUsage({
     },
   );
 }
+
+String formatInstallBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) {
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+}
+
+String? formatInstallProgressLabel(AcpInstallProgressView? progress) {
+  if (progress == null) return null;
+  final bytesLabel = progress.totalBytes != null
+      ? '${formatInstallBytes(progress.completedBytes)} / ${formatInstallBytes(progress.totalBytes!)}'
+      : formatInstallBytes(progress.completedBytes);
+  final speed = progress.effectiveBytesPerSecond;
+  if (speed == null || speed <= 0) return bytesLabel;
+  return '$bytesLabel · ${formatInstallBytes(speed)}/s';
+}
+
+AcpCardUpgradePresentation? projectAcpUpgrade({
+  required AcpInstallSnapshotView? snapshot,
+  required bool installStale,
+  required AcpProviderView? template,
+  required AcpConnectionStateView? connection,
+  required String? runningVersion,
+  required AccountStrings strings,
+  bool busyCheck = false,
+  String? commandError,
+}) {
+  if (template == null || snapshot == null || installStale) return null;
+  final entry = snapshot.entry(template);
+  final installedVersion =
+      entry?.installed?.release.version ??
+      snapshot.readyServer(template)?.release.version ??
+      runningVersion;
+  final installState = entry?.state ?? const AcpInstallIdleState();
+  final updateState = entry?.update ?? const AcpInstallUpdateIdleState();
+
+  if (installState.isBusy) {
+    final latestVersion =
+        installState.release?.version ??
+        switch (updateState) {
+          AcpInstallUpdateAvailableState(:final latest) => latest.version,
+          _ => null,
+        };
+    final stageLabel = installState is AcpInstallCancellingState
+        ? strings['acp.cancelling']
+        : installState.stage == null
+        ? strings['acp.preparing']
+        : strings['stage.${installState.stage!.name}'];
+    final progress = installState.progress;
+    final fraction = progress?.totalBytes != null && progress!.totalBytes! > 0
+        ? (progress.completedBytes / progress.totalBytes!).clamp(0.0, 1.0)
+        : null;
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.upgrading,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      latestVersion: latestVersion,
+      stageLabel: stageLabel,
+      progress: fraction,
+      progressLabel: formatInstallProgressLabel(progress),
+      canCancel: installState is! AcpInstallCancellingState,
+    );
+  }
+
+  if (installedVersion != null &&
+      runningVersion != null &&
+      installedVersion != runningVersion &&
+      connection is AcpConnectionReadyState) {
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.pendingSwitch,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      latestVersion: installedVersion,
+      canCheck: !busyCheck,
+    );
+  }
+
+  if (busyCheck || updateState is AcpInstallUpdateCheckingState) {
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.checking,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+    );
+  }
+
+  if (updateState case AcpInstallUpdateAvailableState(:final latest)) {
+    final failureMessage =
+        commandError ??
+        (installState is AcpInstallFailedState
+            ? installState.failure.message
+            : null);
+    if (failureMessage != null) {
+      return AcpCardUpgradePresentation(
+        phase: AcpUpgradePhase.failed,
+        installedVersion: installedVersion,
+        runningVersion: runningVersion,
+        latestVersion: latest.version,
+        error: failureMessage,
+        canUpgrade: true,
+        canCheck: true,
+      );
+    }
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.updateAvailable,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      latestVersion: latest.version,
+      canUpgrade: true,
+      canCheck: true,
+    );
+  }
+
+  if (updateState case AcpInstallUpdateIncompatibleMajorState(
+    :final latestVersion,
+  )) {
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.incompatibleMajor,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      latestVersion: latestVersion,
+      error: commandError,
+      canCheck: true,
+    );
+  }
+
+  if (updateState case AcpInstallUpdateFailedState(:final failure)) {
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.failed,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      error:
+          commandError ??
+          (failure.message.isNotEmpty
+              ? failure.message
+              : strings['acp.upgrade.checkFailed']),
+      canCheck: true,
+    );
+  }
+
+  if (installState case AcpInstallFailedState(:final failure)) {
+    return AcpCardUpgradePresentation(
+      phase: AcpUpgradePhase.failed,
+      installedVersion: installedVersion,
+      runningVersion: runningVersion,
+      error: commandError ?? failure.message,
+      canUpgrade: installedVersion != null,
+      canCheck: true,
+    );
+  }
+
+  if (updateState case AcpInstallUpdateUpToDateState(:final latestVersion)) {
+    return AcpCardUpgradePresentation(
+      phase: commandError != null
+          ? AcpUpgradePhase.failed
+          : AcpUpgradePhase.upToDate,
+      installedVersion: installedVersion ?? latestVersion,
+      runningVersion: runningVersion,
+      latestVersion: latestVersion,
+      error: commandError,
+      canCheck: true,
+    );
+  }
+
+  return AcpCardUpgradePresentation(
+    phase: commandError != null ? AcpUpgradePhase.failed : AcpUpgradePhase.idle,
+    installedVersion: installedVersion,
+    runningVersion: runningVersion,
+    error: commandError,
+    canCheck: true,
+  );
+}

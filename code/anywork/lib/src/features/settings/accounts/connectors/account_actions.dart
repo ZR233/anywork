@@ -257,6 +257,10 @@ Future<void> performAcpAction(
       await owner.cancelPreparation();
     case AcpAccountAction.usePrepared:
       owner.usePrepared();
+    case AcpAccountAction.upgrade:
+      await owner.prepare();
+    case AcpAccountAction.checkUpdate:
+      await owner.checkUpdate();
     case AcpAccountAction.check:
       await owner.authenticate();
     case AcpAccountAction.retry:

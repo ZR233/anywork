@@ -9,15 +9,18 @@ use std::sync::{Arc, PoisonError};
 
 use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallStage, AcpInstallState,
-    AcpProvider, CancelAcpInstallRequest, StartAcpInstallRequest, StudioErrorCode,
+    AcpInstallUpdateState, AcpProvider, CancelAcpInstallRequest, CheckAcpInstallUpdateRequest,
+    StartAcpInstallRequest, StudioErrorCode,
 };
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use super::mapping::{command_error, ensure_operation_id, failure, failure_command_error};
 use super::operation::{self, JOIN_BUDGET, OperationPlan};
+use super::prepare;
 use super::registry::{
-    AcpInstallInner, BusinessOutcome, CommandIntent, Operation, ResidueHold, Slot,
+    AcpInstallInner, BusinessOutcome, CheckTask, CommandIntent, Operation, Registry, ResidueHold,
+    Slot,
 };
 use super::source;
 
@@ -132,16 +135,15 @@ impl AcpInstallRuntime {
             supervisor_joined: std::sync::atomic::AtomicBool::new(false),
             resources: std::sync::Mutex::new(super::registry::OperationResources::default()),
         });
-        registry.slots.insert(
-            request.provider,
-            Slot {
-                state: AcpInstallState::Resolving {
-                    operation_id: request.operation_id.clone(),
-                },
-                operation: Some(Arc::clone(&operation)),
-                busy: true,
-            },
-        );
+        let slot = registry
+            .slots
+            .entry(request.provider)
+            .or_insert_with(Slot::idle);
+        slot.state = AcpInstallState::Resolving {
+            operation_id: request.operation_id.clone(),
+        };
+        slot.operation = Some(Arc::clone(&operation));
+        slot.busy = true;
         registry
             .commands
             .insert(request.operation_id.clone(), intent);
@@ -277,25 +279,200 @@ impl AcpInstallRuntime {
         })
     }
 
+    /// 并行启动后台版本发现（本地最高 `1.x` 扫描 + 可选远端官方注册表检查）；非阻塞且幂等去重。
+    pub(crate) fn start_background_check(&self, allow_remote: bool) {
+        let provider = AcpProvider::Antigravity;
+        let snapshot = {
+            let mut registry = self.inner.lock();
+            if registry.closed {
+                return;
+            }
+            if let Some(existing) = registry.check_tasks.get(&provider)
+                && !existing.cancel.is_cancelled()
+                && existing
+                    .join
+                    .as_ref()
+                    .is_some_and(|join| !join.is_finished())
+                && (existing.allow_remote || !allow_remote)
+            {
+                return;
+            }
+            spawn_check_task(&mut registry, &self.inner, provider, allow_remote)
+        };
+        if let Some(snapshot) = snapshot {
+            self.inner.emit(snapshot);
+        }
+    }
+
+    /// 显式手动触发一次版本更新检查；正在远端检查时幂等复用当前在途任务。
+    pub(crate) fn check_update(
+        &self,
+        request: CheckAcpInstallUpdateRequest,
+    ) -> Result<AcpInstallAcceptance> {
+        ensure_operation_id(&request.operation_id)?;
+        let intent = CommandIntent::CheckUpdate {
+            provider: request.provider,
+        };
+        let mut registry = self.inner.lock();
+        if registry.closed {
+            return Err(command_error(
+                StudioErrorCode::RuntimeStopped,
+                "运行时正在关闭，不能检查 ACP server 更新",
+                false,
+            ));
+        }
+        if let Some(recorded) = registry.commands.get(&request.operation_id) {
+            if recorded != &intent {
+                return Err(command_error(
+                    StudioErrorCode::Conflict,
+                    "该 operationId 已绑定另一条 ACP 准备命令",
+                    false,
+                ));
+            }
+            let snapshot = registry.snapshot();
+            drop(registry);
+            return Ok(AcpInstallAcceptance {
+                snapshot,
+                changed: false,
+            });
+        }
+        if registry.commands.len() >= MAX_ACCEPTED_COMMANDS {
+            return Err(command_error(
+                StudioErrorCode::Overloaded,
+                "已受理的 ACP 准备命令身份过多，请重启运行时后重试",
+                true,
+            ));
+        }
+        registry
+            .commands
+            .insert(request.operation_id.clone(), intent);
+
+        let already_checking_remote =
+            registry
+                .check_tasks
+                .get(&request.provider)
+                .is_some_and(|existing| {
+                    existing.allow_remote
+                        && !existing.cancel.is_cancelled()
+                        && existing
+                            .join
+                            .as_ref()
+                            .is_some_and(|join| !join.is_finished())
+                });
+        if already_checking_remote {
+            let snapshot = registry.snapshot();
+            drop(registry);
+            return Ok(AcpInstallAcceptance {
+                snapshot,
+                changed: false,
+            });
+        }
+
+        let emitted = spawn_check_task(&mut registry, &self.inner, request.provider, true);
+        let changed = emitted.is_some();
+        let snapshot = emitted.unwrap_or_else(|| registry.snapshot());
+        drop(registry);
+        if changed {
+            self.inner.emit(snapshot.clone());
+        }
+        Ok(AcpInstallAcceptance { snapshot, changed })
+    }
+
+    #[cfg(test)]
+    pub(in crate::studio::runtime) fn set_test_source_override(
+        &self,
+        override_source: source::TestSourceOverride,
+    ) {
+        self.inner.set_test_policy(override_source);
+    }
+
     /// 原子封闭准入并只发取消信号（early-exit 广播与关闭编排的取消阶段）。
     pub(crate) fn signal_cancel(&self) {
-        let operations: Vec<Arc<Operation>> = {
+        let (operations, check_cancels): (Vec<Arc<Operation>>, Vec<CancellationToken>) = {
             let mut registry = self.inner.lock();
             registry.closed = true;
-            registry
+            let operations = registry
                 .slots
                 .values()
                 .filter_map(|slot| slot.operation.clone())
-                .collect()
+                .collect();
+            let check_cancels = registry
+                .check_tasks
+                .values()
+                .map(|task| task.cancel.clone())
+                .collect();
+            (operations, check_cancels)
         };
+        for cancel in check_cancels {
+            cancel.cancel();
+        }
         for operation in operations {
             operation.cancel.cancel();
         }
     }
 
-    /// 取消并等待所有在途操作收束；超时保留 join 句柄，绝不伪报已回收。
+    /// 取消并等待所有在途操作与版本检查收束；超时保留 join 句柄，绝不伪报已回收。
     pub(crate) async fn cancel_and_join(&self) -> Result<()> {
         self.signal_cancel();
+        let mut issues: Vec<String> = Vec::new();
+        let check_tasks: Vec<(AcpProvider, u64, tokio::task::JoinHandle<()>)> = {
+            let mut registry = self.inner.lock();
+            registry
+                .check_tasks
+                .iter_mut()
+                .filter_map(|(provider, task)| {
+                    task.join
+                        .take()
+                        .map(|handle| (*provider, task.generation, handle))
+                })
+                .collect()
+        };
+        for (provider, generation, mut handle) in check_tasks {
+            let deadline = tokio::time::sleep(JOIN_BUDGET);
+            tokio::pin!(deadline);
+            let joined = tokio::select! {
+                result = &mut handle => Some(result),
+                _ = &mut deadline => None,
+            };
+            match joined {
+                Some(Ok(())) => {
+                    let mut registry = self.inner.lock();
+                    if registry
+                        .check_tasks
+                        .get(&provider)
+                        .is_some_and(|task| task.generation == generation)
+                    {
+                        registry.check_tasks.remove(&provider);
+                    }
+                }
+                Some(Err(_)) => {
+                    let mut registry = self.inner.lock();
+                    if registry
+                        .check_tasks
+                        .get(&provider)
+                        .is_some_and(|task| task.generation == generation)
+                    {
+                        registry.check_tasks.remove(&provider);
+                    }
+                    issues.push(format!(
+                        "ACP update check task for {} terminated without a clean join",
+                        provider.as_str()
+                    ));
+                }
+                None => {
+                    let mut registry = self.inner.lock();
+                    if let Some(task) = registry.check_tasks.get_mut(&provider)
+                        && task.generation == generation
+                    {
+                        task.join = Some(handle);
+                    }
+                    issues.push(format!(
+                        "ACP update check task for {} did not finish within the shutdown budget",
+                        provider.as_str()
+                    ));
+                }
+            }
+        }
         let operations: Vec<Arc<Operation>> = {
             let registry = self.inner.lock();
             registry
@@ -304,7 +481,6 @@ impl AcpInstallRuntime {
                 .filter_map(|slot| slot.operation.clone())
                 .collect()
         };
-        let mut issues: Vec<String> = Vec::new();
         // 本轮不允许做残留收束的 provider：supervisor 终止事实未被确认（join 超时或句柄缺失）。
         let mut skip_residue: std::collections::BTreeSet<AcpProvider> =
             std::collections::BTreeSet::new();
@@ -491,6 +667,70 @@ fn no_active_operation() -> anyhow::Error {
         "该平台没有进行中的 ACP server 准备操作",
         false,
     )
+}
+
+/// 在持有 registry 锁内登记一次后台/显式版本检查，并串行化接续任何旧检查句柄（绝不丢弃句柄）。
+fn spawn_check_task(
+    registry: &mut Registry,
+    inner: &Arc<AcpInstallInner>,
+    provider: AcpProvider,
+    allow_remote: bool,
+) -> Option<AcpInstallSnapshot> {
+    let previous = registry.check_tasks.remove(&provider).and_then(|mut old| {
+        old.cancel.cancel();
+        old.join.take()
+    });
+    let generation = registry.mint_generation();
+    let cancel = CancellationToken::new();
+    let mut changed = false;
+    if allow_remote {
+        let slot = registry.slots.entry(provider).or_insert_with(Slot::idle);
+        if slot.update != AcpInstallUpdateState::Checking {
+            slot.update = AcpInstallUpdateState::Checking;
+            changed = true;
+        }
+    }
+    let snapshot = if changed {
+        registry.bump();
+        Some(registry.snapshot())
+    } else {
+        None
+    };
+
+    let task_inner = Arc::clone(inner);
+    let task_cancel = cancel.clone();
+    let handle = tokio::spawn(async move {
+        if let Some(prev) = previous {
+            let _ = prev.await;
+        }
+        if task_cancel.is_cancelled() {
+            return;
+        }
+        let policy = task_inner.policy();
+        let scanned =
+            prepare::scan_installed(&task_inner.store, policy.clone(), provider, &task_cancel)
+                .await;
+        if task_cancel.is_cancelled() {
+            return;
+        }
+        task_inner.publish_local_scan(provider, generation, scanned);
+        if allow_remote && !task_cancel.is_cancelled() {
+            let remote = source::fetch_latest_from_registry(&policy, provider, &task_cancel).await;
+            if !task_cancel.is_cancelled() {
+                task_inner.finish_remote_check(provider, generation, remote);
+            }
+        }
+    });
+    registry.check_tasks.insert(
+        provider,
+        CheckTask {
+            generation,
+            allow_remote,
+            cancel,
+            join: Some(handle),
+        },
+    );
+    snapshot
 }
 
 /// 观测 supervisor 的 JoinError：panic/取消都是句柄终态，必须清槽并发布可观察失败。

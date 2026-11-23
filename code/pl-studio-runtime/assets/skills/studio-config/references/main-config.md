@@ -324,8 +324,11 @@ Choose either a PATH program name/absolute `command` plus independent `args`, or
 `template = "antigravity"` with no command/args. Both may use an explicit `[env]`
 table; do not expose values in diagnostics. There is no shell, variable or `~`
 expansion, configured cwd, model list or UI schema. Only the managed template
-requires the verified fixed `1.4.5` installation; local `agy acp` is an ordinary
-command and does not inherit that brand/version requirement.
+requires a verified SemVer `1.x` (`>= 1.4.5, < 2.0.0`) installation, supports
+parallel startup and manual update checks against the official ACP registry, and
+upgrades in-place within major version `1` (switching idle connections immediately
+or deferred until active sessions close); local `agy acp` is an ordinary command
+and does not inherit that brand/version requirement.
 
 Use Settings for atomic document-CAS save/delete and explicit reload after
 external edits. Startup/reload scans this directory; ordinary reads are cache-only,

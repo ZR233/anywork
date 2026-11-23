@@ -2830,6 +2830,300 @@ as bool,
 }
 
 /// @nodoc
+mixin _$AcpCardUpgradePresentation {
+
+ AcpUpgradePhase get phase; String? get installedVersion; String? get runningVersion; String? get latestVersion; String? get stageLabel; double? get progress; String? get progressLabel; String? get error; bool get canUpgrade; bool get canCancel; bool get canCheck;
+/// Create a copy of AcpCardUpgradePresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpCardUpgradePresentationCopyWith<AcpCardUpgradePresentation> get copyWith => _$AcpCardUpgradePresentationCopyWithImpl<AcpCardUpgradePresentation>(this as AcpCardUpgradePresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpCardUpgradePresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpCardUpgradePresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.installedVersion, _this.installedVersion) || other.installedVersion == _this.installedVersion)&&(identical(other.runningVersion, _this.runningVersion) || other.runningVersion == _this.runningVersion)&&(identical(other.latestVersion, _this.latestVersion) || other.latestVersion == _this.latestVersion)&&(identical(other.stageLabel, _this.stageLabel) || other.stageLabel == _this.stageLabel)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.canUpgrade, _this.canUpgrade) || other.canUpgrade == _this.canUpgrade)&&(identical(other.canCancel, _this.canCancel) || other.canCancel == _this.canCancel)&&(identical(other.canCheck, _this.canCheck) || other.canCheck == _this.canCheck));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpCardUpgradePresentation;
+  return Object.hash(runtimeType,_this.phase,_this.installedVersion,_this.runningVersion,_this.latestVersion,_this.stageLabel,_this.progress,_this.progressLabel,_this.error,_this.canUpgrade,_this.canCancel,_this.canCheck);
+}
+
+@override
+String toString() {
+  final _this = this as AcpCardUpgradePresentation;
+  return 'AcpCardUpgradePresentation(phase: ${_this.phase}, installedVersion: ${_this.installedVersion}, runningVersion: ${_this.runningVersion}, latestVersion: ${_this.latestVersion}, stageLabel: ${_this.stageLabel}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, error: ${_this.error}, canUpgrade: ${_this.canUpgrade}, canCancel: ${_this.canCancel}, canCheck: ${_this.canCheck})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpCardUpgradePresentationCopyWith<$Res>  {
+  factory $AcpCardUpgradePresentationCopyWith(AcpCardUpgradePresentation value, $Res Function(AcpCardUpgradePresentation) _then) = _$AcpCardUpgradePresentationCopyWithImpl;
+@useResult
+$Res call({
+ AcpUpgradePhase phase, String? installedVersion, String? runningVersion, String? latestVersion, String? stageLabel, double? progress, String? progressLabel, String? error, bool canUpgrade, bool canCancel, bool canCheck
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpCardUpgradePresentationCopyWithImpl<$Res>
+    implements $AcpCardUpgradePresentationCopyWith<$Res> {
+  _$AcpCardUpgradePresentationCopyWithImpl(this._self, this._then);
+
+  final AcpCardUpgradePresentation _self;
+  final $Res Function(AcpCardUpgradePresentation) _then;
+
+/// Create a copy of AcpCardUpgradePresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? installedVersion = freezed,Object? runningVersion = freezed,Object? latestVersion = freezed,Object? stageLabel = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? error = freezed,Object? canUpgrade = null,Object? canCancel = null,Object? canCheck = null,}) {
+  return _then(AcpCardUpgradePresentation(
+phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
+as AcpUpgradePhase,installedVersion: freezed == installedVersion ? _self.installedVersion : installedVersion // ignore: cast_nullable_to_non_nullable
+as String?,runningVersion: freezed == runningVersion ? _self.runningVersion : runningVersion // ignore: cast_nullable_to_non_nullable
+as String?,latestVersion: freezed == latestVersion ? _self.latestVersion : latestVersion // ignore: cast_nullable_to_non_nullable
+as String?,stageLabel: freezed == stageLabel ? _self.stageLabel : stageLabel // ignore: cast_nullable_to_non_nullable
+as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
+as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
+as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as String?,canUpgrade: null == canUpgrade ? _self.canUpgrade : canUpgrade // ignore: cast_nullable_to_non_nullable
+as bool,canCancel: null == canCancel ? _self.canCancel : canCancel // ignore: cast_nullable_to_non_nullable
+as bool,canCheck: null == canCheck ? _self.canCheck : canCheck // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpCardUpgradePresentation].
+extension AcpCardUpgradePresentationPatterns on AcpCardUpgradePresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpCardUpgradePresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpCardUpgradePresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpCardUpgradePresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpUpgradePhase phase,  String? installedVersion,  String? runningVersion,  String? latestVersion,  String? stageLabel,  double? progress,  String? progressLabel,  String? error,  bool canUpgrade,  bool canCancel,  bool canCheck)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation() when $default != null:
+return $default(_that.phase,_that.installedVersion,_that.runningVersion,_that.latestVersion,_that.stageLabel,_that.progress,_that.progressLabel,_that.error,_that.canUpgrade,_that.canCancel,_that.canCheck);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpUpgradePhase phase,  String? installedVersion,  String? runningVersion,  String? latestVersion,  String? stageLabel,  double? progress,  String? progressLabel,  String? error,  bool canUpgrade,  bool canCancel,  bool canCheck)  $default,) {final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation():
+return $default(_that.phase,_that.installedVersion,_that.runningVersion,_that.latestVersion,_that.stageLabel,_that.progress,_that.progressLabel,_that.error,_that.canUpgrade,_that.canCancel,_that.canCheck);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpUpgradePhase phase,  String? installedVersion,  String? runningVersion,  String? latestVersion,  String? stageLabel,  double? progress,  String? progressLabel,  String? error,  bool canUpgrade,  bool canCancel,  bool canCheck)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpCardUpgradePresentation() when $default != null:
+return $default(_that.phase,_that.installedVersion,_that.runningVersion,_that.latestVersion,_that.stageLabel,_that.progress,_that.progressLabel,_that.error,_that.canUpgrade,_that.canCancel,_that.canCheck);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpCardUpgradePresentation implements AcpCardUpgradePresentation {
+  const _AcpCardUpgradePresentation({this.phase = AcpUpgradePhase.idle, this.installedVersion, this.runningVersion, this.latestVersion, this.stageLabel, this.progress, this.progressLabel, this.error, this.canUpgrade = false, this.canCancel = false, this.canCheck = false});
+
+
+@override@JsonKey() final  AcpUpgradePhase phase;
+@override final  String? installedVersion;
+@override final  String? runningVersion;
+@override final  String? latestVersion;
+@override final  String? stageLabel;
+@override final  double? progress;
+@override final  String? progressLabel;
+@override final  String? error;
+@override@JsonKey() final  bool canUpgrade;
+@override@JsonKey() final  bool canCancel;
+@override@JsonKey() final  bool canCheck;
+
+/// Create a copy of AcpCardUpgradePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpCardUpgradePresentationCopyWith<_AcpCardUpgradePresentation> get copyWith => __$AcpCardUpgradePresentationCopyWithImpl<_AcpCardUpgradePresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpCardUpgradePresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.installedVersion, installedVersion) || other.installedVersion == installedVersion)&&(identical(other.runningVersion, runningVersion) || other.runningVersion == runningVersion)&&(identical(other.latestVersion, latestVersion) || other.latestVersion == latestVersion)&&(identical(other.stageLabel, stageLabel) || other.stageLabel == stageLabel)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&(identical(other.error, error) || other.error == error)&&(identical(other.canUpgrade, canUpgrade) || other.canUpgrade == canUpgrade)&&(identical(other.canCancel, canCancel) || other.canCancel == canCancel)&&(identical(other.canCheck, canCheck) || other.canCheck == canCheck));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,phase,installedVersion,runningVersion,latestVersion,stageLabel,progress,progressLabel,error,canUpgrade,canCancel,canCheck);
+}
+
+@override
+String toString() {
+    return 'AcpCardUpgradePresentation(phase: $phase, installedVersion: $installedVersion, runningVersion: $runningVersion, latestVersion: $latestVersion, stageLabel: $stageLabel, progress: $progress, progressLabel: $progressLabel, error: $error, canUpgrade: $canUpgrade, canCancel: $canCancel, canCheck: $canCheck)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpCardUpgradePresentationCopyWith<$Res> implements $AcpCardUpgradePresentationCopyWith<$Res> {
+  factory _$AcpCardUpgradePresentationCopyWith(_AcpCardUpgradePresentation value, $Res Function(_AcpCardUpgradePresentation) _then) = __$AcpCardUpgradePresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ AcpUpgradePhase phase, String? installedVersion, String? runningVersion, String? latestVersion, String? stageLabel, double? progress, String? progressLabel, String? error, bool canUpgrade, bool canCancel, bool canCheck
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpCardUpgradePresentationCopyWithImpl<$Res>
+    implements _$AcpCardUpgradePresentationCopyWith<$Res> {
+  __$AcpCardUpgradePresentationCopyWithImpl(this._self, this._then);
+
+  final _AcpCardUpgradePresentation _self;
+  final $Res Function(_AcpCardUpgradePresentation) _then;
+
+/// Create a copy of AcpCardUpgradePresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? installedVersion = freezed,Object? runningVersion = freezed,Object? latestVersion = freezed,Object? stageLabel = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? error = freezed,Object? canUpgrade = null,Object? canCancel = null,Object? canCheck = null,}) {
+  return _then(_AcpCardUpgradePresentation(
+phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
+as AcpUpgradePhase,installedVersion: freezed == installedVersion ? _self.installedVersion : installedVersion // ignore: cast_nullable_to_non_nullable
+as String?,runningVersion: freezed == runningVersion ? _self.runningVersion : runningVersion // ignore: cast_nullable_to_non_nullable
+as String?,latestVersion: freezed == latestVersion ? _self.latestVersion : latestVersion // ignore: cast_nullable_to_non_nullable
+as String?,stageLabel: freezed == stageLabel ? _self.stageLabel : stageLabel // ignore: cast_nullable_to_non_nullable
+as String?,progress: freezed == progress ? _self.progress : progress // ignore: cast_nullable_to_non_nullable
+as double?,progressLabel: freezed == progressLabel ? _self.progressLabel : progressLabel // ignore: cast_nullable_to_non_nullable
+as String?,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
+as String?,canUpgrade: null == canUpgrade ? _self.canUpgrade : canUpgrade // ignore: cast_nullable_to_non_nullable
+as bool,canCancel: null == canCancel ? _self.canCancel : canCancel // ignore: cast_nullable_to_non_nullable
+as bool,canCheck: null == canCheck ? _self.canCheck : canCheck // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AccountRowContent {
 
  Object? get usage;
@@ -2942,11 +3236,11 @@ return acp(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult Function( String status,  AcpUsagePresentation? usage)?  acp,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult Function( String status,  AcpPresentationPhase phase,  bool isManaged,  String? sourceLabel,  String? versionLabel,  AcpCardUpgradePresentation? upgrade,  AcpUsagePresentation? usage)?  acp,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
 return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent() when acp != null:
-return acp(_that.status,_that.usage);case _:
+return acp(_that.status,_that.phase,_that.isManaged,_that.sourceLabel,_that.versionLabel,_that.upgrade,_that.usage);case _:
   return orElse();
 
 }
@@ -2964,11 +3258,11 @@ return acp(_that.status,_that.usage);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)  native,required TResult Function( String status,  AcpUsagePresentation? usage)  acp,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)  native,required TResult Function( String status,  AcpPresentationPhase phase,  bool isManaged,  String? sourceLabel,  String? versionLabel,  AcpCardUpgradePresentation? upgrade,  AcpUsagePresentation? usage)  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent():
 return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent():
-return acp(_that.status,_that.usage);}
+return acp(_that.status,_that.phase,_that.isManaged,_that.sourceLabel,_that.versionLabel,_that.upgrade,_that.usage);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -2982,11 +3276,11 @@ return acp(_that.status,_that.usage);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult? Function( String status,  AcpUsagePresentation? usage)?  acp,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( AccountBilling billing,  AccountUsagePresentation usage,  String? displayEndpoint,  String? accountLabel)?  native,TResult? Function( String status,  AcpPresentationPhase phase,  bool isManaged,  String? sourceLabel,  String? versionLabel,  AcpCardUpgradePresentation? upgrade,  AcpUsagePresentation? usage)?  acp,}) {final _that = this;
 switch (_that) {
 case NativeAccountRowContent() when native != null:
 return native(_that.billing,_that.usage,_that.displayEndpoint,_that.accountLabel);case AcpAccountRowContent() when acp != null:
-return acp(_that.status,_that.usage);case _:
+return acp(_that.status,_that.phase,_that.isManaged,_that.sourceLabel,_that.versionLabel,_that.upgrade,_that.usage);case _:
   return null;
 
 }
@@ -3081,10 +3375,15 @@ $AccountUsagePresentationCopyWith<$Res> get usage {
 
 
 class AcpAccountRowContent implements AccountRowContent {
-  const AcpAccountRowContent({required this.status, this.usage});
+  const AcpAccountRowContent({required this.status, this.phase = AcpPresentationPhase.idle, this.isManaged = false, this.sourceLabel, this.versionLabel, this.upgrade, this.usage});
 
 
  final  String status;
+@JsonKey() final  AcpPresentationPhase phase;
+@JsonKey() final  bool isManaged;
+ final  String? sourceLabel;
+ final  String? versionLabel;
+ final  AcpCardUpgradePresentation? upgrade;
 @override final  AcpUsagePresentation? usage;
 
 /// Create a copy of AccountRowContent
@@ -3097,18 +3396,18 @@ $AcpAccountRowContentCopyWith<AcpAccountRowContent> get copyWith => _$AcpAccount
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountRowContent&&(identical(other.status, status) || other.status == status)&&(identical(other.usage, usage) || other.usage == usage));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountRowContent&&(identical(other.status, status) || other.status == status)&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.isManaged, isManaged) || other.isManaged == isManaged)&&(identical(other.sourceLabel, sourceLabel) || other.sourceLabel == sourceLabel)&&(identical(other.versionLabel, versionLabel) || other.versionLabel == versionLabel)&&(identical(other.upgrade, upgrade) || other.upgrade == upgrade)&&(identical(other.usage, usage) || other.usage == usage));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,status,usage);
+    return Object.hash(runtimeType,status,phase,isManaged,sourceLabel,versionLabel,upgrade,usage);
 }
 
 @override
 String toString() {
-    return 'AccountRowContent.acp(status: $status, usage: $usage)';
+    return 'AccountRowContent.acp(status: $status, phase: $phase, isManaged: $isManaged, sourceLabel: $sourceLabel, versionLabel: $versionLabel, upgrade: $upgrade, usage: $usage)';
 }
 
 
@@ -3119,11 +3418,11 @@ abstract mixin class $AcpAccountRowContentCopyWith<$Res> implements $AccountRowC
   factory $AcpAccountRowContentCopyWith(AcpAccountRowContent value, $Res Function(AcpAccountRowContent) _then) = _$AcpAccountRowContentCopyWithImpl;
 @useResult
 $Res call({
- String status, AcpUsagePresentation? usage
+ String status, AcpPresentationPhase phase, bool isManaged, String? sourceLabel, String? versionLabel, AcpCardUpgradePresentation? upgrade, AcpUsagePresentation? usage
 });
 
 
-$AcpUsagePresentationCopyWith<$Res>? get usage;
+$AcpCardUpgradePresentationCopyWith<$Res>? get upgrade;$AcpUsagePresentationCopyWith<$Res>? get usage;
 
 }
 /// @nodoc
@@ -3136,15 +3435,32 @@ class _$AcpAccountRowContentCopyWithImpl<$Res>
 
 /// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? status = null,Object? usage = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? status = null,Object? phase = null,Object? isManaged = null,Object? sourceLabel = freezed,Object? versionLabel = freezed,Object? upgrade = freezed,Object? usage = freezed,}) {
   return _then(AcpAccountRowContent(
 status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
-as String,usage: freezed == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
+as String,phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
+as AcpPresentationPhase,isManaged: null == isManaged ? _self.isManaged : isManaged // ignore: cast_nullable_to_non_nullable
+as bool,sourceLabel: freezed == sourceLabel ? _self.sourceLabel : sourceLabel // ignore: cast_nullable_to_non_nullable
+as String?,versionLabel: freezed == versionLabel ? _self.versionLabel : versionLabel // ignore: cast_nullable_to_non_nullable
+as String?,upgrade: freezed == upgrade ? _self.upgrade : upgrade // ignore: cast_nullable_to_non_nullable
+as AcpCardUpgradePresentation?,usage: freezed == usage ? _self.usage : usage // ignore: cast_nullable_to_non_nullable
 as AcpUsagePresentation?,
   ));
 }
 
 /// Create a copy of AccountRowContent
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpCardUpgradePresentationCopyWith<$Res>? get upgrade {
+    if (_self.upgrade == null) {
+    return null;
+  }
+
+  return $AcpCardUpgradePresentationCopyWith<$Res>(_self.upgrade!, (value) {
+    return _then(_self.copyWith(upgrade: value));
+  });
+}/// Create a copy of AccountRowContent
 /// with the given fields replaced by the non-null parameter values.
 @override
 @pragma('vm:prefer-inline')
@@ -3486,7 +3802,7 @@ $AccountRowContentCopyWith<$Res> get content {
 /// @nodoc
 mixin _$AccountsListPresentation {
 
- AccountListPhase get phase; List<AccountDisplayKey> get members; String get search; bool get searchHasNoResults; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error;
+ AccountListPhase get phase; List<AccountDisplayKey> get members; String get search; bool get searchHasNoResults; AccountListCategory get category; int get totalCount; int get acpCount; int get nativeCount; int get upgradableCount; bool get refreshing; bool get canAdd; bool get canRefresh; String? get error;
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -3498,20 +3814,20 @@ $AccountsListPresentationCopyWith<AccountsListPresentation> get copyWith => _$Ac
 @override
 bool operator ==(Object other) {
   final _this = this as AccountsListPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.members, _this.members)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AccountsListPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&const DeepCollectionEquality().equals(other.members, _this.members)&&(identical(other.search, _this.search) || other.search == _this.search)&&(identical(other.searchHasNoResults, _this.searchHasNoResults) || other.searchHasNoResults == _this.searchHasNoResults)&&(identical(other.category, _this.category) || other.category == _this.category)&&(identical(other.totalCount, _this.totalCount) || other.totalCount == _this.totalCount)&&(identical(other.acpCount, _this.acpCount) || other.acpCount == _this.acpCount)&&(identical(other.nativeCount, _this.nativeCount) || other.nativeCount == _this.nativeCount)&&(identical(other.upgradableCount, _this.upgradableCount) || other.upgradableCount == _this.upgradableCount)&&(identical(other.refreshing, _this.refreshing) || other.refreshing == _this.refreshing)&&(identical(other.canAdd, _this.canAdd) || other.canAdd == _this.canAdd)&&(identical(other.canRefresh, _this.canRefresh) || other.canRefresh == _this.canRefresh)&&(identical(other.error, _this.error) || other.error == _this.error));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AccountsListPresentation;
-  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.members),_this.search,_this.searchHasNoResults,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error);
+  return Object.hash(runtimeType,_this.phase,const DeepCollectionEquality().hash(_this.members),_this.search,_this.searchHasNoResults,_this.category,_this.totalCount,_this.acpCount,_this.nativeCount,_this.upgradableCount,_this.refreshing,_this.canAdd,_this.canRefresh,_this.error);
 }
 
 @override
 String toString() {
   final _this = this as AccountsListPresentation;
-  return 'AccountsListPresentation(phase: ${_this.phase}, members: ${_this.members}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error})';
+  return 'AccountsListPresentation(phase: ${_this.phase}, members: ${_this.members}, search: ${_this.search}, searchHasNoResults: ${_this.searchHasNoResults}, category: ${_this.category}, totalCount: ${_this.totalCount}, acpCount: ${_this.acpCount}, nativeCount: ${_this.nativeCount}, upgradableCount: ${_this.upgradableCount}, refreshing: ${_this.refreshing}, canAdd: ${_this.canAdd}, canRefresh: ${_this.canRefresh}, error: ${_this.error})';
 }
 
 
@@ -3522,7 +3838,7 @@ abstract mixin class $AccountsListPresentationCopyWith<$Res>  {
   factory $AccountsListPresentationCopyWith(AccountsListPresentation value, $Res Function(AccountsListPresentation) _then) = _$AccountsListPresentationCopyWithImpl;
 @useResult
 $Res call({
- AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
+ AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, AccountListCategory category, int totalCount, int acpCount, int nativeCount, int upgradableCount, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
@@ -3539,13 +3855,18 @@ class _$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? category = null,Object? totalCount = null,Object? acpCount = null,Object? nativeCount = null,Object? upgradableCount = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountListPhase,members: null == members ? _self.members : members // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayKey>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
 as String,searchHasNoResults: null == searchHasNoResults ? _self.searchHasNoResults : searchHasNoResults // ignore: cast_nullable_to_non_nullable
-as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
+as bool,category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountListCategory,totalCount: null == totalCount ? _self.totalCount : totalCount // ignore: cast_nullable_to_non_nullable
+as int,acpCount: null == acpCount ? _self.acpCount : acpCount // ignore: cast_nullable_to_non_nullable
+as int,nativeCount: null == nativeCount ? _self.nativeCount : nativeCount // ignore: cast_nullable_to_non_nullable
+as int,upgradableCount: null == upgradableCount ? _self.upgradableCount : upgradableCount // ignore: cast_nullable_to_non_nullable
+as int,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
@@ -3634,10 +3955,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  AccountListCategory category,  int totalCount,  int acpCount,  int nativeCount,  int upgradableCount,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.category,_that.totalCount,_that.acpCount,_that.nativeCount,_that.upgradableCount,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return orElse();
 
 }
@@ -3655,10 +3976,10 @@ return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  AccountListCategory category,  int totalCount,  int acpCount,  int nativeCount,  int upgradableCount,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation():
-return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.category,_that.totalCount,_that.acpCount,_that.nativeCount,_that.upgradableCount,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -3675,10 +3996,10 @@ return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AccountListPhase phase,  List<AccountDisplayKey> members,  String search,  bool searchHasNoResults,  AccountListCategory category,  int totalCount,  int acpCount,  int nativeCount,  int upgradableCount,  bool refreshing,  bool canAdd,  bool canRefresh,  String? error)?  $default,) {final _that = this;
 switch (_that) {
 case _AccountsListPresentation() when $default != null:
-return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
+return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,_that.category,_that.totalCount,_that.acpCount,_that.nativeCount,_that.upgradableCount,_that.refreshing,_that.canAdd,_that.canRefresh,_that.error);case _:
   return null;
 
 }
@@ -3690,7 +4011,7 @@ return $default(_that.phase,_that.members,_that.search,_that.searchHasNoResults,
 
 
 class _AccountsListPresentation implements AccountsListPresentation {
-  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountDisplayKey> members = const <AccountDisplayKey>[], this.search = '', this.searchHasNoResults = false, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error}): _members = members;
+  const _AccountsListPresentation({this.phase = AccountListPhase.ready,  List<AccountDisplayKey> members = const <AccountDisplayKey>[], this.search = '', this.searchHasNoResults = false, this.category = AccountListCategory.all, this.totalCount = 0, this.acpCount = 0, this.nativeCount = 0, this.upgradableCount = 0, this.refreshing = false, this.canAdd = true, this.canRefresh = false, this.error}): _members = members;
 
 
 @override@JsonKey() final  AccountListPhase phase;
@@ -3703,6 +4024,11 @@ class _AccountsListPresentation implements AccountsListPresentation {
 
 @override@JsonKey() final  String search;
 @override@JsonKey() final  bool searchHasNoResults;
+@override@JsonKey() final  AccountListCategory category;
+@override@JsonKey() final  int totalCount;
+@override@JsonKey() final  int acpCount;
+@override@JsonKey() final  int nativeCount;
+@override@JsonKey() final  int upgradableCount;
 @override@JsonKey() final  bool refreshing;
 @override@JsonKey() final  bool canAdd;
 @override@JsonKey() final  bool canRefresh;
@@ -3718,18 +4044,18 @@ _$AccountsListPresentationCopyWith<_AccountsListPresentation> get copyWith => __
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.members, _members)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AccountsListPresentation&&(identical(other.phase, phase) || other.phase == phase)&&const DeepCollectionEquality().equals(other.members, _members)&&(identical(other.search, search) || other.search == search)&&(identical(other.searchHasNoResults, searchHasNoResults) || other.searchHasNoResults == searchHasNoResults)&&(identical(other.category, category) || other.category == category)&&(identical(other.totalCount, totalCount) || other.totalCount == totalCount)&&(identical(other.acpCount, acpCount) || other.acpCount == acpCount)&&(identical(other.nativeCount, nativeCount) || other.nativeCount == nativeCount)&&(identical(other.upgradableCount, upgradableCount) || other.upgradableCount == upgradableCount)&&(identical(other.refreshing, refreshing) || other.refreshing == refreshing)&&(identical(other.canAdd, canAdd) || other.canAdd == canAdd)&&(identical(other.canRefresh, canRefresh) || other.canRefresh == canRefresh)&&(identical(other.error, error) || other.error == error));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_members),search,searchHasNoResults,refreshing,canAdd,canRefresh,error);
+    return Object.hash(runtimeType,phase,const DeepCollectionEquality().hash(_members),search,searchHasNoResults,category,totalCount,acpCount,nativeCount,upgradableCount,refreshing,canAdd,canRefresh,error);
 }
 
 @override
 String toString() {
-    return 'AccountsListPresentation(phase: $phase, members: $members, search: $search, searchHasNoResults: $searchHasNoResults, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error)';
+    return 'AccountsListPresentation(phase: $phase, members: $members, search: $search, searchHasNoResults: $searchHasNoResults, category: $category, totalCount: $totalCount, acpCount: $acpCount, nativeCount: $nativeCount, upgradableCount: $upgradableCount, refreshing: $refreshing, canAdd: $canAdd, canRefresh: $canRefresh, error: $error)';
 }
 
 
@@ -3740,7 +4066,7 @@ abstract mixin class _$AccountsListPresentationCopyWith<$Res> implements $Accoun
   factory _$AccountsListPresentationCopyWith(_AccountsListPresentation value, $Res Function(_AccountsListPresentation) _then) = __$AccountsListPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, bool refreshing, bool canAdd, bool canRefresh, String? error
+ AccountListPhase phase, List<AccountDisplayKey> members, String search, bool searchHasNoResults, AccountListCategory category, int totalCount, int acpCount, int nativeCount, int upgradableCount, bool refreshing, bool canAdd, bool canRefresh, String? error
 });
 
 
@@ -3757,13 +4083,18 @@ class __$AccountsListPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AccountsListPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? members = null,Object? search = null,Object? searchHasNoResults = null,Object? category = null,Object? totalCount = null,Object? acpCount = null,Object? nativeCount = null,Object? upgradableCount = null,Object? refreshing = null,Object? canAdd = null,Object? canRefresh = null,Object? error = freezed,}) {
   return _then(_AccountsListPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AccountListPhase,members: null == members ? _self._members : members // ignore: cast_nullable_to_non_nullable
 as List<AccountDisplayKey>,search: null == search ? _self.search : search // ignore: cast_nullable_to_non_nullable
 as String,searchHasNoResults: null == searchHasNoResults ? _self.searchHasNoResults : searchHasNoResults // ignore: cast_nullable_to_non_nullable
-as bool,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
+as bool,category: null == category ? _self.category : category // ignore: cast_nullable_to_non_nullable
+as AccountListCategory,totalCount: null == totalCount ? _self.totalCount : totalCount // ignore: cast_nullable_to_non_nullable
+as int,acpCount: null == acpCount ? _self.acpCount : acpCount // ignore: cast_nullable_to_non_nullable
+as int,nativeCount: null == nativeCount ? _self.nativeCount : nativeCount // ignore: cast_nullable_to_non_nullable
+as int,upgradableCount: null == upgradableCount ? _self.upgradableCount : upgradableCount // ignore: cast_nullable_to_non_nullable
+as int,refreshing: null == refreshing ? _self.refreshing : refreshing // ignore: cast_nullable_to_non_nullable
 as bool,canAdd: null == canAdd ? _self.canAdd : canAdd // ignore: cast_nullable_to_non_nullable
 as bool,canRefresh: null == canRefresh ? _self.canRefresh : canRefresh // ignore: cast_nullable_to_non_nullable
 as bool,error: freezed == error ? _self.error : error // ignore: cast_nullable_to_non_nullable
@@ -7703,7 +8034,7 @@ mixin _$AcpAccountPresentation {
 
  AcpPresentationPhase get phase; String get status; String? get subtitle; AcpUsagePresentation get usage; bool get supportsUsage; String? get message; String? get error; double? get progress; String? get progressLabel; List<AccountDisplayFact> get facts; List<AcpAccountAction> get availableActions;/// Optional emphasis chosen by the VM, never inferred from [phase].
 /// Must be an available operation, not cancellation or a documentation link.
- AcpAccountAction? get primaryAction; List<AcpLoginMethodPresentation> get loginMethods; String? get selectedLoginMethod; bool get canSelectLoginMethod;
+ AcpAccountAction? get primaryAction; List<AcpLoginMethodPresentation> get loginMethods; String? get selectedLoginMethod; bool get canSelectLoginMethod; AcpCardUpgradePresentation? get upgrade;
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -7715,20 +8046,20 @@ $AcpAccountPresentationCopyWith<AcpAccountPresentation> get copyWith => _$AcpAcc
 @override
 bool operator ==(Object other) {
   final _this = this as AcpAccountPresentation;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.subtitle, _this.subtitle) || other.subtitle == _this.subtitle)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.supportsUsage, _this.supportsUsage) || other.supportsUsage == _this.supportsUsage)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpAccountPresentation&&(identical(other.phase, _this.phase) || other.phase == _this.phase)&&(identical(other.status, _this.status) || other.status == _this.status)&&(identical(other.subtitle, _this.subtitle) || other.subtitle == _this.subtitle)&&(identical(other.usage, _this.usage) || other.usage == _this.usage)&&(identical(other.supportsUsage, _this.supportsUsage) || other.supportsUsage == _this.supportsUsage)&&(identical(other.message, _this.message) || other.message == _this.message)&&(identical(other.error, _this.error) || other.error == _this.error)&&(identical(other.progress, _this.progress) || other.progress == _this.progress)&&(identical(other.progressLabel, _this.progressLabel) || other.progressLabel == _this.progressLabel)&&const DeepCollectionEquality().equals(other.facts, _this.facts)&&const DeepCollectionEquality().equals(other.availableActions, _this.availableActions)&&(identical(other.primaryAction, _this.primaryAction) || other.primaryAction == _this.primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _this.loginMethods)&&(identical(other.selectedLoginMethod, _this.selectedLoginMethod) || other.selectedLoginMethod == _this.selectedLoginMethod)&&(identical(other.canSelectLoginMethod, _this.canSelectLoginMethod) || other.canSelectLoginMethod == _this.canSelectLoginMethod)&&(identical(other.upgrade, _this.upgrade) || other.upgrade == _this.upgrade));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpAccountPresentation;
-  return Object.hash(runtimeType,_this.phase,_this.status,_this.subtitle,_this.usage,_this.supportsUsage,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod);
+  return Object.hash(runtimeType,_this.phase,_this.status,_this.subtitle,_this.usage,_this.supportsUsage,_this.message,_this.error,_this.progress,_this.progressLabel,const DeepCollectionEquality().hash(_this.facts),const DeepCollectionEquality().hash(_this.availableActions),_this.primaryAction,const DeepCollectionEquality().hash(_this.loginMethods),_this.selectedLoginMethod,_this.canSelectLoginMethod,_this.upgrade);
 }
 
 @override
 String toString() {
   final _this = this as AcpAccountPresentation;
-  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, subtitle: ${_this.subtitle}, usage: ${_this.usage}, supportsUsage: ${_this.supportsUsage}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod})';
+  return 'AcpAccountPresentation(phase: ${_this.phase}, status: ${_this.status}, subtitle: ${_this.subtitle}, usage: ${_this.usage}, supportsUsage: ${_this.supportsUsage}, message: ${_this.message}, error: ${_this.error}, progress: ${_this.progress}, progressLabel: ${_this.progressLabel}, facts: ${_this.facts}, availableActions: ${_this.availableActions}, primaryAction: ${_this.primaryAction}, loginMethods: ${_this.loginMethods}, selectedLoginMethod: ${_this.selectedLoginMethod}, canSelectLoginMethod: ${_this.canSelectLoginMethod}, upgrade: ${_this.upgrade})';
 }
 
 
@@ -7739,11 +8070,11 @@ abstract mixin class $AcpAccountPresentationCopyWith<$Res>  {
   factory $AcpAccountPresentationCopyWith(AcpAccountPresentation value, $Res Function(AcpAccountPresentation) _then) = _$AcpAccountPresentationCopyWithImpl;
 @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod, AcpCardUpgradePresentation? upgrade
 });
 
 
-$AcpUsagePresentationCopyWith<$Res> get usage;
+$AcpUsagePresentationCopyWith<$Res> get usage;$AcpCardUpgradePresentationCopyWith<$Res>? get upgrade;
 
 }
 /// @nodoc
@@ -7756,7 +8087,7 @@ class _$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,Object? upgrade = freezed,}) {
   return _then(AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
@@ -7773,7 +8104,8 @@ as List<AcpAccountAction>,primaryAction: freezed == primaryAction ? _self.primar
 as AcpAccountAction?,loginMethods: null == loginMethods ? _self.loginMethods : loginMethods // ignore: cast_nullable_to_non_nullable
 as List<AcpLoginMethodPresentation>,selectedLoginMethod: freezed == selectedLoginMethod ? _self.selectedLoginMethod : selectedLoginMethod // ignore: cast_nullable_to_non_nullable
 as String?,canSelectLoginMethod: null == canSelectLoginMethod ? _self.canSelectLoginMethod : canSelectLoginMethod // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,upgrade: freezed == upgrade ? _self.upgrade : upgrade // ignore: cast_nullable_to_non_nullable
+as AcpCardUpgradePresentation?,
   ));
 }
 /// Create a copy of AcpAccountPresentation
@@ -7784,6 +8116,18 @@ $AcpUsagePresentationCopyWith<$Res> get usage {
 
   return $AcpUsagePresentationCopyWith<$Res>(_self.usage, (value) {
     return _then(_self.copyWith(usage: value));
+  });
+}/// Create a copy of AcpAccountPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpCardUpgradePresentationCopyWith<$Res>? get upgrade {
+    if (_self.upgrade == null) {
+    return null;
+  }
+
+  return $AcpCardUpgradePresentationCopyWith<$Res>(_self.upgrade!, (value) {
+    return _then(_self.copyWith(upgrade: value));
   });
 }
 }
@@ -7867,10 +8211,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod,  AcpCardUpgradePresentation? upgrade)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod,_that.upgrade);case _:
   return orElse();
 
 }
@@ -7888,10 +8232,10 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.suppor
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod,  AcpCardUpgradePresentation? upgrade)  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation():
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod,_that.upgrade);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -7908,10 +8252,10 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.suppor
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( AcpPresentationPhase phase,  String status,  String? subtitle,  AcpUsagePresentation usage,  bool supportsUsage,  String? message,  String? error,  double? progress,  String? progressLabel,  List<AccountDisplayFact> facts,  List<AcpAccountAction> availableActions,  AcpAccountAction? primaryAction,  List<AcpLoginMethodPresentation> loginMethods,  String? selectedLoginMethod,  bool canSelectLoginMethod,  AcpCardUpgradePresentation? upgrade)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpAccountPresentation() when $default != null:
-return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod);case _:
+return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.supportsUsage,_that.message,_that.error,_that.progress,_that.progressLabel,_that.facts,_that.availableActions,_that.primaryAction,_that.loginMethods,_that.selectedLoginMethod,_that.canSelectLoginMethod,_that.upgrade);case _:
   return null;
 
 }
@@ -7923,7 +8267,7 @@ return $default(_that.phase,_that.status,_that.subtitle,_that.usage,_that.suppor
 
 
 class _AcpAccountPresentation extends AcpAccountPresentation {
-  const _AcpAccountPresentation({required this.phase, required this.status, this.subtitle, this.usage = const AcpUsagePresentation(), this.supportsUsage = false, this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
+  const _AcpAccountPresentation({required this.phase, required this.status, this.subtitle, this.usage = const AcpUsagePresentation(), this.supportsUsage = false, this.message, this.error, this.progress, this.progressLabel,  List<AccountDisplayFact> facts = const <AccountDisplayFact>[],  List<AcpAccountAction> availableActions = const <AcpAccountAction>[], this.primaryAction,  List<AcpLoginMethodPresentation> loginMethods = const <AcpLoginMethodPresentation>[], this.selectedLoginMethod, this.canSelectLoginMethod = false, this.upgrade}): _facts = facts,_availableActions = availableActions,_loginMethods = loginMethods,super._();
 
 
 @override final  AcpPresentationPhase phase;
@@ -7961,6 +8305,7 @@ class _AcpAccountPresentation extends AcpAccountPresentation {
 
 @override final  String? selectedLoginMethod;
 @override@JsonKey() final  bool canSelectLoginMethod;
+@override final  AcpCardUpgradePresentation? upgrade;
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
@@ -7972,18 +8317,18 @@ _$AcpAccountPresentationCopyWith<_AcpAccountPresentation> get copyWith => __$Acp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.subtitle, subtitle) || other.subtitle == subtitle)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.supportsUsage, supportsUsage) || other.supportsUsage == supportsUsage)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpAccountPresentation&&(identical(other.phase, phase) || other.phase == phase)&&(identical(other.status, status) || other.status == status)&&(identical(other.subtitle, subtitle) || other.subtitle == subtitle)&&(identical(other.usage, usage) || other.usage == usage)&&(identical(other.supportsUsage, supportsUsage) || other.supportsUsage == supportsUsage)&&(identical(other.message, message) || other.message == message)&&(identical(other.error, error) || other.error == error)&&(identical(other.progress, progress) || other.progress == progress)&&(identical(other.progressLabel, progressLabel) || other.progressLabel == progressLabel)&&const DeepCollectionEquality().equals(other.facts, _facts)&&const DeepCollectionEquality().equals(other.availableActions, _availableActions)&&(identical(other.primaryAction, primaryAction) || other.primaryAction == primaryAction)&&const DeepCollectionEquality().equals(other.loginMethods, _loginMethods)&&(identical(other.selectedLoginMethod, selectedLoginMethod) || other.selectedLoginMethod == selectedLoginMethod)&&(identical(other.canSelectLoginMethod, canSelectLoginMethod) || other.canSelectLoginMethod == canSelectLoginMethod)&&(identical(other.upgrade, upgrade) || other.upgrade == upgrade));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,phase,status,subtitle,usage,supportsUsage,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod);
+    return Object.hash(runtimeType,phase,status,subtitle,usage,supportsUsage,message,error,progress,progressLabel,const DeepCollectionEquality().hash(_facts),const DeepCollectionEquality().hash(_availableActions),primaryAction,const DeepCollectionEquality().hash(_loginMethods),selectedLoginMethod,canSelectLoginMethod,upgrade);
 }
 
 @override
 String toString() {
-    return 'AcpAccountPresentation(phase: $phase, status: $status, subtitle: $subtitle, usage: $usage, supportsUsage: $supportsUsage, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod)';
+    return 'AcpAccountPresentation(phase: $phase, status: $status, subtitle: $subtitle, usage: $usage, supportsUsage: $supportsUsage, message: $message, error: $error, progress: $progress, progressLabel: $progressLabel, facts: $facts, availableActions: $availableActions, primaryAction: $primaryAction, loginMethods: $loginMethods, selectedLoginMethod: $selectedLoginMethod, canSelectLoginMethod: $canSelectLoginMethod, upgrade: $upgrade)';
 }
 
 
@@ -7994,11 +8339,11 @@ abstract mixin class _$AcpAccountPresentationCopyWith<$Res> implements $AcpAccou
   factory _$AcpAccountPresentationCopyWith(_AcpAccountPresentation value, $Res Function(_AcpAccountPresentation) _then) = __$AcpAccountPresentationCopyWithImpl;
 @override @useResult
 $Res call({
- AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod
+ AcpPresentationPhase phase, String status, String? subtitle, AcpUsagePresentation usage, bool supportsUsage, String? message, String? error, double? progress, String? progressLabel, List<AccountDisplayFact> facts, List<AcpAccountAction> availableActions, AcpAccountAction? primaryAction, List<AcpLoginMethodPresentation> loginMethods, String? selectedLoginMethod, bool canSelectLoginMethod, AcpCardUpgradePresentation? upgrade
 });
 
 
-@override $AcpUsagePresentationCopyWith<$Res> get usage;
+@override $AcpUsagePresentationCopyWith<$Res> get usage;@override $AcpCardUpgradePresentationCopyWith<$Res>? get upgrade;
 
 }
 /// @nodoc
@@ -8011,7 +8356,7 @@ class __$AcpAccountPresentationCopyWithImpl<$Res>
 
 /// Create a copy of AcpAccountPresentation
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? phase = null,Object? status = null,Object? subtitle = freezed,Object? usage = null,Object? supportsUsage = null,Object? message = freezed,Object? error = freezed,Object? progress = freezed,Object? progressLabel = freezed,Object? facts = null,Object? availableActions = null,Object? primaryAction = freezed,Object? loginMethods = null,Object? selectedLoginMethod = freezed,Object? canSelectLoginMethod = null,Object? upgrade = freezed,}) {
   return _then(_AcpAccountPresentation(
 phase: null == phase ? _self.phase : phase // ignore: cast_nullable_to_non_nullable
 as AcpPresentationPhase,status: null == status ? _self.status : status // ignore: cast_nullable_to_non_nullable
@@ -8028,7 +8373,8 @@ as List<AcpAccountAction>,primaryAction: freezed == primaryAction ? _self.primar
 as AcpAccountAction?,loginMethods: null == loginMethods ? _self._loginMethods : loginMethods // ignore: cast_nullable_to_non_nullable
 as List<AcpLoginMethodPresentation>,selectedLoginMethod: freezed == selectedLoginMethod ? _self.selectedLoginMethod : selectedLoginMethod // ignore: cast_nullable_to_non_nullable
 as String?,canSelectLoginMethod: null == canSelectLoginMethod ? _self.canSelectLoginMethod : canSelectLoginMethod // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,upgrade: freezed == upgrade ? _self.upgrade : upgrade // ignore: cast_nullable_to_non_nullable
+as AcpCardUpgradePresentation?,
   ));
 }
 
@@ -8040,6 +8386,18 @@ $AcpUsagePresentationCopyWith<$Res> get usage {
 
   return $AcpUsagePresentationCopyWith<$Res>(_self.usage, (value) {
     return _then(_self.copyWith(usage: value));
+  });
+}/// Create a copy of AcpAccountPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$AcpCardUpgradePresentationCopyWith<$Res>? get upgrade {
+    if (_self.upgrade == null) {
+    return null;
+  }
+
+  return $AcpCardUpgradePresentationCopyWith<$Res>(_self.upgrade!, (value) {
+    return _then(_self.copyWith(upgrade: value));
   });
 }
 }

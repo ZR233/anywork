@@ -73,6 +73,7 @@ pub(super) fn read(
                             usage_query_revision: config.usage_query_revision(id),
                             acp_enabled: None,
                             acp_connection_revision: None,
+                            acp_template: None,
                             capabilities: AccountCapabilities {
                                 set_default: true,
                                 edit: true,
@@ -115,6 +116,7 @@ pub(super) fn read(
                             usage_query_revision: None,
                             acp_enabled: Some(account.enabled),
                             acp_connection_revision: Some(account.connection_revision),
+                            acp_template: account.template,
                             capabilities: AccountCapabilities {
                                 set_default: false,
                                 edit: true,

@@ -11148,7 +11148,7 @@ abstract class AppLocalizations {
   /// No description provided for @acpEditorStepPrepareSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'anywork automatically verifies or downloads the official Google Antigravity server (v1.4.5).'**
+  /// **'anywork automatically verifies or downloads the official Google Antigravity server (1.x).'**
   String get acpEditorStepPrepareSubtitle;
 
   /// No description provided for @acpEditorStepConnectTitle.
@@ -13946,6 +13946,126 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Session info'**
   String get acpSessionDetailTitle;
+
+  /// No description provided for @accountsCategoryAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get accountsCategoryAll;
+
+  /// No description provided for @accountsCategoryAcp.
+  ///
+  /// In en, this message translates to:
+  /// **'ACP Agents'**
+  String get accountsCategoryAcp;
+
+  /// No description provided for @accountsCategoryNative.
+  ///
+  /// In en, this message translates to:
+  /// **'API Accounts'**
+  String get accountsCategoryNative;
+
+  /// No description provided for @accountsUpgradableCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} update{count, plural, =1{} other{s}}'**
+  String accountsUpgradableCount(int count);
+
+  /// No description provided for @acpManagedBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed'**
+  String get acpManagedBadge;
+
+  /// No description provided for @acpLocalBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'Local command'**
+  String get acpLocalBadge;
+
+  /// No description provided for @acpVersionTag.
+  ///
+  /// In en, this message translates to:
+  /// **'v{version}'**
+  String acpVersionTag(String version);
+
+  /// No description provided for @acpUpgradeCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Check for updates'**
+  String get acpUpgradeCheck;
+
+  /// No description provided for @acpUpgradeChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking for updates…'**
+  String get acpUpgradeChecking;
+
+  /// No description provided for @acpUpgradeUpToDate.
+  ///
+  /// In en, this message translates to:
+  /// **'Up to date · v{version}'**
+  String acpUpgradeUpToDate(String version);
+
+  /// No description provided for @acpUpgradeAvailableTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Update available'**
+  String get acpUpgradeAvailableTitle;
+
+  /// No description provided for @acpUpgradeAvailableVersions.
+  ///
+  /// In en, this message translates to:
+  /// **'v{current} → v{latest}'**
+  String acpUpgradeAvailableVersions(String current, String latest);
+
+  /// No description provided for @acpUpgradeAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrade to v{version}'**
+  String acpUpgradeAction(String version);
+
+  /// No description provided for @acpUpgradeActionGeneric.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrade now'**
+  String get acpUpgradeActionGeneric;
+
+  /// No description provided for @acpUpgradeUpgrading.
+  ///
+  /// In en, this message translates to:
+  /// **'Upgrading to v{version}'**
+  String acpUpgradeUpgrading(String version);
+
+  /// No description provided for @acpUpgradePendingSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Installed v{version}; will switch once active sessions end'**
+  String acpUpgradePendingSwitch(String version);
+
+  /// No description provided for @acpUpgradeIncompatibleMajor.
+  ///
+  /// In en, this message translates to:
+  /// **'v{version} available (update anywork to support major v2)'**
+  String acpUpgradeIncompatibleMajor(String version);
+
+  /// No description provided for @acpUpgradeCheckFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Update check failed. Try again.'**
+  String get acpUpgradeCheckFailed;
+
+  /// No description provided for @acpUpgradeRetryCheck.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry check'**
+  String get acpUpgradeRetryCheck;
+
+  /// No description provided for @acpManagedServerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Managed server & updates'**
+  String get acpManagedServerTitle;
 }
 
 class _AppLocalizationsDelegate

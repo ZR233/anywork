@@ -4,8 +4,8 @@
 //! 文件 IO 由安装 owner 在后台推进，不持 Settings 提交锁，也不占用认证状态（见 design/28 §28.6）。
 
 use crate::{
-    AcpInstallCommandReply, AcpInstallSnapshot, CancelAcpInstallRequest, CommandEffectPoint,
-    StartAcpInstallRequest,
+    AcpInstallCommandReply, AcpInstallSnapshot, CancelAcpInstallRequest,
+    CheckAcpInstallUpdateRequest, CommandEffectPoint, StartAcpInstallRequest,
 };
 use anyhow::Result;
 
@@ -45,6 +45,26 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         let operation_id = request.operation_id.clone();
         let acceptance = self.acp_install.cancel(request)?;
+        Ok(AcpInstallCommandReply {
+            receipt: self.command_receipt(
+                operation_id,
+                acceptance.changed,
+                vec![self.resource_stamp("acp-install", acceptance.snapshot.revision)],
+                CommandEffectPoint::Immediate,
+                false,
+            ),
+            snapshot: acceptance.snapshot,
+        })
+    }
+
+    /// 显式检查受管 server 的大版本 `1` 新版；在后台执行并发布到 `acpInstall` topic。
+    pub fn check_acp_install_update(
+        &self,
+        request: CheckAcpInstallUpdateRequest,
+    ) -> Result<AcpInstallCommandReply> {
+        Self::validate_operation_id(&request.operation_id)?;
+        let operation_id = request.operation_id.clone();
+        let acceptance = self.acp_install.check_update(request)?;
         Ok(AcpInstallCommandReply {
             receipt: self.command_receipt(
                 operation_id,

@@ -58,7 +58,7 @@ final class AccountCardViewModelProvider
 }
 
 String _$accountCardViewModelHash() =>
-    r'fe2cc1a90c8bb80ad63c4e75a759c59012f6947e';
+    r'd8b8cf2a6f062066ace06de552178ff854b83055';
 
 /// One list member's read-only projection and refresh intent. Search never owns
 /// this resource; the visible list retains it independently of row widgets.

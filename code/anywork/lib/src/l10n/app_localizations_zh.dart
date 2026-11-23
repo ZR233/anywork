@@ -5906,7 +5906,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpEditorStepPrepareSubtitle =>
-      '糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（v1.4.5）。';
+      '糊来帮将自动检测、校验或下载官方 Google Antigravity 服务程序（1.x）。';
 
   @override
   String get acpEditorStepConnectTitle => '3. 保存并登录 Google 账号';
@@ -7389,4 +7389,80 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpSessionDetailTitle => '会话信息';
+
+  @override
+  String get accountsCategoryAll => '全部';
+
+  @override
+  String get accountsCategoryAcp => 'ACP 智能体';
+
+  @override
+  String get accountsCategoryNative => 'API 账户';
+
+  @override
+  String accountsUpgradableCount(int count) {
+    return '$count 项可升级';
+  }
+
+  @override
+  String get acpManagedBadge => '官方受管';
+
+  @override
+  String get acpLocalBadge => '本地服务';
+
+  @override
+  String acpVersionTag(String version) {
+    return 'v$version';
+  }
+
+  @override
+  String get acpUpgradeCheck => '检查更新';
+
+  @override
+  String get acpUpgradeChecking => '正在检查新版本…';
+
+  @override
+  String acpUpgradeUpToDate(String version) {
+    return '已是最新 · v$version';
+  }
+
+  @override
+  String get acpUpgradeAvailableTitle => '发现官方新版本';
+
+  @override
+  String acpUpgradeAvailableVersions(String current, String latest) {
+    return 'v$current → v$latest';
+  }
+
+  @override
+  String acpUpgradeAction(String version) {
+    return '升级到 v$version';
+  }
+
+  @override
+  String get acpUpgradeActionGeneric => '立即升级';
+
+  @override
+  String acpUpgradeUpgrading(String version) {
+    return '正在升级到 v$version';
+  }
+
+  @override
+  String acpUpgradePendingSwitch(String version) {
+    return '已安装 v$version，当前会话结束后自动切换';
+  }
+
+  @override
+  String acpUpgradeIncompatibleMajor(String version) {
+    return '官方已发布 v$version（需更新应用以支持大版本 2）';
+  }
+
+  @override
+  String get acpUpgradeCheckFailed => '版本检查失败，请重试';
+
+  @override
+  String get acpUpgradeRetryCheck => '重试检查';
+
+  @override
+  String get acpManagedServerTitle => '受管组件与版本';
 }

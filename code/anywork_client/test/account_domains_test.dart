@@ -205,6 +205,8 @@ final class _Port
     OperationId,
   )?
   installCancel;
+  Future<AcpInstallCommandReply> Function(OperationId, AcpProviderView)?
+  installCheckUpdate;
   void Function()? onOpen;
   Future<_Handle> Function(AccountObservationTarget)? openAccount;
   Future<DelegationModelDetail> Function(DelegationModelKey)? modelDetail;
@@ -320,6 +322,12 @@ final class _Port
     required AcpProviderView provider,
     required OperationId targetOperationId,
   }) => installCancel!(operationId, provider, targetOperationId);
+
+  @override
+  Future<AcpInstallCommandReply> checkAcpInstallUpdate({
+    required OperationId operationId,
+    required AcpProviderView provider,
+  }) => installCheckUpdate!(operationId, provider);
 
   @override
   Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key) =>

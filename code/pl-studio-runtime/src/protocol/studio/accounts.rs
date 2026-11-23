@@ -54,6 +54,9 @@ pub struct AccountSummary {
     /// ACP connection identity from the authentication owner; absent for Native accounts.
     /// This is not a cross-domain freshness watermark.
     pub acp_connection_revision: Option<u64>,
+    /// 受管 ACP 模板标识；普通 command / 本地 CLI 与 Native 账号均为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_template: Option<crate::AcpProvider>,
     pub capabilities: AccountCapabilities,
 }
 

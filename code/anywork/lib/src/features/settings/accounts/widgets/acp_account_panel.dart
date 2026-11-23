@@ -1,17 +1,19 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../../../../app/theme/studio_semantic_colors.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import 'account_sections.dart';
 import 'account_usage_metrics.dart';
+import 'acp_upgrade_banner.dart';
 
 String acpActionLabel(AppLocalizations l10n, AcpAccountAction action) =>
     switch (action) {
       AcpAccountAction.prepare => l10n.acpInstallStart,
       AcpAccountAction.cancelPreparation => l10n.acpInstallCancel,
       AcpAccountAction.usePrepared => l10n.acpInstallUsePrepared,
+      AcpAccountAction.upgrade => l10n.acpUpgradeActionGeneric,
+      AcpAccountAction.checkUpdate => l10n.acpUpgradeCheck,
       AcpAccountAction.check => l10n.acpAuthCheck,
       AcpAccountAction.login => l10n.acpAuthLogin,
       AcpAccountAction.cancelAuthentication => l10n.acpAuthCancel,
@@ -25,6 +27,8 @@ IconData _acpActionIcon(AcpAccountAction action) => switch (action) {
   AcpAccountAction.prepare => Icons.download_outlined,
   AcpAccountAction.cancelPreparation => Icons.close,
   AcpAccountAction.usePrepared => Icons.check_circle_outline,
+  AcpAccountAction.upgrade => Icons.upgrade_rounded,
+  AcpAccountAction.checkUpdate => Icons.update_rounded,
   AcpAccountAction.check => Icons.sync,
   AcpAccountAction.login => Icons.open_in_browser,
   AcpAccountAction.cancelAuthentication => Icons.close,
@@ -54,65 +58,29 @@ class AcpAccountPanel extends StatelessWidget {
     final l10n = AppLocalizations.of(context);
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final semantic = theme.extension<StudioSemanticColors>();
-    final (
-      Color accentColor,
-      Color containerColor,
-      IconData statusIcon,
-    ) = switch (value.phase) {
-      AcpPresentationPhase.connected || AcpPresentationPhase.ready => (
-        semantic?.success ?? scheme.primary,
-        Color.alphaBlend(
-          (semantic?.success ?? scheme.primary).withValues(alpha: 0.08),
-          scheme.surfaceContainerLow,
-        ),
-        Icons.check_circle_outline,
-      ),
-      AcpPresentationPhase.needsLogin => (
-        semantic?.warning ?? scheme.tertiary,
-        Color.alphaBlend(
-          (semantic?.warning ?? scheme.tertiary).withValues(alpha: 0.10),
-          scheme.surfaceContainerLow,
-        ),
-        Icons.login_outlined,
-      ),
-      AcpPresentationPhase.failed => (
-        scheme.error,
-        Color.alphaBlend(
-          scheme.error.withValues(alpha: 0.08),
-          scheme.surfaceContainerLow,
-        ),
-        Icons.error_outline,
-      ),
-      AcpPresentationPhase.preparing ||
-      AcpPresentationPhase.checking ||
-      AcpPresentationPhase.reconnecting ||
-      AcpPresentationPhase.authenticating ||
-      AcpPresentationPhase.verifying => (
-        scheme.primary,
-        Color.alphaBlend(
-          scheme.primary.withValues(alpha: 0.08),
-          scheme.surfaceContainerLow,
-        ),
-        Icons.sync,
-      ),
-      AcpPresentationPhase.idle ||
-      AcpPresentationPhase.cancelling ||
-      AcpPresentationPhase.closing => (
-        scheme.onSurfaceVariant,
-        scheme.surfaceContainerLow,
-        Icons.dns_outlined,
-      ),
-    };
+    final style = acpPhaseStyle(context, value.phase);
+    final accentColor = style.accent;
+    final statusIcon = style.icon;
+    final containerColor = style.background.withValues(alpha: 0.45);
 
+    final hideUpgradeAction = value.upgrade != null;
+    final hideCancelPreparation =
+        value.upgrade?.phase == AcpUpgradePhase.upgrading;
+    bool hiddenInPanel(AcpAccountAction action) =>
+        (hideUpgradeAction &&
+            (action == AcpAccountAction.upgrade ||
+                action == AcpAccountAction.checkUpdate)) ||
+        (hideCancelPreparation && action == AcpAccountAction.cancelPreparation);
     final showPrimary =
         value.hasPrimaryAction &&
+        !hiddenInPanel(value.primaryAction!) &&
         !(omitQueryUsageAction &&
             value.primaryAction == AcpAccountAction.queryUsage);
     final secondaryActions = [
       for (final action in value.availableActions)
         if (action != AcpAccountAction.openGuide &&
             action != AcpAccountAction.openTerms &&
+            !hiddenInPanel(action) &&
             !(omitQueryUsageAction && action == AcpAccountAction.queryUsage) &&
             (!value.hasPrimaryAction || action != value.primaryAction))
           action,
@@ -197,6 +165,10 @@ class AcpAccountPanel extends StatelessWidget {
         if (value.error != null) ...[
           const SizedBox(height: 12),
           AccountInlineError(message: value.error!),
+        ],
+        if (value.upgrade case final upgrade?) ...[
+          const SizedBox(height: 16),
+          AcpManagedVersionCard(upgrade: upgrade, onAction: onAction),
         ],
         if (value.loginMethods.isNotEmpty) ...[
           const SizedBox(height: 16),

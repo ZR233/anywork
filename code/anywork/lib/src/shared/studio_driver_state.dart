@@ -416,6 +416,9 @@ final class StudioDriverAcpInstallEntryFacts {
     this.reused = false,
     this.failureCode,
     this.failureRetryable,
+    this.installedVersion,
+    this.updatePhase,
+    this.updateLatestVersion,
   });
 
   final String provider;
@@ -446,6 +449,9 @@ final class StudioDriverAcpInstallEntryFacts {
   final bool reused;
   final String? failureCode;
   final bool? failureRetryable;
+  final String? installedVersion;
+  final String? updatePhase;
+  final String? updateLatestVersion;
 }
 
 final class StudioDriverBotsFacts {
@@ -1735,6 +1741,9 @@ Map<String, Object?>? _acpInstallFactsJson(StudioDriverAcpInstallFacts? facts) {
                 },
           'program': entry.program,
           'reused': entry.reused,
+          'installedVersion': entry.installedVersion,
+          'updatePhase': entry.updatePhase,
+          'updateLatestVersion': entry.updateLatestVersion,
           'failure': entry.failureCode == null
               ? null
               : {

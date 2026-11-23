@@ -150,6 +150,7 @@ AccountSummary vmSummary(
   bool? credentialReady,
   bool acpEnabled = true,
   bool queryUsage = false,
+  AcpProviderView? acpTemplate,
 }) => AccountSummary(
   identity: identity,
   name: name ?? identity.accountId,
@@ -159,6 +160,7 @@ AccountSummary vmSummary(
   usageQueryRevision: 1,
   acpConnectionRevision: identity is AcpAccountIdentity ? acpRevision : null,
   acpEnabled: identity is AcpAccountIdentity ? acpEnabled : null,
+  acpTemplate: identity is AcpAccountIdentity ? acpTemplate : null,
   credentialReady: credentialReady,
   capabilities: identity is NativeAccountIdentity
       ? vmCapabilities
@@ -677,6 +679,7 @@ class VmAcp implements AcpService {
   final starts = <Completer<AcpInstallSnapshotView>>[];
   Completer<void>? prepareStarted;
   final cancels = <Completer<AcpInstallSnapshotView>>[];
+  final updateChecks = <Completer<AcpInstallSnapshotView>>[];
   final authStarts = <Completer<AcpAuthSnapshotView>>[];
   final authCancels = <Completer<AcpAuthSnapshotView>>[];
   final usageQueries = <Completer<AcpAuthSnapshotView>>[];
@@ -732,6 +735,13 @@ class VmAcp implements AcpService {
   Future<AcpInstallSnapshotView> cancelPreparation(AcpProviderView provider) {
     final work = Completer<AcpInstallSnapshotView>();
     cancels.add(work);
+    return work.future;
+  }
+
+  @override
+  Future<AcpInstallSnapshotView> checkUpdate(AcpProviderView provider) {
+    final work = Completer<AcpInstallSnapshotView>();
+    updateChecks.add(work);
     return work.future;
   }
 
@@ -4072,5 +4082,454 @@ void main() {
     await disabledOwner.queryUsage();
     expect(h.acp.authStarts, isEmpty);
     expect(h.acp.usageQueries, isEmpty);
+  });
+
+  test('AccountCardViewModel projects managed upgrade phases, triggers upgrade commands, and re-queries usage on server version change', () async {
+    final h = AccountsVmHarness();
+    h.acp.holdUsageRefreshRequests = true;
+    addTearDown(() {
+      h.dispose();
+      for (final request in h.acp.usageRefreshRequests) {
+        if (!request.completion.isCompleted) {
+          request.completion.complete(AcpUsageRefreshDisposition.cancelled);
+        }
+      }
+    });
+
+    const release145 = AcpInstallReleaseView(
+      version: '1.4.5',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.4.5.zip',
+    );
+    const release152 = AcpInstallReleaseView(
+      version: '1.5.2',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.5.2.zip',
+    );
+    const installed145 = AcpInstalledServerView(
+      installationId: 'id-145',
+      release: release145,
+      program: '/managed/145/agy_acp_server.par',
+      readyAt: 10,
+    );
+    const installed152 = AcpInstalledServerView(
+      installationId: 'id-152',
+      release: release152,
+      program: '/managed/152/agy_acp_server.par',
+      readyAt: 20,
+    );
+
+    void publishState({
+      required AcpInstalledServerView? installed,
+      required AcpInstallStateView installState,
+      required AcpInstallUpdateStateView updateState,
+      required String runningVersion,
+      AcpUsageObservationView? usage,
+    }) {
+      h.accounts.state.publish(
+        AccountsState(
+          stamp: vmStamp,
+          templates: h.accounts.state.value.templates,
+          accounts: [
+            vmSummary(const NativeAccountIdentity('native'), name: 'Native'),
+            vmSummary(
+              const AcpAccountIdentity('acp'),
+              name: 'Antigravity',
+              acpRevision: 1,
+              acpEnabled: true,
+              queryUsage: true,
+              acpTemplate: AcpProviderView.antigravity,
+            ),
+          ],
+        ),
+      );
+      h.acp.install.publish(
+        AccountResource(
+          stamp: vmStamp,
+          value: AcpInstallSnapshotView(
+            revision: 2,
+            updatedAt: 2,
+            installations: [
+              AcpInstallEntryView(
+                provider: AcpProviderView.antigravity,
+                state: installState,
+                installed: installed,
+                update: updateState,
+              ),
+            ],
+          ),
+        ),
+      );
+      h.acp.auth.publish(
+        AccountResource(
+          stamp: vmStamp,
+          value: AcpAuthSnapshotView(
+            revision: 2,
+            updatedAt: 2,
+            accounts: [
+              AcpAuthAccountView(
+                connection: const AcpConnectionReadyState(),
+                accountId: 'acp',
+                connectionRevision: 1,
+                state: AcpVerifiedState(
+                  checkedAt: 2,
+                  server: AcpServerInfoView(
+                    name: 'agy_acp_server',
+                    version: runningVersion,
+                  ),
+                ),
+                usage: usage,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    publishState(
+      installed: installed145,
+      installState: const AcpInstallReadyState(
+        operationId: 'prep-145',
+        server: installed145,
+      ),
+      updateState: const AcpInstallUpdateAvailableState(
+        checkedAt: 10,
+        latest: release152,
+      ),
+      runningVersion: '1.4.5',
+    );
+    const cardKey = AccountDisplayKey(kind: AccountKind.acp, id: 'acp');
+    final listOwner = await h.listOwner();
+    final cardSub = h.container.listen(
+      accountCardViewModelProvider(cardKey),
+      (_, _) {},
+    );
+    addTearDown(cardSub.close);
+    await h.container.read(accountCardViewModelProvider(cardKey).future);
+    await h.container.pump();
+
+    expect(h.acp.usageRefreshRequests, hasLength(1));
+    h.acp.usageRefreshRequests.single.completion.complete(
+      AcpUsageRefreshDisposition.started,
+    );
+
+    final updateRow = h.container
+        .read(accountCardViewModelProvider(cardKey))
+        .requireValue!;
+    final updateContent = updateRow.content as AcpAccountRowContent;
+    expect(updateContent.isManaged, isTrue);
+    expect(updateContent.versionLabel, 'v1.4.5');
+    expect(updateContent.upgrade?.phase, AcpUpgradePhase.updateAvailable);
+    expect(updateContent.upgrade?.latestVersion, '1.5.2');
+    expect(updateContent.upgrade?.canUpgrade, isTrue);
+
+    final checkPending = listOwner.checkUpdate(cardKey);
+    expect(h.acp.updateChecks, hasLength(1));
+    expect(
+      (h.container
+                  .read(accountCardViewModelProvider(cardKey))
+                  .requireValue!
+                  .content
+              as AcpAccountRowContent)
+          .upgrade
+          ?.phase,
+      AcpUpgradePhase.checking,
+    );
+    h.acp.updateChecks.single.complete(h.acp.install.value.value!);
+    await checkPending;
+
+    final upgrading = listOwner.upgrade(cardKey);
+    expect(h.acp.starts, hasLength(1));
+    publishState(
+      installed: installed145,
+      installState: const AcpDownloadingState(
+        operationId: 'up-152',
+        release: release152,
+        progress: AcpInstallProgressView(
+          completedBytes: 5 * 1024 * 1024,
+          totalBytes: 10 * 1024 * 1024,
+          bytesPerSecond: 2 * 1024 * 1024,
+        ),
+      ),
+      updateState: const AcpInstallUpdateAvailableState(
+        checkedAt: 10,
+        latest: release152,
+      ),
+      runningVersion: '1.4.5',
+    );
+    await h.container.pump();
+    final busyContent =
+        h.container
+                .read(accountCardViewModelProvider(cardKey))
+                .requireValue!
+                .content
+            as AcpAccountRowContent;
+    expect(busyContent.upgrade?.phase, AcpUpgradePhase.upgrading);
+    expect(busyContent.upgrade?.progress, closeTo(0.5, 0.001));
+    expect(busyContent.upgrade?.canCancel, isTrue);
+
+    final cancelPending = listOwner.cancelUpgrade(cardKey);
+    expect(h.acp.cancels, hasLength(1));
+    h.acp.cancels.single.complete(h.acp.install.value.value!);
+    h.acp.starts.single.complete(h.acp.install.value.value!);
+    await Future.wait([cancelPending, upgrading]);
+
+    // Installed 1.5.2 while 1.4.5 connection still serves active sessions -> pendingSwitch.
+    publishState(
+      installed: installed152,
+      installState: const AcpInstallReadyState(
+        operationId: 'up-152',
+        server: installed152,
+      ),
+      updateState: const AcpInstallUpdateUpToDateState(
+        checkedAt: 20,
+        latestVersion: '1.5.2',
+      ),
+      runningVersion: '1.4.5',
+    );
+    await h.container.pump();
+    final pendingContent =
+        h.container
+                .read(accountCardViewModelProvider(cardKey))
+                .requireValue!
+                .content
+            as AcpAccountRowContent;
+    expect(pendingContent.upgrade?.phase, AcpUpgradePhase.pendingSwitch);
+    expect(pendingContent.upgrade?.installedVersion, '1.5.2');
+    expect(pendingContent.upgrade?.runningVersion, '1.4.5');
+
+    // Server seamlessly switches to 1.5.2 without changing connectionRevision: triggers fresh /usage.
+    publishState(
+      installed: installed152,
+      installState: const AcpInstallReadyState(
+        operationId: 'up-152',
+        server: installed152,
+      ),
+      updateState: const AcpInstallUpdateUpToDateState(
+        checkedAt: 25,
+        latestVersion: '1.5.2',
+      ),
+      runningVersion: '1.5.2',
+    );
+    await h.container.pump();
+    expect(h.acp.usageRefreshRequests, hasLength(2));
+    final switchedContent =
+        h.container
+                .read(accountCardViewModelProvider(cardKey))
+                .requireValue!
+                .content
+            as AcpAccountRowContent;
+    expect(switchedContent.upgrade?.phase, AcpUpgradePhase.upToDate);
+    expect(switchedContent.versionLabel, 'v1.5.2');
+
+    // Major 2.0 update is reported without offering automated 1.x upgrade.
+    publishState(
+      installed: installed152,
+      installState: const AcpInstallReadyState(
+        operationId: 'up-152',
+        server: installed152,
+      ),
+      updateState: const AcpInstallUpdateIncompatibleMajorState(
+        checkedAt: 30,
+        latestVersion: '2.0.0',
+      ),
+      runningVersion: '1.5.2',
+    );
+    await h.container.pump();
+    final majorContent =
+        h.container
+                .read(accountCardViewModelProvider(cardKey))
+                .requireValue!
+                .content
+            as AcpAccountRowContent;
+    expect(majorContent.upgrade?.phase, AcpUpgradePhase.incompatibleMajor);
+    expect(majorContent.upgrade?.latestVersion, '2.0.0');
+    expect(majorContent.upgrade?.canUpgrade, isFalse);
+  });
+
+  test('AcpAccountViewModel allows prepare() upgrade when UpdateAvailable is present and keeps top panel progress isolated from saved account upgrade', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    const release145 = AcpInstallReleaseView(
+      version: '1.4.5',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.4.5.zip',
+    );
+    const release152 = AcpInstallReleaseView(
+      version: '1.5.2',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.5.2.zip',
+    );
+    const installed145 = AcpInstalledServerView(
+      installationId: 'id-145',
+      release: release145,
+      program: '/managed/145/agy_acp_server.par',
+      readyAt: 10,
+    );
+    publishVmAcp(
+      h,
+      const AcpVerifiedState(
+        checkedAt: 10,
+        server: AcpServerInfoView(name: 'agy_acp_server', version: '1.4.5'),
+      ),
+    );
+    h.acp.install.publish(
+      AccountResource(
+        stamp: vmStamp,
+        value: const AcpInstallSnapshotView(
+          revision: 1,
+          updatedAt: 10,
+          installations: [
+            AcpInstallEntryView(
+              provider: AcpProviderView.antigravity,
+              state: AcpInstallReadyState(
+                operationId: 'prep-145',
+                server: installed145,
+              ),
+              installed: installed145,
+              update: AcpInstallUpdateAvailableState(
+                checkedAt: 10,
+                latest: release152,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final owner = await listenVmAcp(h, vmAcpKey);
+    var state = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue;
+    expect(state.panel.upgrade?.phase, AcpUpgradePhase.updateAvailable);
+    expect(state.panel.progress, isNull);
+
+    final preparing = owner.prepare();
+    await h.container.pump();
+    expect(h.acp.starts, hasLength(1));
+
+    h.acp.install.publish(
+      AccountResource(
+        stamp: vmStamp,
+        value: const AcpInstallSnapshotView(
+          revision: 2,
+          updatedAt: 12,
+          installations: [
+            AcpInstallEntryView(
+              provider: AcpProviderView.antigravity,
+              state: AcpDownloadingState(
+                operationId: 'up-152',
+                release: release152,
+                progress: AcpInstallProgressView(
+                  completedBytes: 256,
+                  totalBytes: 1024,
+                  bytesPerSecond: 128,
+                ),
+              ),
+              installed: installed145,
+              update: AcpInstallUpdateAvailableState(
+                checkedAt: 10,
+                latest: release152,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    await h.container.pump();
+    state = h.container
+        .read(acpAccountViewModelProvider(vmAcpKey))
+        .requireValue;
+    expect(state.panel.phase, AcpPresentationPhase.connected);
+    expect(state.panel.progress, isNull);
+    expect(state.panel.progressLabel, isNull);
+    expect(state.panel.upgrade?.phase, AcpUpgradePhase.upgrading);
+    expect(state.panel.upgrade?.progress, closeTo(0.25, 0.001));
+
+    h.acp.starts.single.complete(h.acp.install.value.value!);
+    await preparing;
+  });
+
+  test('AccountsViewModel filters by AccountListCategory and computes category/upgradable counts', () async {
+    final h = AccountsVmHarness();
+    addTearDown(h.dispose);
+    const release145 = AcpInstallReleaseView(
+      version: '1.4.5',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.4.5.zip',
+    );
+    const release152 = AcpInstallReleaseView(
+      version: '1.5.2',
+      target: 'linux-x86_64',
+      archiveUrl: 'https://dl.google.com/agy-extensions/releases/1.5.2.zip',
+    );
+    const installed145 = AcpInstalledServerView(
+      installationId: 'id-145',
+      release: release145,
+      program: '/managed/145/agy_acp_server.par',
+      readyAt: 10,
+    );
+    h.accounts.state.publish(
+      AccountsState(
+        stamp: vmStamp,
+        templates: h.accounts.state.value.templates,
+        accounts: [
+          vmSummary(const NativeAccountIdentity('native-1'), name: 'DeepSeek'),
+          vmSummary(
+            const AcpAccountIdentity('acp-1'),
+            name: 'Antigravity',
+            acpTemplate: AcpProviderView.antigravity,
+          ),
+          vmSummary(const AcpAccountIdentity('acp-2'), name: 'Local CLI'),
+        ],
+      ),
+    );
+    h.acp.install.publish(
+      AccountResource(
+        stamp: vmStamp,
+        value: const AcpInstallSnapshotView(
+          revision: 1,
+          updatedAt: 10,
+          installations: [
+            AcpInstallEntryView(
+              provider: AcpProviderView.antigravity,
+              state: AcpInstallReadyState(
+                operationId: 'prep-145',
+                server: installed145,
+              ),
+              installed: installed145,
+              update: AcpInstallUpdateAvailableState(
+                checkedAt: 10,
+                latest: release152,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final owner = await h.listOwner();
+    var list = h.container.read(accountsViewModelProvider).requireValue.list;
+    expect(list.totalCount, 3);
+    expect(list.acpCount, 2);
+    expect(list.nativeCount, 1);
+    expect(list.upgradableCount, 1);
+    expect(list.members, hasLength(3));
+
+    owner.selectCategory(AccountListCategory.acp);
+    list = h.container.read(accountsViewModelProvider).requireValue.list;
+    expect(list.category, AccountListCategory.acp);
+    expect(list.members.map((key) => key.id).toList(), ['acp-1', 'acp-2']);
+
+    owner.selectCategory(AccountListCategory.native);
+    list = h.container.read(accountsViewModelProvider).requireValue.list;
+    expect(list.category, AccountListCategory.native);
+    expect(list.members.map((key) => key.id).toList(), ['native-1']);
+
+    owner.selectCategory(AccountListCategory.all);
+    expect(
+      h.container.read(accountsViewModelProvider).requireValue.list.members,
+      hasLength(3),
+    );
   });
 }
