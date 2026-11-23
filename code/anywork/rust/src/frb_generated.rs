@@ -3684,6 +3684,7 @@ fn wire__crate__api__studio__handlers__acp_business__commit_acp_draft_impl(
                 <crate::api::studio::types::acp_business::BridgeAcpSessionTarget>::sse_decode(
                     &mut deserializer,
                 );
+            let api_first_prompt_text = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
                 transform_result_sse::<
@@ -3694,6 +3695,7 @@ fn wire__crate__api__studio__handlers__acp_business__commit_acp_draft_impl(
                         let output_ok =
                             crate::api::studio::handlers::acp_business::commit_acp_draft(
                                 api_target,
+                                api_first_prompt_text,
                             )
                             .await?;
                         std::result::Result::Ok(output_ok)

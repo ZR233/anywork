@@ -36,7 +36,10 @@ abstract interface class AcpSessionObservationPort {
 abstract interface class AcpBusinessPort {
   /// Admits open and returns its resource before waiting for product Settled.
   Future<AcpSessionObservationPort> open(OpenAcpSessionRequestView request);
-  Future<void> commitDraft(AcpSessionTargetView target);
+  Future<void> commitDraft(
+    AcpSessionTargetView target, {
+    required String firstPromptText,
+  });
   Future<AcpRunIdView> prompt(AcpPromptRequestView request);
   Future<AcpRunIdView> replace(AcpReplaceRequestView request);
   Future<void> interrupt(AcpInterruptRequestView request);

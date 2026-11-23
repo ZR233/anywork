@@ -609,6 +609,7 @@ abstract class RustLibApi extends BaseApi {
 
   Future<void> crateApiStudioHandlersAcpBusinessCommitAcpDraft({
     required BridgeAcpSessionTarget target,
+    required String firstPromptText,
   });
 
   Future<void> crateApiStudioHandlersThreadCompactThread({
@@ -4842,12 +4843,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   @override
   Future<void> crateApiStudioHandlersAcpBusinessCommitAcpDraft({
     required BridgeAcpSessionTarget target,
+    required String firstPromptText,
   }) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_box_autoadd_bridge_acp_session_target(target, serializer);
+          sse_encode_String(firstPromptText, serializer);
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
@@ -4860,14 +4863,17 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           decodeErrorData: sse_decode_bridge_acp_business_error,
         ),
         constMeta: kCrateApiStudioHandlersAcpBusinessCommitAcpDraftConstMeta,
-        argValues: [target],
+        argValues: [target, firstPromptText],
         apiImpl: this,
       ),
     );
   }
 
   TaskConstMeta get kCrateApiStudioHandlersAcpBusinessCommitAcpDraftConstMeta =>
-      const TaskConstMeta(debugName: "commit_acp_draft", argNames: ["target"]);
+      const TaskConstMeta(
+        debugName: "commit_acp_draft",
+        argNames: ["target", "firstPromptText"],
+      );
 
   @override
   Future<void> crateApiStudioHandlersThreadCompactThread({

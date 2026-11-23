@@ -409,20 +409,24 @@ impl StudioRuntime {
         if session.archived {
             bail!("archived Threads cannot be renamed");
         }
-        let baseline = session.clone();
-        // A user edit is authoritative: stop the best-effort Explorer task
-        // before publishing the canonical manual title.
-        self.title_tasks
-            .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
-            .await;
-        let changed = session.title != title;
-        session.title = title;
-        session.updated_at = crate::studio::unix_seconds();
-        let committed = self
-            .agent_facility
-            .product_events
-            .commit_session_update(baseline, session)
-            .await?;
+        let events = &self.agent_facility.product_events;
+        let (committed, changed) = if matches!(agent.backend, crate::AgentBackend::Acp { .. }) {
+            events.rename_acp_root_title(&thread_id, title).await?
+        } else {
+            let baseline = session.clone();
+            // A user edit is authoritative: stop the best-effort Explorer task
+            // before publishing the canonical manual title.
+            self.title_tasks
+                .cancel(&thread_id, ThreadTitleCancellationCause::ManualRename)
+                .await;
+            let changed = session.title != title;
+            session.title = title;
+            session.updated_at = crate::studio::unix_seconds();
+            (
+                events.commit_session_update(baseline, session).await?,
+                changed,
+            )
+        };
         let crate::StudioProductEventKind::ThreadDirectoryChanged(delta) = &committed.kind else {
             bail!("thread rename did not publish its directory result");
         };

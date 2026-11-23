@@ -925,7 +925,10 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
         _acpModeIntents[workspaceId] = mode;
       _publishAcpPreparation(workspaceId, null);
       dispatched = true;
-      await sessions.commitDraft(owner.state.target!);
+      await sessions.commitDraft(
+        owner.state.target!,
+        firstPromptText: project.text,
+      );
       created = true;
       committing = null;
       final target = owner.state.target!;

@@ -49,6 +49,8 @@ Native 历史当前为 schema 26，Current JSON schema 为 1；`calls.sqlite` �
 
 目录后端形状在现有 Catalog 正式版本序列内迁移，保留原身份、父边、标题时间、归档、workspace、显式关闭及历史路径，丢弃旧 child 复制的 mode，不全量改写冻结历史。无法证明真实外部引用的旧 ACP 数据保留原件并给出迁移/恢复诊断，不伪造 session ID、自动 new 或清空目录。公共树、归档、删除、关闭及父工作区解析读取 Session/Agent 记录，核验实际根成员与会话身份，并通过 root 的真实 `thread_id` 查询原工作区/租约，不先投影 Native Thread。
 
+Catalog schema 8 在 ACP 根会话的 `sessions` 条目增加 `acpTitle`：记录原 `title` 是待首条输入的备用标签、已确定备用标签、手动别名，还是来源未知的旧标签；服务端部分仅保留最新名单标题或最新主动上报值（含明确清空）。不会保存标题历史或第二份可写显示标题。7→8 迁移保留原 `title`，把 ACP 的旧标签标记为来源未知，不推断别名或访问对端；Native 保持原标题语义。显示优先级及更新资格见 [28.11](./28-acp.md#会话标题)。
+
 ACP 历史由对端协议能力提供，Anywork 不创建其 `history.sqlite`、Native Current、transcript 或外部目录镜像。外部 `session/list` 直接消费对端结果，只有明确新建或打开的成员写入产品关联。本地归档/移除关联不删除对端历史、安装资产或凭据，物理清理按后端跳过 Native Current/History 文件；ACP 冷引用只表示本地未运行、远端状态未知，不推导 idle。业务流与关闭事实见 [28.11](./28-acp.md#2811-acp-业务会话与原生内容通路)。
 
 ACP 引用中的 `cwd` 始终表示实际宿主进程与 ACP 协议目录，不是 SSH 业务根。本地旧引用保留原义；SSH 成员使用所属宿主会话 scratch 的私有 `acp-cwd`，业务根及 worktree 归属由原工作区记录和物理身份维护，恢复及清理不得用本机 cwd 替代远程身份。该目录不保存远程源码镜像或 Native 历史，使用现有会话目录归属和清理规则。经 MCP 产生的命令捕获及可靠资源复用现有存储，不新增 ACP 任务数据库或跨重启回执账本。

@@ -794,6 +794,10 @@ void main() {
       expect(h.calls('prompt'), hasLength(1));
       expect(h.transport.reads, ['frozen']);
       expect(h.transport.removed, ['frozen']);
+      expect(h.calls('commitDraft').single, (
+        target: _target,
+        firstPromptText: '',
+      ));
     },
   );
 
@@ -873,7 +877,9 @@ void main() {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
-    start.updateDraft('workspace', 'first');
+    const firstPromptText = '  first\n input\t ';
+    start.updateDraft('workspace', firstPromptText);
+    h.port.commitDraftResult = Completer<void>();
     h.port.promptResult = Completer<AcpRunIdView>();
     h.repository.attachments.seedNewThreadIfEmpty(
       'workspace',
@@ -894,8 +900,18 @@ void main() {
     h.push(_ready);
     await Future<void>.delayed(Duration.zero);
     expect(finished, isFalse);
+    expect(h.calls('commitDraft'), isEmpty);
     expect(h.calls('prompt'), isEmpty);
     h.push(_accepted);
+    await h.port.enteredCommit.future;
+    expect(h.calls('commitDraft').single, (
+      target: _target,
+      firstPromptText: firstPromptText,
+    ));
+    expect(h.calls('prompt'), isEmpty);
+    expect(h.transport.reads, isEmpty);
+    expect(h.selection.state.selectedThreadId, isNull);
+    h.port.commitDraftResult!.complete();
     await h.transport.readEntered.future;
     await Future<void>.delayed(Duration.zero);
     start.updateDraft('workspace', 'edited while sending');
@@ -913,7 +929,7 @@ void main() {
       BigInt.from(17),
     );
     final content = (h.calls('prompt').single as AcpPromptRequestView).content;
-    expect((content.first as AcpTextContentView).text, 'first');
+    expect((content.first as AcpTextContentView).text, firstPromptText);
     expect(content.last, isA<AcpEmbeddedResourceView>());
     expect(h.transport.removed, ['old']);
     expect(start.state.forProject('workspace').text, isEmpty);
