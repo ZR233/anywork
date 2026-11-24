@@ -167,9 +167,9 @@ pub(in crate::studio) fn project_effect_items(
                 crate::ItemStamp {
                     thread_id: std::borrow::Cow::Owned(thread.id.clone()),
                     turn_id: std::borrow::Cow::Owned(turn_id),
-                    ordinal: ordinal,
+                    ordinal,
                     revision: effect.sequence,
-                    created_at: created_at,
+                    created_at,
                     updated_at: effect.committed_at,
                 },
                 state,
@@ -434,9 +434,9 @@ pub(in crate::studio) fn project_effect_items(
                 crate::ItemStamp {
                     thread_id: std::borrow::Cow::Owned(thread.id.clone()),
                     turn_id: std::borrow::Cow::Owned(String::new()),
-                    ordinal: ordinal,
+                    ordinal,
                     revision: effect.sequence,
-                    created_at: created_at,
+                    created_at,
                     updated_at: effect.committed_at,
                 },
                 ExecutionShape::ContextCompaction(crate::ThreadContextCompactionItem::new(
@@ -483,9 +483,9 @@ pub(in crate::studio) fn project_effect_items(
             crate::ItemStamp {
                 thread_id: std::borrow::Cow::Owned(thread.id.clone()),
                 turn_id: std::borrow::Cow::Owned(turn.id.clone()),
-                ordinal: ordinal,
+                ordinal,
                 revision: turn.revision,
-                created_at: created_at,
+                created_at,
                 updated_at: turn.updated_at,
             },
             ExecutionShape::Turn(ThreadTurnItem::new(turn.state).with_input_id(turn.input_id)),

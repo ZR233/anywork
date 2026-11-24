@@ -18,7 +18,7 @@ pub(super) fn project_completion(
             thread_id: std::borrow::Cow::Owned(thread_id.into()),
             turn_id: std::borrow::Cow::Owned(turn_id.into()),
             ordinal: 0,
-            revision: revision,
+            revision,
             created_at: at,
             updated_at: at,
         },

@@ -110,7 +110,7 @@ pub(in crate::studio) fn project_repaired_tool_call(
             ordinal: saved.ordinal,
             revision: saved.revision,
             created_at: saved.created_at,
-            updated_at: updated_at,
+            updated_at,
         },
         ExecutionShape::Tool(
             ThreadToolItem::new(tool.invocation().clone(), state)
@@ -228,9 +228,9 @@ fn project_invocation(
                 thread_id: std::borrow::Cow::Owned(thread_id.into()),
                 turn_id: std::borrow::Cow::Owned(turn_id.into()),
                 ordinal: revision,
-                revision: revision,
+                revision,
                 created_at: updated_at,
-                updated_at: updated_at,
+                updated_at,
             },
             ExecutionShape::Skill(crate::ThreadSkillItem::new(activation)),
         ));
@@ -249,10 +249,10 @@ fn project_invocation(
         crate::ItemStamp {
             thread_id: std::borrow::Cow::Owned(thread_id.into()),
             turn_id: std::borrow::Cow::Owned(turn_id.into()),
-            ordinal: ordinal,
-            revision: revision,
-            created_at: created_at,
-            updated_at: updated_at,
+            ordinal,
+            revision,
+            created_at,
+            updated_at,
         },
         ExecutionShape::Tool(ThreadToolItem::new(invocation, state).with_wait(wait)),
     ));

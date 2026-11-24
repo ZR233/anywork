@@ -3773,7 +3773,7 @@ mod storage_fault_tests {
                 crate::ItemStamp {
                     thread_id: std::borrow::Cow::Borrowed("child"),
                     turn_id: std::borrow::Cow::Owned(id.into()),
-                    ordinal: ordinal,
+                    ordinal,
                     revision: 1,
                     created_at: 1,
                     updated_at: 1,
@@ -6248,7 +6248,7 @@ mod storage_fault_tests {
             crate::ItemStamp {
                 thread_id: std::borrow::Cow::Owned(thread_id.into()),
                 turn_id: std::borrow::Cow::Borrowed("turn-qa"),
-                ordinal: ordinal,
+                ordinal,
                 revision: 3,
                 created_at: 111,
                 updated_at: 222,
@@ -6315,7 +6315,7 @@ mod storage_fault_tests {
             crate::ItemStamp {
                 thread_id: std::borrow::Cow::Owned(thread_id.into()),
                 turn_id: std::borrow::Cow::Borrowed("turn-plan"),
-                ordinal: ordinal,
+                ordinal,
                 revision: 3,
                 created_at: 111,
                 updated_at: 222,

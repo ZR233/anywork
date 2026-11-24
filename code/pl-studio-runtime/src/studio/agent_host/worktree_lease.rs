@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::studio::StudioStore;
+use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
 use crate::studio::store::object::PersistedStudioObject;
 mod identity;
 mod usage;
@@ -175,7 +176,7 @@ pub(in crate::studio) struct WorktreeLeaseOwner {
     /// 创建路径在记录 `prepared` 之前设置、在创建收束（成功 `active` 或失败 settle 并发布）
     /// 之后清除；标记存续期间该 lease 既不进入 Recovery，也不可被显式清理，即使 owner
     /// Thread 记录尚未发布。
-    writer: super::ThreadWriteBehindWriter,
+    writer: ThreadWriteBehindWriter,
 }
 
 #[derive(Default)]
@@ -193,7 +194,7 @@ struct LeaseEntry {
 }
 
 impl WorktreeLeaseOwner {
-    pub(in crate::studio) fn new(writer: super::ThreadWriteBehindWriter) -> Self {
+    pub(in crate::studio) fn new(writer: ThreadWriteBehindWriter) -> Self {
         Self {
             state: Default::default(),
             writer,

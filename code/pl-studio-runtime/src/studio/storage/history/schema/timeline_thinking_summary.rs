@@ -129,7 +129,7 @@ mod tests {
                 crate::ItemStamp {
                     thread_id: std::borrow::Cow::Owned(THREAD.into()),
                     turn_id: std::borrow::Cow::Borrowed("turn"),
-                    ordinal: ordinal,
+                    ordinal,
                     revision: 1,
                     created_at: started,
                     updated_at: ended,

@@ -4193,7 +4193,7 @@ mod migration_tests {
             crate::ItemStamp {
                 thread_id: std::borrow::Cow::Owned(thread_id.into()),
                 turn_id: std::borrow::Cow::Borrowed("turn-1"),
-                ordinal: ordinal,
+                ordinal,
                 revision: 1,
                 created_at: 1,
                 updated_at: 2,

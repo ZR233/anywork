@@ -61,10 +61,10 @@ pub(super) fn project_input(
         crate::ItemStamp {
             thread_id: std::borrow::Cow::Owned(thread_id.into()),
             turn_id: std::borrow::Cow::Owned(turn_id),
-            ordinal: ordinal,
-            revision: revision,
-            created_at: created_at,
-            updated_at: updated_at,
+            ordinal,
+            revision,
+            created_at,
+            updated_at,
         },
         state,
     )))

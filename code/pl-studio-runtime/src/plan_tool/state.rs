@@ -1,6 +1,6 @@
 //! Per-agent Plan state machine validation, confirmation interpretation, and options.
 
-pub use pl_tool_plan::{Plan, PlanValidationError, allowed_transitions_for};
+pub use pl_tool_plan::{Plan, PlanValidationError};
 
 use crate::plan_tool::{AgentSessionPlanState, PlanActor, PlanState};
 use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, MessagePresentation, PureError};

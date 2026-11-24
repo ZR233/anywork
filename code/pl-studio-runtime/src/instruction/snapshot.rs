@@ -51,7 +51,6 @@ pub(crate) fn encode_snapshot(snapshot: &InstructionSnapshot) -> Result<OpaquePa
 /// identity from verified Thread facts and preserves the execution-profile body. Duplicates, role
 /// sources in the wrong region, and empty role blocks fail closed instead of being projected as
 /// defaults.
-
 pub(super) fn validate(snapshot: &InstructionSnapshot) -> Result<()> {
     if !usage_binding_matches_scope(&snapshot.agent) {
         return Err(invalid(

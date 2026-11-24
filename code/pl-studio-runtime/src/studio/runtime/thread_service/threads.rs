@@ -93,11 +93,11 @@ impl StudioRuntime {
         let (mut delta, session, agent) = DirectoryDelta::register_session(
             crate::studio::store::directory::SessionDirectoryUpsert {
                 session_id: thread_id,
-                workspace_id: workspace_id,
-                title: title,
+                workspace_id,
+                title,
                 mode: crate::mode::ThreadModeId::auto(),
                 workspace_mode: crate::ThreadWorkspaceMode::Local,
-                workspace_path: workspace_path,
+                workspace_path,
                 role: crate::config::ROOT_AGENT_ROUTE_KEY,
             },
         );
@@ -287,7 +287,7 @@ impl StudioRuntime {
                 title: &provisional,
                 mode: request.mode,
                 workspace_mode: request.workspace_mode,
-                workspace_path: workspace_path,
+                workspace_path,
                 role: crate::config::ROOT_AGENT_ROUTE_KEY,
             },
         );

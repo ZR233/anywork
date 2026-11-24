@@ -2676,8 +2676,8 @@ impl LiveProjection {
                     crate::ItemStamp {
                         thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
                         turn_id: std::borrow::Cow::Owned(turn_id.to_owned()),
-                        ordinal: ordinal,
-                        revision: revision,
+                        ordinal,
+                        revision,
                         created_at: committed_at,
                         updated_at: committed_at,
                     },
