@@ -278,14 +278,14 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "1.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV1 {
+struct CatalogDocumentV1 {
     revision: u64,
     entries: Vec<CatalogEntryV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV1 {
+struct CatalogEntryV1 {
     id: String,
     project_id: String,
     title: String,
@@ -306,14 +306,14 @@ pub(super) struct CatalogEntryV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "2.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV2 {
+struct CatalogDocumentV2 {
     revision: u64,
     entries: Vec<CatalogEntryV2>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV2 {
+struct CatalogEntryV2 {
     id: String,
     project_id: String,
     title: String,
@@ -336,14 +336,14 @@ pub(super) struct CatalogEntryV2 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "3.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogDocumentV3 {
+struct CatalogDocumentV3 {
     revision: u64,
     entries: Vec<CatalogEntryV3>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV3 {
+struct CatalogEntryV3 {
     id: String,
     project_id: String,
     title: String,
@@ -370,14 +370,14 @@ pub(super) struct CatalogEntryV3 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "4.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV4 {
+struct CatalogV4 {
     revision: u64,
     entries: Vec<CatalogEntryV4>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV4 {
+struct CatalogEntryV4 {
     explicitly_closed: bool,
     id: String,
     project_id: String,
@@ -405,13 +405,13 @@ pub(super) struct CatalogEntryV4 {
 #[derive(Debug, Serialize, Deserialize, Versioned)]
 #[versioned(version = "5.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV5 {
+struct CatalogV5 {
     revision: u64,
     entries: Vec<CatalogEntryV5>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogEntryV5 {
+struct CatalogEntryV5 {
     explicitly_closed: bool,
     id: String,
     workspace_id: String,
@@ -439,7 +439,7 @@ pub(super) struct CatalogEntryV5 {
 /// V6 会话目录事实记录（冻结 wire 形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogSessionV6 {
+struct CatalogSessionV6 {
     session_id: String,
     root_agent_id: String,
     workspace_id: String,
@@ -459,7 +459,7 @@ pub(super) struct CatalogSessionV6 {
 /// V6 成员事实记录（冻结 wire 形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogAgentV6 {
+struct CatalogAgentV6 {
     agent_id: String,
     session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -479,7 +479,7 @@ pub(super) struct CatalogAgentV6 {
 /// internally-tagged 形状保持一致，但字段固定在迁移边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub(super) enum FrozenAgentBinding {
+enum FrozenAgentBinding {
     Native {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         route: Option<FrozenModelRoute>,
@@ -493,7 +493,7 @@ pub(super) enum FrozenAgentBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "6.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV6 {
+struct CatalogV6 {
     revision: u64,
     sessions: Vec<CatalogSessionV6>,
     agents: Vec<CatalogAgentV6>,
@@ -502,7 +502,7 @@ pub(super) struct CatalogV6 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Versioned)]
 #[versioned(version = "7.0.0")]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct CatalogV7 {
+struct CatalogV7 {
     revision: u64,
     sessions: Vec<CatalogSessionV7>,
     agents: Vec<CatalogAgentV7>,
@@ -697,7 +697,7 @@ impl MigratesTo<CatalogV7> for CatalogV6 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct FrozenModeId(String);
+struct FrozenModeId(String);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -737,7 +737,7 @@ enum FrozenDelegationPreference {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct FrozenModelRoute {
+struct FrozenModelRoute {
     account_id: String,
     model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

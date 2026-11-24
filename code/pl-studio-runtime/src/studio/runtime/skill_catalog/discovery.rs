@@ -23,7 +23,7 @@ enum DiscoverySource {
 
 impl SkillCatalogRuntime {
     /// 显式扫描并原子发布 Project catalog。
-    pub async fn discover(
+    pub(in crate::studio::runtime) async fn discover(
         &self,
         workspace_id: &str,
         workspace_root: &Path,
@@ -42,7 +42,7 @@ impl SkillCatalogRuntime {
     ///
     /// 远端 provider 贡献 Project 源；本地 user/system 目录与
     /// Turn 使用同一套组合，保证设置页与 Turn 看到一致的技能目录。
-    pub async fn discover_remote(
+    pub(in crate::studio::runtime) async fn discover_remote(
         &self,
         workspace_id: &str,
         workspace_root: &Path,
@@ -61,7 +61,7 @@ impl SkillCatalogRuntime {
         .map(|(snapshot, _)| snapshot)
     }
 
-    pub async fn discover_with_cancellation(
+    async fn discover_with_cancellation(
         &self,
         workspace_id: &str,
         workspace_root: &Path,
@@ -255,7 +255,7 @@ impl SkillCatalogRuntime {
     }
 
     /// Settings 变化只标记旧 payload stale，不执行扫描。
-    pub async fn mark_all_stale(&self) {
+    pub(in crate::studio::runtime) async fn mark_all_stale(&self) {
         let _command = self.command_lock.lock().await;
         let mut states = self.states.write().await;
         let mut changed = Vec::new();

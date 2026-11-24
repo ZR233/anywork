@@ -42,35 +42,39 @@ mod worker_assets;
 
 // Data types needed to call Studio's SSH API; transport consumers do not depend on tool runtimes.
 pub use pl_tool::remote::{
-    RemoteDirectoryEntry, RemoteDirectoryListing, SshConfigEntry, SshConfigFile,
-    SshConnectionSnapshot, SshConnectionState, SshServerProfile,
+    RemoteDirectoryListing, SshConfigFile, SshConnectionSnapshot, SshConnectionState,
+    SshServerProfile,
 };
 
 pub use pl_tool::skill::{
-    SkillActivation, SkillActivationCause, SkillActivationResourceBase, SkillCatalog,
-    SkillMetadata, SkillResourceBase, SkillSearchOptions, SkillSourceKind,
+    SkillActivation, SkillCatalog, SkillMetadata, SkillResourceBase, SkillSearchOptions,
+    SkillSourceKind,
 };
+pub(crate) use pl_tool::skill::{SkillActivationCause, SkillActivationResourceBase};
 
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
     DeepSeekWebSearchConfig, McpCatalogResource, McpDocumentError, McpFileSpecV1, McpFileV1,
-    ModelCatalogRuntimeSnapshot, ReasoningEffort, ResolvedThreadMcpServer,
-    STUDIO_CONFIG_SCHEMA_VERSION, ScopedEffectiveMcpServer, StudioConfig, StudioUiConfig,
-    UserAgentProfile, WebSearchContextSize, WebSearchLocation, WebSearchMode,
+    ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig, StudioUiConfig,
+    UserAgentProfile, WebSearchContextSize, WebSearchMode,
+};
+pub(crate) use config::{
+    ModelCatalogRuntimeSnapshot, STUDIO_CONFIG_SCHEMA_VERSION, WebSearchLocation,
 };
 pub use error_mapping::{studio_error_from_anyhow, studio_error_from_anyhow_ref};
 pub use host_mcp_assets::HostMcpSource;
 pub use protocol::*;
 
+pub(crate) use studio::StudioDatabaseError;
 pub use studio::{
     AttachmentRecord, CurrentBodyWatch, CurrentReader, CurrentWatch, DisplayDownloadOutcome,
     DisplayDownloadRequest, PersistenceState, PersistenceStateSnapshot, ProductEventBus,
     ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError, SkillSearchResult,
-    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError,
-    StudioHostKind, StudioInstance, StudioInstanceLease, StudioProductTopicSubscription,
-    StudioReadyUpdate, StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
-    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
-    StudioRuntime, StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
+    SkillsStateSnapshot, SshPasswordUpdate, SshServerRuntimeEntry, StudioHostKind, StudioInstance,
+    StudioInstanceLease, StudioProductTopicSubscription, StudioReadyUpdate, StudioRecoveryImpact,
+    StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
+    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
+    StudioRuntimeLifecycleState, StudioRuntimeOptions, StudioRuntimeSnapshot,
     StudioRuntimeStateKind, StudioStartNewThreadRequest, StudioStartNewThreadResponse,
     StudioStartupError, StudioStartupErrorKind, StudioStartupPolicy, StudioStartupRecovery,
     StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
@@ -79,57 +83,54 @@ pub use studio::{
     ThreadPreparationObserver, ThreadRecord, ThreadsObservation, WorkspaceRecord,
 };
 pub use studio::{
-    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
-    EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
-    ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
-    ExportedContentV3, ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV3, RunExportOptions, RunExportReport,
-    RunExporter, RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3,
-    ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3,
-    UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3, export_sha256_hex,
-    format_export_utc_rfc3339, validate_export_output_dir_preflight,
+    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
+    EventSourceV3, EventV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3,
+    ExecutionOutcome, ExportSchemaV3, ExportedBlobV3, ExportedContentV3,
+    ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, ResultOutcome,
+    ResultV3, RunExportOptions, RunExportReport, RunExporter, RunInvocationV3, RunManifestV3,
+    SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
+    UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
+    export_sha256_hex, format_export_utc_rfc3339, validate_export_output_dir_preflight,
 };
 pub use worker_assets::RemoteHelperSource;
 
-// 公共签名（bridge DTO 字段、HTTP/CLI API 返回值）使用的下层 crate 类型在此精确重导出，
-// 消费方只依赖 pl-studio-runtime 即可命名完整签名。
-pub use pl_model::completion::{
-    AttachmentModality, ContentPart, HostedWebSearchOptions, InferenceBillingRecord,
-    InferenceModelObservation, InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage,
-    Message, MessageContent, MessagePresentation, MessageRole, ModelContextItem,
-    ResponsesContextItem, ResponsesContextItemKind, ThreadAttachment, ToolCallCaller, ToolCallKind,
-    ToolCallRecord, ToolCallerMode, ToolFormat, ToolMediaContext, ToolResultReceipt,
-    ToolResultRecord, ToolSpec, WebSearchFilters, WebSearchUserLocation, WebSearchUserLocationType,
+// 公开签名或外部 crate 直接命名的下层类型在此精确重导出。
+// 只被 crate 根路径内部使用、且不出现在公开签名中的别名收为 pub(crate)。
+pub(crate) use pl_model::completion::{
+    AttachmentModality, InferenceModelObservation, InferenceTiming, MessageContent, MessageRole,
+    ToolSpec,
 };
+pub use pl_model::completion::{
+    InferenceBillingRecord, Message, MessagePresentation, ModelContextItem, ThreadAttachment,
+    ToolResultRecord,
+};
+pub(crate) use pl_model::config::AgentRoleId;
 pub use pl_model::config::{
-    AccountAuthenticationMethod, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
-    AccountTemplateDescriptor, AgentRoleId, BillingKind, ConnectionModeDescriptor,
-    CredentialDescriptorDto, ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor,
-    ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto, ModelOriginDto,
-    ModelReasoningDescriptor, ModelSelectionGuideDto, ModelSelectionMeasurementDto,
-    ModelSelectionSourceDto, ModelSelectionSourceKindDto, ModelTransportDescriptor,
-    WebSearchServiceCapabilitiesDescriptor,
+    AccountAuthenticationMethod, AccountCatalogSnapshot, BillingKind, ModelCapabilitiesDto,
+    ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto,
+    ModelOriginDto, ModelSelectionGuideDto, ModelSelectionSourceKindDto,
 };
 pub use pl_model::model::{
-    AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextResolution,
-    ModelContextUnavailable, ModelPriceTierDto, ModelPricingDto, ModelPricingSnapshot, ModelType,
-    ModelTypeExclusion, ModelTypeSupport, PricingMode, PricingOutcome, RuntimeCostAmount,
-    UnpricedReason, UsageReport,
+    AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextUnavailable,
+    ModelPricingDto, ModelType, ModelTypeExclusion, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
-pub use pl_model::protocol::HostedWebSearchDialect;
+pub(crate) use pl_model::model::{PricingMode, UnpricedReason};
 pub use pl_model::runtime::PromptPrefixChangedReason;
-pub use pl_model_auth::chatgpt::{ChatGptAccountInfo, CodexAccountInfo};
+pub use pl_model_auth::chatgpt::ChatGptAccountInfo;
+pub(crate) use pl_model_auth::chatgpt::CodexAccountInfo;
 pub use pl_protocol::{
-    AgentBackendKind, AgentId, AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
-    AgentThreadIdentity, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
-    AgentWorktreeSnapshot, DelegationMode, DelegationPreference, DelegationSettings,
-    FirstOutputSource, LabeledEnum, NewThreadModelRoute, ProviderFailureKind, PureError, Result,
-    RetryDisposition, SessionId, StateError, ThreadId, UnknownLabelError,
+    AgentBackendKind, AgentId, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
+    DelegationMode, DelegationPreference, DelegationSettings, FirstOutputSource,
+    NewThreadModelRoute, ProviderFailureKind, PureError, Result, RetryDisposition, StateError,
+    UnknownLabelError,
+};
+pub(crate) use pl_protocol::{
+    AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot, AgentThreadIdentity,
+    AgentWorktreeSnapshot, LabeledEnum, SessionId, ThreadId,
 };
 pub use pl_studio_statistics::{MetricAvailability, ModelMatchState, UsageReportStatus};
-pub use pl_tool::ask_user::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption,
-};
+pub(crate) use pl_tool::ask_user::UserQuestionOption;
+pub use pl_tool::ask_user::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion};
 pub use pl_tool::mcp::{McpAvailabilityDescriptor, McpHealthSnapshot, McpServerDescriptor};
 pub use pl_tool::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 

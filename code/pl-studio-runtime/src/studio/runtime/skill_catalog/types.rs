@@ -62,7 +62,7 @@ impl SkillsStateSnapshot {
 
 impl SkillCatalogRuntime {
     /// Creates the Studio catalog owner with its product-owned system Skills directory.
-    pub fn new(
+    pub(in crate::studio) fn new(
         events: crate::ProductEventBus,
         system_skills_dir: PathBuf,
         executor: pl_remote_helper::Executor,
