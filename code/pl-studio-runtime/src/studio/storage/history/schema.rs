@@ -137,6 +137,7 @@ struct Migrator {
 }
 
 /// Frozen migration definitions used to recognize already-applied v24 ledger entries.
+#[cfg(test)]
 pub(super) fn migrations_for_upgrade(thread_id: &str) -> Vec<Box<dyn MigrationTrait>> {
     Migrator {
         thread_id: thread_id.to_owned(),

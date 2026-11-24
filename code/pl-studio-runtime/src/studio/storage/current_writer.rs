@@ -280,6 +280,7 @@ impl fmt::Debug for CurrentWriter {
 }
 
 impl CurrentWriter {
+    #[cfg(test)]
     pub(super) fn new(
         file: CurrentFile,
         on_change: impl Fn() + Send + Sync + 'static,

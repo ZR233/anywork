@@ -47,6 +47,7 @@ pub(crate) mod schema;
 mod timeline;
 pub(crate) use schema::validate_layout_source;
 
+#[cfg(test)]
 pub(crate) fn frozen_v24_migrations(
     thread_id: &str,
 ) -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
