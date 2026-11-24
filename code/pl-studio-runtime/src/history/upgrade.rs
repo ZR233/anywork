@@ -4154,7 +4154,6 @@ mod migration_tests {
             HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore as CurrentHistoryStore,
         },
         resource_store::FileResourceStore,
-        studio::storage::history::{HistoryStore as V24HistoryStore, persist_completed},
     };
     use pl_core::{
         context::{
@@ -4223,16 +4222,67 @@ mod migration_tests {
             text_item(thread_id, "original-large", 1, &large_text),
             text_item(thread_id, "original-empty", 2, ""),
         ];
-        let legacy = V24HistoryStore::open(history_path, thread_id).await?;
-        let completions = persist_completed(&legacy, 1, &items).await?;
-        drop(legacy);
+        // The published schema-24 preparer still owns table shape. Completions are
+        // frozen in memory and inserted directly, so this fixture does not open the
+        // retired HistoryStore or run its effect writer.
+        let db = schema::connect(history_path, false, true).await?;
+        let (database_id, _) = crate::studio::storage::history::schema::initialize(&db, thread_id)
+            .await
+            .map_err(HistoryError::Storage)?;
+        let completions = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let draft = crate::studio::runtime::chat_item::completion_draft(
+                    item,
+                    1,
+                    &database_id,
+                    None,
+                )?;
+                let append_seq = u64::try_from(index)
+                    .ok()
+                    .and_then(|offset| offset.checked_add(1))
+                    .ok_or_else(|| {
+                        HistoryError::Integrity("fixture completion sequence overflow".into())
+                    })?;
+                Ok(Arc::new(pl_core::chat::ChatItem::complete(
+                    draft, append_seq,
+                )))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let execution_order = items.iter().map(|item| item.ordinal).max().unwrap_or(0);
+        for completion in &completions {
+            let header = &completion.header;
+            db.execute_raw(statement(
+                "INSERT INTO conversation_items(seq,item_id,query_class,parent_id,payload,metadata) VALUES(?,?,?,?,?,?)",
+                vec![
+                    db::number(header.append_seq)?.into(),
+                    header.item_id.clone().into(),
+                    header.query_class.clone().into(),
+                    header
+                        .parent_id
+                        .as_ref()
+                        .map(|key| key.as_str().to_owned())
+                        .into(),
+                    completion.payload.to_vec().into(),
+                    header.metadata.to_vec().into(),
+                ],
+            ))
+            .await?;
+        }
+        db.execute_raw(statement(
+            "UPDATE history_meta SET applied_write_seq=?,execution_order=MAX(execution_order,?) WHERE id=1",
+            vec![
+                db::number(1)?.into(),
+                db::number(execution_order)?.into(),
+            ],
+        ))
+        .await?;
         if completions.len() != items.len() {
             return Err(HistoryError::Integrity(
                 "legacy fixture completion count differs".into(),
             ));
         }
-
-        let db = schema::connect(history_path, false, false).await?;
         let metadata = db
             .query_one_raw(statement(
                 "SELECT schema_version,database_id,applied_write_seq FROM history_meta WHERE id=1",

@@ -37,4 +37,6 @@ pub(crate) use snapshot::{
     migrate_mode_snapshot, presentation_mode, saved_registered_mode,
 };
 mod preview;
+#[cfg(test)]
+mod saved_snapshot_tests;
 pub use preview::preview_workflow;

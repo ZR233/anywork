@@ -29,6 +29,8 @@ mod thread_tools;
 pub(crate) mod tool_bindings;
 mod workspace_validation;
 pub(crate) use workspace_validation::{ReviewWorkspaceCheck, ReviewWorkspaceError};
+#[cfg(test)]
+mod mode_binding_recovery_tests;
 mod workspace_usage;
 
 use crate::studio::{ProductEventBus, StudioStore};

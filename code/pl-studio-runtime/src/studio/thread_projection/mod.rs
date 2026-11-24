@@ -46,6 +46,8 @@ mod responses;
 pub(in crate::studio) mod tools;
 mod turns;
 mod user_input;
+#[cfg(test)]
+mod user_input_history;
 mod wait;
 pub(in crate::studio) use turns::project_active_turn;
 pub(in crate::studio) use user_input::{

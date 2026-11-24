@@ -542,3 +542,7 @@ mod ssh_tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "archive_cold_tree_tests.rs"]
+mod cold_tree;
