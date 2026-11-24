@@ -2,7 +2,7 @@
 //!
 //! 模型调用事实属于独立的 `calls.sqlite`，由 `storage::calls::CallsStore` 的唯一逻辑 writer
 //! 落库，本模块不再承载模型性能或计费的第二份事实。
-use super::super::store_error;
+use super::store_error;
 use super::queue::{PendingBatch, StudioMutation};
 use super::worker::{BatchError, PersistenceDisposition};
 use crate::PureError;

@@ -3595,7 +3595,7 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) struct CloseFactoryFixture {
         pub(crate) factory: crate::studio::StudioThreadFactory,
-        pub(in crate::studio) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        pub(in crate::studio) writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
         pub(crate) config: crate::config::ConfigRuntime,
         pub(crate) events: crate::studio::ProductEventBus,
         store: StudioStore,
@@ -3659,7 +3659,7 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) fn close_factory(store: &StudioStore) -> Result<CloseFactoryFixture> {
         use crate::studio::thread_factory::{StudioThreadFactory, StudioThreadServices};
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let writer = crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
         let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
             crate::config::ConfigPaths::from_config_dir(

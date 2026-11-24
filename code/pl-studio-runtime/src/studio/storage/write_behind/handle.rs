@@ -12,7 +12,7 @@ use crate::PureError;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::{PersistenceState, PersistenceStateSnapshot, StudioStore};
 
-use super::super::store_error;
+use super::store_error;
 use super::queue::{QueuedMutation, queue_directory, queue_worktree_lease, try_coalesce_directory};
 use super::state::update_healthy_state;
 use super::worker::supervise_writer;

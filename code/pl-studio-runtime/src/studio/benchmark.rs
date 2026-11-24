@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::agent_host::ThreadWriteBehindWriter;
+use super::storage::write_behind::ThreadWriteBehindWriter;
 use super::runtime::ModelPerformanceOwner;
 use super::storage::calls::{
     CallRetention, CallStatus, CallsStore, PerformanceSampleRow, PurposeUsageProjection,

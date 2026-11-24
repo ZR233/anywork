@@ -1129,7 +1129,7 @@ fn call_retention(retention: BillingRetention) -> CallRetention {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
 
     fn summary_row(account: &str, model: &str, effort: Option<&str>) -> PerformanceSummaryRow {
         PerformanceSummaryRow {

@@ -7,6 +7,7 @@ pub(crate) mod history;
 pub(crate) mod state;
 pub(crate) mod thread_writer;
 pub(in crate::studio) mod tool_task;
+pub(in crate::studio) mod write_behind;
 
 #[cfg(test)]
 mod mode_migration_tests {

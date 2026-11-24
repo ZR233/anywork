@@ -2128,7 +2128,7 @@ mod refresh_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+    use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
     use crate::{McpEffectiveSource, McpExecutionLocation};
     use pl_tool::mcp::McpConnector;
     use pl_tool::mcp::config::{

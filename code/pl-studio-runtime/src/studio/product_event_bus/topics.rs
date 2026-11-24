@@ -512,7 +512,7 @@ mod tests {
     #[tokio::test]
     async fn reclaiming_notifications_preserves_product_snapshot_revision_and_sequence()
     -> anyhow::Result<()> {
-        use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+        use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;

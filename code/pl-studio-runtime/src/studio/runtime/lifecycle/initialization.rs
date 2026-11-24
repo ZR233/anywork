@@ -421,7 +421,7 @@ impl StudioRuntime {
 
     fn start_persistence_observer(
         &self,
-        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+        writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
     ) -> impl std::future::Future<Output = ObserverOpenResult> + Send + 'static {
         let bus = self.agent_facility.product_events.clone();
         let threads = self.store.thread_persistence().clone();

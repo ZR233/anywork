@@ -546,7 +546,7 @@ pub(super) struct ObservationServices {
     pub(super) events: ProductEventBus,
     pub(super) performance: ModelPerformanceOwner,
     pub(super) sessions: crate::session::WeakSessionTable,
-    pub(super) writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    pub(super) writer: crate::studio::storage::write_behind::ThreadWriteBehindWriter,
     pub(super) run_export: Option<std::sync::Arc<super::run_export::RunExportCoordinator>>,
 }
 impl ObservationServices {
