@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::studio::{ProductEventBus, unix_seconds};
 
+use super::super::acp_ops::{CommandLedger, RetainedTask};
 use super::mapping::failure;
 use super::source::SourcePolicy;
 
@@ -73,8 +74,8 @@ pub(super) struct Operation {
     pub(super) target: String,
     pub(super) generation: u64,
     pub(super) cancel: CancellationToken,
-    /// supervisor 任务的真实 join 出口；`None` 只出现在任务已收束后的短暂窗口。
-    pub(super) join: Mutex<Option<JoinHandle<()>>>,
+    /// supervisor 任务的真实 join 出口。句柄只在观察到终态后离开槽。
+    pub(super) join: RetainedTask<()>,
     /// supervisor 的 JoinHandle 是否**真的被 await 到终止**。
     /// 只有关闭 owner 在拿到真实句柄并观测到终态后才置位；supervisor 自己不能声明。
     pub(super) supervisor_joined: std::sync::atomic::AtomicBool,
@@ -320,7 +321,7 @@ pub(super) struct CheckTask {
     pub(super) generation: u64,
     pub(super) allow_remote: bool,
     pub(super) cancel: CancellationToken,
-    pub(super) join: Option<JoinHandle<()>>,
+    pub(super) join: Arc<RetainedTask<()>>,
 }
 
 /// 一条命令身份绑定的意图；同 ID 只允许同一意图，start 与 cancel 与 checkUpdate 共享容量与台账。
@@ -351,14 +352,14 @@ pub(super) struct Registry {
     /// 并行版本检查任务（启动初始化与显式检查更新共用，退出时真实 join）。
     pub(super) check_tasks: BTreeMap<AcpProvider, CheckTask>,
     /// 已受理命令身份（含 start、cancel、checkUpdate，含已完成）；容量有界、只增不减。
-    pub(super) commands: BTreeMap<String, CommandIntent>,
+    pub(super) commands: CommandLedger<CommandIntent>,
     /// 清理未确认收束的资源保管：每个 provider 一条，随 runtime 生命周期存在（有界，不重试膨胀）。
     pub(super) residue: BTreeMap<AcpProvider, ResidueHold>,
     /// **已结束业务操作**的 supervisor 句柄回收登记（以 operationId 为键）。
     ///
     /// 业务终态发布、准入释放后，句柄（以及 identity）移交到这里，等待 runtime 关闭时真实 join。
     /// 这里的 Operation 只保句柄与 identity：资产锁/暂存等重型资源已在业务清理确认后释放，
-    /// 因此登记不会阻塞业务；容量受"已受理命令身份 ≤ MAX_ACCEPTED_COMMANDS"这一既有预算约束
+    /// 因此登记不会阻塞业务；容量受命令身份账本 `COMMAND_LEDGER_MAX` 这一既有预算约束
     /// （每条 retired 都对应一条已受理 start 命令），没有后台 reaper 或第二张任务表。
     pub(super) retired: BTreeMap<String, Arc<Operation>>,
 }

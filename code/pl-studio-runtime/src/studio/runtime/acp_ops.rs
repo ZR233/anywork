@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
 
+use futures::FutureExt;
 use tokio::task::{JoinError, JoinHandle};
 
 use crate::{AcpAuthMethod, AcpAuthMethodKind, StudioError, StudioErrorCode};
@@ -169,6 +170,16 @@ pub(super) enum RetainedJoin<T> {
     TimedOut,
 }
 
+/// One non-blocking look at a retained join, used before recycling a slot.
+pub(super) enum RetainedPoll<T> {
+    /// No handle is installed.
+    Idle,
+    /// The handle is running, or another waiter holds the slot.
+    Pending,
+    /// This caller observed the terminal poll and cleared the slot.
+    Observed(Result<T, JoinError>),
+}
+
 impl<T> RetainedTask<T> {
     pub(super) fn empty() -> Self {
         Self {
@@ -234,6 +245,28 @@ impl<T> RetainedTask<T> {
         self.remember(&joined);
         slot.take();
         Some(joined)
+    }
+
+    /// Poll a finished handle without waiting. Running and borrowed handles stay.
+    ///
+    /// An immediately ready terminal poll is remembered and cleared before this
+    /// returns. `Pending` is not evidence that the slot is empty.
+    pub(super) fn poll_finished(&self) -> RetainedPoll<T> {
+        let Ok(mut slot) = self.join.try_lock() else {
+            return RetainedPoll::Pending;
+        };
+        let Some(handle) = slot.as_mut() else {
+            return RetainedPoll::Idle;
+        };
+        if !handle.is_finished() {
+            return RetainedPoll::Pending;
+        }
+        let Some(joined) = handle.now_or_never() else {
+            return RetainedPoll::Pending;
+        };
+        self.remember(&joined);
+        slot.take();
+        RetainedPoll::Observed(joined)
     }
 
     pub(super) async fn join(&self) -> RetainedJoin<T> {
@@ -405,5 +438,33 @@ mod tests {
         assert!(matches!(slow_join, RetainedJoin::TimedOut));
         assert!(started.elapsed() < Duration::from_millis(500));
         assert_eq!(slow.running_handle_retained(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn poll_finished_keeps_a_running_handle_and_clears_only_a_ready_terminal() {
+        let idle = RetainedTask::<()>::empty();
+        assert!(matches!(idle.poll_finished(), RetainedPoll::Idle));
+
+        let (release, released) = tokio::sync::oneshot::channel();
+        let running = RetainedTask::running(tokio::spawn(async move {
+            released.await.unwrap();
+        }));
+        assert!(matches!(running.poll_finished(), RetainedPoll::Pending));
+        assert_eq!(running.running_handle_retained(), Some(true));
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !running.finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("finished join should become observable");
+        assert!(matches!(
+            running.poll_finished(),
+            RetainedPoll::Observed(Ok(()))
+        ));
+        assert!(running.slot_is_empty().await);
+        assert!(matches!(running.poll_finished(), RetainedPoll::Idle));
+        assert!(matches!(running.observed(), Some(Ok(()))));
     }
 }
