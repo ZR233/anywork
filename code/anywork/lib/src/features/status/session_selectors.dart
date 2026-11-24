@@ -411,6 +411,7 @@ class ModelRoleSelector extends StatelessWidget {
             selectionBlockedReason ??
             filterMessage ??
             context.l10n.statusPlannerModel,
+        showSelectedBrand: true,
         unresolvedLabel: filterMessage,
         labelMaxWidth: 140,
         // Pending is an optimistic projection, not a lock. The controller

@@ -101,6 +101,13 @@ typedef ModelSelectionOptionKeyBuilder = Key Function(
   ModelSelectionOption option,
 );
 
+typedef ModelRouteMenuFooter = List<Widget> Function(
+  BuildContext context,
+  double width,
+  String query,
+  bool hasMatchingModels,
+);
+
 /// Shared compact model picker for session routes and Agent settings.
 ///
 /// The menu is a plain Material [MenuAnchor] with [MenuItemButton] rows:
@@ -125,13 +132,17 @@ class ModelRouteSelector extends StatefulWidget {
     this.labelMaxWidth = 180,
     this.inMenu = false,
     this.optionKeyBuilder,
+    this.showSelectedBrand = false,
+    this.unresolvedLeading,
+    this.searchKey,
+    this.menuFooter,
     super.key,
   });
 
   final List<ModelSelectionOption> options;
   final String accountId;
   final String modelId;
-  final FutureOr<void> Function(ModelSelectionOption option) onSelected;
+  final FutureOr<void> Function(ModelSelectionOption option)? onSelected;
   final String fieldLabel;
   final Key selectorKey;
   final String? unresolvedLabel;
@@ -144,6 +155,12 @@ class ModelRouteSelector extends StatefulWidget {
   final double labelMaxWidth;
   final bool inMenu;
   final ModelSelectionOptionKeyBuilder? optionKeyBuilder;
+  final bool showSelectedBrand;
+  final Widget? unresolvedLeading;
+  final Key? searchKey;
+  final ModelRouteMenuFooter? menuFooter;
+
+  static const triggerIconSize = 18.0;
 
   ({ModelSelectionOption? selected, bool canSelect, StudioMenuLabel label})
   _presentation(BuildContext context) {
@@ -159,11 +176,20 @@ class ModelRouteSelector extends StatefulWidget {
         (modelId.isEmpty && options.isEmpty
             ? context.l10n.modelTextFilterEmpty
             : modelId);
-    final canSelect = enabled && options.isNotEmpty;
+    final canSelect = enabled && (options.isNotEmpty || menuFooter != null);
     return (
       selected: selected,
       canSelect: canSelect,
       label: StudioMenuLabel(
+        leading: selected == null
+            ? unresolvedLeading
+            : showSelectedBrand
+            ? AccountBrandMark(
+                fallbackName: selected.accountName,
+                iconKey: selected.accountIconKey,
+                size: triggerIconSize,
+              )
+            : null,
         label: selectedLabel,
         enabled: canSelect,
         maxWidth: labelMaxWidth,
@@ -172,7 +198,8 @@ class ModelRouteSelector extends StatefulWidget {
   }
 
   double measureInlineWidth(BuildContext context) =>
-      _presentation(context).label.measureWidth(context);
+      _presentation(context).label
+          .measureWidth(context, leadingWidth: triggerIconSize);
 
   @override
   State<ModelRouteSelector> createState() => _ModelRouteSelectorState();
@@ -180,10 +207,12 @@ class ModelRouteSelector extends StatefulWidget {
 
 class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   final FocusNode _triggerFocus = FocusNode(debugLabel: 'model-route-trigger');
+  final TextEditingController _search = TextEditingController();
 
   @override
   void dispose() {
     _triggerFocus.dispose();
+    _search.dispose();
     super.dispose();
   }
 
@@ -206,12 +235,17 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
         message: widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel,
         child: SubmenuButton(
           key: widget.selectorKey,
-          onOpen: _keepSelectedItemVisible,
+          leadingIcon: presentation.label.leading,
+          onOpen: _onOpen,
           menuStyle: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
           menuChildren: canSelect
               ? _menuChildren(context, contentWidth, selected)
               : const [],
-          child: Text('${widget.fieldLabel} · $selectedLabel'),
+          child: Text(
+            '${widget.fieldLabel} · $selectedLabel',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       );
     }
@@ -220,7 +254,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
       childFocusNode: _triggerFocus,
       style: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
       alignmentOffset: const Offset(6, 6),
-      onOpen: _keepSelectedItemVisible,
+      onOpen: _onOpen,
       menuChildren: _menuChildren(context, contentWidth, selected),
       builder: (context, controller, child) =>
           _buildTrigger(context, controller, canSelect, presentation.label),
@@ -274,8 +308,29 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     double contentWidth,
     ModelSelectionOption? selected,
   ) {
-    final children = <Widget>[];
-    for (final group in _groups()) {
+    final query = _search.text.trim().toLowerCase();
+    final groups = _groups(query);
+    final children = <Widget>[
+      if (widget.searchKey case final key?)
+        SizedBox(
+          width: contentWidth,
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: TextField(
+              key: key,
+              controller: _search,
+              autofocus: true,
+              onChanged: (_) => setState(() {}),
+              decoration: InputDecoration(
+                hintText: context.l10n.composerModelSearch,
+                prefixIcon: const Icon(Icons.search_rounded),
+                isDense: true,
+              ),
+            ),
+          ),
+        ),
+    ];
+    for (final group in groups) {
       children.add(_accountHeading(context, contentWidth, group));
       for (final option in group.options) {
         final isSelected = option == selected;
@@ -285,7 +340,9 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
           // finite width to rows with Expanded content, the same axis Material
           // popup menus use.
           overflowAxis: Axis.vertical,
-          onPressed: widget.enabled ? () => _select(option) : null,
+          onPressed: widget.enabled && widget.onSelected != null
+              ? () => _select(option)
+              : null,
           style: isSelected
               ? ButtonStyle(
                   backgroundColor: WidgetStatePropertyAll(
@@ -310,7 +367,15 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
         );
       }
     }
-    return children;
+    return [
+      ...children,
+      ...?widget.menuFooter?.call(
+        context,
+        contentWidth,
+        query,
+        groups.isNotEmpty,
+      ),
+    ];
   }
 
   /// Reports a row selection after [MenuItemButton] performs its normal close
@@ -318,7 +383,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   /// unobserved future; the repository owns user-facing failure state, so
   /// unexpected programmer errors stay diagnosable through FlutterError.
   void _select(ModelSelectionOption option) {
-    final result = widget.onSelected(option);
+    final result = widget.onSelected?.call(option);
     if (result is Future<void>) {
       unawaited(
         result.catchError((Object error, StackTrace stackTrace) {
@@ -332,6 +397,15 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
           );
         }),
       );
+    }
+  }
+
+  void _onOpen() {
+    if (widget.searchKey == null) {
+      _keepSelectedItemVisible();
+    } else if (_search.text.isNotEmpty) {
+      _search.clear();
+      setState(() {});
     }
   }
 
@@ -355,15 +429,21 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     });
   }
 
-  List<_AccountModelGroup> _groups() {
+  Iterable<_AccountModelGroup> _groups(String query) {
     final groups = <String, _AccountModelGroup>{};
     for (final option in widget.options) {
+      if (query.isNotEmpty &&
+          !option.displayName.toLowerCase().contains(query) &&
+          !option.modelId.toLowerCase().contains(query) &&
+          !option.accountName.toLowerCase().contains(query)) {
+        continue;
+      }
       groups
           .putIfAbsent(option.accountId, () => _AccountModelGroup(option))
           .options
           .add(option);
     }
-    return groups.values.toList(growable: false);
+    return groups.values;
   }
 
   Key _optionKey(ModelSelectionOption option) =>

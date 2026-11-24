@@ -3,13 +3,12 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/account_brand.dart';
+import '../../../../shared/model_route_selector.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../../../../shared/studio_menu_label.dart';
-import '../../../../shared/model_route_selector.dart' show ModelSelectionOption;
 import '../../../status/session_selectors.dart' show modelOptions;
 import '../state/start_backend_view_state.dart';
 
-class StartModelSelectorView extends StatefulWidget {
+class StartModelSelectorView extends StatelessWidget {
   const StartModelSelectorView({
     required this.state,
     required this.onSelectModel,
@@ -25,187 +24,132 @@ class StartModelSelectorView extends StatefulWidget {
   final VoidCallback onManageServices;
   final bool inMenu;
 
-  double measureInlineWidth(BuildContext context) {
-    final presentation = _presentation(context);
-    return presentation.label.measureWidth(
-      context,
-      leadingWidth: presentation.leadingWidth,
-    );
-  }
+  double measureInlineWidth(BuildContext context) =>
+      _selector(context).measureInlineWidth(context);
 
-  ({
-    List<ModelSelectionOption> options,
-    ModelSelectionOption? current,
-    bool isAcp,
-    bool available,
-    StudioMenuLabel label,
-    double leadingWidth,
-  })
-  _presentation(BuildContext context) {
-    final options = modelOptions(state.modelAccounts);
-    final current = options
-        .where(
-          (option) =>
-              option.accountId == state.modelAccountId &&
-              option.modelId == state.modelId,
-        )
-        .firstOrNull;
+  @override
+  Widget build(BuildContext context) => _selector(context);
+
+  ModelRouteSelector _selector(BuildContext context) {
+    final l10n = context.l10n;
     final service = state.selectedService;
     final isAcp = state.accountId != null;
-    final available = isAcp ? service?.enabled == true : current != null;
-    final label = isAcp
+    final options = modelOptions(state.modelAccounts);
+    final accountId = isAcp ? '' : state.modelAccountId ?? '';
+    final modelId = isAcp ? '' : state.modelId ?? '';
+    final available = isAcp
+        ? service?.enabled == true
+        : options.any(
+            (option) =>
+                option.accountId == accountId && option.modelId == modelId,
+          );
+    final fallbackLabel = isAcp
         ? service?.name ?? state.accountId!
-        : current?.displayName ??
-              state.modelId ??
-              context.l10n.statusPlannerModel;
-    final leadingWidth = isAcp ? 18.0 : (available ? 0.0 : 16.0);
-    return (
+        : state.modelId ?? l10n.statusPlannerModel;
+    return ModelRouteSelector(
       options: options,
-      current: current,
-      isAcp: isAcp,
-      available: available,
-      leadingWidth: leadingWidth,
-      label: StudioMenuLabel(
-        leading: isAcp
-            ? AccountBrandMark(
-                fallbackName: label,
-                iconKey: service?.brandKey,
-                size: leadingWidth,
-                active: available,
-              )
-            : !available
-            ? Icon(
-                Icons.warning_amber_rounded,
-                size: leadingWidth,
-                color: context.colors.error,
-              )
-            : null,
-        label: label,
-        maxWidth: 160,
-        enabled: state.enabled,
-      ),
+      accountId: accountId,
+      modelId: modelId,
+      enabled: state.enabled,
+      onSelected: state.nativeEnabled
+          ? (option) => onSelectModel(option.accountId, option.modelId)
+          : null,
+      fieldLabel: l10n.statusPlannerModel,
+      selectorKey: StudioDriverKeys.model,
+      showSelectedBrand: true,
+      unresolvedLabel: fallbackLabel,
+      unresolvedLeading: isAcp
+          ? AccountBrandMark(
+              fallbackName: fallbackLabel,
+              iconKey: service?.brandKey,
+              size: ModelRouteSelector.triggerIconSize,
+              active: available,
+            )
+          : Icon(
+              Icons.warning_amber_rounded,
+              size: ModelRouteSelector.triggerIconSize,
+              color: context.colors.error,
+            ),
+      tooltip: available
+          ? l10n.statusPlannerModel
+          : isAcp
+          ? l10n.acpConversationServiceDisabled
+          : l10n.statusModelRouteUnavailable,
+      labelMaxWidth: isAcp ? 160 : 140,
+      inMenu: inMenu,
+      searchKey: const ValueKey('start-model-search'),
+      menuFooter: _menuFooter,
     );
   }
 
-  @override
-  State<StartModelSelectorView> createState() => _StartModelSelectorViewState();
-}
-
-class _StartModelSelectorViewState extends State<StartModelSelectorView> {
-  final _search = TextEditingController();
-
-  @override
-  void dispose() {
-    _search.dispose();
-    super.dispose();
-  }
-
-  bool _matches(Iterable<String> values) {
-    final query = _search.text.trim().toLowerCase();
-    return query.isEmpty ||
-        values.any((value) => value.toLowerCase().contains(query));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final state = widget.state;
+  List<Widget> _menuFooter(
+    BuildContext context,
+    double width,
+    String query,
+    bool hasMatchingModels,
+  ) {
     final l10n = context.l10n;
-    final presentation = widget._presentation(context);
-    final options = presentation.options;
-    final current = presentation.current;
-    final isAcp = presentation.isAcp;
-    final available = presentation.available;
-    final label = presentation.label.label;
-    final width = (MediaQuery.sizeOf(context).width - 32).clamp(200.0, 380.0);
-    final filtered = options
+    final services = state.services
         .where(
-          (option) => _matches([
-            option.displayName,
-            option.modelId,
-            option.accountName,
-          ]),
+          (service) =>
+              service.name.toLowerCase().contains(query) ||
+              service.id.toLowerCase().contains(query),
         )
         .toList();
-    final services = state.services
-        .where((item) => _matches([item.name, item.id]))
-        .toList();
-
-    final menuChildren = <Widget>[
-      SizedBox(
-        width: width,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: TextField(
-            key: const ValueKey('start-model-search'),
-            controller: _search,
-            autofocus: true,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-              hintText: l10n.composerModelSearch,
-              prefixIcon: const Icon(Icons.search_rounded),
-              isDense: true,
+    return [
+      if (state.loading) const LinearProgressIndicator(),
+      if (services.isNotEmpty) ...[
+        if (hasMatchingModels) const Divider(height: 8),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+          child: Text(
+            l10n.acpBackendServicesHeader,
+            style: context.text.labelSmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
             ),
           ),
         ),
-      ),
-      if (state.loading) const LinearProgressIndicator(),
-      for (final account in state.modelAccounts)
-        if (filtered.any((option) => option.accountId == account.id)) ...[
-          _heading(context, account.name),
-          for (final option in filtered.where(
-            (option) => option.accountId == account.id,
-          ))
-            MenuItemButton(
-              key: StudioDriverKeys.modelOption(
-                option.accountId,
-                option.modelId,
-              ),
-              onPressed: state.enabled && state.nativeEnabled
-                  ? () => widget.onSelectModel(option.accountId, option.modelId)
-                  : null,
-              leadingIcon: AccountBrandMark(
-                fallbackName: option.accountName,
-                iconKey: option.accountIconKey,
-                size: 18,
-              ),
-              trailingIcon: _selected(!isAcp && option == current),
-              child: _label(option.displayName, width),
-            ),
-        ],
-      if (services.isNotEmpty) ...[
-        const Divider(height: 8),
-        _heading(context, l10n.acpBackendServicesHeader),
-        for (final item in services)
+        for (final service in services)
           MenuItemButton(
-            key: ValueKey(('start-acp-service', item.id)),
-            onPressed: state.enabled && item.enabled
-                ? () => widget.onSelectService(item.id)
+            key: ValueKey(('start-acp-service', service.id)),
+            overflowAxis: Axis.vertical,
+            onPressed: state.enabled && service.enabled
+                ? () => onSelectService(service.id)
                 : null,
             leadingIcon: AccountBrandMark(
-              fallbackName: item.name,
-              iconKey: item.brandKey,
+              fallbackName: service.name,
+              iconKey: service.brandKey,
               size: 18,
-              active: item.enabled,
+              active: service.enabled,
             ),
-            trailingIcon: item.enabled
-                ? _selected(state.accountId == item.id)
+            trailingIcon: service.enabled
+                ? SizedBox.square(
+                    dimension: 18,
+                    child: state.accountId == service.id
+                        ? const Icon(Icons.check_rounded, size: 18)
+                        : null,
+                  )
                 : Tooltip(
                     message: l10n.acpConversationServiceDisabled,
                     child: const Icon(Icons.block_rounded, size: 16),
                   ),
-            child: _label(item.name, width),
+            child: Text(
+              service.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
       ],
-      if (filtered.isEmpty && services.isEmpty && !state.loading)
+      if (!hasMatchingModels && services.isEmpty && !state.loading)
         Padding(
           padding: const EdgeInsets.all(12),
           child: Text(l10n.composerModelSearchEmpty),
         ),
       if (state.failure case final failure?)
-        Padding(
-          padding: const EdgeInsets.all(12),
-          child: SizedBox(
-            width: width - 24,
+        SizedBox(
+          width: width,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
             child: Text(
               failure,
               style: context.text.bodySmall?.copyWith(
@@ -225,76 +169,9 @@ class _StartModelSelectorViewState extends State<StartModelSelectorView> {
       const Divider(height: 8),
       MenuItemButton(
         leadingIcon: const Icon(Icons.settings_outlined, size: 18),
-        onPressed: widget.onManageServices,
+        onPressed: onManageServices,
         child: Text(l10n.composerManageModels),
       ),
     ];
-    if (widget.inMenu) {
-      return SubmenuButton(
-        key: StudioDriverKeys.model,
-        onOpen: () {
-          _search.clear();
-          setState(() {});
-        },
-        menuChildren: state.enabled ? menuChildren : const [],
-        child: Text('${l10n.statusPlannerModel} · $label'),
-      );
-    }
-
-    return MenuAnchor(
-      key: StudioDriverKeys.model,
-      crossAxisUnconstrained: false,
-      onOpen: () {
-        _search.clear();
-        setState(() {});
-      },
-      style: MenuStyle(
-        maximumSize: WidgetStatePropertyAll(
-          Size(
-            width,
-            (MediaQuery.sizeOf(context).height - 64).clamp(160.0, 520.0),
-          ),
-        ),
-      ),
-      builder: (context, controller, _) => Tooltip(
-        message: !available
-            ? isAcp
-                  ? l10n.acpConversationServiceDisabled
-                  : l10n.statusModelRouteUnavailable
-            : l10n.statusPlannerModel,
-        child: TextButton(
-          onPressed: state.enabled
-              ? () => controller.isOpen ? controller.close() : controller.open()
-              : null,
-          style: TextButton.styleFrom(
-            padding: EdgeInsets.zero,
-            minimumSize: Size.zero,
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: presentation.label,
-        ),
-      ),
-      menuChildren: menuChildren,
-    );
   }
-
-  Widget _label(String text, double width) => SizedBox(
-    width: (width - 104).clamp(96.0, 280.0),
-    child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
-  );
-
-  Widget _selected(bool selected) => SizedBox.square(
-    dimension: 18,
-    child: selected ? const Icon(Icons.check_rounded, size: 18) : null,
-  );
-
-  Widget _heading(BuildContext context, String text) => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-    child: Text(
-      text,
-      style: context.text.labelSmall?.copyWith(
-        color: context.colors.onSurfaceVariant,
-      ),
-    ),
-  );
 }

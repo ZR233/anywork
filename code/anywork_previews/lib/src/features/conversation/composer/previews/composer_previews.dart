@@ -343,19 +343,58 @@ class _PreviewInputState extends State<_PreviewInput>
 final _previewAccounts = [
   ModelSelectionAccount(
     id: 'preview-account',
-    name: '预览账号',
+    name: 'OpenAI（预览）',
+    brandKey: 'openai',
     billingKind: null,
     models: const [
       AccountModelView(
         modelId: 'preview-model',
         displayName: 'Demo GPT-6.2 Sol',
         reasoningEfforts: ['low', 'high'],
+        inputCapabilities: [
+          ModelInputCapabilityView(
+            modality: ModelModalityView.text,
+            sources: [],
+          ),
+          ModelInputCapabilityView(
+            modality: ModelModalityView.image,
+            sources: [ModelInputSourceView.local],
+          ),
+        ],
         serviceTiers: ModelServiceTierParameterView(
           candidates: [
             ModelServiceTierView(id: 'priority', displayName: 'Fast'),
             ModelServiceTierView(id: 'ultrafast', displayName: 'Ultrafast'),
           ],
         ),
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+      ),
+    ],
+  ),
+  ModelSelectionAccount(
+    id: 'preview-gemini',
+    name: 'Gemini（预览）',
+    brandKey: 'gemini',
+    billingKind: null,
+    models: const [
+      AccountModelView(
+        modelId: 'preview-gemini-model',
+        displayName: 'Demo Gemini',
+        reasoningEfforts: [],
+        inputCapabilities: [
+          ModelInputCapabilityView(
+            modality: ModelModalityView.text,
+            sources: [],
+          ),
+          ModelInputCapabilityView(
+            modality: ModelModalityView.image,
+            sources: [ModelInputSourceView.local],
+          ),
+          ModelInputCapabilityView(
+            modality: ModelModalityView.audio,
+            sources: [ModelInputSourceView.local],
+          ),
+        ],
         typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
       ),
     ],
