@@ -49,7 +49,7 @@ class StudioAnywkHandoffTest(unittest.TestCase):
         self.output = self.runner_temp / "github-output"
         self.archive = self.runner_temp / "studio-anywk" / "anywk.tar"
         self.archive.parent.mkdir()
-        self.directory = Path("target/studio-anywk")
+        self.directory = Path("dist/studio-anywk")
         files = self.producer / self.directory
         files.mkdir(parents=True)
         (files / "anywk").write_bytes(b"\0release cli")
@@ -76,6 +76,8 @@ class StudioAnywkHandoffTest(unittest.TestCase):
         return self.run_handoff("restore", self.consumer, ANYWK_ARCHIVE_SHA256=digest)
 
     def test_archive_round_trip_preserves_files_and_executable_mode(self):
+        # Cargo cache restoration can recreate directories beneath target/.
+        (self.producer / "target/studio-anywk").mkdir(parents=True)
         result = self.restore(self.checkpoint())
         self.assertEqual(result.returncode, 0, result.stderr)
         restored = self.consumer / self.directory

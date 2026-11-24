@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-directory=target/studio-anywk
+# Keep the handoff outside target/, which rust-cache restores between builds.
+directory=dist/studio-anywk
 case "${RUNNER_OS:?}" in
   Windows) executable=anywk.exe ;;
   Linux|macOS) executable=anywk ;;
@@ -56,7 +57,7 @@ case "${1:-}" in
       printf 'Unexpected members in %s\n' "$archive" >&2
       exit 1
     fi
-    mkdir -p target
+    mkdir -p "$(dirname "$directory")"
     mkdir "$directory"
     tar -xf - -C "$directory" < "$archive"
     verify_files

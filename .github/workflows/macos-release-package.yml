@@ -89,7 +89,7 @@ jobs:
       - name: Assemble GUI and re-sign the outer app
         run: |
           "$STUDIO_MACOS_TOOL" assemble-gui --bundle "$STUDIO_MACOS_BUNDLE" \
-            --anywk target/studio-anywk --source-sha "$SOURCE_SHA"
+            --anywk dist/studio-anywk --source-sha "$SOURCE_SHA"
       - name: Package the assembled app
         run: '"$STUDIO_MACOS_TOOL" release-gui stage --version "$RELEASE_VERSION" --bundle "$STUDIO_MACOS_BUNDLE"'
       - name: Verify packaged app
