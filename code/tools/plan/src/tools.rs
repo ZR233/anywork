@@ -216,7 +216,7 @@ impl<H> PlanTransitionTool<H> {
 
 impl<H: PlanHost> TypedTool for PlanTransitionTool<H> {
     const NAME: &'static str = PLAN_TRANSITION_TOOL;
-    const DESCRIPTION: &'static str = "Transition the agent's independent Plan state machine (`drafting`, `awaitingConfirmation`, `revisionRequested`, `approved`). When `force` is false (default), only valid outgoing transitions are permitted and invalid targets return detailed hints listing allowed targets and valid states; set `force=true` only when intentionally overriding state rules. Provide complete Markdown in `content` when entering `awaitingConfirmation`.";
+    const DESCRIPTION: &'static str = "Transition the agent's independent Plan state machine (`drafting`, `awaitingConfirmation`, `revisionRequested`, `approved`). When `force` is false (default), only valid outgoing transitions are permitted and invalid targets return detailed hints listing allowed targets and valid states; set `force=true` only when intentionally overriding state rules. Keep `force=false` when submitting to `awaitingConfirmation` so host confirmation UI triggers (if currently `approved`, transition to `drafting` first). Provide complete Markdown in `content` written in clear ELI5 plain language by default unless another style is requested.";
     type Args = PlanTransitionArgs;
     type Context = H::Context;
     type Output = PlanTransitionOutcome;

@@ -276,7 +276,11 @@ impl AcpWorkflowPlanOwner {
                `anywork_plan_history`, `anywork_plan_transition`.\n\
              Both `anywork_workflow_transition` and `anywork_plan_transition` default to `force=false` \
              and validate allowed paths (returning allowed candidates and all states on rejection). \
-             Only pass `force=true` when you intentionally need to override state-machine rules.\n",
+             Keep `force=false` when submitting `anywork_plan_transition` to `awaitingConfirmation` \
+             (transition `approved -> drafting` first when re-planning), and write ELI5 Markdown by \
+             default. During `reviewing`, call `anywork_plan_current` to read the full Plan \
+             document and guide reviewers accordingly. Only pass `force=true` when you intentionally \
+             need to override state-machine rules.\n",
         );
         Some(out)
     }
@@ -367,7 +371,7 @@ impl AcpWorkflowPlanOwner {
                 "hasDocument": plan_snapshot.document.is_some(),
             });
             let block = format!(
-                "[Studio Host State]\n{}{}\nPlan: {}\nUse `anywork_workflow_*` (when workflow is present) and `anywork_plan_*` MCP tools to inspect or advance states.\n",
+                "[Studio Host State]\n{}{}\nPlan: {}\nUse `anywork_workflow_*` (when workflow is present) and `anywork_plan_*` MCP tools to inspect or advance states. In `planning`, clarify design conflicts first, then submit an ELI5 plan via `anywork_plan_transition(targetState=\"awaitingConfirmation\", force=false)`. In `reviewing`, call `anywork_plan_current` to read the full Plan document and instruct reviewers from it.\n",
                 mode_prompt_section
                     .as_ref()
                     .map_or(String::new(), |s| format!("{s}\n\n")),

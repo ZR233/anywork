@@ -57,9 +57,11 @@ revisionRequested -> drafting                plan_transition(targetState="drafti
 
 ## 13.5 与工作模式、提示词及桌面界面的协作边界
 
-### 按需计划确认（与工作流解耦）
+### 引擎解耦与自动工作流提示词契约
 
-在 `mode.auto`（或自定义工作流）下，工作流状态推进**不再强制阻塞**于 `plan_current == approved`：复杂方案需要用户评审批准时，根智能体可随时在主会话调用 `plan_transition(targetState: "awaitingConfirmation", content: ...)` 提交计划确认；无需额外审批的简单任务或中间子计划可独立流转或完全不进入等待确认。
+在底层状态机引擎上，`WorkflowMachine` 与 `PlanStateMachine` 保持严格解耦：工作流引擎本身不硬编码强制阻塞于 `plan_current == approved`，从而确保独立工具包与自定义工作流可自由组合或以 `force: true` 显式纠正状态。
+
+而在内置 `mode.auto` 的提示词与阶段契约（见 [11.6](./11-thread-mode.md#116-内置自动工作模式modeauto)）中，进入 `planning` 阶段（包括复杂任务、用户要求出计划或发现需求/实现方法与既有设计冲突）时，要求主代理先就冲突与关键取舍调用 `request_user_input` 向用户询问澄清，再按默认 **ELI5 规则**撰写 Markdown `content` 并以默认 `force: false` 调用 `plan_transition(targetState: "awaitingConfirmation", content: ...)` 提交计划确认（若原 Plan 已处于 `approved`，需先调用 `plan_transition(targetState: "drafting")` 再切 `awaitingConfirmation`；非强制路径才会挂载宿主确认交互，因此禁止提确认时传 `force: true`）。`simple` 路径的简单任务无需创建或确认计划；进入 `reviewing` 阶段时要求先读取最新 Plan 正文（核对 `pl.plan` 投影或调用 `plan_current`）并据此安排审查者审查。
 
 计划批准门控的是业务实施，不是理解代码所必需的全部准备工作。在已有任务授权和实际权限内，根智能体或明确委派的执行者可以在规划阶段准备最小、可逆的项目探索环境，例如配置已安装的语言服务器、核验初始化及语义查询；不因此提前修改业务源码、共享接口、依赖或生成文件。环境配置本身就是任务交付目标时，仍须遵循该任务的实施批准边界，不能借此提前交付。
 
