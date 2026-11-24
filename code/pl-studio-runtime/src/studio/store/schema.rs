@@ -47,6 +47,15 @@ pub(super) async fn admit(db: &DatabaseConnection) -> Result<()> {
                 "required Studio product table {table} is missing; existing data preserved"
             );
         }
+        ensure!(
+            db.query_one_raw(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT 1 FROM studio_objects WHERE object_kind='agentRetirement' LIMIT 1",
+            ))
+            .await?
+            .is_none(),
+            "old unpublished retirement facts require explicit recovery; original data preserved"
+        );
     }
     let pending = Migrator::get_pending_migrations_read_only(db)
         .await

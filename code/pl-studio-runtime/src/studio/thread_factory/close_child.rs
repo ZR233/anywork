@@ -19,14 +19,6 @@ impl StudioThreadFactory {
         force: bool,
     ) -> Result<AgentCloseRecord> {
         self.validate_child_close_association(thread).await?;
-        ensure!(
-            !self
-                .services
-                .store
-                .has_legacy_retirement(&thread.id)
-                .await?,
-            "old unpublished retirement facts require explicit recovery; original data preserved"
-        );
         if let Some(mut record) = self.services.store.agent_close(&thread.id).await? {
             self.validate_close_identity(thread, &record)?;
             if force && !record.force && !record.worktree_cleanup.is_terminal() {

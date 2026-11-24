@@ -239,18 +239,6 @@ impl StudioStore {
             .collect()
     }
 
-    /// An unpublished old candidate never grants deletion; its source is left untouched.
-    pub(crate) async fn has_legacy_retirement(&self, id: &str) -> Result<bool> {
-        use crate::studio::entity::studio_object::{self, Column};
-        Ok(studio_object::Entity::find()
-            .filter(Column::OwnerKind.eq("thread"))
-            .filter(Column::OwnerId.eq(id))
-            .filter(Column::ObjectKind.eq("agentRetirement"))
-            .one(self.database())
-            .await?
-            .is_some())
-    }
-
     /// The domain job owns this transaction even when its original caller stops waiting.
     pub(crate) async fn save_agent_close(&self, record: &AgentCloseRecord) -> Result<()> {
         record.validate_owner(&record.agent_id)?;
