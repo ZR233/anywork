@@ -1,11 +1,11 @@
 //! HistoryStore SQLite invariants. These tests open the store directly and do not
 //! start a Studio runtime, model provider, or ACP process.
-use anyhow::{Context, Result, ensure};
-
+use anyhow::Result;
 use pl_core::thread::current::RuntimeEpoch;
 use pl_studio_runtime::history::*;
+use pl_studio_runtime::{ChatActiveStatus, ChatTerminalOutcome, RuntimeCostAmount};
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 fn demand() -> HistoryDemand {
     HistoryDemand::default()

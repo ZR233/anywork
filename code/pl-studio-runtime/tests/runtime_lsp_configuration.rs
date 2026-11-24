@@ -5,12 +5,12 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, Reply, Step};
+use pl_studio_runtime::ThreadWorkspaceMode;
 use pl_studio_runtime::{
     StudioLspServerState, StudioLspStateSnapshot, StudioProductBaselineState,
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
     StudioThreadLspStateSnapshot,
 };
-use pl_studio_runtime::ThreadWorkspaceMode;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use support::{Environment, program_reply, prompt_step, receipt, text_reply, tool_reply};
