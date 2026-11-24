@@ -1,6 +1,8 @@
 //! Actual lifecycle folded by the existing projection owner, emitting stateless atomic history events.
 use super::*;
-use crate::history::{HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole};
+use crate::history::{
+    HistoryEvent, HistoryEventKind, HistoryOriginalInfo, HistoryTimelineRole, PendingBody,
+};
 use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
@@ -809,6 +811,7 @@ impl LiveProjection {
                     &atom,
                     draft,
                     &history_database_id,
+                    Vec::new(),
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
                 staged.push((terminal_position, history_event));
@@ -964,13 +967,7 @@ impl LiveProjection {
                 original_kind: atom.kind,
                 tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
             });
-            crate::studio::runtime::chat_item::build_event_from_draft(
-                &mut history_event,
-                &atom,
-                draft,
-                &history_database_id,
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
+            let mut extra_bodies = Vec::new();
             if let Some(tool) = &atom.tool
                 && let Some(task) = effect
                     .tasks
@@ -981,11 +978,23 @@ impl LiveProjection {
                     .iter()
                     .find(|delivery| delivery.call_id == tool.call_id)
             {
-                history_event.bodies.push(
-                    crate::studio::storage::tool_task::body(task, delivery)
-                        .map_err(|error| ProjectionError::History(error.to_string()))?,
-                );
+                let saved = crate::studio::storage::tool_task::body(task, delivery)
+                    .map_err(|error| ProjectionError::History(error.to_string()))?;
+                extra_bodies.push(PendingBody::new(
+                    saved.body_key,
+                    saved.role,
+                    saved.media_type,
+                    saved.bytes,
+                ));
             }
+            crate::studio::runtime::chat_item::build_event_from_draft(
+                &mut history_event,
+                &atom,
+                draft,
+                &history_database_id,
+                extra_bodies,
+            )
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
             staged.push((terminal_position, history_event));
         }
 

@@ -754,3 +754,5 @@ schema 25 到 26 的升级同样在会话独占维护阶段完成，不启动模
    - 已挂接 `CanonicalPayload` 的事件读取原轻量 JSON 信封并直接把 `type`、`data` 与正文引用列表提升为 `payload_json`（指向原地保留的 `history_bodies`），未挂接 `CanonicalPayload` 的旧 `KnownActive` 无 payload 行（包括受损会话）依据 `head_json` 合成为合法 `anywork.event/1` `payload_json`，从根源消除旧记录读取失败；
    - `run_*`、`turn_*`、`source_*`、`usage_*`、`background_delivery_recorded` 与 `business_changed` 记为 `timeline_role = 'hidden'`，保留业务 `row_scope`/`row_key`/`is_anchor` 并将其元信息提升到 `payload_json`。
 3. **索引重建与校验提交**：替换旧 `history_events`，创建 `idx_events_dividers`、`idx_events_work`、`idx_events_call` 等全部 schema 26 索引与只追加触发器，更新 `history_store_meta.schema_version = 26` 并登记迁移版本；执行 `PRAGMA foreign_key_check` 确认无悬空引用后提交事务，失败则完整回滚并保留原库与备份。
+
+正文清单在写入或升级时收录账单 `accounting` 和工具任务 `native.tool-task.v1`。已落库的 schema 26 在相同的独占维护入口按 `seq` 分批补齐清单，保留事件、正文引用和块身份。该维护与只追加触发器的恢复在同一个 SQLite `IMMEDIATE` 事务提交。历史库用 `PRAGMA user_version` 记录清单维护修订，`0` 需要首次维护，`1` 已完成。新建和从 schema 25 升级的库直接写入 `1`。正常读取使用清单定位正文。

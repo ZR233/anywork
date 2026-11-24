@@ -218,6 +218,12 @@ pub(in crate::history) async fn migrate_v25_to_v26(
             )
             .await?
             {
+                let mut converted = converted;
+                index_current_manifest(
+                    &mut converted,
+                    &database_id,
+                    bodies_by_owner.get(&row.event_id),
+                )?;
                 insert_v26_row(db, &converted).await?;
                 migrated_rows += 1;
             }
@@ -270,6 +276,7 @@ pub(in crate::history) async fn migrate_v25_to_v26(
         )));
     }
 
+    super::schema26_manifest::mark_repaired(db).await?;
     Ok((database_id, migrated_rows))
 }
 
@@ -1271,6 +1278,42 @@ async fn insert_migrated_inline_blob(
         .await?;
     }
     Ok(body_id)
+}
+
+fn index_current_manifest(
+    row: &mut ConvertedV26Row,
+    database_id: &str,
+    owner_bodies: Option<&Vec<V25BodyMeta>>,
+) -> Result<()> {
+    let accounting = row.row_scope.as_deref() == Some("accounting");
+    let stored: Vec<super::schema26_manifest::StoredBody> = owner_bodies
+        .into_iter()
+        .flatten()
+        .filter(|body| {
+            body.body_key == super::schema26_manifest::TOOL_TASK_KEY
+                || (accounting && body.body_key == super::schema26_manifest::LEGACY_USAGE_KEY)
+        })
+        .map(|body| super::schema26_manifest::StoredBody {
+            body_id: body.body_id.clone(),
+            body_key: body.body_key.clone(),
+            role: body.role.clone(),
+            byte_length: body.byte_length,
+            media_type: body.media_type.clone(),
+        })
+        .collect();
+    if !accounting && stored.is_empty() {
+        return Ok(());
+    }
+    if let Some(payload) = super::schema26_manifest::rewrite_payload(
+        &row.payload_json,
+        accounting,
+        database_id,
+        &row.event_id,
+        &stored,
+    )? {
+        row.payload_json = payload;
+    }
+    Ok(())
 }
 
 async fn insert_v26_row(db: &impl ConnectionTrait, row: &ConvertedV26Row) -> Result<()> {

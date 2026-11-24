@@ -5,6 +5,7 @@
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
 mod input;
+pub(super) mod schema26_manifest;
 mod v25_schema;
 mod v25_to_v26;
 
@@ -189,7 +190,7 @@ pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Re
         }
         SourceFormat::Schema26 => {
             schema::identity(&read, thread_id).await?;
-            false
+            schema26_manifest::repair_needed(&read).await?
         }
     };
     read.close().await?;
@@ -221,8 +222,16 @@ pub async fn upgrade_history(
         && !pending_v25.try_exists()?
     {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
-        read.close().await?;
-        return complete_schema26_entry(&pending_v24, thread_id, database_id, "history.v24.sqlite");
+        return finish_schema26(
+            &history_path,
+            read,
+            &pending_v24,
+            thread_id,
+            database_id,
+            "history.v24.sqlite",
+            false,
+        )
+        .await;
     }
     read.close().await?;
     let _lease = acquire_writer_lease(&history_path).await?;
@@ -231,26 +240,34 @@ pub async fn upgrade_history(
     match format {
         SourceFormat::Schema26 => {
             let (database_id, _) = schema::identity(&read, thread_id).await?;
-            read.close().await?;
             if pending_v25.try_exists()? {
                 if pending_v24.try_exists()? {
+                    read.close().await?;
                     return Err(HistoryError::Conflict(
                         "conflicting v24 and v25 pending upgrade reports exist".into(),
                     ));
                 }
-                return complete_schema26_entry(
+                return finish_schema26(
+                    &history_path,
+                    read,
                     &pending_v25,
                     thread_id,
                     database_id,
                     "history.v25.sqlite",
-                );
+                    true,
+                )
+                .await;
             }
-            return complete_schema26_entry(
+            return finish_schema26(
+                &history_path,
+                read,
                 &pending_v24,
                 thread_id,
                 database_id,
                 "history.v24.sqlite",
-            );
+                true,
+            )
+            .await;
         }
         SourceFormat::Schema25 => {
             let database_id = schema25_identity(&read, thread_id).await?;
@@ -1036,6 +1053,47 @@ fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result
     }
     let bytes = serde_json::to_vec_pretty(report)?;
     backup_exact_bytes(pending_report, &bytes)
+}
+
+async fn finish_schema26(
+    history_path: &Path,
+    read: DatabaseConnection,
+    pending_report: &Path,
+    thread_id: &str,
+    database_id: String,
+    expected_backup_name: &str,
+    lease_held: bool,
+) -> Result<UpgradeReport> {
+    let needed = match schema26_manifest::repair_needed(&read).await {
+        Ok(needed) => {
+            read.close().await?;
+            needed
+        }
+        Err(error) => {
+            let _ = read.close().await;
+            return Err(error);
+        }
+    };
+    if !needed {
+        return complete_schema26_entry(
+            pending_report,
+            thread_id,
+            database_id,
+            expected_backup_name,
+        );
+    }
+    // upgrade_history may already hold this file lease. try_lock is not reentrant.
+    let _lease = if lease_held {
+        None
+    } else {
+        Some(acquire_writer_lease(history_path).await?)
+    };
+    let writer = schema::connect(history_path, false, false).await?;
+    let repaired = schema26_manifest::repair(&writer).await;
+    let closed = writer.close().await;
+    repaired?;
+    closed?;
+    complete_schema26_entry(pending_report, thread_id, database_id, expected_backup_name)
 }
 
 fn complete_schema26_entry(

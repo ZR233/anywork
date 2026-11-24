@@ -351,12 +351,7 @@ impl HistoryStore {
         let reader = self.reader();
         let existing = match read_event_body_bytes(&reader, &record, "accounting", None).await? {
             Some(bytes) => bytes,
-            None => {
-                // Legacy v25 migrated usage row may hold key "canonical_payload" in history_bodies
-                read_event_body_bytes(&reader, &record, "canonical_payload", None)
-                    .await?
-                    .ok_or_else(|| HistoryError::Conflict(fact.event_id.clone()))?
-            }
+            None => return Err(HistoryError::Conflict(fact.event_id.clone())),
         };
         if existing == payload {
             Ok(Some(record.seq))

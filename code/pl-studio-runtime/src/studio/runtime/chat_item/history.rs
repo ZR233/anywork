@@ -85,6 +85,7 @@ pub(in crate::studio) fn build_event_from_draft(
     atom: &crate::ChatAtom,
     draft: &ChatDraft,
     database_id: &str,
+    extra_bodies: Vec<PendingBody>,
 ) -> Result<()> {
     let payload: serde_json::Value = serde_json::from_slice(&draft.payload)?;
     let obj = payload
@@ -150,6 +151,7 @@ pub(in crate::studio) fn build_event_from_draft(
             content_bytes(&content)?,
         ));
     }
+    pending.extend(extra_bodies);
     let manifest = pack_bodies(event, pending, database_id)?;
     let presentation_contract = extract_presentation_contract(&data);
     let single_visibility = if atom.kind == crate::ChatAtomKind::Text
