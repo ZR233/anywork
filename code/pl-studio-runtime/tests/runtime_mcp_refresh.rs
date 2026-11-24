@@ -11,9 +11,8 @@ mod support;
 use anyhow::{Context, Result, ensure};
 use pl_provider_fixture::{Protocol, Step};
 use pl_studio_runtime::{
-    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, StudioPromptInput,
-    SubmitPromptRequest, ThreadMcpLifecycleKind, ThreadWorkspaceMode, TurnState,
-    UpdateMcpDocumentRequest,
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, ThreadMcpLifecycleKind,
+    ThreadWorkspaceMode, UpdateMcpDocumentRequest,
 };
 use pl_studio_runtime::{
     StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,

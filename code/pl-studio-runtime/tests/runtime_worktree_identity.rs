@@ -94,20 +94,18 @@ async fn recovery_snapshot(
     use pl_studio_runtime::{
         StudioProductBaselineState, StudioProductEventKind, StudioProductFrame,
     };
-    loop {
-        let frame = events.recv().await?.context("Recovery topic ended")?;
-        match frame {
-            StudioProductFrame::Baseline(baseline) => match baseline.state {
-                StudioProductBaselineState::Recovery(snapshot) => return Ok(*snapshot),
-                other => anyhow::bail!("unexpected Recovery baseline: {other:?}"),
-            },
-            StudioProductFrame::Event(event) => match event.kind {
-                StudioProductEventKind::RecoveryStateChanged(snapshot) => return Ok(snapshot),
-                other => anyhow::bail!("unexpected Recovery event: {other:?}"),
-            },
-            StudioProductFrame::Lagged { dropped, .. } => {
-                anyhow::bail!("lost {dropped} Recovery events")
-            }
+    let frame = events.recv().await?.context("Recovery topic ended")?;
+    match frame {
+        StudioProductFrame::Baseline(baseline) => match baseline.state {
+            StudioProductBaselineState::Recovery(snapshot) => Ok(*snapshot),
+            other => anyhow::bail!("unexpected Recovery baseline: {other:?}"),
+        },
+        StudioProductFrame::Event(event) => match event.kind {
+            StudioProductEventKind::RecoveryStateChanged(snapshot) => Ok(snapshot),
+            other => anyhow::bail!("unexpected Recovery event: {other:?}"),
+        },
+        StudioProductFrame::Lagged { dropped, .. } => {
+            anyhow::bail!("lost {dropped} Recovery events")
         }
     }
 }
