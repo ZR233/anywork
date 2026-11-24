@@ -611,11 +611,12 @@ impl BotRuntime {
             let Some(projection) = content.projection else {
                 return Step::Wait;
             };
-            let collected = tokio::select! {
-                _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-                collected = std::future::ready(collect_complete_turn_text(projection)) => collected,
-            };
-            match collected {
+            // 收集是同步的：`std::future::ready(..)` 会在轮询取消之前就完成全部工作，
+            // 因此先判定取消，再直接收集。
+            if cancel.is_cancelled() {
+                return Step::Done(InboundWorkOutcome::Interrupted);
+            }
+            match collect_complete_turn_text(projection) {
                 Ok(text) => Some(text),
                 Err(error) => return Step::Done(content_failure(error)),
             }

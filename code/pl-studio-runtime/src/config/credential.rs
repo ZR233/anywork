@@ -303,7 +303,9 @@ impl SystemCredentialStore {
     ) -> std::result::Result<BotProtectedRead, BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.get_password() {
+        // 与账号凭据共用受保护载荷路径：Windows 上超出 Credential Manager 上限的
+        // 机器人材料经 DPAPI 落盘，keyring 只保留标记；损坏的载荷是 Invalid 而非 Missing。
+        match protected_get(&entry, &account) {
             Ok(secret) => Ok(BotProtectedRead::System(secret)),
             Err(KeyringError::NoEntry) => Ok(BotProtectedRead::Missing),
             Err(error) => Err(classify_bot_keyring(error)),
@@ -317,8 +319,8 @@ impl SystemCredentialStore {
     ) -> std::result::Result<BotProtectedPersist, BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.set_password(payload) {
-            Ok(()) => match entry.get_password() {
+        match protected_set(&entry, &account, payload) {
+            Ok(()) => match protected_get(&entry, &account) {
                 Ok(actual) if actual == payload => Ok(BotProtectedPersist::Stored),
                 Ok(_) => Err(BotCredentialIoError {
                     kind: BotCredentialIoKind::Invalid,
@@ -337,7 +339,7 @@ impl SystemCredentialStore {
     fn recycle_bot_payload(&self, bot_id: &str) -> std::result::Result<(), BotCredentialIoError> {
         let account = bot_account(bot_id);
         let entry = bot_entry(&account)?;
-        match entry.delete_credential() {
+        match protected_delete(&entry, &account) {
             Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
             Err(error) => Err(classify_bot_keyring(error)),
         }

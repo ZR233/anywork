@@ -296,7 +296,12 @@ impl FeishuIm {
             ));
         }
         let body = markdown_body(chat_id, text, uuid);
-        if markdown_request_bytes(chat_id, text, uuid) > super::TEXT_SEGMENT_LIMIT_BYTES {
+        // 与 `send_card` 一致：对将要发送的同一份 body 只构建并序列化一次。
+        if serde_json::to_vec(&body)
+            .expect("IM request strings serialize")
+            .len()
+            > super::TEXT_SEGMENT_LIMIT_BYTES
+        {
             return Err(FeishuError::new(
                 FeishuErrorKind::Rejected,
                 "serialized Markdown message exceeds 30000 UTF-8 bytes",
