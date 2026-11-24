@@ -75,7 +75,7 @@ async fn wait_retired(runtime: &StudioRuntime, old: &std::sync::Weak<AccountConn
             if runtime.acp_accounts.inner.lock().retiring.is_empty() && old.upgrade().is_none() {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::task::yield_now().await;
         }
     })
     .await
@@ -233,7 +233,6 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
             .acp_accounts
             .installation_ready(AcpProvider::Antigravity, "1.5.3");
 
-        tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(fixture.pid("pid")?, pid_v1);
         assert!(std::path::Path::new(&format!("/proc/{pid_v1}")).exists());
 
@@ -254,6 +253,12 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
                 break;
             }
         }
+        assert_eq!(
+            fixture.pid("pid")?,
+            pid_v1,
+            "an active session must keep the original process through the continued prompt"
+        );
+        assert!(std::path::Path::new(&format!("/proc/{pid_v1}")).exists());
 
         // Observe every AcpAuth snapshot transition around closing the active session.
         let mut updates = fixture

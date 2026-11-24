@@ -589,37 +589,13 @@ mod tests {
                 watch
                     .select_target(&env.runtime, "input-binding-explicit", Some(&turn.id))
                     .await?;
-                let settled = tokio::time::timeout(Duration::from_secs(10), async {
+                tokio::time::timeout(Duration::from_secs(10), async {
                     while watch.terminal(&turn.id).is_none() {
                         watch.receive().await?;
                     }
                     Ok::<_, FinalError>(())
                 })
-                .await;
-                if settled.is_err() {
-                    eprintln!(
-                        "reply History status: {:?}",
-                        env.runtime.persistence_queue_snapshot()
-                    );
-                    let page = watch
-                        .history_reader
-                        .events_page(
-                            crate::history::HistoryEventsQuery::Turn {
-                                turn_id: turn.id.clone(),
-                            },
-                            None,
-                            None,
-                            crate::history::HistoryDemand::default(),
-                        )
-                        .await?;
-                    for entry in page.entries.iter().take(12) {
-                        eprintln!(
-                            "reply History entry: seq={} kind={:?} schema={}",
-                            entry.seq, entry.kind, entry.payload_schema
-                        );
-                    }
-                }
-                settled??;
+                .await??;
                 let projection = watch.projection().expect("target projection");
                 assert_eq!(projection.file_displays().count(), 1);
                 let calls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));

@@ -591,18 +591,65 @@ fn operation_id(identity: &WorkflowOperation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mode::ThreadModeManager;
-    use crate::studio::thread::register_builtins;
-    use crate::workflow_tool::WorkflowRunLifecycle;
+    use crate::mode::{RegisteredThreadMode, ThreadModeDefinition, ThreadModeId, new_run};
+    use crate::workflow_tool::{
+        WorkflowDefinition, WorkflowRunLifecycle, WorkflowSessionState, WorkflowState,
+        WorkflowStateKind, WorkflowTransition,
+    };
 
-    fn auto_machine() -> WorkflowMachine {
-        let manager = ThreadModeManager::default();
-        let catalog = register_builtins(&manager).expect("builtin auto mode");
-        let mode = catalog
-            .mode(&crate::mode::ThreadModeId::auto())
-            .expect("mode.auto registered")
-            .clone();
-        let compiled = mode.workflow().expect("mode.auto has workflow");
+    fn fixture_machine() -> WorkflowMachine {
+        let mode = RegisteredThreadMode::from_definition(
+            ThreadModeDefinition {
+                id: ThreadModeId::new("mode.fixture").expect("fixture mode id"),
+                display_name: "Fixture".into(),
+                description: "three-state transition fixture".into(),
+                order: 0,
+                prompt: "exercise transitions".into(),
+                workflow: Some(WorkflowDefinition {
+                    title: "Fixture".into(),
+                    goal: "exercise the machine without mode.auto".into(),
+                    initial_state_id: "intake".into(),
+                    states: vec![
+                        WorkflowState {
+                            id: "intake".into(),
+                            title: "Intake".into(),
+                            instructions: "start".into(),
+                            completion_criteria: vec!["started".into()],
+                            kind: WorkflowStateKind::Atomic,
+                        },
+                        WorkflowState {
+                            id: "review".into(),
+                            title: "Review".into(),
+                            instructions: "review".into(),
+                            completion_criteria: vec!["reviewed".into()],
+                            kind: WorkflowStateKind::Atomic,
+                        },
+                        WorkflowState {
+                            id: "done".into(),
+                            title: "Done".into(),
+                            instructions: String::new(),
+                            completion_criteria: vec![],
+                            kind: WorkflowStateKind::Final,
+                        },
+                    ],
+                    transitions: vec![
+                        WorkflowTransition {
+                            source_state_id: "intake".into(),
+                            target_state_id: "review".into(),
+                            guard: "review is ready".into(),
+                        },
+                        WorkflowTransition {
+                            source_state_id: "review".into(),
+                            target_state_id: "done".into(),
+                            guard: "review is complete".into(),
+                        },
+                    ],
+                }),
+            },
+            1,
+        )
+        .expect("synthetic graph compiles");
+        let compiled = mode.workflow().expect("fixture graph");
         let run = new_run(&mode, compiled, None, "test-seed", 100);
         let state = WorkflowSessionState {
             revision: 1,
@@ -625,7 +672,7 @@ mod tests {
 
     #[test]
     fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
-        let mut machine = auto_machine();
+        let mut machine = fixture_machine();
         let state = machine.state();
         let run = state.current_run.as_ref().unwrap();
         let err_unknown = machine
@@ -633,7 +680,7 @@ mod tests {
                 TransitionInput {
                     expected_run_id: run.run_id.clone(),
                     expected_revision: state.revision,
-                    expected_state_id: "triage".into(),
+                    expected_state_id: "intake".into(),
                     target_state_id: "nonexistent".into(),
                     force: false,
                     completion: completion("invalid target"),
@@ -648,8 +695,9 @@ mod tests {
         assert!(!err_unknown.accepted);
         assert_eq!(err_unknown.code, "unknownTargetState");
         let error = err_unknown.error.expect("structured error");
-        assert!(error.all_states.iter().any(|s| s.id == "simple"));
-        assert!(error.all_states.iter().any(|s| s.id == "planning"));
+        assert!(error.all_states.iter().any(|s| s.id == "intake"));
+        assert!(error.all_states.iter().any(|s| s.id == "review"));
+        assert!(error.all_states.iter().any(|s| s.id == "done"));
         assert!(!error.allowed_transitions.is_empty());
 
         let err_disallowed = machine
@@ -657,8 +705,8 @@ mod tests {
                 TransitionInput {
                     expected_run_id: run.run_id.clone(),
                     expected_revision: state.revision,
-                    expected_state_id: "triage".into(),
-                    target_state_id: "completed".into(),
+                    expected_state_id: "intake".into(),
+                    target_state_id: "done".into(),
                     force: false,
                     completion: completion("skip directly"),
                 },
@@ -679,37 +727,28 @@ mod tests {
                 .contains("force=true")
         );
         let error = err_disallowed.error.expect("structured error");
-        assert_eq!(error.current_state_id.as_deref(), Some("triage"));
-        assert_eq!(
-            error.attempted_target_state_id.as_deref(),
-            Some("completed")
-        );
+        assert_eq!(error.current_state_id.as_deref(), Some("intake"));
+        assert_eq!(error.attempted_target_state_id.as_deref(), Some("done"));
         assert!(
             error
                 .allowed_transitions
                 .iter()
-                .any(|edge| edge.target_state_id == "simple" && !edge.guard.is_empty())
-        );
-        assert!(
-            error
-                .allowed_transitions
-                .iter()
-                .any(|edge| edge.target_state_id == "planning" && !edge.guard.is_empty())
+                .any(|edge| edge.target_state_id == "review" && !edge.guard.is_empty())
         );
     }
 
     #[test]
     fn forced_transition_jumps_anywhere_including_out_of_final_state() {
-        let mut machine = auto_machine();
+        let mut machine = fixture_machine();
         let run_id = machine.state().current_run.unwrap().run_id;
-        // Forced jump directly from `triage` to terminal `completed`.
+        // Forced jump directly from `intake` to terminal `done`.
         let jump_final = machine
             .apply_transition(
                 TransitionInput {
                     expected_run_id: run_id.clone(),
                     expected_revision: 1,
-                    expected_state_id: "triage".into(),
-                    target_state_id: "completed".into(),
+                    expected_state_id: "intake".into(),
+                    target_state_id: "done".into(),
                     force: true,
                     completion: completion("force complete"),
                 },
@@ -727,14 +766,14 @@ mod tests {
             WorkflowRunLifecycle::Terminal
         );
 
-        // Forced jump out of terminal `completed` back into `planning`.
+        // Forced jump out of terminal `done` back into `review`.
         let jump_back = machine
             .apply_transition(
                 TransitionInput {
                     expected_run_id: run_id,
                     expected_revision: machine.state().revision,
-                    expected_state_id: "completed".into(),
-                    target_state_id: "planning".into(),
+                    expected_state_id: "done".into(),
+                    target_state_id: "review".into(),
                     force: true,
                     completion: completion("reopen into planning"),
                 },
@@ -748,7 +787,7 @@ mod tests {
         assert!(jump_back.accepted);
         assert!(jump_back.forced);
         let run = machine.state().current_run.unwrap();
-        assert_eq!(run.current_state_id, "planning");
+        assert_eq!(run.current_state_id, "review");
         assert_eq!(run.lifecycle, WorkflowRunLifecycle::Active);
         assert!(run.history_tail.iter().all(|rec| rec.forced));
     }
