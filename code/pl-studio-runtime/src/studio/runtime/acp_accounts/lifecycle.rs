@@ -11,6 +11,7 @@ use crate::{
 use anyhow::Result;
 use tokio::time::Instant;
 
+use super::super::acp_ops::RetainedJoin;
 use super::admission::AcpAccountRuntime;
 use super::connection::AccountConnection;
 use super::mapping::AcpFailure;
@@ -435,30 +436,27 @@ impl AcpAccountRuntime {
                 }
             }
         });
-        *self
-            .inner
-            .retirement_join
-            .try_lock()
-            .expect("new ACP lifecycle owner") = Some(task);
+        self.inner.retirement_join.install(task);
     }
 
     pub(super) async fn join_lifecycle_driver(&self, deadline: Instant) -> Result<()> {
         self.inner.retirement_wake.notify_one();
-        tokio::time::timeout_at(deadline, async {
-            let mut join = self.inner.retirement_join.lock().await;
-            let result = match join.as_mut() {
-                Some(task) => task.await.map_err(anyhow::Error::from),
-                None => Ok(()),
-            };
-            join.take();
-            if result.is_err() {
+        match self.inner.retirement_join.join_until(deadline).await {
+            RetainedJoin::TimedOut => Err(anyhow::anyhow!("ACP lifecycle driver remains pending")),
+            RetainedJoin::Absent
+            | RetainedJoin::Observed(Ok(()))
+            | RetainedJoin::Settled(Ok(())) => Ok(()),
+            RetainedJoin::Observed(Err(error)) => {
                 self.inner.lock().retirement_issue =
                     Some("ACP lifecycle driver join failed".into());
+                Err(error.into())
             }
-            result
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("ACP lifecycle driver remains pending"))?
+            RetainedJoin::Settled(Err(error)) => {
+                self.inner.lock().retirement_issue =
+                    Some("ACP lifecycle driver join failed".into());
+                Err(anyhow::anyhow!(error))
+            }
+        }
     }
 
     pub(super) fn background_prepare(

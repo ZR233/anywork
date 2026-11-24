@@ -21,11 +21,13 @@ mod acp_detection;
 pub(crate) mod acp_host_mcp;
 mod acp_install;
 mod acp_launch;
+mod acp_ops;
 mod acp_workspace_tools;
 pub use acp_business::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 mod acp_worker;
 mod attachment_drafts;
 mod background_task;
+mod task_registry;
 
 mod bots_api;
 mod bots_recovery;

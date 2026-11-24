@@ -6,8 +6,8 @@
 use std::path::PathBuf;
 
 use crate::{
-    AcpAuthAction, AcpAuthFailure, AcpAuthFailureCode, AcpAuthMethod, AcpAuthMethodKind,
-    AcpAuthStage, AcpAuthState, AcpServerInfo, StudioError, StudioErrorCode,
+    AcpAuthAction, AcpAuthFailure, AcpAuthFailureCode, AcpAuthMethod, AcpAuthStage, AcpAuthState,
+    AcpServerInfo, StudioError, StudioErrorCode,
 };
 use anyhow::Result;
 
@@ -39,18 +39,19 @@ impl AcpFailure {
 }
 
 pub(super) fn ensure_operation_id(operation_id: &str) -> Result<()> {
-    if operation_id.trim().is_empty() {
-        return Err(acp_error(
-            StudioErrorCode::InvalidArgument,
-            "operationId 不能为空",
-            false,
-        ));
-    }
-    Ok(())
+    super::super::StudioRuntime::validate_operation_id(operation_id)
 }
 
 pub(super) fn acp_error(code: StudioErrorCode, message: &str, retryable: bool) -> anyhow::Error {
-    anyhow::Error::new(StudioError::new(code, message, retryable))
+    super::super::acp_ops::studio_error(code, message, retryable)
+}
+
+pub(super) fn ledger_rejection(error: super::super::acp_ops::LedgerError) -> anyhow::Error {
+    super::super::acp_ops::ledger_error(
+        error,
+        "该 operationId 已绑定另一个 ACP 认证意图",
+        "已受理的 ACP 认证操作身份过多，请重启运行时后重试",
+    )
 }
 
 /// 忙碌拒绝：code/message/retryable 语义与既有 `Busy` 完全一致，只额外携带
@@ -145,19 +146,7 @@ pub(super) fn map_auth_server(server: Option<pl_acp::auth::ServerInfo>) -> Optio
 }
 
 pub(super) fn map_auth_methods(methods: Vec<pl_acp::auth::AuthMethod>) -> Vec<AcpAuthMethod> {
-    methods
-        .into_iter()
-        .map(|method| AcpAuthMethod {
-            id: method.id,
-            name: method.name,
-            description: method.description,
-            kind: match method.kind {
-                pl_acp::auth::AuthMethodKind::Agent => AcpAuthMethodKind::Agent,
-                pl_acp::auth::AuthMethodKind::Terminal => AcpAuthMethodKind::Terminal,
-                pl_acp::auth::AuthMethodKind::Unsupported => AcpAuthMethodKind::Unsupported,
-            },
-        })
-        .collect()
+    super::super::acp_ops::map_auth_methods(methods)
 }
 
 /// 协议失败到产品失败状态的穷尽映射；消息由类别与阶段生成，不转发原始 RPC 文本。

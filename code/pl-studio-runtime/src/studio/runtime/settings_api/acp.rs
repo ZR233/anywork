@@ -169,7 +169,5 @@ impl StudioRuntime {
 
 /// wire 接入类型到配置类型的穷尽映射；两种表示刻意分离，避免协议类型进入配置文件。
 fn config_provider(provider: crate::AcpProvider) -> ConfigAcpProvider {
-    match provider {
-        crate::AcpProvider::Antigravity => ConfigAcpProvider::Antigravity,
-    }
+    provider.into()
 }

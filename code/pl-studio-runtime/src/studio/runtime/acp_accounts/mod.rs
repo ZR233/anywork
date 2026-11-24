@@ -30,6 +30,7 @@ mod strategy;
 #[cfg(all(test, target_os = "linux"))]
 mod upgrade_tests;
 
+pub(crate) use admission::AcpAccountAcceptance;
 pub(crate) use admission::AcpAccountRuntime;
 pub(crate) use connection::AccountConnection;
 pub(crate) use projection::acp_account_catalog;
