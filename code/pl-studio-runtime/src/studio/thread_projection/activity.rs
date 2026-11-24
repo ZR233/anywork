@@ -143,7 +143,7 @@ fn project_activity_using(
                 kind(state, turn_id, attempt, &tasks, admitted)
             })
     };
-    let tools = project_tools(state, &tasks, origin.turn_id, kind, previous);
+    let tools = project_tools(state, &tasks, origin.turn_id, kind);
     let associated = associated_attempt(attempt);
     let (summary, summary_truncated) =
         summary(state, associated, origin.turn_id, kind, &tools, admitted);
@@ -434,7 +434,6 @@ fn project_tools(
     active_tasks: &[&TaskRecord],
     foreground_turn: Option<&str>,
     kind: ThreadActivityKind,
-    previous: Option<&ThreadActivity>,
 ) -> ThreadActivityTools {
     let foreground = foreground_calls(state, active_tasks, foreground_turn, kind);
     // 启动顺序是 owner 的真实事实：任务开始时拿到自己的提交序号，所以并发工具的“最近开始”既不是
@@ -446,10 +445,9 @@ fn project_tools(
             .cmp(&start_order(state, right))
             .then_with(|| left.call_id.cmp(&right.call_id))
     });
-    let now_secs = now_unix_seconds();
     let entries = ordered
         .iter()
-        .map(|task| tool_entry(state, task, previous, now_secs))
+        .map(|task| tool_entry(state, task))
         .collect::<Vec<_>>();
     let background = active_tasks
         .iter()
@@ -462,14 +460,6 @@ fn project_tools(
         active: entries,
         latest_started,
     }
-}
-
-fn now_unix_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-        })
 }
 
 /// 一次调用的真实启动次序键：owner 的开始序号，缺失时回落到该 Turn 的调用次序。
@@ -521,22 +511,8 @@ fn foreground_calls<'a>(
     }
 }
 
-fn tool_entry(
-    state: &ThreadSnapshot,
-    task: &TaskRecord,
-    previous: Option<&ThreadActivity>,
-    now_secs: i64,
-) -> ThreadActivityToolEntry {
+fn tool_entry(state: &ThreadSnapshot, task: &TaskRecord) -> ThreadActivityToolEntry {
     let (arguments, summary) = tool_arguments(state, task);
-    let started_at = previous
-        .and_then(|prev| {
-            prev.tools
-                .active
-                .iter()
-                .find(|entry| entry.call_id == task.call_id)
-                .and_then(|entry| entry.started_at)
-        })
-        .or(Some(now_secs));
     ThreadActivityToolEntry {
         call_id: task.call_id.clone(),
         task_id: Some(task.id.clone()),
@@ -548,7 +524,7 @@ fn tool_entry(
         // call" without guessing from call ids, wall-clock seconds or the newest output. Absent only
         // on older v2 records that predate the field.
         ordinal: task.started_sequence,
-        started_at,
+        started_at: None,
         wait: wait_presentation(state, task),
     }
 }

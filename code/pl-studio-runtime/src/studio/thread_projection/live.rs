@@ -1498,6 +1498,16 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
+        self.prepare_inner(thread, effect, state, deliver).await
+    }
+
+    async fn prepare_inner(
+        &mut self,
+        thread: &crate::Thread,
+        effect: &ThreadEffectBatch,
+        state: &ThreadSnapshot,
+        emit_feed: bool,
+    ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
         let run = self
             .run
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
@@ -1505,7 +1515,7 @@ impl LiveProjection {
         self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let provenance = self.begin_provenance(effect, run)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
+        let turns = self.prepare_turn_frames(thread, effect, state, emit_feed)?;
         let ProjectedContent {
             items,
             review_delivery,
@@ -1520,7 +1530,7 @@ impl LiveProjection {
         let (history_events, history_sources_raw) = self
             .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
             .await?;
-        let mut events = deliver.then(Vec::new);
+        let mut events = emit_feed.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
@@ -1570,41 +1580,9 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
-        let run = self
-            .run
-            .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
-        self.stage_history_model_previews(thread, state, effect.committed_at)?;
-        self.stage_history_tool_previews(thread, state, effect.committed_at)?;
-        let provenance = self.begin_provenance(effect, run)?;
-        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let ProjectedContent {
-            items,
-            review_delivery,
-            completion_drafts,
-        } = self.project(thread, effect, state)?;
-        let (history_events, history_sources_raw) = self
-            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
-            .await?;
-        self.retire_effect_source(effect)?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
-        let prepared = Arc::new(PreparedEffect {
-            sequence: effect.sequence,
-            committed_at: effect.committed_at,
-            run_id: run,
-            accounting,
-            history_events: history_events.into(),
-            history_turns: history_turns.into(),
-            history_turn_details: Arc::new(history_turn_details),
-            history_sources: history_sources(&history_sources_raw).into(),
-            retained_resources: retained_resources(effect)?.into(),
-            parent_report: None,
-            parent_finish: None,
-            terminal_retention: None,
-            review_delivery: review_delivery.into(),
-        });
-        self.mark_completed_drafts(&completion_drafts);
-        self.retain(state);
-        Ok(prepared)
+        self.prepare_inner(thread, effect, state, false)
+            .await
+            .map(|(_, prepared)| prepared)
     }
 
     fn mark_completed_drafts(&self, drafts: &[ChatDraft]) {

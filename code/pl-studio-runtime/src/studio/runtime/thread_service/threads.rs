@@ -19,6 +19,31 @@ use super::super::{
 /// 归档收束轮询间隔：既避免忙等，又让正常收束延迟保持在可忽略范围。
 const ARCHIVE_TREE_SETTLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
+pub(super) fn sort_project_roots(roots: &mut [crate::SessionDirectoryRow]) {
+    roots.sort_by(|left, right| {
+        right
+            .last_user_message_at
+            .unwrap_or(right.created_at)
+            .cmp(&left.last_user_message_at.unwrap_or(left.created_at))
+            .then_with(|| right.session_id.cmp(&left.session_id))
+    });
+}
+
+pub(super) fn next_project_root(
+    roots: &[crate::SessionDirectoryRow],
+    root_id: &str,
+) -> Option<crate::SessionDirectoryRow> {
+    match roots.iter().position(|row| row.thread_id == root_id) {
+        Some(index) => roots.get(index + 1).or_else(|| {
+            index
+                .checked_sub(1)
+                .and_then(|previous| roots.get(previous))
+        }),
+        None => roots.first(),
+    }
+    .cloned()
+}
+
 impl StudioRuntime {
     pub async fn create_thread(&self, workspace_id: &str, title: &str) -> Result<ThreadRecord> {
         self.create_thread_with_id(crate::studio::ids::new_id("thread"), workspace_id, title)
@@ -520,17 +545,7 @@ impl StudioRuntime {
         admitted_ids.sort();
         admitted_ids.dedup();
         let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
-        let root_index = roots
-            .iter()
-            .position(|candidate| candidate.thread_id == thread_id);
-        let next_root = root_index
-            .and_then(|index| {
-                roots
-                    .get(index + 1)
-                    .or_else(|| index.checked_sub(1).and_then(|index| roots.get(index)))
-            })
-            .or_else(|| root_index.is_none().then(|| roots.first()).flatten())
-            .cloned();
+        let next_root = next_project_root(&roots, &thread_id);
         let frozen = self
             .freeze_thread_archive(
                 ArchiveScope::Thread(thread_id.clone()),
@@ -797,8 +812,19 @@ impl StudioRuntime {
             return Ok(None);
         };
         let mut roots = self
+            .active_project_roots(&root.session.workspace_id)
+            .await?;
+        sort_project_roots(&mut roots);
+        Ok(Some((root, roots, tree)))
+    }
+
+    pub(super) async fn active_project_roots(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<crate::SessionDirectoryRow>> {
+        let mut roots = self
             .store
-            .directory_members_for_project(&root.session.workspace_id)?
+            .directory_members_for_project(workspace_id)?
             .into_iter()
             .filter(|member| member.agent.is_root_agent() && !member.session.archived)
             .map(|member| member.row())
@@ -812,25 +838,15 @@ impl StudioRuntime {
             .await?;
         if let Some(directory) = hot.state.value() {
             for row in &directory.rows {
-                if row.workspace_id == root.session.workspace_id
-                    && row.is_root_row()
-                    && !row.archived
-                {
+                if row.workspace_id == workspace_id && row.is_root_row() {
                     roots.retain(|entry| entry.thread_id != row.thread_id);
-                    roots.push(row.clone());
+                    if !row.archived {
+                        roots.push(row.clone());
+                    }
                 }
             }
         }
-        // 归档后的候选会话选择与目录排序使用同一顺序键（design/19）：
-        // 最近用户消息时间（缺失回退创建时间）降序，同秒以 ID 稳定破平。
-        roots.sort_by(|a, b| {
-            let left = a.last_user_message_at.unwrap_or(a.created_at);
-            let right = b.last_user_message_at.unwrap_or(b.created_at);
-            right
-                .cmp(&left)
-                .then_with(|| b.session_id.cmp(&a.session_id))
-        });
-        Ok(Some((root, roots, tree)))
+        Ok(roots)
     }
 
     fn ensure_mode_available(&self, mode_id: &crate::mode::ThreadModeId) -> Result<()> {

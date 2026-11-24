@@ -315,8 +315,10 @@ impl SessionRuntime {
             .get(&resolution.interaction_id)
             .ok_or(PlanInteractionError::Identity)?;
         if let InteractionState::Resolved(existing) = &current.state {
+            let answer: UserInputResolution =
+                decode(&existing.payload, crate::plan_tool::PLAN_ANSWER_FORMAT)?;
             if resolution.expected_revision.checked_add(1) == Some(current.revision)
-                && existing.payload == answer_payload(&resolution)?
+                && answer.answers == resolution.answers
             {
                 return project_plan_confirmation(thread_id, current);
             }

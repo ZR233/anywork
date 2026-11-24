@@ -6,6 +6,7 @@ use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
 use tracing::Instrument;
 
 use super::super::{DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime};
+use super::threads::{next_project_root, sort_project_roots};
 use crate::studio::{
     agent_host::worktree_lease::WorkspaceEndpoint,
     store::{
@@ -377,24 +378,16 @@ impl StudioRuntime {
             operation.changed()?;
             self.store.save_thread_delete(&operation).await?;
         }
-        let next_root = {
-            let mut roots = self
-                .store
-                .directory_members_for_project(&workspace_id)?
-                .into_iter()
-                .filter(|member| member.agent.is_root_agent() && !member.session.archived)
-                .map(|member| member.row())
-                .collect::<Vec<_>>();
-            roots.retain(|thread| !ids.contains(&thread.thread_id));
-            roots.sort_by(|left, right| {
-                right
-                    .last_user_message_at
-                    .unwrap_or(right.created_at)
-                    .cmp(&left.last_user_message_at.unwrap_or(left.created_at))
-                    .then_with(|| right.session_id.cmp(&left.session_id))
-            });
-            roots.into_iter().next()
-        };
+        let mut roots = self.active_project_roots(&workspace_id).await?;
+        roots.retain(|row| row.thread_id == root_id || !ids.contains(&row.thread_id));
+        if !roots.iter().any(|row| row.thread_id == root_id)
+            && let Some(root) = root.as_ref().filter(|root| !root.session.archived)
+        {
+            // The durable deletion can remove the anchor before directory publication.
+            roots.push(root.row());
+        }
+        sort_project_roots(&mut roots);
+        let next_root = next_project_root(&roots, &root_id);
         let committed = self
             .agent_facility
             .product_events

@@ -1,11 +1,19 @@
 //! Shared atomic write boundary for the three revisioned Studio TOML documents.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 use version_migrate::Versioned;
+
+pub(super) async fn write_file_atomically_async(path: PathBuf, contents: String) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        pl_tool::workspace::write_file_atomically(&path, contents.as_bytes())
+    })
+    .await??;
+    Ok(())
+}
 
 pub(super) trait RevisionedDocument: Clone + Serialize + Versioned {
     const KIND: &'static str;

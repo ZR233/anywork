@@ -314,7 +314,7 @@ pub(in crate::studio) fn thread_projection(
 ///
 /// 供旧测试的 `Thread` 惯用法注册目录行：root `Thread` 产生会话 + 主成员记录，
 /// child 只产生成员记录（其会话事实由同一测试先注册的父行建立）。
-#[cfg(test)]
+#[cfg(any(test, feature = "benchmarks"))]
 pub(in crate::studio) fn directory_facts_from_thread(
     thread: &crate::Thread,
 ) -> (Option<SessionDirectoryRecord>, AgentDirectoryRecord) {

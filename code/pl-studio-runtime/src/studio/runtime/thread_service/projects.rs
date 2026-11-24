@@ -254,6 +254,11 @@ impl StudioRuntime {
             project.kind == WorkspaceKind::Project,
             "the standalone workspace cannot be renamed"
         );
+        let existing = self
+            .store
+            .workspaces()
+            .get(id)
+            .context("Project directory entry not found")?;
         project.name = name.to_string();
         let now = crate::studio::unix_seconds();
         project.updated_at = now;
@@ -265,7 +270,7 @@ impl StudioRuntime {
                 name: project.name.clone(),
                 path: project.path.clone(),
                 ssh_alias: project.ssh_alias.clone(),
-                created_at: now,
+                created_at: existing.created_at,
                 updated_at: now,
                 last_opened_at: Some(now),
                 closed: false,

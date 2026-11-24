@@ -131,10 +131,17 @@ impl StudioThreadFactory {
         } else {
             match bot_root {
                 Some(root) => root,
-                None => crate::studio::agent_host::workspace_preparation::resolved_project_root(
-                    &project,
-                )
-                .map_err(|error| resource_error("resolve child project root", error))?,
+                None => {
+                    let project = project.clone();
+                    tokio::task::spawn_blocking(move || {
+                        crate::studio::agent_host::workspace_preparation::resolved_project_root(
+                            &project,
+                        )
+                    })
+                    .await
+                    .map_err(|error| resource_error("join child project root resolver", error))?
+                    .map_err(|error| resource_error("resolve child project root", error))?
+                }
             }
         };
         let (session_root, _) =

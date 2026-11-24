@@ -326,7 +326,6 @@ impl super::agents::AgentHost {
             gap: false,
         };
         let observe = async {
-            result.current = self.wait_current(&context, &request.target).await?;
             let owner = self.owner()?;
             let (native, acp, services) = {
                 let state = owner.0.state();
@@ -367,8 +366,8 @@ impl super::agents::AgentHost {
             };
             loop {
                 self.caller(&context)?;
-                let read = source.read(after.as_ref()).await?;
                 result.current = self.wait_current(&context, &request.target).await?;
+                let read = source.read(after.as_ref()).await?;
                 if !read.reports.is_empty() || read.ended {
                     result.reports = read.reports;
                     result.gap = read.gap;

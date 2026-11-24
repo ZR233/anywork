@@ -872,7 +872,6 @@ impl ConfigRuntime {
         if expected_revision != actual.as_deref() {
             return Err(ConfigRuntimeError::ProfileConflict(profile_id.into()));
         }
-        let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         let changed = super::save_user_agent_profile(
             self.store.paths(),
             profile_id,
@@ -888,8 +887,10 @@ impl ConfigRuntime {
             canonical_config: current.canonical_config,
             usage_query_revisions: current.usage_query_revisions,
         };
-        state.snapshot = next.clone();
-        drop(state);
+        self.state
+            .write()
+            .map_err(|_| config_runtime_poisoned())?
+            .snapshot = next.clone();
         // 配置命令采用一次新的目录扫描；资源未变化时不提升 revision、不通知观察者。
         // scan 不持有 state 写锁（与 `update` / `reload_from_disk` 一致）。
         self.profiles
@@ -969,18 +970,7 @@ impl ConfigRuntime {
 
         // 文件和 credential IO 不持有 state lock；command lock 只负责串行化 Settings 命令。
         self.store.commit_config(&desired, &next_config, &intents)?;
-        for (id, old) in &desired.models.accounts {
-            if let Some(session) = &old.chatgpt_session {
-                let retained = next_config
-                    .models
-                    .accounts
-                    .get(id)
-                    .and_then(|account| account.chatgpt_session.as_ref());
-                if retained != Some(session) {
-                    session.revoke();
-                }
-            }
-        }
+        revoke_replaced_chatgpt_sessions(&desired, &next_config);
 
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
@@ -1029,13 +1019,14 @@ impl ConfigRuntime {
             .map_err(|_| config_runtime_poisoned())?;
         let (current, current_catalog) = self.read_with_catalog()?;
         ensure_revision(expected_revision, current.revision)?;
+        let (previous, observations) = {
+            let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
+            if state.closing {
+                return Err(PureError::ConfigError("settings owner is closing".into()).into());
+            }
+            (state.desired.clone(), state.observations.clone())
+        };
         let desired = self.store.load_or_default()?;
-        let observations = self
-            .state
-            .read()
-            .map_err(|_| config_runtime_poisoned())?
-            .observations
-            .clone();
         let next_observations = model_catalog::reconcile(
             self.store.paths(),
             &desired,
@@ -1045,6 +1036,7 @@ impl ConfigRuntime {
         let config = effective_runtime_config(&desired, &next_observations)?;
         config.validate_declarations()?;
         super::AgentProfileCatalog::validate_for_startup(self.store.paths())?;
+        revoke_replaced_chatgpt_sessions(&previous, &desired);
         let next = ConfigRuntimeSnapshot {
             revision: current.revision.saturating_add(1),
             updated_at: unix_seconds(),
@@ -1075,6 +1067,21 @@ impl ConfigRuntime {
         // 同一 command 边界内同步通知身份 owner，随后才释放 command 锁。
         self.notify_settings_committed(&next);
         Ok(next)
+    }
+}
+
+fn revoke_replaced_chatgpt_sessions(previous: &StudioConfig, next: &StudioConfig) {
+    for (id, account) in &previous.models.accounts {
+        if let Some(session) = &account.chatgpt_session {
+            let retained = next
+                .models
+                .accounts
+                .get(id)
+                .and_then(|account| account.chatgpt_session.as_ref());
+            if retained != Some(session) {
+                session.revoke();
+            }
+        }
     }
 }
 
@@ -1140,13 +1147,22 @@ fn update_account_projection_revisions(
     state.account_projection_revisions = revisions;
 }
 
-fn default_account_model<'a>(config: &'a StudioConfig, id: &AccountId) -> Option<&'a str> {
-    config
+fn default_account_model<'a>(
+    config: &'a StudioConfig,
+    id: &AccountId,
+) -> (Option<&'a str>, Option<&'a str>) {
+    let auto = config
+        .mode_model_routes
+        .get(&ThreadModeId::auto())
+        .filter(|route| &route.account_id == id)
+        .map(|route| route.model_id.as_str());
+    let role = config
         .models
         .routes
         .values()
         .find(|route| &route.account_id == id)
-        .map(|route| route.model_id.as_str())
+        .map(|route| route.model_id.as_str());
+    (auto, role)
 }
 
 fn next_usage_query_revisions(
@@ -1483,6 +1499,16 @@ mod tests {
         let store = ConfigStore::new(ConfigPaths::from_config_dir(directory.path()));
         let runtime = ConfigRuntime::initialize(store).expect("default config initializes");
         (directory, runtime)
+    }
+
+    #[test]
+    fn reload_is_rejected_after_configuration_owner_closes() -> anyhow::Result<()> {
+        let (_directory, runtime) = runtime();
+        let before = runtime.read()?;
+        runtime.close_model_catalogs()?;
+        assert!(runtime.reload_from_disk(before.revision).is_err());
+        assert_eq!(runtime.read()?.revision, before.revision);
+        Ok(())
     }
 
     #[test]

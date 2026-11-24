@@ -2496,7 +2496,6 @@ impl ThreadStorageSink {
         // A preceding incarnation may still be finishing one write. Observe its committed
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
-        let durable = 0;
         let (history_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
         let inner = Arc::new(Inner {
             store,
@@ -2513,8 +2512,7 @@ impl ThreadStorageSink {
         // Registration alone cannot discharge a predecessor's obligations: this report proves
         // which retained facts are adopted and which have already become durable.
         {
-            let mut progress = lock_progress(&inner);
-            progress.durable = progress.durable.max(durable);
+            let progress = lock_progress(&inner);
             report(&inner, &progress);
         }
         publish_accounting(&inner, &history).await;
@@ -3201,7 +3199,6 @@ impl ThreadStorageSink {
             return Err(cold_error("history writer is stopped"));
         }
         if thread_id != self.0.thread.id
-            || write.effect.thread_id != thread_id
             || write.effect.thread_id != thread_id
             || write.effect.sequence == 0
         {

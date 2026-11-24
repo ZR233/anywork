@@ -38,7 +38,7 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 - **版本 `28 → 29`**：移除旧 `skills.user_dir`，保留其余技能设置、账号认证身份及凭据关联；旧技能内容原样保留，不复制或覆盖标准用户技能目录。
 - **版本 `29 → 30`**：允许已验证的 Codex workspace 和套餐元数据；已有 API、SIWC 账号、资源、凭据关联和模型选择保持原样，不自动转换或重新登录。新字段只随用户完成并保存的授权写入。
 - **版本 `30 → 31`**：将旧版 `config.toml` 中的 `[mcp.servers.<id>]` 与 `[mcp.builtin_servers.<id>]` 拆分迁移为 `<StudioHome>/mcp/host/<server-key>.toml` 独立单文件配置（各自携带 `schema_version = 1` 与 `kind = "server" | "builtin"`，`server-key` 为稳定服务 ID 的 SHA-256），同时从 `config.toml` 移除 `[mcp]` 配置段与退役字段 `[runtime].active_mcp_servers`，保持其余账号、凭据关联、路由及技能设置不变。迁移前完整备份原文件，中断后可安全恢复；正常读写仅消费单文件 MCP 目录，不双读 `config.toml` 中的旧 `[mcp]` 段。
-- **版本 `34 → 35`**：将内建工作模式路由从 `mode.simple` 与 `mode.task` 收敛为唯一的 `mode.auto`（优先继承原 `mode.simple` 路由，缺失时回退原 `mode.task` 路由），移除旧双模式路由键。
+- **版本 `34 → 35`**：将内建工作模式路由从 `mode.simple` 与 `mode.task` 收敛为唯一的 `mode.auto`（优先继承原 `mode.task` 路由，缺失时回退原 `mode.simple` 路由），移除旧双模式路由键。
 
 设置所有者在写锁内将普通字段和列表单项更新应用到最新配置。整份设置替换或重载校验设置版本，独立文档校验自身版本。提交成功后返回新的 `SettingsConfigSnapshot`；当模型目录发生变化时一并返回 `ModelCatalogSnapshot`，并分别发布 `SettingsConfigStateChanged` 与 `ModelCatalogStateChanged` 事件。直接响应结构 `SettingsStateResponse` 仅用于在单次调用中同时带回配置与目录两份独立资源，消费端仍按各自修订号幂等合并；CAS 冲突或校验失败时保留当前权威状态。
 

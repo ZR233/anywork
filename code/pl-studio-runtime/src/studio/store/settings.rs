@@ -66,7 +66,7 @@ pub(in crate::studio) struct SettingsStore {
 impl SettingsStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
         let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => load_current(&path, &content)?,
+            Ok(content) => load_current(&path, &content).await?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => SettingsDocument {
                 revision: 1,
                 entries: Vec::new(),
@@ -147,7 +147,7 @@ impl SettingsStore {
 
 /// Loads the current document through the typed schema chain, validates business
 /// invariants, and persists exactly once when the source schema was older.
-fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
+async fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
     let target = toml_schema::integer_version(SettingsDocument::VERSION)?;
     let table = toml_schema::parse(path, content, ENTITY, target)?;
     migration::preflight(path, &table, target)?;
@@ -163,7 +163,7 @@ fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
         // Schema-only upgrade: the business revision and entry times are preserved and
         // the current document is published atomically. Re-opening it is a pure read.
         let contents = toml_schema::encode(&loaded.document, VERSION_KEY)?;
-        pl_tool::workspace::write_file_atomically(path, contents.as_bytes())?;
+        toml_store::write_file_atomically_async(path.to_path_buf(), contents).await?;
     }
     Ok(loaded.document)
 }
@@ -223,9 +223,10 @@ mod tests {
         toml::from_str(&content).expect("settings file is valid TOML")
     }
 
-    #[test]
-    fn historical_payload_failure_keeps_its_typed_source() {
+    #[tokio::test]
+    async fn historical_payload_failure_keeps_its_typed_source() {
         let error = load_current(Path::new("settings.toml"), &v1_content("invalid json"))
+            .await
             .expect_err("invalid nested JSON must fail before committing");
         assert!(error.is::<toml_schema::DocumentMigrationFailed>());
         assert!(error.chain().any(|cause| cause.is::<serde_json::Error>()));

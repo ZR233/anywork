@@ -1,11 +1,9 @@
 //! 按环境作用域（`Host` / `Ssh`）组织的单文件 MCP 配置目录资源、合并规则与 CRUD 原子提交。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogEntry, McpCatalogSnapshot,
@@ -18,6 +16,7 @@ use pl_tool::mcp::config::{
     EffectiveMcpServerConfig, McpExecutionContext, McpServerMutationPolicy, McpServerSourceKind,
     McpServerStatusKind, McpServerTransport, validate_mcp_identifier,
 };
+use pl_tool::workspace::write_file_atomically;
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
@@ -560,7 +559,7 @@ impl McpCatalogResource {
         }
 
         let canonical_bytes = request.raw_toml.as_bytes();
-        write_file_atomic(&target_path, canonical_bytes)
+        write_file_atomically(&target_path, canonical_bytes)
             .map_err(|error| McpDocumentError::Io(error.to_string()))?;
         let doc_rev = document_revision(&doc_ref.relative_path, canonical_bytes);
         let (snapshot, _) = self.adopt_scan(paths, models, &request.scope)?;
@@ -660,7 +659,7 @@ impl McpCatalogResource {
         }
 
         let canonical_bytes = request.raw_toml.as_bytes();
-        write_file_atomic(&target_path, canonical_bytes)
+        write_file_atomically(&target_path, canonical_bytes)
             .map_err(|error| McpDocumentError::Io(error.to_string()))?;
         let doc_rev = document_revision(&request.document.relative_path, canonical_bytes);
         let (snapshot, _) = self.adopt_scan(paths, models, &request.document.scope)?;
@@ -836,7 +835,7 @@ pub fn ensure_default_host_builtins_if_fresh(paths: &ConfigPaths) -> Result<()> 
         let filename = canonical_mcp_filename(&doc.id)?;
         let target = host_dir.join(filename);
         let encoded = doc.encode()?;
-        write_file_atomic(&target, encoded.as_bytes())?;
+        write_file_atomically(&target, encoded.as_bytes())?;
     }
     Ok(())
 }
@@ -1919,44 +1918,6 @@ fn host_id_exists_in_other_file(
         }
     }
     Ok(false)
-}
-
-pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("path has no parent directory: {}", path.display()),
-        )
-    })?;
-    fs::create_dir_all(parent)?;
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("mcp.toml");
-    let temp_path = parent.join(format!(".{file_name}.{}.{nanos}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temp_path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
-    }
-    if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    drop(file);
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(error);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

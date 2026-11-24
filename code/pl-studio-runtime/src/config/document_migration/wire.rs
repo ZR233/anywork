@@ -895,14 +895,26 @@ impl Default for InstructionsConfig {
             base_override: String::new(),
             developer: String::new(),
             user: String::new(),
-            project_doc_max_bytes: 32 * 1024,
+            project_doc_max_bytes: default_project_doc_max_bytes(),
             project_doc_fallback_filenames: Vec::new(),
         }
     }
 }
 
 fn default_project_doc_max_bytes() -> usize {
-    32 * 1024
+    crate::config::DEFAULT_PROJECT_DOC_MAX_BYTES
+}
+
+#[cfg(test)]
+#[test]
+fn omitted_project_doc_limit_matches_current_default() {
+    let missing = toml::from_str::<InstructionsConfig>("").expect("legacy instructions");
+    let expected = crate::config::InstructionsConfig::default().project_doc_max_bytes;
+    assert_eq!(missing.project_doc_max_bytes, expected);
+    assert_eq!(
+        InstructionsConfig::default().project_doc_max_bytes,
+        expected
+    );
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
