@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
@@ -169,35 +172,53 @@ class TimelinePatchDiffView extends StatelessWidget {
         _markerColor(context, false),
       ),
     };
+    final opBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: const BorderRadius.all(Radius.circular(6)),
+      ),
+      child: Text(
+        label,
+        style: context.text.labelSmall?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+    final pathText = Text(
+      file.moveTo == null ? file.path : '${file.path} → ${file.moveTo}',
+      overflow: softWrap ? null : TextOverflow.ellipsis,
+      maxLines: softWrap ? null : 1,
+      style: context.text.labelSmall?.copyWith(
+        color: context.colors.onSurface,
+        fontWeight: FontWeight.w600,
+        fontFamily: studioCodeFontFamily,
+      ),
+    );
+    final additions = file.additions;
+    final deletions = file.deletions;
+    final statBadge = additions > 0 || deletions > 0
+        ? TimelineDiffStatBadge(additions: additions, deletions: deletions)
+        : null;
+    final copyButton = _DiffCopyPathButton(path: file.moveTo ?? file.path);
+
+    if (softWrap) {
+      return Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [opBadge, pathText, ?statBadge, copyButton],
+      );
+    }
     return Row(
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.14),
-            borderRadius: const BorderRadius.all(Radius.circular(6)),
-          ),
-          child: Text(
-            label,
-            style: context.text.labelSmall?.copyWith(
-              color: color,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
+        opBadge,
         const SizedBox(width: 6),
-        Flexible(
-          child: Text(
-            file.moveTo == null ? file.path : '${file.path} → ${file.moveTo}',
-            overflow: softWrap ? null : TextOverflow.ellipsis,
-            maxLines: softWrap ? null : 1,
-            style: context.text.labelSmall?.copyWith(
-              color: context.colors.onSurface,
-              fontWeight: FontWeight.w600,
-              fontFamily: studioCodeFontFamily,
-            ),
-          ),
-        ),
+        Expanded(child: pathText),
+        if (statBadge != null) ...[const SizedBox(width: 8), statBadge],
+        const SizedBox(width: 4),
+        copyButton,
       ],
     );
   }
@@ -259,6 +280,98 @@ class TimelinePatchDiffView extends StatelessWidget {
     return isDark
         ? (addition ? _darkAdditionMarker : _darkDeletionMarker)
         : (addition ? _lightAdditionMarker : _lightDeletionMarker);
+  }
+}
+
+/// 等宽对齐展示统一补丁的新增与删除行数统计（`+N -M`）。
+class TimelineDiffStatBadge extends StatelessWidget {
+  const TimelineDiffStatBadge({
+    super.key,
+    required this.additions,
+    required this.deletions,
+  });
+
+  final int additions;
+  final int deletions;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final addColor = isDark ? _darkAdditionMarker : _lightAdditionMarker;
+    final delColor = isDark ? _darkDeletionMarker : _lightDeletionMarker;
+    final baseStyle = context.text.labelSmall?.copyWith(
+      fontFamily: studioCodeFontFamily,
+      fontWeight: FontWeight.w600,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    return Semantics(
+      container: true,
+      label: l10n.timelineDiffStatLabel(additions, deletions),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (additions > 0)
+            Text('+$additions', style: baseStyle?.copyWith(color: addColor)),
+          if (additions > 0 && deletions > 0) const SizedBox(width: 4),
+          if (deletions > 0)
+            Text('-$deletions', style: baseStyle?.copyWith(color: delColor)),
+        ],
+      ),
+    );
+  }
+}
+
+class _DiffCopyPathButton extends StatefulWidget {
+  const _DiffCopyPathButton({required this.path});
+
+  final String path;
+
+  @override
+  State<_DiffCopyPathButton> createState() => _DiffCopyPathButtonState();
+}
+
+class _DiffCopyPathButtonState extends State<_DiffCopyPathButton> {
+  bool _copied = false;
+  Timer? _timer;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _copy() {
+    unawaited(Clipboard.setData(ClipboardData(text: widget.path)));
+    _timer?.cancel();
+    setState(() => _copied = true);
+    _timer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    return Tooltip(
+      message: _copied
+          ? l10n.timelineOutcomeCopied
+          : l10n.timelinePatchCopyPath,
+      child: InkWell(
+        onTap: _copy,
+        borderRadius: const BorderRadius.all(Radius.circular(4)),
+        child: Padding(
+          padding: const EdgeInsets.all(3),
+          child: Icon(
+            _copied ? Icons.check_rounded : Icons.content_copy_rounded,
+            size: 13,
+            color: _copied
+                ? context.colors.primary
+                : context.colors.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
   }
 }
 

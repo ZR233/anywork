@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/models.dart';
+import 'package:diffutil_dart/diffutil.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../timeline/state/patch_presentation.dart';
@@ -244,35 +245,201 @@ String _formatAcpJsonNode(AcpJsonValue value, {required int indent}) {
   };
 }
 
-TimelinePatchDocument mapAcpDiffPresentation(AcpToolDiffView diff) =>
-    TimelinePatchDocument(
+const int _maxMyersDiffTotalLines = 4000;
+const int _diffContextRadius = 3;
+
+List<String> _splitDiffLines(String text) {
+  if (text.isEmpty) return const [];
+  return text.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+}
+
+List<TimelinePatchChunk> _buildMyersPatchChunks(
+  List<String> oldLines,
+  List<String> newLines,
+) {
+  if (oldLines.length + newLines.length > _maxMyersDiffTotalLines) {
+    return [
+      TimelinePatchChunk(
+        context: null,
+        lines: [
+          for (final line in oldLines)
+            TimelinePatchLine(kind: TimelinePatchLineKind.deletion, text: line),
+          for (final line in newLines)
+            TimelinePatchLine(kind: TimelinePatchLineKind.addition, text: line),
+        ],
+      ),
+    ];
+  }
+
+  final updates = calculateListDiff<String>(
+    oldLines,
+    newLines,
+    detectMoves: false,
+  ).getUpdates(batch: false);
+
+  final removedOld = List<bool>.filled(oldLines.length, false);
+  final working = List<int>.generate(oldLines.length, (i) => i);
+  for (final update in updates) {
+    switch (update) {
+      case Remove(:final position, :final count):
+        for (var i = 0; i < count; i++) {
+          final originalIndex = working[position + i];
+          if (originalIndex >= 0) {
+            removedOld[originalIndex] = true;
+          }
+        }
+        working.removeRange(position, position + count);
+      case Insert(:final position, :final count):
+        working.insertAll(position, List<int>.filled(count, -1));
+      case Move():
+      case Change():
+        break;
+    }
+  }
+
+  final allLines = <TimelinePatchLine>[];
+  var oldIndex = 0;
+  var newIndex = 0;
+  while (oldIndex < oldLines.length || newIndex < newLines.length) {
+    if (oldIndex < oldLines.length && removedOld[oldIndex]) {
+      allLines.add(
+        TimelinePatchLine(
+          kind: TimelinePatchLineKind.deletion,
+          text: oldLines[oldIndex],
+        ),
+      );
+      oldIndex++;
+      continue;
+    }
+    if (newIndex < working.length && working[newIndex] < 0) {
+      allLines.add(
+        TimelinePatchLine(
+          kind: TimelinePatchLineKind.addition,
+          text: newLines[newIndex],
+        ),
+      );
+      newIndex++;
+      continue;
+    }
+    if (oldIndex < oldLines.length && newIndex < newLines.length) {
+      allLines.add(
+        TimelinePatchLine(
+          kind: TimelinePatchLineKind.context,
+          text: newLines[newIndex],
+        ),
+      );
+      oldIndex++;
+      newIndex++;
+      continue;
+    }
+    break;
+  }
+
+  if (allLines.isEmpty) {
+    return const [];
+  }
+
+  final windows = <({int start, int end})>[];
+  for (var i = 0; i < allLines.length; i++) {
+    if (allLines[i].kind == TimelinePatchLineKind.context) continue;
+    final start = (i - _diffContextRadius).clamp(0, allLines.length - 1);
+    final end = (i + _diffContextRadius).clamp(0, allLines.length - 1);
+    if (windows.isEmpty || start > windows.last.end + 1) {
+      windows.add((start: start, end: end));
+    } else {
+      final previous = windows.removeLast();
+      windows.add((start: previous.start, end: end));
+    }
+  }
+
+  if (windows.isEmpty) {
+    final previewCount = allLines.length > _diffContextRadius
+        ? _diffContextRadius
+        : allLines.length;
+    return [
+      TimelinePatchChunk(
+        context: null,
+        lines: allLines.sublist(0, previewCount),
+      ),
+    ];
+  }
+
+  return [
+    for (final window in windows)
+      TimelinePatchChunk(
+        context: null,
+        lines: allLines.sublist(window.start, window.end + 1),
+      ),
+  ];
+}
+
+TimelinePatchDocument mapAcpDiffPresentation(AcpToolDiffView diff) {
+  final oldText = diff.oldText;
+  final newLines = _splitDiffLines(diff.newText);
+  if (oldText == null) {
+    return TimelinePatchDocument(
       files: [
         TimelinePatchFile(
-          op: diff.oldText == null
-              ? TimelinePatchFileOp.add
-              : TimelinePatchFileOp.update,
+          op: TimelinePatchFileOp.add,
           path: diff.path,
           chunks: [
-            TimelinePatchChunk(
-              context: null,
-              lines: [
-                if (diff.oldText case final old?)
-                  for (final line in old.split('\n'))
+            if (newLines.isNotEmpty)
+              TimelinePatchChunk(
+                context: null,
+                lines: [
+                  for (final line in newLines)
                     TimelinePatchLine(
-                      kind: TimelinePatchLineKind.deletion,
+                      kind: TimelinePatchLineKind.addition,
                       text: line,
                     ),
-                for (final line in diff.newText.split('\n'))
-                  TimelinePatchLine(
-                    kind: TimelinePatchLineKind.addition,
-                    text: line,
-                  ),
-              ],
-            ),
+                ],
+              ),
           ],
         ),
       ],
     );
+  }
+  final oldLines = _splitDiffLines(oldText);
+  return TimelinePatchDocument(
+    files: [
+      TimelinePatchFile(
+        op: TimelinePatchFileOp.update,
+        path: diff.path,
+        chunks: _buildMyersPatchChunks(oldLines, newLines),
+      ),
+    ],
+  );
+}
+
+List<AcpSlashCommandPresentation> mapAcpSlashCommands(
+  List<AcpAvailableCommandView> commands,
+) => [
+  for (final command in commands)
+    if (command.name.trim().isNotEmpty)
+      AcpSlashCommandPresentation(
+        name: command.name.trim(),
+        description: command.description.trim(),
+        inputHint: switch (command.input) {
+          AcpUnstructuredCommandInputView(:final hint)
+              when hint.trim().isNotEmpty =>
+            hint.trim(),
+          _ => null,
+        },
+      ),
+];
+
+List<AcpSlashCommandPresentation> extractLatestAcpAvailableCommands(
+  List<AcpConversationContentItem> content,
+) {
+  for (var index = content.length - 1; index >= 0; index--) {
+    if (content[index] case AcpConversationUpdateItem(
+      update: AcpAvailableCommandsUpdateView(:final commands),
+    )) {
+      return mapAcpSlashCommands(commands);
+    }
+  }
+  return const [];
+}
 
 String formatCompactBigIntTokens(BigInt value) {
   if (value < BigInt.from(1000)) return value.toString();
@@ -327,10 +494,7 @@ AcpUpdatePresentation mapAcpUpdatePresentation(
     superseded || commands.isEmpty
         ? const AcpUpdatePresentation.superseded()
         : AcpUpdatePresentation.availableCommands(
-            commands: [
-              for (final command in commands)
-                (name: command.name, description: command.description),
-            ],
+            commands: mapAcpSlashCommands(commands),
           ),
   AcpSessionInfoUpdateView() => const AcpUpdatePresentation.superseded(),
   _ => const AcpUpdatePresentation.generic(),
