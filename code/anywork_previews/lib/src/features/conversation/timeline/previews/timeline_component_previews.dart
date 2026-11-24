@@ -13,6 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_outcome_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_controllers.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
@@ -25,6 +26,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_cont
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_image_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outcome_card.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -749,6 +751,76 @@ class _TimelineChildrenPreviewState extends State<_TimelineChildrenPreview> {
 @Preview(name: '降级 / 未知展示契约', group: 'Timeline · 历史组件', size: Size(720, 220))
 Widget timelineFallbackPreview() =>
     _timelinePreviewHost(_chatItem(TimelinePreviewFixtures.fallback));
+
+@Preview(
+  name: '错误与结果 / 直接展示错误信息',
+  group: 'Timeline · 历史组件',
+  size: Size(860, 860),
+)
+Widget timelineErrorShowcasePreview() => _timelinePreviewHost(
+  SelectionArea(
+    child: SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Align(
+            alignment: AlignmentDirectional.centerEnd,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(
+                maxWidth: StudioLayout.conversationPromptWidth,
+              ),
+              child: ChatItemView(
+                item: TimelinePreviewFixtures.user,
+                promptBubble: true,
+                bodyBuilder: _previewMarkdown,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _chatItem(TimelinePreviewFixtures.failedTurnOverloaded),
+          const SizedBox(height: 16),
+          TimelineErrorCard.failure(
+            itemId: 'preview-turn-failed-503-expanded',
+            summary: parseTimelineOutcome(
+              TimelinePreviewFixtures.failedTurnRetryable503.data['outcome'],
+            ),
+            initiallyDetailsExpanded: true,
+          ),
+          const SizedBox(height: 16),
+          _chatItem(TimelinePreviewFixtures.budgetLimitedTurn),
+          const SizedBox(height: 12),
+          _chatItem(TimelinePreviewFixtures.cancelledTurn),
+        ],
+      ),
+    ),
+  ),
+);
+
+@Preview(name: '错误与结果 / 窄窗 150%', group: 'Timeline · 响应式', size: Size(390, 780))
+Widget timelineErrorNarrowPreview() => _timelinePreviewHost(
+  SelectionArea(
+    child: SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _chatItem(TimelinePreviewFixtures.failedTurnOverloaded),
+          const SizedBox(height: 12),
+          TimelineErrorCard.failure(
+            itemId: 'preview-turn-failed-503-narrow',
+            summary: parseTimelineOutcome(
+              TimelinePreviewFixtures.failedTurnRetryable503.data['outcome'],
+            ),
+            initiallyDetailsExpanded: true,
+          ),
+          const SizedBox(height: 12),
+          _chatItem(TimelinePreviewFixtures.budgetLimitedTurn),
+        ],
+      ),
+    ),
+  ),
+  maxWidth: 360,
+  textScale: 1.5,
+);
 
 @Preview(name: '窄窗 / 150% 字体缩放', group: 'Timeline · 响应式', size: Size(340, 720))
 Widget timelineNarrowScaledPreview() => _timelinePreviewHost(

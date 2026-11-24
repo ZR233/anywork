@@ -7240,4 +7240,174 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
+
+  @override
+  String get timelineTurnFailed => '轮次失败';
+
+  @override
+  String get timelineTurnCompleted => '轮次已完成';
+
+  @override
+  String get timelineTurnBudgetLimited => '轮次达到预算上限';
+
+  @override
+  String timelineTurnOutcomeFallback(String state) {
+    return '轮次 · $state';
+  }
+
+  @override
+  String get timelineOutcomeNoMessage => '未提供详细错误信息。';
+
+  @override
+  String get timelineOutcomeTechnicalDetails => '技术详情';
+
+  @override
+  String get timelineOutcomeRawRecord => '公开原始记录';
+
+  @override
+  String get timelineOutcomeCopyMessage => '复制错误信息';
+
+  @override
+  String get timelineOutcomeCopied => '已复制';
+
+  @override
+  String get timelineOutcomeShowMore => '展开全部';
+
+  @override
+  String get timelineOutcomeShowLess => '收起';
+
+  @override
+  String get timelineFailureCategoryProvider => '模型服务';
+
+  @override
+  String get timelineFailureCategoryProviderCapacity => '服务容量';
+
+  @override
+  String get timelineFailureCategoryTool => '工具执行';
+
+  @override
+  String get timelineFailureCategoryValidation => '参数校验';
+
+  @override
+  String get timelineFailureCategoryProtocol => '协议异常';
+
+  @override
+  String get timelineFailureCategoryInternal => '内部错误';
+
+  @override
+  String get timelineProviderKindAuth => '身份认证';
+
+  @override
+  String get timelineProviderKindAuthz => '权限不足';
+
+  @override
+  String get timelineProviderKindCapacity => '服务繁忙 / 限流';
+
+  @override
+  String get timelineProviderKindConfig => '配置错误';
+
+  @override
+  String get timelineProviderKindTransport => '网络传输';
+
+  @override
+  String get timelineProviderKindProtocol => '响应协议';
+
+  @override
+  String get timelineRetryableHint => '可重试';
+
+  @override
+  String timelineRetryAfterSeconds(int seconds) {
+    return '建议 $seconds 秒后重试';
+  }
+
+  @override
+  String get timelineRetryPermanent => '不自动重试';
+
+  @override
+  String get timelineBudgetLimitModelStep => '模型步数';
+
+  @override
+  String get timelineBudgetLimitToolCall => '工具调用次数';
+
+  @override
+  String get timelineBudgetLimitWait => '等待步数';
+
+  @override
+  String get timelineBudgetLimitWallClock => '运行耗时';
+
+  @override
+  String get timelineBudgetLimitAgentCount => '子智能体数量';
+
+  @override
+  String get timelineBudgetLimitAgentDepth => '子智能体层级';
+
+  @override
+  String get timelineBudgetLimitFinalization => '收尾阶段';
+
+  @override
+  String timelineBudgetLimitMessage(String limit) {
+    return '已达到$limit上限，本轮执行已停止。';
+  }
+
+  @override
+  String timelineBudgetUsageModelSteps(int count) {
+    return '模型 $count 步';
+  }
+
+  @override
+  String timelineBudgetUsageToolCalls(int count) {
+    return '工具 $count 次';
+  }
+
+  @override
+  String timelineBudgetUsageWaitCalls(int count) {
+    return '等待 $count 次';
+  }
+
+  @override
+  String get timelineBudgetRolloverSucceeded => '已整理上下文';
+
+  @override
+  String timelineBudgetRolloverFailed(String error) {
+    return '上下文整理失败：$error';
+  }
+
+  @override
+  String get timelineDetailCategory => '错误来源';
+
+  @override
+  String get timelineDetailProviderKind => '细分类型';
+
+  @override
+  String get timelineDetailCode => '错误码';
+
+  @override
+  String get timelineDetailHttpStatus => 'HTTP 状态';
+
+  @override
+  String get timelineDetailRetry => '重试策略';
+
+  @override
+  String get timelineDetailDuration => '耗时';
+
+  @override
+  String get timelineDetailBudgetKind => '触发上限';
+
+  @override
+  String get timelineDetailRollover => '上下文整理';
+
+  @override
+  String get timelineOutcomeStatusFailed => '失败';
+
+  @override
+  String get timelineOutcomeStatusDenied => '已拒绝';
+
+  @override
+  String get timelineOutcomeStatusCancelled => '已取消';
+
+  @override
+  String get timelineOutcomeStatusCompleted => '已完成';
+
+  @override
+  String get timelineOutcomeStatusSucceeded => '已成功';
 }
