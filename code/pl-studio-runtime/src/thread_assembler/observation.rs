@@ -145,6 +145,7 @@ impl super::SessionAssignment {
     }
 }
 impl SessionRuntime {
+    #[cfg(test)]
     pub(crate) fn observe_assembly(
         &self,
         observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)

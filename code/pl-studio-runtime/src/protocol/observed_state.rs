@@ -325,21 +325,20 @@ where
             started_at,
             ..
         } = &command
+            && let Some((last_checked_at, value)) = cached_observation(self)
         {
-            if let Some((last_checked_at, value)) = cached_observation(self) {
-                let next_state = Self::Refreshing(RefreshingResource::new(
-                    revision,
-                    *operation,
-                    operation_id.clone(),
-                    *started_at,
-                    last_checked_at,
-                    value,
-                ));
-                return Ok(ObservedResourceTransitionDecision {
-                    changed: next_state != *self,
-                    next_state,
-                });
-            }
+            let next_state = Self::Refreshing(RefreshingResource::new(
+                revision,
+                *operation,
+                operation_id.clone(),
+                *started_at,
+                last_checked_at,
+                value,
+            ));
+            return Ok(ObservedResourceTransitionDecision {
+                changed: next_state != *self,
+                next_state,
+            });
         }
         let next_state = match (self, &command) {
             (

@@ -1604,8 +1604,8 @@ impl ProductEventBus {
             let row = row_projection(&session, &agent);
             index.insert_session(session);
             index.insert_agent(agent);
-            self.publish_agent_directory_locked(&mut index, before_agents);
-            let event = self.emit_thread_delta_locked(&mut index, vec![row], Vec::new());
+            self.publish_agent_directory_locked(&index, before_agents);
+            let event = self.emit_thread_delta_locked(&index, vec![row], Vec::new());
             (ticket, event)
         };
         self.writer.flush_through(ticket).await?;
@@ -1705,7 +1705,7 @@ impl ProductEventBus {
         let project_upserts = delta
             .project_upserts
             .iter()
-            .map(|record| crate::WorkspaceRecord::from(record))
+            .map(crate::WorkspaceRecord::from)
             .collect::<Vec<_>>();
         let project_changed = !project_upserts.is_empty() || !delta.project_removals.is_empty();
         let mut envelope = {

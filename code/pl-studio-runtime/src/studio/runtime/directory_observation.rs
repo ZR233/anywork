@@ -28,8 +28,10 @@ struct ThreadsInner {
     // Same token as the pull gate, retained so tests can observe that close boundary.
     #[cfg_attr(not(test), allow(dead_code))]
     cancellation: CancellationToken,
-    next: PullObservation<ProductTopicSignal, Option<(Vec<String>, Option<String>)>>,
+    next: PullObservation<ProductTopicSignal, Option<DirectorySelection>>,
 }
+
+type DirectorySelection = (Vec<String>, Option<String>);
 
 #[derive(Clone)]
 pub struct ThreadMetadataObservation {

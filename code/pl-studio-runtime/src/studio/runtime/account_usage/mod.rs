@@ -45,13 +45,8 @@ struct UsageState {
     legacy_unbound: Option<String>,
 }
 
+#[derive(Default)]
 struct UsageTasks(RetainedTaskRegistry<AccountId, u64, Result<()>>);
-
-impl Default for UsageTasks {
-    fn default() -> Self {
-        Self(RetainedTaskRegistry::default())
-    }
-}
 
 impl std::ops::Deref for UsageTasks {
     type Target = RetainedTaskRegistry<AccountId, u64, Result<()>>;
@@ -252,8 +247,7 @@ impl AccountUsageRuntime {
                     }
                     result
                 });
-                let task = tasks.retain(key, id, revision, cancel, join);
-                task
+                tasks.retain(key, id, revision, cancel, join)
             }
         };
         wait_usage(&task).await

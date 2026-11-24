@@ -176,7 +176,7 @@ impl StudioRuntime {
         let mut previous = if purpose == ArchivePurpose::Delete {
             load_deletion_aux(self.store.database(), &scope.key()).await?
         } else {
-            self.store.thread_archive(&scope).await?
+            self.store.thread_archive(scope).await?
         };
         let deletion = if purpose == ArchivePurpose::Delete
             && let ArchiveScope::Thread(root) = scope

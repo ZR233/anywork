@@ -58,9 +58,7 @@ pub(crate) enum ClosePurpose {
 mod published_resources;
 pub(crate) use published_resources::ArchiveScopeSeal;
 mod report_receiver;
-pub use children::{
-    ChildThreadRequest, ConfiguredChildFactory, StudioChildFactory, StudioChildResources,
-};
+pub use children::{ChildThreadRequest, StudioChildFactory, StudioChildResources};
 mod mcp;
 pub(crate) mod media;
 mod tools;
@@ -888,6 +886,7 @@ impl SessionRuntime {
     ///
     /// # Errors
     /// Rejects changes after assembly has begun or shutdown has started.
+    #[cfg(test)]
     pub fn set_child_factory(
         &self,
         factory: impl StudioChildFactory,

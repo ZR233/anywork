@@ -537,12 +537,13 @@ impl AcpWorkflowPlanOwner {
                 };
                 match prepared {
                     PreparedRecord::Ready(value) => Ok(value),
-                    PreparedRecord::Write {
-                        bytes,
-                        install,
-                        snapshot,
-                        value,
-                    } => {
+                    PreparedRecord::Write(write) => {
+                        let PreparedWrite {
+                            bytes,
+                            install,
+                            snapshot,
+                            value,
+                        } = *write;
                         #[cfg(test)]
                         if let Some(pause) = pause {
                             pause.entered.notify_one();
@@ -666,16 +667,18 @@ impl PlanHost for AcpWorkflowPlanOwner {
 
 enum PreparedRecord<T> {
     Ready(T),
-    Write {
-        bytes: Vec<u8>,
-        install: InstalledRecord,
-        snapshot: Option<AcpWorkflowStateSnapshot>,
-        value: T,
-    },
+    Write(Box<PreparedWrite<T>>),
+}
+
+struct PreparedWrite<T> {
+    bytes: Vec<u8>,
+    install: InstalledRecord,
+    snapshot: Option<AcpWorkflowStateSnapshot>,
+    value: T,
 }
 
 enum InstalledRecord {
-    Workflow(PersistedAcpWorkflow),
+    Workflow(Box<PersistedAcpWorkflow>),
     Plan(PlanRecord),
 }
 
@@ -689,7 +692,7 @@ impl InstalledRecord {
 
     fn commit(self, guard: &mut AcpWorkflowStateInner) {
         match self {
-            Self::Workflow(workflow) => guard.workflow = Some(workflow),
+            Self::Workflow(workflow) => guard.workflow = Some(*workflow),
             Self::Plan(plan) => guard.plan = plan,
         }
     }
@@ -718,12 +721,12 @@ fn write_workflow<T>(
             modes,
         )
     });
-    Ok(PreparedRecord::Write {
+    Ok(PreparedRecord::Write(Box::new(PreparedWrite {
         bytes,
-        install: InstalledRecord::Workflow(workflow),
+        install: InstalledRecord::Workflow(Box::new(workflow)),
         snapshot,
         value,
-    })
+    })))
 }
 
 fn write_plan<T>(
@@ -740,12 +743,12 @@ fn write_plan<T>(
         },
         modes,
     );
-    Ok(PreparedRecord::Write {
+    Ok(PreparedRecord::Write(Box::new(PreparedWrite {
         bytes,
         install: InstalledRecord::Plan(plan),
         snapshot: Some(snapshot),
         value,
-    })
+    })))
 }
 
 fn studio_host_state_block(

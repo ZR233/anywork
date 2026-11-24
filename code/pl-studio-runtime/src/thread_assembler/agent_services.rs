@@ -555,6 +555,7 @@ fn output(value: &impl Serialize) -> Result<ToolOutput> {
     ))
 }
 impl SessionRuntime {
+    #[cfg(test)]
     pub(crate) fn set_agent_services(
         &self,
         config: crate::config::ConfigRuntime,
