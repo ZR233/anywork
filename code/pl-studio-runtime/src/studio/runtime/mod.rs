@@ -94,7 +94,10 @@ pub use skill_catalog::{SkillSearchResult, SkillsStateSnapshot};
 pub use ssh::{SshPasswordUpdate, SshServerRuntimeEntry};
 use thread_title::ThreadTitleTasks;
 pub(crate) use updater::StudioUpdateRuntime;
-pub use updater::*;
+pub use updater::{
+    StudioReadyUpdate, StudioUpdateActivity, StudioUpdatePreparationResult,
+    StudioUpdateStateSnapshot,
+};
 
 /// Studio UI 提交 prompt 的请求。
 ///

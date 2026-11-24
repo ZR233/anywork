@@ -1,19 +1,5 @@
 //! Studio runtime 自身生命周期；状态修改只能通过领域命令。
 
-mod failed;
-mod initializing;
-mod ready;
-mod shutting_down;
-mod stopped;
-mod uninitialized;
-
-pub use failed::FailedStudioRuntime;
-pub use initializing::InitializingStudioRuntime;
-pub use ready::ReadyStudioRuntime;
-pub use shutting_down::ShuttingDownStudioRuntime;
-pub use stopped::StoppedStudioRuntime;
-pub use uninitialized::UninitializedStudioRuntime;
-
 use std::sync::{Arc, Mutex};
 
 use crate::StateError;
@@ -28,114 +14,6 @@ use crate::studio::ids::unix_seconds;
 pub struct StudioActiveTurn {
     pub thread_id: String,
     pub turn_id: String,
-}
-
-/// 恢复问题影响的最小 UI 范围。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioRecoveryIssueScope {
-    Application,
-    Project,
-    Thread,
-}
-
-/// 恢复问题的稳定类别。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioRecoveryIssueCategory {
-    ProcessLease,
-    ToolCatalog,
-    Repository,
-    Storage,
-}
-
-/// Authoritative admission impact, independent of diagnostic category and display grouping.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioRecoveryImpact {
-    Advisory,
-    ExecutionBlocked,
-    AccessBlocked,
-}
-
-/// UI 可执行的恢复动作。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioRecoveryIssueAction {
-    None,
-    Retry,
-    CleanupWorktree,
-}
-
-/// Recovery 中 worktree 的归属来源；使会话自身 worktree 与 child worktree 可区分。
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioRecoveryWorktreeOwner {
-    Session,
-    Child,
-}
-
-impl StudioRecoveryWorktreeOwner {
-    /// Canonical 归属标签；也是显式清理入口接受的唯一字符串口径。
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Session => "session",
-            Self::Child => "child",
-        }
-    }
-
-    /// 解析归属标签；未知标签明确失败，不默认为 child 或 session。
-    pub fn from_label(label: &str) -> Option<Self> {
-        match label {
-            "session" => Some(Self::Session),
-            "child" => Some(Self::Child),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum StudioWorktreeInspection {
-    Available,
-    Missing,
-    IdentityMismatch,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioWorktreeRecoveryPreview {
-    pub inspection: StudioWorktreeInspection,
-    pub owner_kind: StudioRecoveryWorktreeOwner,
-    pub owner_thread_id: String,
-    pub lease_revision: u64,
-    pub state: String,
-    pub repository_root: String,
-    pub path: String,
-    pub branch: Option<String>,
-    pub base_commit: String,
-    pub head_commit: Option<String>,
-    pub dirty: Option<bool>,
-    /// Tracked modifications and untracked files, excluding Git-ignored content.
-    pub changed_files: Option<Vec<String>>,
-    /// Ignored local content is protected independently from pending Git changes.
-    pub ignored_files: Option<Vec<String>>,
-}
-
-/// 单个项目或 Thread 的可隔离恢复问题。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct StudioRecoveryIssue {
-    pub id: String,
-    pub scope: StudioRecoveryIssueScope,
-    pub category: StudioRecoveryIssueCategory,
-    pub impact: StudioRecoveryImpact,
-    pub action: StudioRecoveryIssueAction,
-    pub workspace_id: Option<String>,
-    pub thread_id: Option<String>,
-    pub message: String,
-    pub worktree: Option<StudioWorktreeRecoveryPreview>,
 }
 
 /// Studio runtime 的 canonical 生命周期状态。
@@ -251,14 +129,14 @@ impl StudioRuntimeCommand {
 
 /// runtime 生命周期的纯转换结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StudioRuntimeTransitionDecision {
+struct StudioRuntimeTransitionDecision {
     pub next_state: StudioRuntimeLifecycleState,
     pub changed: bool,
 }
 
 /// runtime 生命周期转换错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum StudioRuntimeTransitionError {
+enum StudioRuntimeTransitionError {
     #[error("Studio runtime revision is stale: expected {expected}, actual {actual}")]
     StaleRevision {
         expected: u64,
@@ -379,5 +257,106 @@ impl StudioRuntimeState {
 impl Default for StudioRuntimeState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FailedStudioRuntime {
+    failed_at: i64,
+    error: StateError,
+}
+
+impl FailedStudioRuntime {
+    pub(super) fn new(failed_at: i64, error: StateError) -> Self {
+        Self { failed_at, error }
+    }
+
+    pub fn failed_at(&self) -> i64 {
+        self.failed_at
+    }
+
+    pub fn error(&self) -> &StateError {
+        &self.error
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InitializingStudioRuntime {
+    started_at: i64,
+}
+
+impl InitializingStudioRuntime {
+    pub(super) fn new(started_at: i64) -> Self {
+        Self { started_at }
+    }
+
+    pub fn started_at(&self) -> i64 {
+        self.started_at
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadyStudioRuntime {
+    ready_at: i64,
+}
+
+impl ReadyStudioRuntime {
+    pub(super) fn new(ready_at: i64) -> Self {
+        Self { ready_at }
+    }
+
+    pub fn ready_at(&self) -> i64 {
+        self.ready_at
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShuttingDownStudioRuntime {
+    started_at: i64,
+}
+
+impl ShuttingDownStudioRuntime {
+    pub(super) fn new(started_at: i64) -> Self {
+        Self { started_at }
+    }
+
+    pub fn started_at(&self) -> i64 {
+        self.started_at
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StoppedStudioRuntime {
+    stopped_at: i64,
+}
+
+impl StoppedStudioRuntime {
+    pub(super) fn new(stopped_at: i64) -> Self {
+        Self { stopped_at }
+    }
+
+    pub fn stopped_at(&self) -> i64 {
+        self.stopped_at
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UninitializedStudioRuntime {
+    created_at: i64,
+}
+
+impl UninitializedStudioRuntime {
+    pub(super) fn new(created_at: i64) -> Self {
+        Self { created_at }
+    }
+
+    pub fn created_at(&self) -> i64 {
+        self.created_at
     }
 }

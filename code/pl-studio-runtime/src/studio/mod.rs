@@ -43,6 +43,11 @@ pub use product_event_bus::{
 };
 pub use records::{AttachmentRecord, ThreadKind, ThreadRecord, ThreadVisibility, WorkspaceRecord};
 pub use recovery_registry::StudioRecoveryRegistry;
+pub use recovery_registry::{
+    StudioRecoveryImpact, StudioRecoveryIssue, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview,
+};
 pub use runtime::StudioProductTopicSubscription;
 pub use runtime::*;
 pub use runtime_lock::{StudioHostKind, StudioRuntimeOptions, StudioStartupPolicy};

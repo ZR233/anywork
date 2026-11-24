@@ -1,7 +1,116 @@
 //! Recovery issues and scan lifecycle share one owner and revision.
+/// 恢复问题影响的最小 UI 范围。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryIssueScope {
+    Application,
+    Project,
+    Thread,
+}
+
+/// 恢复问题的稳定类别。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryIssueCategory {
+    ProcessLease,
+    ToolCatalog,
+    Repository,
+    Storage,
+}
+
+/// Authoritative admission impact, independent of diagnostic category and display grouping.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryImpact {
+    Advisory,
+    ExecutionBlocked,
+    AccessBlocked,
+}
+
+/// UI 可执行的恢复动作。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryIssueAction {
+    None,
+    Retry,
+    CleanupWorktree,
+}
+
+/// Recovery 中 worktree 的归属来源；使会话自身 worktree 与 child worktree 可区分。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioRecoveryWorktreeOwner {
+    Session,
+    Child,
+}
+
+impl StudioRecoveryWorktreeOwner {
+    /// Canonical 归属标签；也是显式清理入口接受的唯一字符串口径。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Child => "child",
+        }
+    }
+
+    /// 解析归属标签；未知标签明确失败，不默认为 child 或 session。
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "session" => Some(Self::Session),
+            "child" => Some(Self::Child),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum StudioWorktreeInspection {
+    Available,
+    Missing,
+    IdentityMismatch,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioWorktreeRecoveryPreview {
+    pub inspection: StudioWorktreeInspection,
+    pub owner_kind: StudioRecoveryWorktreeOwner,
+    pub owner_thread_id: String,
+    pub lease_revision: u64,
+    pub state: String,
+    pub repository_root: String,
+    pub path: String,
+    pub branch: Option<String>,
+    pub base_commit: String,
+    pub head_commit: Option<String>,
+    pub dirty: Option<bool>,
+    /// Tracked modifications and untracked files, excluding Git-ignored content.
+    pub changed_files: Option<Vec<String>>,
+    /// Ignored local content is protected independently from pending Git changes.
+    pub ignored_files: Option<Vec<String>>,
+}
+
+/// 单个项目或 Thread 的可隔离恢复问题。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioRecoveryIssue {
+    pub id: String,
+    pub scope: StudioRecoveryIssueScope,
+    pub category: StudioRecoveryIssueCategory,
+    pub impact: StudioRecoveryImpact,
+    pub action: StudioRecoveryIssueAction,
+    pub workspace_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub message: String,
+    pub worktree: Option<StudioWorktreeRecoveryPreview>,
+}
+
 use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseOwnerKind};
-use crate::studio::{StudioRecoveryIssue, StudioRecoveryWorktreeOwner, ids::unix_seconds};
+use crate::studio::ids::unix_seconds;
 use crate::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
