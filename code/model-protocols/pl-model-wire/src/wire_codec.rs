@@ -19,8 +19,8 @@ pub enum VisibleOutputProtocol {
 impl VisibleOutputProtocol {
     pub fn of(api: WireApi) -> Self {
         match api {
-            WireApi::Responses | WireApi::GeminiGenerateContent => Self::NativePhases,
-            WireApi::ChatCompletions => Self::TaggedText,
+            WireApi::Responses => Self::NativePhases,
+            WireApi::ChatCompletions | WireApi::GeminiGenerateContent => Self::TaggedText,
         }
     }
 }

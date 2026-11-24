@@ -75,7 +75,7 @@ pub fn build_http_request(
     while index < request.input.len() {
         if let Some((parts, semantic_len)) = replay_by_start.get(&index) {
             if !parts.is_empty() {
-                push_content(&mut contents, "model", parts.to_vec());
+                push_model_parts(&mut contents, parts.to_vec());
             }
             index = index.saturating_add((*semantic_len).max(1));
             continue;
@@ -85,7 +85,7 @@ pub fn build_http_request(
                 let content = tool_media_content(items);
                 let parts = encode_parts(&content.parts, &request.prepared_content, &media_plan)?;
                 if !parts.is_empty() {
-                    push_content(&mut contents, "user", parts);
+                    push_user_parts(&mut contents, parts);
                 }
             }
             ModelContextItem::Message { message }
@@ -97,13 +97,13 @@ pub fn build_http_request(
                         &media_plan,
                     )?;
                     if !parts.is_empty() {
-                        push_content(&mut contents, "user", parts);
+                        push_user_parts(&mut contents, parts);
                     }
                 }
                 MessageRole::System => {
                     let text = message_content_text(&message.content);
                     if !text.is_empty() {
-                        push_content(&mut contents, "user", vec![json!({ "text": text })]);
+                        push_user_parts(&mut contents, vec![json!({ "text": text })]);
                     }
                 }
                 MessageRole::Assistant => {
@@ -130,7 +130,7 @@ pub fn build_http_request(
                     if parts.is_empty() {
                         parts.push(json!({ "text": "" }));
                     }
-                    push_content(&mut contents, "model", parts);
+                    push_model_parts(&mut contents, parts);
                 }
                 MessageRole::Tool => {
                     let record = message.tool_result.as_ref().ok_or_else(|| {
@@ -143,11 +143,7 @@ pub fn build_http_request(
                     if !record.item_id.starts_with("gemini_noid:") {
                         fr.insert("id".into(), Value::String(record.item_id.clone()));
                     }
-                    push_content(
-                        &mut contents,
-                        "user",
-                        vec![json!({ "functionResponse": fr })],
-                    );
+                    push_function_response(&mut contents, json!({ "functionResponse": fr }));
                 }
             },
             ModelContextItem::Compaction { .. } | ModelContextItem::Native { .. } => {
@@ -259,7 +255,7 @@ pub fn build_http_request(
         sent_model,
         capture_protocol: "geminiGenerateContent",
         sse_content_type: SseContentTypePolicy::Required,
-        visible_output: VisibleOutputProtocol::NativePhases,
+        visible_output: VisibleOutputProtocol::TaggedText,
         close_on_terminal: false,
     })
 }
@@ -286,17 +282,49 @@ fn parameter_writes_path(
     })
 }
 
-fn push_content(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
-    if role == "user"
-        && let Some(last) = contents.last_mut()
+fn is_function_response_turn(content: &Value) -> bool {
+    content.get("role").and_then(Value::as_str) == Some("user")
+        && content
+            .get("parts")
+            .and_then(Value::as_array)
+            .is_some_and(|parts| {
+                !parts.is_empty() && parts.iter().all(|p| p.get("functionResponse").is_some())
+            })
+}
+
+fn push_function_response(contents: &mut Vec<Value>, part: Value) {
+    if let Some(last) = contents.last_mut()
+        && is_function_response_turn(last)
+        && let Some(existing) = last.get_mut("parts").and_then(Value::as_array_mut)
+    {
+        existing.push(part);
+        return;
+    }
+    contents.push(json!({
+        "role": "user",
+        "parts": [part],
+    }));
+}
+
+fn push_user_parts(contents: &mut Vec<Value>, parts: Vec<Value>) {
+    // Vertex AI rejects user turns that mix `functionResponse` with `text` or `inlineData`.
+    if let Some(last) = contents.last_mut()
         && last.get("role").and_then(Value::as_str) == Some("user")
+        && !is_function_response_turn(last)
         && let Some(existing) = last.get_mut("parts").and_then(Value::as_array_mut)
     {
         existing.extend(parts);
         return;
     }
     contents.push(json!({
-        "role": role,
+        "role": "user",
+        "parts": parts,
+    }));
+}
+
+fn push_model_parts(contents: &mut Vec<Value>, parts: Vec<Value>) {
+    contents.push(json!({
+        "role": "model",
         "parts": parts,
     }));
 }

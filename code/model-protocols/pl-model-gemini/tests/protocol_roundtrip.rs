@@ -2,12 +2,12 @@ use pl_model_gemini::{GEMINI_WIRE_CODEC, bundled_definition, endpoint};
 use pl_model_wire::completion::{
     AssistantReplay, AttachmentModality, AttachmentRepresentation, CompletionRequest,
     CompletionResponse, ContentPart, Message, MessageContent, MessageRole, ModelContextItem,
-    ReasoningConfig, ResolvedAttachment, SystemPrompt, ToolCall, ToolCallKind, ToolResultReceipt,
-    ToolResultRecord, ToolSpec,
+    ReasoningConfig, ResolvedAttachment, SystemPrompt, ThreadAttachment, ToolCall, ToolCallKind,
+    ToolMediaContext, ToolResultReceipt, ToolResultRecord, ToolSpec,
     stream::{event::ModelStreamEvent, replay::ReplayCollector},
 };
 use pl_model_wire::model::{InferenceAccounting, ModelProtocolOptions};
-use pl_model_wire::wire_codec::{EncodeHttpRequestInput, WireCodec};
+use pl_model_wire::wire_codec::{EncodeHttpRequestInput, VisibleOutputProtocol, WireCodec};
 use serde_json::json;
 
 #[test]
@@ -296,4 +296,140 @@ fn rejects_cross_owner_thought_signature_replay_and_invalid_model_path() {
         model.extra.binding.request.protocol,
         ModelProtocolOptions::GeminiGenerateContent(_)
     ));
+}
+
+#[test]
+fn tool_media_after_function_response_uses_separate_user_turn() {
+    let bundled = bundled_definition().unwrap();
+    let model = bundled
+        .models
+        .iter()
+        .find(|m| m.base.slug == "gemini-3.7-flash")
+        .unwrap()
+        .clone();
+    let ep = endpoint::vertex_endpoint(None);
+
+    let mut req = CompletionRequest::builder().build();
+    req.input.push(ModelContextItem::Message {
+        message: Message {
+            role: MessageRole::User,
+            content: MessageContent::text("inspect sample.png"),
+            presentation: Default::default(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_result: None,
+            metadata: Default::default(),
+        },
+    });
+    let resp = CompletionResponse {
+        response_id: Some("resp-media-1".into()),
+        content: None,
+        replay: Some(AssistantReplay::Gemini {
+            parts: vec![json!({
+                "functionCall": {"name": "exec", "args": {"path": "sample.png"}, "id": "call_img_1"},
+                "thoughtSignature": "SIG_IMG_1"
+            })],
+        }),
+        reasoning_content: None,
+        tool_calls: vec![ToolCall::function(
+            "call_img_1",
+            "exec",
+            json!({"path": "sample.png"}),
+            "call_img_1",
+        )],
+        responses_context_items: Vec::new(),
+        presentation_items: Vec::new(),
+        orchestration: Default::default(),
+        timing: None,
+        accounting: InferenceAccounting::default(),
+        model: "gemini-3.7-flash".into(),
+        model_observation: None,
+        observation: Default::default(),
+    };
+    req.append_response_from(&resp, Some("acct:vertex:1"))
+        .unwrap();
+
+    req.input.push(ModelContextItem::ToolResult {
+        message: Message {
+            role: MessageRole::Tool,
+            content: MessageContent::text("{\"path\":\"sample.png\"}"),
+            presentation: Default::default(),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_result: Some(ToolResultRecord {
+                item_id: "call_img_1".into(),
+                call_id: "call_img_1".into(),
+                name: "exec".into(),
+                kind: ToolCallKind::Function,
+            }),
+            metadata: Default::default(),
+        },
+        receipt: ToolResultReceipt {
+            call_id: "call_img_1".into(),
+            tool_name: "exec".into(),
+            arguments_hash: "a".into(),
+            result_hash: "b".into(),
+            total_bytes: 21,
+            visible_bytes: 21,
+            truncated: false,
+            artifacts: Vec::new(),
+            continuation: None,
+            reused_from_call_id: None,
+        },
+    });
+
+    req.input.push(ModelContextItem::ToolMedia {
+        items: vec![ToolMediaContext {
+            call_id: "call_img_1".into(),
+            label: "sample.png".into(),
+            attachment: ThreadAttachment {
+                id: "att-sample-png".into(),
+                modality: AttachmentModality::Image,
+                media_type: "image/png".into(),
+                filename: Some("sample.png".into()),
+                width: Some(128),
+                height: Some(128),
+                byte_size: 454,
+            },
+        }],
+    });
+    req.prepared_content.push(ResolvedAttachment {
+        attachment_id: "att-sample-png".into(),
+        modality: AttachmentModality::Image,
+        media_type: "image/png".into(),
+        filename: Some("sample.png".into()),
+        sources: vec![AttachmentRepresentation::DataUrl {
+            base64: "iVBORw0KGgo=".into(),
+        }],
+    });
+
+    let prepared = GEMINI_WIRE_CODEC
+        .encode_http_request(EncodeHttpRequestInput {
+            endpoint: &ep,
+            model: &model,
+            request: &req,
+            prompt_cache_key: None,
+            compaction_body: None,
+            is_compaction: false,
+        })
+        .unwrap();
+
+    assert_eq!(prepared.visible_output, VisibleOutputProtocol::TaggedText);
+    let contents = prepared.body["contents"].as_array().unwrap();
+    assert_eq!(contents.len(), 4);
+    assert_eq!(contents[0]["role"], "user");
+    assert_eq!(contents[1]["role"], "model");
+    assert_eq!(contents[2]["role"], "user");
+    let fr_parts = contents[2]["parts"].as_array().unwrap();
+    assert_eq!(fr_parts.len(), 1);
+    assert!(fr_parts[0].get("functionResponse").is_some());
+    assert_eq!(contents[3]["role"], "user");
+    let media_parts = contents[3]["parts"].as_array().unwrap();
+    assert!(media_parts.iter().any(|p| p.get("text").is_some()));
+    assert!(media_parts.iter().any(|p| {
+        p.get("inlineData")
+            .and_then(|d| d.get("mimeType"))
+            .and_then(|v| v.as_str())
+            == Some("image/png")
+    }));
 }

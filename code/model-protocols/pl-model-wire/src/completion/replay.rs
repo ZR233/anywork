@@ -59,6 +59,8 @@ impl AssistantReplay {
                 Ok(segments.iter().any(|item| item.kind == Text(Commentary))
                     && !segments.iter().any(|item| item.kind == Text(Final)))
             }
+            // Gemini/Vertex AI rejects requests ending with a `model` turn, so text-only
+            // commentary without tool calls must not trigger a bare continuation turn.
             Self::Gemini { .. } => Ok(false),
         }
     }
