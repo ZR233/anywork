@@ -97,9 +97,11 @@ Settings are applied in argument order and checked again before submission; inva
 or changed selections fail without a model fallback. `--no-default-user-skills` and
 `--skill-dir` use the same runtime-only source policy as Native execution. The ACP
 commands do not accept Native `--model`, `--mode`, effort/step budgets or v2 exports.
-Permissions block with exit code 3 and are rejected, never auto-approved. Output is
-written only after clean, drained shutdown. Unpackaged execution requires the
-matching `pl-studio-mcp` on PATH, using the existing external asset source.
+The business session resolves eligible Host MCP permission requests automatically.
+If a permission request still requires user confirmation, the CLI rejects it and
+exits with code 3. Output is written only after clean, drained shutdown. Unpackaged
+execution requires the matching `pl-studio-mcp` on PATH, using the existing external
+asset source.
 
 Local and SSH ACP instances expose enabled host workspace and skill tools through
 `anywork_` names, using the same source and permission owners as ordinary sessions.

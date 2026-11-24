@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::{Context, Result};
 use axum::{Router, body::Body, middleware::Next, response::Response};
 use http::{Request, StatusCode, header::AUTHORIZATION};
-use pl_acp::session::{OpenSetup, PrepareOpen, schema};
+use pl_acp::session::{AllowOnceForTool, PrepareOpen, schema};
 use pl_agent_tool::ToolDefinition;
 use pl_studio_mcp::{
     HostCatalog, HostError, HostInvocation, HostMcpService, HostResult, HostTool, HostTools,
@@ -29,6 +29,8 @@ use crate::{
     config::ConfigRuntime,
     thread_assembler::{AgentHost, SessionRuntime},
 };
+
+const SERVER_NAME: &str = "anywork";
 
 /// All references held by the protocol callback are weak with respect to its owner.
 pub(crate) async fn prepare_open(
@@ -67,7 +69,7 @@ pub(crate) async fn prepare_open(
                         .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?,
                 )
             };
-            let definition = resources
+            let mut setup = resources
                 .prepare_host_mcp(host, caller, is_root, frontend)
                 .await
                 .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?;
@@ -78,10 +80,8 @@ pub(crate) async fn prepare_open(
                  cursors and retain actual report identities. These tools do not grant recursive \
                  spawn, Native review/workflow or filesystem restrictions to ACP agents.\n",
             );
-            Ok(OpenSetup {
-                mcp_servers: vec![definition],
-                instructions: Some(instructions),
-            })
+            setup.instructions = Some(instructions);
+            Ok(setup)
         })
     }))
 }
@@ -300,7 +300,7 @@ impl HostMcp {
             self.ipc = Some(IpcServer::bind(handler, self.shutdown.clone()).await?);
             let ipc = self.ipc.as_ref().expect("attached IPC owner");
             return Ok(schema::McpServer::Stdio(
-                schema::McpServerStdio::new("anywork", command)
+                schema::McpServerStdio::new(SERVER_NAME, command)
                     .args(vec![STDIO_ARG.into()])
                     .env(vec![
                         schema::EnvVariable::new(IPC_ENDPOINT_ENV, ipc.endpoint()),
@@ -350,10 +350,30 @@ impl HostMcp {
         }));
         self.sessions = Some(sessions);
         Ok(schema::McpServer::Http(
-            schema::McpServerHttp::new("anywork", format!("http://{address}/mcp")).headers(vec![
+            schema::McpServerHttp::new(SERVER_NAME, format!("http://{address}/mcp")).headers(vec![
                 schema::HttpHeader::new("Authorization", format!("Bearer {bearer}")),
             ]),
         ))
+    }
+
+    pub(super) fn permission_filter(&self) -> AllowOnceForTool {
+        let tools = Arc::downgrade(&self.tools);
+        let closed = self.domain_closed.clone();
+        let prefixes = [
+            format!("mcp_{SERVER_NAME}_"),
+            format!("mcp__{SERVER_NAME}__"),
+        ];
+        Arc::new(move |name| {
+            !closed.is_cancelled()
+                && prefixes
+                    .iter()
+                    .find_map(|prefix| name.strip_prefix(prefix.as_str()))
+                    .is_some_and(|tool| {
+                        tools
+                            .upgrade()
+                            .is_some_and(|tools| tools.contains_key(tool))
+                    })
+        })
     }
 
     pub(super) fn protocol_closed(&self) -> bool {
@@ -1910,6 +1930,135 @@ mod tests {
                 "ACP capability fixture cleanup also failed: {cleanup:#}"
             ))),
         }
+    }
+
+    #[tokio::test]
+    async fn public_acp_open_answers_only_eligible_host_mcp_permissions() -> Result<()> {
+        use crate::AcpSessionEvent;
+        use pl_acp::session::schema::{ContentBlock, StopReason, TextContent};
+        use std::time::Duration;
+
+        let fixture = Fixture::new("mcp-permission").await?;
+        let result = async {
+            let mut open = fixture.open().await?;
+            Fixture::ready(&mut open).await?;
+            let observation = open.observation.as_mut().context("original observation")?;
+            let once = json!({"optionId":"this-call", "kind":"allow_once", "name":"Allow"});
+            let always = json!({"optionId":"remember", "kind":"allow_always", "name":"Remember"});
+            let reject = json!({"optionId":"deny", "kind":"reject_once", "name":"Deny"});
+            let standard = || vec![always.clone(), reject.clone(), once.clone()];
+            let agy_name = "mcp_anywork_anywork_list_agents";
+            let cases = [
+                ("Antigravity tool", Some(agy_name), standard(), true),
+                (
+                    "Claude tool",
+                    Some("mcp__anywork__anywork_list_agents"),
+                    standard(),
+                    true,
+                ),
+                ("title only", None, standard(), false),
+                ("bare name", Some("anywork_list_agents"), standard(), false),
+                (
+                    "other server",
+                    Some("mcp_other_anywork_list_agents"),
+                    standard(),
+                    false,
+                ),
+                (
+                    "unknown tool",
+                    Some("mcp_anywork_anywork_unknown"),
+                    standard(),
+                    false,
+                ),
+                ("only durable allow", Some(agy_name), vec![always], false),
+                (
+                    "duplicate option id",
+                    Some(agy_name),
+                    vec![
+                        once.clone(),
+                        json!({"optionId":"this-call", "kind":"reject_once", "name":"Deny"}),
+                    ],
+                    false,
+                ),
+                (
+                    "multiple one-time options",
+                    Some(agy_name),
+                    vec![
+                        once,
+                        json!({"optionId":"other", "kind":"allow_once", "name":"Other"}),
+                    ],
+                    false,
+                ),
+            ];
+            for (case, name, options, auto_allowed) in cases {
+                std::fs::write(
+                    fixture.home.path().join("permission-request.json"),
+                    serde_json::to_vec(&json!({
+                        "toolCall": {"toolCallId": case, "title": agy_name, "name": name},
+                        "options": options,
+                    }))?,
+                )?;
+                let run = fixture
+                    .runtime
+                    .prompt_acp_session(
+                        open.target.clone(),
+                        vec![ContentBlock::Text(TextContent::new(case))],
+                    )
+                    .await?;
+                let mut manual = false;
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        match observation.recv().await.context("ACP observation closed")? {
+                            AcpSessionEvent::Permission { id, request } => {
+                                ensure!(!auto_allowed, "{case} unexpectedly required confirmation");
+                                ensure!(
+                                    !manual && request.tool_call.tool_call_id.0.as_ref() == case
+                                );
+                                fixture
+                                    .runtime
+                                    .answer_acp_permission(open.target.clone(), id, None)
+                                    .await?;
+                                manual = true;
+                            }
+                            AcpSessionEvent::Completed { completed } => {
+                                ensure!(
+                                    completed.run == run
+                                        && completed.result?.stop_reason == StopReason::EndTurn
+                                );
+                                return Ok::<_, anyhow::Error>(());
+                            }
+                            AcpSessionEvent::Gap { gap } => {
+                                anyhow::bail!("ACP observation gap: {gap:?}")
+                            }
+                            _ => {}
+                        }
+                    }
+                })
+                .await
+                .with_context(|| format!("{case} did not complete"))??;
+                ensure!(
+                    manual != auto_allowed,
+                    "unexpected permission event for {case}"
+                );
+                let outcome: Value = serde_json::from_slice(&std::fs::read(
+                    fixture.home.path().join("permission-outcome.json"),
+                )?)?;
+                let expected = if auto_allowed {
+                    json!({"outcome":"selected", "optionId":"this-call"})
+                } else {
+                    json!({"outcome":"cancelled"})
+                };
+                assert_eq!(outcome, expected, "{case}");
+            }
+            let close = fixture.runtime.close_acp_session(open.target).await?;
+            ensure!(close.local_complete, "ACP close: {close:?}");
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let shutdown = fixture.runtime.shutdown_runtime().await;
+        result?;
+        shutdown?;
+        Ok(())
     }
 
     #[tokio::test]

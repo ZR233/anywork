@@ -223,6 +223,8 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 普通 submit 消费正式 `ContentBlock`，按对端 prompt 能力校验，最多一个活动 prompt，busy 明确拒绝。独立业务驱动同时推进更新、有限命令、控制请求完成和 EOF；配置/权限 RPC 的等待不持有整个会话锁，权限只保留 SDK responder、合法选项及当前请求资格，回答后释放，cancel/close 按协议回答 Cancelled。待决权限独立受最多 64 项、保留数据合计 8 MiB 的资源上限约束，消费观察事件不会释放仍待回答的权限额度；回答后归还额度，超限请求立即回答 Cancelled。权限事件无法交付或观察已失效时，取消失去有效观察通路的待决权限，后续请求不再积存；活动 prompt 与其他控制仍按实际协议结果继续。
 
+原会话先核对活动轮次及观察资格，再按 [28.12](#2812-host-mcp-与宿主指令) 筛选可即时答复的权限请求。命中时直接向 ACP 对端答复其提供的唯一 `allow_once` 选项，避免产生待确认事件或占用待决权限额度。其余请求继续使用原待确认与取消路径，普通工具更新保持原样交付。
+
 中断发送前在原 owner 核对已观察的 runtime/运行资格，取消通知只有 session ID 也不能迟到命中新 prompt。后续 send 的替换输入由原受管操作持有：cancel 当前运行、消费合法尾部并真实收束后再提交，已有替换在途返回 Busy，不建立可靠输入队列。只有真实 PromptResponse 或错误才结束运行，输出文本或 idle 不构成成功，不自动重发。
 
 唯一运行对象只保留一个 `last_completed`：本次实例、递增完成序号、实际结果/错误及最多 16 KiB 的可见摘要与截断标记，供后续结果读取使用；不保留第二执行日志或 transcript。公开 Native 创建/提交请求仍只表达 Native；ACP 使用独立 open/prompt/config/permission/interrupt/close 及会话查询操作，由 HTTP/FRB 做薄类型转换，不经过 Native 模型路由或历史 materialize。关闭与准备责任统一见 [14](./14-runtime-host.md#141-统一装配与激活)，不因远端关闭失败复制另一套资源回收框架。
@@ -258,6 +260,8 @@ Host MCP 在原领域运行时之上提供传输无关的服务。`AgentHost` / 
 initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rmcp Streamable HTTP 服务，监听 `127.0.0.1:0` 的 `/mcp`，handler 在原进程直接调用领域端口。否则准备原实例本地 IPC 端点，并注入 ACP v1 标准 stdio 定义，由 Agent 启动宿主原生 `pl-studio-mcp --stdio`；该程序是正式 MCP server，通过 IPC 调用原运行时，stdio 路径不创建 HTTP MCP listener。HTTP/SSE 为 false 不等于没有 MCP，外层 ACP stdio 与内层 MCP stdio 是独立通道。new/load/resume 共用准备与选择逻辑，resume 仍受其真实能力约束；准备失败明确返回错误。能力声明、接收配置、实际连接与真实工具调用分别核对，不以注入成功推断可用。
 
 领域端口只交付工具目录和执行调用。目录项与可调用绑定由同一装配结果产生，`HostInvocation` 携带该实例目录中的工具身份和参数，`HostResult` 携带结构化结果及业务错误标记；不维护另一份九项操作枚举或名称白名单。目录直接投影原作者声明，不回解 `ToolDefinition`，不复制 schema；Grammar/Text 输入只在 MCP 边界以明确的字符串字段承载原文。MCP 握手、request ID、通知和结果封装由官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
+
+Host MCP 注入成功时，Studio 以同一份实例目录提供 ACP 权限过滤。它匹配对端报告的程序化工具名、宿主配置的 `anywork` MCP 命名空间和目录中的完整工具身份。裸工具名、显示标题、未知命名形式及目录外工具继续走待确认流程。自动答复只处理 ACP 对端的一次许可。实际 MCP 请求仍由实例凭据、原会话绑定和业务权限校验。
 
 技能管理的多分支JSON参数使用共享的JSON值投影，以 `input` 承载，例如 `{"input":{"action":"delete","name":"example"}}`；不再拥有专用包装类型或解包闭包。投影将原完整作者schema作为独立资源嵌入，保留分支与引用关系；边界严格解开一层后调用原作者，不压平分支、不增加显示元字段、不忽略未知参数，也不改变Native工具输入。该适配避免对端给工具根对象追加显示字段时与内部分支的严格字段校验冲突。
 

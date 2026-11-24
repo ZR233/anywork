@@ -49,11 +49,16 @@ type OpenSetupFuture =
 /// The callback owns its future; it must not require the protocol receive lock.
 pub type PrepareOpen = Arc<dyn Fn(AgentCapabilities) -> OpenSetupFuture + Send + Sync>;
 
+/// Matches a programmatic tool name against the host's session-scoped policy.
+/// Runs under the session lock, so it must be fast and must not reenter the session.
+pub type AllowOnceForTool = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 /// Values prepared by the host for this connection; bearer headers must never be logged.
 #[derive(Default)]
 pub struct OpenSetup {
     pub mcp_servers: Vec<McpServer>,
     pub instructions: Option<String>,
+    pub allow_once_for_tool: Option<AllowOnceForTool>,
 }
 
 #[derive(Clone)]
@@ -397,6 +402,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         prompt_instructions: None,
         on_text_performance: request.on_text_performance.clone(),
         next_run: 0,
+        allow_once_for_tool: None,
         permission_sequence: 0,
         permissions: Vec::new(),
         permission_bytes: Arc::new(Semaphore::new(PERMISSION_BYTES)),
@@ -493,6 +499,7 @@ pub(crate) struct State {
     prompt_instructions: Option<String>,
     on_text_performance: Option<OnTextPerformance>,
     next_run: u64,
+    allow_once_for_tool: Option<AllowOnceForTool>,
     permission_sequence: u64,
     permissions: Vec<Permission>,
     permission_bytes: Arc<Semaphore>,
@@ -757,12 +764,36 @@ impl State {
         delivered
     }
 
-    fn reject_permission(&mut self, responder: Responder<RequestPermissionResponse>) {
-        if let Err(error) = responder.respond(RequestPermissionResponse::new(
-            RequestPermissionOutcome::Cancelled,
-        )) {
+    fn reply_permission(
+        &mut self,
+        responder: Responder<RequestPermissionResponse>,
+        outcome: RequestPermissionOutcome,
+    ) {
+        if let Err(error) = responder.respond(RequestPermissionResponse::new(outcome)) {
             self.close_error.get_or_insert(error.into());
         }
+    }
+
+    fn automatic_permission_option(
+        &self,
+        request: &RequestPermissionRequest,
+    ) -> Option<PermissionOptionId> {
+        let matches_tool = self.allow_once_for_tool.as_ref()?;
+        if !matches_tool(request.tool_call.fields.name.as_deref()?) {
+            return None;
+        }
+        let mut allow_once = request
+            .options
+            .iter()
+            .filter(|option| option.kind == PermissionOptionKind::AllowOnce);
+        let selected = allow_once.next()?;
+        let ambiguous_id = request
+            .options
+            .iter()
+            .filter(|option| option.option_id == selected.option_id)
+            .nth(1)
+            .is_some();
+        (allow_once.next().is_none() && !ambiguous_id).then(|| selected.option_id.clone())
     }
 
     pub(crate) fn permission(
@@ -789,11 +820,21 @@ impl State {
                 && !self.closing
                 && !self.finished
                 && self.session_id.as_ref() == Some(&request.session_id)
-                && self.permissions.len() < PERMISSIONS
         }) else {
-            self.reject_permission(responder);
+            self.reply_permission(responder, RequestPermissionOutcome::Cancelled);
             return;
         };
+        if let Some(option) = self.automatic_permission_option(&request) {
+            self.reply_permission(
+                responder,
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)),
+            );
+            return;
+        }
+        if self.permissions.len() >= PERMISSIONS {
+            self.reply_permission(responder, RequestPermissionOutcome::Cancelled);
+            return;
+        }
 
         // Only IDs (not tool-call content or option labels) are retained after delivery.
         // Charge the retained vector, ID bytes, responder identity and fixed record storage.
@@ -826,7 +867,7 @@ impl State {
             None
         };
         let Some(permit) = permit else {
-            self.reject_permission(responder);
+            self.reply_permission(responder, RequestPermissionOutcome::Cancelled);
             return;
         };
         self.permission_sequence += 1;
@@ -844,7 +885,7 @@ impl State {
                 _bytes: permit,
             });
         } else {
-            self.reject_permission(responder);
+            self.reply_permission(responder, RequestPermissionOutcome::Cancelled);
         }
     }
 }
@@ -1083,6 +1124,7 @@ impl Driver {
             owner.fail_open(Error::Unsupported);
             return;
         }
+        owner.allow_once_for_tool = setup.allow_once_for_tool;
         let instructions = setup.instructions.filter(|text| !text.is_empty());
         let system_prompt = if owner
             .capabilities
@@ -2389,6 +2431,7 @@ mod tests {
                         Ok(OpenSetup {
                             mcp_servers: vec![http_server()],
                             instructions: Some("Host instructions\n保持原文".into()),
+                            ..OpenSetup::default()
                         })
                     })
                 }));
@@ -2637,7 +2680,7 @@ mod tests {
                         } else {
                             Ok(OpenSetup {
                                 mcp_servers: vec![http_server()],
-                                instructions: None,
+                                ..OpenSetup::default()
                             })
                         }
                     })
