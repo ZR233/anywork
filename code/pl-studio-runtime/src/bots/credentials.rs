@@ -1,7 +1,7 @@
 //! 每个机器人的凭据/配置共同提交、journal 与可恢复版本引用。
 use super::config::{
     BOT_CONFIG_SCHEMA_VERSION, BotConfigFile, decode_config_snapshot_at, encode_config_snapshot,
-    load_config, save_config, save_recognized_config,
+    load_config, save_config, save_recognized_config, try_load_config,
 };
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use crate::config::{
@@ -1229,12 +1229,8 @@ fn recycle_kind(
 }
 
 fn actual_config(dir: &Path) -> Result<Option<BotConfigFile>, FeishuError> {
-    let path = dir.join("config.toml");
-    match std::fs::read_to_string(&path) {
-        Ok(_) => load_config(&path).map(Some),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io_error(error)),
-    }
+    // 单次读取同时决定存在性与解析结果，不再为探测存在而重读同一文件。
+    try_load_config(&dir.join("config.toml"))
 }
 
 fn configs_match(actual: Option<&BotConfigFile>, expected: Option<&BotConfigFile>) -> bool {

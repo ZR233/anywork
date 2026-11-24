@@ -413,20 +413,9 @@ pub async fn send_text(claimed: ClaimedSend<'_>) -> Result<crate::BotSendResult,
             break;
         }
     }
-    let status = persist_send_progress(
-        store,
-        &SendRecord {
-            operation_id: operation_id.to_string(),
-            bot_id: bot_id.to_string(),
-            chat_id: chat_id.to_string(),
-            content_hash: plan.content_hash.clone(),
-            status: overall_send_status(unknown, rejected, ids.len(), plan.segments.len()),
-            platform_message_ids: ids,
-            segments: facts,
-            facts_complete: true,
-        },
-    )
-    .await?;
+    // 计划至少含一段（`plan_text` 拒绝空文本），循环内每段之后已持久化同一份终态；
+    // 这里不再重复落库。
+    let status = overall_send_status(unknown, rejected, ids.len(), plan.segments.len());
     Ok(crate::BotSendResult {
         operation_id: operation_id.to_string(),
         bot_id: bot_id.to_string(),

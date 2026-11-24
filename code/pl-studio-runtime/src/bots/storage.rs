@@ -1562,12 +1562,26 @@ impl BotStateStore {
         conflict_or_existing(record, existing).map(Some)
     }
 
+    /// 身份核对与 upsert 必须共享同一事务快照，否则两次调用之间可能被另一写者
+    /// 插入或覆盖（TOCTOU）。WAL 下若快照已被其他写者推进，升级为写会以
+    /// `SQLITE_BUSY_SNAPSHOT` 失败而不是基于过期读取静默覆盖；busy_timeout 只
+    /// 覆盖真实的锁等待。编码在事务外完成，事务内只保留一次读取与一次写入。
     pub async fn save_send(&self, record: &SendRecord) -> Result<(), FeishuError> {
-        if let Some(existing) = self.load_send(&record.operation_id).await? {
-            conflict_or_existing(record, existing)?;
-        }
+        let segment_facts = encode_segment_facts(&record.segments)?;
         let db = self.db().await?;
-        db.execute_raw(statement(
+        let tx = db.begin().await.map_err(storage)?;
+        if let Some(row) = tx
+            .query_one_raw(statement(
+                "SELECT operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts
+                 FROM send_operations WHERE operation_id=?",
+                vec![record.operation_id.clone().into()],
+            ))
+            .await
+            .map_err(storage)?
+        {
+            conflict_or_existing(record, send_record_from_row(row)?)?;
+        }
+        tx.execute_raw(statement(
             "INSERT INTO send_operations(operation_id, bot_id, chat_id, content_hash, status, platform_message_ids, segment_facts, updated_at)
              VALUES(?,?,?,?,?,?,?,?)
              ON CONFLICT(operation_id) DO UPDATE SET
@@ -1582,12 +1596,13 @@ impl BotStateStore {
                 record.content_hash.clone().into(),
                 record.status.as_str().to_string().into(),
                 record.platform_message_ids.join(",").into(),
-                encode_segment_facts(&record.segments)?.into(),
+                segment_facts.into(),
                 unix_seconds().into(),
             ],
         ))
         .await
         .map_err(storage)?;
+        tx.commit().await.map_err(storage)?;
         Ok(())
     }
 }
@@ -2091,13 +2106,23 @@ mod tests {
         probe.close().await?;
 
         let failed_ownership = BotStateStore::new(path.clone());
+        let ownership_failure = failed_ownership
+            .list_due_inbound("legacy")
+            .await
+            .expect_err("ownership migration must roll back")
+            .to_string();
         assert!(
-            failed_ownership
-                .list_due_inbound("legacy")
-                .await
-                .expect_err("ownership migration must roll back")
-                .to_string()
-                .contains("injected ownership migration failure")
+            ownership_failure.contains("injected ownership migration failure"),
+            "{ownership_failure}"
+        );
+        // 失败步骤来自迁移后的真实待执行列表，而非硬编码的首条迁移名。
+        assert!(
+            ownership_failure.contains("m20261030_000002_bot_workspace_ownership"),
+            "{ownership_failure}"
+        );
+        assert!(
+            !ownership_failure.contains("m20261026_000001_bot_ledger_schema"),
+            "{ownership_failure}"
         );
         let probe = Database::connect(
             sqlite_file_options(&path, SqliteFileMode::ReadWrite, |options| options).await?,
@@ -2519,6 +2544,62 @@ mod tests {
         state.confirmed_sequence = state.sequence;
         state.last_operation.as_mut().unwrap().status = card::CardOperationStatus::Confirmed;
     }
+
+    fn text_record(operation_id: &str, content_hash: &str, status: SendRecordStatus) -> SendRecord {
+        SendRecord {
+            operation_id: operation_id.into(),
+            bot_id: "bot".into(),
+            chat_id: "chat".into(),
+            content_hash: content_hash.into(),
+            status,
+            platform_message_ids: Vec::new(),
+            segments: Vec::new(),
+            facts_complete: true,
+        }
+    }
+
+    /// 身份核对与 upsert 共用一个事务：同一 operationId 的不同正文被拒绝且账本保持原样，
+    /// 同一身份的进度则覆盖写入。
+    #[tokio::test]
+    async fn save_send_keeps_identity_verification_and_upsert_in_one_transaction()
+    -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = BotStateStore::new(directory.path().join("ledger.sqlite"));
+        store
+            .save_send(&text_record(
+                "operation",
+                "hash-a",
+                SendRecordStatus::Unknown,
+            ))
+            .await?;
+        let mut progress = text_record("operation", "hash-a", SendRecordStatus::Succeeded);
+        progress.platform_message_ids.push("message".into());
+        store.save_send(&progress).await?;
+        let stored = store
+            .load_send("operation")
+            .await?
+            .expect("the progress is persisted");
+        assert_eq!(stored.status, SendRecordStatus::Succeeded);
+        assert_eq!(stored.platform_message_ids, ["message"]);
+
+        let conflict = store
+            .save_send(&text_record(
+                "operation",
+                "hash-b",
+                SendRecordStatus::Rejected,
+            ))
+            .await
+            .expect_err("a different body under the same operationId is a conflict");
+        assert_eq!(conflict.kind(), FeishuErrorKind::Conflict);
+        let stored = store
+            .load_send("operation")
+            .await?
+            .expect("the rejected save leaves the record in place");
+        assert_eq!(stored.content_hash, "hash-a");
+        assert_eq!(stored.status, SendRecordStatus::Succeeded);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn ledger_adopts_current_file_and_refuses_future_writes() -> anyhow::Result<()> {
         for fault in ["format", "migration", "missing_table"] {

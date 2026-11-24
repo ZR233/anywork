@@ -1,5 +1,7 @@
 //! Bounded target projection of immutable records and independent Final activity.
 
+use std::collections::HashSet;
+
 use super::content::{
     FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS, ReplyItem, ReplyItemKind,
 };
@@ -26,31 +28,25 @@ impl ReplyProjection {
     }
 
     pub(super) fn replace(&mut self, items: Vec<ReplyItem>) -> Result<(), FinalError> {
-        let existing = &[] as &[ReplyItem];
-        let bytes = existing
+        let bytes = items
             .iter()
-            .chain(&items)
             .try_fold(0usize, |size, item| size.checked_add(item.preview_bytes()))
             .ok_or_else(|| gap("reply body size overflow"))?;
-        if existing.len().saturating_add(items.len()) > MAX_TURN_CONTENT_ITEMS
-            || bytes > MAX_TURN_BODY_BYTES
-        {
+        if items.len() > MAX_TURN_CONTENT_ITEMS || bytes > MAX_TURN_BODY_BYTES {
             return Err(FinalError::Attention(
                 "reply projection exceeded its item or UTF-8 budget".into(),
             ));
         }
-        for (index, item) in items.iter().enumerate() {
-            if existing
-                .iter()
-                .chain(&items[..index])
-                .any(|old| old.id == item.id || old.member_id == item.member_id)
-            {
+        // 身份只在同名字段内比较：`id` 与 `member_id` 各自不得与先前项重复。
+        let mut ids = HashSet::with_capacity(items.len());
+        let mut member_ids = HashSet::with_capacity(items.len());
+        for item in &items {
+            if !ids.insert(item.id.as_str()) || !member_ids.insert(item.member_id.as_str()) {
                 return Err(gap("duplicate reply completion identity"));
             }
         }
-        if existing
+        if items
             .iter()
-            .chain(&items)
             .filter(|item| matches!(&item.kind, ReplyItemKind::Terminal(_)))
             .count()
             > 1
@@ -176,4 +172,67 @@ impl ReplyProjection {
 
 pub(super) fn gap(message: &str) -> FinalError {
     FinalError::Retryable(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(member_id: &str, id: &str) -> ReplyItem {
+        ReplyItem {
+            member_id: member_id.into(),
+            id: id.into(),
+            kind: ReplyItemKind::Interaction(member_id.into()),
+        }
+    }
+
+    fn terminal(member_id: &str) -> ReplyItem {
+        ReplyItem {
+            member_id: member_id.into(),
+            id: member_id.into(),
+            kind: ReplyItemKind::Terminal(TurnState::Completed(crate::CompletedTurnState::new(
+                Some(1),
+                3,
+                crate::TurnCompletion::Normal,
+            ))),
+        }
+    }
+
+    #[test]
+    fn replace_rejects_duplicate_identities_and_keeps_the_current_projection() {
+        let mut projection = ReplyProjection::new();
+        projection.replace(vec![terminal("kept")]).unwrap();
+        projection.mark_history_terminal();
+        projection.mark_covered();
+        for (left, right, message) in [
+            (
+                item("a", "shared"),
+                item("b", "shared"),
+                "duplicate reply completion identity",
+            ),
+            (
+                item("shared", "a"),
+                item("shared", "b"),
+                "duplicate reply completion identity",
+            ),
+            (
+                terminal("first"),
+                terminal("second"),
+                "conflicting terminal messages",
+            ),
+        ] {
+            let error = projection
+                .replace(vec![left, right])
+                .expect_err("conflicting items must be rejected");
+            assert!(error.to_string().contains(message), "{error}");
+            assert_eq!(
+                projection.completed().expect("coverage is retained").len(),
+                1,
+                "a rejected replacement must keep the previous items"
+            );
+        }
+        projection
+            .replace(vec![item("a", "a"), item("b", "b")])
+            .expect("distinct identities are accepted");
+    }
 }
