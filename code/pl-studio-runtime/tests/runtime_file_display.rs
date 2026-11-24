@@ -60,7 +60,7 @@ async fn public_artifact(
                     item["kind"] == "opaque" && item["payload"]["format"] == "pl.tool.files"
                 })
                 .context("versioned file display artifact")?;
-            ensure!(artifact["payload"]["version"] == 1);
+            ensure!(artifact["payload"]["version"] == 2);
             return Ok(artifact.clone());
         }
         anyhow::bail!("completed public tool original missing")
