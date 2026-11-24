@@ -235,13 +235,11 @@ impl AcpLocalDetectionRuntime {
         if matches!(joined, RetainedJoin::TimedOut) {
             anyhow::bail!("本机检测任务仍在收束，保留原 owner 待重试");
         }
-        let join_clean = matches!(
-            joined,
-            RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) | RetainedJoin::Absent
-        );
         // Even a panicked task leaves its physical worker in Operation.resources.
         let cleaned = release_resources(&operation).await;
-        if !join_clean || !cleaned {
+        // Report a join failure when it is first observed. Retrying still has to prove
+        // resource cleanup, even when the original handle has already been consumed.
+        if matches!(joined, RetainedJoin::Observed(Err(_))) || !cleaned {
             self.inner
                 .finish(&operation, failed(AcpLocalDetectionFailureKind::Cleanup));
             anyhow::bail!("本机检测资源收束失败，请重试关闭");
@@ -1002,6 +1000,34 @@ sys.stderr.flush()
         drop(resources);
         pause.cancel();
         fixture.runtime.acp_detection.close().await?;
+        fixture.finish().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn close_retries_after_reporting_a_failed_detection_join() -> Result<()> {
+        let fixture = Fixture::new("hang").await?;
+        let directory = fixture.home.path().join("owned-probe");
+        std::fs::create_dir(&directory)?;
+        let handle = tokio::spawn(std::future::pending::<()>());
+        handle.abort();
+        let detection = &fixture.runtime.acp_detection;
+        detection.inner.lock().operation = Some(Arc::new(Operation {
+            id: "aborted-probe".into(),
+            cancel: CancellationToken::new(),
+            deadline: tokio::time::Instant::now(),
+            join: RetainedTask::running(handle),
+            resources: AsyncMutex::new(Resources {
+                worker: None,
+                directory: Some(directory.clone()),
+            }),
+            resources_released: AtomicBool::new(false),
+            cleanup_pause: Mutex::new(None),
+            cleanup_pending: AtomicBool::new(false),
+        }));
+        assert!(detection.close().await.is_err());
+        assert!(!directory.exists());
+        detection.close().await?;
         fixture.finish().await;
         Ok(())
     }

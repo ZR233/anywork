@@ -134,8 +134,9 @@ impl SessionTable {
                 .map(|session| async move { session.close_session().await }),
         )
         .await
-        .into_iter()
-        .flat_map(|group| group.iter().cloned().collect::<Vec<_>>())
+        .iter()
+        .flat_map(|group| group.iter())
+        .cloned()
         .collect()
     }
 
