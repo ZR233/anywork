@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
+import '../../../../presentation/providers/client_provider.dart';
 import '../../timeline/widgets/timeline_image_view.dart';
 import '../state/acp_view_state.dart';
 import '../state/acp_timeline_row.dart';
@@ -27,9 +28,15 @@ class AcpTimelineConnector extends ConsumerWidget {
     return AcpConversationContentView(
       threadId: threadId,
       header: header,
+      outputRevision: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
       planCard: header.hasPlan
           ? AcpPlanCardConnector(threadId: threadId)
           : null,
+      onInsertSlashCommand: (name) => ref
+          .read(anyworkClientProvider)
+          .drafts
+          .composer(threadId)
+          .updateDraft('/$name '),
       itemBuilder: (context, index) =>
           _AcpTimelineItemConnector(threadId: threadId, index: index),
     );

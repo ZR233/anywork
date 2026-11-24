@@ -1019,6 +1019,18 @@ abstract class AppLocalizations {
   /// **'Archive'**
   String get sidebarArchiveSessionConfirmAction;
 
+  /// No description provided for @sidebarArchiveSessionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Archived “{title}”'**
+  String sidebarArchiveSessionSucceeded(String title);
+
+  /// No description provided for @sidebarArchiveSessionResultFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not archive “{title}”. {reason}'**
+  String sidebarArchiveSessionResultFailed(String title, String reason);
+
   /// No description provided for @sidebarDeleteSession.
   ///
   /// In en, this message translates to:
@@ -1042,6 +1054,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete permanently'**
   String get sidebarDeleteSessionConfirmAction;
+
+  /// No description provided for @sidebarDeleteSessionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted “{title}”'**
+  String sidebarDeleteSessionSucceeded(String title);
+
+  /// No description provided for @sidebarDeleteSessionResultFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not delete “{title}”. {reason}'**
+  String sidebarDeleteSessionResultFailed(String title, String reason);
 
   /// No description provided for @sidebarRenameSession.
   ///
@@ -14486,6 +14510,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Succeeded'**
   String get timelineOutcomeStatusSucceeded;
+
+  /// No description provided for @timelineDiffStatLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{additions} additions, {deletions} deletions'**
+  String timelineDiffStatLabel(int additions, int deletions);
+
+  /// No description provided for @timelinePatchCopyPath.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy path'**
+  String get timelinePatchCopyPath;
+
+  /// No description provided for @acpCopyMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy message'**
+  String get acpCopyMessage;
+
+  /// No description provided for @acpJumpToPendingPermission.
+  ///
+  /// In en, this message translates to:
+  /// **'Jump to latest · Permission requested'**
+  String get acpJumpToPendingPermission;
+
+  /// No description provided for @acpJumpToRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Jump to latest · Running'**
+  String get acpJumpToRunning;
+
+  /// No description provided for @acpJumpToNewOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'Jump to latest · New output'**
+  String get acpJumpToNewOutput;
+
+  /// No description provided for @acpPlanCompletedHeadline.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution plan completed'**
+  String get acpPlanCompletedHeadline;
+
+  /// No description provided for @acpSlashMenuLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Slash commands'**
+  String get acpSlashMenuLabel;
+
+  /// No description provided for @acpSlashMenuNoMatches.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching commands'**
+  String get acpSlashMenuNoMatches;
+
+  /// No description provided for @acpHistorySearchHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Search title, path, or session ID'**
+  String get acpHistorySearchHint;
+
+  /// No description provided for @acpHistorySearchCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{matched} of {total}'**
+  String acpHistorySearchCount(int matched, int total);
+
+  /// No description provided for @acpHistorySearchEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No matching external sessions'**
+  String get acpHistorySearchEmpty;
 }
 
 class _AppLocalizationsDelegate

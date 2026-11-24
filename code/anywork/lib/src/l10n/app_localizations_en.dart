@@ -524,6 +524,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => 'Archive';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return 'Archived “$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return 'Could not archive “$title”. $reason';
+  }
+
+  @override
   String get sidebarDeleteSession => 'Delete session';
 
   @override
@@ -537,6 +547,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => 'Delete permanently';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return 'Deleted “$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return 'Could not delete “$title”. $reason';
+  }
 
   @override
   String get sidebarRenameSession => 'Rename session';
@@ -8173,4 +8193,45 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => 'Succeeded';
+
+  @override
+  String timelineDiffStatLabel(int additions, int deletions) {
+    return '$additions additions, $deletions deletions';
+  }
+
+  @override
+  String get timelinePatchCopyPath => 'Copy path';
+
+  @override
+  String get acpCopyMessage => 'Copy message';
+
+  @override
+  String get acpJumpToPendingPermission =>
+      'Jump to latest · Permission requested';
+
+  @override
+  String get acpJumpToRunning => 'Jump to latest · Running';
+
+  @override
+  String get acpJumpToNewOutput => 'Jump to latest · New output';
+
+  @override
+  String get acpPlanCompletedHeadline => 'Execution plan completed';
+
+  @override
+  String get acpSlashMenuLabel => 'Slash commands';
+
+  @override
+  String get acpSlashMenuNoMatches => 'No matching commands';
+
+  @override
+  String get acpHistorySearchHint => 'Search title, path, or session ID';
+
+  @override
+  String acpHistorySearchCount(int matched, int total) {
+    return '$matched of $total';
+  }
+
+  @override
+  String get acpHistorySearchEmpty => 'No matching external sessions';
 }

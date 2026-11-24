@@ -1,6 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
-import '../../widgets/latest_scroll.dart';
+import '../../../../shared/latest_scroll.dart';
 
 /// 实时区共同布局：标题保留自然高度，正文在父级实际余量内滚动。
 class TimelineActivitySection extends StatelessWidget {

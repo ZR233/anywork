@@ -10,7 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_shell.dart';
-import 'package:anywork/src/features/conversation/widgets/latest_scroll.dart';
+import 'package:anywork/src/shared/latest_scroll.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_chrome.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -296,6 +296,7 @@ void main() {
     expect(position.maxScrollExtent, greaterThan(oldEnd));
     expect(position.pixels, closeTo(oldPixels, 1));
     expect(returnButton.hitTestable(), findsOneWidget);
+    expect(find.text('跳到最新 · 有新输出').hitTestable(), findsOneWidget);
 
     await tester.drag(list, Offset(0, -(position.extentAfter + 100)));
     await tester.pumpAndSettle();
@@ -311,6 +312,7 @@ void main() {
     await tester.drag(list, const Offset(0, 400));
     await tester.pumpAndSettle();
     expect(returnButton.hitTestable(), findsOneWidget);
+    expect(find.text('回到最新').hitTestable(), findsOneWidget);
     await tester.tap(returnButton);
     await tester.pumpAndSettle();
     expect(returnButton.hitTestable(), findsNothing);

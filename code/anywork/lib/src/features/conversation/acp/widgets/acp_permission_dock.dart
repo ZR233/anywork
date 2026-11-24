@@ -4,6 +4,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
+import '../../timeline/tools/items/acp/acp_tool_item.dart';
 import '../../timeline/widgets/timeline_patch_diff_view.dart';
 import '../state/acp_view_state.dart';
 
@@ -73,26 +74,37 @@ class AcpPermissionDock extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (request.kindLabel != null || request.locations.isNotEmpty) ...[
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  if (request.kindLabel case final kind?)
-                    StudioPill(label: kind, tone: StudioTone.brand),
-                  for (final loc in request.locations)
-                    StudioCompactChip(
-                      icon: Icons.place_outlined,
-                      label: loc,
-                      tooltip: loc,
-                      maxWidth: 300,
-                    ),
-                ],
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final chipMaxWidth = constraints.maxWidth.isFinite
+                      ? (constraints.maxWidth - 40).clamp(60.0, 300.0)
+                      : 300.0;
+                  return Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      if (request.kindLabel case final kind?)
+                        StudioPill(
+                          icon: acpToolKindIcon(kind),
+                          label: acpToolKindLocalizedLabel(l10n, kind) ?? kind,
+                          tone: StudioTone.brand,
+                        ),
+                      for (final loc in request.locations)
+                        StudioCompactChip(
+                          icon: Icons.place_outlined,
+                          label: loc,
+                          tooltip: loc,
+                          maxWidth: chipMaxWidth,
+                        ),
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 8),
             ],
             if (request.diffs.isNotEmpty)
               ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 160),
+                constraints: const BoxConstraints(maxHeight: 200),
                 child: SingleChildScrollView(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -100,19 +112,13 @@ class AcpPermissionDock extends StatelessWidget {
                     children: [
                       for (var i = 0; i < request.diffs.length; i++) ...[
                         if (i > 0) const SizedBox(height: 6),
-                        DecoratedBox(
-                          decoration: BoxDecoration(
-                            color: context.colors.surfaceContainerLow,
-                            borderRadius: BorderRadius.circular(StudioRadii.sm),
-                            border: Border.all(
-                              color: context.colors.outlineVariant,
-                            ),
-                          ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 6),
-                            child: TimelinePatchDiffView(
-                              document: request.diffs[i],
-                            ),
+                        TimelinePatchDiffView(
+                          document: request.diffs[i],
+                          softWrap: true,
+                          margin: EdgeInsets.zero,
+                          backgroundColor: context.colors.surfaceContainerLow,
+                          border: Border.all(
+                            color: context.colors.outlineVariant,
                           ),
                         ),
                       ],

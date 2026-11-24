@@ -11,7 +11,7 @@ import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../composer/views/composer_submission_status.dart';
-import '../../widgets/latest_scroll.dart';
+import '../../../../shared/latest_scroll.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_ui_controllers.dart';

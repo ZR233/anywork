@@ -31,7 +31,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outc
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
-import 'package:anywork/src/features/conversation/widgets/latest_scroll.dart';
+import 'package:anywork/src/shared/latest_scroll.dart';
 
 import 'timeline_preview_fixtures.dart';
 import 'model_request_wait_preview.dart';

@@ -9,6 +9,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   DirectoryCommands(this._client) : super(const DirectoryCommandState());
   final AnyworkClient _client;
   final CommandLane _lane = CommandLane();
+  final Set<String> _restoringThreads = {};
   int _standalonePreparationGeneration = 0;
 
   Future<void> close() {
@@ -81,8 +82,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   }
 
   Future<void> selectThread(String threadId) {
-    return _navigate((_) async {
+    if (_client.threadCommands.isThreadRemovalPending(threadId)) {
+      return Future<void>.error(StateError('Thread removal is pending'));
+    }
+    return _navigate((intent) async {
       final thread = await _requireThread(threadId);
+      if (!_ownsNavigation(intent)) return;
+      _throwIfRemovalPending(threadId, sessionId: thread.sessionId);
       _throwIfAccessBlocked(
         workspaceId: thread.workspaceId,
         threadId: threadId,
@@ -100,6 +106,13 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   }
 
   Future<void> selectAgentThread(String threadId) {
+    final sessionId = AgentDirectoryQueries.sessionId(
+      threadId: threadId,
+      agents: _client.project.state.agents?.values ?? const [],
+    );
+    if (_isRemovalPending(threadId, sessionId: sessionId)) {
+      return Future<void>.error(StateError('Thread removal is pending'));
+    }
     return _navigate((intent) => _selectAgentThread(threadId, intent));
   }
 
@@ -133,6 +146,7 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         _sessionMembers(sessionId).any((agent) => agent.threadId == threadId);
     final target = await _requireThread(threadId);
     if (!isCurrent()) return;
+    _throwIfRemovalPending(threadId, sessionId: target.sessionId);
     _throwIfAccessBlocked(
       workspaceId: selected.selectedProjectId,
       threadId: threadId,
@@ -161,6 +175,11 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   ///
   /// recovery 阻塞访问时保持待打开状态，由用户解除阻塞后再次触发。
   Future<void> openSelectedThread() {
+    final selectedId = _client.selection.state.selectedThreadId;
+    if (selectedId != null &&
+        _client.threadCommands.isThreadRemovalPending(selectedId)) {
+      return Future<void>.error(StateError('Thread removal is pending'));
+    }
     return _navigate((intent) async {
       final selection = _client.selection.state;
       final threadId = selection.selectedThreadId;
@@ -169,8 +188,9 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         workspaceId: selection.selectedProjectId,
         threadId: threadId,
       );
-      await _requireThread(threadId);
+      final thread = await _requireThread(threadId);
       if (!_ownsNavigation(intent)) return;
+      _throwIfRemovalPending(threadId, sessionId: thread.sessionId);
       _client.selection.markOpened();
     });
   }
@@ -245,24 +265,121 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     );
   }
 
-  Future<void> restoreThread(String threadId) {
-    return _navigate((intent) async {
-      final existing = await _readThread(threadId);
-      _throwIfAccessBlocked(
-        workspaceId: _workspaceIdForThread(threadId, existing),
-        threadId: threadId,
-      );
-      final thread = await _api.restoreThread(threadId);
-      if (!_ownsNavigation(intent)) return;
-      _throwIfAccessBlocked(
-        workspaceId: thread.workspaceId,
-        threadId: thread.threadId,
-      );
-      _client.selection.selectThread(
-        workspaceId: thread.workspaceId,
-        threadId: thread.threadId,
-      );
-    });
+  bool isThreadRestorePending(String threadId) =>
+      _restoringThreads.contains(threadId);
+
+  Future<void> restoreThread(String threadId) async {
+    _throwIfRemovalPending(threadId);
+    if (!_restoringThreads.add(threadId)) {
+      throw StateError('Thread restore is pending');
+    }
+    try {
+      await _navigate((intent) async {
+        final existing = await _readThread(threadId);
+        if (!_ownsNavigation(intent)) return;
+        _throwIfAccessBlocked(
+          workspaceId: _workspaceIdForThread(threadId, existing),
+          threadId: threadId,
+        );
+        final thread = await _api.restoreThread(threadId);
+        if (!_ownsNavigation(intent)) return;
+        _throwIfAccessBlocked(
+          workspaceId: thread.workspaceId,
+          threadId: thread.threadId,
+        );
+        _client.selection.selectThread(
+          workspaceId: thread.workspaceId,
+          threadId: thread.threadId,
+        );
+      });
+    } finally {
+      _restoringThreads.remove(threadId);
+    }
+  }
+
+  /// Moves the current root or member before its removal is sent. The caller
+  /// owns the command's lifetime. Directory reads use the original navigation
+  /// generation and run independently of both command queues.
+  Future<void> selectBeforeThreadRemoval(
+    String rootThreadId, {
+    required SessionDirectoryRow? root,
+    required int navigationGeneration,
+  }) async {
+    final selection = _client.selection.state;
+    final selectedId = selection.selectedThreadId;
+    final workspaceId = selection.selectedProjectId;
+    if (selectedId == null ||
+        workspaceId == null ||
+        !_ownsNavigation(navigationGeneration) ||
+        (root != null && root.workspaceId != workspaceId)) {
+      return;
+    }
+    try {
+      if (selectedId != rootThreadId &&
+          !await _isSelectedMemberOfRoot(
+            selectedId,
+            rootThreadId: rootThreadId,
+            workspaceId: workspaceId,
+            root: root,
+          )) {
+        return;
+      }
+    } catch (_) {
+      // A failed membership read cannot establish that the current selection
+      // belongs to the removal. The command can still proceed.
+      return;
+    }
+    try {
+      await _selectProjectDefault(workspaceId, navigationGeneration);
+    } catch (_) {
+      // Membership is known, but an eligible replacement could not be read.
+      if (_ownsNavigation(navigationGeneration)) {
+        _client.selection.selectProject(workspaceId);
+      }
+    }
+    // AppGraph normally changes the presentation demand on selection. Release
+    // the outgoing demand if it is still held for the removed member.
+    if (_ownsNavigation(navigationGeneration + 1) &&
+        _client.selection.state.selectedThreadId != selectedId &&
+        _client.conversations.visibleThreadId.value == selectedId) {
+      _client.conversations.setVisibleThread(null);
+    }
+  }
+
+  Future<bool> _isSelectedMemberOfRoot(
+    String selectedId, {
+    required String rootThreadId,
+    required String workspaceId,
+    required SessionDirectoryRow? root,
+  }) async {
+    final agents = _client.project.state.agents?.values ?? const [];
+    final selectedSession = AgentDirectoryQueries.sessionId(
+      threadId: selectedId,
+      agents: agents,
+    );
+    final targetSession =
+        root?.sessionId ??
+        agents
+            .where(
+              (agent) => agent.threadId == rootThreadId && agent.isRootAgent,
+            )
+            .firstOrNull
+            ?.sessionId;
+    if (selectedSession != null && targetSession != null) {
+      return selectedSession == targetSession;
+    }
+    final selected = await _readThread(selectedId);
+    if (selected == null ||
+        !selected.isChildRow ||
+        selected.workspaceId != workspaceId) {
+      return false;
+    }
+    if (targetSession != null) return selected.sessionId == targetSession;
+    final target = await _readThread(rootThreadId);
+    return target != null &&
+        target.isRootRow &&
+        target.workspaceId == workspaceId &&
+        target.sessionId == selected.sessionId;
   }
 
   Future<void> archiveProject(String workspaceId) {
@@ -526,38 +643,36 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
   }
 
   Future<bool> _selectProjectDefault(String workspaceId, int intent) async {
-    if (!_ownsNavigation(intent)) return false;
-    final frame = await _readThreads(
-      DirectoryQuery(workspaceId: workspaceId),
-      DirectoryWindow(),
-    );
-    if (!_ownsNavigation(intent)) return false;
-    String? threadId;
-    for (final candidateId in frame.threadIds) {
+    final query = DirectoryQuery(workspaceId: workspaceId);
+    String? cursor;
+    do {
       if (!_ownsNavigation(intent)) return false;
-      final row = await _readThread(candidateId);
-      if (!_ownsNavigation(intent)) return false;
-      if (row != null &&
-          row.isRootRow &&
-          row.workspaceId == workspaceId &&
-          _accessBlocker(
-                workspaceId: row.workspaceId,
-                threadId: row.threadId,
-              ) ==
-              null) {
-        threadId = candidateId;
-        break;
+      final frame = await _readThreads(query, DirectoryWindow(before: cursor));
+      for (final candidateId in frame.threadIds) {
+        if (!_ownsNavigation(intent)) return false;
+        if (_client.threadCommands.isThreadRemovalPending(candidateId)) {
+          continue;
+        }
+        final row = await _readThread(candidateId);
+        if (!_ownsNavigation(intent)) return false;
+        if (row != null &&
+            row.isRootRow &&
+            !row.archived &&
+            row.workspaceId == workspaceId &&
+            !_client.threadCommands.isThreadRemovalPending(candidateId) &&
+            _accessBlocker(workspaceId: workspaceId, threadId: candidateId) ==
+                null) {
+          _client.selection.selectThread(
+            workspaceId: workspaceId,
+            threadId: candidateId,
+          );
+          return true;
+        }
       }
-    }
+      cursor = frame.nextCursor;
+    } while (cursor != null);
     if (!_ownsNavigation(intent)) return false;
-    if (threadId == null) {
-      _client.selection.selectProject(workspaceId);
-    } else {
-      _client.selection.selectThread(
-        workspaceId: workspaceId,
-        threadId: threadId,
-      );
-    }
+    _client.selection.selectProject(workspaceId);
     return true;
   }
 
@@ -566,6 +681,21 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
         sessionId: sessionId,
         agents: _client.project.state.agents?.values ?? const [],
       );
+
+  bool _isRemovalPending(String threadId, {String? sessionId}) =>
+      _client.threadCommands.isThreadRemovalPending(threadId) ||
+      (sessionId != null &&
+          _sessionMembers(sessionId).any(
+            (agent) =>
+                agent.isRootAgent &&
+                _client.threadCommands.isThreadRemovalPending(agent.threadId),
+          ));
+
+  void _throwIfRemovalPending(String threadId, {String? sessionId}) {
+    if (_isRemovalPending(threadId, sessionId: sessionId)) {
+      throw StateError('Thread removal is pending');
+    }
+  }
 
   Future<SessionDirectoryRow?> _readThread(String threadId) async {
     final observation = _client.threadDirectory.observeThread(threadId);

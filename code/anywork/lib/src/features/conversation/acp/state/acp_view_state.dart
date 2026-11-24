@@ -113,6 +113,15 @@ enum AcpHistoryOriginKind {
 }
 
 @freezed
+abstract class AcpSlashCommandPresentation with _$AcpSlashCommandPresentation {
+  const factory AcpSlashCommandPresentation({
+    required String name,
+    required String description,
+    String? inputHint,
+  }) = _AcpSlashCommandPresentation;
+}
+
+@freezed
 abstract class AcpTimelineHeaderViewState with _$AcpTimelineHeaderViewState {
   const factory AcpTimelineHeaderViewState({
     @Default(true) bool loading,
@@ -122,7 +131,11 @@ abstract class AcpTimelineHeaderViewState with _$AcpTimelineHeaderViewState {
     @Default(0) int itemCount,
     @Default(false) bool hasConversationalContent,
     @Default(false) bool hasPlan,
+    @Default(false) bool running,
+    @Default(0) int pendingPermissionCount,
     @Default(<AcpCapabilityKind>[]) List<AcpCapabilityKind> capabilities,
+    @Default(<AcpSlashCommandPresentation>[])
+    List<AcpSlashCommandPresentation> availableCommands,
     String? errorMessage,
     AcpGapKind? gapKind,
     AcpHistoryOriginKind? historyKind,
@@ -205,7 +218,7 @@ sealed class AcpUpdatePresentation with _$AcpUpdatePresentation {
   }) = AcpCompactionUpdatePresentation;
 
   const factory AcpUpdatePresentation.availableCommands({
-    required List<({String name, String description})> commands,
+    required List<AcpSlashCommandPresentation> commands,
   }) = AcpCommandsUpdatePresentation;
 
   const factory AcpUpdatePresentation.sessionInfo() =
@@ -432,6 +445,8 @@ abstract class AcpComposerViewState with _$AcpComposerViewState {
     @Default(false) bool interrupting,
     @Default(false) bool canAttach,
     @Default(false) bool submitting,
+    @Default(<AcpSlashCommandPresentation>[])
+    List<AcpSlashCommandPresentation> availableCommands,
     AcpComposerBlocker? blocker,
     String? draftError,
   }) = _AcpComposerViewState;

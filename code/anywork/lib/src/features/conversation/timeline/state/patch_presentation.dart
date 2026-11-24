@@ -36,12 +36,50 @@ final class TimelinePatchFile {
   final String path;
   final String? moveTo;
   final List<TimelinePatchChunk> chunks;
+
+  int get additions {
+    var count = 0;
+    for (final chunk in chunks) {
+      for (final line in chunk.lines) {
+        if (line.kind == TimelinePatchLineKind.addition) count++;
+      }
+    }
+    return count;
+  }
+
+  int get deletions {
+    var count = 0;
+    for (final chunk in chunks) {
+      for (final line in chunk.lines) {
+        if (line.kind == TimelinePatchLineKind.deletion) count++;
+      }
+    }
+    return count;
+  }
 }
 
 final class TimelinePatchDocument {
   const TimelinePatchDocument({required this.files});
 
   final List<TimelinePatchFile> files;
+
+  int get additions {
+    var count = 0;
+    for (final file in files) {
+      count += file.additions;
+    }
+    return count;
+  }
+
+  int get deletions {
+    var count = 0;
+    for (final file in files) {
+      count += file.deletions;
+    }
+    return count;
+  }
+
+  bool get hasChanges => additions > 0 || deletions > 0;
 }
 
 /// 从 apply_patch 参数中提取补丁正文：仅接受 freeform 正文或当前契约的

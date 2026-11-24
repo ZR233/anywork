@@ -73,14 +73,9 @@ class SelectionStore extends ReadModel<SelectionStoreState> {
     );
   }
 
-  /// 目录增量显式移除当前会话时回退。不在已加载窗口内不等于不存在。
-  void replaceRemovedThread(String? nextThreadId) {
-    _assign(state.copyWith(selectedThreadId: nextThreadId, needsOpen: false));
-  }
-
   void _assign(SelectionStoreState next) {
-    // Direct selection changes and canonical removal also retire pending
-    // navigation, including explicit selection of an already selected value.
+    // Direct changes also retire pending navigation, including explicit
+    // selection of an already selected value.
     beginNavigation();
     if (next == state) return;
     state = next;
