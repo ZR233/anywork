@@ -276,7 +276,7 @@ impl CatalogStore {
     ) -> Result<()> {
         let now = crate::studio::ids::unix_seconds();
         self.store
-            .mutate(|document| {
+            .mutate(move |document| {
                 let previous = document.clone();
                 for mut session in delta.session_upserts {
                     if let Some(existing) = document
@@ -534,7 +534,7 @@ mod tests {
         let store = CatalogStore::load(path.clone())
             .await
             .expect("load current");
-        assert_eq!(store.lock().revision, 7);
+        assert_eq!(store.store.lock().revision, 7);
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("read"),
             encoded
@@ -550,7 +550,7 @@ mod tests {
             .upsert_agent(agent.clone())
             .await
             .expect("idempotent agent");
-        assert_eq!(store.lock().revision, 7);
+        assert_eq!(store.store.lock().revision, 7);
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("read"),
             encoded
@@ -659,7 +659,7 @@ mod tests {
             let store = CatalogStore::load(path.clone())
                 .await
                 .expect("load current ACP");
-            assert_eq!(*store.lock(), document);
+            assert_eq!(*store.store.lock(), document);
             assert_eq!(
                 tokio::fs::read_to_string(path).await.expect("read current"),
                 encoded
@@ -713,7 +713,7 @@ mod tests {
             .await
             .expect("legacy source");
         let store = CatalogStore::load(path.clone()).await.expect("upgrade V5");
-        assert_eq!(*store.lock(), document);
+        assert_eq!(*store.store.lock(), document);
         let upgraded = tokio::fs::read_to_string(&path).await.expect("upgraded");
         assert_ne!(upgraded, legacy);
         assert_eq!(
@@ -722,7 +722,7 @@ mod tests {
         );
         drop(store);
         let reopened = CatalogStore::load(path.clone()).await.expect("reopen V8");
-        assert_eq!(*reopened.lock(), document);
+        assert_eq!(*reopened.store.lock(), document);
         assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), upgraded);
     }
 
@@ -869,7 +869,7 @@ mod tests {
         );
         drop(store);
         let store = CatalogStore::load(path.clone()).await.expect("reopen");
-        assert_eq!(store.lock().revision, 4);
+        assert_eq!(store.store.lock().revision, 4);
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("stable"),
             first
