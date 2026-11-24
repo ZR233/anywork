@@ -80,7 +80,7 @@ Widget _sidebar() => StudioSidebar(
   onNewProjectSession: (_) {},
   onSelectThread: (_) {},
   onProjectAction: (_, _) {},
-  onThreadAction: (_, _, _) {},
+  onThreadAction: (_, _, _, _) {},
   onSettings: () {},
 );
 

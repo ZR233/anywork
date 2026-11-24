@@ -98,9 +98,10 @@ Widget _wholeSidebar({required double width, double textScale = 1}) =>
               recordSidebarPreviewIntent('select thread ${row.threadId}'),
           onProjectAction: (project, action) =>
               recordSidebarPreviewIntent('project ${project.id}: $action'),
-          onThreadAction: (project, row, action) => recordSidebarPreviewIntent(
-            'thread ${row.threadId} in ${project.id}: $action',
-          ),
+          onThreadAction: (project, row, action, _) =>
+              recordSidebarPreviewIntent(
+                'thread ${row.threadId} in ${project.id}: $action',
+              ),
           onSettings: () => recordSidebarPreviewIntent('settings'),
         ),
       ),
@@ -236,14 +237,20 @@ Widget sidebarThreadRowPreview() => _sidebarPreviewHost(
 Widget sidebarDeleteConfirmationPreview() => _sidebarPreviewHost(
   Builder(
     builder: (context) {
-      final pending = Completer<void>();
-      return ThreadDestructiveActionDialog(
-        title: context.l10n.sidebarDeleteSessionConfirmTitle('主会话'),
-        body: context.l10n.sidebarDeleteSessionConfirmBody,
-        actionLabel: context.l10n.sidebarDeleteSessionConfirmAction,
-        confirmKey: const ValueKey('sidebar-delete-preview-confirm'),
-        danger: true,
-        onConfirm: () => pending.future,
+      return TextButton(
+        onPressed: () => unawaited(
+          showDialog<bool>(
+            context: context,
+            builder: (context) => ThreadDestructiveActionDialog(
+              title: context.l10n.sidebarDeleteSessionConfirmTitle('主会话'),
+              body: context.l10n.sidebarDeleteSessionConfirmBody,
+              actionLabel: context.l10n.sidebarDeleteSessionConfirmAction,
+              confirmKey: const ValueKey('sidebar-delete-preview-confirm'),
+              danger: true,
+            ),
+          ),
+        ),
+        child: Text(context.l10n.sidebarDeleteSession),
       );
     },
   ),

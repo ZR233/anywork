@@ -287,7 +287,7 @@ packages:
     source: hosted
     version: "0.9.2"
   diffutil_dart:
-    dependency: "direct overridden"
+    dependency: "direct main"
     description:
       name: diffutil_dart
       sha256: "794bf169096770b6ba60da12c6480116dfefa891c19fc4518ec80ad516f69bb9"

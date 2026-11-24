@@ -193,6 +193,8 @@
   "sidebarArchiveSessionConfirmTitle": "归档会话",
   "sidebarArchiveSessionConfirmBody": "归档将停止该会话及其子会话，删除专属工作树及其中的未提交内容，并清理临时文件。会话历史与附件将保留。",
   "sidebarArchiveSessionConfirmAction": "归档",
+  "sidebarArchiveSessionSucceeded": "已归档“{title}”",
+  "sidebarArchiveSessionResultFailed": "无法归档“{title}”。{reason}",
   "sidebarDeleteSession": "删除会话",
   "sidebarDeleteSessionConfirmTitle": "永久删除“{title}”及其全部子会话？",
   "@sidebarDeleteSessionConfirmTitle": {
@@ -204,6 +206,8 @@
   },
   "sidebarDeleteSessionConfirmBody": "这将永久删除该会话树的聊天记录、附件与资源、笔记与计划、报告与评价、调用统计、临时文件、产物及专属工作树，且无法恢复。普通项目目录不受影响。",
   "sidebarDeleteSessionConfirmAction": "永久删除",
+  "sidebarDeleteSessionSucceeded": "已删除“{title}”",
+  "sidebarDeleteSessionResultFailed": "无法删除“{title}”。{reason}",
   "sidebarRenameSession": "重命名会话",
   "sidebarRenameSessionTitle": "重命名会话",
   "sidebarRenameSessionInput": "会话标题",
@@ -3315,5 +3319,37 @@
   "accountsGeminiPresetGlobal": "global（推荐）",
   "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",
   "accountsGeminiCredentialLabelVertex": "Vertex AI API 密钥",
-  "accountsGeminiCredentialLabelAiStudio": "Gemini API 密钥"
+  "accountsGeminiCredentialLabelAiStudio": "Gemini API 密钥",
+  "timelineDiffStatLabel": "新增 {additions} 行，删除 {deletions} 行",
+  "@timelineDiffStatLabel": {
+    "placeholders": {
+      "additions": {
+        "type": "int"
+      },
+      "deletions": {
+        "type": "int"
+      }
+    }
+  },
+  "timelinePatchCopyPath": "复制路径",
+  "acpCopyMessage": "复制消息",
+  "acpJumpToPendingPermission": "跳到最新 · 等待权限确认",
+  "acpJumpToRunning": "跳到最新 · 运行中",
+  "acpJumpToNewOutput": "跳到最新 · 有新输出",
+  "acpPlanCompletedHeadline": "执行计划已完成",
+  "acpSlashMenuLabel": "斜杠命令",
+  "acpSlashMenuNoMatches": "无匹配命令",
+  "acpHistorySearchHint": "搜索标题、路径或会话 ID",
+  "acpHistorySearchCount": "{matched} / {total}",
+  "@acpHistorySearchCount": {
+    "placeholders": {
+      "matched": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySearchEmpty": "没有匹配的外部会话"
 }

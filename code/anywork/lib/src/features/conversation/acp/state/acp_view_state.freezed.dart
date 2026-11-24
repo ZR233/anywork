@@ -316,9 +316,279 @@ as String?,
 }
 
 /// @nodoc
+mixin _$AcpSlashCommandPresentation {
+
+ String get name; String get description; String? get inputHint;
+/// Create a copy of AcpSlashCommandPresentation
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$AcpSlashCommandPresentationCopyWith<AcpSlashCommandPresentation> get copyWith => _$AcpSlashCommandPresentationCopyWithImpl<AcpSlashCommandPresentation>(this as AcpSlashCommandPresentation, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  final _this = this as AcpSlashCommandPresentation;
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpSlashCommandPresentation&&(identical(other.name, _this.name) || other.name == _this.name)&&(identical(other.description, _this.description) || other.description == _this.description)&&(identical(other.inputHint, _this.inputHint) || other.inputHint == _this.inputHint));
+}
+
+
+@override
+int get hashCode {
+  final _this = this as AcpSlashCommandPresentation;
+  return Object.hash(runtimeType,_this.name,_this.description,_this.inputHint);
+}
+
+@override
+String toString() {
+  final _this = this as AcpSlashCommandPresentation;
+  return 'AcpSlashCommandPresentation(name: ${_this.name}, description: ${_this.description}, inputHint: ${_this.inputHint})';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $AcpSlashCommandPresentationCopyWith<$Res>  {
+  factory $AcpSlashCommandPresentationCopyWith(AcpSlashCommandPresentation value, $Res Function(AcpSlashCommandPresentation) _then) = _$AcpSlashCommandPresentationCopyWithImpl;
+@useResult
+$Res call({
+ String name, String description, String? inputHint
+});
+
+
+
+
+}
+/// @nodoc
+class _$AcpSlashCommandPresentationCopyWithImpl<$Res>
+    implements $AcpSlashCommandPresentationCopyWith<$Res> {
+  _$AcpSlashCommandPresentationCopyWithImpl(this._self, this._then);
+
+  final AcpSlashCommandPresentation _self;
+  final $Res Function(AcpSlashCommandPresentation) _then;
+
+/// Create a copy of AcpSlashCommandPresentation
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') @override $Res call({Object? name = null,Object? description = null,Object? inputHint = freezed,}) {
+  return _then(AcpSlashCommandPresentation(
+name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,description: null == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
+as String,inputHint: freezed == inputHint ? _self.inputHint : inputHint // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+}
+
+
+/// Adds pattern-matching-related methods to [AcpSlashCommandPresentation].
+extension AcpSlashCommandPresentationPatterns on AcpSlashCommandPresentation {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>(TResult Function( _AcpSlashCommandPresentation value)?  $default,{required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation() when $default != null:
+return $default(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>(TResult Function( _AcpSlashCommandPresentation value)  $default,){
+final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation():
+return $default(_that);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>(TResult? Function( _AcpSlashCommandPresentation value)?  $default,){
+final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation() when $default != null:
+return $default(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String name,  String description,  String? inputHint)?  $default,{required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation() when $default != null:
+return $default(_that.name,_that.description,_that.inputHint);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String name,  String description,  String? inputHint)  $default,) {final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation():
+return $default(_that.name,_that.description,_that.inputHint);case _:
+  throw StateError('Unexpected subclass');
+
+}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String name,  String description,  String? inputHint)?  $default,) {final _that = this;
+switch (_that) {
+case _AcpSlashCommandPresentation() when $default != null:
+return $default(_that.name,_that.description,_that.inputHint);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class _AcpSlashCommandPresentation implements AcpSlashCommandPresentation {
+  const _AcpSlashCommandPresentation({required this.name, required this.description, this.inputHint});
+
+
+@override final  String name;
+@override final  String description;
+@override final  String? inputHint;
+
+/// Create a copy of AcpSlashCommandPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+_$AcpSlashCommandPresentationCopyWith<_AcpSlashCommandPresentation> get copyWith => __$AcpSlashCommandPresentationCopyWithImpl<_AcpSlashCommandPresentation>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpSlashCommandPresentation&&(identical(other.name, name) || other.name == name)&&(identical(other.description, description) || other.description == description)&&(identical(other.inputHint, inputHint) || other.inputHint == inputHint));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,name,description,inputHint);
+}
+
+@override
+String toString() {
+    return 'AcpSlashCommandPresentation(name: $name, description: $description, inputHint: $inputHint)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class _$AcpSlashCommandPresentationCopyWith<$Res> implements $AcpSlashCommandPresentationCopyWith<$Res> {
+  factory _$AcpSlashCommandPresentationCopyWith(_AcpSlashCommandPresentation value, $Res Function(_AcpSlashCommandPresentation) _then) = __$AcpSlashCommandPresentationCopyWithImpl;
+@override @useResult
+$Res call({
+ String name, String description, String? inputHint
+});
+
+
+
+
+}
+/// @nodoc
+class __$AcpSlashCommandPresentationCopyWithImpl<$Res>
+    implements _$AcpSlashCommandPresentationCopyWith<$Res> {
+  __$AcpSlashCommandPresentationCopyWithImpl(this._self, this._then);
+
+  final _AcpSlashCommandPresentation _self;
+  final $Res Function(_AcpSlashCommandPresentation) _then;
+
+/// Create a copy of AcpSlashCommandPresentation
+/// with the given fields replaced by the non-null parameter values.
+@override @pragma('vm:prefer-inline') $Res call({Object? name = null,Object? description = null,Object? inputHint = freezed,}) {
+  return _then(_AcpSlashCommandPresentation(
+name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
+as String,description: null == description ? _self.description : description // ignore: cast_nullable_to_non_nullable
+as String,inputHint: freezed == inputHint ? _self.inputHint : inputHint // ignore: cast_nullable_to_non_nullable
+as String?,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$AcpTimelineHeaderViewState {
 
- bool get loading; bool get ready; bool get disconnected; bool get observationEnded; int get itemCount; bool get hasConversationalContent; bool get hasPlan; List<AcpCapabilityKind> get capabilities; String? get errorMessage; AcpGapKind? get gapKind; AcpHistoryOriginKind? get historyKind;
+ bool get loading; bool get ready; bool get disconnected; bool get observationEnded; int get itemCount; bool get hasConversationalContent; bool get hasPlan; bool get running; int get pendingPermissionCount; List<AcpCapabilityKind> get capabilities; List<AcpSlashCommandPresentation> get availableCommands; String? get errorMessage; AcpGapKind? get gapKind; AcpHistoryOriginKind? get historyKind;
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -330,20 +600,20 @@ $AcpTimelineHeaderViewStateCopyWith<AcpTimelineHeaderViewState> get copyWith => 
 @override
 bool operator ==(Object other) {
   final _this = this as AcpTimelineHeaderViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineHeaderViewState&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.ready, _this.ready) || other.ready == _this.ready)&&(identical(other.disconnected, _this.disconnected) || other.disconnected == _this.disconnected)&&(identical(other.observationEnded, _this.observationEnded) || other.observationEnded == _this.observationEnded)&&(identical(other.itemCount, _this.itemCount) || other.itemCount == _this.itemCount)&&(identical(other.hasConversationalContent, _this.hasConversationalContent) || other.hasConversationalContent == _this.hasConversationalContent)&&(identical(other.hasPlan, _this.hasPlan) || other.hasPlan == _this.hasPlan)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities)&&(identical(other.errorMessage, _this.errorMessage) || other.errorMessage == _this.errorMessage)&&(identical(other.gapKind, _this.gapKind) || other.gapKind == _this.gapKind)&&(identical(other.historyKind, _this.historyKind) || other.historyKind == _this.historyKind));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpTimelineHeaderViewState&&(identical(other.loading, _this.loading) || other.loading == _this.loading)&&(identical(other.ready, _this.ready) || other.ready == _this.ready)&&(identical(other.disconnected, _this.disconnected) || other.disconnected == _this.disconnected)&&(identical(other.observationEnded, _this.observationEnded) || other.observationEnded == _this.observationEnded)&&(identical(other.itemCount, _this.itemCount) || other.itemCount == _this.itemCount)&&(identical(other.hasConversationalContent, _this.hasConversationalContent) || other.hasConversationalContent == _this.hasConversationalContent)&&(identical(other.hasPlan, _this.hasPlan) || other.hasPlan == _this.hasPlan)&&(identical(other.running, _this.running) || other.running == _this.running)&&(identical(other.pendingPermissionCount, _this.pendingPermissionCount) || other.pendingPermissionCount == _this.pendingPermissionCount)&&const DeepCollectionEquality().equals(other.capabilities, _this.capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _this.availableCommands)&&(identical(other.errorMessage, _this.errorMessage) || other.errorMessage == _this.errorMessage)&&(identical(other.gapKind, _this.gapKind) || other.gapKind == _this.gapKind)&&(identical(other.historyKind, _this.historyKind) || other.historyKind == _this.historyKind));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpTimelineHeaderViewState;
-  return Object.hash(runtimeType,_this.loading,_this.ready,_this.disconnected,_this.observationEnded,_this.itemCount,_this.hasConversationalContent,_this.hasPlan,const DeepCollectionEquality().hash(_this.capabilities),_this.errorMessage,_this.gapKind,_this.historyKind);
+  return Object.hash(runtimeType,_this.loading,_this.ready,_this.disconnected,_this.observationEnded,_this.itemCount,_this.hasConversationalContent,_this.hasPlan,_this.running,_this.pendingPermissionCount,const DeepCollectionEquality().hash(_this.capabilities),const DeepCollectionEquality().hash(_this.availableCommands),_this.errorMessage,_this.gapKind,_this.historyKind);
 }
 
 @override
 String toString() {
   final _this = this as AcpTimelineHeaderViewState;
-  return 'AcpTimelineHeaderViewState(loading: ${_this.loading}, ready: ${_this.ready}, disconnected: ${_this.disconnected}, observationEnded: ${_this.observationEnded}, itemCount: ${_this.itemCount}, hasConversationalContent: ${_this.hasConversationalContent}, hasPlan: ${_this.hasPlan}, capabilities: ${_this.capabilities}, errorMessage: ${_this.errorMessage}, gapKind: ${_this.gapKind}, historyKind: ${_this.historyKind})';
+  return 'AcpTimelineHeaderViewState(loading: ${_this.loading}, ready: ${_this.ready}, disconnected: ${_this.disconnected}, observationEnded: ${_this.observationEnded}, itemCount: ${_this.itemCount}, hasConversationalContent: ${_this.hasConversationalContent}, hasPlan: ${_this.hasPlan}, running: ${_this.running}, pendingPermissionCount: ${_this.pendingPermissionCount}, capabilities: ${_this.capabilities}, availableCommands: ${_this.availableCommands}, errorMessage: ${_this.errorMessage}, gapKind: ${_this.gapKind}, historyKind: ${_this.historyKind})';
 }
 
 
@@ -354,7 +624,7 @@ abstract mixin class $AcpTimelineHeaderViewStateCopyWith<$Res>  {
   factory $AcpTimelineHeaderViewStateCopyWith(AcpTimelineHeaderViewState value, $Res Function(AcpTimelineHeaderViewState) _then) = _$AcpTimelineHeaderViewStateCopyWithImpl;
 @useResult
 $Res call({
- bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, List<AcpCapabilityKind> capabilities, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
+ bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, bool running, int pendingPermissionCount, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
 });
 
 
@@ -371,7 +641,7 @@ class _$AcpTimelineHeaderViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? capabilities = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? running = null,Object? pendingPermissionCount = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
   return _then(AcpTimelineHeaderViewState(
 loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
@@ -380,8 +650,11 @@ as bool,observationEnded: null == observationEnded ? _self.observationEnded : ob
 as bool,itemCount: null == itemCount ? _self.itemCount : itemCount // ignore: cast_nullable_to_non_nullable
 as int,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
 as bool,hasPlan: null == hasPlan ? _self.hasPlan : hasPlan // ignore: cast_nullable_to_non_nullable
-as bool,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
-as List<AcpCapabilityKind>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
+as bool,running: null == running ? _self.running : running // ignore: cast_nullable_to_non_nullable
+as bool,pendingPermissionCount: null == pendingPermissionCount ? _self.pendingPermissionCount : pendingPermissionCount // ignore: cast_nullable_to_non_nullable
+as int,capabilities: null == capabilities ? _self.capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as List<AcpCapabilityKind>,availableCommands: null == availableCommands ? _self.availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
+as List<AcpSlashCommandPresentation>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
 as String?,gapKind: freezed == gapKind ? _self.gapKind : gapKind // ignore: cast_nullable_to_non_nullable
 as AcpGapKind?,historyKind: freezed == historyKind ? _self.historyKind : historyKind // ignore: cast_nullable_to_non_nullable
 as AcpHistoryOriginKind?,
@@ -469,10 +742,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  List<AcpCapabilityKind> capabilities,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState() when $default != null:
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.capabilities,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   return orElse();
 
 }
@@ -490,10 +763,10 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  List<AcpCapabilityKind> capabilities,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)  $default,) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState():
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.capabilities,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -510,10 +783,10 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  List<AcpCapabilityKind> capabilities,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( bool loading,  bool ready,  bool disconnected,  bool observationEnded,  int itemCount,  bool hasConversationalContent,  bool hasPlan,  bool running,  int pendingPermissionCount,  List<AcpCapabilityKind> capabilities,  List<AcpSlashCommandPresentation> availableCommands,  String? errorMessage,  AcpGapKind? gapKind,  AcpHistoryOriginKind? historyKind)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpTimelineHeaderViewState() when $default != null:
-return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.capabilities,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
+return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEnded,_that.itemCount,_that.hasConversationalContent,_that.hasPlan,_that.running,_that.pendingPermissionCount,_that.capabilities,_that.availableCommands,_that.errorMessage,_that.gapKind,_that.historyKind);case _:
   return null;
 
 }
@@ -525,7 +798,7 @@ return $default(_that.loading,_that.ready,_that.disconnected,_that.observationEn
 
 
 class _AcpTimelineHeaderViewState implements AcpTimelineHeaderViewState {
-  const _AcpTimelineHeaderViewState({this.loading = true, this.ready = false, this.disconnected = false, this.observationEnded = false, this.itemCount = 0, this.hasConversationalContent = false, this.hasPlan = false,  List<AcpCapabilityKind> capabilities = const <AcpCapabilityKind>[], this.errorMessage, this.gapKind, this.historyKind}): _capabilities = capabilities;
+  const _AcpTimelineHeaderViewState({this.loading = true, this.ready = false, this.disconnected = false, this.observationEnded = false, this.itemCount = 0, this.hasConversationalContent = false, this.hasPlan = false, this.running = false, this.pendingPermissionCount = 0,  List<AcpCapabilityKind> capabilities = const <AcpCapabilityKind>[],  List<AcpSlashCommandPresentation> availableCommands = const <AcpSlashCommandPresentation>[], this.errorMessage, this.gapKind, this.historyKind}): _capabilities = capabilities,_availableCommands = availableCommands;
 
 
 @override@JsonKey() final  bool loading;
@@ -535,11 +808,20 @@ class _AcpTimelineHeaderViewState implements AcpTimelineHeaderViewState {
 @override@JsonKey() final  int itemCount;
 @override@JsonKey() final  bool hasConversationalContent;
 @override@JsonKey() final  bool hasPlan;
+@override@JsonKey() final  bool running;
+@override@JsonKey() final  int pendingPermissionCount;
  final  List<AcpCapabilityKind> _capabilities;
 @override@JsonKey() List<AcpCapabilityKind> get capabilities {
   if (_capabilities is EqualUnmodifiableListView) return _capabilities;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_capabilities);
+}
+
+ final  List<AcpSlashCommandPresentation> _availableCommands;
+@override@JsonKey() List<AcpSlashCommandPresentation> get availableCommands {
+  if (_availableCommands is EqualUnmodifiableListView) return _availableCommands;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_availableCommands);
 }
 
 @override final  String? errorMessage;
@@ -556,18 +838,18 @@ _$AcpTimelineHeaderViewStateCopyWith<_AcpTimelineHeaderViewState> get copyWith =
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpTimelineHeaderViewState&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.ready, ready) || other.ready == ready)&&(identical(other.disconnected, disconnected) || other.disconnected == disconnected)&&(identical(other.observationEnded, observationEnded) || other.observationEnded == observationEnded)&&(identical(other.itemCount, itemCount) || other.itemCount == itemCount)&&(identical(other.hasConversationalContent, hasConversationalContent) || other.hasConversationalContent == hasConversationalContent)&&(identical(other.hasPlan, hasPlan) || other.hasPlan == hasPlan)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage)&&(identical(other.gapKind, gapKind) || other.gapKind == gapKind)&&(identical(other.historyKind, historyKind) || other.historyKind == historyKind));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpTimelineHeaderViewState&&(identical(other.loading, loading) || other.loading == loading)&&(identical(other.ready, ready) || other.ready == ready)&&(identical(other.disconnected, disconnected) || other.disconnected == disconnected)&&(identical(other.observationEnded, observationEnded) || other.observationEnded == observationEnded)&&(identical(other.itemCount, itemCount) || other.itemCount == itemCount)&&(identical(other.hasConversationalContent, hasConversationalContent) || other.hasConversationalContent == hasConversationalContent)&&(identical(other.hasPlan, hasPlan) || other.hasPlan == hasPlan)&&(identical(other.running, running) || other.running == running)&&(identical(other.pendingPermissionCount, pendingPermissionCount) || other.pendingPermissionCount == pendingPermissionCount)&&const DeepCollectionEquality().equals(other.capabilities, _capabilities)&&const DeepCollectionEquality().equals(other.availableCommands, _availableCommands)&&(identical(other.errorMessage, errorMessage) || other.errorMessage == errorMessage)&&(identical(other.gapKind, gapKind) || other.gapKind == gapKind)&&(identical(other.historyKind, historyKind) || other.historyKind == historyKind));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,loading,ready,disconnected,observationEnded,itemCount,hasConversationalContent,hasPlan,const DeepCollectionEquality().hash(_capabilities),errorMessage,gapKind,historyKind);
+    return Object.hash(runtimeType,loading,ready,disconnected,observationEnded,itemCount,hasConversationalContent,hasPlan,running,pendingPermissionCount,const DeepCollectionEquality().hash(_capabilities),const DeepCollectionEquality().hash(_availableCommands),errorMessage,gapKind,historyKind);
 }
 
 @override
 String toString() {
-    return 'AcpTimelineHeaderViewState(loading: $loading, ready: $ready, disconnected: $disconnected, observationEnded: $observationEnded, itemCount: $itemCount, hasConversationalContent: $hasConversationalContent, hasPlan: $hasPlan, capabilities: $capabilities, errorMessage: $errorMessage, gapKind: $gapKind, historyKind: $historyKind)';
+    return 'AcpTimelineHeaderViewState(loading: $loading, ready: $ready, disconnected: $disconnected, observationEnded: $observationEnded, itemCount: $itemCount, hasConversationalContent: $hasConversationalContent, hasPlan: $hasPlan, running: $running, pendingPermissionCount: $pendingPermissionCount, capabilities: $capabilities, availableCommands: $availableCommands, errorMessage: $errorMessage, gapKind: $gapKind, historyKind: $historyKind)';
 }
 
 
@@ -578,7 +860,7 @@ abstract mixin class _$AcpTimelineHeaderViewStateCopyWith<$Res> implements $AcpT
   factory _$AcpTimelineHeaderViewStateCopyWith(_AcpTimelineHeaderViewState value, $Res Function(_AcpTimelineHeaderViewState) _then) = __$AcpTimelineHeaderViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, List<AcpCapabilityKind> capabilities, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
+ bool loading, bool ready, bool disconnected, bool observationEnded, int itemCount, bool hasConversationalContent, bool hasPlan, bool running, int pendingPermissionCount, List<AcpCapabilityKind> capabilities, List<AcpSlashCommandPresentation> availableCommands, String? errorMessage, AcpGapKind? gapKind, AcpHistoryOriginKind? historyKind
 });
 
 
@@ -595,7 +877,7 @@ class __$AcpTimelineHeaderViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpTimelineHeaderViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? capabilities = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? loading = null,Object? ready = null,Object? disconnected = null,Object? observationEnded = null,Object? itemCount = null,Object? hasConversationalContent = null,Object? hasPlan = null,Object? running = null,Object? pendingPermissionCount = null,Object? capabilities = null,Object? availableCommands = null,Object? errorMessage = freezed,Object? gapKind = freezed,Object? historyKind = freezed,}) {
   return _then(_AcpTimelineHeaderViewState(
 loading: null == loading ? _self.loading : loading // ignore: cast_nullable_to_non_nullable
 as bool,ready: null == ready ? _self.ready : ready // ignore: cast_nullable_to_non_nullable
@@ -604,8 +886,11 @@ as bool,observationEnded: null == observationEnded ? _self.observationEnded : ob
 as bool,itemCount: null == itemCount ? _self.itemCount : itemCount // ignore: cast_nullable_to_non_nullable
 as int,hasConversationalContent: null == hasConversationalContent ? _self.hasConversationalContent : hasConversationalContent // ignore: cast_nullable_to_non_nullable
 as bool,hasPlan: null == hasPlan ? _self.hasPlan : hasPlan // ignore: cast_nullable_to_non_nullable
-as bool,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
-as List<AcpCapabilityKind>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
+as bool,running: null == running ? _self.running : running // ignore: cast_nullable_to_non_nullable
+as bool,pendingPermissionCount: null == pendingPermissionCount ? _self.pendingPermissionCount : pendingPermissionCount // ignore: cast_nullable_to_non_nullable
+as int,capabilities: null == capabilities ? _self._capabilities : capabilities // ignore: cast_nullable_to_non_nullable
+as List<AcpCapabilityKind>,availableCommands: null == availableCommands ? _self._availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
+as List<AcpSlashCommandPresentation>,errorMessage: freezed == errorMessage ? _self.errorMessage : errorMessage // ignore: cast_nullable_to_non_nullable
 as String?,gapKind: freezed == gapKind ? _self.gapKind : gapKind // ignore: cast_nullable_to_non_nullable
 as AcpGapKind?,historyKind: freezed == historyKind ? _self.historyKind : historyKind // ignore: cast_nullable_to_non_nullable
 as AcpHistoryOriginKind?,
@@ -1892,7 +2177,7 @@ return generic(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult Function( List<({String description, String name,})> commands)?  availableCommands,TResult Function()?  sessionInfo,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( String title,  String? description)?  notice,TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult Function()?  sessionInfo,TResult Function()?  superseded,TResult Function()?  generic,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
@@ -1919,7 +2204,7 @@ return generic();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)  compaction,required TResult Function( List<({String description, String name,})> commands)  availableCommands,required TResult Function()  sessionInfo,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( String title,  String? description)  notice,required TResult Function( String usedFormatted,  String sizeFormatted,  String? costLabel)  usage,required TResult Function( String statusLabel,  String? errorMessage,  bool inProgress)  compaction,required TResult Function( List<AcpSlashCommandPresentation> commands)  availableCommands,required TResult Function()  sessionInfo,required TResult Function()  superseded,required TResult Function()  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation():
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation():
@@ -1942,7 +2227,7 @@ return generic();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult? Function( List<({String description, String name,})> commands)?  availableCommands,TResult? Function()?  sessionInfo,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( String title,  String? description)?  notice,TResult? Function( String usedFormatted,  String sizeFormatted,  String? costLabel)?  usage,TResult? Function( String statusLabel,  String? errorMessage,  bool inProgress)?  compaction,TResult? Function( List<AcpSlashCommandPresentation> commands)?  availableCommands,TResult? Function()?  sessionInfo,TResult? Function()?  superseded,TResult? Function()?  generic,}) {final _that = this;
 switch (_that) {
 case AcpNoticeUpdatePresentation() when notice != null:
 return notice(_that.title,_that.description);case AcpUsageUpdatePresentation() when usage != null:
@@ -2177,11 +2462,11 @@ as bool,
 
 
 class AcpCommandsUpdatePresentation implements AcpUpdatePresentation {
-  const AcpCommandsUpdatePresentation({required  List<({String description, String name,})> commands}): _commands = commands;
+  const AcpCommandsUpdatePresentation({required  List<AcpSlashCommandPresentation> commands}): _commands = commands;
 
 
- final  List<({String description, String name,})> _commands;
- List<({String description, String name,})> get commands {
+ final  List<AcpSlashCommandPresentation> _commands;
+ List<AcpSlashCommandPresentation> get commands {
   if (_commands is EqualUnmodifiableListView) return _commands;
   // ignore: implicit_dynamic_type
   return EqualUnmodifiableListView(_commands);
@@ -2220,7 +2505,7 @@ abstract mixin class $AcpCommandsUpdatePresentationCopyWith<$Res> implements $Ac
   factory $AcpCommandsUpdatePresentationCopyWith(AcpCommandsUpdatePresentation value, $Res Function(AcpCommandsUpdatePresentation) _then) = _$AcpCommandsUpdatePresentationCopyWithImpl;
 @useResult
 $Res call({
- List<({String description, String name,})> commands
+ List<AcpSlashCommandPresentation> commands
 });
 
 
@@ -2240,7 +2525,7 @@ class _$AcpCommandsUpdatePresentationCopyWithImpl<$Res>
 @pragma('vm:prefer-inline') $Res call({Object? commands = null,}) {
   return _then(AcpCommandsUpdatePresentation(
 commands: null == commands ? _self._commands : commands // ignore: cast_nullable_to_non_nullable
-as List<({String description, String name,})>,
+as List<AcpSlashCommandPresentation>,
   ));
 }
 
@@ -5938,7 +6223,7 @@ as String?,
 /// @nodoc
 mixin _$AcpComposerViewState {
 
- String get threadId; String get draftText; List<AttachmentDraftView> get attachments; List<ModelInputCapabilityView> get localCapabilities; List<ModelInputCapabilityView> get remoteCapabilities; bool get supportsImagePaste; bool get canSend; bool get isRunning; bool get canInterrupt; bool get interrupting; bool get canAttach; bool get submitting; AcpComposerBlocker? get blocker; String? get draftError;
+ String get threadId; String get draftText; List<AttachmentDraftView> get attachments; List<ModelInputCapabilityView> get localCapabilities; List<ModelInputCapabilityView> get remoteCapabilities; bool get supportsImagePaste; bool get canSend; bool get isRunning; bool get canInterrupt; bool get interrupting; bool get canAttach; bool get submitting; List<AcpSlashCommandPresentation> get availableCommands; AcpComposerBlocker? get blocker; String? get draftError;
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
@@ -5950,20 +6235,20 @@ $AcpComposerViewStateCopyWith<AcpComposerViewState> get copyWith => _$AcpCompose
 @override
 bool operator ==(Object other) {
   final _this = this as AcpComposerViewState;
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpComposerViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.draftText, _this.draftText) || other.draftText == _this.draftText)&&const DeepCollectionEquality().equals(other.attachments, _this.attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _this.localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _this.remoteCapabilities)&&(identical(other.supportsImagePaste, _this.supportsImagePaste) || other.supportsImagePaste == _this.supportsImagePaste)&&(identical(other.canSend, _this.canSend) || other.canSend == _this.canSend)&&(identical(other.isRunning, _this.isRunning) || other.isRunning == _this.isRunning)&&(identical(other.canInterrupt, _this.canInterrupt) || other.canInterrupt == _this.canInterrupt)&&(identical(other.interrupting, _this.interrupting) || other.interrupting == _this.interrupting)&&(identical(other.canAttach, _this.canAttach) || other.canAttach == _this.canAttach)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&(identical(other.blocker, _this.blocker) || other.blocker == _this.blocker)&&(identical(other.draftError, _this.draftError) || other.draftError == _this.draftError));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is AcpComposerViewState&&(identical(other.threadId, _this.threadId) || other.threadId == _this.threadId)&&(identical(other.draftText, _this.draftText) || other.draftText == _this.draftText)&&const DeepCollectionEquality().equals(other.attachments, _this.attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _this.localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _this.remoteCapabilities)&&(identical(other.supportsImagePaste, _this.supportsImagePaste) || other.supportsImagePaste == _this.supportsImagePaste)&&(identical(other.canSend, _this.canSend) || other.canSend == _this.canSend)&&(identical(other.isRunning, _this.isRunning) || other.isRunning == _this.isRunning)&&(identical(other.canInterrupt, _this.canInterrupt) || other.canInterrupt == _this.canInterrupt)&&(identical(other.interrupting, _this.interrupting) || other.interrupting == _this.interrupting)&&(identical(other.canAttach, _this.canAttach) || other.canAttach == _this.canAttach)&&(identical(other.submitting, _this.submitting) || other.submitting == _this.submitting)&&const DeepCollectionEquality().equals(other.availableCommands, _this.availableCommands)&&(identical(other.blocker, _this.blocker) || other.blocker == _this.blocker)&&(identical(other.draftError, _this.draftError) || other.draftError == _this.draftError));
 }
 
 
 @override
 int get hashCode {
   final _this = this as AcpComposerViewState;
-  return Object.hash(runtimeType,_this.threadId,_this.draftText,const DeepCollectionEquality().hash(_this.attachments),const DeepCollectionEquality().hash(_this.localCapabilities),const DeepCollectionEquality().hash(_this.remoteCapabilities),_this.supportsImagePaste,_this.canSend,_this.isRunning,_this.canInterrupt,_this.interrupting,_this.canAttach,_this.submitting,_this.blocker,_this.draftError);
+  return Object.hash(runtimeType,_this.threadId,_this.draftText,const DeepCollectionEquality().hash(_this.attachments),const DeepCollectionEquality().hash(_this.localCapabilities),const DeepCollectionEquality().hash(_this.remoteCapabilities),_this.supportsImagePaste,_this.canSend,_this.isRunning,_this.canInterrupt,_this.interrupting,_this.canAttach,_this.submitting,const DeepCollectionEquality().hash(_this.availableCommands),_this.blocker,_this.draftError);
 }
 
 @override
 String toString() {
   final _this = this as AcpComposerViewState;
-  return 'AcpComposerViewState(threadId: ${_this.threadId}, draftText: ${_this.draftText}, attachments: ${_this.attachments}, localCapabilities: ${_this.localCapabilities}, remoteCapabilities: ${_this.remoteCapabilities}, supportsImagePaste: ${_this.supportsImagePaste}, canSend: ${_this.canSend}, isRunning: ${_this.isRunning}, canInterrupt: ${_this.canInterrupt}, interrupting: ${_this.interrupting}, canAttach: ${_this.canAttach}, submitting: ${_this.submitting}, blocker: ${_this.blocker}, draftError: ${_this.draftError})';
+  return 'AcpComposerViewState(threadId: ${_this.threadId}, draftText: ${_this.draftText}, attachments: ${_this.attachments}, localCapabilities: ${_this.localCapabilities}, remoteCapabilities: ${_this.remoteCapabilities}, supportsImagePaste: ${_this.supportsImagePaste}, canSend: ${_this.canSend}, isRunning: ${_this.isRunning}, canInterrupt: ${_this.canInterrupt}, interrupting: ${_this.interrupting}, canAttach: ${_this.canAttach}, submitting: ${_this.submitting}, availableCommands: ${_this.availableCommands}, blocker: ${_this.blocker}, draftError: ${_this.draftError})';
 }
 
 
@@ -5974,7 +6259,7 @@ abstract mixin class $AcpComposerViewStateCopyWith<$Res>  {
   factory $AcpComposerViewStateCopyWith(AcpComposerViewState value, $Res Function(AcpComposerViewState) _then) = _$AcpComposerViewStateCopyWithImpl;
 @useResult
 $Res call({
- String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
+ String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, List<AcpSlashCommandPresentation> availableCommands, AcpComposerBlocker? blocker, String? draftError
 });
 
 
@@ -5991,7 +6276,7 @@ class _$AcpComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
+@pragma('vm:prefer-inline') @override $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? availableCommands = null,Object? blocker = freezed,Object? draftError = freezed,}) {
   return _then(AcpComposerViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,draftText: null == draftText ? _self.draftText : draftText // ignore: cast_nullable_to_non_nullable
@@ -6005,7 +6290,8 @@ as bool,canInterrupt: null == canInterrupt ? _self.canInterrupt : canInterrupt /
 as bool,interrupting: null == interrupting ? _self.interrupting : interrupting // ignore: cast_nullable_to_non_nullable
 as bool,canAttach: null == canAttach ? _self.canAttach : canAttach // ignore: cast_nullable_to_non_nullable
 as bool,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
-as bool,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable
+as bool,availableCommands: null == availableCommands ? _self.availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
+as List<AcpSlashCommandPresentation>,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable
 as AcpComposerBlocker?,draftError: freezed == draftError ? _self.draftError : draftError // ignore: cast_nullable_to_non_nullable
 as String?,
   ));
@@ -6104,10 +6390,10 @@ return $default(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,{required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  List<AcpSlashCommandPresentation> availableCommands,  AcpComposerBlocker? blocker,  String? draftError)?  $default,{required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState() when $default != null:
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.availableCommands,_that.blocker,_that.draftError);case _:
   return orElse();
 
 }
@@ -6125,10 +6411,10 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)  $default,) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>(TResult Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  List<AcpSlashCommandPresentation> availableCommands,  AcpComposerBlocker? blocker,  String? draftError)  $default,) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState():
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.availableCommands,_that.blocker,_that.draftError);case _:
   throw StateError('Unexpected subclass');
 
 }
@@ -6145,10 +6431,10 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  AcpComposerBlocker? blocker,  String? draftError)?  $default,) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>(TResult? Function( String threadId,  String draftText,  List<AttachmentDraftView> attachments,  List<ModelInputCapabilityView> localCapabilities,  List<ModelInputCapabilityView> remoteCapabilities,  bool supportsImagePaste,  bool canSend,  bool isRunning,  bool canInterrupt,  bool interrupting,  bool canAttach,  bool submitting,  List<AcpSlashCommandPresentation> availableCommands,  AcpComposerBlocker? blocker,  String? draftError)?  $default,) {final _that = this;
 switch (_that) {
 case _AcpComposerViewState() when $default != null:
-return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.blocker,_that.draftError);case _:
+return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapabilities,_that.remoteCapabilities,_that.supportsImagePaste,_that.canSend,_that.isRunning,_that.canInterrupt,_that.interrupting,_that.canAttach,_that.submitting,_that.availableCommands,_that.blocker,_that.draftError);case _:
   return null;
 
 }
@@ -6160,7 +6446,7 @@ return $default(_that.threadId,_that.draftText,_that.attachments,_that.localCapa
 
 
 class _AcpComposerViewState extends AcpComposerViewState {
-  const _AcpComposerViewState({required this.threadId, this.draftText = '',  List<AttachmentDraftView> attachments = const <AttachmentDraftView>[],  List<ModelInputCapabilityView> localCapabilities = const <ModelInputCapabilityView>[],  List<ModelInputCapabilityView> remoteCapabilities = const <ModelInputCapabilityView>[], this.supportsImagePaste = false, this.canSend = false, this.isRunning = false, this.canInterrupt = false, this.interrupting = false, this.canAttach = false, this.submitting = false, this.blocker, this.draftError}): _attachments = attachments,_localCapabilities = localCapabilities,_remoteCapabilities = remoteCapabilities,super._();
+  const _AcpComposerViewState({required this.threadId, this.draftText = '',  List<AttachmentDraftView> attachments = const <AttachmentDraftView>[],  List<ModelInputCapabilityView> localCapabilities = const <ModelInputCapabilityView>[],  List<ModelInputCapabilityView> remoteCapabilities = const <ModelInputCapabilityView>[], this.supportsImagePaste = false, this.canSend = false, this.isRunning = false, this.canInterrupt = false, this.interrupting = false, this.canAttach = false, this.submitting = false,  List<AcpSlashCommandPresentation> availableCommands = const <AcpSlashCommandPresentation>[], this.blocker, this.draftError}): _attachments = attachments,_localCapabilities = localCapabilities,_remoteCapabilities = remoteCapabilities,_availableCommands = availableCommands,super._();
 
 
 @override final  String threadId;
@@ -6193,6 +6479,13 @@ class _AcpComposerViewState extends AcpComposerViewState {
 @override@JsonKey() final  bool interrupting;
 @override@JsonKey() final  bool canAttach;
 @override@JsonKey() final  bool submitting;
+ final  List<AcpSlashCommandPresentation> _availableCommands;
+@override@JsonKey() List<AcpSlashCommandPresentation> get availableCommands {
+  if (_availableCommands is EqualUnmodifiableListView) return _availableCommands;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_availableCommands);
+}
+
 @override final  AcpComposerBlocker? blocker;
 @override final  String? draftError;
 
@@ -6206,18 +6499,18 @@ _$AcpComposerViewStateCopyWith<_AcpComposerViewState> get copyWith => __$AcpComp
 
 @override
 bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpComposerViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.draftText, draftText) || other.draftText == draftText)&&const DeepCollectionEquality().equals(other.attachments, _attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _remoteCapabilities)&&(identical(other.supportsImagePaste, supportsImagePaste) || other.supportsImagePaste == supportsImagePaste)&&(identical(other.canSend, canSend) || other.canSend == canSend)&&(identical(other.isRunning, isRunning) || other.isRunning == isRunning)&&(identical(other.canInterrupt, canInterrupt) || other.canInterrupt == canInterrupt)&&(identical(other.interrupting, interrupting) || other.interrupting == interrupting)&&(identical(other.canAttach, canAttach) || other.canAttach == canAttach)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&(identical(other.blocker, blocker) || other.blocker == blocker)&&(identical(other.draftError, draftError) || other.draftError == draftError));
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is _AcpComposerViewState&&(identical(other.threadId, threadId) || other.threadId == threadId)&&(identical(other.draftText, draftText) || other.draftText == draftText)&&const DeepCollectionEquality().equals(other.attachments, _attachments)&&const DeepCollectionEquality().equals(other.localCapabilities, _localCapabilities)&&const DeepCollectionEquality().equals(other.remoteCapabilities, _remoteCapabilities)&&(identical(other.supportsImagePaste, supportsImagePaste) || other.supportsImagePaste == supportsImagePaste)&&(identical(other.canSend, canSend) || other.canSend == canSend)&&(identical(other.isRunning, isRunning) || other.isRunning == isRunning)&&(identical(other.canInterrupt, canInterrupt) || other.canInterrupt == canInterrupt)&&(identical(other.interrupting, interrupting) || other.interrupting == interrupting)&&(identical(other.canAttach, canAttach) || other.canAttach == canAttach)&&(identical(other.submitting, submitting) || other.submitting == submitting)&&const DeepCollectionEquality().equals(other.availableCommands, _availableCommands)&&(identical(other.blocker, blocker) || other.blocker == blocker)&&(identical(other.draftError, draftError) || other.draftError == draftError));
 }
 
 
 @override
 int get hashCode {
-    return Object.hash(runtimeType,threadId,draftText,const DeepCollectionEquality().hash(_attachments),const DeepCollectionEquality().hash(_localCapabilities),const DeepCollectionEquality().hash(_remoteCapabilities),supportsImagePaste,canSend,isRunning,canInterrupt,interrupting,canAttach,submitting,blocker,draftError);
+    return Object.hash(runtimeType,threadId,draftText,const DeepCollectionEquality().hash(_attachments),const DeepCollectionEquality().hash(_localCapabilities),const DeepCollectionEquality().hash(_remoteCapabilities),supportsImagePaste,canSend,isRunning,canInterrupt,interrupting,canAttach,submitting,const DeepCollectionEquality().hash(_availableCommands),blocker,draftError);
 }
 
 @override
 String toString() {
-    return 'AcpComposerViewState(threadId: $threadId, draftText: $draftText, attachments: $attachments, localCapabilities: $localCapabilities, remoteCapabilities: $remoteCapabilities, supportsImagePaste: $supportsImagePaste, canSend: $canSend, isRunning: $isRunning, canInterrupt: $canInterrupt, interrupting: $interrupting, canAttach: $canAttach, submitting: $submitting, blocker: $blocker, draftError: $draftError)';
+    return 'AcpComposerViewState(threadId: $threadId, draftText: $draftText, attachments: $attachments, localCapabilities: $localCapabilities, remoteCapabilities: $remoteCapabilities, supportsImagePaste: $supportsImagePaste, canSend: $canSend, isRunning: $isRunning, canInterrupt: $canInterrupt, interrupting: $interrupting, canAttach: $canAttach, submitting: $submitting, availableCommands: $availableCommands, blocker: $blocker, draftError: $draftError)';
 }
 
 
@@ -6228,7 +6521,7 @@ abstract mixin class _$AcpComposerViewStateCopyWith<$Res> implements $AcpCompose
   factory _$AcpComposerViewStateCopyWith(_AcpComposerViewState value, $Res Function(_AcpComposerViewState) _then) = __$AcpComposerViewStateCopyWithImpl;
 @override @useResult
 $Res call({
- String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, AcpComposerBlocker? blocker, String? draftError
+ String threadId, String draftText, List<AttachmentDraftView> attachments, List<ModelInputCapabilityView> localCapabilities, List<ModelInputCapabilityView> remoteCapabilities, bool supportsImagePaste, bool canSend, bool isRunning, bool canInterrupt, bool interrupting, bool canAttach, bool submitting, List<AcpSlashCommandPresentation> availableCommands, AcpComposerBlocker? blocker, String? draftError
 });
 
 
@@ -6245,7 +6538,7 @@ class __$AcpComposerViewStateCopyWithImpl<$Res>
 
 /// Create a copy of AcpComposerViewState
 /// with the given fields replaced by the non-null parameter values.
-@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? blocker = freezed,Object? draftError = freezed,}) {
+@override @pragma('vm:prefer-inline') $Res call({Object? threadId = null,Object? draftText = null,Object? attachments = null,Object? localCapabilities = null,Object? remoteCapabilities = null,Object? supportsImagePaste = null,Object? canSend = null,Object? isRunning = null,Object? canInterrupt = null,Object? interrupting = null,Object? canAttach = null,Object? submitting = null,Object? availableCommands = null,Object? blocker = freezed,Object? draftError = freezed,}) {
   return _then(_AcpComposerViewState(
 threadId: null == threadId ? _self.threadId : threadId // ignore: cast_nullable_to_non_nullable
 as String,draftText: null == draftText ? _self.draftText : draftText // ignore: cast_nullable_to_non_nullable
@@ -6259,7 +6552,8 @@ as bool,canInterrupt: null == canInterrupt ? _self.canInterrupt : canInterrupt /
 as bool,interrupting: null == interrupting ? _self.interrupting : interrupting // ignore: cast_nullable_to_non_nullable
 as bool,canAttach: null == canAttach ? _self.canAttach : canAttach // ignore: cast_nullable_to_non_nullable
 as bool,submitting: null == submitting ? _self.submitting : submitting // ignore: cast_nullable_to_non_nullable
-as bool,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable
+as bool,availableCommands: null == availableCommands ? _self._availableCommands : availableCommands // ignore: cast_nullable_to_non_nullable
+as List<AcpSlashCommandPresentation>,blocker: freezed == blocker ? _self.blocker : blocker // ignore: cast_nullable_to_non_nullable
 as AcpComposerBlocker?,draftError: freezed == draftError ? _self.draftError : draftError // ignore: cast_nullable_to_non_nullable
 as String?,
   ));

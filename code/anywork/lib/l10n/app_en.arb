@@ -193,6 +193,14 @@
   "sidebarArchiveSessionConfirmTitle": "Archive session",
   "sidebarArchiveSessionConfirmBody": "Archiving stops this session and its child sessions, removes their dedicated worktrees including uncommitted content, and clears temporary files. Conversation history and attachments are kept.",
   "sidebarArchiveSessionConfirmAction": "Archive",
+  "sidebarArchiveSessionSucceeded": "Archived “{title}”",
+  "@sidebarArchiveSessionSucceeded": {
+    "placeholders": { "title": { "type": "String" } }
+  },
+  "sidebarArchiveSessionResultFailed": "Could not archive “{title}”. {reason}",
+  "@sidebarArchiveSessionResultFailed": {
+    "placeholders": { "title": { "type": "String" }, "reason": { "type": "String" } }
+  },
   "sidebarDeleteSession": "Delete session",
   "sidebarDeleteSessionConfirmTitle": "Permanently delete “{title}” and all its child sessions?",
   "@sidebarDeleteSessionConfirmTitle": {
@@ -204,6 +212,14 @@
   },
   "sidebarDeleteSessionConfirmBody": "This permanently deletes the tree’s chat history, attachments and resources, notes and plans, reports and evaluations, call statistics, temporary files, artifacts, and dedicated worktree. This cannot be undone. The ordinary project directory is not affected.",
   "sidebarDeleteSessionConfirmAction": "Delete permanently",
+  "sidebarDeleteSessionSucceeded": "Deleted “{title}”",
+  "@sidebarDeleteSessionSucceeded": {
+    "placeholders": { "title": { "type": "String" } }
+  },
+  "sidebarDeleteSessionResultFailed": "Could not delete “{title}”. {reason}",
+  "@sidebarDeleteSessionResultFailed": {
+    "placeholders": { "title": { "type": "String" }, "reason": { "type": "String" } }
+  },
   "sidebarRenameSession": "Rename session",
   "sidebarRenameSessionTitle": "Rename session",
   "sidebarRenameSessionInput": "Session title",
@@ -3952,5 +3968,37 @@
   "accountsGeminiPresetGlobal": "global (Recommended)",
   "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",
   "accountsGeminiCredentialLabelVertex": "Vertex AI API key",
-  "accountsGeminiCredentialLabelAiStudio": "Gemini API key"
+  "accountsGeminiCredentialLabelAiStudio": "Gemini API key",
+  "timelineDiffStatLabel": "{additions} additions, {deletions} deletions",
+  "@timelineDiffStatLabel": {
+    "placeholders": {
+      "additions": {
+        "type": "int"
+      },
+      "deletions": {
+        "type": "int"
+      }
+    }
+  },
+  "timelinePatchCopyPath": "Copy path",
+  "acpCopyMessage": "Copy message",
+  "acpJumpToPendingPermission": "Jump to latest · Permission requested",
+  "acpJumpToRunning": "Jump to latest · Running",
+  "acpJumpToNewOutput": "Jump to latest · New output",
+  "acpPlanCompletedHeadline": "Execution plan completed",
+  "acpSlashMenuLabel": "Slash commands",
+  "acpSlashMenuNoMatches": "No matching commands",
+  "acpHistorySearchHint": "Search title, path, or session ID",
+  "acpHistorySearchCount": "{matched} of {total}",
+  "@acpHistorySearchCount": {
+    "placeholders": {
+      "matched": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySearchEmpty": "No matching external sessions"
 }

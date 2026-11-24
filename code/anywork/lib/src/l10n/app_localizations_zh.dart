@@ -491,6 +491,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => '归档';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return '已归档“$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return '无法归档“$title”。$reason';
+  }
+
+  @override
   String get sidebarDeleteSession => '删除会话';
 
   @override
@@ -504,6 +514,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => '永久删除';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return '已删除“$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return '无法删除“$title”。$reason';
+  }
 
   @override
   String get sidebarRenameSession => '重命名会话';
@@ -7764,4 +7784,44 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountsGeminiCredentialLabelAiStudio => 'Gemini API 密钥';
+
+  @override
+  String timelineDiffStatLabel(int additions, int deletions) {
+    return '新增 $additions 行，删除 $deletions 行';
+  }
+
+  @override
+  String get timelinePatchCopyPath => '复制路径';
+
+  @override
+  String get acpCopyMessage => '复制消息';
+
+  @override
+  String get acpJumpToPendingPermission => '跳到最新 · 等待权限确认';
+
+  @override
+  String get acpJumpToRunning => '跳到最新 · 运行中';
+
+  @override
+  String get acpJumpToNewOutput => '跳到最新 · 有新输出';
+
+  @override
+  String get acpPlanCompletedHeadline => '执行计划已完成';
+
+  @override
+  String get acpSlashMenuLabel => '斜杠命令';
+
+  @override
+  String get acpSlashMenuNoMatches => '无匹配命令';
+
+  @override
+  String get acpHistorySearchHint => '搜索标题、路径或会话 ID';
+
+  @override
+  String acpHistorySearchCount(int matched, int total) {
+    return '$matched / $total';
+  }
+
+  @override
+  String get acpHistorySearchEmpty => '没有匹配的外部会话';
 }

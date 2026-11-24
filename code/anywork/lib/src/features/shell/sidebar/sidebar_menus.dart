@@ -140,6 +140,7 @@ class SidebarThreadMenu extends StatefulWidget {
     required this.hostApps,
     required this.minTarget,
     required this.onAction,
+    this.removalPending = false,
   });
 
   final SessionDirectoryRow row;
@@ -150,6 +151,7 @@ class SidebarThreadMenu extends StatefulWidget {
   final String targetDescription;
   final SidebarHostApps hostApps;
   final double minTarget;
+  final bool removalPending;
   final FutureOr<void> Function(SidebarThreadAction action) onAction;
 
   @override
@@ -207,16 +209,24 @@ class _SidebarThreadMenuState extends State<SidebarThreadMenu> {
             // 归档不依赖工作区访问状态；物理工作树检查与归档相互独立。
             key: StudioDriverKeys.archiveThread(row.threadId),
             overflowAxis: Axis.vertical,
-            onPressed: () => _select(SidebarThreadAction.archive),
+            onPressed: widget.removalPending
+                ? null
+                : () => _select(SidebarThreadAction.archive),
             child: Text(context.l10n.sidebarArchiveSession),
           ),
           MenuItemButton(
             key: StudioDriverKeys.deleteThread(row.threadId),
-            style: ButtonStyle(
-              foregroundColor: WidgetStatePropertyAll(context.colors.error),
-            ),
+            style: widget.removalPending
+                ? null
+                : ButtonStyle(
+                    foregroundColor: WidgetStatePropertyAll(
+                      context.colors.error,
+                    ),
+                  ),
             overflowAxis: Axis.vertical,
-            onPressed: () => _select(SidebarThreadAction.delete),
+            onPressed: widget.removalPending
+                ? null
+                : () => _select(SidebarThreadAction.delete),
             child: Text(context.l10n.sidebarDeleteSession),
           ),
           MenuItemButton(
