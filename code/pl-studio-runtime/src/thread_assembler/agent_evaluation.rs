@@ -2,12 +2,16 @@
 use super::{SessionRuntime, agent_services::AgentServices};
 use crate::{AgentEvaluation, EvaluateAgentReceipt, EvaluateAgentRequest};
 use anyhow::{Context, Result, ensure};
-use pl_core::thread::{
-    ThreadLifecycle, ThreadSnapshot, TurnState,
-    input::{InputExecution, InputState},
-    interactions::InteractionState,
-    permissions::PermissionState,
-    task::TaskStatus,
+use pl_core::{
+    context::AgentMessageKind,
+    thread::{
+        ThreadLifecycle, ThreadSnapshot, ToolDelivery, ToolDeliveryTarget, TurnState,
+        inbox::InboxRecord,
+        input::{InputExecution, InputState},
+        interactions::InteractionState,
+        permissions::PermissionState,
+        task::{TaskRecord, TaskStatus},
+    },
 };
 
 impl AgentServices {
@@ -92,11 +96,50 @@ impl AgentServices {
     }
 }
 
+fn settled_background_task<'a>(
+    snapshot: &'a ThreadSnapshot,
+    source_id: &str,
+) -> Option<&'a TaskRecord> {
+    snapshot
+        .tasks
+        .get(source_id)
+        .or_else(|| {
+            snapshot
+                .terminal_tasks
+                .iter()
+                .find(|task| task.id == source_id)
+        })
+        .filter(|task| task.acknowledgement.is_some() && task.status != TaskStatus::Running)
+}
+
+fn is_settled_background_inbox_record(snapshot: &ThreadSnapshot, record: &InboxRecord) -> bool {
+    record.sequence > snapshot.wake_messages_through
+        && record.message.kind == AgentMessageKind::Report
+        && settled_background_task(snapshot, &record.message.source_id).is_some()
+}
+
+fn is_settled_background_delivery(snapshot: &ThreadSnapshot, delivery: &ToolDelivery) -> bool {
+    let ToolDeliveryTarget::Inbox { message_id } = &delivery.target else {
+        return false;
+    };
+    snapshot.inbox.iter().any(|record| {
+        record.message.id == *message_id
+            && record.sequence > snapshot.consumed_messages
+            && is_settled_background_inbox_record(snapshot, record)
+            && settled_background_task(snapshot, &record.message.source_id)
+                .is_some_and(|task| task.call_id == delivery.call_id)
+    })
+}
+
 pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
     ensure!(
         snapshot.execution.is_none()
             && snapshot.model_execution.is_none()
-            && snapshot.deliveries.is_empty()
+            && snapshot.wake_messages_through <= snapshot.consumed_messages
+            && snapshot
+                .deliveries
+                .iter()
+                .all(|delivery| is_settled_background_delivery(snapshot, delivery))
             && !matches!(
                 snapshot.input_execution,
                 InputExecution::Interrupting { .. }
@@ -113,10 +156,10 @@ pub(crate) fn validate_idle(snapshot: &ThreadSnapshot) -> Result<()> {
                 .inputs
                 .iter()
                 .any(|input| input.state == InputState::Pending)
-            && !snapshot
-                .inbox
-                .iter()
-                .any(|message| message.sequence > snapshot.consumed_messages)
+            && !snapshot.inbox.iter().any(|message| {
+                message.sequence > snapshot.consumed_messages
+                    && !is_settled_background_inbox_record(snapshot, message)
+            })
             && !snapshot
                 .interactions
                 .values()
@@ -175,5 +218,251 @@ impl SessionRuntime {
                 },
             )
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_idle;
+    use anyhow::Result;
+    use pl_core::{
+        context::{AgentMessageKind, ContextContent, OpaquePayload},
+        model::ModelToolCall,
+        thread::{
+            ThreadSnapshot, ToolDelivery, ToolDeliveryTarget, ToolOutcome,
+            inbox::{InboxRecord, ThreadMessage},
+            task::{TaskAcknowledgement, TaskRecord, TaskStatus},
+        },
+        tool::ToolOutput,
+    };
+    use std::sync::Arc;
+
+    fn task_record(call_id: &str, status: TaskStatus, acknowledged: bool) -> TaskRecord {
+        TaskRecord {
+            id: format!("task:{call_id}"),
+            parent_call_id: None,
+            invocation: Some(ModelToolCall {
+                call_id: call_id.into(),
+                tool_id: "exec".into(),
+                arguments: OpaquePayload::text("{}"),
+                presentation_contract: None,
+                rejection: None,
+            }),
+            call_id: call_id.into(),
+            tool_id: "exec".into(),
+            turn_id: "turn-1".into(),
+            revision: 3,
+            status,
+            cancel_requested: false,
+            acknowledgement: acknowledged.then(|| TaskAcknowledgement {
+                record_id: "task-receipt:1".into(),
+                context_revision: 12,
+            }),
+            started_sequence: Some(5),
+        }
+    }
+
+    fn inbox_record(sequence: u64, message_id: &str, source_id: &str) -> InboxRecord {
+        InboxRecord {
+            sequence,
+            message: ThreadMessage {
+                kind: AgentMessageKind::Report,
+                id: message_id.into(),
+                source_id: source_id.into(),
+                payload: OpaquePayload::text("done"),
+                context: vec![ContextContent::Text {
+                    text: Arc::from("done"),
+                }],
+            },
+        }
+    }
+
+    fn inbox_delivery(call_id: &str, message_id: &str, outcome: ToolOutcome) -> ToolDelivery {
+        ToolDelivery {
+            target: ToolDeliveryTarget::Inbox {
+                message_id: message_id.into(),
+            },
+            call_id: call_id.into(),
+            tool_id: "exec".into(),
+            output: ToolOutput::new(OpaquePayload::text("done"), vec![]),
+            delivered_context: vec![],
+            outcome,
+        }
+    }
+
+    #[test]
+    fn validate_idle_allows_settled_non_waking_background_results_and_rejects_live_work()
+    -> Result<()> {
+        for (case, snapshot, expected_ok) in [
+            ("empty-idle", ThreadSnapshot::default(), true),
+            (
+                "hot-settled-succeeded-background-result",
+                {
+                    let mut s = ThreadSnapshot {
+                        inbox_sequence: 3,
+                        consumed_messages: 2,
+                        wake_messages_through: 1,
+                        inbox: Arc::from([inbox_record(3, "task-result:3", "task:call-bg")]),
+                        deliveries: Arc::from([inbox_delivery(
+                            "call-bg",
+                            "task-result:3",
+                            ToolOutcome::Succeeded,
+                        )]),
+                        ..Default::default()
+                    };
+                    s.tasks.insert(
+                        "task:call-bg".into(),
+                        task_record("call-bg", TaskStatus::Succeeded, true),
+                    );
+                    s
+                },
+                true,
+            ),
+            (
+                "hot-settled-failed-and-cancelled-background-results",
+                {
+                    let mut s = ThreadSnapshot {
+                        inbox_sequence: 4,
+                        consumed_messages: 2,
+                        wake_messages_through: 1,
+                        inbox: Arc::from([
+                            inbox_record(3, "task-result:3", "task:call-fail"),
+                            inbox_record(4, "task-result:4", "task:call-cancel"),
+                        ]),
+                        deliveries: Arc::from([
+                            inbox_delivery(
+                                "call-fail",
+                                "task-result:3",
+                                ToolOutcome::Failed(Arc::new(
+                                    pl_core::tool::opaque::ToolError::new(std::io::Error::other(
+                                        "boom",
+                                    )),
+                                )),
+                            ),
+                            inbox_delivery("call-cancel", "task-result:4", ToolOutcome::Cancelled),
+                        ]),
+                        ..Default::default()
+                    };
+                    s.tasks.insert(
+                        "task:call-fail".into(),
+                        task_record("call-fail", TaskStatus::Failed, true),
+                    );
+                    s.tasks.insert(
+                        "task:call-cancel".into(),
+                        task_record("call-cancel", TaskStatus::Cancelled, true),
+                    );
+                    s
+                },
+                true,
+            ),
+            (
+                "cold-reopened-settled-non-waking-background-result",
+                ThreadSnapshot {
+                    inbox_sequence: 3,
+                    consumed_messages: 2,
+                    wake_messages_through: 1,
+                    inbox: Arc::from([inbox_record(3, "task-result:3", "task:call-bg")]),
+                    terminal_tasks: Arc::from([task_record(
+                        "call-bg",
+                        TaskStatus::Succeeded,
+                        true,
+                    )]),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                "running-background-task",
+                {
+                    let mut s = ThreadSnapshot::default();
+                    s.tasks.insert(
+                        "task:call-run".into(),
+                        task_record("call-run", TaskStatus::Running, true),
+                    );
+                    s
+                },
+                false,
+            ),
+            (
+                "waking-background-result-must-reject",
+                {
+                    let mut s = ThreadSnapshot {
+                        inbox_sequence: 3,
+                        consumed_messages: 2,
+                        wake_messages_through: 3,
+                        inbox: Arc::from([inbox_record(3, "task-result:3", "task:call-bg")]),
+                        deliveries: Arc::from([inbox_delivery(
+                            "call-bg",
+                            "task-result:3",
+                            ToolOutcome::Succeeded,
+                        )]),
+                        ..Default::default()
+                    };
+                    s.tasks.insert(
+                        "task:call-bg".into(),
+                        task_record("call-bg", TaskStatus::Succeeded, true),
+                    );
+                    s
+                },
+                false,
+            ),
+            (
+                "non-task-unconsumed-inbox-message-must-reject",
+                ThreadSnapshot {
+                    inbox_sequence: 3,
+                    consumed_messages: 2,
+                    wake_messages_through: 1,
+                    inbox: Arc::from([inbox_record(3, "agent-msg:3", "agent:root")]),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                "non-inbox-delivery-must-reject",
+                ThreadSnapshot {
+                    deliveries: Arc::from([ToolDelivery {
+                        target: ToolDeliveryTarget::CallResult,
+                        call_id: "call-fg".into(),
+                        tool_id: "exec".into(),
+                        output: ToolOutput::new(OpaquePayload::text("done"), vec![]),
+                        delivered_context: vec![],
+                        outcome: ToolOutcome::Succeeded,
+                    }]),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                "mismatched-call-id-delivery-must-reject",
+                {
+                    let mut s = ThreadSnapshot {
+                        inbox_sequence: 3,
+                        consumed_messages: 2,
+                        wake_messages_through: 1,
+                        inbox: Arc::from([inbox_record(3, "task-result:3", "task:call-bg")]),
+                        deliveries: Arc::from([inbox_delivery(
+                            "call-other",
+                            "task-result:3",
+                            ToolOutcome::Succeeded,
+                        )]),
+                        ..Default::default()
+                    };
+                    s.tasks.insert(
+                        "task:call-bg".into(),
+                        task_record("call-bg", TaskStatus::Succeeded, true),
+                    );
+                    s
+                },
+                false,
+            ),
+        ] {
+            let actual = validate_idle(&snapshot);
+            assert_eq!(
+                actual.is_ok(),
+                expected_ok,
+                "case `{case}` returned {actual:?}"
+            );
+        }
+        Ok(())
     }
 }
