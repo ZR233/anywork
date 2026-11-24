@@ -4,14 +4,14 @@ use super::owner::RuntimeInboundHost;
 use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::http::FeishuHttp;
 use super::protocol::im::FeishuIm;
-use super::protocol::ws::{FeishuWsSession, WsEndpointDiscovery, WsInbound};
+use super::protocol::ws::{FeishuWsSession, WsEndpointDiscovery};
 use super::send::SendPlan;
 use super::storage::{BotStateStore, SendRecord, SendRecordStatus, SendSegmentFact};
 use crate::BotConnectionState;
 use crate::studio::unix_seconds;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
@@ -19,7 +19,6 @@ use tokio_util::sync::CancellationToken;
 
 pub struct BotConnectionOwner {
     bot_id: String,
-    generation: AtomicU64,
     operations: Mutex<()>,
     cancel: Mutex<CancellationToken>,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -31,7 +30,6 @@ impl BotConnectionOwner {
     pub fn new(bot_id: String) -> Self {
         Self {
             bot_id,
-            generation: AtomicU64::new(0),
             operations: Mutex::new(()),
             cancel: Mutex::new(CancellationToken::new()),
             task: Mutex::new(None),
@@ -69,7 +67,7 @@ impl BotConnectionOwner {
         config: BotConfigFile,
         secret: String,
         host: Arc<RuntimeInboundHost>,
-    ) -> Result<u64, FeishuError> {
+    ) -> Result<(), FeishuError> {
         let _operation = self.operations.lock().await;
         if self.sealed.load(Ordering::SeqCst) {
             return Err(FeishuError::new(
@@ -88,7 +86,6 @@ impl BotConnectionOwner {
                 None,
             ));
         }
-        let _owner_generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let cancel = CancellationToken::new();
         *self.cancel.lock().await = cancel.clone();
         let _ = self.state.send(BotConnectionState::Connecting);
@@ -105,7 +102,7 @@ impl BotConnectionOwner {
             }));
             *slot = Some(task);
         }
-        Ok(_owner_generation)
+        Ok(())
     }
 
     async fn join_inner(&self) -> Result<(), FeishuError> {
@@ -307,7 +304,7 @@ async fn connect_once(
                         session.close().await;
                         return Ok(Some(config));
                     }
-                    Some(WsInbound::Event(event)) => {
+                    Some(event) => {
                         let decision = classify_event(config, &event.payload, Some(bot_open_id.as_str()));
                         let ack_ok = match decision {
                             InboundDecision::Ignore => true,
@@ -355,6 +352,18 @@ pub async fn send_text(claimed: ClaimedSend<'_>) -> Result<crate::BotSendResult,
     let mut ids = Vec::new();
     let mut unknown = false;
     let mut rejected = false;
+    let progress =
+        |ids: &[String], facts: &[SendSegmentFact], unknown: bool, rejected: bool| SendRecord {
+            operation_id: operation_id.to_string(),
+            bot_id: bot_id.to_string(),
+            chat_id: chat_id.to_string(),
+            content_hash: plan.content_hash.clone(),
+            status: overall_send_status(unknown, rejected, ids.len(), plan.segments.len()),
+            platform_message_ids: ids.to_vec(),
+            segments: facts.to_vec(),
+            facts_complete: true,
+        };
+    let mut status = None;
     for (index, segment) in plan.segments.iter().enumerate() {
         rate.acquire().await.start();
         match im
@@ -395,38 +404,18 @@ pub async fn send_text(claimed: ClaimedSend<'_>) -> Result<crate::BotSendResult,
                 facts[index].diagnostic = Some(error.diagnostic().message);
             }
         }
-        persist_send_progress(
-            store,
-            &SendRecord {
-                operation_id: operation_id.to_string(),
-                bot_id: bot_id.to_string(),
-                chat_id: chat_id.to_string(),
-                content_hash: plan.content_hash.clone(),
-                status: overall_send_status(unknown, rejected, ids.len(), plan.segments.len()),
-                platform_message_ids: ids.clone(),
-                segments: facts.clone(),
-                facts_complete: true,
-            },
-        )
-        .await?;
+        // Persist after every segment so a crash never loses which platform messages exist.
+        status =
+            Some(persist_send_progress(store, &progress(&ids, &facts, unknown, rejected)).await?);
         if unknown || rejected {
             break;
         }
     }
-    let status = persist_send_progress(
-        store,
-        &SendRecord {
-            operation_id: operation_id.to_string(),
-            bot_id: bot_id.to_string(),
-            chat_id: chat_id.to_string(),
-            content_hash: plan.content_hash.clone(),
-            status: overall_send_status(unknown, rejected, ids.len(), plan.segments.len()),
-            platform_message_ids: ids,
-            segments: facts,
-            facts_complete: true,
-        },
-    )
-    .await?;
+    // The last iteration already wrote the terminal record; only an empty plan still needs one.
+    let status = match status {
+        Some(status) => status,
+        None => persist_send_progress(store, &progress(&ids, &facts, unknown, rejected)).await?,
+    };
     Ok(crate::BotSendResult {
         operation_id: operation_id.to_string(),
         bot_id: bot_id.to_string(),

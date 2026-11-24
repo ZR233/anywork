@@ -119,13 +119,7 @@ struct EventMention {
     #[serde(default)]
     key: Option<String>,
     #[serde(default)]
-    id: Option<MentionId>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum MentionId {
-    Ids(UserIdSet),
+    id: Option<UserIdSet>,
 }
 
 pub fn classify_event(
@@ -273,8 +267,9 @@ fn is_all_mention(mention: &EventMention) -> bool {
 }
 
 fn mention_open_id(mention: &EventMention) -> Option<String> {
-    match &mention.id {
-        Some(MentionId::Ids(ids)) => ids.open_id.clone().filter(|value| !value.is_empty()),
-        _ => None,
-    }
+    mention
+        .id
+        .as_ref()
+        .and_then(|ids| ids.open_id.clone())
+        .filter(|value| !value.is_empty())
 }

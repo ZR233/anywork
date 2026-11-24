@@ -138,7 +138,6 @@ impl std::fmt::Debug for CredentialRecovery {
 /// 阻塞准备完成后交给异步 owner 的交接物。尚未写入目标配置。
 pub struct PreparedCredential {
     pub operation_id: String,
-    pub previous: Option<BotConfigFile>,
     pub target: BotConfigFile,
     pub invalidate: bool,
     journal: CredentialJournal,
@@ -149,7 +148,6 @@ impl std::fmt::Debug for PreparedCredential {
         formatter
             .debug_struct("PreparedCredential")
             .field("operation_id", &self.operation_id)
-            .field("previous", &self.previous)
             .field("target", &self.target)
             .field("invalidate", &self.invalidate)
             .finish()
@@ -234,16 +232,6 @@ fn ensure_journal_identity(
         ensure_config_identity(expected_bot_id, previous)?;
     }
     Ok(())
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn recover_bot_credentials(
-    dir: &Path,
-    expected_bot_id: &str,
-    credentials: &BotCredentialCapability,
-    config: Option<BotConfigFile>,
-) -> Result<CredentialRecovery, FeishuError> {
-    recover_bot_directory(dir, expected_bot_id, credentials, config)
 }
 
 pub fn recover_bot_directory(
@@ -382,35 +370,6 @@ fn recovery_from_commit(
         operation_id: Some(commit.operation_id),
         reserved_app_id,
         previous_app_id,
-    }
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn commit_bot_credentials(
-    dir: &Path,
-    expected_bot_id: &str,
-    credentials: &BotCredentialCapability,
-    previous: &BotConfigFile,
-    candidate: BotConfigFile,
-    secret: BotSecretUpdate,
-    operation_id: &str,
-) -> Result<CredentialCommit, FeishuError> {
-    if previous.id != expected_bot_id || candidate.id != expected_bot_id {
-        return Err(directory_identity_error());
-    }
-    match prepare_bot_credentials(
-        dir,
-        expected_bot_id,
-        credentials,
-        previous,
-        candidate,
-        secret,
-        operation_id,
-    )? {
-        CredentialPrepare::Decided(commit) => Ok(*commit),
-        CredentialPrepare::Ready(prepared) => {
-            commit_prepared_credentials(dir, credentials, *prepared)
-        }
     }
 }
 
@@ -586,7 +545,6 @@ pub fn prepare_bot_credentials(
     write_journal(dir, &intent)?;
     Ok(CredentialPrepare::Ready(Box::new(PreparedCredential {
         operation_id: operation_id.to_string(),
-        previous: intent.previous.clone(),
         target: candidate,
         invalidate,
         journal: intent,
@@ -1181,11 +1139,6 @@ fn gc_source(
             .map(|selected| vec![selected.version.clone()])
             .unwrap_or_default();
         payload.retain_referenced(&keep);
-        if let Some(candidate) = candidate_version
-            && !keep.iter().any(|id| id == candidate)
-        {
-            payload.versions.retain(|version| version.id != candidate);
-        }
     } else if let Some(candidate) = candidate_version {
         payload.versions.retain(|version| version.id != candidate);
     }
@@ -1625,6 +1578,35 @@ mod tests {
         .bot_credentials()
     }
 
+    /// 同步准备并提交：测试只需最终 `CredentialCommit`，不观察 owner 的交接边界。
+    fn commit_bot_credentials(
+        dir: &Path,
+        expected_bot_id: &str,
+        credentials: &BotCredentialCapability,
+        previous: &BotConfigFile,
+        candidate: BotConfigFile,
+        secret: BotSecretUpdate,
+        operation_id: &str,
+    ) -> Result<CredentialCommit, FeishuError> {
+        if previous.id != expected_bot_id || candidate.id != expected_bot_id {
+            return Err(directory_identity_error());
+        }
+        match prepare_bot_credentials(
+            dir,
+            expected_bot_id,
+            credentials,
+            previous,
+            candidate,
+            secret,
+            operation_id,
+        )? {
+            CredentialPrepare::Decided(commit) => Ok(*commit),
+            CredentialPrepare::Ready(prepared) => {
+                commit_prepared_credentials(dir, credentials, *prepared)
+            }
+        }
+    }
+
     fn bot_config(app_id: &str) -> BotConfigFile {
         BotConfigFile::new(
             "botA1234".into(),
@@ -2030,7 +2012,7 @@ mod tests {
         write_schema1_config(directory.path(), config);
         let loaded = load_config(&directory.path().join("config.toml")).unwrap();
         let migrated =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
+            recover_bot_directory(directory.path(), "botA1234", &credentials, Some(loaded))
                 .unwrap();
         assert_eq!(
             migrated.availability,
@@ -2060,7 +2042,7 @@ mod tests {
         write_schema1_config(directory.path(), config);
         let loaded = load_config(&directory.path().join("config.toml")).unwrap();
         let migrated =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
+            recover_bot_directory(directory.path(), "botA1234", &credentials, Some(loaded))
                 .unwrap();
         assert_eq!(migrated.availability, BotCredentialAvailability::Stored);
         assert_eq!(migrated.secret.as_deref(), Some("opaque-system-secret"));
@@ -2077,7 +2059,7 @@ mod tests {
         assert!(persisted.contains("schema_version = 4"));
         assert_current_document(&persisted, "cli_a");
         let recovered =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(reopened))
+            recover_bot_directory(directory.path(), "botA1234", &credentials, Some(reopened))
                 .unwrap();
         assert_eq!(
             recovered
@@ -2217,7 +2199,7 @@ mod tests {
         credentials
             .persist_system_raw("botA1234", "not-json")
             .unwrap();
-        let recovered = recover_bot_credentials(
+        let recovered = recover_bot_directory(
             directory.path(),
             "botA1234",
             &credentials,
@@ -2397,7 +2379,7 @@ mod tests {
         };
         write_journal(directory.path(), &journal).unwrap();
         memory_faults::set_persist_unavailable(true);
-        let pending_candidate = recover_bot_credentials(
+        let pending_candidate = recover_bot_directory(
             directory.path(),
             "botA1234",
             &credentials,
@@ -2550,7 +2532,7 @@ mod tests {
             Some(version.as_str())
         );
         assert_eq!(again.secret.as_deref(), Some("journal-fault-secret"));
-        let reopened = recover_bot_credentials(
+        let reopened = recover_bot_directory(
             directory.path(),
             "botA1234",
             &credentials,
@@ -2621,7 +2603,7 @@ mod tests {
         };
         write_journal(directory.path(), &journal).unwrap();
         let recovered =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, None).unwrap();
+            recover_bot_directory(directory.path(), "botA1234", &credentials, None).unwrap();
         assert_eq!(recovered.decision, CredentialDecision::NotApplied);
         assert_eq!(recovered.operation, BotCredentialOperation::Idle);
         assert!(recovered.config.is_none());
@@ -2744,7 +2726,7 @@ mod tests {
         assert!(ids.contains(&"cred-new".into()));
         // 实际文件是旧 A、journal 目标是新 B：未决恢复必须保留目标 B，并同时保留
         // 已知旧 A 关联占用，不能拿实际 A 替代 B。
-        let recovery = recover_bot_credentials(
+        let recovery = recover_bot_directory(
             directory.path(),
             "botA1234",
             &credentials,
@@ -2821,7 +2803,7 @@ mod tests {
         assert_eq!(selected.kind, BotCredentialRefKind::Session);
         memory_faults::reset();
         credentials.recycle_lease("botA1234").unwrap();
-        let reopened = recover_bot_credentials(
+        let reopened = recover_bot_directory(
             directory.path(),
             "botA1234",
             &credentials,
@@ -2981,7 +2963,7 @@ mod tests {
         assert_eq!(loaded.schema_version, 1);
         assert!(loaded.selected_ref.is_none());
         let migrated =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
+            recover_bot_directory(directory.path(), "botA1234", &credentials, Some(loaded))
                 .unwrap();
         assert_eq!(migrated.availability, BotCredentialAvailability::Stored);
         assert_eq!(migrated.secret.as_deref(), Some("opaque-system-secret"));

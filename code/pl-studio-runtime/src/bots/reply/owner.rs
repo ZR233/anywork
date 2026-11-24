@@ -611,10 +611,10 @@ impl BotRuntime {
             let Some(projection) = content.projection else {
                 return Step::Wait;
             };
-            let collected = tokio::select! {
-                _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-                collected = std::future::ready(collect_complete_turn_text(projection)) => collected,
-            };
+            if cancel.is_cancelled() {
+                return Step::Done(InboundWorkOutcome::Interrupted);
+            }
+            let collected = collect_complete_turn_text(projection);
             match collected {
                 Ok(text) => Some(text),
                 Err(error) => return Step::Done(content_failure(error)),

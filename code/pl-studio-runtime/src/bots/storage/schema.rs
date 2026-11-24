@@ -22,9 +22,16 @@ pub(super) async fn initialize(db: &DatabaseConnection) -> anyhow::Result<()> {
         crate::studio::startup::migration_error("bot ledger", "preflight", error)
     })?;
     if let Err(error) = Migrator::up(db, None).await {
+        // Report the migration that actually failed instead of a stale fixed name.
+        let pending = Migrator::get_pending_migrations_read_only(db)
+            .await
+            .unwrap_or_default();
+        let step = pending
+            .first()
+            .map_or("migration bookkeeping", |migration| migration.name());
         return Err(crate::studio::startup::migration_error(
             "bot ledger",
-            "m20261026_000001_bot_ledger_schema",
+            step,
             error,
         ));
     }

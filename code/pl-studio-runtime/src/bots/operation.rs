@@ -178,7 +178,6 @@ pub(crate) struct BotOperationOwner {
     completions: Mutex<CompletionSlot>,
     /// 已确认清理失败、仍待同一信任值重提完成的配对请求身份。
     pairing_cleanup: Mutex<BTreeSet<String>>,
-    submitting: AtomicBool,
 }
 
 /// 已完成操作的结果保留位置：`current` 是最近受理的操作，`previous` 是上一操作。
@@ -871,7 +870,6 @@ impl BotOperationOwner {
             inspect: Mutex::new(None),
             completions: Mutex::new(CompletionSlot::new()),
             pairing_cleanup: Mutex::new(BTreeSet::new()),
-            submitting: AtomicBool::new(false),
         }
     }
 
@@ -1671,13 +1669,11 @@ impl BotOperationOwner {
                 .await?;
             managed.admission_closed.store(true, Ordering::Release);
             managed.submitting.store(true, Ordering::Release);
-            self.submitting.store(true, Ordering::Release);
             return Ok(());
         }
         self.runtime
             .claim_app_target_or_error(&self.bot_id, &target.feishu().app_id)
             .await?;
-        self.submitting.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -2131,7 +2127,6 @@ impl BotOperationOwner {
             managed.admission_closed.store(false, Ordering::Release);
             managed.submitting.store(false, Ordering::Release);
         }
-        self.submitting.store(false, Ordering::Release);
     }
 
     async fn ensure_published(
@@ -2560,7 +2555,6 @@ impl BotOperationOwner {
     }
 
     async fn clear_submitting(&self) {
-        self.submitting.store(false, Ordering::Release);
         if let Some(managed) = self.published().await {
             managed.submitting.store(false, Ordering::Release);
         }

@@ -41,19 +41,8 @@ struct EndpointData {
     #[serde(rename = "URL")]
     url: Option<String>,
     #[serde(rename = "ClientConfig")]
-    client_config: Option<ClientConfigWire>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientConfigWire {
-    #[serde(rename = "PingInterval")]
-    ping_interval: Option<u64>,
-    #[serde(rename = "ReconnectCount")]
-    reconnect_count: Option<i32>,
-    #[serde(rename = "ReconnectInterval")]
-    reconnect_interval: Option<u64>,
-    #[serde(rename = "ReconnectNonce")]
-    reconnect_nonce: Option<u64>,
+    /// The endpoint and the pong frames carry the same connection tuning fields.
+    client_config: Option<PongConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,7 +186,7 @@ impl WsEndpointDiscovery {
                     None,
                 )
             })?;
-        let config = data.client_config.unwrap_or(ClientConfigWire {
+        let config = data.client_config.unwrap_or(PongConfig {
             ping_interval: Some(120),
             reconnect_count: Some(-1),
             reconnect_interval: Some(120),
@@ -294,7 +283,7 @@ impl FeishuWsSession {
     pub async fn next_event(
         &mut self,
         cancel: &CancellationToken,
-    ) -> Result<Option<WsInbound>, FeishuError> {
+    ) -> Result<Option<EventAck>, FeishuError> {
         loop {
             let message = tokio::select! {
                 _ = cancel.cancelled() => return Ok(None),
@@ -336,7 +325,7 @@ impl FeishuWsSession {
         }
     }
 
-    fn handle_binary(&mut self, bytes: &[u8]) -> Result<Option<WsInbound>, FeishuError> {
+    fn handle_binary(&mut self, bytes: &[u8]) -> Result<Option<EventAck>, FeishuError> {
         let frame = Pbbp2Frame::decode(bytes).map_err(|error| {
             FeishuError::new(
                 FeishuErrorKind::Protocol,
@@ -389,19 +378,15 @@ impl FeishuWsSession {
         let Some(merged) = self.fragments.merge(&frame)? else {
             return Ok(None);
         };
-        Ok(Some(WsInbound::Event(EventAck {
+        Ok(Some(EventAck {
             frame,
             payload: merged,
-        })))
+        }))
     }
 
     pub async fn close(&mut self) {
         let _ = self.stream.close(None).await;
     }
-}
-
-pub enum WsInbound {
-    Event(EventAck),
 }
 
 pub struct FragmentCache {
@@ -537,7 +522,6 @@ fn inspect_handshake(
 ) -> Result<(), FeishuError> {
     let status = headers
         .get("handshake-status")
-        .or_else(|| headers.get("Handshake-Status"))
         .and_then(|value| value.to_str().ok());
     if let Some(status) = status
         && status != "0"

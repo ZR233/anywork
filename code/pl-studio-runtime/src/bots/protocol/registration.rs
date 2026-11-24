@@ -207,18 +207,11 @@ impl RegistrationClient {
                 )),
             };
         }
-        if status_code == 400 {
-            return Ok(PollRegistrationOutcome::Failed {
-                code: "unknown".to_string(),
-                message: "registration failed".to_string(),
-            });
-        }
-        Err(FeishuError::new(
-            FeishuErrorKind::Unavailable,
-            "registration poll HTTP request failed",
-            matches!(status_code, 429 | 500..=599),
-            Some(status_code.to_string()),
-        ))
+        // `post_form` 只放行 2xx 与 400：能走到这里的是没有业务错误码的 400。
+        Ok(PollRegistrationOutcome::Failed {
+            code: "unknown".to_string(),
+            message: "registration failed".to_string(),
+        })
     }
 }
 
@@ -274,54 +267,27 @@ fn registration_url(http: &FeishuHttp) -> Result<Url, FeishuError> {
 }
 
 fn begin_http_error(status: reqwest::StatusCode, error: Option<&str>) -> FeishuError {
+    // `post_form` 只放行 2xx 与 400：带业务错误码的 begin 响应按不可用归类且都不可重试；
+    // 不带错误码的只会是 400，按普通请求被拒呈现。
     let code = match (status.as_u16(), error) {
         (400, Some("authorization_pending")) => "authorization_pending",
         (400, Some("slow_down")) => "slow_down",
         (400, Some("access_denied")) => "access_denied",
         (400, Some("expired_token")) => "expired_token",
         (_, Some(_)) => "unknown",
-        (status, None) => return classify_begin_status(status),
+        (_, None) => {
+            return FeishuError::new(
+                FeishuErrorKind::Rejected,
+                "registration HTTP request was rejected",
+                false,
+                Some(status.as_u16().to_string()),
+            );
+        }
     };
     FeishuError::new(
         FeishuErrorKind::Unavailable,
         "registration begin failed",
-        matches!(status.as_u16(), 429 | 500..=599),
+        false,
         Some(code.to_string()),
     )
-}
-
-fn classify_begin_status(status: u16) -> FeishuError {
-    let (kind, retryable, message) = match status {
-        401 => (
-            FeishuErrorKind::Auth,
-            false,
-            "registration HTTP authentication was rejected",
-        ),
-        403 => (
-            FeishuErrorKind::Permission,
-            false,
-            "registration HTTP permission was denied",
-        ),
-        429 => (
-            FeishuErrorKind::Unavailable,
-            true,
-            "registration HTTP rate limit was reached",
-        ),
-        400..=499 => (
-            FeishuErrorKind::Rejected,
-            false,
-            "registration HTTP request was rejected",
-        ),
-        500..=599 => (
-            FeishuErrorKind::Unavailable,
-            true,
-            "registration HTTP service is unavailable",
-        ),
-        _ => (
-            FeishuErrorKind::Unavailable,
-            false,
-            "registration HTTP request failed",
-        ),
-    };
-    FeishuError::new(kind, message, retryable, Some(status.to_string()))
 }

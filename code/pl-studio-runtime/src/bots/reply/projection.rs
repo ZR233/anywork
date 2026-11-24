@@ -1,5 +1,7 @@
 //! Bounded target projection of immutable records and independent Final activity.
 
+use std::collections::HashSet;
+
 use super::content::{
     FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS, ReplyItem, ReplyItemKind,
 };
@@ -26,36 +28,28 @@ impl ReplyProjection {
     }
 
     pub(super) fn replace(&mut self, items: Vec<ReplyItem>) -> Result<(), FinalError> {
-        let existing = &[] as &[ReplyItem];
-        let bytes = existing
+        let bytes = items
             .iter()
-            .chain(&items)
             .try_fold(0usize, |size, item| size.checked_add(item.preview_bytes()))
             .ok_or_else(|| gap("reply body size overflow"))?;
-        if existing.len().saturating_add(items.len()) > MAX_TURN_CONTENT_ITEMS
-            || bytes > MAX_TURN_BODY_BYTES
-        {
+        if items.len() > MAX_TURN_CONTENT_ITEMS || bytes > MAX_TURN_BODY_BYTES {
             return Err(FinalError::Attention(
                 "reply projection exceeded its item or UTF-8 budget".into(),
             ));
         }
-        for (index, item) in items.iter().enumerate() {
-            if existing
-                .iter()
-                .chain(&items[..index])
-                .any(|old| old.id == item.id || old.member_id == item.member_id)
-            {
+        let mut ids = HashSet::with_capacity(items.len());
+        let mut member_ids = HashSet::with_capacity(items.len());
+        let mut terminal = false;
+        for item in &items {
+            if !ids.insert(item.id.as_str()) || !member_ids.insert(item.member_id.as_str()) {
                 return Err(gap("duplicate reply completion identity"));
             }
-        }
-        if existing
-            .iter()
-            .chain(&items)
-            .filter(|item| matches!(&item.kind, ReplyItemKind::Terminal(_)))
-            .count()
-            > 1
-        {
-            return Err(gap("reply target has conflicting terminal messages"));
+            if matches!(&item.kind, ReplyItemKind::Terminal(_)) {
+                if terminal {
+                    return Err(gap("reply target has conflicting terminal messages"));
+                }
+                terminal = true;
+            }
         }
         self.items = items;
         self.covered = false;

@@ -129,7 +129,7 @@ impl ActiveRegistration {
 }
 
 enum StartAdmission {
-    Reuse { changed: bool },
+    Reuse,
     Launch { previous: Option<RegistrationJob> },
 }
 
@@ -201,7 +201,7 @@ impl BotRuntime {
                 }
                 match slot.as_mut() {
                     Some(active) if active.matches_request(&operation_id, &name, &workspace_id) => {
-                        StartAdmission::Reuse { changed: false }
+                        StartAdmission::Reuse
                     }
                     Some(active) if active.operation_id == operation_id => {
                         return Err(FeishuError::new(
@@ -227,9 +227,10 @@ impl BotRuntime {
                 }
             };
             match admission {
-                StartAdmission::Reuse { changed } => {
+                StartAdmission::Reuse => {
+                    // 同一请求重放只复用进行中的注册，不产生新的状态变更。
                     return Ok(self
-                        .registration_reply(operation_id, changed, owner_epoch)
+                        .registration_reply(operation_id, false, owner_epoch)
                         .await);
                 }
                 StartAdmission::Launch { previous } => {
@@ -328,11 +329,6 @@ impl BotRuntime {
                         false,
                         None,
                     ));
-                }
-                Some(active)
-                    if matches!(active.status, BotRegistrationStatus::Cancelled { .. }) =>
-                {
-                    CancelAdmission::NoChange
                 }
                 Some(active) if active.is_committing() => {
                     return Err(busy_registration_error());
@@ -534,17 +530,7 @@ impl BotRuntime {
                 }
             }
             Ok(Ok(PollRegistrationOutcome::Completed(result))) => {
-                if let Err(error) = self.complete_registration(attempt_id, result).await {
-                    self.finish_worker(
-                        attempt_id,
-                        WorkerFinish::Failed {
-                            code: error.kind().label().to_string(),
-                            message: error.diagnostic().message,
-                            retryable: error.retryable(),
-                        },
-                    )
-                    .await;
-                }
+                self.complete_registration(attempt_id, result).await;
                 PollWait::Stop
             }
             Ok(Ok(PollRegistrationOutcome::Denied { message })) => {
@@ -637,11 +623,7 @@ impl BotRuntime {
         }
     }
 
-    async fn complete_registration(
-        &self,
-        attempt_id: &str,
-        result: PollRegistration,
-    ) -> Result<(), FeishuError> {
+    async fn complete_registration(&self, attempt_id: &str, result: PollRegistration) {
         let claim = {
             let mut slot = self.inner.registration.lock().await;
             match slot.as_mut() {
@@ -687,7 +669,6 @@ impl BotRuntime {
         match claim {
             CompleteClaim::Stale => {
                 self.publish().await;
-                Ok(())
             }
             CompleteClaim::Claimed {
                 name,
@@ -717,7 +698,7 @@ impl BotRuntime {
         attempt_id: &str,
         bot_id: &str,
         committed: Result<CredentialCommit, FeishuError>,
-    ) -> Result<(), FeishuError> {
+    ) {
         match committed {
             Ok(commit) if commit.decision == CredentialDecision::Applied && commit.publishable => {
                 {
@@ -743,7 +724,6 @@ impl BotRuntime {
                     *managed.diagnostic.lock().await = Some(error.diagnostic());
                 }
                 self.publish().await;
-                Ok(())
             }
             Ok(commit) => {
                 let diagnostic = commit.diagnostic.clone().unwrap_or_else(|| {
@@ -765,11 +745,9 @@ impl BotRuntime {
                     .diagnostic()
                 });
                 self.fail_after_claim(attempt_id, diagnostic).await;
-                Ok(())
             }
             Err(error) => {
                 self.fail_after_claim(attempt_id, error.diagnostic()).await;
-                Ok(())
             }
         }
     }

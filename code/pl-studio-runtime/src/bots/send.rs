@@ -137,14 +137,6 @@ fn send_uuid(
     hasher.update(chat_id.as_bytes());
     hasher.update(index.to_le_bytes());
     let digest = hasher.finalize();
-    let uuid = hex::encode(&digest[..16]);
-    if uuid.chars().count() > 50 {
-        return Err(FeishuError::new(
-            FeishuErrorKind::Protocol,
-            "constructed send uuid exceeds 50 characters",
-            false,
-            None,
-        ));
-    }
-    Ok(uuid)
+    // 16 字节摘要固定编码为 32 个十六进制字符，始终满足飞书 uuid 长度上限。
+    Ok(hex::encode(&digest[..16]))
 }
