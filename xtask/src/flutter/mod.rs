@@ -770,20 +770,8 @@ pub(crate) fn build_gui(options: BuildGuiOptions) -> Result<()> {
         DistCleanMode::Clean
     };
     copy_release_artifacts(&artifact_dir, &dist_dir, clean_mode, target)?;
-    if matches!(demo_mode, DemoMode::Native) {
-        let resources = if target == DesktopTarget::Macos {
-            dist_dir.join("anywork.app/Contents/Resources/bin")
-        } else {
-            dist_dir.join("bin")
-        };
-        crate::cli_bundle::build_and_stage(&workspace_root, &resources, &app_version.to_string())?;
-        #[cfg(target_os = "macos")]
-        process::run_checked(
-            Command::new("/usr/bin/codesign")
-                .args(["--force", "--deep", "--sign", "-"])
-                .arg(dist_dir.join("anywork.app")),
-            "codesign app with bundled anywk",
-        )?;
+    if matches!(demo_mode, DemoMode::Native) && !options.without_anywk {
+        crate::cli_bundle::build_for_gui(&workspace_root, &dist_dir, &app_version.to_string())?;
     }
     #[cfg(target_os = "linux")]
     if target == DesktopTarget::Linux && matches!(demo_mode, DemoMode::Native) {

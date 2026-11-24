@@ -42,6 +42,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> Result<()> {
                 cli::Command::ManualGui(options) => studio_acceptance::run(&options.args),
                 cli::Command::RunGui(options) => flutter::run_gui(options),
                 cli::Command::BuildGui(options) => flutter::build_gui(options),
+                cli::Command::BuildAnywk { output } => cli_bundle::build_release(&output),
+                cli::Command::AssembleGui {
+                    bundle,
+                    anywk,
+                    source_sha,
+                } => cli_bundle::assemble_gui(&bundle, &anywk, &source_sha),
                 cli::Command::ReleaseGui { action } => release::run(action),
                 cli::Command::BuildRemoteHelper(options) => remote_helper::build(options),
             }
