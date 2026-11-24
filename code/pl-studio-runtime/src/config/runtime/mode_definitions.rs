@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::Path;
 
 use crate::mode::{
@@ -12,6 +12,7 @@ use crate::mode::{
 use crate::{StudioError, StudioErrorCode};
 use anyhow::{Context, Result};
 
+use crate::config::fs_util::{DocumentReadError, read_optional_file, read_regular_file_bounded};
 use crate::config::{ConfigPaths, ConfigRuntimeError};
 use crate::mode::{
     MAX_MODE_DOCUMENT_BYTES, ThreadModeManager, ThreadModeSource, ThreadModeSourceId,
@@ -132,7 +133,7 @@ impl ConfigRuntime {
                 "Thread Mode document exceeds the {MAX_MODE_DOCUMENT_BYTES} byte limit"
             )));
         }
-        let previous = read_optional(&path)?;
+        let previous = read_optional_file(&path)?;
         fs::create_dir_all(self.store.paths().modes_dir())?;
         check_document_version(&path, previous.as_deref(), expected_revision)?;
         if previous.as_deref() != Some(bytes.as_slice()) {
@@ -204,7 +205,7 @@ impl ConfigRuntime {
             return Err(thread_mode_not_found(mode_id));
         }
         let path = mode_path(self.store.paths(), mode_id)?;
-        let previous = read_optional(&path)?;
+        let previous = read_optional_file(&path)?;
         check_document_version(&path, previous.as_deref(), expected_revision)?;
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -328,26 +329,22 @@ fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadMo
     );
     let mut documents = BTreeMap::new();
     for path in paths {
-        let metadata = fs::symlink_metadata(&path)?;
-        anyhow::ensure!(
-            metadata.file_type().is_file(),
-            "Thread Mode path {} is not a regular file",
-            path.display()
-        );
-        anyhow::ensure!(
-            metadata.len() <= MAX_MODE_DOCUMENT_BYTES as u64,
-            "Thread Mode file {} exceeds the {MAX_MODE_DOCUMENT_BYTES} byte limit",
-            path.display()
-        );
-        let mut json = String::new();
-        fs::File::open(&path)?
-            .take(MAX_MODE_DOCUMENT_BYTES as u64 + 1)
-            .read_to_string(&mut json)?;
-        anyhow::ensure!(
-            json.len() <= MAX_MODE_DOCUMENT_BYTES,
-            "Thread Mode file {} exceeds the document byte limit",
-            path.display()
-        );
+        let bytes =
+            read_regular_file_bounded(&path, MAX_MODE_DOCUMENT_BYTES as u64).map_err(|error| {
+                match error {
+                    DocumentReadError::NotFound(error) | DocumentReadError::Io(error) => {
+                        anyhow::Error::new(error)
+                    }
+                    DocumentReadError::Symlink | DocumentReadError::NotRegularFile => {
+                        anyhow::anyhow!("Thread Mode path {} is not a regular file", path.display())
+                    }
+                    DocumentReadError::TooLarge { .. } => anyhow::anyhow!(
+                        "Thread Mode file {} exceeds the {MAX_MODE_DOCUMENT_BYTES} byte limit",
+                        path.display()
+                    ),
+                }
+            })?;
+        let json = String::from_utf8(bytes)?;
         let crate::mode::ThreadModeValidationResult { document, issues } =
             crate::mode::validate_mode_json(&json);
         let document = document.ok_or_else(|| mode_file_validation_error(&path, issues))?;
@@ -381,14 +378,6 @@ fn mode_file_name(mode_id: &ThreadModeId) -> Result<String> {
         "Thread Mode ID cannot be used as a file name"
     );
     Ok(format!("{}.json", id.as_str()))
-}
-
-fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn restore_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {

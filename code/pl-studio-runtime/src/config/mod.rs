@@ -15,10 +15,12 @@ mod credential;
 pub(crate) mod credential_commit;
 mod document_migration;
 mod execution;
+mod fs_util;
 pub mod mcp;
 pub mod mcp_document;
 pub mod mcp_resource;
 pub use execution::RuntimeConfig;
+pub use fs_util::document_revision;
 pub(crate) mod model_catalog;
 mod runtime;
 mod schema_migration;
@@ -50,7 +52,7 @@ pub use mcp_document::{
 };
 pub use mcp_resource::{
     McpCatalogResource, McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer,
-    ScopedMcpScan, canonical_document_ref, canonical_mcp_filename, document_revision,
+    ScopedMcpScan, canonical_document_ref, canonical_mcp_filename,
     ensure_default_host_builtins_if_fresh, resolve_document_path,
     resolve_scoped_servers_for_thread, resolve_stdio_cwd, scan_scope_catalog, scope_dir,
 };
