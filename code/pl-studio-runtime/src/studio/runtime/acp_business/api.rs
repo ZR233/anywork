@@ -535,7 +535,7 @@ impl AcpBusinessOwner {
                                 events.clone(),
                                 identity.thread_id.to_string(),
                                 reference,
-                                session.title_changes(),
+                                session.clone(),
                             )
                             .await;
                     }

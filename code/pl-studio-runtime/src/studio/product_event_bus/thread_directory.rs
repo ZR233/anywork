@@ -598,6 +598,20 @@ fn active_acp_member<'a>(
         .then_some((session, agent))
 }
 
+fn apply_acp_list_title(metadata: &mut AcpDirectoryTitle, title: &str) -> bool {
+    let title = title.trim();
+    if title.is_empty()
+        || matches!(&metadata.peer, Some(AcpPeerTitle::Pushed { .. }))
+        || matches!(&metadata.peer, Some(AcpPeerTitle::Listed { title: previous }) if previous == title)
+    {
+        return false;
+    }
+    metadata.peer = Some(AcpPeerTitle::Listed {
+        title: title.to_owned(),
+    });
+    true
+}
+
 fn rebase_command_session(
     mut current: SessionDirectoryRecord,
     requested: &SessionDirectoryRecord,
@@ -1407,6 +1421,34 @@ impl ProductEventBus {
         .await;
     }
 
+    pub(in crate::studio) fn acp_title_readback_baseline(
+        &self,
+        thread_id: &str,
+        reference: &crate::AcpSessionReference,
+    ) -> Option<AcpDirectoryTitle> {
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let (session, agent) = active_acp_member(&index, thread_id, reference)?;
+        let metadata = session.acp_title.as_ref()?;
+        (agent.is_root_agent() && !matches!(&metadata.peer, Some(AcpPeerTitle::Pushed { .. })))
+            .then(|| metadata.clone())
+    }
+
+    pub(in crate::studio) async fn record_acp_list_title(
+        &self,
+        thread_id: &str,
+        reference: &crate::AcpSessionReference,
+        baseline: &AcpDirectoryTitle,
+        title: &str,
+    ) {
+        self.observe_acp_root_title(thread_id, reference, |_, metadata| {
+            metadata.peer == baseline.peer && apply_acp_list_title(metadata, title)
+        })
+        .await;
+    }
+
     async fn observe_acp_root_title(
         &self,
         thread_id: &str,
@@ -1477,19 +1519,8 @@ impl ProductEventBus {
                     return None;
                 }
                 let title = *titles.get(reference.acp_session_id.as_str())?;
-                let metadata = entry.session.acp_title.as_ref()?;
-                match &metadata.peer {
-                    Some(AcpPeerTitle::Pushed { .. }) => return None,
-                    Some(AcpPeerTitle::Listed { title: previous }) if previous == title => {
-                        return None;
-                    }
-                    _ => {}
-                }
                 let mut session = entry.session.clone();
-                session.acp_title.as_mut()?.peer = Some(AcpPeerTitle::Listed {
-                    title: title.to_owned(),
-                });
-                Some(session)
+                apply_acp_list_title(session.acp_title.as_mut()?, title).then_some(session)
             })
             .collect::<Vec<_>>();
         self.publish_acp_title_facts(&mut index, sessions);

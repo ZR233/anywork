@@ -5,9 +5,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, ensure};
 use pl_acp::session::{
     Driver, Exit, Observer, OpenRequest, OpenSetup, Session, SessionTitleUpdate,
+    schema::{ListSessionsRequest, StopReason},
 };
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
@@ -25,6 +27,13 @@ pub(crate) type AcpReportDelivery = Arc<
 >;
 
 static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+const TITLE_REFRESH_DELAYS: [Duration; 3] = [
+    Duration::from_secs(3),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+];
+const TITLE_LIST_TIMEOUT: Duration = Duration::from_secs(2);
+const TITLE_LIST_PAGES: usize = 4;
 
 /// Exact local reclamation facts, independent of the peer's history or close capability.
 #[derive(Debug, Clone)]
@@ -188,31 +197,39 @@ impl AcpResources {
         (snapshot.ready && !snapshot.closing && !self.cancellation.is_cancelled()).then_some(gate)
     }
 
-    /// Observe only the latest title from the original typed SDK state. The
-    /// protocol driver and content observer never await directory publication.
+    /// Project the latest title for this instance, with bounded list readback
+    /// after a successful turn if the peer has yet to push a title.
     pub(super) async fn start_title_projection(
         self: &Arc<Self>,
         events: crate::studio::ProductEventBus,
         thread_id: String,
         reference: AcpSessionReference,
-        mut changes: watch::Receiver<Option<SessionTitleUpdate>>,
+        sdk: Session,
     ) {
         let _gate = self.association_gate.lock().await;
         if self.cancellation.is_cancelled() {
             return;
         }
         let close = self.cancellation.clone();
-        let resources = Arc::downgrade(self);
+        let weak = Arc::downgrade(self);
         let mut owned = self.owned.lock().await;
         debug_assert!(
             owned.title_join.is_none(),
             "title projection belongs to one preparation"
         );
         owned.title_join = Some(tokio::spawn(async move {
+            let mut changes = sdk.title_changes();
+            let mut completions = sdk.completion_changes();
+            let can_list = sdk
+                .snapshot()
+                .await
+                .is_ok_and(|state| state.capabilities.session_capabilities.list.is_some());
+            let mut refreshes = None;
             loop {
                 let update = changes.borrow_and_update().clone();
-                if let Some(update) = update {
-                    let Some(resources) = resources.upgrade() else {
+                if let Some(update) = &update {
+                    refreshes = None;
+                    let Some(resources) = weak.upgrade() else {
                         break;
                     };
                     let Some(_gate) = resources.title_update_admission().await else {
@@ -220,14 +237,57 @@ impl AcpResources {
                     };
                     if resources.association_published().await {
                         events
-                            .record_acp_pushed_title(&thread_id, &reference, pushed_title(&update))
+                            .record_acp_pushed_title(&thread_id, &reference, pushed_title(update))
                             .await;
                     }
                 }
+                let next = refreshes.and_then(|(completed, index)| {
+                    TITLE_REFRESH_DELAYS
+                        .get(index)
+                        .map(|delay| completed + *delay)
+                });
                 tokio::select! {
                     biased;
                     () = close.cancelled() => break,
                     result = changes.changed() => if result.is_err() { break; },
+                    result = completions.changed(), if can_list && update.is_none() => {
+                        if result.is_err() { break; }
+                        if sdk.snapshot().await.is_ok_and(|state| {
+                            state.last_completed.is_some_and(|turn| {
+                                turn.result.is_ok_and(|response| response.stop_reason == StopReason::EndTurn)
+                            })
+                        }) {
+                            refreshes = Some((Instant::now(), 0));
+                        }
+                    }
+                    () = async { tokio::time::sleep_until(next.expect("scheduled title refresh")).await }, if next.is_some() => {
+                        let (completed, index) = refreshes.expect("scheduled title refresh");
+                        refreshes = Some((completed, index + 1));
+                        let Some(baseline) = events.acp_title_readback_baseline(&thread_id, &reference) else {
+                            refreshes = None;
+                            continue;
+                        };
+                        if !sdk.snapshot().await.is_ok_and(|state| {
+                            state.ready && !state.closing && state.active_run.is_none()
+                        }) {
+                            continue;
+                        }
+                        let result = tokio::select! {
+                            biased;
+                            () = close.cancelled() => break,
+                            result = changes.changed() => {
+                                if result.is_err() { break; }
+                                continue;
+                            }
+                            result = tokio::time::timeout(TITLE_LIST_TIMEOUT, read_listed_title(&sdk, &reference)) => result,
+                        };
+                        let Ok(Ok(Some(title))) = result else { continue; };
+                        let Some(resources) = weak.upgrade() else { break; };
+                        let Some(_gate) = resources.title_update_admission().await else { break; };
+                        if changes.borrow().is_none() {
+                            events.record_acp_list_title(&thread_id, &reference, &baseline, &title).await;
+                        }
+                    }
                 }
             }
         }));
@@ -791,6 +851,30 @@ impl AcpResources {
         }
         outcome
     }
+}
+
+async fn read_listed_title(
+    sdk: &Session,
+    reference: &AcpSessionReference,
+) -> Result<Option<String>, pl_acp::session::Error> {
+    let mut request = ListSessionsRequest::new().cwd(std::path::PathBuf::from(&reference.cwd));
+    for _ in 0..TITLE_LIST_PAGES {
+        let page = sdk.list(request.clone()).await?;
+        if let Some(title) = page.sessions.into_iter().find_map(|item| {
+            let title = item.title?;
+            (item.session_id.0.as_ref() == reference.acp_session_id
+                && item.cwd.to_str() == Some(reference.cwd.as_str())
+                && !title.trim().is_empty())
+            .then_some(title)
+        }) {
+            return Ok(Some(title));
+        }
+        let Some(cursor) = page.next_cursor else {
+            break;
+        };
+        request.cursor = Some(cursor);
+    }
+    Ok(None)
 }
 
 fn pushed_title(update: &SessionTitleUpdate) -> AcpPeerTitle {
