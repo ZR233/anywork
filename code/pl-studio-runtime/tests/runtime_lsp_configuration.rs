@@ -10,7 +10,7 @@ use pl_studio_runtime::{
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
     StudioThreadLspStateSnapshot,
 };
-use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode, TurnState};
+use pl_studio_runtime::ThreadWorkspaceMode;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use support::{Environment, program_reply, prompt_step, receipt, text_reply, tool_reply};
