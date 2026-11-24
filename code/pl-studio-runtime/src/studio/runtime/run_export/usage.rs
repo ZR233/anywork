@@ -6,7 +6,7 @@ use crate::{InferenceBillingRecord, PricingOutcome};
 use anyhow::{Result, ensure};
 use pl_core::model::ModelUsage;
 use pl_core::thread::UsageSummary;
-use pl_core::usage::{UsageAnalysis, UsageField, UsageStatus, analyze_usage};
+use pl_core::usage::{UsageAnalysis, UsageField, analyze_usage};
 
 use super::types::{
     ModelUsageExportV3, ThreadUsageExportV3, UsageCoverage, UsageExportV3, UsageKnownTotalsV3,

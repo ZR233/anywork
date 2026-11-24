@@ -1,7 +1,7 @@
 //! Workspace and skill tools over ordinary authors and the original ACP execution owner.
 use super::acp_host_mcp::{HostBinding, HostHandle, attach_binding, prepare_binding};
 use crate::tool_json::{JsonToolInput, json_output};
-use crate::{studio::thread_factory::PreparedAcpWorkspace, thread_assembler::AgentHost};
+use crate::studio::thread_factory::PreparedAcpWorkspace;
 use anyhow::Result;
 use futures::future::BoxFuture;
 use pl_agent_tool::{Tool, ToolDefinition};
