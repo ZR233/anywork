@@ -87,8 +87,8 @@ async fn managed_upgrade_when_idle_retires_old_process_and_reconnects_cleanly() 
     let fixture = Fixture::disabled("replay").await?;
     seed_synthetic_install_version(
         &fixture.runtime.store,
-        "1.4.5",
-        &peer_wrapper_script("1.4.5"),
+        "1.5.2",
+        &peer_wrapper_script("1.5.2"),
     );
 
     let result: Result<()> = async {
@@ -111,7 +111,7 @@ async fn managed_upgrade_when_idle_retires_old_process_and_reconnects_cleanly() 
                 && matches!(
                     &account.state,
                     AcpAuthState::Verified { server: Some(server), .. }
-                        if server.version == "1.4.5"
+                        if server.version == "1.5.2"
                 )
         })
         .await;
@@ -122,20 +122,20 @@ async fn managed_upgrade_when_idle_retires_old_process_and_reconnects_cleanly() 
         // Upgrade installation on disk and notify accounts owner.
         seed_synthetic_install_version(
             &fixture.runtime.store,
-            "1.5.2",
-            &peer_wrapper_script("1.5.2"),
+            "1.5.3",
+            &peer_wrapper_script("1.5.3"),
         );
         fixture
             .runtime
             .acp_accounts
-            .installation_ready(AcpProvider::Antigravity, "1.5.2");
+            .installation_ready(AcpProvider::Antigravity, "1.5.3");
 
         let ready_v2 = wait_account_state(&fixture.runtime, "business-peer", |account| {
             matches!(account.connection, AcpConnectionState::Ready)
                 && matches!(
                     &account.state,
                     AcpAuthState::Verified { server: Some(server), .. }
-                        if server.version == "1.5.2"
+                        if server.version == "1.5.3"
                 )
         })
         .await;
@@ -177,8 +177,8 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
     let fixture = Fixture::disabled("replay").await?;
     seed_synthetic_install_version(
         &fixture.runtime.store,
-        "1.4.5",
-        &peer_wrapper_script("1.4.5"),
+        "1.5.2",
+        &peer_wrapper_script("1.5.2"),
     );
 
     let result: Result<()> = async {
@@ -201,14 +201,14 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
                 && matches!(
                     &account.state,
                     AcpAuthState::Verified { server: Some(server), .. }
-                        if server.version == "1.4.5"
+                        if server.version == "1.5.2"
                 )
         })
         .await;
         let pid_v1 = fixture.pid("pid")?;
         let old_conn = Arc::downgrade(&fixture.runtime.acp_accounts.connection(&definition)?);
 
-        // Open active session on v1.4.5.
+        // Open active session on v1.5.2.
         let mut session = fixture
             .runtime
             .open_acp_session(OpenAcpSessionRequest {
@@ -225,13 +225,13 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
         // Upgrade installation while active session is open: connection must NOT switch yet.
         seed_synthetic_install_version(
             &fixture.runtime.store,
-            "1.5.2",
-            &peer_wrapper_script("1.5.2"),
+            "1.5.3",
+            &peer_wrapper_script("1.5.3"),
         );
         fixture
             .runtime
             .acp_accounts
-            .installation_ready(AcpProvider::Antigravity, "1.5.2");
+            .installation_ready(AcpProvider::Antigravity, "1.5.3");
 
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(fixture.pid("pid")?, pid_v1);
@@ -243,7 +243,7 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
             .prompt_acp_session(
                 session.target.clone(),
                 vec![pl_acp::session::schema::ContentBlock::Text(
-                    pl_acp::session::schema::TextContent::new("continue on 1.4.5"),
+                    pl_acp::session::schema::TextContent::new("continue on 1.5.2"),
                 )],
             )
             .await?;
@@ -298,7 +298,7 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
                         && matches!(
                             &account.state,
                             AcpAuthState::Verified { server: Some(server), .. }
-                                if server.version == "1.5.2"
+                                if server.version == "1.5.3"
                         )
                     {
                         break;

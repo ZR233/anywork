@@ -39,7 +39,7 @@
 | 25 | [客户端、前端状态与资源生命周期](./25-frontend-state.md) | 纯 SDK 客户端、FRB/Riverpod 边界、单一写入端、命令回执、草稿与资源关闭契约（唯一权威源） |
 | 26 | [时间线内容源与原生列表](./26-timeline-content.md) | Current overlay、schema 26 原子事件与索引派生 `WorkRange`、工作组 ViewModel 折叠、单条回退与唯一 Flutter apply（唯一权威源） |
 | 27 | [外部机器人与飞书接入](./27-bots.md) | 原生飞书协议、扫码首配、可信联系人与群组、会话工具、统一发送与连接生命周期（唯一权威源） |
-| 28 | [ACP 接入、服务器准备与认证](./28-acp.md) | 固定 Antigravity 1.4.5 自动安装、受管接入、认证检查与资源生命周期（独立于原生模型协议） |
+| 28 | [ACP 接入、服务器准备与认证](./28-acp.md) | 受管 Antigravity `1.x`（`>= 1.5.2, < 2.0.0`）自动安装、接入、认证检查与资源生命周期（独立于原生模型协议） |
 | 29 | [命令行宿主与 Harbor 接入](./29-cli-harbor.md) | anywk 单任务执行、V3/schema 3 归档、Harbor 本地评测、桌面分发与 PATH |
 
 配套资产：`concepts/` 保存产品概念设计（如项目侧栏），`prototypes/` 保存视觉原型（HTML 静态稿，不作为架构契约），`assets/` 保存文档引用的图像资源。
