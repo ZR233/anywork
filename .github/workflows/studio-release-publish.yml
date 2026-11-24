@@ -416,7 +416,7 @@ jobs:
       - name: Assemble GUI from verified prebuilt inputs
         shell: pwsh
         run: |
-          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk target/studio-anywk --source-sha $env:SOURCE_SHA
+          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk dist/studio-anywk --source-sha $env:SOURCE_SHA
           if ($LASTEXITCODE -ne 0) { throw "GUI assembly exited with $LASTEXITCODE" }
 
       - name: Install pinned release packaging tools
@@ -712,7 +712,7 @@ jobs:
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
             "$STUDIO_LINUX_TOOL" assemble-gui --bundle "$STUDIO_LINUX_BUNDLE" \
-            --anywk target/studio-anywk --source-sha "$SOURCE_SHA"
+            --anywk dist/studio-anywk --source-sha "$SOURCE_SHA"
       - name: Stage Debian package from verified bundle
         run: |
           bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
