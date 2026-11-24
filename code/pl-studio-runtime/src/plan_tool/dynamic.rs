@@ -522,10 +522,17 @@ mod migration_tests {
 
     #[test]
     fn version_one_legacy_shape_migrates_once_and_hot_decode_rejects_it() {
+        let hash = pl_core::context::content_hash(b"keep");
         let saved = OpaquePayload::new(
             FORMAT,
             1,
-            r#"{"revision":4,"state":"approved","document":{"version":2,"markdown":"keep","contentHash":"abc"},"updatedAt":9}"#,
+            serde_json::json!({
+                "revision": 4,
+                "state": "approved",
+                "document": {"version": 2, "markdown": "keep", "contentHash": hash},
+                "updatedAt": 9
+            })
+            .to_string(),
         )
         .unwrap();
         assert!(decode_plan_state(&saved).is_err());
@@ -538,7 +545,7 @@ mod migration_tests {
         let document = state.plan.document.unwrap();
         assert_eq!(document.revision, 2);
         assert_eq!(document.content, "keep");
-        assert_eq!(document.hash, "abc");
+        assert_eq!(document.hash, hash);
         assert!(migrate_plan_payload(&current).unwrap().is_none());
     }
 

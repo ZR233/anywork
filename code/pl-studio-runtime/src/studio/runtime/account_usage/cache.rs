@@ -388,9 +388,9 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            error
+            error.chain().any(|cause| cause
                 .to_string()
-                .contains("duplicate account usage cache identity"),
+                .contains("duplicate account usage cache identity")),
             "{error:#}"
         );
     }

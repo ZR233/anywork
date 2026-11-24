@@ -2048,6 +2048,7 @@ mod storage_fault_tests {
         let path = temp.path().join("calls.sqlite");
         let db = schema_eight_fixture(&path, true).await?;
         let before = material_snapshot(&db).await?;
+        let current_hash = stored_summary_hash(&db, "current").await?;
         let logs = log_snapshot(temp.path()).await?;
         db.execute_unprepared(
             "CREATE TRIGGER reject_retirement BEFORE UPDATE OF schema_version ON calls_meta
@@ -2080,7 +2081,15 @@ mod storage_fault_tests {
             .await?;
         initialize(&db, temp.path()).await?;
         assert_eq!(format_version(&db).await?, CALLS_SCHEMA_VERSION);
-        assert_eq!(material_snapshot(&db).await?, before);
+        assert_eq!(
+            without_summary_content_hash(&db, material_snapshot(&db).await?).await?,
+            without_summary_content_hash(&db, before).await?
+        );
+        assert_eq!(stored_summary_hash(&db, "current").await?, current_hash);
+        assert_eq!(
+            stored_summary_hash(&db, "legacy").await?,
+            Some(expected_legacy_summary_hash("legacy")?)
+        );
         assert_eq!(log_snapshot(temp.path()).await?, logs);
         db.close().await?;
         let store = CallsStore::prepare(&path).await?;
