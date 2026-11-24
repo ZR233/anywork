@@ -4809,6 +4809,80 @@ mod tests {
         harness.finish().await;
     }
 
+    #[tokio::test]
+    async fn automatic_permission_requires_one_unambiguous_allow_once() {
+        let mut harness = Harness::new(
+            Open::New,
+            permission_filter_scenario(Arc::new(|tool_call| tool_call.name == Some("host-tool"))),
+        );
+        harness.ready().await;
+        harness.session.submit(input("options")).await.unwrap();
+        harness.wait(|state| state.prompt_requests.len() == 1).await;
+
+        let cases = [
+            (
+                "durable",
+                vec![PermissionOption::new(
+                    "remember",
+                    "Remember",
+                    PermissionOptionKind::AllowAlways,
+                )],
+            ),
+            (
+                "duplicate",
+                vec![
+                    PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+                    PermissionOption::new("allow", "Deny", PermissionOptionKind::RejectOnce),
+                ],
+            ),
+            (
+                "multiple",
+                vec![
+                    PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+                    PermissionOption::new("other", "Other", PermissionOptionKind::AllowOnce),
+                ],
+            ),
+        ];
+        for (index, (id, options)) in cases.into_iter().enumerate() {
+            harness
+                .control
+                .send(PeerCommand::PermissionToolCall(
+                    Box::new(
+                        ToolCallUpdate::new(id, ToolCallUpdateFields::new()).name("host-tool"),
+                    ),
+                    options,
+                ))
+                .await
+                .unwrap();
+            let permission = match harness.event().await {
+                Event::Permission {
+                    id: permission_id,
+                    request,
+                } => {
+                    assert_eq!(request.tool_call.tool_call_id.0.as_ref(), id);
+                    permission_id
+                }
+                event => panic!("{id} was selected automatically: {event:?}"),
+            };
+            harness
+                .session
+                .answer_permission(permission, None)
+                .await
+                .unwrap();
+            harness
+                .wait(|state| state.permission_results.len() == index + 1)
+                .await;
+            assert!(matches!(
+                peer_lock(&harness.state).permission_results[index],
+                RequestPermissionOutcome::Cancelled
+            ));
+        }
+
+        harness.complete(StopReason::EndTurn).await;
+        assert!(matches!(harness.event().await, Event::Completed(_)));
+        harness.finish().await;
+    }
+
     #[test]
     fn active_tool_name_cache_bounds_entries_and_bytes() {
         let mut active = Active {

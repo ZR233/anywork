@@ -128,6 +128,41 @@ impl GetDelegationModelsRequest {
     }
 }
 
+#[cfg(test)]
+mod details_validation {
+    use super::*;
+
+    fn identity(account: &str, model: &str) -> GetDelegationModelRequest {
+        GetDelegationModelRequest {
+            account_id: account.into(),
+            model_id: model.into(),
+        }
+    }
+
+    #[test]
+    fn batch_details_reject_empty_duplicate_oversized_and_blank_identities() {
+        let rejected = [
+            Vec::new(),
+            vec![identity("inventory", "model-00"); 2],
+            (0..11)
+                .map(|index| identity("inventory", &format!("model-{index:02}")))
+                .collect(),
+            vec![identity("", "model-00")],
+            vec![identity("inventory", " ")],
+        ];
+        for models in rejected {
+            assert!(GetDelegationModelsRequest { models }.validate().is_err());
+        }
+        assert!(
+            GetDelegationModelsRequest {
+                models: vec![identity("inventory", "model-00")],
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+}
+
 /// 同一目录快照上的批量详情，结果顺序与输入相同。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

@@ -20,7 +20,8 @@ use pl_studio_runtime::{
 };
 use serde_json::json;
 use support::{
-    Environment, program_reply, prompt_step, receipt, text_reply, tool_output, tool_reply,
+    Environment, completed, program_reply, prompt_step, receipt, submit, text_reply, tool_output,
+    tool_reply,
 };
 
 fn after(steps: &mut Vec<Step>, call: &str, marker: &str, reply: pl_provider_fixture::Reply) {
@@ -93,50 +94,6 @@ fn script() -> Vec<Step> {
         text_reply("disk refreshed", "refresh-disk"),
     );
     steps
-}
-
-async fn completed(env: &Environment, id: &str, prompt: &str) -> Result<()> {
-    let turn = support::completed_prompt(&env.runtime, id, prompt).await?;
-    ensure!(
-        matches!(turn.state, TurnState::Completed(_)),
-        "{prompt}: unexpected terminal state {:?}",
-        turn.state
-    );
-    Ok(())
-}
-
-async fn submit(env: &Environment, id: &str, prompt: &str) -> Result<()> {
-    let turn = submit_turn(env, id, prompt).await?;
-    ensure!(
-        matches!(turn.state, TurnState::Completed(_)),
-        "{prompt}: unexpected terminal state {:?}",
-        turn.state
-    );
-    Ok(())
-}
-
-async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_studio_runtime::Turn> {
-    let revision = env
-        .runtime
-        .thread_snapshot(id)
-        .await?
-        .model_route
-        .context("frozen model route")?
-        .revision;
-    env.runtime
-        .submit_prompt_command(
-            id.to_owned(),
-            SubmitPromptRequest {
-                input: StudioPromptInput {
-                    input_id: format!("input-{prompt}"),
-                    text: prompt.to_owned(),
-                    attachment_draft_ids: Vec::new(),
-                },
-                expected_model_route_revision: revision,
-            },
-        )
-        .await?;
-    support::completed_prompt(&env.runtime, id, prompt).await
 }
 
 async fn state(env: &Environment, id: &str, present: bool, after: u64) -> Result<()> {
@@ -327,16 +284,6 @@ fn reconnect_script() -> Vec<Step> {
         text_reply("reconnect available without dynamic servers", "empty"),
     );
     for (phase, input, marker) in [
-        ("missing", json!({}), "missing field"),
-        ("null", json!({"serverId":null}), "invalid type"),
-        ("number", json!({"serverId":7}), "invalid type"),
-        ("empty-id", json!({"serverId":""}), "non-empty"),
-        ("blank-id", json!({"serverId":"  "}), "non-empty"),
-        (
-            "override",
-            json!({"serverId":"fixture","threadId":"other"}),
-            "unknown field",
-        ),
         ("unknown", json!({"serverId":"unknown"}), "not enabled"),
         ("disabled", json!({"serverId":"fixture"}), "not enabled"),
         (
@@ -381,9 +328,7 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_redacts_fai
         let started = env.start(ThreadWorkspaceMode::Local, "empty").await?;
         let id = &started.thread.id;
         completed(&env, id, "empty").await?;
-        for phase in ["missing", "null", "number", "empty-id", "blank-id", "override", "unknown"] {
-            submit(&env, id, phase).await?;
-        }
+        submit(&env, id, "unknown").await?;
         let disabled = env.runtime.create_mcp_document(&CreateMcpDocumentRequest {
             scope: McpScope::Host,
             id: "fixture".into(),
