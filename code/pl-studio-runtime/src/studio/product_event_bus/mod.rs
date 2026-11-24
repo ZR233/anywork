@@ -25,8 +25,8 @@ use crate::{
 };
 
 use super::StudioStore;
-use super::storage::write_behind::ThreadWriteBehindWriter;
 use super::ids::unix_seconds;
+use super::storage::write_behind::ThreadWriteBehindWriter;
 pub(in crate::studio) use thread_directory::NativeAgentObservation;
 pub(crate) use thread_directory::ThreadMetadataSignal;
 pub(crate) use topics::ProductTopicSignal;

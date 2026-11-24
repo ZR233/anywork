@@ -220,7 +220,8 @@ mod tests {
     async fn topic_fixture() -> Result<(tempfile::TempDir, ProductEventBus)> {
         let temp = tempfile::tempdir()?;
         let store = crate::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let writer = crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
+        let writer =
+            crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = ProductEventBus::new(store, writer);
         events.initialize_directories().await?;
         Ok((temp, events))
