@@ -1228,3 +1228,222 @@ async fn safe_recovery_preserves_authorization_and_explicit_archive_reports_git_
     }
     env.finish(result).await
 }
+
+async fn completed_turns(
+    runtime: &pl_studio_runtime::StudioRuntime,
+    id: &str,
+    min_count: usize,
+) -> Result<Vec<pl_studio_runtime::Turn>> {
+    use pl_studio_runtime::history::{HistoryBusinessRowHead, HistoryTurnState};
+
+    let reader = runtime
+        .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
+        .await?;
+    let demand = HistoryDemand {
+        max_rows: 128,
+        max_bytes: 256 * 1024,
+    };
+    let observed = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let mut cut = reader.capture().await?;
+        loop {
+            let mut cursor = None;
+            let mut completed = Vec::new();
+            loop {
+                let page = reader
+                    .turns_page(Some(cut.clone()), cursor.clone(), demand)
+                    .await?;
+                for entry in page.entries {
+                    let HistoryBusinessRowHead::Turn(head) = entry.head else {
+                        continue;
+                    };
+                    if matches!(head.state, HistoryTurnState::Completed) {
+                        let event = head.detail_event_id.context("turn detail event")?;
+                        let detail = reader.read_event(event, demand).await?;
+                        let bytes = read_event_body_bytes(&reader, &detail, "turn_detail", None)
+                            .await?
+                            .context("turn detail bytes")?;
+                        let turn: pl_studio_runtime::Turn = serde_json::from_slice(&bytes)?;
+                        completed.push((entry.anchor_seq, turn));
+                    }
+                }
+                let Some(next) = page.next else { break };
+                ensure!(
+                    cursor.as_ref() != Some(&next),
+                    "Turn cursor did not advance"
+                );
+                cursor = Some(next);
+            }
+            if completed.len() >= min_count {
+                completed.sort_by_key(|(anchor_seq, _)| *anchor_seq);
+                return Ok::<_, anyhow::Error>(
+                    completed.into_iter().map(|(_, turn)| turn).collect(),
+                );
+            }
+            cut = reader.wait_changed(cut).await?;
+        }
+    })
+    .await
+    .context("expected completed History Turns not observed");
+    reader.close().await;
+    observed?
+}
+
+#[tokio::test]
+async fn worktree_child_can_be_evaluated_after_shorter_followup_turn() -> Result<()> {
+    let spawned = ReplyStage::new();
+    let child_round1_done = ReplyStage::new();
+    let send2_done = ReplyStage::new();
+    let evaluated_done = ReplyStage::new();
+    let mut env = Environment::new(
+        vec![
+            prompt_step(
+                "eval-parent-1",
+                0,
+                support::spawn_reply("eval-spawn", "eval-child-round-1"),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "eval-spawn",
+                "agentId",
+                1,
+                held_reply(&spawned, "eval-parent-spawned"),
+            ),
+        ],
+        vec![
+            prompt_step(
+                "eval-child-round-1",
+                0,
+                support::tool_reply(
+                    "discover_tools",
+                    "child-disc-1",
+                    serde_json::json!({"query": "exec"}),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "child-disc-1",
+                "exec",
+                1,
+                support::tool_reply(
+                    "discover_tools",
+                    "child-disc-2",
+                    serde_json::json!({"query": "wait"}),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "child-disc-2",
+                "wait",
+                2,
+                held_reply(&child_round1_done, "eval-child-r1-done"),
+            ),
+            prompt_step(
+                "eval-child-round-2",
+                3,
+                support::text_reply("short-followup-complete", "eval-child-r2-done"),
+            ),
+        ],
+    )
+    .await?;
+
+    let result = async {
+        let root = env
+            .start(ThreadWorkspaceMode::Worktree, "eval-parent-1")
+            .await?;
+        reached(&spawned).await?;
+        let receipt = support::receipt(&env.root_provider, "eval-spawn")?;
+        let child_id = support::child_id(&receipt)?.to_owned();
+
+        env.root_provider.extend_script(vec![
+            Step::agent_report(
+                Protocol::ResponsesHttp,
+                "released",
+                2,
+                support::tool_reply(
+                    "send_message",
+                    "eval-send-2",
+                    serde_json::json!({
+                        "target": child_id,
+                        "message": "eval-child-round-2",
+                    }),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "eval-send-2",
+                "sequence",
+                3,
+                held_reply(&send2_done, "eval-parent-send2-done"),
+            ),
+        ]);
+
+        spawned.release();
+        reached(&child_round1_done).await?;
+        child_round1_done.release();
+        reached(&send2_done).await?;
+
+        let child_turns = completed_turns(&env.runtime, &child_id, 2).await?;
+        let turn1 = &child_turns[0];
+        let turn2 = &child_turns[1];
+        ensure!(
+            turn2.id != turn1.id,
+            "expected two distinct completed Turns, got duplicate {}",
+            turn1.id
+        );
+        ensure!(
+            turn2.revision > turn1.revision,
+            "shorter follow-up Turn revision {} did not advance past Turn 1 revision {}",
+            turn2.revision,
+            turn1.revision
+        );
+
+        env.root_provider.extend_script(vec![
+            Step::agent_report(
+                Protocol::ResponsesHttp,
+                "short-followup-complete",
+                4,
+                support::tool_reply(
+                    "evaluate_agent",
+                    "eval-call-4",
+                    serde_json::json!({
+                        "target": child_id,
+                        "expectedTurnId": turn2.id,
+                        "expectedRevision": 0,
+                        "taskCategory": "coding",
+                        "outcome": "passed",
+                        "quality": 5,
+                        "instructionFollowing": 5,
+                        "comment": "Shorter follow-up turn completed cleanly."
+                    }),
+                ),
+            ),
+            Step::tool_output(
+                Protocol::ResponsesHttp,
+                "eval-call-4",
+                "created",
+                5,
+                held_reply(&evaluated_done, "eval-parent-done"),
+            ),
+        ]);
+        send2_done.release();
+        reached(&evaluated_done).await.with_context(|| {
+            format!(
+                "evaluate_agent call did not reach created receipt: {:?}",
+                support::tool_output(&env.root_provider, "eval-call-4")
+            )
+        })?;
+        let eval_receipt = support::receipt(&env.root_provider, "eval-call-4")?;
+        ensure!(eval_receipt["write"] == "created");
+        ensure!(eval_receipt["evaluation"]["turnId"] == turn2.id);
+        evaluated_done.release();
+        completed_turns(&env.runtime, &root.thread.id, 3).await?;
+        Ok(())
+    }
+    .await;
+
+    spawned.release();
+    child_round1_done.release();
+    send2_done.release();
+    evaluated_done.release();
+    env.finish(result).await
+}
