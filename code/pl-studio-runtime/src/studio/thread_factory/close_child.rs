@@ -1,4 +1,10 @@
-//! Closing a saved child checks frozen workspace ownership without restoring execution resources.
+//! Durable child close intent shared by Native and ACP children.
+//!
+//! `ChildCloseCoordinator` owns the saved record's lifecycle: resuming an existing intent, proving
+//! its binding still matches the frozen lease, freezing a new intent, advancing execution-close
+//! progress and recording failures. Each backend proves the closing identity from its own directory
+//! facts and releases its own owner; neither re-implements the record transitions. No model or
+//! execution workspace is restored while closing a saved child.
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::Thread;
 use crate::studio::{
@@ -8,59 +14,19 @@ use crate::studio::{
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
-use pl_tool::collaboration::control::AgentWorktreeCleanup;
+use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 
-impl StudioThreadFactory {
-    /// The caller holds the root/tree coordinator. No model or execution workspace is restored.
-    pub(crate) async fn begin_child_close(
-        &self,
-        thread: &Thread,
-        snapshot: Option<&pl_core::thread::ThreadSnapshot>,
-        force: bool,
-    ) -> Result<AgentCloseRecord> {
-        self.validate_child_close_association(thread).await?;
-        ensure!(
-            !self.services.store.has_legacy_retirement(&thread.id),
-            "old unpublished retirement facts require explicit recovery; original data preserved"
-        );
-        if let Some(mut record) = self.services.store.agent_close(&thread.id).await? {
-            self.validate_close_identity(thread, &record)?;
-            if force && !record.force && !record.worktree_cleanup.is_terminal() {
-                record.force = true;
-                record.changed()?;
-                self.services.store.save_agent_close(&record).await?;
-            }
-            if let Some(binding) = &record.worktree
-                && !record.worktree_cleanup.is_terminal()
-            {
-                self.services
-                    .worktrees
-                    .restore_workspace_seal(&thread.id, binding.identity.clone())?;
-            }
-            return Ok(record);
-        }
-        let snapshot = snapshot.context("explicit close needs the original saved assignment")?;
-        self.validate_child_close(thread, snapshot)?;
-        let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
-            .map_err(anyhow::Error::msg)?
-            .context("child has no frozen workspace")?;
-        let worktree = if assignment.mode == crate::AgentWorkspaceMode::Worktree {
-            let lease = self
-                .services
-                .worktrees
-                .get(&thread.id)
-                .context("child ownership lease is missing")?;
-            let identity =
-                workspace_preparation::cleanup_identity(&self.services.store, &lease).await?;
-            ensure!(
-                identity.matches_root(&assignment.root),
-                "owned worktree assignment changed"
-            );
-            Some(OwnedWorktreeBinding { lease, identity })
-        } else {
-            None
-        };
-        let record = AgentCloseRecord {
+/// The collaboration-tree identity a saved close intent must still describe.
+pub(super) struct ChildCloseIdentity {
+    agent_id: String,
+    parent_id: String,
+    root_id: String,
+    workspace_id: String,
+}
+
+impl ChildCloseIdentity {
+    fn native(thread: &Thread) -> Result<Self> {
+        Ok(Self {
             agent_id: thread.id.clone(),
             parent_id: thread
                 .parent_thread_id
@@ -68,78 +34,98 @@ impl StudioThreadFactory {
                 .context("cannot close a root as a child")?,
             root_id: thread.root_thread_id.clone(),
             workspace_id: thread.workspace_id.clone(),
-            revision: 1,
-            force,
-            worktree,
-            git: None,
-            execution_closed: false,
-            worktree_cleanup: AgentWorktreeCleanup::Pending,
-            error: None,
-        };
-        self.save_child_close_intent(&record).await?;
-        Ok(record)
+        })
     }
 
-    pub(super) async fn save_child_close_intent(&self, record: &AgentCloseRecord) -> Result<()> {
-        // The product transaction is the permanent execution seal. A readback error is not rollback.
-        let saved = self.services.store.save_agent_close(record).await;
-        if let Some(binding) = &record.worktree {
-            if let Some(frozen) = self
+    fn acp(member: &crate::studio::records::DirectoryMember) -> Result<Self> {
+        ensure!(
+            matches!(&member.agent.backend, crate::AgentBackend::Acp { .. }),
+            "ACP close requires an ACP member"
+        );
+        Ok(Self {
+            agent_id: member.agent.thread_id.clone(),
+            parent_id: member
+                .parent_thread_id
+                .clone()
+                .context("cannot close root as child")?,
+            root_id: member.root_thread_id.clone(),
+            workspace_id: member.session.workspace_id.clone(),
+        })
+    }
+}
+
+/// Durable close-intent lifecycle for one child, independent of the owning backend.
+pub(super) struct ChildCloseCoordinator<'a> {
+    factory: &'a StudioThreadFactory,
+    identity: &'a ChildCloseIdentity,
+}
+
+impl StudioThreadFactory {
+    pub(super) fn child_close<'a>(
+        &'a self,
+        identity: &'a ChildCloseIdentity,
+    ) -> ChildCloseCoordinator<'a> {
+        ChildCloseCoordinator {
+            factory: self,
+            identity,
+        }
+    }
+}
+
+impl ChildCloseCoordinator<'_> {
+    /// Resume the saved intent: prove its identity and lease, honour a force upgrade while the
+    /// worktree cleanup is still retriable, and restore the physical seal. `None` when no intent
+    /// is saved yet.
+    pub(super) async fn resume(&self, force: bool) -> Result<Option<AgentCloseRecord>> {
+        let Some(mut record) = self
+            .factory
+            .services
+            .store
+            .agent_close(&self.identity.agent_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.validate_saved(&record)?;
+        if force && !record.force && !record.worktree_cleanup.is_terminal() {
+            record.force = true;
+            record.changed()?;
+            self.factory
                 .services
                 .store
-                .workspace_identity(&record.agent_id)
-                .await?
-            {
-                ensure!(
-                    frozen == binding.identity,
-                    "closed child physical identity changed"
-                );
-            }
-            match self.services.store.agent_close(&record.agent_id).await {
-                Ok(Some(actual)) if &actual == record => self
-                    .services
-                    .worktrees
-                    .restore_workspace_seal(&record.agent_id, binding.identity.clone())?,
-                Ok(None) => {}
-                Ok(_) => anyhow::bail!("close intent changed during save; resources preserved"),
-                Err(error) => {
-                    self.services
-                        .worktrees
-                        .restore_workspace_seal(&record.agent_id, binding.identity.clone())?;
-                    return Err(error.context(
-                        "close save outcome unresolved; physical workspace remains sealed",
-                    ));
-                }
-            }
+                .save_agent_close(&record)
+                .await?;
         }
-        saved?;
-        self.services
-            .product_events
-            .commit_explicit_close(&record.agent_id)
-            .await?;
-        Ok(())
+        if let Some(binding) = &record.worktree
+            && !record.worktree_cleanup.is_terminal()
+        {
+            self.factory
+                .services
+                .worktrees
+                .restore_workspace_seal(&record.agent_id, binding.identity.clone())?;
+        }
+        Ok(Some(record))
     }
 
-    pub(super) fn validate_close_identity(
-        &self,
-        thread: &Thread,
-        record: &AgentCloseRecord,
-    ) -> Result<()> {
+    /// Prove the saved record still describes this child and its immutable lease binding.
+    /// Generic shutdown may settle Preserve, but can never change that binding.
+    pub(super) fn validate_saved(&self, record: &AgentCloseRecord) -> Result<()> {
+        let id = &self.identity.agent_id;
         ensure!(
-            record.agent_id == thread.id
-                && Some(&record.parent_id) == thread.parent_thread_id.as_ref()
-                && record.root_id == thread.root_thread_id
-                && record.workspace_id == thread.workspace_id,
+            record.agent_id == *id
+                && record.parent_id == self.identity.parent_id
+                && record.root_id == self.identity.root_id
+                && record.workspace_id == self.identity.workspace_id,
             "saved close identity differs from the original collaboration tree"
         );
         if let Some(binding) = &record.worktree {
             let current = self
+                .factory
                 .services
                 .worktrees
-                .get(&thread.id)
+                .get(id)
                 .context("closed child ownership lease is missing")?;
             let original = &binding.lease;
-            // Generic shutdown may settle Preserve, but cannot change the immutable binding.
             ensure!(
                 current.owner_kind == original.owner_kind
                     && current.owner_thread_id == original.owner_thread_id
@@ -155,37 +141,237 @@ impl StudioThreadFactory {
         Ok(())
     }
 
-    /// Called only after actual Turn/tool/process/observer/writer/report ACK completion.
-    pub(crate) async fn finish_child_execution(&self, thread: &Thread) -> Result<()> {
+    /// Freeze a new intent after the backend proved the child's workspace ownership.
+    pub(super) async fn create(
+        &self,
+        worktree: Option<OwnedWorktreeBinding>,
+        force: bool,
+    ) -> Result<AgentCloseRecord> {
+        let record = AgentCloseRecord {
+            agent_id: self.identity.agent_id.clone(),
+            parent_id: self.identity.parent_id.clone(),
+            root_id: self.identity.root_id.clone(),
+            workspace_id: self.identity.workspace_id.clone(),
+            revision: 1,
+            force,
+            worktree,
+            git: None,
+            execution_closed: false,
+            worktree_cleanup: AgentWorktreeCleanup::Pending,
+            error: None,
+        };
+        // The product transaction is the permanent execution seal. A readback error is not rollback.
+        let saved = self.factory.services.store.save_agent_close(&record).await;
+        if let Some(binding) = &record.worktree {
+            if let Some(frozen) = self
+                .factory
+                .services
+                .store
+                .workspace_identity(&record.agent_id)
+                .await?
+            {
+                ensure!(
+                    frozen == binding.identity,
+                    "closed child physical identity changed"
+                );
+            }
+            match self
+                .factory
+                .services
+                .store
+                .agent_close(&record.agent_id)
+                .await
+            {
+                Ok(Some(actual)) if actual == record => self
+                    .factory
+                    .services
+                    .worktrees
+                    .restore_workspace_seal(&record.agent_id, binding.identity.clone())?,
+                Ok(None) => {}
+                Ok(_) => anyhow::bail!("close intent changed during save; resources preserved"),
+                Err(error) => {
+                    self.factory
+                        .services
+                        .worktrees
+                        .restore_workspace_seal(&record.agent_id, binding.identity.clone())?;
+                    return Err(error.context(
+                        "close save outcome unresolved; physical workspace remains sealed",
+                    ));
+                }
+            }
+        }
+        saved?;
+        self.factory
+            .services
+            .product_events
+            .commit_explicit_close(&record.agent_id)
+            .await?;
+        Ok(record)
+    }
+
+    /// Advance the saved intent to execution-closed once every owner joined, then release the
+    /// physical resources of a child that owns no worktree. Worktree cleanup stays with the caller.
+    pub(super) async fn mark_execution_closed(&self) -> Result<AgentCloseRecord> {
+        let id = &self.identity.agent_id;
         let mut record = self
+            .factory
             .services
             .store
-            .agent_close(&thread.id)
+            .agent_close(id)
             .await?
             .context("close intent is missing")?;
-        self.validate_close_identity(thread, &record)?;
-        self.services
+        self.validate_saved(&record)?;
+        self.factory
+            .services
             .worktrees
-            .ensure_thread_workspace_idle(&thread.id)?;
+            .ensure_thread_workspace_idle(id)?;
         if !record.execution_closed {
             record.execution_closed = true;
             record.error = None;
             record.changed()?;
-            self.services.store.save_agent_close(&record).await?;
+            self.factory
+                .services
+                .store
+                .save_agent_close(&record)
+                .await?;
         }
-        self.services
+        self.factory
+            .services
             .product_events
-            .commit_explicit_close(&thread.id)
+            .commit_explicit_close(id)
             .await?;
         if record.worktree.is_none()
-            && let Some(identity) = self.services.store.workspace_identity(&thread.id).await?
+            && let Some(identity) = self.factory.services.store.workspace_identity(id).await?
         {
             // Retained SessionFiles are not a live use after all runtime owners joined.
-            self.services
+            self.factory
+                .services
                 .worktrees
-                .release_workspace_resources(&thread.id, &identity)?;
+                .release_workspace_resources(id, &identity)?;
         }
-        Ok(())
+        Ok(record)
+    }
+}
+
+impl StudioThreadFactory {
+    /// Native: the caller holds the root/tree coordinator. No model or execution workspace is restored.
+    pub(crate) async fn begin_child_close(
+        &self,
+        thread: &Thread,
+        snapshot: Option<&pl_core::thread::ThreadSnapshot>,
+        force: bool,
+    ) -> Result<AgentCloseRecord> {
+        self.validate_child_close_association(thread).await?;
+        ensure!(
+            !self.services.store.has_legacy_retirement(&thread.id),
+            "old unpublished retirement facts require explicit recovery; original data preserved"
+        );
+        let identity = ChildCloseIdentity::native(thread)?;
+        let coordinator = self.child_close(&identity);
+        if let Some(record) = coordinator.resume(force).await? {
+            return Ok(record);
+        }
+        let snapshot = snapshot.context("explicit close needs the original saved assignment")?;
+        self.validate_child_close(thread, snapshot)?;
+        let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
+            .map_err(anyhow::Error::msg)?
+            .context("child has no frozen workspace")?;
+        let worktree = if assignment.mode == crate::AgentWorkspaceMode::Worktree {
+            let lease = self
+                .services
+                .worktrees
+                .get(&thread.id)
+                .context("child ownership lease is missing")?;
+            let physical =
+                workspace_preparation::cleanup_identity(&self.services.store, &lease).await?;
+            ensure!(
+                physical.matches_root(&assignment.root),
+                "owned worktree assignment changed"
+            );
+            Some(OwnedWorktreeBinding {
+                lease,
+                identity: physical,
+            })
+        } else {
+            None
+        };
+        coordinator.create(worktree, force).await
+    }
+
+    /// ACP children use the existing workspace and final-worktree owners, not Native Threads.
+    pub(crate) async fn begin_acp_child_close(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> Result<AgentCloseResult> {
+        let member = self.directory_member(id)?;
+        let identity = ChildCloseIdentity::acp(&member)?;
+        let coordinator = self.child_close(&identity);
+        if let Some(record) = coordinator.resume(force).await? {
+            return Ok(record.result());
+        }
+        let worktree = if let Some(lease) = self.services.worktrees.get(id) {
+            ensure!(
+                lease.owner_kind
+                    == crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind::Child
+                    && lease.root_thread_id == member.root_thread_id
+                    && lease.workspace_id == member.session.workspace_id,
+                "ACP child does not own this worktree"
+            );
+            let physical =
+                workspace_preparation::cleanup_identity(&self.services.store, &lease).await?;
+            ensure!(
+                self.services.store.workspace_identity(id).await?.as_ref() == Some(&physical)
+                    && physical.matches_root(&lease.path),
+                "ACP execution workspace changed"
+            );
+            Some(OwnedWorktreeBinding {
+                lease,
+                identity: physical,
+            })
+        } else {
+            None
+        };
+        Ok(coordinator.create(worktree, force).await?.result())
+    }
+
+    /// Native: called only after actual Turn/tool/process/observer/writer/report ACK completion.
+    pub(crate) async fn finish_child_execution(&self, thread: &Thread) -> Result<()> {
+        let identity = ChildCloseIdentity::native(thread)?;
+        self.child_close(&identity)
+            .mark_execution_closed()
+            .await
+            .map(|_| ())
+    }
+
+    /// ACP: the original result-delivery join may need the Native parent's inbox gate, so the
+    /// caller drops its root permit first and this join removes the owned worktree afterwards.
+    pub(crate) async fn finish_acp_child_close(
+        &self,
+        id: &str,
+    ) -> Result<(AgentCloseResult, Option<crate::StateError>)> {
+        let member = self.directory_member(id)?;
+        let identity = ChildCloseIdentity::acp(&member)?;
+        let mut record = self.child_close(&identity).mark_execution_closed().await?;
+        match self.cleanup_one_owned_worktree(&mut record).await {
+            Ok(()) => Ok((record.result(), None)),
+            Err(error) => {
+                record.error = Some(state_error(&error));
+                record.changed()?;
+                self.services.store.save_agent_close(&record).await?;
+                Ok((record.result(), record.error))
+            }
+        }
+    }
+
+    /// Native worktree cleanup re-proves the same saved binding before touching Git.
+    pub(super) fn validate_close_identity(
+        &self,
+        thread: &Thread,
+        record: &AgentCloseRecord,
+    ) -> Result<()> {
+        let identity = ChildCloseIdentity::native(thread)?;
+        self.child_close(&identity).validate_saved(record)
     }
 
     pub(crate) async fn record_child_close_error(
