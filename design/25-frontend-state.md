@@ -201,7 +201,7 @@ HistoryReader、CurrentReader、History body watch、Current body watch 与界�
 
 范围正文观察同样由原 read scope 持有显式传输句柄，页面只借用单消费者窗口 Stream；取消订阅与原资源 join 分别收束，失败后仍可对原句柄重试。具体端口与取消语义见 [07.10](./07-streaming.md#710-会话推送交付确认与关闭)，不把 Stream 的终止当作底层资源已经关闭。
 
-会话 State 观察进入重连后，启动后续尝试时保留重连状态及最近已接纳的业务快照。接纳替代快照后更新连接状态，耗尽重试则发布失败。实时状态栏在重连期间显示固定的本地化文案，最近一次失败详情可从提示查看。
+会话 State 观察进入重连后，启动后续尝试时保留重连状态及最近已接纳的业务快照。接纳替代快照后更新连接状态，耗尽重试则发布失败。实时状态栏将重连作为与工作组、流式正文互斥的主阶段，显示固定的本地化文案，最近一次失败详情可从提示查看。
 
 首次 await 前冻结 thread/incarnation、reader generation、attempt、operationId、草稿/附件版本并登记原始 open、watch、query、consumer 与清理责任。A→B→A 迟到页、Current reset、命令结果或 finally 只结算原请求，不能覆盖新会话、清新草稿或解除新请求 busy。命令回执与观察各自结算，UnknownOutcome 保留冻结意图，不自动重放；权威当前态仍进入所属 Repository 同一入口。
 

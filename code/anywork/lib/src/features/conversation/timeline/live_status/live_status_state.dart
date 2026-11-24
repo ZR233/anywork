@@ -18,10 +18,23 @@ enum LiveStorageSeverity {
 /// 实时流同步连接状态。
 enum LiveConnectionStatus { connected, reconnecting, disconnected }
 
-/// 实时状态栏四选一主阶段。
+/// 实时状态栏的互斥主阶段。
 @immutable
 sealed class LiveStatusPrimaryPhase {
   const LiveStatusPrimaryPhase();
+}
+
+final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
+  const LiveReconnectingPhase({this.detail});
+
+  final String? detail;
+
+  @override
+  bool operator ==(Object other) =>
+      other is LiveReconnectingPhase && detail == other.detail;
+
+  @override
+  int get hashCode => detail.hashCode;
 }
 
 /// 主模型正在产出流式正文，可选附带未抑制的活动提示。
@@ -200,21 +213,17 @@ final class LiveStorageAttention extends LiveStatusAttention {
   int get hashCode => Object.hash(activity, storage, severity);
 }
 
-final class LiveConnectionAttention extends LiveStatusAttention {
-  const LiveConnectionAttention({required this.status, this.detail});
+final class LiveDisconnectedAttention extends LiveStatusAttention {
+  const LiveDisconnectedAttention({this.detail});
 
-  final LiveConnectionStatus status;
   final String? detail;
 
   @override
   bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveConnectionAttention &&
-          status == other.status &&
-          detail == other.detail;
+      other is LiveDisconnectedAttention && detail == other.detail;
 
   @override
-  int get hashCode => Object.hash(status, detail);
+  int get hashCode => detail.hashCode;
 }
 
 final class LiveErrorAttention extends LiveStatusAttention {

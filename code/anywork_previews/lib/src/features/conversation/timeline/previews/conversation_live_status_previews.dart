@@ -433,7 +433,6 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
       ),
     ),
     liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
-    connectionStatus: LiveConnectionStatus.reconnecting,
     liveWorkInitiallyExpanded: true,
     now: () => DateTime.fromMillisecondsSinceEpoch(225_000),
     liveWorkChildBuilder: (_) => const Column(
@@ -473,6 +472,18 @@ Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
         ),
       ],
     ),
+  ),
+);
+
+@Preview(name: '重连中 · 独立状态', group: '实时状态栏', size: Size(760, 140))
+Widget conversationLiveStatusReconnectingPreview() => liveStatusPreviewHost(
+  _liveMachineSurface(
+    activity: _threadActivity(
+      ThreadActivityKind.runningTool,
+      summary: '读取 design/26-timeline-content.md',
+    ),
+    liveOpenWork: _previewOpenWork('preview-work-tools', memberCount: 3),
+    connectionStatus: LiveConnectionStatus.reconnecting,
   ),
 );
 

@@ -93,6 +93,8 @@ abstract final class LiveStatusMachine {
         );
 
     final primary = _selectPrimaryPhase(
+      connectionStatus: inputs.connectionStatus,
+      connectionDetail: inputs.connectionDetail,
       execution: activeExecution,
       liveWork: liveWork,
       liveResponseAtoms: liveResponseAtoms,
@@ -315,6 +317,8 @@ abstract final class LiveStatusMachine {
   }
 
   static LiveStatusPrimaryPhase? _selectPrimaryPhase({
+    required LiveConnectionStatus connectionStatus,
+    required String? connectionDetail,
     required ConversationActivityView? execution,
     required LiveWorkPhase? liveWork,
     required List<CurrentAtom> liveResponseAtoms,
@@ -323,6 +327,9 @@ abstract final class LiveStatusMachine {
     required bool responseSuppressed,
     required bool compactingSuppressed,
   }) {
+    if (connectionStatus == LiveConnectionStatus.reconnecting) {
+      return LiveReconnectingPhase(detail: _nonEmpty(connectionDetail));
+    }
     final hasResponse =
         liveResponseAtoms.isNotEmpty ||
         (previewResponseText != null && previewResponseText.isNotEmpty);
@@ -406,12 +413,9 @@ abstract final class LiveStatusMachine {
       );
     }
 
-    if (connectionStatus != LiveConnectionStatus.connected) {
+    if (connectionStatus == LiveConnectionStatus.disconnected) {
       attentions.add(
-        LiveConnectionAttention(
-          status: connectionStatus,
-          detail: _nonEmpty(connectionDetail),
-        ),
+        LiveDisconnectedAttention(detail: _nonEmpty(connectionDetail)),
       );
     }
 

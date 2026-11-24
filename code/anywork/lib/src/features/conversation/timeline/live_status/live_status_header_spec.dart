@@ -427,12 +427,28 @@ final class LiveStatusHeaderSpec {
     );
   }
 
+  factory LiveStatusHeaderSpec.forReconnecting(
+    BuildContext context,
+    String? detail,
+  ) {
+    final label = context.l10n.liveStatusConnectionReconnecting;
+    return LiveStatusHeaderSpec(
+      label: label,
+      icon: Icons.sync_outlined,
+      indicatorStyle: TimelineActivityIndicatorStyle.circularProgress,
+      active: !(MediaQuery.maybeDisableAnimationsOf(context) ?? false),
+      tone: StudioTone.warning,
+      iconColor: StudioTone.warning.indicator(context),
+      tooltip: detail ?? label,
+      semanticsLabel: detail ?? label,
+    );
+  }
+
   /// 由并发关注条状态（控制、审批、存储、断连、错误）派生单行规格。
   factory LiveStatusHeaderSpec.forAttention(
     BuildContext context,
     LiveStatusAttention attention,
   ) {
-    final reducedMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
     final l10n = context.l10n;
     return switch (attention) {
       LiveStoppingAttention(:final activity) =>
@@ -445,32 +461,17 @@ final class LiveStatusHeaderSpec {
           activity,
           storageSeverity: severity,
         ),
-      LiveConnectionAttention(:final status, :final detail) => switch (status) {
-        LiveConnectionStatus.disconnected => LiveStatusHeaderSpec(
-          label: detail ?? l10n.liveStatusConnectionDisconnected,
-          icon: Icons.cloud_off_outlined,
-          indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
-          active: false,
-          tone: StudioTone.error,
-          iconColor: context.colors.error,
-          tooltip: detail ?? l10n.liveStatusConnectionDisconnected,
-          semanticsLabel: detail ?? l10n.liveStatusConnectionDisconnected,
-          isIssue: true,
-        ),
-        LiveConnectionStatus.reconnecting => LiveStatusHeaderSpec(
-          label: l10n.liveStatusConnectionReconnecting,
-          icon: Icons.sync_outlined,
-          indicatorStyle: TimelineActivityIndicatorStyle.circularProgress,
-          active: !reducedMotion,
-          tone: StudioTone.warning,
-          iconColor: StudioTone.warning.indicator(context),
-          tooltip: detail ?? l10n.liveStatusConnectionReconnecting,
-          semanticsLabel: detail ?? l10n.liveStatusConnectionReconnecting,
-        ),
-        LiveConnectionStatus.connected => throw StateError(
-          'connected status must not produce LiveConnectionAttention',
-        ),
-      },
+      LiveDisconnectedAttention(:final detail) => LiveStatusHeaderSpec(
+        label: detail ?? l10n.liveStatusConnectionDisconnected,
+        icon: Icons.cloud_off_outlined,
+        indicatorStyle: TimelineActivityIndicatorStyle.restingCat,
+        active: false,
+        tone: StudioTone.error,
+        iconColor: context.colors.error,
+        tooltip: detail ?? l10n.liveStatusConnectionDisconnected,
+        semanticsLabel: detail ?? l10n.liveStatusConnectionDisconnected,
+        isIssue: true,
+      ),
       LiveErrorAttention(:final message) => LiveStatusHeaderSpec(
         label: message,
         icon: Icons.error_outline,
