@@ -514,17 +514,6 @@ pub struct AcpAuthSnapshot {
     pub accounts: Vec<AcpAuthAccount>,
 }
 
-impl AcpAuthSnapshot {
-    /// 尚未产生任何观察的空快照；不是“全部未检查”的伪造条目。
-    pub fn empty(updated_at: i64) -> Self {
-        Self {
-            revision: 0,
-            updated_at,
-            accounts: Vec::new(),
-        }
-    }
-}
-
 /// 认证命令的受理回执与受理时的 canonical 快照。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

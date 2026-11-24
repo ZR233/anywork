@@ -787,7 +787,6 @@ fn agent_bytes(agent: &ThreadAgentItem) -> u64 {
     ] {
         bytes = bytes.saturating_add(text.len() as u64);
     }
-    bytes = bytes.saturating_add(optional_bytes(identity.parent_path()));
     match agent.state() {
         ThreadAgentState::Queued(_) | ThreadAgentState::Running(_) => {}
         ThreadAgentState::Succeeded(state) => {

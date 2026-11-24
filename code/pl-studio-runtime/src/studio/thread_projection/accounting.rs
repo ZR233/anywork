@@ -173,29 +173,67 @@ impl PreparedAccounting {
     }
 }
 
-fn merge_costs(
-    target: &mut Vec<pl_core::thread::UsageCost>,
+trait MergeableCost: Sized {
+    fn currency(&self) -> &str;
+    fn amount(&mut self) -> &mut f64;
+    fn from_runtime(cost: &crate::RuntimeCostAmount) -> Self;
+}
+
+impl MergeableCost for crate::RuntimeCostAmount {
+    fn currency(&self) -> &str {
+        &self.currency
+    }
+    fn amount(&mut self) -> &mut f64 {
+        &mut self.amount
+    }
+    fn from_runtime(cost: &crate::RuntimeCostAmount) -> Self {
+        cost.clone()
+    }
+}
+
+impl MergeableCost for pl_core::thread::UsageCost {
+    fn currency(&self) -> &str {
+        &self.currency
+    }
+    fn amount(&mut self) -> &mut f64 {
+        &mut self.amount
+    }
+    fn from_runtime(cost: &crate::RuntimeCostAmount) -> Self {
+        Self {
+            currency: cost.currency.clone(),
+            amount: cost.amount,
+        }
+    }
+}
+
+pub(super) fn merge_runtime_costs(
+    target: &mut Vec<crate::RuntimeCostAmount>,
+    incoming: &[crate::RuntimeCostAmount],
+) {
+    let _ = merge_costs(target, incoming);
+}
+
+/// Fold same-currency runtime costs. Non-finite sums are left unchanged and reported.
+fn merge_costs<T: MergeableCost>(
+    target: &mut Vec<T>,
     incoming: &[crate::RuntimeCostAmount],
 ) -> bool {
     let mut complete = true;
     for cost in incoming {
         if let Some(existing) = target
             .iter_mut()
-            .find(|existing| existing.currency == cost.currency)
+            .find(|existing| existing.currency() == cost.currency)
         {
-            let next = existing.amount + cost.amount;
+            let next = *existing.amount() + cost.amount;
             if next.is_finite() {
-                existing.amount = next;
+                *existing.amount() = next;
             } else {
                 complete = false;
             }
         } else {
-            target.push(pl_core::thread::UsageCost {
-                currency: cost.currency.clone(),
-                amount: cost.amount,
-            });
+            target.push(T::from_runtime(cost));
         }
     }
-    target.sort_by(|left, right| left.currency.cmp(&right.currency));
+    target.sort_by(|left, right| left.currency().cmp(right.currency()));
     complete
 }

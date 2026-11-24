@@ -11,7 +11,14 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::MessagePresentation;
-use crate::{LabeledEnum, UserInputAnswer, UserQuestion};
+use crate::{LabeledEnum, UserQuestion};
+
+/// 一个 UserInput 问题的已提交答案。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputAnswer {
+    pub answers: Vec<String>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -103,23 +110,6 @@ pub enum InteractionContinuationMessage {
     Resolution,
     /// 复用某个 UserInput question 的完整正文。
     Question { question_id: String },
-}
-
-/// 已根据 immutable preset 解析出的 mailbox 用户输入。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InteractionContinuationInput {
-    pub message: String,
-    pub presentation: MessagePresentation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum InteractionContinuationError {
-    #[error("interaction continuation requires UserInput content")]
-    NotUserInput,
-    #[error("interaction continuation question `{question_id}` does not exist exactly once")]
-    InvalidQuestion { question_id: String },
-    #[error("failed to serialize interaction resolution continuation: {0}")]
-    Serialization(String),
 }
 
 /// Interaction kind 与其 payload/state 的唯一绑定。
@@ -241,56 +231,6 @@ impl InteractionRequest {
         self
     }
 
-    /// 按创建 Interaction 时冻结的通用预设解析下一条用户输入。
-    ///
-    /// # Errors
-    ///
-    /// preset 请求了不适用的 content，或指定 question 不唯一时返回错误。
-    pub fn continuation_input(
-        &self,
-        resolution: &InteractionResolution,
-    ) -> Result<Option<InteractionContinuationInput>, InteractionContinuationError> {
-        let Some(preset) = &self.continuation else {
-            return Ok(None);
-        };
-        let message = match &preset.message {
-            InteractionContinuationMessage::Resolution => {
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "type": "interactionResolution",
-                    "interactionId": self.interaction_id,
-                    "originTurnId": self.scope.turn_id,
-                    "payload": self.content,
-                    "resolution": resolution,
-                }))
-                .map_err(|error| InteractionContinuationError::Serialization(error.to_string()))?
-            }
-            InteractionContinuationMessage::Question { question_id } => {
-                let InteractionContent::UserInput(user_input) = &self.content else {
-                    return Err(InteractionContinuationError::NotUserInput);
-                };
-                let mut questions = user_input
-                    .questions()
-                    .iter()
-                    .filter(|question| question.id == *question_id);
-                let question = questions.next().ok_or_else(|| {
-                    InteractionContinuationError::InvalidQuestion {
-                        question_id: question_id.clone(),
-                    }
-                })?;
-                if questions.next().is_some() {
-                    return Err(InteractionContinuationError::InvalidQuestion {
-                        question_id: question_id.clone(),
-                    });
-                }
-                question.question.clone()
-            }
-        };
-        Ok(Some(InteractionContinuationInput {
-            message,
-            presentation: preset.presentation,
-        }))
-    }
-
     pub fn decide(
         &self,
         command: InteractionCommand,
@@ -341,28 +281,6 @@ impl InteractionRequest {
                         .map_err(|error| error.at(self))?,
                 )
             }
-            (InteractionContent::UserInput(value), InteractionCommand::Expire(command)) => {
-                InteractionContent::UserInput(
-                    value
-                        .decide(UserInputCommand::Expire(command))
-                        .map_err(|error| error.at(self))?,
-                )
-            }
-            (InteractionContent::ToolApproval(value), InteractionCommand::Expire(command)) => {
-                InteractionContent::ToolApproval(
-                    value
-                        .decide(ToolApprovalCommand::Expire(command))
-                        .map_err(|error| error.at(self))?,
-                )
-            }
-            (
-                InteractionContent::UserInput(value),
-                InteractionCommand::ReopenRecovered(command),
-            ) => InteractionContent::UserInput(
-                value
-                    .decide(UserInputCommand::ReopenRecovered(command))
-                    .map_err(|error| error.at(self))?,
-            ),
             (_, command) => {
                 return Err(
                     InteractionTransitionError::new(self.kind(), current, command.name()).at(self),
@@ -389,8 +307,6 @@ pub enum InteractionCommand {
     ResolveUserInput(ResolveUserInput),
     ResolveToolApproval(ResolveToolApproval),
     Cancel(CancelInteraction),
-    Expire(ExpireInteraction),
-    ReopenRecovered(ReopenRecoveredInteraction),
 }
 
 impl InteractionCommand {
@@ -399,8 +315,6 @@ impl InteractionCommand {
             Self::ResolveUserInput(_) => "resolveUserInput",
             Self::ResolveToolApproval(_) => "resolveToolApproval",
             Self::Cancel(_) => "cancel",
-            Self::Expire(_) => "expire",
-            Self::ReopenRecovered(_) => "reopenRecovered",
         }
     }
 
@@ -409,8 +323,6 @@ impl InteractionCommand {
             Self::ResolveUserInput(command) => &command.interaction_id,
             Self::ResolveToolApproval(command) => &command.interaction_id,
             Self::Cancel(command) => &command.interaction_id,
-            Self::Expire(command) => &command.interaction_id,
-            Self::ReopenRecovered(command) => &command.interaction_id,
         }
     }
 
@@ -419,8 +331,6 @@ impl InteractionCommand {
             Self::ResolveUserInput(command) => command.expected_revision,
             Self::ResolveToolApproval(command) => command.expected_revision,
             Self::Cancel(command) => command.expected_revision,
-            Self::Expire(command) => command.expected_revision,
-            Self::ReopenRecovered(command) => command.expected_revision,
         }
     }
 }

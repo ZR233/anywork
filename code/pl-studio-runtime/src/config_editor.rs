@@ -128,14 +128,13 @@ impl AccountEdit {
         let template_protocol = template
             .as_ref()
             .map(|template| template.account.protocol.clone());
-        let mut config = match &self.template {
-            Some(template_id) => {
-                let template = template.expect("resolved template for this account edit");
+        let mut config = match template {
+            Some(template) => {
                 let mut config = match current {
                     Some(current) => {
                         let mut config = current.clone();
-                        if current.template_id() != Some(template_id) {
-                            config.template = Some(template_id.clone());
+                        if current.template_id() != Some(&template.id) {
+                            config.template = Some(template.id.clone());
                             config.protocol = template.account.protocol;
                             config.catalog = template.account.catalog;
                             config.capabilities = template.account.capabilities;
@@ -145,7 +144,7 @@ impl AccountEdit {
                     }
                     None => template.account,
                 };
-                if current.and_then(AccountConfig::template_id) == Some(template_id) {
+                if current.and_then(AccountConfig::template_id) == Some(&template.id) {
                     let current = current.expect("matching current template is present");
                     config.bearer_token_env = current.bearer_token_env.clone();
                     config.http_headers = current.http_headers.clone();
@@ -213,23 +212,23 @@ impl AccountEdit {
             .collect::<Result<Vec<_>>>()?;
         match &mut config.catalog {
             AccountModelCatalogConfig::Bundled {
-                additional_models, ..
-            } => *additional_models = declarations,
-            AccountModelCatalogConfig::Explicit { models, .. } => *models = declarations,
-        }
-        config.replace_model_auto_compact_overrides(self.model_auto_compact_limits.clone())?;
-        match &mut config.catalog {
-            AccountModelCatalogConfig::Bundled {
-                connection_overrides,
-                ..
-            }
-            | AccountModelCatalogConfig::Explicit {
+                additional_models,
                 connection_overrides,
                 ..
             } => {
+                *additional_models = declarations;
+                *connection_overrides = self.model_connection_modes.clone();
+            }
+            AccountModelCatalogConfig::Explicit {
+                models,
+                connection_overrides,
+                ..
+            } => {
+                *models = declarations;
                 *connection_overrides = self.model_connection_modes.clone();
             }
         }
+        config.replace_model_auto_compact_overrides(self.model_auto_compact_limits.clone())?;
         if current.is_none() {
             config.billing_kind = self.initial_billing_kind;
         } else if self.initial_billing_kind.is_some() {
