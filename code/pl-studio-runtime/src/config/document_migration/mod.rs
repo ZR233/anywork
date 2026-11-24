@@ -4,7 +4,7 @@ mod profile;
 pub(super) mod wire;
 
 pub(super) use main::{
-    MainV34, extract_historical_acp_accounts, extract_legacy_acp_from_main,
+    MainV35, extract_historical_acp_accounts, extract_legacy_acp_from_main,
     extract_legacy_lsp_from_main, extract_legacy_mcp_from_main, load_current_main, load_main,
 };
 pub(super) use profile::load_current as load_current_profile;

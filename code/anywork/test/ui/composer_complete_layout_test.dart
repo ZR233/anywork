@@ -83,8 +83,8 @@ void main() {
 final _selectorExpectations = <({Key key, String menuLabel, Key optionKey})>[
   (
     key: StudioDriverKeys.sessionMode,
-    menuLabel: '会话模式 · 任务',
-    optionKey: StudioDriverKeys.sessionModeOption(ThreadModeId.task.name),
+    menuLabel: '会话模式 · 自动',
+    optionKey: StudioDriverKeys.sessionModeOption(ThreadModeId.auto.name),
   ),
   (
     key: StudioDriverKeys.model,
@@ -159,7 +159,7 @@ void _expectCompleteLayout(
   final moreVisible = moreFinder.hitTestable().evaluate().isNotEmpty;
   if (wide) {
     expect(moreVisible, isFalse, reason: '宽窗的三个常用配置应直接显示');
-    expect(find.text('任务'), findsOneWidget);
+    expect(find.text('自动'), findsOneWidget);
     expect(find.text('GPT-6.1 Sol'), findsOneWidget);
     expect(find.text('high'), findsOneWidget);
   } else {
@@ -260,8 +260,8 @@ Widget completeComposerFixture({
       revision: 1,
       modes: [
         ThreadModeDescriptorView(
-          id: 'mode.task',
-          displayName: '任务',
+          id: 'mode.auto',
+          displayName: '自动',
           description: '合成布局场景',
           order: 0,
           hasWorkflow: true,
@@ -275,7 +275,7 @@ Widget completeComposerFixture({
         threadId: threadId,
         workspaceId: 'layout-workspace',
         title: '完整 Composer 布局样例',
-        mode: ThreadModeId.task,
+        mode: ThreadModeId.auto,
         delegationMode: DelegationMode.automatic,
         delegationPreference: DelegationPreference.balanced,
         workspacePath: 'synthetic-layout-workspace',

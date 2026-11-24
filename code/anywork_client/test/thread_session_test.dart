@@ -200,7 +200,7 @@ void main() {
       id: 'member',
       workspaceId: 'project',
       title: 'Member',
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       parentThreadId: parentThreadId,

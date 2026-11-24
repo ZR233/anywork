@@ -37,9 +37,27 @@ void main() {
   for (final width in [700.0, 90.0]) {
     testWidgets('Native 配置宽度 $width 复用相同候选、稳定 key 与在途选择语义', (tester) async {
       final selections = <Object>[];
+      const catalog = ThreadModeCatalogView(
+        modes: [
+          ThreadModeDescriptorView(
+            id: 'mode.auto',
+            displayName: '自动',
+            description: '自动模式',
+            order: 0,
+            hasWorkflow: true,
+          ),
+          ThreadModeDescriptorView(
+            id: 'mode.custom',
+            displayName: '自定义',
+            description: '自定义模式',
+            order: 1,
+            hasWorkflow: false,
+          ),
+        ],
+      );
       final inlineMode = SessionModeSelector(
-        catalog: const ThreadModeCatalogView(),
-        mode: ThreadModeId.task,
+        catalog: catalog,
+        mode: ThreadModeId.auto,
         onSelected: selections.add,
       );
       await tester.pumpWidget(
@@ -57,8 +75,8 @@ void main() {
                     measureInlineWidth: inlineMode.measureInlineWidth,
                     menuItem: SessionModeSelector(
                       inMenu: true,
-                      catalog: const ThreadModeCatalogView(),
-                      mode: ThreadModeId.task,
+                      catalog: catalog,
+                      mode: ThreadModeId.auto,
                       onSelected: selections.add,
                     ),
                   ),
@@ -80,9 +98,9 @@ void main() {
         ),
       );
       if (width == 700) {
-        expect(find.text('任务'), findsOneWidget);
+        expect(find.text('自动'), findsOneWidget);
         expect(find.text('low'), findsOneWidget);
-        expect(find.text('会话模式 · 任务'), findsNothing);
+        expect(find.text('会话模式 · 自动'), findsNothing);
         expect(find.text('思考强度 · low'), findsNothing);
         expect(find.text('会话模式'), findsNothing);
         expect(find.text('思考强度'), findsNothing);
@@ -92,7 +110,7 @@ void main() {
           await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
           await tester.pump(const Duration(milliseconds: 300));
           expect(find.byType(SubmenuButton), findsNWidgets(3));
-          for (final title in ['会话模式 · 任务', '思考强度 · low']) {
+          for (final title in ['会话模式 · 自动', '思考强度 · low']) {
             final label = find.text(title);
             expect(label, findsOneWidget);
             expect(tester.widget<Text>(label).maxLines, 1);
@@ -109,12 +127,10 @@ void main() {
 
       await open(StudioDriverKeys.sessionMode);
       await tester.tap(
-        find.byKey(
-          StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name),
-        ),
+        find.byKey(StudioDriverKeys.sessionModeOption('mode.custom')),
       );
       await tester.pump(const Duration(milliseconds: 300));
-      expect(selections.last, ThreadModeId.simple);
+      expect(selections.last, ThreadModeId.fromId('mode.custom'));
       await open(StudioDriverKeys.model);
       await tester.tap(
         find.byKey(StudioDriverKeys.modelOption('account', 'two')),

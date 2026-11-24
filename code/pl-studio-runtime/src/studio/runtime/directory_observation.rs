@@ -279,7 +279,7 @@ mod tests {
             thread_id: id.into(),
             workspace_id: "directory-pull-fixture".into(),
             title: id.into(),
-            mode: Some(crate::mode::ThreadModeId::simple()),
+            mode: Some(crate::mode::ThreadModeId::auto()),
             workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
@@ -622,11 +622,15 @@ mod tests {
 
         // Native mode belongs only to the root; it cannot wake or fabricate mode for a child.
         events
-            .commit_observed_thread_mode(&root.thread_id, crate::mode::ThreadModeId::task(), 2)
+            .commit_observed_thread_mode(
+                &root.thread_id,
+                crate::mode::ThreadModeId::new("mode.custom").unwrap(),
+                2,
+            )
             .await?;
         assert_eq!(
             root_observation.next().await?.unwrap().row.unwrap().mode,
-            Some(crate::mode::ThreadModeId::task())
+            Some(crate::mode::ThreadModeId::new("mode.custom").unwrap())
         );
         assert!(!metadata_has_pending(&child_observation).await);
         assert_eq!(

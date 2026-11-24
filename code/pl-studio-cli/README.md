@@ -21,7 +21,7 @@ anywk exec \
   --skill-dir ./evaluation-skills
 ```
 
-`task` 可以是普通非 Git 目录。所有相对路径以进程启动目录解析；不会改变全局工作目录、HOME 或 USERPROFILE。`--prompt-file -` 从标准输入读到结束，任务须为非空白 UTF-8。`--reasoning-effort` 由该模型原生能力校验；`--mode` 默认 `mode.simple`。`--max-model-steps` 只能收紧根输入的模型步数，不是整棵任务树的总预算。
+`task` 可以是普通非 Git 目录。所有相对路径以进程启动目录解析；不会改变全局工作目录、HOME 或 USERPROFILE。`--prompt-file -` 从标准输入读到结束，任务须为非空白 UTF-8。`--reasoning-effort` 由该模型原生能力校验；`--mode` 默认 `mode.auto`。`--max-model-steps` 只能收紧根输入的模型步数，不是整棵任务树的总预算。
 
 配置必须事先存在且有效。严格启动保留坏配置和恢复现场，不创建默认配置或自动重置。凭据仅来自原生账号的环境变量引用，不能使用 ChatGPT/OAuth、交互登录或系统凭据库。OpenAI-compatible 可以无凭据；其他协议仍遵守原生凭据要求。CLI 当前沿用产品的实际 FullAccess 权限。
 

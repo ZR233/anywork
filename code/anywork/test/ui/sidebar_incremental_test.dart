@@ -31,7 +31,7 @@ SessionDirectoryRow _row(String id) => SessionDirectoryRow(
   threadId: id,
   workspaceId: _project.id,
   title: 'Row $id',
-  mode: ThreadModeId.simple,
+  mode: ThreadModeId.auto,
   delegationMode: DelegationMode.automatic,
   delegationPreference: DelegationPreference.balanced,
   updatedAt: DateTime.utc(2026),

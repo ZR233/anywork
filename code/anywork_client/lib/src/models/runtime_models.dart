@@ -1,3 +1,4 @@
+import '../modes/domain/mode_editor_models.dart' show WorkflowStateKind;
 import 'agent_models.dart';
 import 'collection_equality.dart';
 import 'current_state_field.dart';
@@ -604,6 +605,8 @@ class WorkflowRunView {
     required this.terminal,
     required this.startedAt,
     required this.updatedAt,
+    this.visitedStateIds = const [],
+    this.lastTransitionForced = false,
     this.currentStateTitle = '',
     this.modeDisplayName = '',
     this.modeDeleted = false,
@@ -618,6 +621,8 @@ class WorkflowRunView {
   final bool terminal;
   final DateTime startedAt;
   final DateTime updatedAt;
+  final List<String> visitedStateIds;
+  final bool lastTransitionForced;
   final String currentStateTitle;
   final String modeDisplayName;
   final bool modeDeleted;
@@ -628,6 +633,8 @@ class WorkflowRunView {
       runId == other.runId &&
       currentStateId == other.currentStateId &&
       updatedAt == other.updatedAt &&
+      lastTransitionForced == other.lastTransitionForced &&
+      _listEquals(visitedStateIds, other.visitedStateIds) &&
       currentStateTitle == other.currentStateTitle &&
       modeDisplayName == other.modeDisplayName &&
       modeDeleted == other.modeDeleted;
@@ -637,10 +644,109 @@ class WorkflowRunView {
     runId,
     currentStateId,
     updatedAt,
+    lastTransitionForced,
+    Object.hashAll(visitedStateIds),
     currentStateTitle,
     modeDisplayName,
     modeDeleted,
   );
+}
+
+class WorkflowRuntimeGraphStateView {
+  const WorkflowRuntimeGraphStateView({
+    required this.id,
+    required this.title,
+    required this.kind,
+    this.instructions = '',
+  });
+
+  final String id;
+  final String title;
+  final WorkflowStateKind kind;
+  final String instructions;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WorkflowRuntimeGraphStateView &&
+      id == other.id &&
+      title == other.title &&
+      kind == other.kind &&
+      instructions == other.instructions;
+
+  @override
+  int get hashCode => Object.hash(id, title, kind, instructions);
+}
+
+class WorkflowRuntimeGraphEdgeView {
+  const WorkflowRuntimeGraphEdgeView({
+    required this.id,
+    required this.sourceStateId,
+    required this.targetStateId,
+    required this.guard,
+  });
+
+  final String id;
+  final String sourceStateId;
+  final String targetStateId;
+  final String guard;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WorkflowRuntimeGraphEdgeView &&
+      id == other.id &&
+      sourceStateId == other.sourceStateId &&
+      targetStateId == other.targetStateId &&
+      guard == other.guard;
+
+  @override
+  int get hashCode => Object.hash(id, sourceStateId, targetStateId, guard);
+}
+
+class WorkflowRuntimeGraphSnapshotView {
+  const WorkflowRuntimeGraphSnapshotView({
+    required this.modeId,
+    required this.modeDisplayName,
+    required this.modeDeleted,
+    required this.initialStateId,
+    required this.states,
+    required this.edges,
+  });
+
+  final String modeId;
+  final String modeDisplayName;
+  final bool modeDeleted;
+  final String initialStateId;
+  final List<WorkflowRuntimeGraphStateView> states;
+  final List<WorkflowRuntimeGraphEdgeView> edges;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WorkflowRuntimeGraphSnapshotView &&
+      modeId == other.modeId &&
+      modeDisplayName == other.modeDisplayName &&
+      modeDeleted == other.modeDeleted &&
+      initialStateId == other.initialStateId &&
+      _listEquals(states, other.states) &&
+      _listEquals(edges, other.edges);
+
+  @override
+  int get hashCode => Object.hash(
+    modeId,
+    modeDisplayName,
+    modeDeleted,
+    initialStateId,
+    Object.hashAll(states),
+    Object.hashAll(edges),
+  );
+}
+
+bool _listEquals<T>(List<T> a, List<T> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 enum PlanRuntimePhase {

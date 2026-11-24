@@ -23,6 +23,9 @@ pub enum AcpOpenIntent {
         workspace_mode: crate::ThreadWorkspaceMode,
         delegation_mode: Option<crate::DelegationMode>,
         delegation_preference: Option<crate::DelegationPreference>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schema(value_type = Option<String>)]
+        mode: Option<crate::mode::ThreadModeId>,
     },
     Load {
         session_id: String,
@@ -188,6 +191,25 @@ pub struct AcpSessionInfoSnapshot {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpWorkflowStateSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<String>)]
+    pub mode_id: Option<crate::mode::ThreadModeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub run: Option<crate::workflow_tool::WorkflowRuntimeRunSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub graph: Option<crate::workflow_tool::WorkflowRuntimeGraphSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub plan: Option<crate::plan_tool::AgentSessionPlanRuntimeSnapshot>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AcpCompletedRun {
@@ -241,6 +263,9 @@ pub enum AcpSessionEvent {
     Completed {
         completed: AcpCompletedRun,
     },
+    WorkflowStateUpdated {
+        state: Box<AcpWorkflowStateSnapshot>,
+    },
     Gap {
         gap: AcpObservationGap,
     },
@@ -259,6 +284,8 @@ pub enum AcpSessionFrame {
         has_observation: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         info_snapshot: Option<Box<AcpSessionInfoSnapshot>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workflow_state: Option<Box<AcpWorkflowStateSnapshot>>,
     },
     Settled {
         #[schema(value_type = Object)]
@@ -287,6 +314,8 @@ pub struct AcpBusinessSnapshot {
     pub auth_methods: Vec<super::AcpAuthMethod>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub info_snapshot: Option<AcpSessionInfoSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_state: Option<AcpWorkflowStateSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -329,6 +358,7 @@ mod tests {
             workspace_mode: crate::ThreadWorkspaceMode::Worktree,
             delegation_mode: None,
             delegation_preference: None,
+            mode: None,
         };
         let value = serde_json::to_value(&draft).unwrap();
         assert_eq!(

@@ -95,7 +95,7 @@ abstract final class ModelRouteQueries {
     ThreadModeId mode,
   ) =>
       routes.where((route) => route.modeId == mode).firstOrNull ??
-      routes.where((route) => route.modeId == ThreadModeId.simple).firstOrNull;
+      routes.where((route) => route.modeId == ThreadModeId.auto).firstOrNull;
 
   static AccountModelView? model(
     List<ModelSelectionAccount> accounts,

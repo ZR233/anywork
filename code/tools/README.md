@@ -16,6 +16,7 @@
 | `media` | `pl-tool-media` | 模型读图、图像生成、用户文件展示 |
 | `skill` | `pl-tool-skill` | 技能发现、读取、管理 |
 | `bots` | `pl-tool-bots` | 机器人及会话读取、发送 |
+| `plan` | `pl-tool-plan` | 独立 Plan 状态机、`plan_transition`（含强制切换）与查询工具 |
 | `support/media` | `pl-tool-media-support` | 跨 MCP/媒体家族共享的原字节、图像处理与归档端口，不含工具 |
 
 ## 作者契约

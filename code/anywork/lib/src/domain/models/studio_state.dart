@@ -200,8 +200,8 @@ class StudioState {
   ThreadModeId get newThreadMode {
     final workspaceId = selectedProjectId;
     return workspaceId == null
-        ? ThreadModeId.simple
-        : newThreadModeByProject[workspaceId] ?? ThreadModeId.simple;
+        ? ThreadModeId.auto
+        : newThreadModeByProject[workspaceId] ?? ThreadModeId.auto;
   }
 
   /// 当前项目的会话工作区模式草稿；默认 `local`。

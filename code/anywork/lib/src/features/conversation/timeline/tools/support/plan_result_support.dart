@@ -5,6 +5,7 @@ import 'tool_detail_values.dart';
 List<ToolDetailValue> toolPlanResult(AppLocalizations l10n, Object? result) =>
     toolProject(l10n, _planEnums(l10n, result), {
       'state': l10n.timelineToolDetailPlanPhase,
+      'forced': l10n.timelineToolDetailForceTransition,
       'document': l10n.timelineToolDetailPlan,
       'markdown': l10n.timelineToolDetailPlanContent,
       'lastRevisionFeedback': l10n.timelineToolDetailRevisionFeedback,
@@ -30,6 +31,7 @@ Object? _planEnums(AppLocalizations l10n, Object? value) => switch (value) {
           'approved' => l10n.timelineToolPlanApproved,
           _ => state,
         },
+        ('forced', final bool forced) => forced.toString(),
         ('operation', final String operation) => switch (operation) {
           'submit' => l10n.timelineToolPlanSubmit,
           'approve' => l10n.timelineToolPlanApprove,

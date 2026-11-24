@@ -639,6 +639,8 @@ WorkflowRuntimeView _workflowRuntimeFromFrb(
             terminal: run.lifecycle == frb.BridgeWorkflowRunLifecycle.terminal,
             startedAt: _dateFromUnix(run.startedAt),
             updatedAt: _dateFromUnix(run.updatedAt),
+            visitedStateIds: List<String>.unmodifiable(run.visitedStateIds),
+            lastTransitionForced: run.lastTransitionForced,
             currentStateTitle: run.currentStateTitle,
             modeDisplayName: run.modeDisplayName,
             modeDeleted: run.modeDeleted,

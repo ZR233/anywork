@@ -631,6 +631,7 @@ version!(MainV31, "31.0.0", Document31);
 version!(MainV32, "32.0.0", Document32);
 version!(MainV33, "33.0.0", Document33<wire::ModelInfo>);
 version!(MainV34, "34.0.0", Document33<wire::ModelDeclaration34>);
+version!(MainV35, "35.0.0", Document33<wire::ModelDeclaration34>);
 
 fn validate_pre_mode_routes(document: &PreModes) -> Result<()> {
     for (mode, route) in &document.mode_model_routes {
@@ -1131,19 +1132,33 @@ impl MigratesTo<MainV34> for MainV33 {
     }
 }
 
-impl IntoDomain<MainV34> for MainV34 {
+impl MigratesTo<MainV35> for MainV34 {
+    fn migrate(self) -> MainV35 {
+        let mut doc = self.0;
+        let simple = doc.mode_model_routes.remove("mode.simple");
+        let task = doc.mode_model_routes.remove("mode.task");
+        if !doc.mode_model_routes.contains_key("mode.auto")
+            && let Some(route) = task.or(simple)
+        {
+            doc.mode_model_routes.insert("mode.auto".into(), route);
+        }
+        MainV35(doc)
+    }
+}
+
+impl IntoDomain<MainV35> for MainV35 {
     fn into_domain(self) -> Self {
         self
     }
 }
 
-impl MainV34 {
+impl MainV35 {
     pub(crate) fn into_config(self) -> Result<super::super::StudioConfig> {
         let mut value = toml::Value::try_from(self)?;
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 34.into());
+            .insert(VERSION_KEY.into(), 35.into());
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -1219,18 +1234,19 @@ fn migrator() -> Result<Migrator> {
                 .step::<MainV32>()
                 .step::<MainV33>()
                 .step::<MainV34>()
-                .into::<MainV34>(),
+                .step::<MainV35>()
+                .into::<MainV35>(),
         )
         .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
     Ok(migrator)
 }
 
-pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV34>> {
-    toml_schema::load::<MainV18, MainV34>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV35>> {
+    toml_schema::load::<MainV18, MainV35>(path, content, &migrator()?, ENTITY, VERSION_KEY)
 }
 
-pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV34> {
-    toml_schema::load::<MainV34, MainV34>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV35> {
+    toml_schema::load::<MainV35, MainV35>(path, content, &migrator()?, ENTITY, VERSION_KEY)
         .map(|loaded| loaded.document)
 }
 
@@ -1447,8 +1463,8 @@ enabled = false
         let integer = toml_schema::encode(document, VERSION_KEY).unwrap();
         let loaded = load_main(Path::new("historical.toml"), &integer).expect("official path");
         assert_eq!(loaded.source_version, version);
-        assert_eq!(loaded.migrated, version != 34);
-        assert_eq!(loaded.document.into_config().unwrap().schema_version, 34);
+        assert_eq!(loaded.migrated, version != 35);
+        assert_eq!(loaded.document.into_config().unwrap().schema_version, 35);
     }
 
     #[test]
@@ -1485,6 +1501,8 @@ enabled = false
         assert_registered_schema_loads(&v32);
         let v33: MainV33 = v32.migrate();
         assert_registered_schema_loads(&v33);
+        let v34: MainV34 = v33.migrate();
+        assert_registered_schema_loads(&v34);
     }
 
     #[test]
@@ -1516,7 +1534,7 @@ enabled = false
         });
         let id = pl_model::config::AccountId::new("saved-oauth").unwrap();
         config.models.accounts.insert(id.clone(), account);
-        let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV35::from_config(&config).unwrap().encode().unwrap();
         let current = load_current_main(Path::new("codex.toml"), &encoded)
             .unwrap()
             .into_config()
@@ -1528,7 +1546,7 @@ enabled = false
         assert!(
             load_main(
                 Path::new("invalid29.toml"),
-                &encoded.replacen("schema_version = 34", "schema_version = 29", 1)
+                &encoded.replacen("schema_version = 35", "schema_version = 29", 1)
             )
             .is_err()
         );
@@ -1539,11 +1557,11 @@ enabled = false
         info.client_id = "old-issued-client".into();
         info.plan_usage_enabled = true;
         info.codex = None;
-        let historical = MainV34::from_config(&config)
+        let historical = MainV35::from_config(&config)
             .unwrap()
             .encode()
             .unwrap()
-            .replacen("schema_version = 34", "schema_version = 29", 1);
+            .replacen("schema_version = 35", "schema_version = 29", 1);
         let loaded = load_main(Path::new("siwc29.toml"), &historical).unwrap();
         assert!(loaded.migrated);
         let migrated = loaded.document.into_config().unwrap();
@@ -1564,7 +1582,12 @@ enabled = false
             let loaded = load_main(Path::new("saved.toml"), raw).unwrap();
             let config = loaded.document.into_config().unwrap();
             assert_eq!(config.models.routes.len(), 4);
-            assert_eq!(config.mode_model_routes.len(), 2);
+            assert_eq!(config.mode_model_routes.len(), 1);
+            assert!(
+                config
+                    .mode_model_routes
+                    .contains_key(&crate::mode::ThreadModeId::auto())
+            );
             assert!(config.disabled_system_agents.contains("reviewer"));
             assert!(!config.deepseek_web_search.enabled);
             assert!(config.deepseek_web_search.fetch_enabled);
@@ -1572,7 +1595,7 @@ enabled = false
                 config.instructions.user,
                 "Keep deep_seek_anthropic_messages in user text"
             );
-            let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
+            let encoded = MainV35::from_config(&config).unwrap().encode().unwrap();
             let table: toml::Table = toml::from_str(&encoded).unwrap();
             assert_eq!(
                 table["models"]["accounts"]["saved"]["capabilities"]["web_search"]["standalone"]
@@ -1748,7 +1771,7 @@ enabled = false
             .is_err()
         );
         let migrated = loaded.document.into_config().unwrap();
-        assert_eq!(migrated.schema_version, 34);
+        assert_eq!(migrated.schema_version, 35);
         assert_eq!(migrated.models, old_models);
         assert_eq!(migrated.mode_model_routes, old_routes);
         assert_eq!(migrated.ui, old_ui);
@@ -1764,7 +1787,7 @@ enabled = false
     #[test]
     fn historical_acp_name_validation_keeps_trimmed_length_and_control_boundaries() {
         let config = crate::config::StudioConfig::default_config().unwrap();
-        let encoded = MainV34::from_config(&config).unwrap().encode().unwrap();
+        let encoded = MainV35::from_config(&config).unwrap().encode().unwrap();
         let mut main: toml::Value = toml::from_str(&encoded).unwrap();
         main[VERSION_KEY] = 32.into();
         for (name, historical_ok, current_ok) in [
@@ -1804,5 +1827,43 @@ enabled = false
                 "{name:?}"
             );
         }
+    }
+
+    #[test]
+    fn schema_34_migrates_simple_and_task_routes_to_auto_preserving_custom_modes() {
+        let config = crate::config::StudioConfig::default_config().unwrap();
+        let default_route = config.mode_model_routes[&crate::mode::ThreadModeId::auto()].clone();
+        let mut raw_v34: toml::Value =
+            toml::from_str(&MainV35::from_config(&config).unwrap().encode().unwrap()).unwrap();
+        raw_v34[VERSION_KEY] = 34.into();
+        let routes_table = raw_v34["mode_model_routes"].as_table_mut().unwrap();
+        routes_table.remove("mode.auto");
+        let mut task_route = toml::Value::try_from(&default_route).unwrap();
+        task_route["model_id"] = "preferred-task-model".into();
+        routes_table.insert(
+            "mode.simple".into(),
+            toml::Value::try_from(&default_route).unwrap(),
+        );
+        routes_table.insert("mode.task".into(), task_route);
+        routes_table.insert(
+            "mode.custom_review".into(),
+            toml::Value::try_from(&default_route).unwrap(),
+        );
+        let encoded_v34 = toml::to_string(&raw_v34).unwrap();
+        let loaded = load_main(Path::new("v34.toml"), &encoded_v34).unwrap();
+        assert_eq!(loaded.source_version, 34);
+        assert!(loaded.migrated);
+        let migrated = loaded.document.into_config().unwrap();
+        assert_eq!(migrated.schema_version, 35);
+        assert_eq!(
+            migrated.mode_model_routes[&crate::mode::ThreadModeId::auto()].model_id,
+            "preferred-task-model"
+        );
+        assert!(
+            migrated
+                .mode_model_routes
+                .contains_key(&crate::mode::ThreadModeId::new("mode.custom_review").unwrap())
+        );
+        assert_eq!(migrated.mode_model_routes.len(), 2);
     }
 }

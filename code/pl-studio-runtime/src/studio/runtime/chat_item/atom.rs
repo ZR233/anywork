@@ -10,7 +10,9 @@ pub(crate) fn atom(item: &ExecutionItem) -> ChatAtom {
         ExecutionShape::Text(_) => ChatAtomKind::Text,
         ExecutionShape::Thinking(_) => ChatAtomKind::Reasoning,
         ExecutionShape::Tool(tool)
-            if tool.invocation().name() == crate::plan_tool::TOOL_PLAN_SUBMIT =>
+            if tool.invocation().name() == crate::plan_tool::TOOL_PLAN_SUBMIT
+                || (tool.invocation().name() == crate::plan_tool::TOOL_PLAN_TRANSITION
+                    && tool.user_input().is_some()) =>
         {
             ChatAtomKind::Plan
         }

@@ -38,9 +38,16 @@ void main() {
         '${l10n.statusLastConfirmedAgentTokenSpeed}: 42 词元/秒';
     expect(_tooltipWithMessage(workflowLabel), findsOneWidget);
     expect(_tooltipWithMessage(throughputLabel), findsOneWidget);
-    final items = find.byType(StatusBarItem);
-    expect(tester.getSemantics(items.at(1)).label, workflowLabel);
-    expect(tester.getSemantics(items.at(2)).label, throughputLabel);
+    expect(
+      tester
+          .getSemantics(find.byKey(const ValueKey('workflow-status-pill')))
+          .label,
+      workflowLabel,
+    );
+    expect(
+      tester.getSemantics(find.byType(TokenThroughputReadout)).label,
+      throughputLabel,
+    );
     expect(tester.takeException(), isNull);
     semantics.dispose();
   });
@@ -80,9 +87,16 @@ void main() {
         '${l10n.statusLastConfirmedAgentTokenSpeed}: 42 词元/秒';
     expect(_tooltipWithMessage(workflowLabel), findsOneWidget);
     expect(_tooltipWithMessage(throughputLabel), findsOneWidget);
-    final items = find.byType(StatusBarItem);
-    expect(tester.getSemantics(items.at(1)).label, workflowLabel);
-    expect(tester.getSemantics(items.at(2)).label, throughputLabel);
+    expect(
+      tester
+          .getSemantics(find.byKey(const ValueKey('workflow-status-pill')))
+          .label,
+      workflowLabel,
+    );
+    expect(
+      tester.getSemantics(find.byType(TokenThroughputReadout)).label,
+      throughputLabel,
+    );
     expect(tester.takeException(), isNull);
 
     position.jumpTo(position.maxScrollExtent);

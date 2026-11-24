@@ -512,7 +512,7 @@ mod tests {
                 workspace_id: "project-a".into(),
                 title: "Root".into(),
                 acp_title: None,
-                native_mode: Some(crate::mode::ThreadModeId::simple()),
+                native_mode: Some(crate::mode::ThreadModeId::auto()),
                 workspace_mode: crate::ThreadWorkspaceMode::Local,
                 delegation_mode: crate::DelegationMode::Profile,
                 delegation_preference: crate::DelegationPreference::Balanced,
@@ -706,7 +706,7 @@ mod tests {
         let path = dir.path().join("catalog.toml");
         let mut document = current_document();
         document.sessions[0].archived = true;
-        document.sessions[0].native_mode = Some(crate::mode::ThreadModeId::task());
+        document.sessions[0].native_mode = Some(crate::mode::ThreadModeId::auto());
         let mut child = document.agents[0].clone();
         child.agent_id = "child".into();
         child.thread_id = "child".into();

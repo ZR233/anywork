@@ -63,7 +63,7 @@ Future<AppGraph> _mount(WidgetTester tester, {double scale = 1}) async {
       threadId: 'layout-thread',
       workspaceId: project.id,
       title: _longTitle,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.automatic,
       delegationPreference: DelegationPreference.balanced,
       workspacePath: project.path,

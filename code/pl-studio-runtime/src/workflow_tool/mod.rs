@@ -8,6 +8,7 @@ mod types;
 pub use dynamic::{
     WORKFLOW_EXTENSION, decode_workflow_state, encode_workflow_state, workflow_registrations,
 };
+pub(crate) use dynamic::{WorkflowOperationKind, workflow_tool_definitions};
 pub use restart::{TOOL_WORKFLOW_RESTART, validate_workflow_restart_arguments};
 pub use transition::{TOOL_WORKFLOW_TRANSITION, validate_workflow_transition_arguments};
 pub use types::*;

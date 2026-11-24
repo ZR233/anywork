@@ -6,11 +6,13 @@ mod projection;
 mod resources;
 #[cfg(all(test, target_os = "linux"))]
 mod title_tests;
+mod workflow_plan;
 
 pub(crate) use api::AcpBusinessOwner;
 pub use api::AcpSessionOpen;
 pub use observation::{AcpSessionCompletion, AcpSessionObservation};
 pub(crate) use resources::{AcpCloseOutcome, AcpResources};
+pub(crate) use workflow_plan::{AcpPlanToolContext, AcpWorkflowPlanOwner};
 
 #[cfg(all(test, target_os = "linux"))]
 mod mixed_tests {
@@ -1079,6 +1081,7 @@ mod tests {
                 workspace_mode: crate::ThreadWorkspaceMode::Local,
                 delegation_mode: None,
                 delegation_preference: None,
+                mode: None,
             })
             .await?;
         Fixture::ready(&mut open).await?;
@@ -1142,6 +1145,7 @@ mod tests {
                 workspace_mode: crate::ThreadWorkspaceMode::Local,
                 delegation_mode: None,
                 delegation_preference: None,
+                mode: None,
             })
             .await?;
         Fixture::ready(&mut open).await?;
@@ -1192,6 +1196,7 @@ mod tests {
                 workspace_mode: crate::ThreadWorkspaceMode::Worktree,
                 delegation_mode: None,
                 delegation_preference: None,
+                mode: None,
             })
             .await?;
         Fixture::ready(&mut open).await?;
@@ -1253,6 +1258,7 @@ mod tests {
                 workspace_mode: crate::ThreadWorkspaceMode::Worktree,
                 delegation_mode: None,
                 delegation_preference: None,
+                mode: None,
             })
             .await?;
         Fixture::ready(&mut committed).await?;
@@ -1896,7 +1902,7 @@ mod tests {
                 "native-neighbor".into(),
                 &fixture.workspace.id,
                 "Native neighbor",
-                crate::mode::ThreadModeId::simple(),
+                crate::mode::ThreadModeId::auto(),
                 crate::ThreadWorkspaceMode::Local,
                 fixture.workspace.path.clone(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
@@ -2355,6 +2361,207 @@ mod tests {
         );
         shutdown?;
         assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn acp_workflow_and_plan_state_recover_after_shutdown_and_restart() -> Result<()> {
+        use super::AcpPlanToolContext;
+        use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+        use pl_tool_plan::{PlanHost, PlanState, PlanTransitionArgs};
+
+        let fixture = Fixture::new("normal").await?;
+        let studio_home = fixture.home.path().join("studio");
+        let account_rev = fixture.revision;
+        let workspace_id = fixture.workspace.id.clone();
+
+        let mut open1 = fixture.open().await?;
+        let target1 = open1.target.clone();
+        Fixture::ready(&mut open1).await?;
+        open1.completion.wait().await?;
+        let snap1 = fixture
+            .runtime
+            .acp_session_snapshot(target1.clone())
+            .await?;
+        let remote_sid = snap1.acp_session_id.context("opened ACP session id")?;
+
+        // Turn 1 initializes the auto workflow run at `triage`.
+        fixture
+            .runtime
+            .prompt_acp_session(
+                target1.clone(),
+                vec![crate::acp_schema::ContentBlock::Text(
+                    crate::acp_schema::TextContent::new("turn 1 before shutdown"),
+                )],
+            )
+            .await?;
+        timeout(Duration::from_secs(10), async {
+            let observer = open1.observation.as_mut().context("observer1")?;
+            loop {
+                match observer.recv().await.context("stream1 ended")? {
+                    AcpSessionEvent::Completed { .. } => return Ok::<_, anyhow::Error>(()),
+                    AcpSessionEvent::Failed { error } => anyhow::bail!("turn 1 failed: {error:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await??;
+
+        // Mutate ACP workflow (triage -> simple -> planning) and Plan (drafting -> approved via force).
+        let owner1 = fixture
+            .runtime
+            .sessions
+            .get(&crate::SessionId::new(target1.session_id.clone())?)
+            .context("owner1")?;
+        let resources1 = owner1
+            .resident_acp(&target1.thread_id)?
+            .context("resources1")?;
+        let wp1 = resources1.workflow_plan.get().cloned().context("wp1")?;
+        let cur = wp1.workflow_current_json().await?;
+        let run_id = cur["runId"].as_str().context("runId")?.to_owned();
+        let rev1 = cur["revision"].as_u64().context("rev1")?;
+        wp1.workflow_transition(
+            serde_json::from_value(serde_json::json!({
+                "expectedRunId": run_id,
+                "expectedRevision": rev1,
+                "expectedStateId": "triage",
+                "targetStateId": "simple",
+                "completion": { "reason": "start simple", "summary": "s", "evidence": ["e"] }
+            }))?,
+            crate::workflow_tool::machine::WorkflowOperation {
+                turn_id: "acp-turn-1".into(),
+                call_id: "acp-wf-1".into(),
+            },
+            "h1".into(),
+        )
+        .await?;
+        let escalated = wp1
+            .workflow_transition(
+                serde_json::from_value(serde_json::json!({
+                    "expectedRunId": run_id,
+                    "expectedRevision": rev1 + 1,
+                    "expectedStateId": "simple",
+                    "targetStateId": "planning",
+                    "completion": { "reason": "escalate", "summary": "p", "evidence": ["e"] }
+                }))?,
+                crate::workflow_tool::machine::WorkflowOperation {
+                    turn_id: "acp-turn-1".into(),
+                    call_id: "acp-wf-2".into(),
+                },
+                "h2".into(),
+            )
+            .await?;
+        assert_eq!(escalated["accepted"], true);
+        assert_eq!(escalated["snapshot"]["currentStateId"], "planning");
+
+        let plan_outcome = wp1
+            .transition(
+                PlanTransitionArgs {
+                    target_state: PlanState::Approved,
+                    content: Some("# ACP Restart Plan\n\n- step 1".into()),
+                    feedback: None,
+                    reason: Some("commit plan before restart".into()),
+                    force: true,
+                    expected_revision: Some(0),
+                    idempotency_key: None,
+                },
+                AcpPlanToolContext {
+                    call_id: "acp-plan-1".into(),
+                    turn_id: "acp-turn-1".into(),
+                    now_ms: 1_700_000_000_000,
+                },
+            )
+            .await?;
+        assert!(plan_outcome.accepted && plan_outcome.forced);
+
+        // Drop observation before shutting down runtime.
+        drop(open1);
+        fixture.runtime.shutdown_runtime().await?;
+
+        // Restart StudioRuntime pointing at the same `studio_home`.
+        let restarted = StudioRuntime::initialize(StudioRuntimeOptions {
+            studio_home: Some(studio_home),
+            host: StudioHostKind::Test,
+            host_mcp_source: crate::HostMcpSource::External,
+            ..StudioRuntimeOptions::desktop()
+        })
+        .await?;
+
+        // Cold workflow graph read succeeds even before ACP process reload.
+        let cold_graph = restarted
+            .thread_workflow_graph(&target1.thread_id)
+            .await?
+            .context("cold ACP workflow graph")?;
+        assert_eq!(cold_graph.mode_id, crate::mode::ThreadModeId::auto());
+        assert_eq!(cold_graph.states.len(), 9);
+
+        // Reopen persisted ACP thread via Load and verify state restoration.
+        let mut open2 = restarted
+            .open_acp_session(OpenAcpSessionRequest {
+                account_id: "business-peer".into(),
+                expected_connection_revision: account_rev,
+                workspace_id,
+                thread_id: Some(target1.thread_id.clone()),
+                intent: AcpOpenIntent::Load {
+                    session_id: remote_sid,
+                },
+            })
+            .await?;
+        let target2 = open2.target.clone();
+        Fixture::ready(&mut open2).await?;
+        open2.completion.wait().await?;
+
+        let wf2 = open2
+            .workflow_state
+            .clone()
+            .context("restored ACP workflow_state on open")?;
+        let run2 = wf2.run.context("restored ACP run")?;
+        assert_eq!(run2.current_state_id, "planning");
+        assert_eq!(run2.visited_state_ids, vec!["triage", "simple", "planning"]);
+        let plan2 = wf2.plan.context("restored ACP plan")?;
+        assert_eq!(
+            plan2.state,
+            crate::plan_tool::AgentSessionPlanPhase::Approved
+        );
+        assert_eq!(plan2.revision, 1);
+        assert!(
+            plan2
+                .document
+                .context("restored ACP plan doc")?
+                .markdown
+                .contains("ACP Restart Plan")
+        );
+
+        // Turn 2 after restart preserves `planning` (does not reset to `triage`).
+        restarted
+            .prompt_acp_session(
+                target2.clone(),
+                vec![crate::acp_schema::ContentBlock::Text(
+                    crate::acp_schema::TextContent::new("turn 2 after restart"),
+                )],
+            )
+            .await?;
+        timeout(Duration::from_secs(10), async {
+            let observer = open2.observation.as_mut().context("observer2")?;
+            loop {
+                match observer.recv().await.context("stream2 ended")? {
+                    AcpSessionEvent::Completed { .. } => return Ok::<_, anyhow::Error>(()),
+                    AcpSessionEvent::Failed { error } => anyhow::bail!("turn 2 failed: {error:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await??;
+
+        let snap2 = restarted.acp_session_snapshot(target2).await?;
+        let run_after_turn2 = snap2
+            .workflow_state
+            .context("post-restart snapshot workflow_state")?
+            .run
+            .context("post-restart run")?;
+        assert_eq!(run_after_turn2.current_state_id, "planning");
+
+        restarted.shutdown_runtime().await?;
         Ok(())
     }
 }

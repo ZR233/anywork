@@ -41,7 +41,7 @@ pub struct AskUserInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UserQuestionInput {
     /// Stable snake_case id used as the answer map key.
-    /// `plan_confirmation` is reserved for plan_submit.
+    /// `plan_confirmation` is reserved for plan_transition.
     id: String,
     /// Short label for the question.
     header: String,
@@ -108,7 +108,7 @@ impl pl_agent_tool::typed::TypedTool for AskUserTool {
             return Err(pl_core::tool::opaque::ToolError::new(crate::tool_error(
                 "request_user_input",
                 format!(
-                    "question ID `{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID}` is reserved for plan_submit"
+                    "question ID `{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID}` is reserved for plan_transition"
                 ),
             )));
         }

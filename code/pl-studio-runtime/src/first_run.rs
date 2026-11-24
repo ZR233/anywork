@@ -282,10 +282,7 @@ impl FirstRunConfigDraft {
                 accounts,
                 routes: BTreeMap::new(),
             },
-            mode_model_routes: BTreeMap::from([
-                (ThreadModeId::simple(), route.clone()),
-                (ThreadModeId::task(), route),
-            ]),
+            mode_model_routes: BTreeMap::from([(ThreadModeId::auto(), route)]),
             disabled_system_agents: Default::default(),
             web_search: Default::default(),
             deepseek_web_search: Default::default(),

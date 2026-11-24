@@ -76,6 +76,14 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
         .updateDraft(workspaceId, text);
   }
 
+  void setMode(ThreadModeId mode) {
+    ref
+        .read(anyworkClientProvider)
+        .drafts
+        .startDraft
+        .setMode(workspaceId, mode);
+  }
+
   Future<void> retryPreparation() => ref
       .read(anyworkClientProvider)
       .drafts

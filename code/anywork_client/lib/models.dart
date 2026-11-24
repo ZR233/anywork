@@ -29,6 +29,7 @@ export 'src/models/acp_install_models.dart';
 export 'src/models/recovery_models.dart';
 export 'src/models/remote_models.dart';
 export 'src/models/runtime_models.dart';
+export 'src/models/workflow_graph_layout.dart';
 export 'src/models/usage_diagnostics.dart';
 export 'src/models/settings_models.dart';
 export 'src/models/settings_snapshot_projection.dart';

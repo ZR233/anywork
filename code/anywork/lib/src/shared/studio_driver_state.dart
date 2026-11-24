@@ -276,7 +276,7 @@ final class StudioDriverFacts {
     this.selectedThreadId,
     this.visibleThreadId,
     this.presentationThreadId,
-    this.newThreadMode = ThreadModeId.simple,
+    this.newThreadMode = ThreadModeId.auto,
     this.newThreadWorkspaceMode = ThreadWorkspaceMode.local,
     this.newThreadComposer = const ComposerThreadState.idle(),
     this.threadComposer = const ComposerThreadState.idle(),

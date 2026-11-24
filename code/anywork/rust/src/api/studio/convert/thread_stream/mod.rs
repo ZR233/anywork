@@ -19,7 +19,9 @@ use pl_studio_runtime::{
 };
 
 use pl_studio_runtime::workflow_tool::{
-    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
+    WorkflowRunLifecycle, WorkflowRuntimeGraphEdge, WorkflowRuntimeGraphSnapshot,
+    WorkflowRuntimeGraphState, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
+    WorkflowStateKind,
 };
 
 use crate::api::studio::convert::chat;
@@ -480,7 +482,9 @@ fn workflow_runtime_snapshot(value: WorkflowRuntimeSnapshot) -> BridgeWorkflowRu
     }
 }
 
-fn plan_runtime_snapshot(value: AgentSessionPlanRuntimeSnapshot) -> BridgePlanRuntimeSnapshot {
+pub(crate) fn plan_runtime_snapshot(
+    value: AgentSessionPlanRuntimeSnapshot,
+) -> BridgePlanRuntimeSnapshot {
     BridgePlanRuntimeSnapshot {
         revision: value.revision,
         state: plan_phase(value.state),
@@ -506,7 +510,7 @@ pub(super) fn plan_phase(value: AgentSessionPlanPhase) -> BridgePlanPhase {
     }
 }
 
-fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
+pub(crate) fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
     BridgeWorkflowRun {
         lineage_id: value.lineage_id,
         run_id: value.run_id,
@@ -518,11 +522,61 @@ fn workflow_run(value: WorkflowRuntimeRunSnapshot) -> BridgeWorkflowRun {
             WorkflowRunLifecycle::Terminal => BridgeWorkflowRunLifecycle::Terminal,
         },
         current_state_id: value.current_state_id,
+        visited_state_ids: value.visited_state_ids,
+        last_transition_forced: value.last_transition_forced,
         started_at: value.started_at,
         updated_at: value.updated_at,
         current_state_title: value.current_state_title,
         mode_display_name: value.mode_display_name,
         mode_deleted: value.mode_deleted,
+    }
+}
+
+pub(crate) fn workflow_runtime_graph_snapshot(
+    value: WorkflowRuntimeGraphSnapshot,
+) -> BridgeWorkflowRuntimeGraphSnapshot {
+    BridgeWorkflowRuntimeGraphSnapshot {
+        mode_id: value.mode_id.to_string(),
+        mode_display_name: value.mode_display_name,
+        mode_deleted: value.mode_deleted,
+        initial_state_id: value.initial_state_id,
+        states: value
+            .states
+            .into_iter()
+            .map(
+                |WorkflowRuntimeGraphState {
+                     id,
+                     title,
+                     kind,
+                     instructions,
+                 }| BridgeWorkflowRuntimeGraphState {
+                    id,
+                    title,
+                    kind: match kind {
+                        WorkflowStateKind::Atomic => BridgeWorkflowStateKind::Atomic,
+                        WorkflowStateKind::Final => BridgeWorkflowStateKind::FinalState,
+                    },
+                    instructions,
+                },
+            )
+            .collect(),
+        edges: value
+            .edges
+            .into_iter()
+            .map(
+                |WorkflowRuntimeGraphEdge {
+                     id,
+                     source_state_id,
+                     target_state_id,
+                     guard,
+                 }| BridgeWorkflowRuntimeGraphEdge {
+                    id,
+                    source_state_id,
+                    target_state_id,
+                    guard,
+                },
+            )
+            .collect(),
     }
 }
 
@@ -728,7 +782,7 @@ mod tests {
                     },
                     status: ThreadStatus::Running,
                 },
-                Some(pl_studio_runtime::mode::ThreadModeId::task()),
+                Some(pl_studio_runtime::mode::ThreadModeId::auto()),
                 None,
             ),
             directory_row(
@@ -785,7 +839,7 @@ mod tests {
         for (id, mode, parent) in [
             (
                 "native-root",
-                Some(pl_studio_runtime::mode::ThreadModeId::task()),
+                Some(pl_studio_runtime::mode::ThreadModeId::auto()),
                 None,
             ),
             ("native-child", None, Some("native-root".to_owned())),

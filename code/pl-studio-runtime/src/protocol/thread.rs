@@ -92,7 +92,7 @@ impl Thread {
         Self {
             workspace_id: String::new(),
             title: String::new(),
-            mode: Some(ThreadModeId::simple()),
+            mode: Some(ThreadModeId::auto()),
             workspace_mode: ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),

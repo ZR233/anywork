@@ -7047,6 +7047,18 @@ abstract class AppLocalizations {
   /// **'- t/s'**
   String get statusThroughputUnavailable;
 
+  /// No description provided for @workflowStateTriage.
+  ///
+  /// In en, this message translates to:
+  /// **'Triage'**
+  String get workflowStateTriage;
+
+  /// No description provided for @workflowStateSimple.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct'**
+  String get workflowStateSimple;
+
   /// No description provided for @workflowStatePlanning.
   ///
   /// In en, this message translates to:
@@ -7088,6 +7100,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Stopped'**
   String get workflowStateStopped;
+
+  /// No description provided for @workflowModeAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto'**
+  String get workflowModeAuto;
 
   /// No description provided for @workflowModeSimple.
   ///
@@ -14492,6 +14510,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Succeeded'**
   String get timelineOutcomeStatusSucceeded;
+
+  /// No description provided for @modeSelectorAddMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Add mode'**
+  String get modeSelectorAddMode;
+
+  /// No description provided for @workflowGraphPanelTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow graph'**
+  String get workflowGraphPanelTitle;
+
+  /// No description provided for @workflowGraphPanelCloseTooltip.
+  ///
+  /// In en, this message translates to:
+  /// **'Close workflow graph'**
+  String get workflowGraphPanelCloseTooltip;
+
+  /// No description provided for @workflowGraphPanelEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No workflow state yet'**
+  String get workflowGraphPanelEmpty;
+
+  /// No description provided for @workflowGraphPanelLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load workflow graph'**
+  String get workflowGraphPanelLoadFailed;
+
+  /// No description provided for @workflowGraphPanelRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get workflowGraphPanelRetry;
+
+  /// No description provided for @workflowGraphStateCurrent.
+  ///
+  /// In en, this message translates to:
+  /// **'Current'**
+  String get workflowGraphStateCurrent;
+
+  /// No description provided for @workflowGraphStateVisited.
+  ///
+  /// In en, this message translates to:
+  /// **'Visited'**
+  String get workflowGraphStateVisited;
+
+  /// No description provided for @workflowGraphStateForced.
+  ///
+  /// In en, this message translates to:
+  /// **'Forced'**
+  String get workflowGraphStateForced;
+
+  /// No description provided for @workflowGraphStateFinal.
+  ///
+  /// In en, this message translates to:
+  /// **'Final'**
+  String get workflowGraphStateFinal;
+
+  /// No description provided for @timelineToolNamePlanTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan transition'**
+  String get timelineToolNamePlanTransition;
+
+  /// No description provided for @timelineToolDetailForceTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Forced'**
+  String get timelineToolDetailForceTransition;
 }
 
 class _AppLocalizationsDelegate

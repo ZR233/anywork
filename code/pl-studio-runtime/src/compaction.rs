@@ -989,8 +989,8 @@ fn current_facts(
             crate::plan_tool::plan_model_context_section(&state).map_err(receipt_error)?;
         let mut metadata: serde_json::Value =
             serde_json::from_str(&section.content).map_err(receipt_error)?;
-        if let Some(document) = &state.document {
-            put("studio.plan.document", serde_json::to_string(&serde_json::json!({"version":document.version,"contentHash":document.content_hash,"markdown":document.markdown})).map_err(receipt_error)?);
+        if let Some(document) = &state.plan.document {
+            put("studio.plan.document", serde_json::to_string(&serde_json::json!({"version":document.revision,"contentHash":document.hash,"markdown":document.content})).map_err(receipt_error)?);
             if let Some(document) = metadata
                 .get_mut("document")
                 .and_then(serde_json::Value::as_object_mut)
@@ -1288,8 +1288,8 @@ mod tests {
         let modes = crate::mode::ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&modes)?;
         let mode = registry
-            .mode(&crate::mode::ThreadModeId::simple())
-            .context("Simple mode")?;
+            .mode(&crate::mode::ThreadModeId::auto())
+            .context("Auto mode")?;
         let snapshot: crate::instruction::InstructionSnapshot = serde_json::from_value(json!({
             "agent": {"id":"root:main", "scope":"root", "usageBinding":{"kind":"rootEntry","entry":"studio"},
                 "revision":"1", "origin":"builtin"},

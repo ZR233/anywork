@@ -35,9 +35,9 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
                 "reopened-plan",
                 0,
                 support::tool_reply(
-                    "plan_submit",
+                    "plan_transition",
                     "saved-plan",
-                    serde_json::json!({"expectedRevision":0,"plan":plan}),
+                    serde_json::json!({"targetState":"awaitingConfirmation","expectedRevision":0,"content":plan}),
                 ),
             ),
             prompt_step(plan, 1, support::held_reply(&continuation, "approved")),
@@ -57,7 +57,7 @@ async fn approving_a_reopened_plan_commits_its_decision_and_continuation() -> Re
                         text: "reopened-plan".into(),
                         attachment_draft_ids: Vec::new(),
                     },
-                    mode: ThreadModeId::task().to_string(),
+                    mode: ThreadModeId::auto().to_string(),
                     route: NewThreadModelRoute {
                         account_id: "root-fixture".into(),
                         model_id: support::MODEL.into(),

@@ -1,7 +1,11 @@
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::PureError;
-use crate::workflow_tool::{WorkflowSessionState, WorkflowTransitionRecord};
+use crate::workflow_tool::{
+    WorkflowAllowedTransition, WorkflowSessionState, WorkflowStateBrief, WorkflowTransitionError,
+    WorkflowTransitionRecord,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,15 +47,49 @@ impl WorkflowMachine {
             .expect("workflow tools require a registered graph")
     }
 
+    pub fn all_states_brief(&self) -> Vec<WorkflowStateBrief> {
+        self.graph()
+            .definition()
+            .states
+            .iter()
+            .map(|state| WorkflowStateBrief {
+                id: state.id.clone(),
+                title: state.title.clone(),
+                kind: state.kind,
+            })
+            .collect()
+    }
+
+    pub fn allowed_transitions_for_state(&self, state_id: &str) -> Vec<WorkflowAllowedTransition> {
+        let graph = self.graph();
+        graph
+            .outgoing(state_id)
+            .into_iter()
+            .filter_map(|edge| {
+                let target = graph.state(&edge.target_state_id)?;
+                Some(WorkflowAllowedTransition {
+                    target_state_id: edge.target_state_id.clone(),
+                    target_state_title: target.title.clone(),
+                    target_kind: target.kind,
+                    guard: edge.guard.clone(),
+                })
+            })
+            .collect()
+    }
+
     pub fn current_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
+        let all_states = self.all_states_brief();
         let Some(run) = &state.current_run else {
             return serde_json::json!({
                 "modeId": self.mode.descriptor().id,
                 "revision": state.revision,
                 "currentRun": null,
+                "allowedTransitions": [],
+                "allStates": all_states,
             });
         };
         let current = self.graph().state(&run.current_state_id);
+        let allowed_transitions = self.allowed_transitions_for_state(&run.current_state_id);
         serde_json::json!({
             "modeId": run.mode_id,
             "runId": run.run_id,
@@ -62,25 +100,33 @@ impl WorkflowMachine {
             "lifecycle": run.lifecycle,
             "currentStateId": run.current_state_id,
             "currentState": current,
+            "allowedTransitions": allowed_transitions,
+            "allStates": all_states,
             "updatedAt": run.updated_at,
         })
     }
 
     pub fn next_snapshot(&self, state: &WorkflowSessionState) -> serde_json::Value {
+        let all_states = self.all_states_brief();
         let Some(run) = &state.current_run else {
             return serde_json::json!({
                 "modeId": self.mode.descriptor().id,
                 "revision": state.revision,
                 "currentRun": null,
                 "transitions": [],
+                "allowedTransitions": [],
+                "allStates": all_states,
             });
         };
+        let allowed = self.allowed_transitions_for_state(&run.current_state_id);
         serde_json::json!({
             "modeId": run.mode_id,
             "runId": run.run_id,
             "revision": state.revision,
             "currentStateId": run.current_state_id,
             "transitions": self.graph().outgoing(&run.current_state_id),
+            "allowedTransitions": allowed,
+            "allStates": all_states,
         })
     }
 
@@ -128,28 +174,86 @@ impl WorkflowMachine {
             return Ok(response);
         }
         if let Some(message) = validate_completion(&input.completion) {
-            return Ok(self.rejected("invalidCompletion", &state, message));
+            return Ok(self.rejected(
+                "invalidCompletion",
+                &state,
+                Some(&input.target_state_id),
+                message,
+                message,
+            ));
         }
         let run = state
             .current_run
             .as_ref()
             .expect("validated CAS requires a run");
-        let Some(transition) = self
+        let current_state_id = run.current_state_id.clone();
+        let Some(target_state) = self.graph().state(&input.target_state_id) else {
+            let all_states = self.all_states_brief();
+            let allowed = self.allowed_transitions_for_state(&current_state_id);
+            let message = format!(
+                "Unknown workflow targetStateId `{}` from `{}`. Valid states in `{}`: [{}]. Allowed direct transitions: [{}].",
+                input.target_state_id,
+                current_state_id,
+                self.mode.descriptor().id,
+                format_all_states(&all_states),
+                format_allowed_transitions(&allowed),
+            );
+            return Ok(self.rejected(
+                "unknownTargetState",
+                &state,
+                Some(&input.target_state_id),
+                message,
+                format!(
+                    "Select a valid targetStateId from: [{}].",
+                    all_states
+                        .iter()
+                        .map(|s| s.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+        };
+        let target_kind = target_state.kind;
+        let target_title = target_state.title.clone();
+        let direct_edge = self
             .graph()
-            .transition(&run.current_state_id, &input.target_state_id)
-        else {
+            .transition(&current_state_id, &input.target_state_id);
+        if direct_edge.is_none() && !input.force {
+            let current_title = self
+                .graph()
+                .state(&current_state_id)
+                .map_or("", |s| s.title.as_str());
+            let allowed = self.allowed_transitions_for_state(&current_state_id);
+            let all_states = self.all_states_brief();
+            let allowed_ids = allowed
+                .iter()
+                .map(|t| t.target_state_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let message = format!(
+                "Cannot transition workflow from `{current_state_id}` ({current_title}) to `{}` ({target_title}) without force=true. Allowed next states from `{current_state_id}`: [{}]. All workflow states: [{}]. Pass force=true only when an out-of-path jump is intentionally needed.",
+                input.target_state_id,
+                format_allowed_transitions(&allowed),
+                format_all_states(&all_states),
+            );
+            let recovery = if allowed.is_empty() {
+                "Current state is terminal (no direct outgoing transitions). Pass force=true to jump explicitly to any valid state, or call workflow_restart to begin a new run."
+                    .to_string()
+            } else {
+                format!(
+                    "Choose an allowed direct targetStateId [{allowed_ids}], or pass force=true to override transition rules."
+                )
+            };
             return Ok(self.rejected(
                 "transitionNotAllowed",
                 &state,
-                "Choose a target returned by workflow_next.",
+                Some(&input.target_state_id),
+                message,
+                recovery,
             ));
-        };
-        let target_id = transition.target_state_id.clone();
-        let target_kind = self
-            .graph()
-            .state(&target_id)
-            .expect("compiled transition target exists")
-            .kind;
+        }
+        let target_id = input.target_state_id.clone();
+        let forced = input.force;
         let next_revision = state.revision.saturating_add(1);
         let now = crate::studio::unix_seconds();
         let run = state
@@ -164,6 +268,7 @@ impl WorkflowMachine {
             revision: next_revision,
             source_state_id,
             target_state_id: target_id,
+            forced,
             reason: input.completion.reason.trim().to_string(),
             summary: input.completion.summary.trim().to_string(),
             evidence: input
@@ -180,7 +285,7 @@ impl WorkflowMachine {
         commit_operation_receipt(&mut state, operation_id, argument_hash, next_revision);
         crate::mode::state::validate_session_state_size(&state)?;
         self.state = state.clone();
-        Ok(self.accepted("transitioned", &state))
+        Ok(self.accepted("transitioned", forced, &state))
     }
 
     pub fn apply_restart(
@@ -198,11 +303,8 @@ impl WorkflowMachine {
             return Ok(response);
         }
         if input.reason.trim().is_empty() || input.reason.len() > MAX_REASON_BYTES {
-            return Ok(self.rejected(
-                "invalidReason",
-                &state,
-                "reason must be non-empty and within the documented limit",
-            ));
+            let msg = "reason must be non-empty and within the documented limit";
+            return Ok(self.rejected("invalidReason", &state, None, msg, msg));
         }
         let old = state
             .current_run
@@ -216,20 +318,23 @@ impl WorkflowMachine {
         commit_operation_receipt(&mut state, operation_id, argument_hash, next_revision);
         crate::mode::state::validate_session_state_size(&state)?;
         self.state = state.clone();
-        Ok(self.accepted("restarted", &state))
+        Ok(self.accepted("restarted", false, &state))
     }
 
     fn accepted(
         &self,
         code: &'static str,
+        forced: bool,
         state: &WorkflowSessionState,
     ) -> WorkflowMutationResponse {
         WorkflowMutationResponse {
             accepted: true,
             code,
+            forced,
             operation_revision: state.revision,
             snapshot: self.current_snapshot(state),
             recovery_action: None,
+            error: None,
         }
     }
 
@@ -237,16 +342,73 @@ impl WorkflowMachine {
         &self,
         code: &'static str,
         state: &WorkflowSessionState,
+        attempted_target_state_id: Option<&str>,
+        message: impl Into<String>,
         recovery_action: impl Into<String>,
     ) -> WorkflowMutationResponse {
+        let message = message.into();
+        let recovery_action = recovery_action.into();
+        let current_state_id = state
+            .current_run
+            .as_ref()
+            .map(|run| run.current_state_id.clone());
+        let current_state_title = current_state_id
+            .as_deref()
+            .and_then(|id| self.graph().state(id))
+            .map(|state| state.title.clone());
+        let allowed_transitions = current_state_id
+            .as_deref()
+            .map(|id| self.allowed_transitions_for_state(id))
+            .unwrap_or_default();
+        let all_states = self.all_states_brief();
         WorkflowMutationResponse {
             accepted: false,
             code,
+            forced: false,
             operation_revision: state.revision,
             snapshot: self.current_snapshot(state),
-            recovery_action: Some(recovery_action.into()),
+            recovery_action: Some(recovery_action.clone()),
+            error: Some(WorkflowTransitionError {
+                code: code.to_string(),
+                message,
+                current_state_id,
+                current_state_title,
+                attempted_target_state_id: attempted_target_state_id.map(str::to_string),
+                allowed_transitions,
+                all_states,
+                recovery_action,
+            }),
         }
     }
+}
+
+fn format_allowed_transitions(allowed: &[WorkflowAllowedTransition]) -> String {
+    if allowed.is_empty() {
+        return "none".to_string();
+    }
+    let mut out = String::new();
+    for (idx, item) in allowed.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        let _ = write!(
+            out,
+            "{} ({}): {}",
+            item.target_state_id, item.target_state_title, item.guard
+        );
+    }
+    out
+}
+
+fn format_all_states(states: &[WorkflowStateBrief]) -> String {
+    let mut out = String::new();
+    for (idx, state) in states.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        let _ = write!(out, "{} ({})", state.id, state.title);
+    }
+    out
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -262,8 +424,11 @@ pub struct TransitionInput {
     pub expected_revision: u64,
     /// Current state returned by `workflow_current`.
     pub expected_state_id: String,
-    /// One direct successor returned by `workflow_next`.
+    /// Target state ID (must be an outgoing edge from `workflow_next` unless `force` is true).
     pub target_state_id: String,
+    /// Bypass workflow edge and terminal-state rules to jump to any valid state ID in the graph (default: false). Use only when intentionally overriding normal flow.
+    #[serde(default)]
+    pub force: bool,
     /// Exactly three keys: reason explains why the selected guard holds; summary describes the phase outcome; evidence is an array of supporting records.
     pub completion: CompletionInput,
 }
@@ -315,10 +480,14 @@ impl RestartInput {
 pub(crate) struct WorkflowMutationResponse {
     pub accepted: bool,
     pub code: &'static str,
+    #[serde(default)]
+    pub forced: bool,
     pub operation_revision: u64,
     pub snapshot: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recovery_action: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<WorkflowTransitionError>,
 }
 
 struct WorkflowCas<'a> {
@@ -333,30 +502,50 @@ fn validate_cas(
     cas: &WorkflowCas<'_>,
 ) -> Option<WorkflowMutationResponse> {
     let Some(run) = &state.current_run else {
-        return Some(runtime.rejected(
-            "workflowNotStarted",
-            state,
-            "Wait for the root Turn bootstrap before mutating workflow state.",
-        ));
+        let msg = "Wait for the root Turn bootstrap before mutating workflow state.";
+        return Some(runtime.rejected("workflowNotStarted", state, None, msg, msg));
     };
     let mismatch = if run.run_id != cas.expected_run_id {
-        Some("runMismatch")
+        Some((
+            "runMismatch",
+            format!(
+                "expectedRunId `{}` does not match active run `{}`.",
+                cas.expected_run_id, run.run_id
+            ),
+        ))
     } else if state.revision != cas.expected_revision {
-        Some("staleRevision")
+        Some((
+            "staleRevision",
+            format!(
+                "expectedRevision {} does not match current revision {}.",
+                cas.expected_revision, state.revision
+            ),
+        ))
     } else if run.current_state_id != cas.expected_state_id {
-        Some("stateMismatch")
+        Some((
+            "stateMismatch",
+            format!(
+                "expectedStateId `{}` does not match current state `{}`.",
+                cas.expected_state_id, run.current_state_id
+            ),
+        ))
     } else if run.mode_id != runtime.mode.descriptor().id
         || run.graph_hash != runtime.graph().graph_hash()
     {
-        Some("modeSnapshotMismatch")
+        Some((
+            "modeSnapshotMismatch",
+            "active run mode or graph hash differs from frozen Mode snapshot.".to_string(),
+        ))
     } else {
         None
     };
-    mismatch.map(|code| {
+    mismatch.map(|(code, msg)| {
         runtime.rejected(
             code,
             state,
-            "Call workflow_current and retry with its canonical run, revision, and state.",
+            None,
+            msg,
+            "Call workflow_current and retry with its canonical runId, revision, and currentStateId.",
         )
     })
 }
@@ -387,17 +576,180 @@ fn idempotent_response(
 ) -> Option<WorkflowMutationResponse> {
     operation_receipt(state, operation_id).map(|receipt| {
         if receipt.argument_hash == argument_hash {
-            runtime.accepted("alreadyApplied", state)
+            runtime.accepted("alreadyApplied", false, state)
         } else {
-            runtime.rejected(
-                "operationIdentityConflict",
-                state,
-                "Retry with a new tool call identity.",
-            )
+            let msg = "Retry with a new tool call identity.";
+            runtime.rejected("operationIdentityConflict", state, None, msg, msg)
         }
     })
 }
 
 fn operation_id(identity: &WorkflowOperation) -> String {
     format!("{}/{}", identity.turn_id, identity.call_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mode::ThreadModeManager;
+    use crate::studio::thread::register_builtins;
+    use crate::workflow_tool::WorkflowRunLifecycle;
+
+    fn auto_machine() -> WorkflowMachine {
+        let manager = ThreadModeManager::default();
+        let catalog = register_builtins(&manager).expect("builtin auto mode");
+        let mode = catalog
+            .mode(&crate::mode::ThreadModeId::auto())
+            .expect("mode.auto registered")
+            .clone();
+        let compiled = mode.workflow().expect("mode.auto has workflow");
+        let run = new_run(&mode, compiled, None, "test-seed", 100);
+        let state = WorkflowSessionState {
+            revision: 1,
+            current_run: Some(run),
+            archived_runs: Vec::new(),
+            archived_run_count: 0,
+            archived_run_digest: String::new(),
+            operation_receipts: Vec::new(),
+        };
+        WorkflowMachine::new(mode, state)
+    }
+
+    fn completion(reason: &str) -> CompletionInput {
+        CompletionInput {
+            reason: reason.into(),
+            summary: "stage summary".into(),
+            evidence: vec!["unit test evidence".into()],
+        }
+    }
+
+    #[test]
+    fn non_forced_unknown_target_and_disallowed_transition_return_rich_hints() {
+        let mut machine = auto_machine();
+        let state = machine.state();
+        let run = state.current_run.as_ref().unwrap();
+        let err_unknown = machine
+            .apply_transition(
+                TransitionInput {
+                    expected_run_id: run.run_id.clone(),
+                    expected_revision: state.revision,
+                    expected_state_id: "triage".into(),
+                    target_state_id: "nonexistent".into(),
+                    force: false,
+                    completion: completion("invalid target"),
+                },
+                &WorkflowOperation {
+                    turn_id: "t1".into(),
+                    call_id: "c1".into(),
+                },
+                "h1".into(),
+            )
+            .unwrap();
+        assert!(!err_unknown.accepted);
+        assert_eq!(err_unknown.code, "unknownTargetState");
+        let error = err_unknown.error.expect("structured error");
+        assert!(error.all_states.iter().any(|s| s.id == "simple"));
+        assert!(error.all_states.iter().any(|s| s.id == "planning"));
+        assert!(!error.allowed_transitions.is_empty());
+
+        let err_disallowed = machine
+            .apply_transition(
+                TransitionInput {
+                    expected_run_id: run.run_id.clone(),
+                    expected_revision: state.revision,
+                    expected_state_id: "triage".into(),
+                    target_state_id: "completed".into(),
+                    force: false,
+                    completion: completion("skip directly"),
+                },
+                &WorkflowOperation {
+                    turn_id: "t1".into(),
+                    call_id: "c2".into(),
+                },
+                "h2".into(),
+            )
+            .unwrap();
+        assert!(!err_disallowed.accepted);
+        assert_eq!(err_disallowed.code, "transitionNotAllowed");
+        assert!(
+            err_disallowed
+                .recovery_action
+                .as_deref()
+                .unwrap_or_default()
+                .contains("force=true")
+        );
+        let error = err_disallowed.error.expect("structured error");
+        assert_eq!(error.current_state_id.as_deref(), Some("triage"));
+        assert_eq!(
+            error.attempted_target_state_id.as_deref(),
+            Some("completed")
+        );
+        assert!(
+            error
+                .allowed_transitions
+                .iter()
+                .any(|edge| edge.target_state_id == "simple" && !edge.guard.is_empty())
+        );
+        assert!(
+            error
+                .allowed_transitions
+                .iter()
+                .any(|edge| edge.target_state_id == "planning" && !edge.guard.is_empty())
+        );
+    }
+
+    #[test]
+    fn forced_transition_jumps_anywhere_including_out_of_final_state() {
+        let mut machine = auto_machine();
+        let run_id = machine.state().current_run.unwrap().run_id;
+        // Forced jump directly from `triage` to terminal `completed`.
+        let jump_final = machine
+            .apply_transition(
+                TransitionInput {
+                    expected_run_id: run_id.clone(),
+                    expected_revision: 1,
+                    expected_state_id: "triage".into(),
+                    target_state_id: "completed".into(),
+                    force: true,
+                    completion: completion("force complete"),
+                },
+                &WorkflowOperation {
+                    turn_id: "t1".into(),
+                    call_id: "c1".into(),
+                },
+                "h1".into(),
+            )
+            .unwrap();
+        assert!(jump_final.accepted);
+        assert!(jump_final.forced);
+        assert_eq!(
+            machine.state().current_run.as_ref().unwrap().lifecycle,
+            WorkflowRunLifecycle::Terminal
+        );
+
+        // Forced jump out of terminal `completed` back into `planning`.
+        let jump_back = machine
+            .apply_transition(
+                TransitionInput {
+                    expected_run_id: run_id,
+                    expected_revision: machine.state().revision,
+                    expected_state_id: "completed".into(),
+                    target_state_id: "planning".into(),
+                    force: true,
+                    completion: completion("reopen into planning"),
+                },
+                &WorkflowOperation {
+                    turn_id: "t2".into(),
+                    call_id: "c2".into(),
+                },
+                "h2".into(),
+            )
+            .unwrap();
+        assert!(jump_back.accepted);
+        assert!(jump_back.forced);
+        let run = machine.state().current_run.unwrap();
+        assert_eq!(run.current_state_id, "planning");
+        assert_eq!(run.lifecycle, WorkflowRunLifecycle::Active);
+        assert!(run.history_tail.iter().all(|rec| rec.forced));
+    }
 }

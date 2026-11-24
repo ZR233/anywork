@@ -3724,6 +3724,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get statusThroughputUnavailable => '—';
 
   @override
+  String get workflowStateTriage => '评估分流';
+
+  @override
+  String get workflowStateSimple => '简单处理';
+
+  @override
   String get workflowStatePlanning => '规划';
 
   @override
@@ -3743,6 +3749,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get workflowStateStopped => '已停止';
+
+  @override
+  String get workflowModeAuto => '自动';
 
   @override
   String get workflowModeSimple => '简洁';
@@ -7702,4 +7711,40 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => '已成功';
+
+  @override
+  String get modeSelectorAddMode => '添加模式';
+
+  @override
+  String get workflowGraphPanelTitle => '工作流图';
+
+  @override
+  String get workflowGraphPanelCloseTooltip => '关闭工作流图';
+
+  @override
+  String get workflowGraphPanelEmpty => '当前暂无工作流状态';
+
+  @override
+  String get workflowGraphPanelLoadFailed => '加载工作流图失败';
+
+  @override
+  String get workflowGraphPanelRetry => '重试';
+
+  @override
+  String get workflowGraphStateCurrent => '当前';
+
+  @override
+  String get workflowGraphStateVisited => '已走过';
+
+  @override
+  String get workflowGraphStateForced => '强制切换';
+
+  @override
+  String get workflowGraphStateFinal => '终态';
+
+  @override
+  String get timelineToolNamePlanTransition => '切换计划状态';
+
+  @override
+  String get timelineToolDetailForceTransition => '强制切换';
 }

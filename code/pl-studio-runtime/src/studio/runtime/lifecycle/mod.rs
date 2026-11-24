@@ -470,7 +470,7 @@ mod startup_fault_tests {
                 "cold".into(),
                 "project-cold",
                 "cold",
-                crate::mode::ThreadModeId::simple(),
+                crate::mode::ThreadModeId::auto(),
                 crate::ThreadWorkspaceMode::Local,
                 "/tmp/project-cold".into(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
@@ -529,7 +529,7 @@ mod startup_fault_tests {
         assert_eq!(session.root_agent_id, "cold");
         assert_eq!(
             session.native_mode,
-            Some(crate::mode::ThreadModeId::simple())
+            Some(crate::mode::ThreadModeId::new("mode.simple")?)
         );
         let child = catalog
             .get_agent("synthetic-child")
@@ -878,7 +878,7 @@ mod startup_fault_tests {
         value["models"]["routes"]
             .as_table_mut()
             .expect("role routes")
-            .insert("planner".into(), routes["mode.simple"].clone());
+            .insert("planner".into(), routes["mode.auto"].clone());
         // Schema 18 predates the explicit account authentication field.
         for (_, account) in value["models"]["accounts"]
             .as_table_mut()

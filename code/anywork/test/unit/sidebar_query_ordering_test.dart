@@ -421,7 +421,7 @@ SessionDirectoryRow _thread(String id, String title, int year) =>
       threadId: id,
       workspaceId: _projectId,
       title: title,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(year),

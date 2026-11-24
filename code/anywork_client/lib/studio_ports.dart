@@ -168,6 +168,9 @@ abstract class StudioTransport
   });
   Future<StudioBootstrap> readBootstrap();
   Future<SessionDirectoryRow> restoreThread(String threadId);
+  Future<WorkflowRuntimeGraphSnapshotView?> getThreadWorkflowGraph(
+    String threadId,
+  );
 
   Future<void> activateProject(String workspaceId);
   Future<StudioProject> openProject(String path);

@@ -9,8 +9,12 @@ library;
 /// 提交计划的工具名（与 `pl-studio-runtime` 的 `TOOL_PLAN_SUBMIT` 一致）。
 const String planSubmitToolName = 'plan_submit';
 
+/// 切换计划状态的工具名（与 `pl-studio-runtime` 的 `TOOL_PLAN_TRANSITION` 一致）。
+const String planTransitionToolName = 'plan_transition';
+
 /// 该工具名称是否拥有计划确认语义。
 ///
 /// 普通问答工具（例如 `ask_user` / `request_user_input`）即使携带了保留的问题 ID，
 /// 也仍然只是普通问答：它既不能被隐藏成“待确认计划”，也不能被渲染成计划回执。
-bool ownsPlanConfirmation(String? toolName) => toolName == planSubmitToolName;
+bool ownsPlanConfirmation(String? toolName) =>
+    toolName == planSubmitToolName || toolName == planTransitionToolName;

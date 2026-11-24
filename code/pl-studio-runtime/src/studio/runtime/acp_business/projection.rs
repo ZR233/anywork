@@ -243,7 +243,11 @@ pub(super) fn info_snapshot(snapshot: &sdk::Snapshot) -> Option<AcpSessionInfoSn
     })
 }
 
-pub(super) fn snapshot(target: AcpSessionTarget, snapshot: sdk::Snapshot) -> AcpBusinessSnapshot {
+pub(super) fn snapshot(
+    target: AcpSessionTarget,
+    snapshot: sdk::Snapshot,
+    workflow_state: Option<AcpWorkflowStateSnapshot>,
+) -> AcpBusinessSnapshot {
     let info = info_snapshot(&snapshot);
     AcpBusinessSnapshot {
         target,
@@ -258,6 +262,7 @@ pub(super) fn snapshot(target: AcpSessionTarget, snapshot: sdk::Snapshot) -> Acp
         observation_gap: snapshot.observation_gap.map(gap),
         auth_methods: methods(snapshot.auth_methods),
         info_snapshot: info,
+        workflow_state,
     }
 }
 

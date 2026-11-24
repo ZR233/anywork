@@ -112,6 +112,22 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
   }
 
   @override
+  Future<acp_business.AcpWorkflowStateView> setThreadMode(
+    acp_business.AcpSetThreadModeRequestView request,
+  ) async {
+    final wire = frb_acp_types.BridgeAcpSetThreadModeRequest(
+      target: acp_mapper.acpTargetToFrb(request.target),
+      modeId: request.modeId,
+    );
+    await ensureReady();
+    final state = await _acpBusinessCall(
+      () => frb_acp_business.setAcpThreadMode(request: wire),
+      command: 'setThreadMode',
+    );
+    return acp_mapper.acpWorkflowStateFromFrb(state);
+  }
+
+  @override
   Future<void> answerPermission(
     acp_business.AcpPermissionAnswerRequestView request,
   ) async {

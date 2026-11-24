@@ -17,7 +17,7 @@ use super::payload::{
     UserInputDescriptor, UserInputState,
 };
 use crate::plan_tool::{
-    TOOL_PLAN_SUBMIT,
+    TOOL_PLAN_SUBMIT, TOOL_PLAN_TRANSITION,
     state::{AgentSessionPlanConfirmationDecision, confirmation_decision},
 };
 use crate::thread_assembler::encode_interaction_key;
@@ -37,7 +37,9 @@ pub(super) fn plan_completion(item: &ExecutionItem) -> Result<Option<PlanComplet
     let ExecutionShape::Tool(tool) = item.state() else {
         return Ok(None);
     };
-    if tool.invocation().name() != TOOL_PLAN_SUBMIT {
+    if tool.invocation().name() != TOOL_PLAN_SUBMIT
+        && tool.invocation().name() != TOOL_PLAN_TRANSITION
+    {
         return Ok(None);
     }
     let Some(input) = tool.user_input() else {

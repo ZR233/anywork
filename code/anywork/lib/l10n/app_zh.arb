@@ -1432,6 +1432,8 @@
     }
   },
   "statusThroughputUnavailable": "—",
+  "workflowStateTriage": "评估分流",
+  "workflowStateSimple": "简单处理",
   "workflowStatePlanning": "规划",
   "workflowStateEditingDocuments": "编辑文档",
   "workflowStateWorking": "实施",
@@ -1439,6 +1441,7 @@
   "workflowStateReviewing": "审查",
   "workflowStateCompleted": "已完成",
   "workflowStateStopped": "已停止",
+  "workflowModeAuto": "自动",
   "workflowModeSimple": "简洁",
   "workflowModeTask": "任务",
   "attachmentFallback": "附件",
@@ -3296,5 +3299,17 @@
   "timelineOutcomeStatusDenied": "已拒绝",
   "timelineOutcomeStatusCancelled": "已取消",
   "timelineOutcomeStatusCompleted": "已完成",
-  "timelineOutcomeStatusSucceeded": "已成功"
+  "timelineOutcomeStatusSucceeded": "已成功",
+  "modeSelectorAddMode": "添加模式",
+  "workflowGraphPanelTitle": "工作流图",
+  "workflowGraphPanelCloseTooltip": "关闭工作流图",
+  "workflowGraphPanelEmpty": "当前暂无工作流状态",
+  "workflowGraphPanelLoadFailed": "加载工作流图失败",
+  "workflowGraphPanelRetry": "重试",
+  "workflowGraphStateCurrent": "当前",
+  "workflowGraphStateVisited": "已走过",
+  "workflowGraphStateForced": "强制切换",
+  "workflowGraphStateFinal": "终态",
+  "timelineToolNamePlanTransition": "切换计划状态",
+  "timelineToolDetailForceTransition": "强制切换"
 }

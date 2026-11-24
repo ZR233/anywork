@@ -1330,7 +1330,10 @@ mod tests {
         let session = &current.sessions[0];
         assert_eq!(session.session_id, legacy.sessions[0].session_id);
         assert_eq!(session.root_agent_id, legacy.sessions[0].root_agent_id);
-        assert_eq!(session.native_mode, Some(ThreadModeId::simple()));
+        assert_eq!(
+            session.native_mode,
+            Some(ThreadModeId::new("mode.simple").unwrap())
+        );
         assert_eq!(session.acp_title, None);
         assert_eq!(session.title, legacy.sessions[0].title);
         assert_eq!(session.display_title(), legacy.sessions[0].title);
@@ -1363,7 +1366,7 @@ mod tests {
                 .map(|agent| agent.thread_id.clone())
         })
         .expect("Native child projection");
-        assert_eq!(root.mode, Some(ThreadModeId::simple()));
+        assert_eq!(root.mode, Some(ThreadModeId::new("mode.simple").unwrap()));
         assert_eq!(child.mode, None);
     }
 

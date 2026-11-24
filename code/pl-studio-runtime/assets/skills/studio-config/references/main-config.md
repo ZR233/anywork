@@ -45,7 +45,7 @@ anywk exec --studio-home /runs/profile --cwd /workspace/task \
 All relative paths resolve once against the process startup cwd; the task cwd is
 passed separately. The CLI does not change HOME/USERPROFILE or initialize Git.
 `--prompt-file -` reads UTF-8 from stdin to EOF. Optional `--reasoning-effort` uses
-the selected model's native validation; `--mode` defaults to `mode.simple`.
+the selected model's native validation; `--mode` defaults to `mode.auto`.
 `--max-model-steps` tightens only the root input's budget, not the whole tree.
 
 `--no-default-user-skills` only removes the implicit user source.
@@ -120,7 +120,7 @@ This minimal API-account example requires a real credential supplied through the
 environment. Do not replace an existing file wholesale with this example:
 
 ```toml
-schema_version = 34
+schema_version = 35
 
 [models.accounts.deepseek]
 template = "deepseek"
@@ -134,12 +134,7 @@ bearer_token_env = "DEEPSEEK_API_KEY"
 source = "bundled"
 catalog = "deepseek"
 
-[mode_model_routes."mode.simple"]
-account_id = "deepseek"
-model_id = "deepseek-flash"
-effort = "high"
-
-[mode_model_routes."mode.task"]
+[mode_model_routes."mode.auto"]
 account_id = "deepseek"
 model_id = "deepseek-flash"
 effort = "high"
@@ -203,13 +198,13 @@ the current account capabilities; an already prepared request remains frozen.
 Verify the actual Responses request and reported cache read/write usage. A saved
 capability or a present key does not prove a cache hit or lower cost.
 
-Both built-in Mode routes are required. A route contains `account_id`, `model_id`
+The built-in `mode.auto` route is required. A route contains `account_id`, `model_id`
 and optional `effort`, which must be supported by that model. Custom Modes inherit
-`mode.simple` unless their full ID has an explicit route. Existing Threads retain
+`mode.auto` unless their full ID has an explicit route. Existing Threads retain
 their own route; changing these defaults does not replace their frozen selection.
 
 `[models.routes.<system-child-id>]` optionally overrides a declared built-in child
-Agent's route. Omission inherits the complete `mode.simple` route; an invalid
+Agent's route. Omission inherits the complete `mode.auto` route; an invalid
 explicit route does not fall back. Root Agent identities are not child routes.
 `disabled_system_agents = ["<child-id>"]` is a root-level array, default `[]`; get
 actual child IDs from the current catalog instead of inventing them.

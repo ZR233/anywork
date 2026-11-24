@@ -175,7 +175,7 @@ void main() {
       threadId: 'thread',
       workspaceId: 'project',
       title: 'Thread',
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),

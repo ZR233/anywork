@@ -761,6 +761,7 @@ void main() {
       'builtin.plan_current@1',
       'builtin.plan_next@1',
       'builtin.plan_history@1',
+      'builtin.plan_transition@1',
       'builtin.plan_submit@1',
       'builtin.plan_restart@1',
       'builtin.workflow_current@1',
@@ -774,7 +775,7 @@ void main() {
       'builtin.deepseek_web_fetch@1',
     };
     expect(timelineToolItemRegistry.exactContracts, expectedContracts);
-    expect(timelineToolItemRegistry.adapters, hasLength(38));
+    expect(timelineToolItemRegistry.adapters, hasLength(39));
 
     final nonFallbackAdapters = timelineToolItemRegistry.adapters
         .where((adapter) => adapter.id != 'generic@1')
@@ -839,6 +840,7 @@ void main() {
         ('builtin.plan_next@1', '查询计划可用操作', 'Read available plan operations'),
         ('builtin.plan_restart@1', '重新规划', 'Restart planning'),
         ('builtin.plan_submit@1', '提交计划', 'Submit plan'),
+        ('builtin.plan_transition@1', '切换计划状态', 'Plan transition'),
         ('builtin.read_session_note@1', '读取会话笔记', 'Read session note'),
         ('builtin.search_session_note@1', '搜索会话笔记', 'Search session note'),
         ('builtin.send_message@1', '发送消息', 'Send message'),

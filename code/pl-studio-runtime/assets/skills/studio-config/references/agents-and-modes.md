@@ -91,7 +91,7 @@ Profile files; their enablement and optional routes belong to the main config.
 
 Custom modes live at `<studio-home>/modes/<mode-id>.json`. The filename must equal
 the document `id` plus `.json`. Use the current JSON editing shape below, without
-a TOML schema header. `mode.simple` and `mode.task` are built-in and read-only.
+a TOML schema header. `mode.auto` is built-in and read-only.
 
 ```json
 {
@@ -150,5 +150,5 @@ Saving validates before publication. External JSON edits require explicit mode
 reload. A malformed document, filename mismatch, unknown field or compiler error
 rejects the reload and retains the previous published catalog. The product exposes
 `thread_mode_definition_schema` and `validate_thread_mode_definition` APIs; these
-are not standalone shell commands. Custom modes use `mode.simple`'s model route
+are not standalone shell commands. Custom modes use `mode.auto`'s model route
 unless the main config supplies their own `mode_model_routes` entry.

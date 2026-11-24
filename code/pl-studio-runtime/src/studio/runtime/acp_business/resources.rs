@@ -77,6 +77,7 @@ pub(crate) struct AcpResources {
     host_mcp: Mutex<Option<HostMcp>>,
     pub(in crate::studio::runtime) workspace_tools:
         OnceLock<Arc<super::super::acp_workspace_tools::WorkspaceTools>>,
+    pub(in crate::studio::runtime) workflow_plan: OnceLock<Arc<super::AcpWorkflowPlanOwner>>,
     workspace_close: Mutex<Option<JoinHandle<Result<()>>>>,
     /// Member lease of the account-cached image; the account retains its own lease until
     /// the entire ACP process tree is joined, independently of this session's service.
@@ -132,6 +133,7 @@ impl AcpResources {
             association_gate: Mutex::new(()),
             host_mcp: Mutex::new(None),
             workspace_tools: OnceLock::new(),
+            workflow_plan: OnceLock::new(),
             workspace_close: Mutex::new(None),
             mcp_frontend: std::sync::Mutex::new(None),
             mcp_injected: AtomicBool::new(false),
@@ -259,6 +261,7 @@ impl AcpResources {
                 is_root,
                 frontend.as_ref().map(AsRef::as_ref),
                 self.workspace_tools.get().cloned(),
+                self.workflow_plan.get().cloned(),
             )
             .await?;
         let calls = service.observed_counter();
@@ -467,6 +470,32 @@ impl AcpResources {
         owned.usage = Some(usage);
         self.obligations.store(true, Ordering::Release);
         Ok(())
+    }
+
+    pub(in crate::studio::runtime) fn retain_workflow_plan(
+        &self,
+        owner: Arc<super::AcpWorkflowPlanOwner>,
+    ) -> Result<()> {
+        ensure!(
+            !self.cancellation.is_cancelled(),
+            "ACP workflow preparation closed"
+        );
+        self.workflow_plan
+            .set(owner)
+            .map_err(|_| anyhow::anyhow!("ACP workflow plan owner already prepared"))?;
+        Ok(())
+    }
+
+    pub(in crate::studio::runtime) fn workflow_snapshot(
+        &self,
+    ) -> Option<crate::protocol::AcpWorkflowStateSnapshot> {
+        self.workflow_plan.get().map(|wp| wp.snapshot())
+    }
+
+    pub(in crate::studio::runtime) fn subscribe_workflow(
+        &self,
+    ) -> Option<watch::Receiver<Option<crate::protocol::AcpWorkflowStateSnapshot>>> {
+        self.workflow_plan.get().map(|wp| wp.subscribe())
     }
 
     pub(crate) fn has_obligations(&self) -> bool {

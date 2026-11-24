@@ -9,6 +9,8 @@ import '../../types/acp_business.dart';
 import '../../types/acp_business/content.dart';
 import '../../types/acp_business/notification.dart';
 import '../../types/error.dart';
+import '../../types/mode_editor.dart';
+import '../../types/thread_stream.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 

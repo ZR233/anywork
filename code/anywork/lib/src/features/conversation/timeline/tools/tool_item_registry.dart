@@ -25,6 +25,7 @@ import 'items/plan/plan_history_tool_item.dart';
 import 'items/plan/plan_next_tool_item.dart';
 import 'items/plan/plan_restart_tool_item.dart';
 import 'items/plan/plan_submit_tool_item.dart';
+import 'items/plan/plan_transition_tool_item.dart';
 import 'items/session_note/apply_session_note_patch_tool_item.dart';
 import 'items/session_note/read_session_note_tool_item.dart';
 import 'items/session_note/search_session_note_tool_item.dart';
@@ -163,6 +164,7 @@ final TimelineToolItemRegistry timelineToolItemRegistry =
         PlanCurrentToolItem(),
         PlanNextToolItem(),
         PlanHistoryToolItem(),
+        PlanTransitionToolItem(),
         PlanSubmitToolItem(),
         PlanRestartToolItem(),
 

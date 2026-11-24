@@ -46,7 +46,7 @@ pub struct ExecArgs {
     #[arg(long, value_name = "VALUE")]
     pub reasoning_effort: Option<String>,
     /// 原生工作模式 ID。
-    #[arg(long, default_value = "mode.simple", value_name = "ID")]
+    #[arg(long, default_value = "mode.auto", value_name = "ID")]
     pub mode: String,
     /// UTF-8 任务文件；- 表示从标准输入读取至结束。正文不会进入进程参数。
     #[arg(long, value_name = "PATH")]

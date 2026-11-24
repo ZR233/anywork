@@ -1864,6 +1864,8 @@
     }
   },
   "statusThroughputUnavailable": "- t/s",
+  "workflowStateTriage": "Triage",
+  "workflowStateSimple": "Direct",
   "workflowStatePlanning": "Planning",
   "workflowStateEditingDocuments": "Editing docs",
   "workflowStateWorking": "Working",
@@ -1871,6 +1873,7 @@
   "workflowStateReviewing": "Reviewing",
   "workflowStateCompleted": "Completed",
   "workflowStateStopped": "Stopped",
+  "workflowModeAuto": "Auto",
   "workflowModeSimple": "Simple",
   "workflowModeTask": "Task",
   "attachmentFallback": "Attachment",
@@ -3933,5 +3936,17 @@
   "timelineOutcomeStatusDenied": "Denied",
   "timelineOutcomeStatusCancelled": "Cancelled",
   "timelineOutcomeStatusCompleted": "Completed",
-  "timelineOutcomeStatusSucceeded": "Succeeded"
+  "timelineOutcomeStatusSucceeded": "Succeeded",
+  "modeSelectorAddMode": "Add mode",
+  "workflowGraphPanelTitle": "Workflow graph",
+  "workflowGraphPanelCloseTooltip": "Close workflow graph",
+  "workflowGraphPanelEmpty": "No workflow state yet",
+  "workflowGraphPanelLoadFailed": "Failed to load workflow graph",
+  "workflowGraphPanelRetry": "Retry",
+  "workflowGraphStateCurrent": "Current",
+  "workflowGraphStateVisited": "Visited",
+  "workflowGraphStateForced": "Forced",
+  "workflowGraphStateFinal": "Final",
+  "timelineToolNamePlanTransition": "Plan transition",
+  "timelineToolDetailForceTransition": "Forced"
 }

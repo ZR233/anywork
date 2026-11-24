@@ -207,7 +207,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
                     text: "must not reach a model".into(),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
+                mode: pl_studio_runtime::mode::ThreadModeId::auto().to_string(),
                 route: pl_studio_runtime::NewThreadModelRoute {
                     account_id: "root-fixture".into(),
                     model_id: support::MODEL.into(),
@@ -329,7 +329,7 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
                         text: "must not reach a model".into(),
                         attachment_draft_ids: vec![draft.draft_id.clone()],
                     },
-                    mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
+                    mode: pl_studio_runtime::mode::ThreadModeId::auto().to_string(),
                     route,
                     service_tier: None,
                     delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),

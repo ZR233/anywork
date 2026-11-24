@@ -333,6 +333,16 @@ impl StudioThreadFactory {
         let mode = crate::mode::saved_registered_mode(&saved)
             .map_err(|error| resource_error("restore Mode snapshot", error))?
             .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
+            .or_else(|| {
+                matches!(selected_mode.as_str(), "mode.simple" | "mode.task")
+                    .then(|| {
+                        self.services
+                            .thread_modes
+                            .snapshot()
+                            .mode(&crate::mode::ThreadModeId::auto())
+                    })
+                    .flatten()
+            })
             .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)
             .map_err(|error| resource_error("decode saved model route", error))?;
@@ -500,13 +510,11 @@ impl StudioThreadFactory {
             tracing::debug!(target: "thread_preparation", thread_id = id, stage = "instructions", elapsed_ms = instructions_started.elapsed().as_millis() as u64, "completed");
             initial_context = context;
             initial_extensions.insert("studio.instructions".into(), sources);
-            if config.runtime.tool_capabilities.ask_user {
-                initial_extensions.insert(
-                    crate::plan_tool::PLAN_EXTENSION.into(),
-                    crate::plan_tool::encode_plan_state(&Default::default())
-                        .map_err(|error| resource_error("freeze initial plan state", error))?,
-                );
-            }
+            initial_extensions.insert(
+                crate::plan_tool::PLAN_EXTENSION.into(),
+                crate::plan_tool::encode_plan_state(&Default::default())
+                    .map_err(|error| resource_error("freeze initial plan state", error))?,
+            );
 
             initial_extensions.insert(
                 "studio.project".into(),

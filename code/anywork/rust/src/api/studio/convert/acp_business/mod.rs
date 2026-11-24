@@ -68,35 +68,57 @@ impl From<BridgeAcpPermissionId> for p::AcpPermissionId {
         }
     }
 }
-impl From<BridgeOpenAcpSessionRequest> for p::OpenAcpSessionRequest {
-    fn from(v: BridgeOpenAcpSessionRequest) -> Self {
-        Self {
-            account_id: v.account_id,
-            expected_connection_revision: v.expected_connection_revision,
-            workspace_id: v.workspace_id,
-            thread_id: v.thread_id,
-            intent: match v.intent {
-                BridgeAcpOpenIntent::New => p::AcpOpenIntent::New,
-                BridgeAcpOpenIntent::Draft {
-                    workspace_mode,
-                    delegation_mode,
-                    delegation_preference,
-                } => p::AcpOpenIntent::Draft {
-                    workspace_mode: match workspace_mode {
-                        BridgeAcpWorkspaceMode::Local => p::ThreadWorkspaceMode::Local,
-                        BridgeAcpWorkspaceMode::Worktree => p::ThreadWorkspaceMode::Worktree,
-                    },
-                    delegation_mode: delegation_mode.map(Into::into),
-                    delegation_preference: delegation_preference.map(Into::into),
-                },
-                BridgeAcpOpenIntent::Load { session_id } => p::AcpOpenIntent::Load {
-                    session_id: session_id.value,
-                },
-                BridgeAcpOpenIntent::Resume { session_id } => p::AcpOpenIntent::Resume {
-                    session_id: session_id.value,
-                },
+pub(crate) fn open_request(v: BridgeOpenAcpSessionRequest) -> R<p::OpenAcpSessionRequest> {
+    let intent = match v.intent {
+        BridgeAcpOpenIntent::New => p::AcpOpenIntent::New,
+        BridgeAcpOpenIntent::Draft {
+            workspace_mode,
+            delegation_mode,
+            delegation_preference,
+            mode,
+        } => p::AcpOpenIntent::Draft {
+            workspace_mode: match workspace_mode {
+                BridgeAcpWorkspaceMode::Local => p::ThreadWorkspaceMode::Local,
+                BridgeAcpWorkspaceMode::Worktree => p::ThreadWorkspaceMode::Worktree,
             },
-        }
+            delegation_mode: delegation_mode.map(Into::into),
+            delegation_preference: delegation_preference.map(Into::into),
+            mode: mode
+                .map(p::mode::ThreadModeId::new)
+                .transpose()
+                .map_err(|error| {
+                    BridgeAcpBusinessError::from(BridgeError::from(anyhow::anyhow!(error)))
+                })?,
+        },
+        BridgeAcpOpenIntent::Load { session_id } => p::AcpOpenIntent::Load {
+            session_id: session_id.value,
+        },
+        BridgeAcpOpenIntent::Resume { session_id } => p::AcpOpenIntent::Resume {
+            session_id: session_id.value,
+        },
+    };
+    Ok(p::OpenAcpSessionRequest {
+        account_id: v.account_id,
+        expected_connection_revision: v.expected_connection_revision,
+        workspace_id: v.workspace_id,
+        thread_id: v.thread_id,
+        intent,
+    })
+}
+
+pub(crate) fn workflow_state(v: p::AcpWorkflowStateSnapshot) -> BridgeAcpWorkflowStateSnapshot {
+    BridgeAcpWorkflowStateSnapshot {
+        mode_id: v.mode_id.map(|id| id.to_string()),
+        mode_display_name: v.mode_display_name,
+        run: v
+            .run
+            .map(crate::api::studio::convert::thread_stream::workflow_run),
+        graph: v
+            .graph
+            .map(crate::api::studio::convert::thread_stream::workflow_runtime_graph_snapshot),
+        plan: v
+            .plan
+            .map(crate::api::studio::convert::thread_stream::plan_runtime_snapshot),
     }
 }
 pub(crate) fn failure(v: p::AcpBusinessFailure) -> R<BridgeAcpBusinessFailure> {
@@ -287,6 +309,7 @@ pub(crate) fn snapshot(v: p::AcpBusinessSnapshot) -> R<BridgeAcpBusinessSnapshot
             .map(super::acp::bridge_acp_auth_method)
             .collect(),
         info_snapshot: v.info_snapshot.map(info_snapshot),
+        workflow_state: v.workflow_state.map(workflow_state),
     })
 }
 pub(crate) fn close(v: p::AcpBusinessClose) -> R<BridgeAcpBusinessClose> {
@@ -317,10 +340,12 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
             target,
             has_observation,
             info_snapshot: info,
+            workflow_state: ws,
         } => BridgeAcpSessionFrame::Accepted {
             target: target.into(),
             has_observation,
             info_snapshot: info.map(|v| Box::new(info_snapshot(*v))),
+            workflow_state: ws.map(|v| Box::new(workflow_state(*v))),
         },
         p::AcpSessionFrame::Settled { result } => BridgeAcpSessionFrame::Settled {
             result: match result {
@@ -394,6 +419,11 @@ pub(crate) fn frame(v: p::AcpSessionFrame) -> R<BridgeAcpSessionFrame> {
                 p::AcpSessionEvent::Completed { completed: v } => {
                     BridgeAcpSessionEvent::Completed {
                         completed: completed(v)?,
+                    }
+                }
+                p::AcpSessionEvent::WorkflowStateUpdated { state } => {
+                    BridgeAcpSessionEvent::WorkflowStateUpdated {
+                        state: Box::new(workflow_state(*state)),
                     }
                 }
                 p::AcpSessionEvent::Gap { gap: v } => BridgeAcpSessionEvent::Gap { gap: gap(v) },
@@ -616,6 +646,7 @@ mod tests {
             observation_gap: None,
             auth_methods: vec![],
             info_snapshot: None,
+            workflow_state: None,
         };
         let mapped = snapshot(source.clone()).unwrap();
         assert_eq!(mapped.target.instance, 41);
@@ -961,7 +992,7 @@ mod tests {
 
     #[test]
     fn list_and_open_inputs_preserve_literal_paths_remote_ids_and_extension_values() {
-        let request: p::OpenAcpSessionRequest = BridgeOpenAcpSessionRequest {
+        let request: p::OpenAcpSessionRequest = open_request(BridgeOpenAcpSessionRequest {
             account_id: "account".into(),
             expected_connection_revision: 4,
             workspace_id: "workspace".into(),
@@ -971,8 +1002,8 @@ mod tests {
                     value: "remote-id".into(),
                 },
             },
-        }
-        .into();
+        })
+        .unwrap();
         assert_eq!(request.thread_id.as_deref(), Some("product-thread"));
         assert_eq!(
             request.intent,
@@ -1033,6 +1064,7 @@ mod tests {
             target: target(),
             has_observation: false,
             info_snapshot: Some(Box::new(snap.clone())),
+            workflow_state: None,
         })
         .unwrap();
         let BridgeAcpSessionFrame::Accepted {

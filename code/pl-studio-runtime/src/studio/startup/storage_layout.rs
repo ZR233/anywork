@@ -1274,7 +1274,10 @@ mod tests {
         assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
         let root = runtime.read_thread(THREAD).await?;
         assert_eq!(root.workspace_id, OWNER);
-        assert_eq!(root.mode, Some(crate::mode::ThreadModeId::simple()));
+        assert_eq!(
+            root.mode,
+            Some(crate::mode::ThreadModeId::new("mode.simple").unwrap())
+        );
         let child = runtime.read_thread("synthetic-child").await?;
         assert_eq!(child.root_thread_id, THREAD);
         assert_eq!(child.parent_thread_id.as_deref(), Some(THREAD));

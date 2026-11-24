@@ -3920,6 +3920,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get statusThroughputUnavailable => '- t/s';
 
   @override
+  String get workflowStateTriage => 'Triage';
+
+  @override
+  String get workflowStateSimple => 'Direct';
+
+  @override
   String get workflowStatePlanning => 'Planning';
 
   @override
@@ -3939,6 +3945,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get workflowStateStopped => 'Stopped';
+
+  @override
+  String get workflowModeAuto => 'Auto';
 
   @override
   String get workflowModeSimple => 'Simple';
@@ -8176,4 +8185,40 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => 'Succeeded';
+
+  @override
+  String get modeSelectorAddMode => 'Add mode';
+
+  @override
+  String get workflowGraphPanelTitle => 'Workflow graph';
+
+  @override
+  String get workflowGraphPanelCloseTooltip => 'Close workflow graph';
+
+  @override
+  String get workflowGraphPanelEmpty => 'No workflow state yet';
+
+  @override
+  String get workflowGraphPanelLoadFailed => 'Failed to load workflow graph';
+
+  @override
+  String get workflowGraphPanelRetry => 'Retry';
+
+  @override
+  String get workflowGraphStateCurrent => 'Current';
+
+  @override
+  String get workflowGraphStateVisited => 'Visited';
+
+  @override
+  String get workflowGraphStateForced => 'Forced';
+
+  @override
+  String get workflowGraphStateFinal => 'Final';
+
+  @override
+  String get timelineToolNamePlanTransition => 'Plan transition';
+
+  @override
+  String get timelineToolDetailForceTransition => 'Forced';
 }

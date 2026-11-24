@@ -687,8 +687,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
   }
 
   bool _isBuiltinId(String id) =>
-      id == ThreadModeId.simple.id ||
-      id == ThreadModeId.task.id ||
+      id == ThreadModeId.auto.id ||
       (_client.modeCatalog.state.value?.modes.any(
             (mode) => mode.id == id && mode.readOnly,
           ) ??

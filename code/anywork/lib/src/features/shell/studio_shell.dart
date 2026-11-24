@@ -45,6 +45,7 @@ import '../conversation/composer/composer.dart';
 import '../conversation/composer/view_models/conversation_backend_view_model.dart';
 import '../conversation/acp/connectors/acp_workspace_connector.dart';
 import '../status/thread_status_bar.dart';
+import '../status/workflow_graph_panel.dart';
 import '../conversation/timeline/live_status/live_status_bar.dart';
 import '../conversation/timeline/connectors/timeline_connector.dart';
 import '../conversation/timeline/connectors/timeline_read_demand_viewport.dart';

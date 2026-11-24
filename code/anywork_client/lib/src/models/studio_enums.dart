@@ -17,9 +17,8 @@ enum PermissionMode { requestApproval, autoReview, fullAccess }
 final class ThreadModeId {
   const ThreadModeId(this.id);
 
-  static const simple = ThreadModeId('mode.simple');
-  static const task = ThreadModeId('mode.task');
-  static const values = [simple, task];
+  static const auto = ThreadModeId('mode.auto');
+  static const values = [auto];
 
   final String id;
 
@@ -27,8 +26,7 @@ final class ThreadModeId {
   String get name => id;
 
   factory ThreadModeId.fromId(String id) => switch (id) {
-    'mode.simple' => simple,
-    'mode.task' => task,
+    'mode.auto' || 'mode.simple' || 'mode.task' => auto,
     _ => ThreadModeId(id),
   };
 

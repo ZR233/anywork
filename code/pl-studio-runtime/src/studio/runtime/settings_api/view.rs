@@ -129,7 +129,7 @@ fn settings_view(
         delegation: config.delegation,
         default_account_id: config
             .mode_model_routes
-            .get(&crate::mode::ThreadModeId::simple())
+            .get(&crate::mode::ThreadModeId::auto())
             .map(|route| route.account_id.to_string()),
         accounts,
         acp_accounts,

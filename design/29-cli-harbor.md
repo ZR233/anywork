@@ -17,7 +17,7 @@ anywk exec \
   --account benchmark \
   --model vendor/model \
   --reasoning-effort high \
-  --mode mode.simple \
+  --mode mode.auto \
   --prompt-file /runs/prompt.txt \
   --max-model-steps 100 \
   --no-default-user-skills \
@@ -25,7 +25,7 @@ anywk exec \
   --output-dir /runs/export
 ```
 
-`--studio-home`、`--cwd`、`--account`、`--model` 与 `--prompt-file` 必须显式提供。`--output-dir` 为可选开关：省略时不创建任何导出目录或临时文件；传入时要求目标尚不存在或为已存在的空可写非符号链接目录，并在初始化运行时及获取运行锁前完成只读预检，失败以 `2` 退出且不改动既有文件。数据根必须已有原生 `config.toml`；任务目录必须存在且可访问，允许普通非 Git 目录，不自动初始化 Git 或创建工作树。模型 ID 原样交付，不按斜杠拆分。推理强度通过所选模型的现有路由能力校验，不设全局枚举，也不静默替换。工作模式默认 `mode.simple`，未知模式明确失败。
+`--studio-home`、`--cwd`、`--account`、`--model` 与 `--prompt-file` 必须显式提供。`--output-dir` 为可选开关：省略时不创建任何导出目录或临时文件；传入时要求目标尚不存在或为已存在的空可写非符号链接目录，并在初始化运行时及获取运行锁前完成只读预检，失败以 `2` 退出且不改动既有文件。数据根必须已有原生 `config.toml`；任务目录必须存在且可访问，允许普通非 Git 目录，不自动初始化 Git 或创建工作树。模型 ID 原样交付，不按斜杠拆分。推理强度通过所选模型的现有路由能力校验，不设全局枚举，也不静默替换。工作模式默认 `mode.auto`，未知模式明确失败。
 
 所有参数路径以进程启动目录为基准一次性转为绝对路径，词法消去 `.`、`..`，不改变全局工作目录或用户主目录。技能目录复用既有 `~` 展开规则；词法归一化不跟随链接，也不代替既有链接、重解析点及目录越界检查。运行时后续取得任务目录的原生物理身份，不重新解释其他参数。
 

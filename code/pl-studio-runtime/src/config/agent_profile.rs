@@ -448,7 +448,7 @@ pub(crate) fn effective_system_profile_route(
     let role = AgentRoleId::new(profile_id.to_owned())?;
     Ok(config.models.routes.get(&role).cloned().unwrap_or(
         config
-            .mode_model_route(&crate::mode::ThreadModeId::simple())?
+            .mode_model_route(&crate::mode::ThreadModeId::auto())?
             .clone(),
     ))
 }

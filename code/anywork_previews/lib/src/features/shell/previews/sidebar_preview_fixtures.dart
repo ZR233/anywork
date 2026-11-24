@@ -41,7 +41,7 @@ SessionDirectoryRow sidebarPreviewThread({
   threadId: id,
   workspaceId: workspaceId,
   title: title,
-  mode: ThreadModeId.simple,
+  mode: ThreadModeId.auto,
   delegationMode: DelegationMode.automatic,
   delegationPreference: DelegationPreference.balanced,
   updatedAt: _previewTime,

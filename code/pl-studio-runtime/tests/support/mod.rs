@@ -322,7 +322,7 @@ impl Environment {
                     text: prompt.into(),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
+                mode: pl_studio_runtime::mode::ThreadModeId::auto().to_string(),
                 route: NewThreadModelRoute {
                     account_id: "root-fixture".into(),
                     model_id: MODEL.into(),

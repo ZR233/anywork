@@ -167,6 +167,11 @@ class AnyworkClient {
   bool hasAcpConversation(String threadId) =>
       _acpSessions?.conversationForThread(threadId) != null;
 
+  /// Loads the frozen workflow graph on demand for runtime status inspection.
+  Future<WorkflowRuntimeGraphSnapshotView?> getThreadWorkflowGraph(
+    String threadId,
+  ) => transport.getThreadWorkflowGraph(threadId);
+
   /// Opens the directory's original ACP member, never a replacement session.
   ///
   /// A resident display owner is reused. Cold opens explicitly load history;

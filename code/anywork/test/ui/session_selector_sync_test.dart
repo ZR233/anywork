@@ -603,37 +603,50 @@ void main() {
   });
 
   testWidgets('切换会话模式后触发器与菜单选中态立即更新，无需页面往返', (tester) async {
-    final simpleKey = StudioDriverKeys.sessionModeOption(
-      ThreadModeId.simple.name,
+    final reply = await transport.saveThreadModeDefinition(
+      const ModeDocument(
+        definition: ModeDefinition(
+          id: 'mode.custom',
+          displayName: '自定义',
+          description: '自定义模式',
+          order: 1,
+          prompt: '',
+        ),
+      ),
+      expectedRevision: 1,
+      operationId: const OperationId('seed-custom-mode'),
     );
-    final taskKey = StudioDriverKeys.sessionModeOption(ThreadModeId.task.name);
+    graph.client.modeCatalog.apply(reply.catalog);
+    final autoKey = StudioDriverKeys.sessionModeOption(ThreadModeId.auto.name);
+    final customMode = ThreadModeId.fromId('mode.custom');
+    final customKey = StudioDriverKeys.sessionModeOption(customMode.name);
 
     await tester.pumpWidget(harness(const _ModeSelectorHost()));
     await tester.pumpAndSettle();
 
-    expect(find.text('简洁'), findsOneWidget, reason: '起始页默认模式是 simple');
-    expect(find.text('任务'), findsNothing);
+    expect(find.text('自动'), findsOneWidget, reason: '起始页默认模式是 auto');
+    expect(find.text('自定义'), findsNothing);
 
     await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
     await tester.pumpAndSettle();
-    expect(selectedRow(simpleKey), findsOneWidget, reason: '打开菜单时当前模式行是选中行');
-    expect(selectedRow(taskKey), findsNothing);
+    expect(selectedRow(autoKey), findsOneWidget, reason: '打开菜单时当前模式行是选中行');
+    expect(selectedRow(customKey), findsNothing);
 
-    await tester.tap(find.byKey(taskKey));
+    await tester.tap(find.byKey(customKey));
     await tester.pumpAndSettle();
 
-    expect(find.text('任务'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
-    expect(find.text('简洁'), findsNothing, reason: '旧模式不得残留');
+    expect(find.text('自定义'), findsOneWidget, reason: '选中的模式必须立即出现在触发器上');
+    expect(find.text('自动'), findsNothing, reason: '旧模式不得残留');
     expect(
       container.read(_startProjectionProvider).requireValue.mode,
-      ThreadModeId.task,
+      customMode,
       reason: '触发器与起始页草稿是同一事实，不能停在本地副本',
     );
 
     await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
     await tester.pumpAndSettle();
-    expect(selectedRow(taskKey), findsOneWidget, reason: '菜单选中态必须随草稿事实移动');
-    expect(selectedRow(simpleKey), findsNothing, reason: '旧选中行不得保持深色选中态');
+    expect(selectedRow(customKey), findsOneWidget, reason: '菜单选中态必须随草稿事实移动');
+    expect(selectedRow(autoKey), findsNothing, reason: '旧选中行不得保持深色选中态');
   });
 
   testWidgets('修改思考强度后选择器立即显示新值，无需页面往返', (tester) async {
@@ -858,7 +871,7 @@ void main() {
       findsOneWidget,
     );
     expect(
-      find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name)),
+      find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.auto.name)),
       findsNothing,
       reason: '禁用状态下不展开菜单',
     );
@@ -1583,9 +1596,7 @@ void main() {
       await tester.tap(find.byKey(StudioDriverKeys.sessionMode));
       await tester.pumpAndSettle();
       expect(
-        find.byKey(
-          StudioDriverKeys.sessionModeOption(ThreadModeId.simple.name),
-        ),
+        find.byKey(StudioDriverKeys.sessionModeOption(ThreadModeId.auto.name)),
         findsNothing,
         reason: 'workflow active 期间 Mode 仍冻结，不得随本次修复放开',
       );

@@ -31,7 +31,7 @@ mod mode_migration_tests {
     use sea_orm::ConnectionTrait;
 
     fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
-        let mut definition = crate::studio::thread::task::REGISTRATION.to_registration()?;
+        let mut definition = crate::studio::thread::auto::REGISTRATION.to_registration()?;
         definition.id = crate::mode::ThreadModeId::new("mode.migration")?;
         let source = ThreadModeSource::external(ThreadModeSourceId::new("migration-fixture")?);
         let registry = manager.replace_source(source, [definition])?;
@@ -1077,8 +1077,8 @@ mod mode_migration_tests {
         let manager = ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&manager)?;
         let mode = registry
-            .mode(&crate::mode::ThreadModeId::simple())
-            .context("built-in simple Mode")?;
+            .mode(&crate::mode::ThreadModeId::auto())
+            .context("built-in auto Mode")?;
         let mut model_info = ModelDefinition::compatible("migration-model");
         model_info.base.model_messages.instructions_template = "frozen migration base".into();
         let endpoint = pl_model::protocol::providers::openai::compatible_endpoint(
@@ -1454,7 +1454,7 @@ mod mode_migration_tests {
             .set_thread_mode(
                 "same-mode-without-binding".into(),
                 &thread.id,
-                crate::mode::ThreadModeId::simple(),
+                crate::mode::ThreadModeId::auto(),
             )
             .await?;
         runtime.shutdown_runtime().await?;
@@ -1585,12 +1585,29 @@ mod mode_migration_tests {
         drop(state);
         coordinator_store.close().await?;
 
+        let second_mode_id = crate::mode::ThreadModeId::new("mode.custom_check")?;
+        tokio::fs::create_dir_all(home.join("modes")).await?;
+        tokio::fs::write(
+            home.join("modes/mode.custom_check.json"),
+            serde_json::to_vec(&crate::mode::ThreadModeDocument {
+                definition: crate::mode::ThreadModeDefinition {
+                    id: second_mode_id.clone(),
+                    display_name: "Custom Check".into(),
+                    description: "Mode change test".into(),
+                    order: 20,
+                    prompt: "Custom prompt".into(),
+                    workflow: None,
+                },
+                editor: Default::default(),
+            })?,
+        )
+        .await?;
         let runtime = crate::StudioRuntime::initialize(options()).await?;
         runtime
             .set_thread_mode(
                 "changed-mode-with-unknown-binding".into(),
                 &thread.id,
-                crate::mode::ThreadModeId::task(),
+                second_mode_id,
             )
             .await?;
         runtime.shutdown_runtime().await?;

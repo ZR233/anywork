@@ -173,6 +173,20 @@ class AcpComposerViewModel extends _$AcpComposerViewModel {
     }
   }
 
+  Future<void> setThreadMode(String modeId) async {
+    final client = ref.read(anyworkClientProvider);
+    final draft = client.drafts.composer(threadId);
+    try {
+      await coordinateAcpSessionCommand(
+        client,
+        threadId,
+        (owner) => owner.setThreadMode(modeId),
+      );
+    } catch (error) {
+      draft.reportFailure(error);
+    }
+  }
+
   Future<void> interrupt() async {
     if (!state.canInterrupt ||
         _interruptCommandPending ||

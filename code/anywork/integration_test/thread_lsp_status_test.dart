@@ -143,7 +143,7 @@ void main() {
       expect(created.error, isNull);
       expect(created.observed, isTrue);
       const route = ModeModelRouteView(
-        modeId: ThreadModeId.simple,
+        modeId: ThreadModeId.auto,
         accountId: accountId,
         modelId: SidebarFixture.modelId,
         effort: '',
@@ -282,7 +282,7 @@ Future<StudioThread> _submitRoot(
       text: 'Create an isolated LSP status test session.',
       attachmentDraftIds: const [],
     ),
-    mode: ThreadModeId.simple,
+    mode: ThreadModeId.auto,
     route: route,
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,

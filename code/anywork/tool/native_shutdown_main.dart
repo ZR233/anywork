@@ -47,7 +47,7 @@ Future<void> _prepareAndClose(AppGraph graph) async {
   final workspaceId = graph.client.selection.state.selectedProjectId!;
   final route = ModelRouteQueries.modeRoute(
     graph.client.settings.state.canonical!.modeModelRoutes,
-    ThreadModeId.simple,
+    ThreadModeId.auto,
   )!;
   final result = await graph.client.threadCommands.submitNewThread(
     workspaceId: workspaceId,
@@ -56,7 +56,7 @@ Future<void> _prepareAndClose(AppGraph graph) async {
       text: prompt,
       attachmentDraftIds: const [],
     ),
-    mode: ThreadModeId.simple,
+    mode: ThreadModeId.auto,
     route: route,
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,

@@ -39,7 +39,7 @@ SettingsStateSnapshot _snapshot(int revision, AccountSettingsView account) =>
       accounts: [account],
       modeModelRoutes: const [
         ModeModelRouteView(
-          modeId: ThreadModeId.simple,
+          modeId: ThreadModeId.auto,
           accountId: 'account',
           modelId: 'online',
           effort: 'high',

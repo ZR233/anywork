@@ -235,6 +235,12 @@ WorkflowRuntimeView decodeCurrentWorkflowState(Object? value) {
               updatedAt: DateTime.fromMillisecondsSinceEpoch(
                 (run['updatedAt'] as int) * 1000,
               ),
+              visitedStateIds: [
+                if (run['visitedStateIds'] case final List<dynamic> visited)
+                  for (final id in visited) id.toString(),
+              ],
+              lastTransitionForced:
+                  run['lastTransitionForced'] as bool? ?? false,
               currentStateTitle: run['currentStateTitle'] as String? ?? '',
               modeDisplayName: run['modeDisplayName'] as String? ?? '',
               modeDeleted: run['modeDeleted'] as bool? ?? false,

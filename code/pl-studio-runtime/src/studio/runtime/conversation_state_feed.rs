@@ -792,22 +792,11 @@ mod storage_fault_tests {
     #[test]
     fn state_baseline_carries_qualified_plan_without_changing_on_unrelated_progress() -> Result<()>
     {
-        use crate::plan_tool::{
-            AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
-        };
+        use crate::plan_tool::{AgentSessionPlanState, PlanState};
         use crate::studio::thread_projection::CurrentState;
 
         let text = "# The saved Plan\n\nKeep the business references consistent.";
-        let mut plan = AgentSessionPlanState {
-            revision: 3,
-            state: AgentSessionPlanPhase::Approved,
-            document: Some(AgentSessionPlanDocument {
-                version: 3,
-                markdown: text.into(),
-                content_hash: crate::canonical_content_hash(text.as_bytes()),
-            }),
-            ..Default::default()
-        };
+        let mut plan = AgentSessionPlanState::with_document(PlanState::Approved, 3, text, 0);
         let mut state = pl_core::thread::ThreadSnapshot::default();
         state.extensions.insert(
             crate::plan_tool::PLAN_EXTENSION.into(),
@@ -823,7 +812,7 @@ mod storage_fault_tests {
         assert!(references.interactions.is_some());
         state.commit_sequence = 8;
         assert_eq!(current.business_refs(), references);
-        plan.revision = 4;
+        plan.plan.revision = 4;
         state
             .extensions
             .get_mut(crate::plan_tool::PLAN_EXTENSION)

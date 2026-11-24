@@ -41,10 +41,10 @@ pub fn workflow_model_context_section(
             .map(|record| record.summary.as_str()),
         constraint: match run.lifecycle {
             WorkflowRunLifecycle::Active => {
-                "Follow the current state instructions. Use the projected runId, revision, state id and allowed transitions to call workflow_transition once after the completion criteria are satisfied. Query only if this projection is missing or a compare-and-swap conflict occurs. Compaction and restart do not reset the current stage."
+                "Follow the current state instructions. Use the projected runId, revision, state id and allowed transitions to call workflow_transition once after the completion criteria are satisfied (set force=true only when an intentional out-of-path jump is needed). Query only if this projection is missing or a compare-and-swap conflict occurs. Compaction and restart do not reset the current stage."
             }
             WorkflowRunLifecycle::Terminal => {
-                "The workflow is terminal. Do not transition it; use workflow_restart only for an explicit new attempt."
+                "The workflow is terminal. Do not transition it unless overriding with workflow_transition(force=true) or starting an explicit new attempt with workflow_restart."
             }
         },
     };

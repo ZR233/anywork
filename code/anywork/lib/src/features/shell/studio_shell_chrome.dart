@@ -483,6 +483,8 @@ class _Footer extends StatelessWidget {
     required this.showTodo,
     required this.todoExpanded,
     required this.onToggleTodo,
+    this.workflowExpanded = false,
+    this.onToggleWorkflow,
     this.showPlanEntry = false,
     this.onOpenPlan,
     required this.compact,
@@ -493,6 +495,8 @@ class _Footer extends StatelessWidget {
   final bool showTodo;
   final bool todoExpanded;
   final VoidCallback? onToggleTodo;
+  final bool workflowExpanded;
+  final VoidCallback? onToggleWorkflow;
   final bool showPlanEntry;
   final VoidCallback? onOpenPlan;
 
@@ -531,6 +535,8 @@ class _Footer extends StatelessWidget {
             showTodo: showTodo,
             todoExpanded: todoExpanded,
             onToggleTodo: onToggleTodo,
+            workflowExpanded: workflowExpanded,
+            onToggleWorkflow: onToggleWorkflow,
             showPlanEntry: showPlanEntry,
             onOpenPlan: onOpenPlan,
           ),

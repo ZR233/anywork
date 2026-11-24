@@ -531,7 +531,7 @@ impl StudioRuntime {
         let current_route = current
             .config
             .mode_model_routes
-            .get(&ThreadModeId::simple())
+            .get(&ThreadModeId::auto())
             .filter(|route| route.account_id == account_id);
         let model = current_route
             .and_then(|route| {
@@ -567,7 +567,7 @@ impl StudioRuntime {
             effort.as_deref(),
         )?;
         let mut next = current.config.clone();
-        next.mode_model_routes.insert(ThreadModeId::simple(), route);
+        next.mode_model_routes.insert(ThreadModeId::auto(), route);
         let state = self
             .config_runtime
             .replace(request.expected_revision, next)?;
@@ -928,7 +928,7 @@ mod tests {
                     operation_id: "change-mode-default".into(),
                     expected_revision: settings.revision,
                     update: SettingsFieldUpdate::ModeModel {
-                        mode_id: crate::mode::ThreadModeId::simple().to_string(),
+                        mode_id: crate::mode::ThreadModeId::auto().to_string(),
                         account_id: "child-fixture".into(),
                         model_id: selector.model.model_id.clone(),
                     },

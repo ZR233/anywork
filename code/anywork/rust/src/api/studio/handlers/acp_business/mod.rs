@@ -9,10 +9,11 @@ use crate::api::studio::types::*;
 pub async fn open_acp_session(
     request: BridgeOpenAcpSessionRequest,
 ) -> Result<BridgeAcpSessionObservation, BridgeAcpBusinessError> {
+    let runtime_request = convert::open_request(request)?;
     let bridge = active_bridge().await?;
     let opened = bridge
         .studio
-        .open_acp_session(request.into())
+        .open_acp_session(runtime_request)
         .await
         .map_err(convert::runtime_error)?;
     Ok(BridgeAcpSessionObservation::new(
@@ -97,6 +98,19 @@ pub async fn set_acp_session_mode(
         .studio
         .set_acp_session_mode(request.target.into(), request.mode_id.value.into())
         .await
+        .map_err(convert::business_error)
+}
+pub async fn set_acp_thread_mode(
+    request: BridgeAcpSetThreadModeRequest,
+) -> Result<BridgeAcpWorkflowStateSnapshot, BridgeAcpBusinessError> {
+    let mode_id = pl_studio_runtime::mode::ThreadModeId::new(request.mode_id)
+        .map_err(|error| BridgeAcpBusinessError::from(BridgeError::from(anyhow::anyhow!(error))))?;
+    let bridge = active_bridge().await?;
+    bridge
+        .studio
+        .set_acp_thread_mode(request.target.into(), mode_id)
+        .await
+        .map(convert::workflow_state)
         .map_err(convert::business_error)
 }
 pub async fn answer_acp_permission(

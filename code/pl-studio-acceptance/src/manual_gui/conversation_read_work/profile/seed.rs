@@ -226,7 +226,7 @@ async fn seed_batches(
                     text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: ThreadModeId::simple().label().into(),
+                mode: ThreadModeId::auto().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),

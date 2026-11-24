@@ -464,16 +464,13 @@ mod tests {
             commit_sequence: 3,
             ..Default::default()
         };
-        let mut plan = crate::plan_tool::state::AgentSessionPlanMachine::new(Default::default())?;
-        plan.submit(crate::plan_tool::state::AgentSessionPlanSubmitCommand {
-            expected_revision: 0,
-            plan: "# 完整计划\n\n- 保全旧记录".into(),
-            interaction_id: "plan-confirmation".into(),
-            operation_id: "submit".into(),
-            argument_hash: "plan-hash".into(),
-            submitted_at: 1,
-        });
-        let plan = plan.into_state();
+        let mut plan = crate::plan_tool::AgentSessionPlanState::with_document(
+            crate::plan_tool::PlanState::AwaitingConfirmation,
+            1,
+            "# 完整计划\n\n- 保全旧记录",
+            1,
+        );
+        plan.pending_interaction_id = Some("plan-confirmation".into());
         state.extensions.insert(
             crate::plan_tool::PLAN_EXTENSION.into(),
             ExtensionRecord {

@@ -35,9 +35,9 @@ void main() {
               text: 'Directory observation contract',
               attachmentDraftIds: [],
             ),
-            ThreadModeId.simple,
+            ThreadModeId.auto,
             route: bootstrap.settingsState.modeModelRoutes.firstWhere(
-              (route) => route.modeId == ThreadModeId.simple,
+              (route) => route.modeId == ThreadModeId.auto,
             ),
             delegationMode: DelegationMode.automatic,
             delegationPreference: DelegationPreference.balanced,

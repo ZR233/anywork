@@ -44,6 +44,7 @@ const _expectedReadableText = <String, String>{
       'The user approves the exact pending plan Interaction.',
   'builtin.plan_history@1': '提交计划',
   'builtin.plan_submit@1': '# 检查搜索详情',
+  'builtin.plan_transition@1': '# 检查搜索详情',
   'builtin.plan_restart@1': '补充窄屏错误状态验证',
   'builtin.workflow_current@1': '校验结构化工具输出',
   'builtin.workflow_next@1': '确认实现已完成且所有 fixture 使用生产回执对象。',

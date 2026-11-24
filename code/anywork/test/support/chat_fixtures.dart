@@ -165,7 +165,7 @@ ThreadWorkspace chatWorkspace(String threadId) {
     id: threadId,
     workspaceId: 'workspace',
     title: 'Thread',
-    mode: ThreadModeId.simple,
+    mode: ThreadModeId.auto,
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
     updatedAt: DateTime.utc(2026),

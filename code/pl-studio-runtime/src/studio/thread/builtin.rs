@@ -1,6 +1,6 @@
 //! 随 Studio 二进制发布的内置 Thread Mode 注册入口。
 
-use super::{simple, task};
+use super::auto;
 use std::sync::Arc;
 
 use crate::mode::{
@@ -14,7 +14,7 @@ const BUILTIN_SOURCE_ID: &str = "studio.builtin";
 pub(crate) fn register_builtins(
     manager: &ThreadModeManager,
 ) -> Result<Arc<ThreadModeRegistrySnapshot>> {
-    let registrations = [simple::REGISTRATION, task::REGISTRATION]
+    let registrations = [auto::REGISTRATION]
         .into_iter()
         .map(|registration| registration.to_registration())
         .collect::<Result<Vec<_>, _>>()?;

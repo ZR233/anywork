@@ -9,12 +9,15 @@ import 'acp_business/content.dart';
 import 'acp_business/notification.dart';
 import 'delegation.dart';
 import 'error.dart';
+import 'mode_editor.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
+
+import 'thread_stream.dart';
 part 'acp_business.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`
 
 class BridgeAcpAgentCapabilities {
   final bool image;
@@ -215,6 +218,7 @@ class BridgeAcpBusinessSnapshot {
   final BridgeAcpObservationGap? observationGap;
   final List<BridgeAcpAuthMethod> authMethods;
   final BridgeAcpSessionInfoSnapshot? infoSnapshot;
+  final BridgeAcpWorkflowStateSnapshot? workflowState;
 
   const BridgeAcpBusinessSnapshot({
     required this.target,
@@ -229,6 +233,7 @@ class BridgeAcpBusinessSnapshot {
     this.observationGap,
     required this.authMethods,
     this.infoSnapshot,
+    this.workflowState,
   });
 
   @override
@@ -244,7 +249,8 @@ class BridgeAcpBusinessSnapshot {
       lastCompleted.hashCode ^
       observationGap.hashCode ^
       authMethods.hashCode ^
-      infoSnapshot.hashCode;
+      infoSnapshot.hashCode ^
+      workflowState.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -262,7 +268,8 @@ class BridgeAcpBusinessSnapshot {
           lastCompleted == other.lastCompleted &&
           observationGap == other.observationGap &&
           authMethods == other.authMethods &&
-          infoSnapshot == other.infoSnapshot;
+          infoSnapshot == other.infoSnapshot &&
+          workflowState == other.workflowState;
 }
 
 class BridgeAcpCompletedRun {
@@ -729,6 +736,7 @@ sealed class BridgeAcpOpenIntent with _$BridgeAcpOpenIntent {
     required BridgeAcpWorkspaceMode workspaceMode,
     BridgeDelegationMode? delegationMode,
     BridgeDelegationPreference? delegationPreference,
+    String? mode,
   }) = BridgeAcpOpenIntent_Draft;
   const factory BridgeAcpOpenIntent.load({
     required BridgeAcpRemoteSessionId sessionId,
@@ -1027,6 +1035,9 @@ sealed class BridgeAcpSessionEvent with _$BridgeAcpSessionEvent {
   const factory BridgeAcpSessionEvent.completed({
     required BridgeAcpCompletedRun completed,
   }) = BridgeAcpSessionEvent_Completed;
+  const factory BridgeAcpSessionEvent.workflowStateUpdated({
+    required BridgeAcpWorkflowStateSnapshot state,
+  }) = BridgeAcpSessionEvent_WorkflowStateUpdated;
   const factory BridgeAcpSessionEvent.gap({
     required BridgeAcpObservationGap gap,
   }) = BridgeAcpSessionEvent_Gap;
@@ -1040,6 +1051,7 @@ sealed class BridgeAcpSessionFrame with _$BridgeAcpSessionFrame {
     required BridgeAcpSessionTarget target,
     required bool hasObservation,
     BridgeAcpSessionInfoSnapshot? infoSnapshot,
+    BridgeAcpWorkflowStateSnapshot? workflowState,
   }) = BridgeAcpSessionFrame_Accepted;
   const factory BridgeAcpSessionFrame.settled({
     required BridgeAcpSettlement result,
@@ -1184,6 +1196,27 @@ class BridgeAcpSetModeRequest {
           modeId == other.modeId;
 }
 
+class BridgeAcpSetThreadModeRequest {
+  final BridgeAcpSessionTarget target;
+  final String modeId;
+
+  const BridgeAcpSetThreadModeRequest({
+    required this.target,
+    required this.modeId,
+  });
+
+  @override
+  int get hashCode => target.hashCode ^ modeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpSetThreadModeRequest &&
+          runtimeType == other.runtimeType &&
+          target == other.target &&
+          modeId == other.modeId;
+}
+
 @freezed
 sealed class BridgeAcpSettlement with _$BridgeAcpSettlement {
   const BridgeAcpSettlement._();
@@ -1272,6 +1305,41 @@ class BridgeAcpUsageSnapshot {
           used == other.used &&
           size == other.size &&
           updatedAt == other.updatedAt;
+}
+
+class BridgeAcpWorkflowStateSnapshot {
+  final String? modeId;
+  final String? modeDisplayName;
+  final BridgeWorkflowRun? run;
+  final BridgeWorkflowRuntimeGraphSnapshot? graph;
+  final BridgePlanRuntimeSnapshot? plan;
+
+  const BridgeAcpWorkflowStateSnapshot({
+    this.modeId,
+    this.modeDisplayName,
+    this.run,
+    this.graph,
+    this.plan,
+  });
+
+  @override
+  int get hashCode =>
+      modeId.hashCode ^
+      modeDisplayName.hashCode ^
+      run.hashCode ^
+      graph.hashCode ^
+      plan.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeAcpWorkflowStateSnapshot &&
+          runtimeType == other.runtimeType &&
+          modeId == other.modeId &&
+          modeDisplayName == other.modeDisplayName &&
+          run == other.run &&
+          graph == other.graph &&
+          plan == other.plan;
 }
 
 enum BridgeAcpWorkspaceMode { local, worktree }

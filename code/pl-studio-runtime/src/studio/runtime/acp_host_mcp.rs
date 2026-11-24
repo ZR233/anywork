@@ -67,17 +67,35 @@ pub(crate) async fn prepare_open(
                         .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?,
                 )
             };
+            let mode_instructions = if is_root {
+                resources
+                    .workflow_plan
+                    .get()
+                    .and_then(|wp| wp.compiled_mode_instructions())
+            } else {
+                None
+            };
             let definition = resources
                 .prepare_host_mcp(host, caller, is_root, frontend)
                 .await
                 .map_err(|error| pl_acp::session::Error::Preparation(error.to_string()))?;
             instructions.push_str(
-                "\nUse the anywork_ tools for host-managed agent delegation, member queries, \
+                "\nUse the `anywork_*` tools for host-managed agent delegation, member queries, \
                  report waiting, interruption and closing. Agent IDs and profile IDs come from \
-                 these tools. Receipt acceptance is not completion; use anywork_wait_agent \
-                 cursors and retain actual report identities. These tools do not grant recursive \
-                 spawn, Native review/workflow or filesystem restrictions to ACP agents.\n",
+                 these tools. Receipt acceptance is not completion; use `anywork_wait_agent` \
+                 cursors and retain actual report identities.\n\
+                 Use `anywork_plan_current`, `anywork_plan_next`, `anywork_plan_history`, and \
+                 `anywork_plan_transition` to manage your independent per-agent Plan state \
+                 machine (`drafting` -> `awaitingConfirmation` -> `approved` / `revisionRequested`). \
+                 In ACP, transitioning to `awaitingConfirmation` records the plan non-blockingly: \
+                 present the plan clearly to the user in your visible response and await user confirmation \
+                 or revision.\n\
+                 These host MCP tools do not grant recursive child-agent spawning or override \
+                 configured filesystem restrictions.\n",
             );
+            if let Some(mode_instructions) = mode_instructions {
+                instructions.push_str(&mode_instructions);
+            }
             Ok(OpenSetup {
                 mcp_servers: vec![definition],
                 instructions: Some(instructions),
@@ -224,6 +242,32 @@ impl HostMcp {
         Self::start_bound(host, caller, domain_closed, is_root, frontend, None).await
     }
 
+    #[cfg(all(test, target_os = "linux"))]
+    async fn start_with_workflow(
+        host: AgentHost,
+        caller: crate::AgentId,
+        domain_closed: CancellationToken,
+        is_root: bool,
+        frontend: Option<&std::path::Path>,
+        workflow_plan: Option<Arc<super::acp_business::AcpWorkflowPlanOwner>>,
+    ) -> Result<(Self, schema::McpServer)> {
+        let mut service = Self::pending(host, caller, domain_closed);
+        match service.launch(is_root, frontend, None, workflow_plan).await {
+            Ok(definition) => Ok((service, definition)),
+            Err(error) => {
+                service
+                    .close()
+                    .await
+                    .context("failed to reclaim rejected MCP transport")?;
+                service
+                    .close_tools()
+                    .await
+                    .context("failed to reclaim rejected MCP tools")?;
+                Err(error)
+            }
+        }
+    }
+
     /// Attach this owner to AcpResources before any fallible setup or await.
     pub(super) fn pending(
         host: AgentHost,
@@ -255,7 +299,7 @@ impl HostMcp {
         workspace: Option<Arc<super::acp_workspace_tools::WorkspaceTools>>,
     ) -> Result<(Self, schema::McpServer)> {
         let mut service = Self::pending(host, caller, domain_closed);
-        match service.launch(is_root, frontend, workspace).await {
+        match service.launch(is_root, frontend, workspace, None).await {
             Ok(definition) => Ok((service, definition)),
             Err(error) => {
                 service
@@ -276,6 +320,7 @@ impl HostMcp {
         is_root: bool,
         frontend: Option<&std::path::Path>,
         workspace: Option<Arc<super::acp_workspace_tools::WorkspaceTools>>,
+        workflow_plan: Option<Arc<super::acp_business::AcpWorkflowPlanOwner>>,
     ) -> Result<schema::McpServer> {
         let tools = Arc::get_mut(&mut self.tools).context("Host MCP tools already published")?;
         crate::thread_assembler::host_agent_tools::register(
@@ -286,6 +331,9 @@ impl HostMcp {
         )?;
         if let Some(workspace) = workspace {
             workspace.bind(tools).await?;
+        }
+        if let Some(wp) = workflow_plan {
+            attach_workflow_and_plan_tools(tools, wp, is_root)?;
         }
         let handler = Handler {
             host: self.host.clone(),
@@ -629,6 +677,305 @@ impl crate::thread_assembler::host_agent_tools::AgentToolSink for AgentMcpTools<
     {
         attach_direct(self.0, projection, tool);
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AcpPlanToolKind {
+    Current,
+    Next,
+    History,
+    Transition,
+}
+
+struct AcpPlanBindingTool {
+    definition: ToolDefinition,
+    kind: AcpPlanToolKind,
+    owner: Arc<super::acp_business::AcpWorkflowPlanOwner>,
+}
+
+impl pl_agent_tool::Tool for AcpPlanBindingTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = AgentCallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
+    async fn execute(
+        &self,
+        input: pl_core::context::OpaquePayload,
+        context: AgentCallContext,
+    ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
+        use pl_core::{
+            context::{ContextContent, OpaquePayload},
+            tool::{ToolOutput, opaque::ToolError},
+        };
+        use pl_tool_plan::PlanHost;
+
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
+        }
+        if input.format() != "application/json" || input.version() != 1 {
+            return Err(ToolError::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "unsupported input payload {} v{}",
+                    input.format(),
+                    input.version()
+                ),
+            )));
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        let plan_ctx = super::acp_business::AcpPlanToolContext {
+            call_id: context.call_id.clone(),
+            turn_id: context.call_id,
+            now_ms,
+        };
+        let value = match self.kind {
+            AcpPlanToolKind::Current => {
+                let _: pl_tool_plan::PlanEmptyArgs =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                serde_json::to_value(self.owner.current(plan_ctx).await.map_err(ToolError::new)?)
+                    .map_err(ToolError::new)?
+            }
+            AcpPlanToolKind::Next => {
+                let _: pl_tool_plan::PlanEmptyArgs =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                serde_json::to_value(self.owner.next(plan_ctx).await.map_err(ToolError::new)?)
+                    .map_err(ToolError::new)?
+            }
+            AcpPlanToolKind::History => {
+                let args: pl_tool_plan::PlanHistoryArgs =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                serde_json::to_value(
+                    self.owner
+                        .history(args, plan_ctx)
+                        .await
+                        .map_err(ToolError::new)?,
+                )
+                .map_err(ToolError::new)?
+            }
+            AcpPlanToolKind::Transition => {
+                let args: pl_tool_plan::PlanTransitionArgs =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let outcome = self
+                    .owner
+                    .transition(args, plan_ctx)
+                    .await
+                    .map_err(ToolError::new)?;
+                let mut val = serde_json::to_value(&outcome).map_err(ToolError::new)?;
+                if outcome.accepted
+                    && outcome.awaiting_confirmation
+                    && let Some(obj) = val.as_object_mut()
+                {
+                    obj.insert(
+                        "acpNote".into(),
+                        Value::String(
+                            "Plan recorded as awaitingConfirmation (non-blocking in ACP). Present this plan clearly to the user and wait for their reply to approve or revise."
+                                .into(),
+                        ),
+                    );
+                }
+                val
+            }
+        };
+        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
+        Ok(ToolOutput::new(
+            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
+            vec![ContextContent::Text {
+                text: Arc::from(text),
+            }],
+        ))
+    }
+}
+
+struct AcpWorkflowBindingTool {
+    definition: ToolDefinition,
+    kind: crate::workflow_tool::WorkflowOperationKind,
+    owner: Arc<super::acp_business::AcpWorkflowPlanOwner>,
+}
+
+impl pl_agent_tool::Tool for AcpWorkflowBindingTool {
+    type Input = pl_core::context::OpaquePayload;
+    type Context = AgentCallContext;
+    type Output = pl_core::tool::ToolOutput;
+    type Error = pl_core::tool::opaque::ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
+    async fn execute(
+        &self,
+        input: pl_core::context::OpaquePayload,
+        context: AgentCallContext,
+    ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
+        use crate::workflow_tool::{
+            WorkflowOperationKind,
+            machine::{EmptyInput, RestartInput, TransitionInput, WorkflowOperation},
+        };
+        use pl_core::{
+            context::{ContextContent, OpaquePayload},
+            tool::{ToolOutput, opaque::ToolError},
+        };
+
+        if context.cancellation.is_cancelled() {
+            return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
+        }
+        if input.format() != "application/json" || input.version() != 1 {
+            return Err(ToolError::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "unsupported input payload {} v{}",
+                    input.format(),
+                    input.version()
+                ),
+            )));
+        }
+        let arg_hash = pl_core::context::content_hash(input.content().as_bytes());
+        let op = WorkflowOperation {
+            turn_id: context.call_id.clone(),
+            call_id: context.call_id,
+        };
+        let value = match self.kind {
+            WorkflowOperationKind::Current => {
+                let _: EmptyInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_current_json()
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            WorkflowOperationKind::Next => {
+                let _: EmptyInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_next_json()
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            WorkflowOperationKind::Graph => {
+                let _: EmptyInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_graph_json()
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            WorkflowOperationKind::History => {
+                let _: EmptyInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_history_json()
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            WorkflowOperationKind::Transition => {
+                let args: TransitionInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_transition(args, op, arg_hash)
+                    .await
+                    .map_err(ToolError::new)?
+            }
+            WorkflowOperationKind::Restart => {
+                let args: RestartInput =
+                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                self.owner
+                    .workflow_restart(args, op, arg_hash)
+                    .await
+                    .map_err(ToolError::new)?
+            }
+        };
+        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
+        Ok(ToolOutput::new(
+            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
+            vec![ContextContent::Text {
+                text: Arc::from(text),
+            }],
+        ))
+    }
+}
+
+fn attach_workflow_and_plan_tools(
+    tools: &mut BTreeMap<String, HostBinding>,
+    owner: Arc<super::acp_business::AcpWorkflowPlanOwner>,
+    is_root: bool,
+) -> Result<()> {
+    use pl_agent_tool::typed::{TypedTool, input_schema_for};
+    use pl_tool_plan::{
+        PlanCurrentTool, PlanEmptyArgs, PlanHistoryArgs, PlanHistoryTool, PlanNextTool,
+        PlanTransitionArgs, PlanTransitionTool,
+    };
+
+    type Owner = super::acp_business::AcpWorkflowPlanOwner;
+    let plan_defs = [
+        (
+            AcpPlanToolKind::Current,
+            ToolDefinition::json(
+                PlanCurrentTool::<Owner>::NAME,
+                PlanCurrentTool::<Owner>::DESCRIPTION,
+                input_schema_for::<PlanEmptyArgs>(),
+            )?,
+        ),
+        (
+            AcpPlanToolKind::Next,
+            ToolDefinition::json(
+                PlanNextTool::<Owner>::NAME,
+                PlanNextTool::<Owner>::DESCRIPTION,
+                input_schema_for::<PlanEmptyArgs>(),
+            )?,
+        ),
+        (
+            AcpPlanToolKind::History,
+            ToolDefinition::json(
+                PlanHistoryTool::<Owner>::NAME,
+                PlanHistoryTool::<Owner>::DESCRIPTION,
+                input_schema_for::<PlanHistoryArgs>(),
+            )?,
+        ),
+        (
+            AcpPlanToolKind::Transition,
+            ToolDefinition::json(
+                PlanTransitionTool::<Owner>::NAME,
+                PlanTransitionTool::<Owner>::DESCRIPTION,
+                input_schema_for::<PlanTransitionArgs>(),
+            )?,
+        ),
+    ];
+    for (kind, definition) in plan_defs {
+        let projection = prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+        attach_direct(
+            tools,
+            projection,
+            AcpPlanBindingTool {
+                definition,
+                kind,
+                owner: Arc::clone(&owner),
+            },
+        );
+    }
+
+    if is_root {
+        for (kind, definition) in crate::workflow_tool::workflow_tool_definitions()? {
+            let projection = prepare_binding(tools, &definition, pl_studio_mcp::JsonInput::Object)?;
+            attach_direct(
+                tools,
+                projection,
+                AcpWorkflowBindingTool {
+                    definition,
+                    kind,
+                    owner: Arc::clone(&owner),
+                },
+            );
+        }
+    }
+    Ok(())
 }
 
 impl HostTools for Handler {
@@ -2224,6 +2571,284 @@ mod tests {
                 Err(error.context(format!("ACP spawn/wait cleanup also failed: {cleanup:#}")))
             }
         }
+    }
+
+    #[tokio::test]
+    async fn host_mcp_exposes_acp_workflow_and_plan_tools_with_forced_transitions_and_child_isolation()
+    -> Result<()> {
+        use crate::AcpSessionEvent;
+        use crate::studio::runtime::acp_business::AcpWorkflowPlanOwner;
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let fixture = Fixture::new("normal").await?;
+        let mut open = fixture.open().await?;
+        let target = open.target.clone();
+        Fixture::ready(&mut open).await?;
+        open.completion.wait().await?;
+
+        // Trigger initial turn reconciliation so a live workflow run starts at `triage`.
+        fixture
+            .runtime
+            .prompt_acp_session(
+                target.clone(),
+                vec![crate::acp_schema::ContentBlock::Text(
+                    crate::acp_schema::TextContent::new("start turn"),
+                )],
+            )
+            .await?;
+        timeout(Duration::from_secs(10), async {
+            let observer = open.observation.as_mut().context("observer")?;
+            loop {
+                match observer.recv().await.context("stream ended")? {
+                    AcpSessionEvent::Completed { .. } => return Ok::<_, anyhow::Error>(()),
+                    AcpSessionEvent::Failed { error } => anyhow::bail!("ACP failed: {error:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await??;
+
+        let owner = fixture
+            .runtime
+            .sessions
+            .get(&crate::SessionId::new(target.session_id.clone())?)
+            .context("session owner")?;
+        let resources = owner
+            .resident_acp(&target.thread_id)?
+            .context("acp resources")?;
+        let wp = resources
+            .workflow_plan
+            .get()
+            .cloned()
+            .context("workflow_plan owner")?;
+        let compiled_prompt = wp
+            .compiled_mode_instructions()
+            .context("compiled mode prompt")?;
+        ensure!(compiled_prompt.contains("anywork_workflow_transition"));
+        ensure!(compiled_prompt.contains("anywork_plan_transition"));
+
+        let identity = fixture
+            .runtime
+            .agent_facility
+            .product_events
+            .agent_execution_identity(&target.thread_id)
+            .context("root identity")?
+            .0;
+        let profiles = fixture.runtime.config_runtime.agent_profiles_snapshot()?;
+        let delegation = fixture.runtime.config_runtime.read()?.config.delegation;
+        let host = owner.acp_agent_host(&identity, &resources, &profiles, delegation)?;
+        let (mut root_service, root_def) = HostMcp::start_with_workflow(
+            host,
+            identity.agent_id.clone(),
+            CancellationToken::new(),
+            true,
+            None,
+            Some(wp.clone()),
+        )
+        .await?;
+        let mut root_peer = HttpMcp::from_definition(root_def)?;
+        root_peer.initialize().await?;
+        let root_tools = root_peer.request("tools/list", json!({})).await?;
+        let root_names: Vec<String> = root_tools["result"]["tools"]
+            .as_array()
+            .context("root tools")?
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+        for expected in [
+            "anywork_plan_current",
+            "anywork_plan_next",
+            "anywork_plan_history",
+            "anywork_plan_transition",
+            "anywork_workflow_current",
+            "anywork_workflow_next",
+            "anywork_workflow_graph",
+            "anywork_workflow_history",
+            "anywork_workflow_transition",
+            "anywork_workflow_restart",
+        ] {
+            ensure!(
+                root_names.iter().any(|name| name == expected),
+                "root ACP catalog missing `{expected}`: {root_names:?}"
+            );
+        }
+
+        // Child ACP agent gets independent `anywork_plan_*` tools and NO `anywork_workflow_*` tools.
+        let child_dir = tempfile::tempdir()?;
+        let child_wp = AcpWorkflowPlanOwner::load_or_init(
+            "child-thread".into(),
+            false,
+            child_dir.path().to_path_buf(),
+            fixture.runtime.thread_modes.clone(),
+            None,
+        )
+        .await?;
+        let child_host = owner.acp_agent_host(&identity, &resources, &profiles, delegation)?;
+        let (mut child_service, child_def) = HostMcp::start_with_workflow(
+            child_host,
+            identity.agent_id.clone(),
+            CancellationToken::new(),
+            false,
+            None,
+            Some(child_wp),
+        )
+        .await?;
+        let mut child_peer = HttpMcp::from_definition(child_def)?;
+        child_peer.initialize().await?;
+        let child_tools = child_peer.request("tools/list", json!({})).await?;
+        let child_names: Vec<String> = child_tools["result"]["tools"]
+            .as_array()
+            .context("child tools")?
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect();
+        for expected in [
+            "anywork_plan_current",
+            "anywork_plan_next",
+            "anywork_plan_history",
+            "anywork_plan_transition",
+        ] {
+            ensure!(child_names.iter().any(|name| name == expected));
+        }
+        ensure!(
+            !child_names
+                .iter()
+                .any(|name| name.starts_with("anywork_workflow_")),
+            "child ACP agent unexpectedly exposed workflow tools: {child_names:?}"
+        );
+
+        // Read initial workflow state (`triage`), test non-forced invalid jump returns rich hints.
+        let current = root_peer
+            .tool("anywork_workflow_current", json!({}))
+            .await?;
+        let run_id = current["runId"].as_str().context("runId")?.to_owned();
+        let rev = current["revision"].as_u64().context("revision")?;
+        ensure!(current["currentStateId"] == "triage");
+
+        let rejected = root_peer
+            .tool(
+                "anywork_workflow_transition",
+                json!({
+                    "expectedRunId": run_id,
+                    "expectedRevision": rev,
+                    "expectedStateId": "triage",
+                    "targetStateId": "reviewing",
+                    "completion": { "reason": "skip", "summary": "bad", "evidence": ["test"] }
+                }),
+            )
+            .await?;
+        ensure!(
+            rejected["accepted"] == false && rejected["code"] == "transitionNotAllowed",
+            "disallowed transition must be rejected when force=false: {rejected}"
+        );
+        let err_msg = rejected["error"]["message"].as_str().unwrap_or_default();
+        ensure!(
+            err_msg.contains("simple") && err_msg.contains("planning"),
+            "diagnostic should list allowed transitions: {rejected}"
+        );
+
+        // Valid path: triage -> simple -> planning, then forced jump to completed.
+        let to_simple = root_peer
+            .tool(
+                "anywork_workflow_transition",
+                json!({
+                    "expectedRunId": run_id,
+                    "expectedRevision": rev,
+                    "expectedStateId": "triage",
+                    "targetStateId": "simple",
+                    "completion": { "reason": "small scope", "summary": "start simple", "evidence": ["ok"] }
+                }),
+            )
+            .await?;
+        ensure!(
+            to_simple["accepted"] == true && to_simple["snapshot"]["currentStateId"] == "simple"
+        );
+        let rev2 = to_simple["snapshot"]["revision"].as_u64().context("rev2")?;
+        let escalate = root_peer
+            .tool(
+                "anywork_workflow_transition",
+                json!({
+                    "expectedRunId": run_id,
+                    "expectedRevision": rev2,
+                    "expectedStateId": "simple",
+                    "targetStateId": "planning",
+                    "completion": { "reason": "expanded scope", "summary": "escalate to planning", "evidence": ["ok"] }
+                }),
+            )
+            .await?;
+        ensure!(
+            escalate["accepted"] == true && escalate["snapshot"]["currentStateId"] == "planning"
+        );
+        let rev3 = escalate["snapshot"]["revision"].as_u64().context("rev3")?;
+        let forced = root_peer
+            .tool(
+                "anywork_workflow_transition",
+                json!({
+                    "expectedRunId": run_id,
+                    "expectedRevision": rev3,
+                    "expectedStateId": "planning",
+                    "targetStateId": "completed",
+                    "force": true,
+                    "completion": { "reason": "override", "summary": "forced jump", "evidence": ["admin"] }
+                }),
+            )
+            .await?;
+        ensure!(
+            forced["accepted"] == true
+                && forced["forced"] == true
+                && forced["snapshot"]["currentStateId"] == "completed"
+        );
+
+        // Independent Plan tool test + ACP non-blocking `awaitingConfirmation` + `force: true` jump.
+        let submitted = root_peer
+            .tool(
+                "anywork_plan_transition",
+                json!({
+                    "targetState": "awaitingConfirmation",
+                    "expectedRevision": 0,
+                    "content": "# ACP Plan\n\n- Step 1\n",
+                    "reason": "ready for confirmation"
+                }),
+            )
+            .await?;
+        ensure!(submitted["accepted"] == true && submitted["awaitingConfirmation"] == true);
+        ensure!(
+            submitted["acpNote"]
+                .as_str()
+                .is_some_and(|s| s.contains("non-blocking"))
+        );
+        let forced_plan = root_peer
+            .tool(
+                "anywork_plan_transition",
+                json!({
+                    "targetState": "approved",
+                    "force": true,
+                    "expectedRevision": 1,
+                    "reason": "forced approve"
+                }),
+            )
+            .await?;
+        ensure!(forced_plan["accepted"] == true && forced_plan["forced"] == true);
+
+        // Child agent's independent Plan remains untouched at drafting rev 0.
+        let child_plan = child_peer.tool("anywork_plan_current", json!({})).await?;
+        ensure!(child_plan["state"] == "drafting" && child_plan["revision"] == 0);
+
+        let snap = fixture.runtime.acp_session_snapshot(target.clone()).await?;
+        let wf_state = snap.workflow_state.context("snapshot workflow_state")?;
+        let wf_run = wf_state.run.context("snapshot workflow run")?;
+        ensure!(wf_run.current_state_id == "completed" && wf_run.last_transition_forced);
+        ensure!(
+            wf_state.plan.context("snapshot plan")?.state
+                == crate::plan_tool::AgentSessionPlanPhase::Approved
+        );
+
+        root_service.close().await?;
+        child_service.close().await?;
+        fixture.runtime.close_acp_session(target).await?;
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
     }
 }
 

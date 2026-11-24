@@ -353,9 +353,11 @@ impl StudioThreadFactory {
         )
         .await?;
         tracing::debug!(target: "thread_preparation", thread_id, stage = "tools_bindings", elapsed_ms = bindings_started.elapsed().as_millis() as u64, "completed");
-        if config.runtime.tool_capabilities.ask_user && thread_id == root_thread_id {
-            tools = tools.with_tools(crate::plan_tool::plan_registrations(Default::default())?);
-        }
+        let plan_options = crate::plan_tool::state::AgentSessionPlanOptions::default()
+            .with_confirmation_interaction(
+                config.runtime.tool_capabilities.ask_user && thread_id == root_thread_id,
+            );
+        tools = tools.with_tools(crate::plan_tool::plan_registrations(plan_options)?);
         if config.runtime.tool_capabilities.git {
             let git =
                 pl_tool::git::GitWorkspaceConfig::local(root.clone()).with_native_credentials();

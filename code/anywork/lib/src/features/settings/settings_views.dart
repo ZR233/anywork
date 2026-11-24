@@ -455,7 +455,7 @@ final settingsBotsViewProvider = Provider.autoDispose<SettingsBotsView>((ref) {
   );
   final route = ModelRouteQueries.modeRoute(
     settings?.modeModelRoutes ?? const [],
-    ThreadModeId.simple,
+    ThreadModeId.auto,
   );
   final accounts = ref.watch(modelSelectionAccountsProvider);
   final accountSummaries = ref.watch(accountsStateProvider);

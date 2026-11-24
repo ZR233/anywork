@@ -49,7 +49,7 @@ configuration are different locations:
 
 | Configure | Current file/location | Read next |
 | --- | --- | --- |
-| Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 34 | [Main configuration](references/main-config.md) |
+| Native accounts, routes, runtime, skills, UI, search | `<studio-home>/config.toml`, TOML schema 35 | [Main configuration](references/main-config.md) |
 | Desktop diagnostic logging | Studio host process startup environment; no TOML key | [Diagnostic logging](references/main-config.md#desktop-diagnostic-logging) |
 | Noninteractive `anywk exec` | Explicit `--studio-home`, existing native config, environment-only credentials, runtime-only skill options and optional version-3 run export | [CLI execution](references/main-config.md#noninteractive-cli-execution) |
 | ACP definitions | `<studio-home>/acp/<id>.toml`, TOML schema 1 | [Main configuration](references/main-config.md#acp-accounts) |

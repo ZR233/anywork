@@ -358,7 +358,7 @@ StudioThread _thread([String id = 'thread', String? parentThreadId]) =>
       id: id,
       workspaceId: _project.id,
       title: 'Thread',
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),
@@ -381,7 +381,7 @@ SessionDirectoryRow _row([String id = 'thread', String? parentAgentId]) =>
       threadId: id,
       workspaceId: _project.id,
       title: 'Thread',
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       delegationMode: DelegationMode.profile,
       delegationPreference: DelegationPreference.balanced,
       updatedAt: DateTime.utc(2026),
@@ -534,7 +534,7 @@ Future<AnyworkClient> _client(
     ],
     modeModelRoutes: const [
       ModeModelRouteView(
-        modeId: ThreadModeId.simple,
+        modeId: ThreadModeId.auto,
         accountId: 'account',
         modelId: 'alpha',
         effort: 'medium',
@@ -1087,23 +1087,23 @@ void main() {
     );
     final owner = client.drafts.startDraft;
     owner.updateDraft(_project.id, 'keep this draft');
-    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
+    owner.setModelIntent(ThreadModeId.auto, 'account', 'beta');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/first.bin')],
     );
     await client.drafts.attachments.addNewThreadRemote(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       url: 'https://example.invalid/second.bin',
     );
     final paste = client.drafts.attachments.addNewThreadClipboard(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
-    owner.setModelIntent(ThreadModeId.simple, 'account', 'alpha');
+    owner.setModelIntent(ThreadModeId.auto, 'account', 'alpha');
     staged.complete('/clipboard.png');
     await paste;
     expect(
@@ -1126,7 +1126,7 @@ void main() {
     );
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/unsupported.bin')],
     );
     final rejected = client.drafts.attachments.state.newThread(_project.id);
@@ -1136,7 +1136,7 @@ void main() {
     transport.admissionFailure = null;
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/supported.bin')],
     );
     final recovered = client.drafts.attachments.state.newThread(_project.id);
@@ -1522,7 +1522,7 @@ void main() {
     owner.updateDraft(_project.id, 'failed new-thread payload');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [
         const AttachmentDraftSource.localFile('/start-remove-close.bin'),
       ],
@@ -1614,7 +1614,7 @@ void main() {
       owner.updateDraft(_project.id, 'new thread failed input');
       await client.drafts.attachments.admitNewThread(
         workspaceId: _project.id,
-        mode: ThreadModeId.simple,
+        mode: ThreadModeId.auto,
         sources: [const AttachmentDraftSource.localFile('/start-remove.bin')],
       );
       final submission = owner.submit(_project.id);
@@ -1813,9 +1813,9 @@ void main() {
     }
 
     owner.updateDraft(_project.id, 'first request');
-    owner.setServiceTierIntent(ThreadModeId.simple, 'priority');
-    owner.setEffortIntent(ThreadModeId.simple, 'medium');
-    expect(owner.state.serviceTierIntents[ThreadModeId.simple.id], 'priority');
+    owner.setServiceTierIntent(ThreadModeId.auto, 'priority');
+    owner.setEffortIntent(ThreadModeId.auto, 'medium');
+    expect(owner.state.serviceTierIntents[ThreadModeId.auto.id], 'priority');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree);
     owner.setDelegationPreferenceOverride(
       _project.id,
@@ -1826,11 +1826,11 @@ void main() {
     defaults(2, DelegationMode.automatic, DelegationPreference.economy);
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
     final submission = owner.submit(_project.id);
-    owner.setServiceTierIntent(ThreadModeId.simple, null);
+    owner.setServiceTierIntent(ThreadModeId.auto, null);
     defaults(3, DelegationMode.profile, DelegationPreference.balanced);
     final request = await transport.startEntered.future;
     expect(
@@ -1838,7 +1838,7 @@ void main() {
       'priority',
       reason: 'Speed is frozen before queued transport dispatch',
     );
-    expect(owner.state.serviceTierIntents[ThreadModeId.simple.id], isNull);
+    expect(owner.state.serviceTierIntents[ThreadModeId.auto.id], isNull);
     final revision = owner.state.revision;
     final progressObserved = owner.source.waitFor(
       (value) =>
@@ -1867,14 +1867,14 @@ void main() {
       '/isolated/worktree',
     );
     owner.updateDraft(_project.id, 'second request');
-    owner.setServiceTierIntent(ThreadModeId.simple, 'priority');
-    owner.setModelIntent(ThreadModeId.simple, 'account', 'beta');
+    owner.setServiceTierIntent(ThreadModeId.auto, 'priority');
+    owner.setModelIntent(ThreadModeId.auto, 'account', 'beta');
     expect(
-      owner.state.serviceTierIntents[ThreadModeId.simple.id],
+      owner.state.serviceTierIntents[ThreadModeId.auto.id],
       isNull,
       reason: 'Changing models never carries the old speed intent',
     );
-    owner.setEffortIntent(ThreadModeId.simple, 'high');
+    owner.setEffortIntent(ThreadModeId.auto, 'high');
     owner.setWorkspaceMode(_project.id, ThreadWorkspaceMode.local);
     owner.setDelegationModeOverride(_project.id, DelegationMode.profile);
     owner.setDelegationPreferenceOverride(_project.id, null);
@@ -1884,7 +1884,7 @@ void main() {
     );
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/two.bin')],
     );
     final thread = _thread('new-thread');
@@ -1914,8 +1914,8 @@ void main() {
     );
     expect(transport.settingsWrites, 0);
     expect(owner.state.forProject(_project.id).text, 'second request');
-    expect(owner.state.modelIntentFor(ThreadModeId.simple)?.modelId, 'beta');
-    expect(owner.state.effortIntentFor(ThreadModeId.simple), 'high');
+    expect(owner.state.modelIntentFor(ThreadModeId.auto)?.modelId, 'beta');
+    expect(owner.state.effortIntentFor(ThreadModeId.auto), 'high');
     expect(
       owner.state
           .forProject(_project.id)
@@ -1976,7 +1976,7 @@ void main() {
         modeModelRoutes: [
           ...canonical.modeModelRoutes,
           const ModeModelRouteView(
-            modeId: ThreadModeId.task,
+            modeId: ThreadModeId('mode.custom'),
             accountId: 'account',
             modelId: 'alpha',
             effort: 'medium',
@@ -1988,7 +1988,7 @@ void main() {
     final owner = client.drafts.startDraft;
     owner
       ..updateDraft(_project.id, 'worktree task request')
-      ..setMode(_project.id, ThreadModeId.task)
+      ..setMode(_project.id, const ThreadModeId('mode.custom'))
       ..setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree)
       ..setDelegationModeOverride(_project.id, DelegationMode.profile)
       ..setDelegationPreferenceOverride(
@@ -2000,14 +2000,14 @@ void main() {
     final request = await transport.startEntered.future;
     final duringPreparation = owner.state.forProject(_project.id);
     expect(duringPreparation.text, isEmpty);
-    expect(duringPreparation.mode, ThreadModeId.task);
+    expect(duringPreparation.mode, const ThreadModeId('mode.custom'));
     expect(duringPreparation.workspaceMode, ThreadWorkspaceMode.worktree);
     expect(duringPreparation.delegationModeOverride, DelegationMode.profile);
     expect(
       duringPreparation.delegationPreferenceOverride,
       DelegationPreference.economy,
     );
-    expect(request.mode, ThreadModeId.task);
+    expect(request.mode, const ThreadModeId('mode.custom'));
     expect(request.workspaceMode, ThreadWorkspaceMode.worktree.id);
     transport.startEvents.add(
       const NewThreadStartFailed(
@@ -2022,7 +2022,7 @@ void main() {
     expect(await submitted, isFalse);
     final afterFailure = owner.state.forProject(_project.id);
     expect(afterFailure.text, isEmpty);
-    expect(afterFailure.mode, ThreadModeId.task);
+    expect(afterFailure.mode, const ThreadModeId('mode.custom'));
     expect(afterFailure.workspaceMode, ThreadWorkspaceMode.worktree);
     expect(afterFailure.delegationModeOverride, DelegationMode.profile);
     expect(
@@ -2051,7 +2051,7 @@ void main() {
         modeModelRoutes: [
           ...canonical.modeModelRoutes,
           const ModeModelRouteView(
-            modeId: ThreadModeId.task,
+            modeId: ThreadModeId('mode.custom'),
             accountId: 'account',
             modelId: 'alpha',
             effort: 'medium',
@@ -2063,7 +2063,7 @@ void main() {
     final owner = client.drafts.startDraft;
     owner
       ..updateDraft(_project.id, 'preserve selected context')
-      ..setMode(_project.id, ThreadModeId.task)
+      ..setMode(_project.id, const ThreadModeId('mode.custom'))
       ..setWorkspaceMode(_project.id, ThreadWorkspaceMode.worktree)
       ..setDelegationModeOverride(_project.id, DelegationMode.profile)
       ..setDelegationPreferenceOverride(
@@ -2075,7 +2075,7 @@ void main() {
     final request = await transport.startEntered.future;
     final duringPreparation = owner.state.forProject(_project.id);
     expect(duringPreparation.text, isEmpty);
-    expect(duringPreparation.mode, ThreadModeId.task);
+    expect(duringPreparation.mode, const ThreadModeId('mode.custom'));
     expect(duringPreparation.workspaceMode, ThreadWorkspaceMode.worktree);
     expect(duringPreparation.delegationModeOverride, DelegationMode.profile);
     expect(
@@ -2095,7 +2095,7 @@ void main() {
     expect(await submitted, isFalse);
     final afterFailure = owner.state.forProject(_project.id);
     expect(afterFailure.text, isEmpty);
-    expect(afterFailure.mode, ThreadModeId.task);
+    expect(afterFailure.mode, const ThreadModeId('mode.custom'));
     expect(afterFailure.workspaceMode, ThreadWorkspaceMode.worktree);
     expect(afterFailure.delegationModeOverride, DelegationMode.profile);
     expect(
@@ -2106,7 +2106,7 @@ void main() {
       owner.submissions.value[_project.id]!.single.text,
       'preserve selected context',
     );
-    expect(request.mode, ThreadModeId.task);
+    expect(request.mode, const ThreadModeId('mode.custom'));
     await owner.removeSubmission(
       _project.id,
       owner.submissions.value[_project.id]!.single.inputId,
@@ -2275,7 +2275,7 @@ void main() {
               config: const NativeAgentConfigView(),
               status: ThreadStatusView.idle,
             ),
-            mode: ThreadModeId.simple,
+            mode: ThreadModeId.auto,
             delegationMode: DelegationMode.profile,
             delegationPreference: DelegationPreference.balanced,
             updatedAt: DateTime.utc(2026),
@@ -2351,7 +2351,7 @@ void main() {
             config: const NativeAgentConfigView(),
             status: ThreadStatusView.idle,
           ),
-          mode: ThreadModeId.simple,
+          mode: ThreadModeId.auto,
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,
           updatedAt: DateTime.utc(2026),
@@ -2495,10 +2495,10 @@ void main() {
             text: 'must not enter a worktree',
             attachmentDraftIds: [],
           ),
-          mode: ThreadModeId.simple,
+          mode: ThreadModeId.auto,
           workspaceMode: 'worktree',
           route: const ModeModelRouteView(
-            modeId: ThreadModeId.simple,
+            modeId: ThreadModeId.auto,
             accountId: 'account',
             modelId: 'alpha',
             effort: 'medium',
@@ -2527,7 +2527,7 @@ void main() {
     owner.updateDraft(_project.id, 'first request');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/one.bin')],
     );
     final submitted = owner.submit(_project.id);
@@ -3105,7 +3105,7 @@ void main() {
     );
     final admission = client.drafts.attachments.addNewThreadClipboard(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
     addTearDown(() async {
@@ -3196,7 +3196,7 @@ void main() {
       );
       final admission = client.drafts.attachments.addNewThreadClipboard(
         workspaceId: _project.id,
-        mode: ThreadModeId.simple,
+        mode: ThreadModeId.auto,
         pngBytes: Uint8List.fromList([1, 2, 3]),
       );
       var closed = false;
@@ -3231,7 +3231,7 @@ void main() {
     );
     await client.drafts.attachments.addNewThreadClipboard(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       pngBytes: Uint8List.fromList([1, 2, 3]),
     );
     expect(client.drafts.attachments.unresolvedStagingPaths, [
@@ -3426,7 +3426,7 @@ void main() {
         owner.updateDraft(_project.id, 'retry after queued recovery rejection');
         await client.drafts.attachments.admitNewThread(
           workspaceId: _project.id,
-          mode: ThreadModeId.simple,
+          mode: ThreadModeId.auto,
           sources: [const AttachmentDraftSource.localFile('/retry.bin')],
         );
         final submit = owner.submit(_project.id);
@@ -3567,7 +3567,7 @@ void main() {
     owner.updateDraft(_project.id, 'retain under application block');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/application.bin')],
     );
     expect(await owner.submit(_project.id), isFalse);
@@ -3649,7 +3649,7 @@ void main() {
     owner.updateDraft(_project.id, 'retain this new-session request');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/request.bin')],
     );
     final attachedId = client.drafts.attachments.state
@@ -4147,7 +4147,7 @@ void main() {
     owner.updateDraft(_project.id, 'unknown StartDraft payload');
     await client.drafts.attachments.admitNewThread(
       workspaceId: _project.id,
-      mode: ThreadModeId.simple,
+      mode: ThreadModeId.auto,
       sources: [const AttachmentDraftSource.localFile('/start-unknown.bin')],
     );
     final submitted = owner.submit(_project.id);
