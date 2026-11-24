@@ -19,7 +19,7 @@ Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显
 
 历史写入完全无状态，事件之间**互不等待、不维护工作组状态机、不回改历史行、也不改写后台工具终态身份**。每次用户输入、工具调用、等待审批、转后台、取消请求、终态完成与助手回复都作为各自独立的不可变原子事件顺序追加至 `history_events`（前导纯索引标量列，尾部为动态字段 `payload_schema` + `payload_json`；数据库不对 `kind` 设枚举 `CHECK`，新增工具或新事件字段零数据库迁移）：
 
-- `divider`（主时间线分隔事件）：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`，含曾有可见边界但最终为空时的 `finalEmptyAfterContent` 标记）、计划公开决议（`plan_resolved`）及带独立展示资格的终态工具事件。每条 `divider` 本身就是主时间线上的独立卡片。
+- `divider`（主时间线分隔事件）：用户输入（`input_accepted`）、助手可见完成正文（`text_completed`，含曾有可见边界但最终为空时的 `finalEmptyAfterContent` 标记）、确认的模型请求中断（`model_interrupted`）、计划公开决议（`plan_resolved`）及带独立展示资格的终态工具事件。每条 `divider` 本身就是主时间线上的独立卡片。
 - `work`（工作过程原子事件）：工具生命周期原子事件（`tool_called`、`tool_waiting_approval`、`tool_backgrounded`、`tool_cancel_requested`、`tool_completed`，同一次调用全程共享同一个 `call_id` 与 `tool_name`）、推理（`reasoning_started`／`reasoning_completed`）、上下文压缩（`compaction_started`／`compaction_completed`）、子智能体（`agent_spawned`／`agent_completed`）与等待/原始/技能/文件事件。
 - `hidden`（非时间线业务与审计事件）：`run_*`、`turn_*`、`source_*`、`usage_*`、`parent_report_recorded`、`review_delivery_recorded`、`retained_resource_recorded` 及不可见空产物，供业务查询、导出、计费和机器人回复消费。
 
@@ -27,6 +27,8 @@ Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显
 
 - 任意相邻两条 `divider` 之间（以及最新 `divider` 到 `through` 之间）只要存在至少一条 `work` 事件，即自然构成一个稳定的 `WorkRange`（标识 `work:<first_seq>`，边界 `(after_seq, before_seq)`、`first_seq`、`last_seq`、`started_at`、`ended_at`、`run_id`、`event_count`）；
 - 一旦新的 `divider`（如助手可见说明或终稿）落盘，`before_seq` 自动固定，旧工作区间天然封口；即使后台工具跨正文运行或被用户停止，写入器也不做跨事件等待或 `BoundaryObserved` 截断快照。
+
+模型运行时确认首次请求中断并决定重试时，沿现有可靠模型成员入口交付该次中断及失败代次的可见片段。历史在片段之后追加一条连接中断说明作为正文分隔。后续重试保持同一个中断边界，恢复结果以 `model_recovery_finished` 元信息供历史查询，恢复后的工作事件自然落入新区间。Studio 状态观察重连只切换实时栏主阶段，业务历史由执行所有者确认的事件切分。
 
 ## 26.3 混合正文契约（16 KiB 内联与 64 KiB BLOB 分块）
 

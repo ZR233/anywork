@@ -10,8 +10,8 @@ use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatContentRole, ChatScope, ContentRange,
     CurrentContentRef, CurrentFrame, CurrentProjection, ThreadWorkspaceMode,
     history::{
-        HistoryDemand, HistoryEventRecord, HistoryEventsQuery, HistoryReader,
-        decode_event_envelope, read_event_body_bytes,
+        HistoryCut, HistoryDemand, HistoryEventRecord, HistoryEventsQuery, HistoryReader,
+        HistoryTimelineItem, HistoryTimelineRole, decode_event_envelope, read_event_body_bytes,
     },
 };
 use std::collections::HashSet;
@@ -119,7 +119,10 @@ struct PublicHistory {
     recovery_notices: Vec<OutputOriginal>,
 }
 
-async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
+async fn public_history_at(
+    reader: &HistoryReader,
+    cut: Option<HistoryCut>,
+) -> Result<PublicHistory> {
     let demand = HistoryDemand {
         max_rows: 128,
         max_bytes: 1024 * 1024,
@@ -133,7 +136,7 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                 HistoryEventsQuery::Originals {
                     scope: ChatScope::conversation(None),
                 },
-                None,
+                cut.clone(),
                 cursor.clone(),
                 demand,
             )
@@ -216,6 +219,10 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
         cursor = Some(next);
     }
     Ok(result)
+}
+
+async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
+    public_history_at(reader, None).await
 }
 
 fn output_shape(history: &PublicHistory) -> (usize, u64) {
@@ -345,7 +352,9 @@ async fn closing_current_joins_metadata_and_body_watches_then_reopens_the_live_o
 #[tokio::test]
 async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_current() -> Result<()> {
     let barrier_reached = CancellationToken::new();
+    let retry_barrier_reached = CancellationToken::new();
     let release = CancellationToken::new();
+    let retry_release = CancellationToken::new();
     let frames = pl_provider_fixture::responses_reasoning_text(
         &[" a"],
         &[" a"; 96],
@@ -381,7 +390,15 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
                 Protocol::ResponsesWebSocket,
                 "reconnect",
                 1,
-                pl_provider_fixture::Reply::WebSocket(frames),
+                pl_provider_fixture::Reply::WebSocketScript(
+                    vec![WebSocketAction::Barrier {
+                        reached: retry_barrier_reached.clone(),
+                        release: retry_release.clone(),
+                    }]
+                    .into_iter()
+                    .chain(frames.iter().cloned().map(WebSocketAction::Event))
+                    .collect(),
+                ),
             ),
         ],
         vec![],
@@ -425,6 +442,73 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
         current.close().await?;
 
         release.cancel();
+        tokio::time::timeout(
+            support::integration_test_deadline()?,
+            retry_barrier_reached.cancelled(),
+        )
+        .await
+        .context("retry provider websocket barrier was not reached")?;
+        let (early_cut, early) =
+            tokio::time::timeout(support::integration_test_deadline()?, async {
+                let mut early_cut = history.capture().await?;
+                loop {
+                    let published = public_history_at(&history, Some(early_cut.clone())).await?;
+                    if published.recovery_notices.len() == 1 && !published.outputs.is_empty() {
+                        return Ok::<_, anyhow::Error>((early_cut, published));
+                    }
+                    early_cut = history.wait_changed(early_cut).await?;
+                }
+            })
+            .await??;
+        let early_notice = &early.recovery_notices[0];
+        let early_timeline = history
+            .timeline_page(Some(early_cut.clone()), None, HistoryDemand::default())
+            .await?;
+        let divider = early_timeline
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HistoryTimelineItem::Divider(event)
+                    if event.kind.as_str() == "model_interrupted"
+                        && event.timeline_role == HistoryTimelineRole::Divider =>
+                {
+                    Some(event)
+                }
+                _ => None,
+            })
+            .context("interruption was not published as a model_interrupted Divider")?;
+        let previous_range = early_timeline
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HistoryTimelineItem::WorkRange(range) if range.before_seq == Some(divider.seq) => {
+                    Some(range)
+                }
+                _ => None,
+            })
+            .context("previous WorkRange did not end at the retry Divider")?;
+        let previous_work = history
+            .work_range_page(
+                previous_range.after_seq,
+                previous_range.before_seq,
+                Some(early_cut.clone()),
+                None,
+                HistoryDemand::default(),
+            )
+            .await?;
+        ensure!(
+            previous_work.events.iter().any(|event| {
+                early
+                    .outputs
+                    .iter()
+                    .any(|output| output.event_id == event.event_id)
+                    && decode_event_envelope(event)
+                        .is_ok_and(|envelope| envelope.item_type == "thinking")
+            }),
+            "failed attempt thinking output was not in the WorkRange before the retry Divider"
+        );
+
+        retry_release.cancel();
         let terminal = support::completed_prompt(&env.runtime, id, "reconnect").await?;
         ensure!(terminal.id == live.projection.active_turn.context("live Turn")?.id);
         let published = public_history(&history).await?;
@@ -435,6 +519,25 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             published.outputs.len(),
             published.recovery_notices,
             output_shape(&published)
+        );
+        ensure!(
+            published
+                .recovery_notices
+                .iter()
+                .filter(|notice| *notice == early_notice)
+                .count()
+                == 1,
+            "retry notice identity or content changed after the retry completed"
+        );
+        ensure!(
+            published.recovery_notices.iter().any(|notice| {
+                notice.event_id != early_notice.event_id
+                    && notice
+                        .bodies
+                        .iter()
+                        .any(|(_, bytes)| bytes.as_slice() == "连接已恢复，继续执行。".as_bytes())
+            }),
+            "recovery completion output was not retained as a distinct original"
         );
         history.close().await;
 
@@ -487,6 +590,35 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
         ensure!(
             public_history(&restored_history).await? == published,
             "restart changed websocket output identities, order or bytes"
+        );
+        let restored_timeline = restored_history
+            .timeline_page(None, None, HistoryDemand::default())
+            .await?;
+        ensure!(
+            restored_timeline.items.iter().any(|item| matches!(
+                item,
+                HistoryTimelineItem::Divider(event)
+                    if event.event_id == divider.event_id
+                        && event.kind.as_str() == "model_interrupted"
+                        && event.timeline_role == HistoryTimelineRole::Divider
+            )),
+            "restart did not retain the retry interruption Divider"
+        );
+        ensure!(
+            restored_timeline.items.iter().any(|item| matches!(
+                item,
+                HistoryTimelineItem::WorkRange(range)
+                    if range.before_seq == Some(divider.seq)
+            )),
+            "restart did not retain the previous WorkRange boundary"
+        );
+        ensure!(
+            !restored_timeline.items.iter().any(|item| matches!(
+                item,
+                HistoryTimelineItem::Divider(event)
+                    if event.kind.as_str() == "model_recovery_finished"
+            )),
+            "recovery completion incorrectly created a second Divider"
         );
         restored_history.close().await;
         paused.close().await?;

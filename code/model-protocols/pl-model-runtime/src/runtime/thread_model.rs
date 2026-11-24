@@ -21,7 +21,9 @@ pub use compaction::{
     ThreadCompactionStrategy, migrate_legacy_compaction,
 };
 mod codec;
+pub(crate) mod interruption;
 mod media;
+pub use interruption::{ModelInterruptionReceipt, model_interruption_receipt};
 pub(crate) mod member;
 pub use member::{ModelMemberReceipt, ModelMemberState, model_member_receipt};
 pub mod migration;

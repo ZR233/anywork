@@ -55,6 +55,8 @@ event_kinds! {
     InputConsumed => "input_consumed",
     InputDiscarded => "input_discarded",
     TextCompleted => "text_completed",
+    ModelInterrupted => "model_interrupted",
+    ModelRecoveryFinished => "model_recovery_finished",
     PlanResolved => "plan_resolved",
     TurnReceiptRecorded => "turn_receipt_recorded",
     InboxMessageReceived => "inbox_message_received",

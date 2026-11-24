@@ -46,6 +46,22 @@ pub(super) fn response_id(id: &str, kind: &str) -> String {
     format!("model:{}:{id}:{kind}", id.len())
 }
 
+pub(super) fn recovery_interruption_id(attempt_id: &str) -> String {
+    response_id(attempt_id, "recovery:interrupted")
+}
+
+pub(super) fn recovery_result_id(attempt_id: &str) -> String {
+    response_id(attempt_id, "recovery:result")
+}
+
+pub(super) fn is_model_output(id: &str, attempt_id: &str) -> bool {
+    id.starts_with(&presentation_prefix(attempt_id))
+        || id.starts_with(&observation_prefix(attempt_id))
+        || ["text", "reasoning"]
+            .iter()
+            .any(|kind| id == response_id(attempt_id, kind))
+}
+
 pub(super) fn observation_id(id: &str, generation: u32, kind: &str) -> String {
     if generation == 0 {
         response_id(id, kind)

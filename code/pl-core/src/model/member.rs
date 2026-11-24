@@ -31,6 +31,8 @@ pub(crate) fn encoded_member_bytes(value: &impl Serialize) -> Result<u64, serde_
 /// An immutable, producer-validated member, not a model context or attempt outcome.
 ///
 /// Core binds the call identities. The producer owns the member schema, part identities and bytes.
+/// Completed identities are scoped by generation and payload format; versions of one format share
+/// the same identity and cannot replace already admitted bytes.
 /// The same envelope enters the ordinary effect and reliable output handoff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,7 +127,7 @@ pub struct ModelMemberSender {
 #[derive(Debug, Default)]
 pub(crate) struct AdmittedMembers {
     pub(crate) completed:
-        std::collections::BTreeMap<(u32, String), (OpaquePayload, Option<MemberCharge>)>,
+        std::collections::BTreeMap<(u32, String, String), (OpaquePayload, Option<MemberCharge>)>,
     pub(crate) started: std::collections::BTreeMap<(u32, StartedKey), AdmittedPart>,
 }
 
@@ -403,6 +405,7 @@ impl ModelMemberSender {
             ))))
         })?;
         let metadata = (2 * (self.turn_id.len() + self.attempt_id.len() + member.member_id.len())
+            + member.payload.format().len()
             + std::mem::size_of::<ModelMemberAdmission>()
             + std::mem::size_of::<ModelCompletedMember>()
             + 128) as u64;
@@ -412,7 +415,11 @@ impl ModelMemberSender {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .completed
-            .get(&(generation, member.member_id.clone()))
+            .get(&(
+                generation,
+                member.payload.format().to_owned(),
+                member.member_id.clone(),
+            ))
             .is_some_and(|(old, _)| {
                 old == &member.payload && std::ptr::eq(old.content(), member.payload.content())
             });

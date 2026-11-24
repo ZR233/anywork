@@ -361,6 +361,127 @@ async fn upgrade_required_falls_back_immediately_only_when_http_is_declared() {
 }
 
 #[tokio::test]
+async fn thread_interruption_is_admitted_once_before_retries_and_http_fallback() {
+    for immediate in [false, true] {
+        let mut steps = if immediate {
+            vec![Step::exact(
+                Protocol::ResponsesWebSocket,
+                serde_json::Value::Null,
+                Reply::WebSocketHandshake { status: 426 },
+            )]
+        } else {
+            let mut interrupted = unfinished_text_prefix("original failed prefix");
+            interrupted.push(temporary_error());
+            vec![
+                Step::prompt(
+                    Protocol::ResponsesWebSocket,
+                    "fallback receipt",
+                    0,
+                    Reply::WebSocket(interrupted),
+                ),
+                Step::prompt(
+                    Protocol::ResponsesWebSocket,
+                    "fallback receipt",
+                    1,
+                    Reply::WebSocket(vec![temporary_error()]),
+                ),
+            ]
+        };
+        let generation = if immediate { 1 } else { 2 };
+        steps.push(Step::prompt(
+            Protocol::ResponsesHttp,
+            "fallback receipt",
+            generation,
+            Reply::Sse(responses_text(
+                "HTTP answer",
+                "http-receipt",
+                "recovery-model",
+            )),
+        ));
+        let fixture = FixtureServer::start(steps).await.unwrap();
+        let thread = thread(&fixture).await;
+        thread
+            .run_turn(turn("fallback receipt", "fallback-receipt-turn", 1))
+            .await
+            .unwrap();
+        let effects = thread.effects().await.unwrap();
+        let interruptions = effects
+            .iter()
+            .flat_map(|effect| {
+                effect.model_members.iter().filter_map(move |member| {
+                    pl_model::runtime::model_interruption_receipt(member)
+                        .unwrap()
+                        .map(|receipt| (effect.sequence, member, receipt))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            interruptions.len(),
+            1,
+            "one divider for the invocation, including consecutive retries"
+        );
+        let (sequence, member, interruption) = &interruptions[0];
+        assert_eq!(member.generation, 0);
+        assert_eq!(interruption.generation, 0);
+        assert_eq!(interruption.max_retries, 5);
+        assert!(interruption.message.contains(if immediate {
+            "426"
+        } else {
+            "temporary failure"
+        }));
+        assert_eq!(
+            interruption
+                .parts
+                .iter()
+                .map(|part| part.text())
+                .collect::<String>(),
+            if immediate {
+                ""
+            } else {
+                "original failed prefix"
+            }
+        );
+        let new_members = effects
+            .iter()
+            .filter(|effect| {
+                effect
+                    .model_member_starts
+                    .iter()
+                    .any(|member| member.generation > 0)
+                    || effect
+                        .model_members
+                        .iter()
+                        .any(|member| member.generation > 0)
+            })
+            .collect::<Vec<_>>();
+        assert!(!new_members.is_empty());
+        assert!(new_members.iter().all(|effect| *sequence < effect.sequence));
+        let output = effects
+            .iter()
+            .find_map(
+                |effect| match effect.attempt.as_ref().map(|attempt| &attempt.outcome) {
+                    Some(pl_core::thread::AttemptOutcome::Committed(output)) => Some(output),
+                    _ => None,
+                },
+            )
+            .unwrap();
+        let response = pl_model::runtime::model_response_receipt(output)
+            .unwrap()
+            .unwrap()
+            .response;
+        assert_eq!(response.content.as_deref(), Some("HTTP answer"));
+        assert_eq!(
+            response.orchestration.transport_attempts,
+            generation as u64 + 1
+        );
+        assert_eq!(response.orchestration.http_fallbacks, 1);
+        assert_eq!(response.observation.failed.len(), generation);
+        thread.close().await.unwrap();
+        assert_eq!(fixture.finish().await.unwrap().len(), generation + 1);
+    }
+}
+
+#[tokio::test]
 async fn websocket_only_budget_exhaustion_keeps_last_typed_cause_and_failed_observations() {
     let fixture = FixtureServer::start(
         (0..6)
@@ -639,8 +760,28 @@ async fn completed_presentation_item_does_not_prevent_safe_recovery() {
                 .iter()
                 .flat_map(|effect| effect.model_members.iter())
                 .collect::<Vec<_>>();
-            assert_eq!(admitted.len(), 2);
-            for (generation, member) in admitted.iter().enumerate() {
+            assert_eq!(admitted.len(), 3);
+            let interruption = pl_model::runtime::model_interruption_receipt(admitted[1])
+                .unwrap()
+                .expect("interruption between the original and retried members");
+            assert_eq!(interruption.generation, 0);
+            assert_eq!(admitted[1].generation, 0);
+            assert_eq!(interruption.max_retries, 5);
+            assert!(interruption.message.contains(expected_message));
+            assert_eq!(
+                interruption
+                    .parts
+                    .iter()
+                    .map(|part| part.text())
+                    .collect::<String>(),
+                "discarded attempt"
+            );
+            for (generation, member) in [admitted[0], admitted[2]].iter().enumerate() {
+                assert!(
+                    pl_model::runtime::model_interruption_receipt(member)
+                        .unwrap()
+                        .is_none()
+                );
                 assert_eq!(member.generation, generation as u32);
                 let receipt = pl_model::runtime::model_member_receipt(member).unwrap();
                 assert_eq!(
@@ -1363,8 +1504,22 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
             .flat_map(|effect| effect.model_members.iter())
             .filter(|member| member.generation == 0)
             .collect::<Vec<_>>();
-        assert_eq!(admitted.len(), usize::from(completed));
-        if let Some(member) = admitted.first() {
+        assert_eq!(admitted.len(), usize::from(completed) + 1);
+        let interruption =
+            pl_model::runtime::model_interruption_receipt(admitted[usize::from(completed)])
+                .unwrap()
+                .expect("interrupted reasoning is reliably admitted before retry");
+        assert_eq!(interruption.generation, 0);
+        assert_eq!(
+            interruption
+                .parts
+                .iter()
+                .map(|part| part.text())
+                .collect::<String>(),
+            "abandoned reasoning"
+        );
+        if completed {
+            let member = admitted[0];
             let receipt = pl_model::runtime::model_member_receipt(member).unwrap();
             assert_eq!(
                 receipt.state,
@@ -1372,6 +1527,32 @@ async fn completed_or_partial_reasoning_is_display_only_when_a_safe_retry_succee
             );
             assert_eq!(receipt.item.parts[0].text, "abandoned reasoning");
         }
+        let interruption_sequence = effects
+            .iter()
+            .find(|effect| {
+                effect.model_members.iter().any(|member| {
+                    pl_model::runtime::model_interruption_receipt(member)
+                        .unwrap()
+                        .is_some()
+                })
+            })
+            .unwrap()
+            .sequence;
+        assert!(
+            effects
+                .iter()
+                .filter(|effect| {
+                    effect
+                        .model_member_starts
+                        .iter()
+                        .any(|member| member.generation == 1)
+                        || effect
+                            .model_members
+                            .iter()
+                            .any(|member| member.generation == 1)
+                })
+                .all(|effect| interruption_sequence < effect.sequence)
+        );
         let records = records.unwrap();
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|record| record.accepted));

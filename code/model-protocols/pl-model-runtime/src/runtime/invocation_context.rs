@@ -101,12 +101,51 @@ impl ModelInvocationContext {
         self.prompt_cache_scope = Some(scope);
         self
     }
-    pub(super) fn begin_retry(&self, error: &mut CompletionFailure) -> Result<()> {
+    pub(super) async fn begin_retry(
+        &self,
+        error: &mut CompletionFailure,
+        confirmed_interruption: bool,
+        interruption_submitted: &mut bool,
+        current: Option<&mut super::current::CurrentProducer>,
+    ) -> Result<()> {
         let sender = self
             .progress
             .as_ref()
             .expect("invocation owns its observation");
         let message = error.to_string();
+        if confirmed_interruption
+            && !*interruption_submitted
+            && let Some(members) = &self.members
+        {
+            let progress = sender.latest();
+            let receipt = super::ModelInterruptionReceipt {
+                generation: progress.observation().generation,
+                max_retries: MODEL_MAX_RETRIES,
+                parts: progress.parts().clone(),
+                message: Arc::from(message.as_str()),
+            };
+            let payload = receipt.encode()?;
+            // Await the old generation's reliable admission before retiring its progress. The
+            // owner checks that generation; after sending, cancellation cannot revoke its reply.
+            let admission = members.submit(
+                receipt.generation,
+                super::thread_model::interruption::MEMBER_ID.to_owned(),
+                payload,
+                self.cancellation.as_ref(),
+            );
+            let admitted = if let Some(current) = current {
+                current.wait(admission, None).await
+            } else {
+                admission.await
+            };
+            if let Err(cause) = admitted {
+                if matches!(cause, pl_core::model::ModelMemberError::Cancelled) {
+                    error.cancelled = true;
+                }
+                return Err(PureError::LlmError(cause.to_string()));
+            }
+            *interruption_submitted = true;
+        }
         sender
             .charge_output(
                 sender

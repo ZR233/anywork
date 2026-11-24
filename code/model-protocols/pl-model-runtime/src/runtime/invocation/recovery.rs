@@ -62,6 +62,7 @@ impl ModelRuntime {
         // This generation remains the last actually attempted request throughout retry
         // preparation/backoff. A cancellation must not replace its facts with an unsent attempt.
         let mut retry_failure: Option<CompletionFailure> = None;
+        let mut interruption_submitted = false;
 
         loop {
             if context
@@ -240,7 +241,15 @@ impl ModelRuntime {
                     http_fallbacks += 1;
                 }
                 attempt_number += 1;
-                if let Err(cause) = context.begin_retry(&mut error) {
+                if let Err(cause) = context
+                    .begin_retry(
+                        &mut error,
+                        attempted_stream,
+                        &mut interruption_submitted,
+                        current.as_deref_mut(),
+                    )
+                    .await
+                {
                     return Err(error.with_source(cause));
                 }
                 retry_failure = Some(error);
@@ -259,7 +268,15 @@ impl ModelRuntime {
                 })
             {
                 attempt_number += 1;
-                if let Err(cause) = context.begin_retry(&mut error) {
+                if let Err(cause) = context
+                    .begin_retry(
+                        &mut error,
+                        false,
+                        &mut interruption_submitted,
+                        current.as_deref_mut(),
+                    )
+                    .await
+                {
                     return Err(error.with_source(cause));
                 }
                 let locking = context.session.uploaded_files.lock();
@@ -304,7 +321,15 @@ impl ModelRuntime {
                 }
             }
             attempt_number += 1;
-            if let Err(cause) = context.begin_retry(&mut error) {
+            if let Err(cause) = context
+                .begin_retry(
+                    &mut error,
+                    attempted_stream,
+                    &mut interruption_submitted,
+                    current.as_deref_mut(),
+                )
+                .await
+            {
                 return Err(error.with_source(cause));
             }
             let delay = model_request_retry_delay(

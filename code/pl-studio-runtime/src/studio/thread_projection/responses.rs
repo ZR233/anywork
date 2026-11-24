@@ -287,15 +287,36 @@ pub(super) fn project_attempt(
             ThreadTextChannel::Commentary,
         ),
     };
-    items.extend(project_recovery(
-        thread_id,
-        attempt,
-        ordinal,
-        created_at,
-        revision,
-        updated_at,
-        &response.observation,
-    )?);
+    if !matches!(attempt.outcome, AttemptOutcome::Running) {
+        for failed in &response.observation.failed {
+            let failed_lifecycle =
+                ThreadContentLifecycle::failed(updated_at, failed.message.to_string());
+            items.extend(project_failed_parts(
+                PresentationStamp {
+                    thread_id,
+                    turn_id: &attempt.turn_id,
+                    attempt_id: &attempt.attempt_id,
+                    ordinal,
+                    created_at,
+                    revision,
+                    updated_at,
+                    generation: failed.generation,
+                    lifecycle: &failed_lifecycle,
+                },
+                &failed.parts,
+            )?);
+        }
+        if let Some(message) = recovery_result(&response.observation) {
+            items.push(recovery_text(
+                super::order::recovery_result_id(&attempt.attempt_id),
+                thread_id,
+                &attempt.turn_id,
+                revision,
+                updated_at,
+                message,
+            ));
+        }
+    }
     let text_id =
         super::order::observation_id(&attempt.attempt_id, response.observation.generation, "text");
     let reasoning_id = super::order::observation_id(
@@ -463,6 +484,39 @@ pub(super) fn project_model_member(
     revision: u64,
     committed_at: i64,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
+    if let Some(interruption) = pl_model::runtime::model_interruption_receipt(member)
+        .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?
+    {
+        let lifecycle =
+            ThreadContentLifecycle::failed(committed_at, interruption.message.to_string());
+        let mut items = project_failed_parts(
+            PresentationStamp {
+                thread_id,
+                turn_id: &member.turn_id,
+                attempt_id: &member.attempt_id,
+                ordinal: 0,
+                created_at: committed_at,
+                revision,
+                updated_at: committed_at,
+                generation: interruption.generation,
+                lifecycle: &lifecycle,
+            },
+            &interruption.parts,
+        )?;
+        items.push(recovery_text(
+            super::order::recovery_interruption_id(&member.attempt_id),
+            thread_id,
+            &member.turn_id,
+            revision,
+            committed_at,
+            format!(
+                "连接中断，正在重试（{}/{}）。",
+                interruption.generation + 1,
+                interruption.max_retries,
+            ),
+        ));
+        return Ok(items);
+    }
     let receipt = pl_model::runtime::model_member_receipt(member)
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
     let lifecycle = match receipt.state {
@@ -593,129 +647,104 @@ fn project_presentation_items(
     Ok(projected)
 }
 
-/// The same provider-neutral facts drive live commentary and durable final projection.
-pub(super) fn recovery_notices(
-    attempt_id: &str,
-    observation: &pl_core::model::ModelObservation,
-) -> Vec<(String, String)> {
+fn recovery_result(observation: &pl_core::model::ModelObservation) -> Option<String> {
     use pl_core::model::ModelRecoveryPhase;
-    let Some(status) = observation.recovery else {
-        return Vec::new();
-    };
-    let mut notices = observation
-        .failed
-        .iter()
-        .map(|failed| {
-            let retry = failed.generation + 1;
-            (
-                super::order::response_id(attempt_id, &format!("recovery:retry:{retry}")),
-                format!("连接中断，正在重试（{retry}/{}）。", status.max_retries),
-            )
-        })
-        .collect::<Vec<_>>();
-    let message = match status.phase {
+    let status = observation.recovery?;
+    match status.phase {
         ModelRecoveryPhase::Retrying => None,
-        ModelRecoveryPhase::Recovered => Some("连接已恢复，继续执行。".to_owned()),
+        ModelRecoveryPhase::Recovered => Some("连接已恢复，继续执行。".into()),
         ModelRecoveryPhase::Exhausted => Some(format!(
             "连接重试 {} 次仍失败，本轮已停止。",
             status.max_retries
         )),
-        ModelRecoveryPhase::Failed => Some("连接恢复未完成，本轮已停止。".to_owned()),
-        ModelRecoveryPhase::Cancelled => Some("连接恢复已取消，本轮已停止。".to_owned()),
-    };
-    if let Some(message) = message {
-        notices.push((
-            super::order::response_id(attempt_id, "recovery:result"),
-            message,
-        ));
+        ModelRecoveryPhase::Failed => Some("连接恢复未完成，本轮已停止。".into()),
+        ModelRecoveryPhase::Cancelled => Some("连接恢复已取消，本轮已停止。".into()),
     }
-    notices
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_recovery(
+fn recovery_text(
+    id: String,
     thread_id: &str,
-    attempt: &pl_core::thread::journal::AttemptUpdate,
-    ordinal: u64,
-    created_at: i64,
+    turn_id: &str,
     revision: u64,
-    updated_at: i64,
-    observation: &pl_core::model::ModelObservation,
+    at: i64,
+    message: String,
+) -> ExecutionItem {
+    ExecutionItem::new(
+        id,
+        thread_id.into(),
+        turn_id.into(),
+        0,
+        revision,
+        at,
+        at,
+        ExecutionShape::Text(ThreadTextItem::new(
+            ThreadTextChannel::Commentary,
+            message,
+            Vec::new(),
+            ThreadContentLifecycle::completed(at),
+        )),
+    )
+}
+
+fn project_failed_parts(
+    stamp: PresentationStamp<'_>,
+    parts: &pl_core::model::ModelParts,
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let mut items = Vec::new();
-    for failed in &observation.failed {
-        let lifecycle = ThreadContentLifecycle::failed(updated_at, failed.message.to_string());
-        for part in &failed.parts {
-            if part.is_empty() {
-                continue;
-            }
-            let Some((id, field, shape)) = super::live::observation_preview(
-                &attempt.attempt_id,
-                failed.generation,
-                part,
-                &lifecycle,
-            ) else {
-                return Err(ProjectionError::UnsupportedOutput(
-                    "failed observation has invalid part identity".into(),
-                ));
-            };
-            let state = match shape {
-                ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
-                    text.channel(),
-                    part.text(),
-                    Vec::new(),
-                    lifecycle.clone(),
-                )),
-                ExecutionShape::Thinking(_) => {
-                    let (summary, reasoning) = if matches!(
-                        field,
-                        crate::studio::runtime::chat_item::BodyKey::Part(
-                            pl_core::chat::PresentationPart::SummaryText(_)
-                        )
-                    ) {
-                        (vec![part.text()], Vec::new())
-                    } else {
-                        (Vec::new(), vec![part.text()])
-                    };
-                    ExecutionShape::Thinking(ThreadThinkingItem::new(
-                        summary,
-                        reasoning,
-                        lifecycle.clone(),
-                    ))
-                }
-                _ => {
-                    return Err(ProjectionError::UnsupportedOutput(
-                        "failed observation has invalid content state".into(),
-                    ));
-                }
-            };
-            items.push(ExecutionItem::new(
-                id,
-                thread_id.into(),
-                attempt.turn_id.clone(),
-                ordinal,
-                revision,
-                created_at,
-                updated_at,
-                state,
-            ));
+    for part in parts {
+        if part.is_empty() {
+            continue;
         }
-    }
-    for (id, message) in recovery_notices(&attempt.attempt_id, observation) {
+        let Some((id, field, shape)) = super::live::observation_preview(
+            stamp.attempt_id,
+            stamp.generation,
+            part,
+            stamp.lifecycle,
+        ) else {
+            return Err(ProjectionError::UnsupportedOutput(
+                "failed observation has invalid part identity".into(),
+            ));
+        };
+        let state = match shape {
+            ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
+                text.channel(),
+                part.text(),
+                Vec::new(),
+                stamp.lifecycle.clone(),
+            )),
+            ExecutionShape::Thinking(_) => {
+                let (summary, reasoning) = if matches!(
+                    field,
+                    crate::studio::runtime::chat_item::BodyKey::Part(
+                        pl_core::chat::PresentationPart::SummaryText(_)
+                    )
+                ) {
+                    (vec![part.text()], Vec::new())
+                } else {
+                    (Vec::new(), vec![part.text()])
+                };
+                ExecutionShape::Thinking(ThreadThinkingItem::new(
+                    summary,
+                    reasoning,
+                    stamp.lifecycle.clone(),
+                ))
+            }
+            _ => {
+                return Err(ProjectionError::UnsupportedOutput(
+                    "failed observation has invalid content state".into(),
+                ));
+            }
+        };
         items.push(ExecutionItem::new(
             id,
-            thread_id.into(),
-            attempt.turn_id.clone(),
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
-            ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                message,
-                Vec::new(),
-                ThreadContentLifecycle::completed(updated_at),
-            )),
+            stamp.thread_id.into(),
+            stamp.turn_id.into(),
+            stamp.ordinal,
+            stamp.revision,
+            stamp.created_at,
+            stamp.updated_at,
+            state,
         ));
     }
     Ok(items)

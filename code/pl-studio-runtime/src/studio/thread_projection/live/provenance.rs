@@ -128,6 +128,16 @@ fn set_event_atom_columns(
 }
 
 fn event_kind_for_draft(atom: &ChatAtom) -> HistoryEventKind {
+    if atom.kind == ChatAtomKind::Text
+        && let Some(attempt_id) = atom.attempt_id.as_deref()
+    {
+        if atom.id == super::super::order::recovery_interruption_id(attempt_id) {
+            return HistoryEventKind::ModelInterrupted;
+        }
+        if atom.id == super::super::order::recovery_result_id(attempt_id) {
+            return HistoryEventKind::ModelRecoveryFinished;
+        }
+    }
     if matches!(atom.source, ChatSourceId::InboxMessage { .. }) {
         return HistoryEventKind::InboxMessageReceived;
     }
@@ -150,8 +160,10 @@ fn event_kind_for_draft(atom: &ChatAtom) -> HistoryEventKind {
     }
 }
 
-fn draft_timeline_role(atom: &ChatAtom) -> HistoryTimelineRole {
-    if crate::studio::thread_projection::hidden(atom) {
+fn draft_timeline_role(atom: &ChatAtom, kind: &HistoryEventKind) -> HistoryTimelineRole {
+    if *kind == HistoryEventKind::ModelRecoveryFinished
+        || crate::studio::thread_projection::hidden(atom)
+    {
         HistoryTimelineRole::Hidden
     } else if crate::studio::thread_projection::work(atom) {
         HistoryTimelineRole::Work
@@ -785,7 +797,7 @@ impl LiveProjection {
                     &mut sources,
                 )?;
                 let kind = event_kind_for_draft(&atom);
-                let timeline_role = draft_timeline_role(&atom);
+                let timeline_role = draft_timeline_role(&atom, &kind);
                 let mut history_event =
                     HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
                 set_event_atom_columns(
@@ -842,14 +854,9 @@ impl LiveProjection {
                     .map(|member| &member.attempt_id)
                     .chain(effect.attempt.iter().map(|attempt| &attempt.attempt_id))
                     .find(|attempt| {
-                        atom.id
-                            .starts_with(&super::super::order::presentation_prefix(attempt))
-                            || atom
-                                .id
-                                .starts_with(&super::super::order::observation_prefix(attempt))
-                            || ["text", "reasoning"].iter().any(|kind| {
-                                atom.id == super::super::order::response_id(attempt, kind)
-                            })
+                        super::super::order::is_model_output(&atom.id, attempt)
+                            || atom.id == super::super::order::recovery_interruption_id(attempt)
+                            || atom.id == super::super::order::recovery_result_id(attempt)
                     })
                     .cloned();
             }
@@ -945,7 +952,7 @@ impl LiveProjection {
                 }
             }
             let kind = event_kind_for_draft(&atom);
-            let timeline_role = draft_timeline_role(&atom);
+            let timeline_role = draft_timeline_role(&atom, &kind);
             let mut history_event =
                 HistoryEvent::new(draft.item_id.clone(), kind, timeline_role, recorded_at);
             set_event_atom_columns(

@@ -118,44 +118,6 @@ pub(super) fn project(
             ));
             atoms.push(atom);
         }
-        for (id, message) in super::super::responses::recovery_notices(
-            &attempt.attempt_id,
-            progress.progress.observation(),
-        ) {
-            let block = ContentBlock::from_text(&message);
-            let fields = BTreeMap::from([(BodyKey::Body, block.clone())]);
-            let shape = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::streaming(),
-            ));
-            let item = ExecutionItem::new(
-                id.clone(),
-                thread.id.clone(),
-                attempt.turn_id.clone(),
-                0,
-                1,
-                0,
-                0,
-                shape,
-            );
-            let mut atom = crate::studio::runtime::chat_item::atom(&item);
-            atom.attempt_id = Some(attempt.attempt_id.clone());
-            atom.started_at = None;
-            atom.finished_at = None;
-            atom.contents = atom_contents(owner_id, &id, &fields);
-            insert_active_source(&mut sources, atom.source.clone());
-            active.push((
-                id,
-                BodyKey::Body,
-                block,
-                0,
-                Some(ThreadTextChannel::Commentary),
-                None,
-            ));
-            atoms.push(atom);
-        }
     }
 
     for task in state

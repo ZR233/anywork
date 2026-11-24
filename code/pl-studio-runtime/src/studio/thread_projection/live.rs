@@ -1755,25 +1755,29 @@ impl LiveProjection {
         // 实时帧同样不允许带着无法补全的 identity 继续：投影失败由调用方转成报告并 fail-closed。
         projected.ensure_complete()?;
         let mut items = projected.items;
-        // Model/Core already checked the final receipt against independently admitted members.
-        // Their frozen product fact must not acquire the final attempt's time, source or revision.
-        // A sealed presentation part is immutable, unlike mutable tool delivery metadata.
-        let member_prefixes = effect
+        // Independently ended members and interrupted-generation parts already have an
+        // immutable History position. A later attempt receipt cannot move or replace them.
+        let model_attempts = effect
             .attempt
             .iter()
             .map(|attempt| &attempt.attempt_id)
             .chain(effect.model_members.iter().map(|member| &member.attempt_id))
-            .map(|attempt| super::order::presentation_prefix(attempt))
             .collect::<BTreeSet<_>>();
         let index = self.order_index_of()?;
+        if let Some(attempt) = &effect.attempt
+            && !index.is_sealed(&super::order::recovery_interruption_id(&attempt.attempt_id))
+        {
+            let recovery_result = super::order::recovery_result_id(&attempt.attempt_id);
+            items.retain(|item| item.id != recovery_result);
+        }
         items.retain(|item| {
             !(matches!(
                 item.state(),
                 ExecutionShape::Text(_) | ExecutionShape::Thinking(_)
             ) && index.is_sealed(&item.id)
-                && member_prefixes
+                && model_attempts
                     .iter()
-                    .any(|prefix| item.id.starts_with(prefix)))
+                    .any(|attempt| super::order::is_model_output(&item.id, attempt)))
         });
         for item in &mut items {
             if let crate::ExecutionShape::Turn(turn) = item.state()
@@ -2152,47 +2156,6 @@ impl LiveProjection {
             None,
             at,
         )?;
-        for (id, message) in
-            super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
-        {
-            let fields = BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&message))]);
-            if self
-                .previews
-                .get(&id)
-                .is_some_and(|entry| fields_equal(&entry.fields, &fields))
-            {
-                continue;
-            }
-            let revision = self.bump_content_revision(&id);
-            let order = self
-                .order_index_of()?
-                .reserve_observed(&attempt.attempt_id, &id)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            let created_at = self.created_at(&id, at);
-            let state = ExecutionShape::Text(ThreadTextItem::new(
-                ThreadTextChannel::Commentary,
-                String::new(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(at),
-            ));
-            self.store_fact(
-                id.clone(),
-                Fact {
-                    ordinal: order,
-                    revision,
-                    created_at,
-                    turn_id: attempt.turn_id.clone(),
-                },
-            );
-            let entry = LivePreview {
-                fields,
-                observed: None,
-                shape: static_state(&state),
-                observed_version: progress.version(),
-                model_part: None,
-            };
-            self.store_preview(id, entry);
-        }
         Ok(())
     }
 

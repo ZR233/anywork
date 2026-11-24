@@ -726,7 +726,21 @@ async fn admitted_member_survives_safe_recovery_after_clean_eof() {
         1,
         "{diagnostic}"
     );
-    assert_eq!(members.len(), 2, "{diagnostic}");
+    assert_eq!(members.len(), 3, "{diagnostic}");
+    let interruption = pl_model::runtime::model_interruption_receipt(members[1])
+        .unwrap()
+        .expect("the failed request is admitted between original and recovered members");
+    assert_eq!(interruption.generation, 0, "{diagnostic}");
+    assert_eq!(
+        interruption
+            .parts
+            .iter()
+            .map(|part| part.text())
+            .collect::<String>(),
+        "frozen before EOF",
+        "{diagnostic}"
+    );
+    let members = [members[0], members[2]];
     assert_eq!(beginnings.len(), 2, "{diagnostic}");
     let mut receipts = Vec::new();
     for (index, generation, id, kind, text, part_kind) in [
@@ -933,7 +947,19 @@ async fn admitted_member_survives_early_eof_and_retry_failure() {
         .iter()
         .flat_map(|effect| effect.model_members.iter())
         .collect::<Vec<_>>();
-    assert_eq!(members.len(), 1);
+    assert_eq!(members.len(), 2);
+    let interruption = pl_model::runtime::model_interruption_receipt(members[1])
+        .unwrap()
+        .expect("first failed generation remains reliable after the retry fails permanently");
+    assert_eq!(interruption.generation, 0);
+    assert_eq!(
+        interruption
+            .parts
+            .iter()
+            .map(|part| part.text())
+            .collect::<String>(),
+        "frozen before EOF"
+    );
     assert_eq!(members[0].generation, 0);
     let beginnings: Vec<_> = effects
         .iter()

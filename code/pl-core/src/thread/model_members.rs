@@ -87,9 +87,11 @@ impl Owner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (invalid, conflict, duplicate) = match &member {
             MemberFact::Completed(member) => {
-                let old = seen
-                    .completed
-                    .get(&(member.generation, member.member_id.clone()));
+                let old = seen.completed.get(&(
+                    member.generation,
+                    member.payload.format().to_owned(),
+                    member.member_id.clone(),
+                ));
                 (
                     member.turn_id != call.turn_id
                         || member.attempt_id != call.attempt_id
@@ -196,7 +198,11 @@ impl Owner {
         match &member {
             MemberFact::Completed(member) => {
                 seen.completed.insert(
-                    (member.generation, member.member_id.clone()),
+                    (
+                        member.generation,
+                        member.payload.format().to_owned(),
+                        member.member_id.clone(),
+                    ),
                     (member.payload.clone(), charge),
                 );
             }

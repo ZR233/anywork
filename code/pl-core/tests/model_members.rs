@@ -1028,6 +1028,86 @@ async fn identical_member_from_a_distinct_allocation_is_charged_without_republic
 }
 
 #[tokio::test]
+async fn completed_member_formats_have_separate_identities_but_versions_still_conflict() {
+    struct NamespacedModel;
+    impl ModelSession for NamespacedModel {
+        async fn close(&mut self) -> Result<(), ModelError> {
+            Ok(())
+        }
+
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
+            Ok(PreparedModelCall::new(async move {
+                let sender = request.members.as_ref().unwrap();
+                for format in ["test.provider-item", "test.interruption"] {
+                    let payload = OpaquePayload::new(format, 1, "original content").unwrap();
+                    // Same generation/ID, distinct producer formats: both facts must survive.
+                    sender
+                        .submit(0, "same-id".into(), payload.clone(), None)
+                        .await
+                        .map_err(model_error)?;
+                    sender
+                        .submit(0, "same-id".into(), payload, None)
+                        .await
+                        .map_err(model_error)?;
+                }
+                assert!(matches!(
+                    sender
+                        .submit(
+                            0,
+                            "same-id".into(),
+                            OpaquePayload::new("test.provider-item", 2, "original content")
+                                .unwrap(),
+                            None
+                        )
+                        .await,
+                    Err(ModelMemberError::Rejected(_))
+                ));
+                Err(model_error(std::io::Error::other("version conflict")))
+            }))
+        }
+    }
+    let thread = ThreadHandle::start(
+        "namespaced-members".into(),
+        DynModelSession::new(NamespacedModel),
+    )
+    .unwrap();
+    assert!(
+        thread
+            .run_turn(TurnInput {
+                turn_id: "namespace-turn".into(),
+                attempt_prefix: "namespace-attempt".into(),
+                content: vec![ContextContent::Text {
+                    text: Arc::from("question")
+                }],
+                max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+                cancellation: Default::default(),
+            })
+            .await
+            .is_err()
+    );
+    let effects = thread.effects().await.unwrap();
+    let members = effects
+        .iter()
+        .flat_map(|effect| effect.model_members.iter())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        members.len(),
+        2,
+        "duplicates do not republish; version conflicts cannot replace original facts"
+    );
+    assert_eq!(members[0].payload.format(), "test.provider-item");
+    assert_eq!(members[1].payload.format(), "test.interruption");
+    assert!(
+        members.iter().all(|member| member.payload.version() == 1
+            && member.payload.content() == "original content")
+    );
+    thread.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn cancel_failure_and_conflict_preserve_previously_admitted_member() {
     for ending in [
         Ending::Cancel,

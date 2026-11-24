@@ -48,10 +48,10 @@ mod thread_model;
 pub use thread_model::migration;
 pub(crate) use thread_model::progress as model_part_identity;
 pub use thread_model::{
-    ModelCallBinding, ModelFailureReceipt, ModelMemberReceipt, ModelMemberState,
-    ModelRequestReceipt, ModelResponseReceipt, TextCompactionBinding, ThreadCompaction,
-    ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy, ThreadModel,
-    ToolAttachment, attachment_content, decode_attachment, migrate_legacy_compaction,
-    model_failure_receipt, model_member_receipt, model_request_receipt, model_response_receipt,
-    thread_tool_declaration, validate_attachment_content,
+    ModelCallBinding, ModelFailureReceipt, ModelInterruptionReceipt, ModelMemberReceipt,
+    ModelMemberState, ModelRequestReceipt, ModelResponseReceipt, TextCompactionBinding,
+    ThreadCompaction, ThreadCompactionDecision, ThreadCompactionOptions, ThreadCompactionStrategy,
+    ThreadModel, ToolAttachment, attachment_content, decode_attachment, migrate_legacy_compaction,
+    model_failure_receipt, model_interruption_receipt, model_member_receipt, model_request_receipt,
+    model_response_receipt, thread_tool_declaration, validate_attachment_content,
 };
