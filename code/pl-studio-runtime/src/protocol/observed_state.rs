@@ -1,23 +1,5 @@
 //! 外部资源观察状态；每个 variant 只持有当前阶段合法的字段。
 
-mod degraded;
-mod failed;
-mod loading;
-mod ready;
-mod refreshing;
-mod stale;
-mod stopped;
-mod uninitialized;
-
-pub use degraded::DegradedResource;
-pub use failed::FailedResource;
-pub use loading::LoadingResource;
-pub use ready::ReadyResource;
-pub use refreshing::RefreshingResource;
-pub use stale::StaleResource;
-pub use stopped::StoppedResource;
-pub use uninitialized::UninitializedResource;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -301,6 +283,21 @@ impl<T> ObservedResource<T> {
     }
 }
 
+fn cached_observation<T: Clone>(state: &ObservedResource<T>) -> Option<(i64, T)> {
+    match state {
+        ObservedResource::Ready(current) => {
+            Some((current.last_checked_at(), current.value().clone()))
+        }
+        ObservedResource::Stale(current) => {
+            Some((current.last_checked_at(), current.value().clone()))
+        }
+        ObservedResource::Degraded(current) => {
+            Some((current.last_checked_at(), current.value().clone()))
+        }
+        _ => None,
+    }
+}
+
 impl<T> ObservedResource<T>
 where
     T: Clone + PartialEq + std::fmt::Debug,
@@ -322,6 +319,28 @@ where
             });
         }
         let revision = self.revision().saturating_add(1);
+        if let ObservedResourceCommand::Begin {
+            operation,
+            operation_id,
+            started_at,
+            ..
+        } = &command
+        {
+            if let Some((last_checked_at, value)) = cached_observation(self) {
+                let next_state = Self::Refreshing(RefreshingResource::new(
+                    revision,
+                    *operation,
+                    operation_id.clone(),
+                    *started_at,
+                    last_checked_at,
+                    value,
+                ));
+                return Ok(ObservedResourceTransitionDecision {
+                    changed: next_state != *self,
+                    next_state,
+                });
+            }
+        }
         let next_state = match (self, &command) {
             (
                 Self::Uninitialized(_) | Self::Failed(_),
@@ -336,54 +355,6 @@ where
                 *operation,
                 operation_id.clone(),
                 *started_at,
-            )),
-            (
-                Self::Ready(current),
-                ObservedResourceCommand::Begin {
-                    operation,
-                    operation_id,
-                    started_at,
-                    ..
-                },
-            ) => Self::Refreshing(RefreshingResource::new(
-                revision,
-                *operation,
-                operation_id.clone(),
-                *started_at,
-                current.last_checked_at(),
-                current.value().clone(),
-            )),
-            (
-                Self::Stale(current),
-                ObservedResourceCommand::Begin {
-                    operation,
-                    operation_id,
-                    started_at,
-                    ..
-                },
-            ) => Self::Refreshing(RefreshingResource::new(
-                revision,
-                *operation,
-                operation_id.clone(),
-                *started_at,
-                current.last_checked_at(),
-                current.value().clone(),
-            )),
-            (
-                Self::Degraded(current),
-                ObservedResourceCommand::Begin {
-                    operation,
-                    operation_id,
-                    started_at,
-                    ..
-                },
-            ) => Self::Refreshing(RefreshingResource::new(
-                revision,
-                *operation,
-                operation_id.clone(),
-                *started_at,
-                current.last_checked_at(),
-                current.value().clone(),
             )),
             (
                 Self::Loading(_) | Self::Refreshing(_),
@@ -486,4 +457,354 @@ pub enum StateOperation {
     Repair,
     Reset,
     Shutdown,
+}
+
+/// 刷新失败但仍保留可展示 last-known value 的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DegradedResource<T> {
+    revision: u64,
+    failed_at: i64,
+    last_checked_at: Option<i64>,
+    operation: StateOperation,
+    error: StateError,
+    value: T,
+}
+
+impl<T> DegradedResource<T> {
+    pub(super) fn new(
+        revision: u64,
+        failed_at: i64,
+        last_checked_at: Option<i64>,
+        operation: StateOperation,
+        error: StateError,
+        value: T,
+    ) -> Self {
+        Self {
+            revision,
+            failed_at,
+            last_checked_at,
+            operation,
+            error,
+            value,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn failed_at(&self) -> i64 {
+        self.failed_at
+    }
+
+    pub fn last_checked_at(&self) -> Option<i64> {
+        self.last_checked_at
+    }
+
+    pub fn operation(&self) -> StateOperation {
+        self.operation
+    }
+
+    pub fn error(&self) -> &StateError {
+        &self.error
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(super) fn into_value(self) -> T {
+        self.value
+    }
+}
+
+/// 加载失败且没有可用值的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FailedResource {
+    revision: u64,
+    failed_at: i64,
+    operation: StateOperation,
+    error: StateError,
+}
+
+impl FailedResource {
+    pub(super) fn new(
+        revision: u64,
+        failed_at: i64,
+        operation: StateOperation,
+        error: StateError,
+    ) -> Self {
+        Self {
+            revision,
+            failed_at,
+            operation,
+            error,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn failed_at(&self) -> i64 {
+        self.failed_at
+    }
+
+    pub fn operation(&self) -> StateOperation {
+        self.operation
+    }
+
+    pub fn error(&self) -> &StateError {
+        &self.error
+    }
+}
+
+/// 首次加载中；此阶段没有可展示的旧值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LoadingResource {
+    revision: u64,
+    operation: StateOperation,
+    operation_id: String,
+    started_at: i64,
+}
+
+impl LoadingResource {
+    pub(super) fn new(
+        revision: u64,
+        operation: StateOperation,
+        operation_id: String,
+        started_at: i64,
+    ) -> Self {
+        Self {
+            revision,
+            operation,
+            operation_id,
+            started_at,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn operation(&self) -> StateOperation {
+        self.operation
+    }
+
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    pub fn started_at(&self) -> i64 {
+        self.started_at
+    }
+}
+
+/// 已就绪且与 desired state 一致的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReadyResource<T> {
+    revision: u64,
+    updated_at: i64,
+    last_checked_at: Option<i64>,
+    value: T,
+}
+
+impl<T> ReadyResource<T> {
+    pub(super) fn new(revision: u64, updated_at: i64, value: T) -> Self {
+        Self::new_observed(revision, updated_at, None, value)
+    }
+
+    pub(super) fn new_observed(
+        revision: u64,
+        updated_at: i64,
+        last_checked_at: Option<i64>,
+        value: T,
+    ) -> Self {
+        Self {
+            revision,
+            updated_at,
+            last_checked_at,
+            value,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn updated_at(&self) -> i64 {
+        self.updated_at
+    }
+
+    pub fn last_checked_at(&self) -> Option<i64> {
+        self.last_checked_at
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(super) fn into_value(self) -> T {
+        self.value
+    }
+}
+
+/// 刷新中，并保留可展示的 last-known value。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RefreshingResource<T> {
+    revision: u64,
+    operation: StateOperation,
+    operation_id: String,
+    started_at: i64,
+    last_checked_at: Option<i64>,
+    value: T,
+}
+
+impl<T> RefreshingResource<T> {
+    pub(super) fn new(
+        revision: u64,
+        operation: StateOperation,
+        operation_id: String,
+        started_at: i64,
+        last_checked_at: Option<i64>,
+        value: T,
+    ) -> Self {
+        Self {
+            revision,
+            operation,
+            operation_id,
+            started_at,
+            last_checked_at,
+            value,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn operation(&self) -> StateOperation {
+        self.operation
+    }
+
+    pub fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
+    pub fn started_at(&self) -> i64 {
+        self.started_at
+    }
+
+    pub fn last_checked_at(&self) -> Option<i64> {
+        self.last_checked_at
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(super) fn into_value(self) -> T {
+        self.value
+    }
+}
+
+/// 已明确失效但仍可展示 last-known value 的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaleResource<T> {
+    revision: u64,
+    stale_at: i64,
+    last_checked_at: Option<i64>,
+    value: T,
+}
+
+impl<T> StaleResource<T> {
+    pub(super) fn new(
+        revision: u64,
+        stale_at: i64,
+        last_checked_at: Option<i64>,
+        value: T,
+    ) -> Self {
+        Self {
+            revision,
+            stale_at,
+            last_checked_at,
+            value,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn stale_at(&self) -> i64 {
+        self.stale_at
+    }
+
+    pub fn last_checked_at(&self) -> Option<i64> {
+        self.last_checked_at
+    }
+
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub(super) fn into_value(self) -> T {
+        self.value
+    }
+}
+
+/// 已停止且不再暴露旧值的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StoppedResource {
+    revision: u64,
+    stopped_at: i64,
+}
+
+impl StoppedResource {
+    pub(super) fn new(revision: u64, stopped_at: i64) -> Self {
+        Self {
+            revision,
+            stopped_at,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn stopped_at(&self) -> i64 {
+        self.stopped_at
+    }
+}
+
+/// 尚未加载、没有可用值的资源。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UninitializedResource {
+    revision: u64,
+    updated_at: i64,
+}
+
+impl UninitializedResource {
+    pub(super) fn new(updated_at: i64) -> Self {
+        Self {
+            revision: 0,
+            updated_at,
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn updated_at(&self) -> i64 {
+        self.updated_at
+    }
 }

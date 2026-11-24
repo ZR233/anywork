@@ -217,7 +217,7 @@ pub(in crate::studio::storage::history) fn current_owner(
         revision,
     };
     ensure!(
-        crate::studio::conversation_identity::content_owner_key(&owner)? == *key,
+        crate::studio::content_owner_key(&owner)? == *key,
         "noncanonical current content owner"
     );
     Ok(Some(owner))

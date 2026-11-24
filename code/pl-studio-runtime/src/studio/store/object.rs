@@ -10,7 +10,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::thread_preparation::PreparationObjectError;
-use crate::studio::entity::studio_object;
 
 pub(in crate::studio) fn checked_bump_revision(revision: &mut u64, kind: &str) -> Result<()> {
     *revision = revision
@@ -33,6 +32,31 @@ pub(in crate::studio) trait PersistedStudioObject: Sized {
     fn validate_owner(&self, _owner_id: &str) -> Result<()> {
         Ok(())
     }
+}
+
+pub(in crate::studio) mod studio_object {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
+    #[sea_orm(table_name = "studio_objects")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_kind: String,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_id: String,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub object_kind: String,
+        pub revision: i64,
+        pub schema_version: i64,
+        pub payload_json: String,
+        pub payload_hash: String,
+        pub updated_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
 }
 
 pub(in crate::studio) async fn load_object<T>(

@@ -32,7 +32,7 @@ mod mode_migration_tests {
     use sea_orm::ConnectionTrait;
 
     fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
-        let mut definition = crate::studio::thread::auto::REGISTRATION.to_registration()?;
+        let mut definition = crate::studio::thread::REGISTRATION.to_registration()?;
         definition.id = crate::mode::ThreadModeId::new("mode.migration")?;
         let source = ThreadModeSource::external(ThreadModeSourceId::new("migration-fixture")?);
         let registry = manager.replace_source(source, [definition])?;

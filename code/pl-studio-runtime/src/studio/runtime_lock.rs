@@ -175,9 +175,7 @@ impl RuntimeLock {
         let metadata = RuntimeLockMetadata {
             pid: std::process::id(),
             host: host.as_str(),
-            started_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_secs()),
+            started_at: u64::try_from(super::ids::unix_seconds()).unwrap_or(0),
         };
         let encoded = serde_json::to_vec(&metadata).map_err(|error| {
             tracing::error!(error = %error, "failed to encode Studio runtime lock metadata");

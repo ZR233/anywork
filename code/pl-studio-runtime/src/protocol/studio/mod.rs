@@ -16,7 +16,6 @@ mod receipt;
 mod request;
 mod settings;
 mod settings_update;
-mod thread_lsp;
 mod thread_preparation;
 mod workspace;
 
@@ -36,6 +35,5 @@ pub use receipt::*;
 pub use request::*;
 pub use settings::*;
 pub use settings_update::*;
-pub use thread_lsp::*;
 pub use thread_preparation::*;
 pub use workspace::*;

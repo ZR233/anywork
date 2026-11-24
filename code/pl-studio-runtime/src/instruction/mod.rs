@@ -7,7 +7,6 @@
 mod assembler;
 mod migration;
 mod snapshot;
-mod structure;
 mod types;
 
 pub use assembler::InstructionAssembler;

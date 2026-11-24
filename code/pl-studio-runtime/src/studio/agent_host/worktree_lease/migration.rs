@@ -8,7 +8,7 @@ use sea_orm::{
 use serde::Deserialize;
 
 use super::{WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState};
-use crate::studio::entity::studio_object;
+use crate::studio::store::object::studio_object;
 use crate::studio::store::object::{PersistedStudioObject, decode_object};
 
 #[derive(Deserialize)]

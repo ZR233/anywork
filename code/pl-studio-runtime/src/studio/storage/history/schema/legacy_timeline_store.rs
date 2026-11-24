@@ -598,7 +598,7 @@ async fn rebuild_thinking_summary(
             anyhow::bail!("reasoning summary is not a body reference");
         };
         let key = pl_core::chat::ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+            owner: crate::studio::content_owner_key(owner)?,
             key: key.clone(),
         };
         let row = db

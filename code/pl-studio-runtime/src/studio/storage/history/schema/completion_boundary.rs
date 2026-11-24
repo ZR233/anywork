@@ -214,13 +214,11 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
             } else if let Some(encoded) = owner.strip_prefix("7:current") {
                 let (domain, id, revision): (String, String, u64) = serde_json::from_str(encoded)?;
                 ensure!(
-                    crate::studio::conversation_identity::content_owner_key(
-                        &crate::ContentOwner::Current {
-                            domain,
-                            id,
-                            revision
-                        },
-                    )? == identity,
+                    crate::studio::content_owner_key(&crate::ContentOwner::Current {
+                        domain,
+                        id,
+                        revision
+                    },)? == identity,
                     "invalid unfinished current owner"
                 );
                 let row = db.query_one_raw(statement(
@@ -230,7 +228,7 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
                     serde_json::from_slice(&row.try_get::<Vec<u8>>("", "payload")?)?;
                 let referenced = super::legacy_current::references(&original).any(|reference| {
                     matches!(&reference.target, ContentTarget::Body {owner: candidate,key: candidate_key}
-                        if crate::studio::conversation_identity::content_owner_key(candidate).as_ref().ok()==Some(&identity)
+                        if crate::studio::content_owner_key(candidate).as_ref().ok()==Some(&identity)
                             && candidate_key==&key)
                 });
                 let entry = db
@@ -270,9 +268,7 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
                         } = body.reference.target
                         {
                             ensure!(
-                                crate::studio::conversation_identity::content_owner_key(
-                                    &referenced
-                                )? != identity
+                                crate::studio::content_owner_key(&referenced)? != identity
                                     || referenced_key != key,
                                 "unfinished content is referenced by a completion"
                             );
@@ -546,7 +542,7 @@ mod tests {
                 content: Arc::new(ChatContent {
                     descriptor: ContentDescriptor {
                         key: ChatContentKey {
-                            owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+                            owner: crate::studio::content_owner_key(&owner)?,
                             key: "body".into(),
                         },
                         byte_length: bytes.len() as u64,

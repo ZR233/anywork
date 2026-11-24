@@ -4,8 +4,7 @@ use crate::studio::{
     agent_host::worktree_lease::{
         WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind, WorktreeLeaseState,
     },
-    entity::studio_object,
-    store::object::{PersistedStudioObject, decode_object},
+    store::object::{PersistedStudioObject, decode_object, studio_object},
 };
 use anyhow::{Result, ensure};
 use pl_core::context::content_hash;

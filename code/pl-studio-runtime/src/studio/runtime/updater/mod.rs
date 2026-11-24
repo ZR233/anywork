@@ -1,6 +1,5 @@
 //! Process-owned update scheduling, current operation, and verified installer lease.
 
-mod automatic;
 mod state;
 
 pub use state::*;
@@ -209,7 +208,7 @@ impl StudioUpdateRuntime {
 
     /// A retained scheduler owns one round at a time; UI cancellation never cancels `stop`.
     pub(crate) async fn run_automatic(&self, stop: StudioUpdateCancellation) {
-        automatic::schedule(&stop, || async {
+        schedule(&stop, || async {
             if let Err(error) = self.abort_cancelled_installation().await {
                 self.publish_owner_failure(&error).await;
                 return;
@@ -903,7 +902,7 @@ mod tests {
         }
     }
     async fn next(owner: &StudioUpdateRuntime, io: &TestIo, calls: usize) {
-        tokio::time::advance(automatic::CHECK_INTERVAL).await;
+        tokio::time::advance(CHECK_INTERVAL).await;
         settle(owner, io, calls).await;
     }
 
@@ -947,7 +946,7 @@ mod tests {
             owner.read().await.activity,
             StudioUpdateActivity::CheckFailed(_)
         ));
-        tokio::time::advance(automatic::CHECK_INTERVAL - std::time::Duration::from_secs(1)).await;
+        tokio::time::advance(CHECK_INTERVAL - std::time::Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(io.calls.load(Ordering::SeqCst), 1);
         tokio::time::advance(std::time::Duration::from_secs(1)).await;
@@ -1052,7 +1051,7 @@ mod tests {
         owner.cancel_current().await?;
         assert_eq!(io.live_downloads.load(Ordering::SeqCst), 0);
         assert!(!task.is_finished());
-        tokio::time::advance(automatic::CHECK_INTERVAL).await;
+        tokio::time::advance(CHECK_INTERVAL).await;
         download_started(&io).await;
         assert_eq!(io.calls.load(Ordering::SeqCst), 2);
         assert_eq!(io.live_downloads.load(Ordering::SeqCst), 1);
@@ -1098,7 +1097,7 @@ mod tests {
             !task.is_finished(),
             "preparation completion never waits for scheduler exit"
         );
-        tokio::time::advance(automatic::CHECK_INTERVAL).await;
+        tokio::time::advance(CHECK_INTERVAL).await;
         tokio::task::yield_now().await;
         assert_eq!(
             io.calls.load(Ordering::SeqCst),
@@ -1129,7 +1128,7 @@ mod tests {
             async move { owner.run_automatic(stop).await }
         });
         settle(&owner, &io, 1).await;
-        tokio::time::advance(automatic::CHECK_INTERVAL).await;
+        tokio::time::advance(CHECK_INTERVAL).await;
         download_started(&io).await;
         assert_eq!(
             owner
@@ -1191,14 +1190,14 @@ mod tests {
             let stop = stop.clone();
             let count = count.clone();
             async move {
-                automatic::schedule(&stop, || {
+                schedule(&stop, || {
                     let count = count.clone();
                     let entered = entered.clone();
                     async move {
                         let n = count.fetch_add(1, Ordering::SeqCst);
                         entered.send(n).unwrap();
                         if n == 0 {
-                            tokio::time::sleep(automatic::CHECK_INTERVAL * 4).await;
+                            tokio::time::sleep(CHECK_INTERVAL * 4).await;
                         }
                     }
                 })
@@ -1206,7 +1205,7 @@ mod tests {
             }
         });
         assert_eq!(entries.recv().await, Some(0));
-        tokio::time::advance(automatic::CHECK_INTERVAL * 4).await;
+        tokio::time::advance(CHECK_INTERVAL * 4).await;
         assert_eq!(entries.recv().await, Some(1));
         for _ in 0..10 {
             tokio::task::yield_now().await;
@@ -1274,5 +1273,38 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+use std::future::Future;
+use std::time::Duration;
+
+use tokio::time::{MissedTickBehavior, interval};
+
+const CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
+
+/// The callback owns and joins its current round, including after cancellation.
+/// Only the process stop signal ends scheduling; failures cannot escape a tick.
+async fn schedule<F, Fut>(stop: &StudioUpdateCancellation, mut round: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut ticks = interval(CHECK_INTERVAL);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            biased;
+            _ = stop.cancelled() => return,
+            _ = ticks.tick() => {}
+        }
+        // Include callback construction in the unwind boundary as well as polling.
+        if AssertUnwindSafe(async { round().await })
+            .catch_unwind()
+            .await
+            .is_err()
+        {
+            tracing::error!("Studio update scheduling round panicked; continuing next interval");
+        }
     }
 }

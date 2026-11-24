@@ -1,7 +1,7 @@
 //! Effect-local product current and its read owners. No completed-history mirror lives here.
 
 use crate::studio::{
-    conversation_identity::content_owner_key,
+    content_owner_key,
     runtime::chat_item::{BodyKey, TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD},
 };
 use crate::*;
