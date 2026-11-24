@@ -36,6 +36,14 @@ const _accountBrandAssets = <String, _AccountBrandAsset>{
     path: 'assets/provider-logos/mimo.svg',
     color: Color(0xFF000000),
   ),
+  'gemini': _AccountBrandAsset(
+    path: 'assets/provider-logos/gemini.svg',
+    color: Color(0xFF1A73E8),
+  ),
+  'vertex': _AccountBrandAsset(
+    path: 'assets/provider-logos/vertex.svg',
+    color: Color(0xFF4285F4),
+  ),
 };
 
 /// Brand mark for a account, keyed by the catalog `iconKey`.
@@ -87,6 +95,7 @@ class AccountBrandMark extends StatelessWidget {
         child: Center(
           child: SvgPicture.asset(
             brand.path,
+            package: 'anywork',
             width: size * 0.6,
             height: size * 0.6,
             colorFilter: ColorFilter.mode(brand.color, BlendMode.srcIn),

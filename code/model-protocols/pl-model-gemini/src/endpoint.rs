@@ -34,9 +34,9 @@ fn build_endpoint(name: &str, default_url: &str, base_url: Option<String>) -> Pr
 }
 
 pub fn vertex_endpoint(base_url: Option<String>) -> ProtocolEndpoint {
-    build_endpoint("Google Cloud Vertex AI", VERTEX_BASE_URL, base_url)
+    build_endpoint("Vertex AI", VERTEX_BASE_URL, base_url)
 }
 
 pub fn gemini_api_endpoint(base_url: Option<String>) -> ProtocolEndpoint {
-    build_endpoint("Google Gemini API", GEMINI_API_BASE_URL, base_url)
+    build_endpoint("AI Studio", GEMINI_API_BASE_URL, base_url)
 }

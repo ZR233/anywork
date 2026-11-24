@@ -370,40 +370,49 @@ final class ManualModelDraft {
   );
   ManualAccountModelPresentation presentation(
     AccountStrings strings,
-    AccountModelView? descriptor,
-  ) => ManualAccountModelPresentation(
-    editorKey: editorKey,
-    id: AccountTextPresentation(
-      raw: id,
-      error: id.trim().isEmpty ? strings['required'] : null,
-    ),
-    name: AccountTextPresentation(raw: name),
-    contextWindow: AccountTextPresentation(
-      raw: context,
-      error: context.isNotEmpty && positiveAccountInteger(context) == null
-          ? strings['positiveInteger']
-          : null,
-    ),
-    maxOutputTokens: AccountTextPresentation(
-      raw: output,
-      error: output.isNotEmpty && positiveAccountInteger(output) == null
-          ? strings['positiveInteger']
-          : null,
-    ),
-    wireApi: wireApi,
-    allowedWireApis: AccountWireApi.values,
-    connection: connection,
-    allowedConnections: [
-      AccountConnection.automatic,
-      if (savedId == null ||
-          descriptor?.supportedConnectionModes.contains('http') == true)
-        AccountConnection.http,
-      if (savedId != null &&
-          descriptor?.supportedConnectionModes.contains('web_socket') == true)
-        AccountConnection.webSocket,
-    ],
-    canRemove: true,
-    canEditId: savedId == null,
-    error: validate(strings),
-  );
+    AccountModelView? descriptor, {
+    String? accountProtocol,
+  }) {
+    final isGeminiProtocol = accountProtocol == 'gemini';
+    return ManualAccountModelPresentation(
+      editorKey: editorKey,
+      id: AccountTextPresentation(
+        raw: id,
+        error: id.trim().isEmpty ? strings['required'] : null,
+      ),
+      name: AccountTextPresentation(raw: name),
+      contextWindow: AccountTextPresentation(
+        raw: context,
+        error: context.isNotEmpty && positiveAccountInteger(context) == null
+            ? strings['positiveInteger']
+            : null,
+      ),
+      maxOutputTokens: AccountTextPresentation(
+        raw: output,
+        error: output.isNotEmpty && positiveAccountInteger(output) == null
+            ? strings['positiveInteger']
+            : null,
+      ),
+      wireApi: wireApi,
+      allowedWireApis: isGeminiProtocol
+          ? const [AccountWireApi.geminiGenerateContent]
+          : const [AccountWireApi.chatCompletions, AccountWireApi.responses],
+      connection: connection,
+      allowedConnections: isGeminiProtocol
+          ? const [AccountConnection.automatic, AccountConnection.http]
+          : [
+              AccountConnection.automatic,
+              if (savedId == null ||
+                  descriptor?.supportedConnectionModes.contains('http') == true)
+                AccountConnection.http,
+              if (savedId != null &&
+                  descriptor?.supportedConnectionModes.contains('web_socket') ==
+                      true)
+                AccountConnection.webSocket,
+            ],
+      canRemove: true,
+      canEditId: savedId == null,
+      error: validate(strings),
+    );
+  }
 }

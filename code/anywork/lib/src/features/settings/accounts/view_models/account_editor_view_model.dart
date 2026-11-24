@@ -794,9 +794,12 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
 
   String _appendModelRow() {
     final editorKey = '${_key.editorId}-row-${++_rowSequence}';
+    final wireApi = _raw!.protocol == 'gemini'
+        ? AccountWireApi.geminiGenerateContent
+        : AccountWireApi.chatCompletions;
     _raw = _raw!.withRows([
       ..._raw!.rows,
-      ManualModelDraft(editorKey: editorKey),
+      ManualModelDraft(editorKey: editorKey, wireApi: wireApi),
     ]);
     _revision++;
     return editorKey;
@@ -1415,6 +1418,7 @@ class AccountEditorViewModel extends _$AccountEditorViewModel {
                             modelId: row.id,
                           ),
                         ),
+                        accountProtocol: draft.protocol,
                       )
                       .copyWith(canRemove: !_saving && !_unknownResult),
               ],

@@ -25,27 +25,99 @@ class AccountTemplateSelector extends StatefulWidget {
       _AccountTemplateSelectorState();
 }
 
+class _TemplateOption {
+  const _TemplateOption({
+    required this.key,
+    required this.valueKeyId,
+    required this.label,
+    required this.iconKey,
+  });
+
+  final AccountTemplateKey key;
+  final String valueKeyId;
+  final String label;
+  final String? iconKey;
+}
+
+bool _isGeminiTemplate(AccountTemplateKey? key) =>
+    key != null &&
+    key.kind == AccountKind.native &&
+    (key.id == 'vertex-ai' || key.id == 'gemini');
+
 class _AccountTemplateSelectorState extends State<AccountTemplateSelector> {
   final TextEditingController _search = TextEditingController();
-  AccountTemplatePresentation? get _selection =>
-      widget.templates.where((item) => item.key == widget.selected).firstOrNull;
+
+  List<_TemplateOption> _nativeOptions(
+    List<AccountTemplatePresentation> templates,
+    AccountTemplateKey? selected,
+  ) {
+    final native = templates
+        .where((template) => template.key.kind == AccountKind.native)
+        .toList();
+    final preferredGeminiKey = native
+        .where(
+          (template) =>
+              template.key.id == 'gemini' || template.key.id == 'vertex-ai',
+        )
+        .fold<AccountTemplateKey?>(null, (picked, item) {
+          if (item.key.id == 'gemini') return item.key;
+          return picked ?? item.key;
+        });
+
+    final options = <_TemplateOption>[];
+    var addedGemini = false;
+    for (final template in native) {
+      if (_isGeminiTemplate(template.key)) {
+        if (addedGemini) continue;
+        addedGemini = true;
+        options.add(
+          _TemplateOption(
+            key: _isGeminiTemplate(selected) ? selected! : preferredGeminiKey!,
+            valueKeyId: 'gemini',
+            label: 'Gemini',
+            iconKey: 'gemini',
+          ),
+        );
+        continue;
+      }
+      options.add(
+        _TemplateOption(
+          key: template.key,
+          valueKeyId: template.key.id,
+          label: template.name,
+          iconKey: template.iconKey,
+        ),
+      );
+    }
+    return options;
+  }
+
+  String _selectionLabel(
+    List<AccountTemplatePresentation> templates,
+    AccountTemplateKey? selected,
+  ) {
+    final options = _nativeOptions(templates, selected);
+    return options.where((item) => item.key == selected).firstOrNull?.label ??
+        templates.where((item) => item.key == selected).firstOrNull?.name ??
+        '';
+  }
 
   @override
   void initState() {
     super.initState();
-    _search.text = _selection?.name ?? '';
+    _search.text = _selectionLabel(widget.templates, widget.selected);
   }
 
   @override
   void didUpdateWidget(covariant AccountTemplateSelector oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final previousName = oldWidget.templates
-        .where((item) => item.key == oldWidget.selected)
-        .firstOrNull
-        ?.name;
-    if (oldWidget.selected != widget.selected ||
-        previousName != _selection?.name) {
-      _search.text = _selection?.name ?? '';
+    final previousName = _selectionLabel(
+      oldWidget.templates,
+      oldWidget.selected,
+    );
+    final nextName = _selectionLabel(widget.templates, widget.selected);
+    if (oldWidget.selected != widget.selected || previousName != nextName) {
+      _search.text = nextName;
     }
   }
 
@@ -59,9 +131,7 @@ class _AccountTemplateSelectorState extends State<AccountTemplateSelector> {
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final kind = widget.selected?.kind ?? AccountKind.native;
-    final native = widget.templates
-        .where((template) => template.key.kind == AccountKind.native)
-        .toList();
+    final options = _nativeOptions(widget.templates, widget.selected);
     final acp = widget.templates
         .where(
           (template) =>
@@ -90,10 +160,10 @@ class _AccountTemplateSelectorState extends State<AccountTemplateSelector> {
                   final next = selection.single;
                   if (next == kind) return;
                   final target = next == AccountKind.acp
-                      ? acp
-                      : native.firstOrNull;
+                      ? acp?.key
+                      : options.firstOrNull?.key;
                   if (target != null) {
-                    widget.onSelected(target.key);
+                    widget.onSelected(target);
                   }
                 },
         ),
@@ -110,28 +180,28 @@ class _AccountTemplateSelectorState extends State<AccountTemplateSelector> {
             initialSelection: widget.selected,
             label: Text(l10n.settingsAccountTemplate),
             dropdownMenuEntries: [
-              for (final template in native)
+              for (final option in options)
                 DropdownMenuEntry(
-                  value: template.key,
-                  label: template.name,
+                  value: option.key,
+                  label: option.label,
                   labelWidget: Text(
-                    template.name,
+                    option.label,
                     key: ValueKey(
                       AccountViewKeyValues.template(
-                        template.key.kind.name,
-                        template.key.id,
+                        option.key.kind.name,
+                        option.valueKeyId,
                       ),
                     ),
                   ),
                   leadingIcon: AccountBrandMark(
-                    fallbackName: template.name,
-                    iconKey: template.iconKey,
+                    fallbackName: option.label,
+                    iconKey: option.iconKey,
                     size: 28,
                   ),
                 ),
             ],
             onSelected: (value) {
-              _search.text = _selection?.name ?? '';
+              _search.text = _selectionLabel(widget.templates, widget.selected);
               if (value != null && value != widget.selected) {
                 widget.onSelected(value);
               }

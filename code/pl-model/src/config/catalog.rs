@@ -181,11 +181,11 @@ impl AccountCatalogRegistry {
             &gemini.suggested_model,
             "vertex-ai",
             "GCP_API_KEY",
-            "Google Cloud Vertex AI Gemini models (API Key).",
+            "Vertex AI Gemini API.",
             "gemini",
         );
-        vertex_ai.credential_label = "Vertex AI API Key".to_owned();
-        vertex_ai.icon_key = None;
+        vertex_ai.credential_label = "Vertex AI API key".to_owned();
+        vertex_ai.icon_key = Some("vertex".to_owned());
         templates.push(vertex_ai);
 
         let mut gemini_api = template(
@@ -194,11 +194,11 @@ impl AccountCatalogRegistry {
             &gemini.suggested_model,
             "gemini",
             "GEMINI_API_KEY",
-            "Google Gemini Developer API (AI Studio).",
+            "Google AI Studio Gemini API.",
             "gemini",
         );
-        gemini_api.credential_label = "Gemini API Key".to_owned();
-        gemini_api.icon_key = None;
+        gemini_api.credential_label = "Gemini API key".to_owned();
+        gemini_api.icon_key = Some("gemini".to_owned());
         templates.push(gemini_api);
 
         let mut compatible = template(

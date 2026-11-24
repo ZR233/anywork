@@ -1458,12 +1458,12 @@
   "settingsApiKeyOptional": "API 密钥（可选）",
   "modelProtocolResponses": "Responses（响应式接口）",
   "modelProtocolChatCompletions": "Chat Completions（对话补全）",
-  "modelProtocolGeminiGenerateContent": "Gemini GenerateContent（原生接口）",
+  "modelProtocolGeminiGenerateContent": "Gemini API（generateContent）",
   "modelConnectionWebSocket": "WS（WebSocket 长连接）",
   "modelConnectionHttp": "HTTP",
   "settingsProtocolChatCompletionsHttp": "Chat Completions（对话补全，HTTP）",
   "settingsProtocolResponsesHttp": "Responses（响应式接口，HTTP）",
-  "settingsProtocolGeminiGenerateContentHttp": "Gemini GenerateContent（原生接口，HTTP）",
+  "settingsProtocolGeminiGenerateContentHttp": "Gemini API（generateContent，HTTP）",
   "settingsAgentRouteUnavailable": "{route}（不可用）",
   "@settingsAgentRouteUnavailable": {
     "placeholders": {
@@ -3299,5 +3299,21 @@
   "timelineOutcomeStatusDenied": "已拒绝",
   "timelineOutcomeStatusCancelled": "已取消",
   "timelineOutcomeStatusCompleted": "已完成",
-  "timelineOutcomeStatusSucceeded": "已成功"
+  "timelineOutcomeStatusSucceeded": "已成功",
+  "accountsGeminiModeAiStudio": "AI Studio",
+  "accountsGeminiModeVertexAi": "Vertex AI",
+  "accountsGeminiModeCustom": "自定义端点",
+  "accountsGeminiHintAiStudio": "使用 Google AI Studio 的 Gemini API 密钥（x-goog-api-key），支持在线获取模型列表。",
+  "accountsGeminiHintVertexAi": "使用 Vertex AI API 密钥（x-goog-api-key）访问 Gemini 模型，推荐使用 global 端点。",
+  "accountsGeminiHintCustom": "使用自定义 Gemini API（generateContent）端点，通过 x-goog-api-key 鉴权。",
+  "accountsGeminiBadgeHeader": "x-goog-api-key",
+  "accountsGeminiBadgeMultimodal": "多模态",
+  "accountsGeminiBadgeDiscovery": "在线目录",
+  "accountsGeminiBadgeBundledCatalog": "内置目录",
+  "accountsGeminiBadgeImplicitCache": "隐式缓存",
+  "accountsGeminiEndpointPresetsLabel": "端点",
+  "accountsGeminiPresetGlobal": "global（推荐）",
+  "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",
+  "accountsGeminiCredentialLabelVertex": "Vertex AI API 密钥",
+  "accountsGeminiCredentialLabelAiStudio": "Gemini API 密钥"
 }

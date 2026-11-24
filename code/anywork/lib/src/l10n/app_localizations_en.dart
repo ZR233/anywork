@@ -3970,7 +3970,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions';
 
   @override
-  String get modelProtocolGeminiGenerateContent => 'Gemini GenerateContent';
+  String get modelProtocolGeminiGenerateContent =>
+      'Gemini API (generateContent)';
 
   @override
   String get modelConnectionWebSocket => 'WS';
@@ -3986,7 +3987,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsProtocolGeminiGenerateContentHttp =>
-      'Gemini GenerateContent (HTTP)';
+      'Gemini API (generateContent, HTTP)';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -8186,4 +8187,55 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineOutcomeStatusSucceeded => 'Succeeded';
+
+  @override
+  String get accountsGeminiModeAiStudio => 'AI Studio';
+
+  @override
+  String get accountsGeminiModeVertexAi => 'Vertex AI';
+
+  @override
+  String get accountsGeminiModeCustom => 'Custom endpoint';
+
+  @override
+  String get accountsGeminiHintAiStudio =>
+      'Access the Gemini API with a Google AI Studio API key (x-goog-api-key), including online model listing.';
+
+  @override
+  String get accountsGeminiHintVertexAi =>
+      'Access Gemini models with a Vertex AI API key (x-goog-api-key). The global endpoint is recommended.';
+
+  @override
+  String get accountsGeminiHintCustom =>
+      'Connect to a custom Gemini API (generateContent) endpoint using x-goog-api-key authentication.';
+
+  @override
+  String get accountsGeminiBadgeHeader => 'x-goog-api-key';
+
+  @override
+  String get accountsGeminiBadgeMultimodal => 'Multimodal';
+
+  @override
+  String get accountsGeminiBadgeDiscovery => 'Online catalog';
+
+  @override
+  String get accountsGeminiBadgeBundledCatalog => 'Built-in catalog';
+
+  @override
+  String get accountsGeminiBadgeImplicitCache => 'Implicit caching';
+
+  @override
+  String get accountsGeminiEndpointPresetsLabel => 'Endpoints';
+
+  @override
+  String get accountsGeminiPresetGlobal => 'global (Recommended)';
+
+  @override
+  String get accountsGeminiPresetAiStudioOfficial => 'Gemini API (v1beta)';
+
+  @override
+  String get accountsGeminiCredentialLabelVertex => 'Vertex AI API key';
+
+  @override
+  String get accountsGeminiCredentialLabelAiStudio => 'Gemini API key';
 }
