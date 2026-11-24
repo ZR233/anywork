@@ -1437,3 +1437,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "compaction_instruction_normalization_tests.rs"]
+mod instruction_normalization_tests;
