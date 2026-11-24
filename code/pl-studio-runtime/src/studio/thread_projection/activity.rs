@@ -1145,7 +1145,7 @@ impl ActivityProjection {
         let mut activity =
             project_activity_using(thread_id, state, self.previous.as_ref(), admitted);
         if let Some(act) = activity.as_mut() {
-            let now = now_unix_seconds();
+            let now = crate::studio::unix_seconds();
             if act.kind == ThreadActivityKind::Thinking {
                 let same_step = self.thinking_started_at.as_ref().is_some_and(|started| {
                     started.turn_id == act.turn_id
