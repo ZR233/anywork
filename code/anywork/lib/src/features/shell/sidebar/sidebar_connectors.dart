@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../presentation/providers/client_provider.dart';
+import '../../../presentation/providers/observe_client.dart';
 import '../../../presentation/providers/thread_directory_store.dart';
 import '../shell_view.dart';
 import 'sidebar_directory_owner.dart';
@@ -118,6 +119,19 @@ class _SidebarProjectConnectorState
   }
 }
 
+final _threadRemovalPendingProvider = Provider.autoDispose.family<bool, String>(
+  (ref, threadId) {
+    final commands = ref.watch(anyworkClientProvider).threadCommands;
+    final pending = commands.isThreadRemovalPending(threadId);
+    observeClient(ref, commands.source, (_) {
+      if (pending != commands.isThreadRemovalPending(threadId)) {
+        ref.invalidateSelf();
+      }
+    });
+    return pending;
+  },
+);
+
 /// Stable thread identity is the only source of this row's content.
 class SidebarThreadConnector extends ConsumerWidget {
   const SidebarThreadConnector({
@@ -143,6 +157,7 @@ class SidebarThreadConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final view = ref.watch(sidebarThreadViewProvider(threadId));
+    final removalPending = ref.watch(_threadRemovalPendingProvider(threadId));
     return SidebarThreadContent(
       threadId: threadId,
       row: view.metadata.frame?.row,
@@ -162,6 +177,7 @@ class SidebarThreadConnector extends ConsumerWidget {
         hostApps: hostApps,
         touchMode: touchMode,
         archived: archived,
+        removalPending: removalPending,
         onSelect: () => onSelect(row),
         onAction: (action) => onAction(row, action),
       ),

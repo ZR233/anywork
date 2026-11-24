@@ -491,6 +491,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => '归档';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return '已归档“$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return '无法归档“$title”。$reason';
+  }
+
+  @override
   String get sidebarDeleteSession => '删除会话';
 
   @override
@@ -504,6 +514,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => '永久删除';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return '已删除“$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return '无法删除“$title”。$reason';
+  }
 
   @override
   String get sidebarRenameSession => '重命名会话';

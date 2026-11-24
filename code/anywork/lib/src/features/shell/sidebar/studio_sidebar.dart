@@ -72,6 +72,7 @@ class StudioSidebar extends StatefulWidget {
     StudioProject project,
     SessionDirectoryRow row,
     SidebarThreadAction action,
+    VoidCallback? showActiveSessions,
   )
   onThreadAction;
   final VoidCallback? onSettings;
@@ -158,6 +159,10 @@ class _StudioSidebarState extends State<StudioSidebar> {
       setState(() => _querySearch = _search.text);
       _publishQuery();
     });
+  }
+
+  void _showActiveSessions() {
+    if (mounted && _archived) _change(() => _archived = false);
   }
 
   @override
@@ -452,8 +457,12 @@ class _StudioSidebarState extends State<StudioSidebar> {
                     _touchInput,
                     _archived,
                     widget.onSelectThread,
-                    (row, action) =>
-                        widget.onThreadAction(project, row, action),
+                    (row, action) => widget.onThreadAction(
+                      project,
+                      row,
+                      action,
+                      _archived ? _showActiveSessions : null,
+                    ),
                   ),
                 ),
               if (pinnedWindow != null)
@@ -474,8 +483,12 @@ class _StudioSidebarState extends State<StudioSidebar> {
                     _touchInput,
                     _archived,
                     widget.onSelectThread,
-                    (row, action) =>
-                        widget.onThreadAction(project, row, action),
+                    (row, action) => widget.onThreadAction(
+                      project,
+                      row,
+                      action,
+                      _archived ? _showActiveSessions : null,
+                    ),
                   ),
                 ),
               SidebarPageStatus(

@@ -227,6 +227,7 @@ class SidebarThreadRow extends StatelessWidget {
     this.recoveryIssue,
     this.archived = false,
     this.touchMode = false,
+    this.removalPending = false,
   });
 
   final SessionDirectoryRow row;
@@ -239,6 +240,7 @@ class SidebarThreadRow extends StatelessWidget {
   final StudioRecoveryIssue? recoveryIssue;
   final bool archived;
   final bool touchMode;
+  final bool removalPending;
 
   @override
   Widget build(BuildContext context) {
@@ -280,7 +282,9 @@ class SidebarThreadRow extends StatelessWidget {
               const SizedBox(width: 6),
             ],
           ),
-          onTap: archived || issue?.blocksAccess == true ? null : onSelect,
+          onTap: archived || removalPending || issue?.blocksAccess == true
+              ? null
+              : onSelect,
           leadingActionsAlwaysVisible: pinned && !archived,
           leadingActions: archived
               ? null
@@ -336,20 +340,25 @@ class SidebarThreadRow extends StatelessWidget {
                       tooltip: context.l10n.sidebarRestore,
                       icon: Icons.unarchive_outlined,
                       minTarget: target,
-                      onPressed: () => onAction(SidebarThreadAction.restore),
+                      onPressed: removalPending
+                          ? null
+                          : () => onAction(SidebarThreadAction.restore),
                     ),
                     _tileIconButton(
                       key: StudioDriverKeys.deleteThread(row.threadId),
                       tooltip: context.l10n.sidebarDeleteSession,
                       icon: Icons.delete_outline,
-                      color: context.colors.error,
+                      color: removalPending ? null : context.colors.error,
                       minTarget: target,
-                      onPressed: () => onAction(SidebarThreadAction.delete),
+                      onPressed: removalPending
+                          ? null
+                          : () => onAction(SidebarThreadAction.delete),
                     ),
                   ],
                 )
               : SidebarThreadMenu(
                   row: row,
+                  removalPending: removalPending,
                   blocked: issue?.blocksAccess == true,
                   recoveryIssue: issue,
                   recoveryIssueId: issue?.scope == RecoveryIssueScope.thread
