@@ -39,7 +39,7 @@ for line in sys.stdin:
         with (root / ('probe-calls' if probe else 'business-calls')).open('a') as log:
             log.write(method + '\n')
     if 'id' not in msg:
-        assert method in ['session/cancel', '$/cancel_request'], method
+        assert method == 'session/cancel', method
         continue
     rid=msg['id']
     if method == 'initialize':
@@ -171,16 +171,7 @@ for line in sys.stdin:
         update(sid, '### Quota Limits\n- No quota limits reported.' if usage else 'actual answer')
         result={'stopReason':'end_turn'}
     elif method == 'session/list' and (root / 'mode').read_text() == 'session-titles':
-        later_page = root / 'listed-next.json'
-        cursor = msg['params'].get('cursor')
-        if cursor is not None:
-            assert cursor == 'title-next-page'
-        page = later_page if cursor is not None else root / 'listed.json'
-        sessions = json.loads(page.read_text()) if page.exists() else []
-        result={'sessions':sessions}
-        if cursor is None and later_page.exists():
-            assert pathlib.Path(msg['params']['cwd']).is_absolute()
-            result['nextCursor'] = 'title-next-page'
+        result={'sessions':json.loads((root / 'listed.json').read_text())}
     elif method == 'authenticate':
         assert msg['params']['methodId'] == 'login'
         (root / 'mode').write_text('replay')

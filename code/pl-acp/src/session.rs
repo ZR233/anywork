@@ -2,8 +2,7 @@
 //!
 //! [`channel`] 在发出 open 请求前交付观察入口。宿主必须恰好一次运行 [`Driver::run`]，
 //! 自行 spawn/join 该 future，并拥有 OS 进程、stderr 和最终回收。句柄方法只等待该命令的
-//! 协议结果；丢弃调用 future 不撤销已经受理的业务命令。只读 list 在等待者消失时结束，
-//! 丢弃 driver 也不表示进程已回收。
+//! 协议结果；丢弃调用 future 不取消已经受理的命令，丢弃 driver 更不表示进程已回收。
 //! [`Session::close`] 只确认开始关闭；完整关闭事实从 driver join 的 [`Exit`] 读取。
 
 use std::collections::{HashMap, VecDeque};
@@ -232,7 +231,6 @@ pub enum ExitReason {
 
 type Reply<T> = oneshot::Sender<Result<T, Error>>;
 type ReplySlot<T> = Arc<Mutex<Option<Reply<T>>>>;
-type ListFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
 
 fn deliver<T>(slot: &ReplySlot<T>, result: Result<T, Error>) {
     if let Some(reply) = slot.lock().expect("ACP reply slot panicked").take() {
@@ -424,6 +422,7 @@ pub fn channel(request: OpenRequest) -> (Session, Observer, Driver) {
         replacement: None,
         config_pending: false,
         config_reply: None,
+        list_reply: None,
         list_pending: false,
         closing: false,
         close_sent: false,
@@ -576,6 +575,7 @@ pub(crate) struct State {
     replacement: Option<(Vec<ContentBlock>, Reply<RunId>)>,
     config_pending: bool,
     config_reply: Option<ReplySlot<()>>,
+    list_reply: Option<ReplySlot<ListSessionsResponse>>,
     list_pending: bool,
     closing: bool,
     close_sent: bool,
@@ -616,6 +616,9 @@ impl State {
         self.settle_open(Err(Error::Closed));
         self.cancel_permissions();
         if let Some(reply) = self.config_reply.take() {
+            deliver(&reply, Err(Error::Closed));
+        }
+        if let Some(reply) = self.list_reply.take() {
             deliver(&reply, Err(Error::Closed));
         }
         if let Some((_, reply)) = self.replacement.take() {
@@ -1093,7 +1096,6 @@ impl Driver {
         let mut observation_ended = false;
         let wake = lock(&state).wake.clone();
         let mut preparing: Option<OpenSetupFuture> = None;
-        let mut listing: Option<ListFuture> = None;
         loop {
             let mut prepare_capabilities = None;
             {
@@ -1177,11 +1179,6 @@ impl Driver {
                 });
             }
             tokio::select! {
-                biased;
-                () = async { listing.as_mut().expect("guarded list request").await }, if listing.is_some() => {
-                    listing = None;
-                    lock(&state).list_pending = false;
-                }
                 result = async { preparing.as_mut().expect("guarded preparation").await },
                     if preparing.is_some() => {
                     preparing = None;
@@ -1206,7 +1203,7 @@ impl Driver {
                 command = self.commands.recv() => {
                     let mut owner = lock(&state);
                     if let Some(command) = command {
-                        self.command(&connection, &mut owner, command, &mut listing);
+                        self.command(&connection, &mut owner, command);
                     } else {
                         begin_close(&connection, &mut owner);
                     }
@@ -1335,13 +1332,7 @@ impl Driver {
         }
     }
 
-    fn command(
-        &self,
-        connection: &ConnectionTo<Agent>,
-        owner: &mut State,
-        command: Command,
-        listing: &mut Option<ListFuture>,
-    ) {
+    fn command(&self, connection: &ConnectionTo<Agent>, owner: &mut State, command: Command) {
         match command {
             Command::Close(reply) => {
                 begin_close(connection, owner);
@@ -1396,19 +1387,30 @@ impl Driver {
                     return;
                 }
                 owner.list_pending = true;
-                let prepared = connection.prepare_request(request);
-                *listing = Some(Box::pin(async move {
-                    let mut reply = reply;
-                    if reply.is_closed() {
-                        return;
-                    }
-                    tokio::select! {
-                        result = prepared.block_task() => {
-                            let _ = reply.send(result.map_err(Error::from));
-                        }
-                        () = reply.closed() => {}
-                    }
-                }));
+                let state = self.state.clone();
+                let reply = Arc::new(Mutex::new(Some(reply)));
+                owner.list_reply = Some(reply.clone());
+                let callback_reply = reply.clone();
+                let result =
+                    connection
+                        .prepare_request(request)
+                        .on_receiving_result(async move |result| {
+                            let mut owner = lock(&state);
+                            owner.list_pending = false;
+                            deliver(
+                                &callback_reply,
+                                if owner.finished {
+                                    Err(Error::Closed)
+                                } else {
+                                    result.map_err(Error::from)
+                                },
+                            );
+                            Ok(())
+                        });
+                if let Err(error) = result {
+                    owner.list_pending = false;
+                    deliver(&reply, Err(error.into()));
+                }
             }
         }
     }
@@ -1830,7 +1832,6 @@ mod tests {
         load_replay: bool,
         close_failure: bool,
         close_hangs: bool,
-        hold_first_list: bool,
         auth_required: bool,
         server_info: Option<Implementation>,
         expected_server_version: Option<String>,
@@ -1853,7 +1854,6 @@ mod tests {
                 load_replay: false,
                 close_failure: false,
                 close_hangs: false,
-                hold_first_list: false,
                 auth_required: false,
                 server_info: None,
                 expected_server_version: None,
@@ -1918,7 +1918,6 @@ mod tests {
         boolean_advertised: bool,
         initialize_request: Option<InitializeRequest>,
         held_closes: Vec<Responder<CloseSessionResponse>>,
-        held_lists: Vec<Responder<ListSessionsResponse>>,
         held_load: Option<(Responder<LoadSessionResponse>, LoadSessionResponse)>,
     }
 
@@ -1982,7 +1981,6 @@ mod tests {
             let new_scenario = scenario.clone();
             let load_scenario = scenario.clone();
             let resume_scenario = scenario.clone();
-            let hold_first_list = scenario.hold_first_list;
             let peer = tokio::spawn(async move {
                 let init_state = peer_state.clone();
                 let new_state = peer_state.clone();
@@ -1998,7 +1996,6 @@ mod tests {
                 let load_changed = peer_changed.clone();
                 let config_changed = peer_changed.clone();
                 let cancel_changed = peer_changed.clone();
-                let list_changed = peer_changed.clone();
                 Agent.v1()
                 .on_receive_request(async move |request: InitializeRequest, responder: Responder<InitializeResponse>, _: ConnectionTo<Client>| {
                     peer_lock(&init_state).initialize_request = Some(request.clone());
@@ -2075,14 +2072,7 @@ mod tests {
                     else { responder.respond(CloseSessionResponse::new()) }
                 }, agent_client_protocol::on_receive_request!())
                 .on_receive_request(async move |_: ListSessionsRequest, responder: Responder<ListSessionsResponse>, _: ConnectionTo<Client>| {
-                    let mut state = peer_lock(&list_state);
-                    state.lists += 1;
-                    list_changed.notify_one();
-                    if hold_first_list && state.lists == 1 {
-                        state.held_lists.push(responder);
-                        return Ok(());
-                    }
-                    drop(state);
+                    peer_lock(&list_state).lists += 1;
                     responder.respond(ListSessionsResponse::new(vec![]))
                 }, agent_client_protocol::on_receive_request!())
                 .connect_with(ByteStreams::new(agent_writer.compat_write(), agent_reader.compat()), async move |connection| {
@@ -4050,37 +4040,6 @@ mod tests {
             assert_eq!(peer_lock(&harness.state).lists, 0);
             harness.finish().await;
         }
-    }
-
-    #[tokio::test]
-    async fn cancelled_list_releases_the_session_slot_before_peer_response() {
-        let mut harness = Harness::new(
-            Open::New,
-            Scenario {
-                hold_first_list: true,
-                ..Scenario::default()
-            },
-        );
-        harness.ready().await;
-
-        let session = harness.session.clone();
-        let first = tokio::spawn(async move { session.list(ListSessionsRequest::new()).await });
-        harness
-            .wait(|state| state.lists == 1 && state.held_lists.len() == 1)
-            .await;
-        first.abort();
-        let _ = first.await;
-
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            harness.session.list(ListSessionsRequest::new()),
-        )
-        .await
-        .expect("the cancelled request must release the single list slot")
-        .unwrap();
-        assert_eq!(peer_lock(&harness.state).lists, 2);
-        assert_eq!(peer_lock(&harness.state).held_lists.len(), 1);
-        harness.finish().await;
     }
 
     #[tokio::test]

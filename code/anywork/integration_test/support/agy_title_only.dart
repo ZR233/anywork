@@ -14,8 +14,8 @@ import 'production_studio_harness.dart';
 const _prompt =
     'Write a slogan for a fictional moon library. Use no tools. One sentence.';
 
-// One New/draft and one UI submit only. No snapshots, extra prompt, mode change,
-// worktree, private transport probe, login or mutation of an external session.
+// One New/draft and one UI submit. The title must arrive without listing
+// sessions, and the same sidebar row must display it.
 Future<void> runAgyTitleOnly({
   required ProductionStudioScene scene,
   required AcpConversationSession owner,
@@ -51,8 +51,6 @@ Future<void> runAgyTitleOnly({
     'cwd': project.path,
     'workspaceId': project.id,
   };
-  evidence['listSessions'] = owner.state.capabilities!.listSessions;
-  evidence['listRead'] = {'calls': 0, 'status': 'notAttempted'};
   evidence['stopReason'] = null;
 
   void inspectOwner(AcpConversationState state) {
@@ -74,9 +72,11 @@ Future<void> runAgyTitleOnly({
           break;
         case AcpFieldNull<String>():
           rawTitleField = 'null';
+          latestRawTitle = null;
         case AcpFieldValue<String>(:final value):
-          rawTitleField = value.trim().isEmpty ? 'empty' : 'value';
-          if (value.trim().isNotEmpty) latestRawTitle = value.trim();
+          final title = value.trim();
+          rawTitleField = title.isEmpty ? 'empty' : 'value';
+          latestRawTitle = title.isEmpty ? null : title;
       }
     }
     rawUpdateCount = updates.length;
@@ -225,80 +225,30 @@ Future<void> runAgyTitleOnly({
       isNotEmpty,
     );
 
-    // PromptResponse need not be the last session notification. Observe local
-    // typed state for at most 20 seconds, then perform at most one list read.
-    // This condition never polls the peer and makes no claim of absent capability.
+    // The title notification can precede or follow the prompt response.
     const titleWindow = Duration(seconds: 20);
-    final window = Stopwatch()..start();
-    await scene.until(
-      () {
-        check();
-        return latestRawTitle != null || window.elapsed >= titleWindow;
-      },
-      'typed SessionInfoUpdate title or bounded observation deadline',
-      timeout: const Duration(seconds: 25),
-    );
     evidence['titleObservation'] = {
       'source': 'existingOwner.typedSessionInfoUpdate',
       'postResponseLimitMs': titleWindow.inMilliseconds,
-      'deadlineReached': latestRawTitle == null,
     };
-
-    String? listedTitle;
-    if (owner.state.capabilities!.listSessions) {
-      evidence['listRead'] = {'calls': 1, 'status': 'pending'};
-      // The public Client binds both the original target and its canonical cwd.
-      // Filter before reporting; never save external sessions, cursors or meta.
-      final response = await client
-          .listAcpConversations(target.threadId)
-          .timeout(const Duration(seconds: 30));
-      check();
-      final matches = response.sessions
-          .where(
-            (entry) =>
-                entry.sessionId == remoteId &&
-                p.equals(entry.cwd, project.path),
-          )
-          .toList();
-      expect(matches.length, lessThanOrEqualTo(1));
-      if (matches.singleOrNull?.title case final title?
-          when title.trim().isNotEmpty) {
-        listedTitle = title.trim();
-      }
-      evidence['listRead'] = {
-        'calls': 1,
-        'status': matches.isEmpty ? 'targetNotInPage' : 'targetObserved',
-        'hasMore': response.nextCursor != null,
-        'title': listedTitle,
-      };
-    } else {
-      evidence['listRead'] = {'calls': 0, 'status': 'notAdvertised'};
-    }
-    check();
     await scene.until(
       () {
         check();
-        // A notification can arrive during list or directory delivery. Do not
-        // freeze an older title or assume the list and stream are an atomic cut.
-        final expectedTitle = latestRawTitle ?? listedTitle ?? _prompt;
-        return metadata.state.value.frame?.row?.title == expectedTitle &&
+        final title = latestRawTitle;
+        return title != null &&
+            title != _prompt &&
+            lastDirectoryTitle == title &&
             find
-                .descendant(of: sidebarRow, matching: find.text(expectedTitle))
+                .descendant(of: sidebarRow, matching: find.text(title))
                 .evaluate()
                 .isNotEmpty;
       },
-      'same target directory and project sidebar agree with observed title or summary',
+      'the ACP title notification updates the directory and the same sidebar row',
+      timeout: titleWindow,
     );
-    final peerPreemptedSummary =
-        !summaryPublished &&
-        (firstDirectoryMatchesRaw ||
-            (listedTitle != null && firstDirectoryTitle == listedTitle));
+    final peerPreemptedSummary = !summaryPublished && firstDirectoryMatchesRaw;
     snapshotTitles();
-    evidence['titleSource'] = latestRawTitle != null
-        ? 'sessionInfoUpdate'
-        : listedTitle != null
-        ? 'sessionList'
-        : 'notObserved';
+    evidence['titleSource'] = 'sessionInfoUpdate';
     evidence['peerTitlePreemptedSummary'] = peerPreemptedSummary;
     expect(
       summaryPublished || peerPreemptedSummary,
