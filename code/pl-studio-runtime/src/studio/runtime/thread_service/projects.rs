@@ -901,10 +901,20 @@ mod standalone_tests {
     async fn configure(home: &Path) -> Result<pl_provider_fixture::FixtureServer> {
         // Discovery uses the fixture catalog. The empty inference script rejects any model call.
         let endpoint = pl_provider_fixture::FixtureServer::start(Vec::new()).await?;
+        let config = standalone_config(
+            endpoint.base_url(),
+            ModelDefinition::compatible("standalone-model"),
+        )?;
+        ConfigStore::new(ConfigPaths::from_config_dir(home)).save(&config)?;
+        Ok(endpoint)
+    }
+
+    fn standalone_config(endpoint: String, model: ModelDefinition) -> Result<StudioConfig> {
+        let model_id = model.base.slug.clone();
         let account_id = AccountId::new("standalone-fixture")?;
         let route = ModelRouteConfig {
             account_id: account_id.clone(),
-            model_id: "standalone-model".into(),
+            model_id,
             effort: None,
         };
         let mut config = StudioConfig::default_config()?;
@@ -914,9 +924,9 @@ mod standalone_tests {
             AccountConfig::from_explicit_models(
                 pl_model::protocol::providers::openai::compatible_endpoint(
                     "Standalone fixture",
-                    endpoint.base_url(),
+                    endpoint,
                 ),
-                vec![ModelDefinition::compatible(&route.model_id)],
+                vec![model],
             ),
         );
         for selected in config
@@ -927,8 +937,7 @@ mod standalone_tests {
         {
             *selected = route.clone();
         }
-        ConfigStore::new(ConfigPaths::from_config_dir(home)).save(&config)?;
-        Ok(endpoint)
+        Ok(config)
     }
 
     fn request(workspace_mode: crate::ThreadWorkspaceMode) -> crate::CreateThreadRequest {
@@ -1569,7 +1578,6 @@ mod standalone_tests {
                 async fn new(servers: &[(&str, &Server, bool, &str)]) -> Result<Self> {
                     let temp = tempfile::tempdir()?;
                     let home = temp.path().join("home");
-                    let _unused_endpoint = configure(&home).await?;
                     let provider = pl_provider_fixture::FixtureServer::start(vec![
                         pl_provider_fixture::Step::prompt(
                             pl_provider_fixture::Protocol::ResponsesHttp,
@@ -1595,25 +1603,18 @@ mod standalone_tests {
                         .optional(),
                     ])
                     .await?;
-                    let store = ConfigStore::new(ConfigPaths::from_config_dir(&home));
-                    let mut config = store.load()?;
-                    config.skills.enabled = false;
                     let mut model = ModelDefinition::compatible("standalone-model");
                     model
                         .extra
                         .binding
                         .set_transport(pl_model::model::ModelTransportProfile::responses_http());
-                    config.models.accounts.insert(
-                        AccountId::new("standalone-fixture")?,
-                        AccountConfig::from_explicit_models(
-                            pl_model::protocol::providers::openai::compatible_endpoint(
-                                "isolated",
-                                provider.base_url(),
-                            ),
-                            vec![model],
-                        ),
-                    );
-                    store.save(&config)?;
+                    let store = ConfigStore::new(ConfigPaths::from_config_dir(&home));
+                    let mut config = standalone_config(provider.base_url(), model)
+                        .context("prepare MCP fixture configuration")?;
+                    config.skills.enabled = false;
+                    store
+                        .save(&config)
+                        .context("save MCP fixture configuration")?;
                     let directory = store.paths().mcp_host_dir();
                     tokio::fs::create_dir_all(&directory).await?;
                     for (id, server, required, extra) in servers {
@@ -2199,7 +2200,9 @@ mod standalone_tests {
             if failure != "timeout" {
                 server.gate.release.cancel();
             }
-            let env = Environment::new(&[("required", &server, true, extra)]).await?;
+            let env = Environment::new(&[("required", &server, true, extra)])
+                .await
+                .with_context(|| format!("prepare required MCP branch {failure}"))?;
             let result = env.create().await;
             eprintln!(
                 "MCP_REQUIRED_CASE kind={failure} accepted={}",

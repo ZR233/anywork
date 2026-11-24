@@ -2061,6 +2061,17 @@ impl FixtureServer {
             .clone()
     }
 
+    /// Adds steps that depend on observed runtime values, preserving the endpoint
+    /// and request history. Explicit step indices still refer to the entire script.
+    pub fn extend_script(&mut self, steps: Vec<Step>) {
+        self.state
+            .script
+            .lock()
+            .expect("fixture state poisoned")
+            .steps
+            .extend(steps);
+    }
+
     /// Read-only strict-script counters for a coordinator polling mid-run.
     ///
     /// The values are derived from the same script state the requests match
