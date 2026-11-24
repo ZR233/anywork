@@ -939,6 +939,7 @@ impl SessionRuntime {
                 model: spec.model,
                 require_idle: false,
                 model_context_revision: None,
+                wait_for_model_before_input: false,
                 tools: Some(pl_core::thread::RuntimeTools {
                     registrations,
                     binding: runtime_binding,

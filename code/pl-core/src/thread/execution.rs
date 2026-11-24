@@ -760,6 +760,7 @@ impl Owner {
     pub(super) fn start_ready_work(&mut self) -> Result<bool, ThreadError> {
         self.expire_tool_waiters()?;
         self.retire_revoked_runtime_tools()?;
+        let pending_input_model = self.pending_input_model();
         self.install_ready_bundle();
         if self.primary.is_some() {
             return Ok(false);
@@ -788,10 +789,18 @@ impl Owner {
             RunPhase::Starting => {
                 // A model replacement can wait for open or old tool leases while the mailbox
                 // accepts the next input. Keep that input at the turn boundary until installation.
-                if self.state.runtime_bundle.preparing_model_identity.is_some() {
-                    run.phase = RunPhase::Starting;
+                if matches!(run.reply, RunReply::Driver)
+                    && let Some(model) = pending_input_model
+                    && self.state.runtime_bundle.model_identity.as_ref() != Some(&model)
+                {
+                    if self.pending_input_model().is_some() {
+                        run.phase = RunPhase::Starting;
+                        self.active = Some(run);
+                        return Ok(false);
+                    }
                     self.active = Some(run);
-                    return Ok(false);
+                    self.settle_run(Err(ThreadError::StaleRuntimeBundle));
+                    return Ok(true);
                 }
                 if !matches!(run.reply, RunReply::Step(_) | RunReply::Compact(_)) {
                     let mut turns = self.state.turns.to_vec();

@@ -223,6 +223,7 @@ impl NativeModelConfiguration {
             desired,
             model: apply_model.then_some(self.model),
             require_idle: false,
+            wait_for_model_before_input: true,
             // Validate replay in the turn's context preparation, after any old turn settles.
             model_context_revision: None,
             tools: Some(RuntimeTools {
