@@ -282,7 +282,7 @@ pub(in super::super) async fn seed_current(
             id: "document".into(),
             revision: plan.revision(),
         };
-        let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)?;
+        let owner_key = crate::studio::content_owner_key(&owner)?;
         let document = plan.plan.document.as_ref().map(|document| {
             let bytes = Arc::<[u8]>::from(document.content.as_bytes());
             contents.push(CurrentContentWrite {

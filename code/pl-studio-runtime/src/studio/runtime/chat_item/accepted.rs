@@ -276,7 +276,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let content = &first.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+            owner: crate::studio::content_owner_key(&ContentOwner::Item {
                 item_id: first.item_id.clone(),
             })?,
             key,
@@ -346,7 +346,7 @@ mod tests {
             .unwrap()
             .to_owned();
         let content = &draft.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+            owner: crate::studio::content_owner_key(&ContentOwner::Item {
                 item_id: draft.item_id.clone(),
             })?,
             key,

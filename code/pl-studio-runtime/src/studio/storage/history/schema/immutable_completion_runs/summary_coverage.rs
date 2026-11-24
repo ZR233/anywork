@@ -62,7 +62,7 @@ pub(super) async fn prove(
                     continue;
                 }
                 let key = ChatContentKey {
-                    owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+                    owner: crate::studio::content_owner_key(owner)?,
                     key: key.clone(),
                 };
                 for (directory, chunks) in [

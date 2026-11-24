@@ -4,10 +4,8 @@ mod agent_host;
 #[doc(hidden)]
 pub mod benchmark;
 pub(crate) mod catalog;
-pub(crate) mod conversation_identity;
 pub(crate) mod conversation_store;
 pub(crate) mod delegation;
-pub(crate) mod entity;
 mod ids;
 mod instance;
 pub(crate) mod model_binding;
@@ -26,7 +24,6 @@ pub(crate) mod startup;
 pub(crate) mod storage;
 
 pub(crate) mod store;
-mod store_support;
 pub(crate) mod thread;
 pub(crate) mod thread_factory;
 pub(crate) mod thread_projection;
@@ -34,7 +31,7 @@ mod toml_store;
 pub(crate) mod workspace_receipt;
 
 pub use agent_host::worktree_lease::WorkspaceUsageLease;
-pub(crate) use ids::{new_id, unix_seconds};
+pub(crate) use ids::{content_owner_key, new_id, unix_seconds};
 pub use instance::{StudioInstance, StudioInstanceLease};
 pub(crate) use paths::StudioPaths;
 pub use persistence::*;

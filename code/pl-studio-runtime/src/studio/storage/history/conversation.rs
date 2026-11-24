@@ -158,11 +158,9 @@ pub(super) async fn append_records_at_head<'a>(
                     && old.try_get::<Vec<u8>>("", "payload")?.as_slice() == item.payload.as_ref(),
                 "immutable completion payload conflict"
             );
-            let owner = crate::studio::conversation_identity::content_owner_key(
-                &crate::ContentOwner::Item {
-                    item_id: h.item_id.clone(),
-                },
-            )?;
+            let owner = crate::studio::content_owner_key(&crate::ContentOwner::Item {
+                item_id: h.item_id.clone(),
+            })?;
             let manifest = db
                 .query_all_raw(statement(
                     "SELECT content_key FROM conversation_contents WHERE owner_key=?",

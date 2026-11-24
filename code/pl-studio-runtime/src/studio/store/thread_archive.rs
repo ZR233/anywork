@@ -251,7 +251,7 @@ impl StudioStore {
     }
 
     pub(in crate::studio) async fn thread_archives(&self) -> Result<Vec<ThreadArchiveOperation>> {
-        use crate::studio::entity::studio_object;
+        use crate::studio::store::object::studio_object;
         studio_object::Entity::find()
             .filter(studio_object::Column::OwnerKind.eq(ThreadArchiveOperation::OWNER_KIND))
             .filter(studio_object::Column::ObjectKind.eq(ThreadArchiveOperation::OBJECT_KIND))

@@ -184,7 +184,7 @@ impl StudioStore {
     }
 
     pub(crate) async fn thread_preparations(&self) -> Result<Vec<ThreadPreparationRecord>> {
-        use crate::studio::entity::studio_object;
+        use crate::studio::store::object::studio_object;
         studio_object::Entity::find()
             .filter(studio_object::Column::OwnerKind.eq(ThreadPreparationRecord::OWNER_KIND))
             .filter(studio_object::Column::ObjectKind.eq(ThreadPreparationRecord::OBJECT_KIND))

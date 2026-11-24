@@ -101,10 +101,7 @@ pub(in crate::studio) async fn migrate_bot_identities(
     db: &sea_orm::DatabaseConnection,
     mappings: &mut [crate::studio::startup::storage_layout::bot_roots::BotRootMove],
 ) -> Result<()> {
-    use crate::studio::{
-        entity::studio_object,
-        store::object::{PersistedStudioObject, decode_object},
-    };
+    use crate::studio::store::object::{PersistedStudioObject, decode_object, studio_object};
     use sea_orm::{
         ActiveModelTrait, ActiveValue::Set, EntityTrait, IntoActiveModel, TransactionTrait,
     };

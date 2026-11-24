@@ -3274,12 +3274,10 @@ async fn import_entity_anchor<C: ConnectionTrait>(
                 "schema 24 frozen observation payload owner differs".into(),
             ));
         }
-        let owner_key = crate::studio::conversation_identity::content_owner_key(
-            &ContentOwner::DisplayObservation {
-                block_id: block_id.clone(),
-                member_key: member_key.clone(),
-            },
-        )
+        let owner_key = crate::studio::content_owner_key(&ContentOwner::DisplayObservation {
+            block_id: block_id.clone(),
+            member_key: member_key.clone(),
+        })
         .map_err(|error| HistoryError::Storage(error.into()))?;
         let mut staged_payload = StagedPayload::from_body(
             connection,
@@ -4359,7 +4357,7 @@ mod migration_tests {
             let owner = ContentOwner::Item {
                 item_id: item_id.clone(),
             };
-            let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)
+            let owner_key = crate::studio::content_owner_key(&owner)
                 .map_err(|error| HistoryError::Storage(error.into()))?;
             let manifest = serde_json::to_vec(&serde_json::json!({
                 "byteLength": body.len() as u64,
@@ -4624,9 +4622,8 @@ mod migration_tests {
                 block_id: block_id.into(),
                 member_key: "member-1".into(),
             };
-            let observation_owner_key =
-                crate::studio::conversation_identity::content_owner_key(&observation_owner)
-                    .map_err(|error| HistoryError::Storage(error.into()))?;
+            let observation_owner_key = crate::studio::content_owner_key(&observation_owner)
+                .map_err(|error| HistoryError::Storage(error.into()))?;
             let observation_body = b"frozen body \xF0\x9F\xA6\x80";
             let body_reference = crate::ContentRef {
                 database_id: database_id.clone(),

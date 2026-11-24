@@ -13,8 +13,6 @@ use anyhow::Result;
 use crate::studio::ids::unix_seconds;
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
 use crate::studio::store::StudioStore;
-use crate::studio::store_support::non_empty_title;
-
 /// 一次目录事实提交。
 ///
 /// 由内存目录 owner（ProductEventBus 侧命令）在更新热集合同一临界区构建；
@@ -28,6 +26,15 @@ pub(in crate::studio) struct DirectoryDelta {
     pub(in crate::studio) thread_deletions: Vec<String>,
     pub(in crate::studio) project_upserts: Vec<ProjectDirectoryRecord>,
     pub(in crate::studio) project_removals: Vec<ProjectRemoval>,
+}
+
+fn non_empty_title(title: &str) -> String {
+    let title = title.trim();
+    if title.is_empty() {
+        "新会话".to_string()
+    } else {
+        title.chars().take(80).collect()
+    }
 }
 
 #[derive(Debug, Clone)]

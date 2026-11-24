@@ -157,7 +157,7 @@ pub(in crate::studio) async fn migrate_bot_roots(
     db: &sea_orm::DatabaseConnection,
     mappings: &mut [crate::studio::startup::storage_layout::bot_roots::BotRootMove],
 ) -> Result<()> {
-    use crate::studio::entity::studio_object;
+    use crate::studio::store::object::studio_object;
     use sea_orm::{ActiveModelTrait, ActiveValue::Set, IntoActiveModel};
     let tx = db.begin().await?;
     for mapping in mappings {
@@ -229,7 +229,7 @@ impl StudioStore {
     }
 
     pub(crate) async fn agent_closes(&self) -> Result<Vec<AgentCloseRecord>> {
-        use crate::studio::entity::studio_object;
+        use crate::studio::store::object::studio_object;
         studio_object::Entity::find()
             .filter(studio_object::Column::ObjectKind.eq(AgentCloseRecord::OBJECT_KIND))
             .all(self.database())
@@ -241,7 +241,7 @@ impl StudioStore {
 
     /// An unpublished old candidate never grants deletion; its source is left untouched.
     pub(crate) async fn has_legacy_retirement(&self, id: &str) -> Result<bool> {
-        use crate::studio::entity::studio_object::{self, Column};
+        use crate::studio::store::object::studio_object::{self, Column};
         Ok(studio_object::Entity::find()
             .filter(Column::OwnerKind.eq("thread"))
             .filter(Column::OwnerId.eq(id))

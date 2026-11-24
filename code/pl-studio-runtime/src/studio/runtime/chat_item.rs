@@ -280,7 +280,7 @@ fn freeze(
     let owner = ContentOwner::Item {
         item_id: id.to_owned(),
     };
-    let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)?;
+    let owner_key = crate::studio::content_owner_key(&owner)?;
     let mut contents = ChatContents::new();
     let mut body_envelopes = Vec::with_capacity(bodies.len());
     for (position, block) in bodies.iter() {
@@ -1079,7 +1079,7 @@ mod tests {
             }
         );
         let key = ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+            owner: crate::studio::content_owner_key(&ContentOwner::Item {
                 item_id: "text".into(),
             })?,
             key: "body".into(),

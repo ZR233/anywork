@@ -174,7 +174,7 @@ pub(in super::super) async fn apply_changes(
                     id: entry.entry_id.clone(),
                     revision: collection.revision,
                 };
-                let owner = crate::studio::conversation_identity::content_owner_key(&owner)?;
+                let owner = crate::studio::content_owner_key(&owner)?;
                 if let Some(row) = db.query_one_raw(statement(
                     "SELECT payload FROM conversation_view_entries WHERE collection=? AND entry_id=?",
                     vec![entry.collection.clone().into(), entry.entry_id.clone().into()],
@@ -239,7 +239,7 @@ async fn validate_references(
                 .await?
                 .is_some(),
             crate::ContentTarget::Body { owner, key } => {
-                let owner_key = crate::studio::conversation_identity::content_owner_key(owner)?;
+                let owner_key = crate::studio::content_owner_key(owner)?;
                 db.query_one_raw(statement(
                     "SELECT 1 FROM conversation_contents WHERE owner_key=? AND content_key=?",
                     vec![owner_key.as_str().into(), key.clone().into()],
