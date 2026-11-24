@@ -205,18 +205,17 @@ impl StudioRuntime {
                         crate::studio::thread_projection::CurrentState::from_saved(&saved)?;
                     model_route = crate::studio::model_route::saved(&snapshot)?
                         .map(|route| route.snapshot(false));
-                    let projected = crate::studio::thread_projection::project_cold_runtime(
-                        thread_id,
-                        &snapshot,
-                        thread.updated_at,
-                        &snapshot.usage_summary,
-                    )?;
-                    let mut resources =
-                        super::thread_observation::state_resources::StateResources::cold(
+                    // Keep the deferred runtime snapshot; the cold body index is not retained here.
+                    let (_, runtime_snapshot) =
+                        super::thread_observation::state_resources::StateResources::project_cold(
                             current.owner_id().into(),
                             saved.snapshot_revision,
-                        );
-                    runtime = Some(resources.runtime(projected)?);
+                            thread_id,
+                            &snapshot,
+                            thread.updated_at,
+                            &snapshot.usage_summary,
+                        )?;
+                    runtime = Some(runtime_snapshot);
                     (
                         saved.snapshot_revision,
                         current.active_turn().cloned(),

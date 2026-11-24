@@ -409,43 +409,41 @@ impl CurrentReader {
             .thread_observations
             .observation_slot(self.thread_id());
         let (position, _) = slot.capture();
-        let resources = if let Some(feed) =
-            position.source.filter(|feed| !feed.is_delivery_closed())
-        {
-            ensure!(
-                feed.current_conversation()
-                    .is_some_and(|source| source.current.owner_id() == owner_id),
-                stale()
-            );
-            feed.state_resources()
-        } else {
-            let thread = self
-                .inner
-                .runtime
-                .read_protocol_thread(self.thread_id())
-                .await?;
-            let saved = self
-                .inner
-                .runtime
-                .store
-                .state_for(&thread.workspace_id, self.thread_id())?
-                .load_current()
-                .await?
-                .ok_or_else(stale)?;
-            ensure!(saved.saved_runtime_epoch.to_string() == owner_id, stale());
-            let snapshot = saved.state.to_paused_snapshot();
-            let mut resources = super::thread_observation::state_resources::StateResources::cold(
-                owner_id.into(),
-                saved.snapshot_revision,
-            );
-            resources.runtime(crate::studio::thread_projection::project_cold_runtime(
-                self.thread_id(),
-                &snapshot,
-                thread.updated_at,
-                &snapshot.usage_summary,
-            )?)?;
-            resources
-        };
+        let resources =
+            if let Some(feed) = position.source.filter(|feed| !feed.is_delivery_closed()) {
+                ensure!(
+                    feed.current_conversation()
+                        .is_some_and(|source| source.current.owner_id() == owner_id),
+                    stale()
+                );
+                feed.state_resources()
+            } else {
+                let thread = self
+                    .inner
+                    .runtime
+                    .read_protocol_thread(self.thread_id())
+                    .await?;
+                let saved = self
+                    .inner
+                    .runtime
+                    .store
+                    .state_for(&thread.workspace_id, self.thread_id())?
+                    .load_current()
+                    .await?
+                    .ok_or_else(stale)?;
+                ensure!(saved.saved_runtime_epoch.to_string() == owner_id, stale());
+                let snapshot = saved.state.to_paused_snapshot();
+                let (resources, _) =
+                    super::thread_observation::state_resources::StateResources::project_cold(
+                        owner_id.into(),
+                        saved.snapshot_revision,
+                        self.thread_id(),
+                        &snapshot,
+                        thread.updated_at,
+                        &snapshot.usage_summary,
+                    )?;
+                resources
+            };
         ensure!(slot.is_current(position.epoch), stale());
         self.check_open()?;
         Ok(resources)
@@ -752,13 +750,15 @@ impl CurrentReader {
     }
 }
 
-pub struct CurrentWatch {
-    receiver: AsyncMutex<mpsc::Receiver<Result<CurrentFrame>>>,
+pub struct CurrentWatch<T = CurrentFrame> {
+    receiver: AsyncMutex<mpsc::Receiver<Result<T>>>,
     cancel: CancellationToken,
     task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
 }
-impl CurrentWatch {
-    pub async fn next(&self) -> Result<Option<CurrentFrame>> {
+/// Body subscription name. Methods are the same latest-state watch as `CurrentWatch`.
+pub type CurrentBodyWatch = CurrentWatch<ContentWindow>;
+impl<T> CurrentWatch<T> {
+    pub async fn next(&self) -> Result<Option<T>> {
         tokio::select! { biased;
             _ = self.cancel.cancelled() => Ok(None),
             frame = async { self.receiver.lock().await.recv().await } => frame.transpose(),
@@ -784,43 +784,7 @@ impl CurrentWatch {
         joined
     }
 }
-impl Drop for CurrentWatch {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-pub struct CurrentBodyWatch {
-    receiver: AsyncMutex<mpsc::Receiver<Result<ContentWindow>>>,
-    cancel: CancellationToken,
-    task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
-}
-impl CurrentBodyWatch {
-    pub async fn next(&self) -> Result<Option<ContentWindow>> {
-        tokio::select! { biased;
-            _ = self.cancel.cancelled() => Ok(None),
-            frame = async { self.receiver.lock().await.recv().await } => frame.transpose(),
-        }
-    }
-    pub fn request_close(&self) {
-        self.cancel.cancel();
-    }
-    pub async fn close(&self) -> Result<()> {
-        self.request_close();
-        let mut task = self.task.lock().await;
-        let joined = match task.as_mut() {
-            Some(task) => task.await.map_err(anyhow::Error::from),
-            None => Ok(()),
-        };
-        task.take();
-        drop(task);
-        let mut receiver = self.receiver.lock().await;
-        receiver.close();
-        while receiver.try_recv().is_ok() {}
-        joined
-    }
-}
-impl Drop for CurrentBodyWatch {
+impl<T> Drop for CurrentWatch<T> {
     fn drop(&mut self) {
         self.cancel.cancel();
     }

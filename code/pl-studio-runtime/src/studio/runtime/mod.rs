@@ -51,6 +51,7 @@ mod model_refresh;
 mod observation_lifecycle;
 mod product_subscription;
 mod prompt_runner;
+mod pull_observation;
 pub(crate) mod rejected_tools;
 mod residency;
 pub(in crate::studio) mod run_export;

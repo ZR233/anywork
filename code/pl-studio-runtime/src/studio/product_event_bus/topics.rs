@@ -18,6 +18,152 @@ pub use tokio::sync::broadcast::error::{
 /// 单个 topic 通道的容量；与订阅者消费速率无关的进程内环形缓冲。
 const TOPIC_CHANNEL_CAPACITY: usize = 256;
 
+/// 代次保护的 sender 表。旧凭证只能回收自己登记的那一代。
+#[derive(Debug)]
+pub(in crate::studio::product_event_bus) struct TopicMap<S, K = StudioProductTopic> {
+    entries: BTreeMap<K, TopicEntry<S>>,
+    generation: u64,
+}
+
+pub(in crate::studio::product_event_bus) struct TopicLease<K> {
+    key: K,
+    generation: u64,
+}
+
+impl<K> TopicLease<K> {
+    pub(in crate::studio::product_event_bus) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+pub(in crate::studio::product_event_bus) trait TopicSender:
+    Sized
+{
+    type Receiver;
+    fn open() -> Self;
+    fn receiver_count(&self) -> usize;
+    fn attach(&self) -> Self::Receiver;
+}
+
+impl TopicSender for broadcast::Sender<StudioProductEventEnvelope> {
+    type Receiver = broadcast::Receiver<StudioProductEventEnvelope>;
+
+    fn open() -> Self {
+        broadcast::channel(TOPIC_CHANNEL_CAPACITY).0
+    }
+
+    fn receiver_count(&self) -> usize {
+        broadcast::Sender::receiver_count(self)
+    }
+
+    fn attach(&self) -> Self::Receiver {
+        broadcast::Sender::subscribe(self)
+    }
+}
+
+impl TopicSender for watch::Sender<()> {
+    type Receiver = watch::Receiver<()>;
+
+    fn open() -> Self {
+        watch::channel(()).0
+    }
+
+    fn receiver_count(&self) -> usize {
+        watch::Sender::receiver_count(self)
+    }
+
+    fn attach(&self) -> Self::Receiver {
+        watch::Sender::subscribe(self)
+    }
+}
+
+impl<S, K> Default for TopicMap<S, K> {
+    fn default() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            generation: 0,
+        }
+    }
+}
+
+impl<S, K> TopicMap<S, K>
+where
+    K: Clone + Ord,
+    S: TopicSender,
+{
+    pub(in crate::studio::product_event_bus) fn subscribe(
+        &mut self,
+        key: K,
+    ) -> (S::Receiver, TopicLease<K>) {
+        if !self.entries.contains_key(&key) {
+            let generation = self.next_generation();
+            self.entries.insert(
+                key.clone(),
+                TopicEntry {
+                    generation,
+                    sender: S::open(),
+                },
+            );
+        }
+        let entry = self.entries.get(&key).expect("registered topic");
+        let receiver = entry.sender.attach();
+        let generation = entry.generation;
+        (receiver, TopicLease { key, generation })
+    }
+
+    pub(in crate::studio::product_event_bus) fn reclaim(&mut self, lease: &TopicLease<K>) {
+        if self.entries.get(&lease.key).is_some_and(|entry| {
+            entry.generation == lease.generation && entry.sender.receiver_count() == 0
+        }) {
+            self.entries.remove(&lease.key);
+        }
+    }
+
+    pub(in crate::studio::product_event_bus) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(in crate::studio::product_event_bus) fn contains(&self, key: &K) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub(in crate::studio::product_event_bus) fn sender(&self, key: &K) -> Option<&S> {
+        self.entries.get(key).map(|entry| &entry.sender)
+    }
+
+    pub(in crate::studio::product_event_bus) fn remove(
+        &mut self,
+        key: &K,
+    ) -> Option<TopicEntry<S>> {
+        self.entries.remove(key)
+    }
+
+    fn next_generation(&mut self) -> u64 {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("topic registration generation exhausted");
+        self.generation
+    }
+}
+
+impl<K: Ord> TopicMap<watch::Sender<()>, K> {
+    /// 没有接收者时回收空通道；否则只发布最新唤醒，不积压业务值。
+    pub(in crate::studio::product_event_bus) fn wake(&mut self, key: &K) {
+        let idle = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.sender.receiver_count() == 0);
+        if idle {
+            self.entries.remove(key);
+            return;
+        }
+        if let Some(entry) = self.entries.get(key) {
+            entry.sender.send_replace(());
+        }
+    }
+}
+
 /// 一个独占的产品主题接收凭证。
 ///
 /// 丢弃凭证先释放接收者，再回收同一登记代次中已无需求的通知通道；不持有产品总线或
@@ -25,7 +171,8 @@ const TOPIC_CHANNEL_CAPACITY: usize = 256;
 /// 通道没有 durable replay；重新订阅后须读取当前领域基线。
 pub struct ProductTopicReceiver {
     receiver: Option<broadcast::Receiver<StudioProductEventEnvelope>>,
-    registration: TopicRegistration,
+    registration: TopicLease<StudioProductTopic>,
+    registry: Weak<Mutex<TopicChannels>>,
 }
 
 impl ProductTopicReceiver {
@@ -50,29 +197,17 @@ impl ProductTopicReceiver {
 impl Drop for ProductTopicReceiver {
     fn drop(&mut self) {
         drop(self.receiver.take());
-        let registration = &self.registration;
-        let Some(registry) = registration.registry.upgrade() else {
-            return;
-        };
-        let mut registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if registry
-            .channels
-            .get(&registration.topic)
-            .is_some_and(|entry| {
-                entry.generation == registration.generation && entry.sender.receiver_count() == 0
-            })
-        {
-            registry.channels.remove(&registration.topic);
-        }
+        reclaim_registration(&self.registry, |channels| {
+            channels.channels.reclaim(&self.registration);
+        });
     }
 }
 
 /// 只唤醒按需查询的独占登记凭证，不存业务值或事件积压。
 pub(crate) struct ProductTopicSignal {
     receiver: Option<watch::Receiver<()>>,
-    registration: TopicRegistration,
+    registration: TopicLease<StudioProductTopic>,
+    registry: Weak<Mutex<TopicChannels>>,
 }
 
 impl ProductTopicSignal {
@@ -96,29 +231,23 @@ impl ProductTopicSignal {
 impl Drop for ProductTopicSignal {
     fn drop(&mut self) {
         drop(self.receiver.take());
-        let registration = &self.registration;
-        let Some(registry) = registration.registry.upgrade() else {
-            return;
-        };
-        let mut registry = registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if registry
-            .signals
-            .get(&registration.topic)
-            .is_some_and(|entry| {
-                entry.generation == registration.generation && entry.sender.receiver_count() == 0
-            })
-        {
-            registry.signals.remove(&registration.topic);
-        }
+        reclaim_registration(&self.registry, |channels| {
+            channels.signals.reclaim(&self.registration);
+        });
     }
 }
 
-struct TopicRegistration {
-    topic: StudioProductTopic,
-    generation: u64,
-    registry: Weak<Mutex<TopicChannels>>,
+fn reclaim_registration(
+    registry: &Weak<Mutex<TopicChannels>>,
+    cleanup: impl FnOnce(&mut TopicChannels),
+) {
+    let Some(registry) = registry.upgrade() else {
+        return;
+    };
+    let mut registry = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    cleanup(&mut registry);
 }
 
 #[derive(Debug)]
@@ -133,21 +262,11 @@ struct TopicEntry<S> {
 /// replay），新订阅者通过首帧基线取得当前事实。
 #[derive(Debug, Default)]
 pub(super) struct TopicChannels {
-    channels:
-        BTreeMap<StudioProductTopic, TopicEntry<broadcast::Sender<StudioProductEventEnvelope>>>,
-    signals: BTreeMap<StudioProductTopic, TopicEntry<watch::Sender<()>>>,
-    generation: u64,
+    channels: TopicMap<broadcast::Sender<StudioProductEventEnvelope>>,
+    signals: TopicMap<watch::Sender<()>>,
 }
 
 impl TopicChannels {
-    fn next_generation(&mut self) -> u64 {
-        self.generation = self
-            .generation
-            .checked_add(1)
-            .expect("product topic registration generation exhausted");
-        self.generation
-    }
-
     /// Wake-only latest-state observation: no business payload and no event backlog.
     pub(super) fn subscribe_signal(
         registry: &Arc<Mutex<Self>>,
@@ -156,27 +275,11 @@ impl TopicChannels {
         let mut channels = registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !channels.signals.contains_key(topic) {
-            let generation = channels.next_generation();
-            channels.signals.insert(
-                topic.clone(),
-                TopicEntry {
-                    generation,
-                    sender: watch::channel(()).0,
-                },
-            );
-        }
-        let entry = channels
-            .signals
-            .get(topic)
-            .expect("registered topic signal");
+        let (receiver, registration) = channels.signals.subscribe(topic.clone());
         ProductTopicSignal {
-            receiver: Some(entry.sender.subscribe()),
-            registration: TopicRegistration {
-                topic: topic.clone(),
-                generation: entry.generation,
-                registry: Arc::downgrade(registry),
-            },
+            receiver: Some(receiver),
+            registration,
+            registry: Arc::downgrade(registry),
         }
     }
 
@@ -188,27 +291,11 @@ impl TopicChannels {
         let mut channels = registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !channels.channels.contains_key(topic) {
-            let generation = channels.next_generation();
-            channels.channels.insert(
-                topic.clone(),
-                TopicEntry {
-                    generation,
-                    sender: broadcast::channel(TOPIC_CHANNEL_CAPACITY).0,
-                },
-            );
-        }
-        let entry = channels
-            .channels
-            .get(topic)
-            .expect("registered topic channel");
+        let (receiver, registration) = channels.channels.subscribe(topic.clone());
         ProductTopicReceiver {
-            receiver: Some(entry.sender.subscribe()),
-            registration: TopicRegistration {
-                topic: topic.clone(),
-                generation: entry.generation,
-                registry: Arc::downgrade(registry),
-            },
+            receiver: Some(receiver),
+            registration,
+            registry: Arc::downgrade(registry),
         }
     }
 
@@ -219,8 +306,8 @@ impl TopicChannels {
     pub(super) fn dispatch(&mut self, envelope: &StudioProductEventEnvelope) {
         let topic = StudioProductTopic::of_kind(&envelope.kind);
         self.notify(&topic);
-        if let Some(entry) = self.channels.get(&topic)
-            && entry.sender.send(envelope.clone()).is_err()
+        if let Some(sender) = self.channels.sender(&topic)
+            && sender.send(envelope.clone()).is_err()
         {
             self.channels.remove(&topic);
         }
@@ -228,13 +315,7 @@ impl TopicChannels {
 
     /// A query dependency can change without a Thread row delta.
     pub(super) fn notify(&mut self, topic: &StudioProductTopic) {
-        if let Some(entry) = self.signals.get(topic) {
-            if entry.sender.receiver_count() == 0 {
-                self.signals.remove(topic);
-            } else {
-                entry.sender.send_replace(());
-            }
-        }
+        self.signals.wake(topic);
     }
 }
 
@@ -353,7 +434,8 @@ mod tests {
             channels.dispatch(&envelope(1));
             channels.notify(&topic);
             assert_eq!(
-                channels.generation, 0,
+                (channels.channels.generation, channels.signals.generation),
+                (0, 0),
                 "publishing does not allocate registrations"
             );
         }
