@@ -18,9 +18,9 @@ use crate::{
 use anyhow::Result;
 use futures::FutureExt;
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use super::acp_ops::{RetainedJoin, RetainedPoll, RetainedTask};
 use super::acp_worker::{AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim};
 use crate::studio::{ProductEventBus, StudioStore};
 use pl_remote_helper::Executor;
@@ -30,10 +30,8 @@ pub(crate) struct AcpLocalDetectionRuntime {
     inner: Arc<Inner>,
 }
 
-pub(crate) struct AcpLocalDetectionAcceptance {
-    pub snapshot: AcpLocalDetectionSnapshot,
-    pub changed: bool,
-}
+pub(crate) type AcpLocalDetectionAcceptance =
+    super::acp_ops::TopicAcceptance<AcpLocalDetectionSnapshot>;
 
 struct Inner {
     store: StudioStore,
@@ -58,7 +56,7 @@ struct Operation {
     id: String,
     cancel: CancellationToken,
     deadline: tokio::time::Instant,
-    join: AsyncMutex<Option<JoinHandle<()>>>,
+    join: RetainedTask<()>,
     resources: AsyncMutex<Resources>,
     resources_released: AtomicBool,
     /// Thin fault assembly around real resources; production has no such gates.
@@ -138,20 +136,14 @@ impl AcpLocalDetectionRuntime {
         // Completion of the domain state alone is not evidence of task termination.
         let existing = admission.slot().operation.clone();
         if let Some(operation) = existing {
-            let Ok(mut join) = operation.join.try_lock() else {
-                return Err(busy());
-            };
-            if let Some(task) = join.as_mut() {
-                if !task.is_finished() {
-                    return Err(busy());
+            match operation.join.poll_finished() {
+                RetainedPoll::Pending => return Err(busy()),
+                RetainedPoll::Observed(outcome) => {
+                    if outcome.is_err() {
+                        admission.assign(failed(AcpLocalDetectionFailureKind::Cleanup));
+                    }
                 }
-                let Some(outcome) = task.now_or_never() else {
-                    return Err(busy());
-                };
-                *join = None;
-                if outcome.is_err() {
-                    admission.assign(failed(AcpLocalDetectionFailureKind::Cleanup));
-                }
+                RetainedPoll::Idle => {}
             }
             if !operation.resources_released.load(Ordering::Acquire) {
                 return Err(busy());
@@ -163,7 +155,7 @@ impl AcpLocalDetectionRuntime {
             id: request.operation_id,
             cancel: CancellationToken::new(),
             deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(10),
-            join: AsyncMutex::new(None),
+            join: RetainedTask::empty(),
             resources: AsyncMutex::new(Resources::default()),
             resources_released: AtomicBool::new(false),
             #[cfg(test)]
@@ -176,10 +168,7 @@ impl AcpLocalDetectionRuntime {
         admission.assign(AcpLocalDetectionState::Checking);
         // Responsibility is visible before spawn, with no intervening await.
         let task = tokio::spawn(supervise(Arc::clone(&self.inner), Arc::clone(&operation)));
-        *operation
-            .join
-            .try_lock()
-            .expect("new detection join is idle") = Some(task);
+        operation.join.install(task);
         Ok(acceptance(admission.slot(), true))
     }
 
@@ -241,22 +230,18 @@ impl AcpLocalDetectionRuntime {
         let Some(operation) = operation else {
             return Ok(());
         };
-        let joined = tokio::time::timeout(PROCESS_CLEANUP_LIMIT, async {
-            let mut join = operation.join.lock().await;
-            if let Some(task) = join.as_mut() {
-                let outcome = task.await;
-                *join = None;
-                outcome.map_err(|_| ())?;
-            }
-            Ok::<(), ()>(())
-        })
-        .await;
-        if joined.is_err() {
+        let deadline = tokio::time::Instant::now() + PROCESS_CLEANUP_LIMIT;
+        let joined = operation.join.join_until(deadline).await;
+        if matches!(joined, RetainedJoin::TimedOut) {
             anyhow::bail!("本机检测任务仍在收束，保留原 owner 待重试");
         }
+        let join_clean = matches!(
+            joined,
+            RetainedJoin::Observed(Ok(())) | RetainedJoin::Settled(Ok(())) | RetainedJoin::Absent
+        );
         // Even a panicked task leaves its physical worker in Operation.resources.
         let cleaned = release_resources(&operation).await;
-        if !matches!(joined, Ok(Ok(()))) || !cleaned {
+        if !join_clean || !cleaned {
             self.inner
                 .finish(&operation, failed(AcpLocalDetectionFailureKind::Cleanup));
             anyhow::bail!("本机检测资源收束失败，请重试关闭");
@@ -664,11 +649,15 @@ sys.stderr.flush()
         async fn terminal(&self) -> State {
             timeout(Duration::from_secs(18), async {
                 let operation = self.operation();
-                let mut slot = operation.join.lock().await;
-                if let Some(task) = slot.as_mut() {
-                    let outcome = task.await;
-                    slot.take();
-                    outcome.expect("the original detection owner finishes");
+                match operation.join.join().await {
+                    RetainedJoin::Observed(result) => {
+                        result.expect("the original detection owner finishes");
+                    }
+                    RetainedJoin::Settled(Ok(())) | RetainedJoin::Absent => {}
+                    RetainedJoin::Settled(Err(error)) => {
+                        panic!("the original detection owner finishes: {error}")
+                    }
+                    RetainedJoin::TimedOut => unreachable!("unbounded join has no deadline"),
                 }
                 let state = self.runtime.read_acp_local_detection_state().state;
                 assert!(!matches!(state, State::Checking | State::Cancelling));
@@ -691,7 +680,7 @@ sys.stderr.flush()
                 StudioErrorCode::RuntimeStopped
             );
             let operation = self.operation();
-            assert!(operation.join.lock().await.is_none(), "join must be reaped");
+            assert!(operation.join.slot_is_empty().await, "join must be reaped");
             let resources = operation.resources.lock().await;
             assert!(resources.worker.is_none());
             assert!(resources.directory.is_none());
@@ -1006,9 +995,7 @@ sys.stderr.flush()
             .await
             .is_err()
         );
-        let join = operation.join.lock().await;
-        assert!(!join.as_ref().unwrap().is_finished());
-        drop(join);
+        assert_eq!(operation.join.running_handle_retained(), Some(true));
         let resources = operation.resources.lock().await;
         assert!(resources.worker.is_some());
         assert!(resources.directory.as_ref().unwrap().is_dir());
