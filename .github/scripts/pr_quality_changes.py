@@ -24,10 +24,8 @@ OUTPUT_FLAGS = (
     "remote_helpers",
     "linux_desktop",
     "linux_native",
-    "windows_build",
-    "macos_build",
-    "windows_gui_build",
-    "macos_gui_build",
+    "pages_preview",
+    "rust_scale",
 )
 
 _ZERO_SHA = "0" * 40
@@ -51,6 +49,15 @@ _DOCS_PREFIXES = (
     "reports/",
     "site/",
 )
+
+_PAGES_EXACT = frozenset({
+    ".github/workflows/pages.yml",
+    "code/anywork/windows/runner/resources/app_icon.ico",
+})
+_SCALE_EXACT = frozenset({
+    ".github/workflows/rust-scale.yml",
+    ".github/workflows/rust-scale-checks.yml",
+})
 
 # Shared build inputs can change every consumer. Release metadata and frontend
 # configuration have narrower owners and are classified before these rules.
@@ -160,6 +167,15 @@ def _has_prefix(path: str, prefixes: Iterable[str]) -> bool:
     return any(path == prefix.rstrip("/") or path.startswith(prefix) for prefix in prefixes)
 
 
+def _requires_pages_preview(path: str) -> bool:
+    directory, _, name = path.rpartition("/")
+    return (
+        path in _PAGES_EXACT
+        or path.startswith(("site/", "code/anywork/assets/"))
+        or (directory == "design/assets" and name.startswith("readme-") and name.endswith(".png"))
+    )
+
+
 def _is_pure_test_path(path: str) -> bool:
     # Test-local helpers and fixture data have the same consumers as their
     # enclosing Cargo integration tests. A module named src/tests.rs (or a
@@ -211,12 +227,8 @@ def classify_path(path: str) -> frozenset[str]:
     pure_test = _is_pure_test_path(path)
     if path in _RUST_EXACT or _has_prefix(path, _RUST_PREFIXES):
         tags.add("rust")
-        if pure_test or path == "rustfmt.toml":
-            tags.add("pure_test")
-        else:
-            tags.add("rust_production")
-            if _has_prefix(path, _DESKTOP_RUST_PREFIXES):
-                tags.add("desktop")
+        if not pure_test and _has_prefix(path, _DESKTOP_RUST_PREFIXES):
+            tags.add("desktop")
     if not pure_test and (path in _BRIDGE_EXACT or _has_prefix(path, _BRIDGE_PREFIXES)):
         tags.add("bridge")
     if _has_prefix(path, ("code/anywork/", "code/anywork_previews/")) and not path.startswith(
@@ -244,10 +256,6 @@ def classify_path(path: str) -> frozenset[str]:
         tags.add("native_exact")
     if path.startswith("code/anywork/linux/"):
         tags.add("linux")
-    if path.startswith("code/anywork/windows/"):
-        tags.add("windows")
-    if path.startswith("code/anywork/macos/"):
-        tags.add("macos")
     if path.startswith("code/anywork/runner_common/"):
         tags.add("runner_common")
     if path.startswith("code/anywork/integration_test/"):
@@ -270,8 +278,13 @@ def _full_flags() -> dict[str, bool]:
 
 def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, object]:
     normalized = [_posix(path) for path in paths if _posix(path)]
+    is_pr = event_name == "pull_request"
+    pr_only_flags = {
+        "pages_preview": is_pr and any(_requires_pages_preview(path) for path in normalized),
+        "rust_scale": is_pr and any(path in _SCALE_EXACT for path in normalized),
+    }
     if not normalized:
-        flags = _full_flags()
+        flags = _full_flags() | pr_only_flags
         return _finish(
             flags,
             event_name=event_name,
@@ -284,12 +297,12 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         tags.update(classify_path(path))
 
     if "unknown" in tags or "policy" in tags or "full" in tags:
-        flags = _full_flags()
+        flags = _full_flags() | pr_only_flags
         reason = "unknown path category or shared build/fixture/CI input"
         return _finish(flags, event_name=event_name, plan="full", reason=reason)
 
     if tags == {"docs"}:
-        flags = _empty_flags()
+        flags = _empty_flags() | pr_only_flags
         flags["docs_policy"] = True
         return _finish(
             flags,
@@ -298,18 +311,13 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
             reason="all paths are design or documentation",
         )
 
-    flags = _empty_flags()
+    flags = _empty_flags() | pr_only_flags
     if "docs" in tags:
         flags["docs_policy"] = True
     if "release" in tags:
         flags["release_configuration"] = True
     if "rust" in tags:
         flags["rust_checks"] = True
-        flags["windows_build"] = True
-        flags["macos_build"] = True
-        if "rust_production" in tags:
-            flags["windows_gui_build"] = True
-            flags["macos_gui_build"] = True
     if "desktop" in tags:
         flags["linux_desktop"] = True
     if "flutter" in tags:
@@ -323,47 +331,24 @@ def plan_from_paths(paths: Iterable[str], *, event_name: str) -> dict[str, objec
         flags["gui_generated"] = True
         flags["linux_desktop"] = True
         flags["linux_native"] = True
-        flags["windows_build"] = True
-        flags["macos_build"] = True
-        flags["windows_gui_build"] = True
-        flags["macos_gui_build"] = True
     if "native_exact" in tags:
         flags["flutter_checks"] = True
         flags["linux_native"] = True
-        flags["windows_build"] = True
-        flags["macos_build"] = True
-        flags["windows_gui_build"] = True
-        flags["macos_gui_build"] = True
     if "linux" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
         flags["linux_native"] = True
-    if "windows" in tags:
-        flags["flutter_checks"] = True
-        flags["windows_build"] = True
-        flags["windows_gui_build"] = True
-    if "macos" in tags:
-        flags["flutter_checks"] = True
-        flags["macos_build"] = True
-        flags["macos_gui_build"] = True
     if "runner_common" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
         flags["linux_native"] = True
-        flags["windows_build"] = True
-        flags["macos_build"] = True
-        flags["windows_gui_build"] = True
-        flags["macos_gui_build"] = True
     if "integration" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
     if "tool" in tags:
         flags["flutter_checks"] = True
         flags["linux_desktop"] = True
-    flags["remote_helpers"] = any(
-        flags[name]
-        for name in ("linux_desktop", "linux_native", "windows_gui_build", "macos_gui_build")
-    )
+    flags["remote_helpers"] = flags["linux_desktop"] or flags["linux_native"]
     flags["linux_inputs"] = flags["gui_generated"] or flags["remote_helpers"]
     flags["linux_environment"] = (
         flags["client_checks"] or flags["flutter_checks"] or flags["rust_checks"] or flags["linux_inputs"]
@@ -388,14 +373,15 @@ def _finish(
     jobs_by_flag = (
         ("release_configuration", "release-configuration"),
         ("rust_checks", "rust-checks"),
+        ("rust_checks", "platform-rust-checks"),
         ("linux_environment", "linux-environment"),
         ("flutter_checks", "flutter-checks"),
         ("gui_generated", "gui-generated"),
         ("linux_inputs", "linux-inputs"),
         ("linux_desktop", "linux-desktop"),
         ("linux_native", "linux-native"),
-        ("windows_build", "windows-build"),
-        ("macos_build", "macos-build"),
+        ("pages_preview", "pages-preview"),
+        ("rust_scale", "rust-scale"),
     )
     for flag, job in jobs_by_flag:
         if flags[flag] or (flag == "flutter_checks" and flags["client_checks"]):

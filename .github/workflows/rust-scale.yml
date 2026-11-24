@@ -4,16 +4,11 @@ on:
   schedule:
     - cron: '23 18 * * *'
   workflow_dispatch:
-  # Validate this entrypoint when it changes; ordinary PRs keep bounded cases.
-  pull_request:
-    paths:
-      - '.github/workflows/rust-scale.yml'
 
 permissions: {}
 
 concurrency:
   group: rust-scale-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   linux-environment:
@@ -24,45 +19,13 @@ jobs:
       sourceRef: ${{ github.sha }}
 
   rust-scale:
-    name: Runtime scale (Linux)
     needs: linux-environment
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    uses: ./.github/workflows/rust-scale-checks.yml
     permissions:
       contents: read
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-    steps:
-      - name: Check out the tested source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Restore exact Linux environment
-        uses: ./.github/actions/restore-linux-environment
-        with:
-          image-ref: ${{ needs.linux-environment.outputs.imageRef }}
-          image-id: ${{ needs.linux-environment.outputs.imageId }}
-          artifact-id: ${{ needs.linux-environment.outputs.artifactId }}
-          archive-sha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
-      - name: Cache container Rust dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: linux-workspace-${{ needs.linux-environment.outputs.key }}
-          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
-          save-if: false
-          cache-bin: false
-      - name: Verify indexed history at one hundred thousand records
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite --lib \
-            studio::storage::history::conversation::record_read_tests::hundred_thousand_records_use_index_seeks_without_loading_bodies \
-            -- --exact --ignored --nocapture
-      - name: Verify current and history at two thousand items
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-studio-runtime --features pl-core/sqlite \
-            --test runtime_conversation_feed current_and_history_2000_item_scale -- --exact --ignored --nocapture
-      - name: Verify the complete model stream
-        run: |
-          bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo test --locked -p pl-model --test protocol_wire \
-            full_gui_stress_stream_reaches_model_public_api_without_loss -- --exact --ignored --nocapture
+    with:
+      environmentKey: ${{ needs.linux-environment.outputs.key }}
+      imageRef: ${{ needs.linux-environment.outputs.imageRef }}
+      imageId: ${{ needs.linux-environment.outputs.imageId }}
+      artifactId: ${{ needs.linux-environment.outputs.artifactId }}
+      archiveSha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
