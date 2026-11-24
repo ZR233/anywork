@@ -322,7 +322,7 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> TypedTool for ShowFi
                         let parsed = url::Url::parse(&url).expect("validated URL");
                         let name = parsed
                             .path_segments()
-                            .and_then(|segments| segments.filter(|s| !s.is_empty()).next_back())
+                            .and_then(|mut segments| segments.rfind(|s| !s.is_empty()))
                             .map(filename)
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| "network-image".into());
