@@ -1162,20 +1162,7 @@ impl BotRuntime {
         self.close_publisher().await?;
         {
             let mut slot = self.inner.recovery.lock().await;
-            if let Some(recovery) = slot.as_mut() {
-                let joined = std::pin::Pin::new(recovery).await;
-                *slot = None;
-                if let Err(error) = joined
-                    && !error.is_cancelled()
-                {
-                    return Err(FeishuError::new(
-                        FeishuErrorKind::Unavailable,
-                        "bot inbound recovery join failed",
-                        true,
-                        None,
-                    ));
-                }
-            }
+            join_inbound_recovery(&mut slot).await?;
         }
         self.drain_replies().await?;
         self.close_operations().await?;
@@ -1881,20 +1868,7 @@ impl BotRuntime {
         if slot.as_ref().is_some_and(|handle| !handle.is_finished()) {
             return Ok(());
         }
-        if let Some(handle) = slot.as_mut() {
-            let joined = std::pin::Pin::new(handle).await;
-            *slot = None;
-            if let Err(error) = joined
-                && !error.is_cancelled()
-            {
-                return Err(FeishuError::new(
-                    FeishuErrorKind::Unavailable,
-                    "bot inbound recovery join failed",
-                    true,
-                    None,
-                ));
-            }
-        }
+        join_inbound_recovery(&mut slot).await?;
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             return Err(FeishuError::new(
                 FeishuErrorKind::Unavailable,
@@ -1932,23 +1906,23 @@ impl BotRuntime {
         *slot = Some(handle);
         if self.inner.sealed.load(Ordering::SeqCst) != 0 {
             self.inner.reply_cancel.cancel();
-            if let Some(handle) = slot.as_mut() {
-                let joined = std::pin::Pin::new(handle).await;
-                *slot = None;
-                if let Err(error) = joined
-                    && !error.is_cancelled()
-                {
-                    return Err(FeishuError::new(
-                        FeishuErrorKind::Unavailable,
-                        "bot inbound recovery join failed",
-                        true,
-                        None,
-                    ));
-                }
-            }
+            join_inbound_recovery(&mut slot).await?;
         }
         Ok(())
     }
+}
+
+async fn join_inbound_recovery(
+    slot: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Result<(), FeishuError> {
+    super::join_owned_task(slot).await.map_err(|_| {
+        FeishuError::new(
+            FeishuErrorKind::Unavailable,
+            "bot inbound recovery join failed",
+            true,
+            None,
+        )
+    })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

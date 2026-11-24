@@ -20,7 +20,6 @@ use crate::{
 };
 use std::collections::BTreeSet;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, oneshot, watch};
@@ -78,21 +77,14 @@ impl WatchSlot {
 
     async fn join(&mut self) -> Result<(), FeishuError> {
         self.cancel.cancel();
-        let Some(handle) = self.handle.as_mut() else {
-            return Ok(());
-        };
-        let joined = Pin::new(handle).await;
-        self.handle = None;
-        match joined {
-            Ok(()) => Ok(()),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(_) => Err(FeishuError::new(
+        super::join_owned_task(&mut self.handle).await.map_err(|_| {
+            FeishuError::new(
                 FeishuErrorKind::Unavailable,
                 "bot connection watch join failed",
                 true,
                 None,
-            )),
-        }
+            )
+        })
     }
 }
 
@@ -2360,16 +2352,7 @@ impl BotOperationOwner {
     }
 
     async fn join_slot(&self, slot: &mut Option<JoinHandle<()>>) -> Result<(), FeishuError> {
-        let Some(handle) = slot.as_mut() else {
-            return Ok(());
-        };
-        let joined = Pin::new(handle).await;
-        *slot = None;
-        match joined {
-            Ok(()) => Ok(()),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(_) => Err(join_error()),
-        }
+        super::join_owned_task(slot).await.map_err(|_| join_error())
     }
 
     /// 已结束任务槽的终态消费：异常只保留安全分类并清槽一次，后续操作不复报旧 join

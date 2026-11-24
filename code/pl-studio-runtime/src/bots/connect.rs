@@ -9,7 +9,6 @@ use super::send::SendPlan;
 use super::storage::{BotStateStore, SendRecord, SendRecordStatus, SendSegmentFact};
 use crate::BotConnectionState;
 use crate::studio::unix_seconds;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -108,23 +107,20 @@ impl BotConnectionOwner {
     async fn join_inner(&self) -> Result<(), FeishuError> {
         self.cancel.lock().await.cancel();
         let mut slot = self.task.lock().await;
-        let Some(task) = slot.as_mut() else {
+        if slot.is_none() {
             return Ok(());
-        };
-        let joined = Pin::new(task).await;
-        *slot = None;
+        }
+        let joined = super::join_owned_task(&mut slot).await;
         drop(slot);
         *self.cancel.lock().await = CancellationToken::new();
-        match joined {
-            Ok(()) => Ok(()),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(_) => Err(FeishuError::new(
+        joined.map_err(|_| {
+            FeishuError::new(
                 FeishuErrorKind::Unavailable,
                 "bot connection join failed",
                 true,
                 None,
-            )),
-        }
+            )
+        })
     }
 }
 

@@ -18,7 +18,6 @@ use crate::{
     BotDiagnostic, BotRegistrationAttempt, BotRegistrationStatus, BotsCommandReply,
     CommandDisposition, CommandEffectPoint, ResourceStamp, StudioCommandReceipt,
 };
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -48,21 +47,16 @@ impl RegistrationJob {
 
     async fn join(&self) -> Result<(), FeishuError> {
         let mut inner = self.inner.lock().await;
-        let Some(handle) = inner.handle.as_mut() else {
-            return Ok(());
-        };
-        let joined = Pin::new(handle).await;
-        inner.handle = None;
-        match joined {
-            Ok(()) => Ok(()),
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(FeishuError::new(
-                FeishuErrorKind::Unavailable,
-                format!("bot registration join failed: {error}"),
-                true,
-                None,
-            )),
-        }
+        super::join_owned_task(&mut inner.handle)
+            .await
+            .map_err(|error| {
+                FeishuError::new(
+                    FeishuErrorKind::Unavailable,
+                    format!("bot registration join failed: {error}"),
+                    true,
+                    None,
+                )
+            })
     }
 }
 
