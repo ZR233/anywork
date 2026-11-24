@@ -61,9 +61,7 @@ impl SessionRuntime {
         let model_ready = |state: &pl_core::thread::ThreadSnapshot,
                            config: &NativeModelConfiguration| {
             state.model_available
-                && (state.runtime_bundle.model_identity.as_deref() == Some(config.model.identity())
-                    || state.runtime_bundle.preparing_model_identity.as_deref()
-                        == Some(config.model.identity()))
+                && state.runtime_bundle.model_identity.as_deref() == Some(config.model.identity())
         };
         if model_ready(&snapshot, &config) {
             return Ok(config.route);

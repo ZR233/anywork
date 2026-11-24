@@ -214,11 +214,10 @@ class _ComposerContentViewState extends State<ComposerContentView> {
     }
     final route = view.displayRoute;
     final blockedReason = switch (backend.status) {
-      ThreadStatusView.idle => null,
       ThreadStatusView.closing ||
       ThreadStatusView.closed ||
       ThreadStatusView.faulted => context.l10n.statusModelSwitchWhileInactive,
-      _ => context.l10n.statusModelSwitchWhileRunning,
+      _ => null,
     };
     SessionModeSelector modeSelector(bool inMenu) => SessionModeSelector(
       inMenu: inMenu,

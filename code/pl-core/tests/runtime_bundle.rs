@@ -37,6 +37,7 @@ fn bundle(
         desired: label.into(),
         model: None,
         require_idle: false,
+        wait_for_model_before_input: false,
         model_context_revision: None,
         tools: Some(RuntimeTools {
             registrations,

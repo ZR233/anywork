@@ -52,7 +52,6 @@ pub(crate) fn preparer(
             .as_ref()
             .map(|effort| effort.as_str().to_owned()),
         context_window: route.context.context_window,
-        auto_compact_limit: route.context.auto_compact_limit,
         options: policy(mode),
         base_instructions: route
             .model
@@ -73,7 +72,6 @@ struct StudioCompaction {
     modes: crate::mode::ThreadModeManager,
     reasoning_effort: Option<String>,
     context_window: Option<u64>,
-    auto_compact_limit: Option<u64>,
     options: ThreadCompactionOptions,
     base_instructions: String,
     instruction_binding: InstructionBinding,
@@ -164,27 +162,6 @@ impl ContextPreparationHook for StudioCompaction {
         }
         // Source summarization must see the committed source instructions, not the target repair.
         let source_context = request.committed_context.clone();
-        // This old source observation only triggers a handoff; it never measures target input.
-        let source_usage_route = request.previous_usage.as_ref().and_then(|usage| {
-            let route = usage.origin.binding.route_identity.as_ref()?;
-            let source_window = usage.origin.binding.context_window?;
-            let total = usage
-                .usage
-                .input_tokens?
-                .checked_add(usage.usage.output_tokens?)?;
-            (route != &self.model.route_identity()
-                && source_window > self.context_window?
-                && total >= self.auto_compact_limit?
-                && usage.origin.context_revision == source_context.revision)
-                .then(|| route.clone())
-        });
-        // Source provenance belongs to the published context revision, not the current tool plan.
-        // Token measurement reuse separately validates its prefix/tools through matches_input.
-        let same_route_continuation = request.previous_usage.as_ref().is_some_and(|usage| {
-            usage.origin.context_revision == request.committed_context.revision
-                && usage.origin.binding.route_identity.as_deref()
-                    == Some(self.model.route_identity().as_str())
-        });
         let mut instruction_repair = match restore_current_instructions(
             &mut request,
             &self.base_instructions,
@@ -234,53 +211,12 @@ impl ContextPreparationHook for StudioCompaction {
             facts: facts.clone(),
             mutations: instruction_repair.mutations.clone(),
         };
-        let mut preview = request.model.clone();
-        let mut records = preview.context.records.to_vec();
-        // Capacity includes freshly projected state, as well as this step's frozen input.
-        append_preview_facts(&mut records, &facts, request.extension_sequence);
-        preview.context.records = records.into();
-        let estimate = match self
-            .model
-            .compaction_decision(
-                &preview,
-                request.previous_usage.as_ref(),
-                request.force_compaction,
-            )
-            .await
-        {
-            Ok(decision) => decision,
-            Err(error) => {
-                return ContextPreparation::Failed {
-                    error,
-                    mutations: vec![],
-                };
-            }
-        };
-        if request
-            .committed_context
-            .records
-            .iter()
-            .all(|record| record.source == pl_core::context::ContextSource::Instruction)
-            || (estimate == pl_model::runtime::ThreadCompactionDecision::Keep
-                && source_usage_route.is_none())
-        {
-            return unchanged(inputs);
-        }
         inputs.include_keys(&frozen, &[LATEST_RECEIPT]);
         let previous_summary = active_text_summary(&source_context.records, &request.extensions);
-        let handoff = match if same_route_continuation {
-            Ok(None)
-        } else {
-            self.handoff_source(
-                &source_context.records,
-                previous_summary.as_ref(),
-                if estimate == pl_model::runtime::ThreadCompactionDecision::Keep {
-                    source_usage_route.as_deref()
-                } else {
-                    None
-                },
-            )
-        } {
+        // Check the committed source before the target attempts to encode old tool calls,
+        // attachments or provider checkpoints, independent of the two context windows.
+        let handoff = match self.handoff_source(&source_context.records, previous_summary.as_ref())
+        {
             Ok(source) => source,
             Err(error) => {
                 return ContextPreparation::Failed {
@@ -289,8 +225,37 @@ impl ContextPreparationHook for StudioCompaction {
                 };
             }
         };
-        if estimate == pl_model::runtime::ThreadCompactionDecision::Keep && handoff.is_none() {
-            return unchanged(inputs);
+        if handoff.is_none() {
+            if source_context
+                .records
+                .iter()
+                .all(|record| record.source == pl_core::context::ContextSource::Instruction)
+            {
+                return unchanged(inputs);
+            }
+            let mut preview = request.model.clone();
+            let mut records = preview.context.records.to_vec();
+            // Capacity includes freshly projected state and this step's frozen input.
+            append_preview_facts(&mut records, &facts, request.extension_sequence);
+            preview.context.records = records.into();
+            match self
+                .model
+                .compaction_decision(
+                    &preview,
+                    request.previous_usage.as_ref(),
+                    request.force_compaction,
+                )
+                .await
+            {
+                Ok(pl_model::runtime::ThreadCompactionDecision::Keep) => return unchanged(inputs),
+                Ok(pl_model::runtime::ThreadCompactionDecision::Compact) => {}
+                Err(error) => {
+                    return ContextPreparation::Failed {
+                        error,
+                        mutations: vec![],
+                    };
+                }
+            }
         }
         let (compactor, reasoning_effort, context_window) = match &handoff {
             Some((model, route)) => (
@@ -350,7 +315,10 @@ impl ContextPreparationHook for StudioCompaction {
         model_request.attempt_id = id.clone();
         let mut options = self.options.clone();
         if handoff.is_some() {
-            options.strategy = ThreadCompactionStrategy::TextSummary;
+            options.strategy = ThreadCompactionStrategy::PortableTextSummary;
+            // Only committed source history is exposed to the auxiliary request.
+            model_request.tools = Default::default();
+            model_request.solo_tool_ids = Default::default();
         }
         match compactor.compact(model_request, options).await {
             Ok(mut result) => {
@@ -371,7 +339,8 @@ impl ContextPreparationHook for StudioCompaction {
                     timing: result.timing,
                     implementation: Some(
                         match result.implementation {
-                            ThreadCompactionStrategy::TextSummary => "textSummary",
+                            ThreadCompactionStrategy::TextSummary
+                            | ThreadCompactionStrategy::PortableTextSummary => "textSummary",
                             ThreadCompactionStrategy::PreferNative => "native",
                         }
                         .into(),
@@ -410,11 +379,14 @@ impl ContextPreparationHook for StudioCompaction {
                 rejected.error =
                     Some("context preparation candidate was cancelled or rejected".into());
                 receipt.context_summary = match result.implementation {
-                    ThreadCompactionStrategy::TextSummary => {
+                    ThreadCompactionStrategy::TextSummary
+                    | ThreadCompactionStrategy::PortableTextSummary => {
                         Some(pl_model::runtime::TextCompactionBinding {
                             inference_id: id.clone(),
                             binding: receipt.binding.clone(),
                             retained_through_record_id: receipt.retained_through_record_id.clone(),
+                            portable: result.implementation
+                                == ThreadCompactionStrategy::PortableTextSummary,
                         })
                     }
                     ThreadCompactionStrategy::PreferNative => None,
@@ -497,21 +469,13 @@ impl StudioCompaction {
         &self,
         records: &[pl_core::context::ContextRecord],
         summary: Option<&pl_model::runtime::TextCompactionBinding>,
-        observed_route: Option<&str>,
     ) -> Result<Option<(ThreadModel, ResolvedModelRoute)>, pl_core::model::ModelError> {
         use pl_model::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-        let Some(binding) = ThreadModel::latest_context_binding(records, summary)? else {
+        let Some(binding) = ThreadModel::latest_replay_binding(records, summary)? else {
             return Ok(None);
         };
-        if observed_route.is_some_and(|route| route != binding.route_identity()) {
-            return Ok(None);
-        }
-        if binding.route_identity() == self.model.route_identity()
-            || !binding
-                .context_window
-                .zip(self.context_window)
-                .is_some_and(|(source, target)| source > target)
-        {
+        let source_identity = binding.route_identity();
+        if source_identity == self.model.route_identity() {
             return Ok(None);
         }
         let resolve = || -> anyhow::Result<_> {
@@ -534,9 +498,14 @@ impl StudioCompaction {
                     effort: entry.model.default_effort().map(ReasoningEffort::new),
                 },
             )?;
+            crate::studio::delegation::validate_credential(&route)?;
             let model = ThreadModel::new(
                 pl_model::runtime::from_route(&route)?,
                 route.reasoning_config(),
+            );
+            anyhow::ensure!(
+                model.route_identity() == source_identity,
+                "compaction source route no longer matches the committed context"
             );
             Ok((model, route))
         };
@@ -566,6 +535,7 @@ fn active_text_summary(
                 inference_id: receipt.inference_id,
                 binding: receipt.binding,
                 retained_through_record_id: receipt.retained_through_record_id,
+                portable: false,
             })
     });
     origin.filter(|origin| records.iter().any(|record| {
@@ -1209,7 +1179,7 @@ pub(crate) fn migrate_checkpoint_sources(
 
 #[cfg(test)]
 mod tests {
-    //! One production regression for observed-source downsizing below the target's rough threshold.
+    //! A source-side handoff below the target's automatic compaction threshold.
     use super::*;
     use anyhow::{Context, Result};
     use pl_core::{
@@ -1238,21 +1208,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_observed_usage_triggers_downsizing_below_target_rough_threshold() -> Result<()>
-    {
-        // A small wire sample avoids the fixture's HTTP body cap; reported source usage is independent
-        // from the target's rough text estimate, just as with the real 604202-token source checkpoint.
-        let ledger = "ledger ".repeat(2048);
+    async fn switches_to_a_larger_model_and_reuses_handoff_after_target_failure() -> Result<()> {
+        let ledger = "prior ledger marker";
         let mut reported = responses_text("source answer", "source-turn", "source");
-        reported.last_mut().unwrap()["response"]["usage"]["input_tokens"] = json!(604_202);
+        reported.last_mut().unwrap()["response"]["usage"]["input_tokens"] = json!(37);
         let options = policy(OpenAiCompactionMode::Local);
         let source = FixtureServer::start(vec![
-            Step::prompt(
-                Protocol::ResponsesHttp,
-                ledger.clone(),
-                0,
-                Reply::Sse(reported),
-            ),
+            Step::prompt(Protocol::ResponsesHttp, ledger, 0, Reply::Sse(reported)),
             Step::prompt(
                 Protocol::ResponsesHttp,
                 format!("{}\n\n{}", options.instructions, options.requirement),
@@ -1265,24 +1227,36 @@ mod tests {
             ),
         ])
         .await?;
-        let target = FixtureServer::start(vec![Step::prompt(
-            Protocol::ResponsesHttp,
-            "TARGET_PENDING_INPUT_ONLY",
-            0,
-            Reply::Sse(responses_text("target continued", "target-turn", "target")),
-        )])
+        let target = FixtureServer::start(vec![
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "TARGET_PENDING_INPUT_ONLY",
+                0,
+                Reply::HttpError {
+                    status: 400,
+                    code: "invalid_request_error".into(),
+                    message: "fixture target error".into(),
+                },
+            ),
+            Step::prompt(
+                Protocol::ResponsesHttp,
+                "TARGET_RETRY",
+                1,
+                Reply::Sse(responses_text("target continued", "target-turn", "target")),
+            ),
+        ])
         .await?;
         let mut config = crate::StudioConfig::default_config()?;
         config.models.accounts.clear();
         for (id, endpoint, window, threshold, base) in [
+            ("source", source.base_url(), 272_000, 244_800, "SOURCE_BASE"),
             (
-                "source",
-                source.base_url(),
+                "target",
+                target.base_url(),
                 1_000_000,
                 900_000,
-                "SOURCE_BASE",
+                "TARGET_BASE",
             ),
-            ("target", target.base_url(), 500_000, 450_000, "TARGET_BASE"),
         ] {
             let mut model = ModelDefinition::compatible(id);
             model
@@ -1368,7 +1342,7 @@ mod tests {
                 },
             ])
             .await?;
-        thread.run_turn(turn("source-turn", &ledger)).await?;
+        thread.run_turn(turn("source-turn", ledger)).await?;
         let before = thread.snapshot();
         let origin = before
             .last_attempt_usage_origin
@@ -1377,7 +1351,7 @@ mod tests {
         assert_eq!(origin.context_revision, before.context.revision);
         assert_eq!(
             before.last_attempt_usage.as_ref().unwrap().input_tokens,
-            Some(604_202)
+            Some(37)
         );
         let target_model = ThreadModel::new(pl_model::runtime::from_route(&target_route)?, None);
         let mut preview = before.context.records.to_vec();
@@ -1425,9 +1399,13 @@ mod tests {
             .await?
             .installed()
             .await?;
-        thread
+        let failed = thread
             .run_turn(turn("target-turn", "TARGET_PENDING_INPUT_ONLY"))
-            .await?;
+            .await
+            .expect_err("the target rejects its first request");
+        assert!(matches!(failed, pl_core::thread::ThreadError::Model(_)));
+        assert!(failed.to_string().contains("fixture target error"));
+        thread.run_turn(turn("retry-turn", "TARGET_RETRY")).await?;
         let after = thread.snapshot();
         let saved = after
             .extensions
@@ -1436,6 +1414,7 @@ mod tests {
         let receipt = decode_receipt(saved.payload.version(), saved.payload.content())?;
         assert_eq!(receipt.binding.account_id, "source");
         assert_eq!(receipt.accounting.usage.input_tokens, Some(11));
+        assert!(receipt.context_summary.context("summary origin")?.portable);
         assert_eq!(
             after.last_attempt_usage.as_ref().unwrap().input_tokens,
             Some(11),
@@ -1445,15 +1424,16 @@ mod tests {
         let source_requests = source.finish().await?;
         assert_eq!(source_requests.len(), 2);
         let summary = source_requests[1].body.to_string();
-        assert!(summary.contains("SOURCE_BASE") && summary.contains(&ledger[..100]));
+        assert!(summary.contains("SOURCE_BASE") && summary.contains(ledger));
         assert!(!summary.contains("TARGET_BASE") && !summary.contains("TARGET_PENDING_INPUT_ONLY"));
         let target_requests = target.finish().await?;
-        assert_eq!(target_requests.len(), 1);
-        let continuation = target_requests[0].body.to_string();
-        assert!(
-            continuation.contains("source handoff summary") && continuation.contains("TARGET_BASE")
-        );
-        assert!(!continuation.contains(&ledger[..100]));
+        assert_eq!(target_requests.len(), 2);
+        for request in target_requests {
+            let continuation = request.body.to_string();
+            assert!(continuation.contains("source handoff summary"));
+            assert!(continuation.contains("TARGET_BASE"));
+            assert!(!continuation.contains(ledger));
+        }
         Ok(())
     }
 }

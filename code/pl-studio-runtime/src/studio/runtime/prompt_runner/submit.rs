@@ -255,11 +255,7 @@ impl StudioRuntime {
                     attachments: &attachments,
                 })?,
             )?;
-            crate::studio::model_binding::validate_media(
-                &thread.snapshot(),
-                &route.model,
-                &context,
-            )?;
+            crate::studio::model_binding::validate_media(&context, &route.model)?;
             if let Some(suggestions) =
                 self.thread_factory
                     .skill_suggestions(&thread_id, &prompt, &thread.snapshot())

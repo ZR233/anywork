@@ -702,8 +702,7 @@ impl StudioRuntime {
         let update_mode_default =
             crate::studio::model_route::decode(&previous.payload)?.model != selector.model;
         let route = selector.resolve(&settings.config)?;
-
-        crate::studio::model_binding::validate_context(&state, &route)?;
+        crate::studio::delegation::validate_credential(&route)?;
         let committed = match thread
             .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                 id: route_extension_id.into(),

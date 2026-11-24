@@ -269,9 +269,6 @@ class _PreviewInputState extends State<_PreviewInput>
                 modelId: 'preview-model',
                 effort: 'high',
                 serviceTier: _serviceTier,
-                blockedReason: widget.execution == null
-                    ? null
-                    : context.l10n.statusModelSwitchWhileRunning,
                 unavailableReason:
                     context.l10n.statusModelRouteUnavailableFallback,
                 onModelSelected: (_, _) {},

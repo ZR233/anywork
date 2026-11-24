@@ -122,6 +122,8 @@ pub struct RuntimeBundle {
     pub desired: Arc<str>,
     pub model: Option<RuntimeModel>,
     pub require_idle: bool,
+    /// Keep the next input-driven turn at its start boundary until this model is installed.
+    pub wait_for_model_before_input: bool,
     pub model_context_revision: Option<u64>,
     pub tools: Option<RuntimeTools>,
     pub application: Option<RuntimeApplication>,
@@ -150,6 +152,7 @@ impl RuntimeBundle {
             desired: Arc::from(model.identity()),
             model: Some(model),
             require_idle: false,
+            wait_for_model_before_input: false,
             model_context_revision: None,
             tools: None,
             application: None,
@@ -217,6 +220,13 @@ pub(super) struct PendingBundle {
 }
 
 impl Owner {
+    pub(super) fn pending_input_model(&self) -> Option<Arc<str>> {
+        self.pending_bundle
+            .as_ref()
+            .filter(|bundle| bundle.update.wait_for_model_before_input)
+            .and(self.state.runtime_bundle.preparing_model_identity.clone())
+    }
+
     pub(super) fn queue_runtime_bundle(
         &mut self,
         update: RuntimeBundle,
