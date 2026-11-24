@@ -1,5 +1,7 @@
 //! Workspace policy over one immutable executor and target root.
+mod deferred;
 mod directory;
+pub use deferred::DeferredWorkspaceFile;
 mod download;
 mod patch;
 mod policy;
@@ -303,6 +305,9 @@ impl ExecutorWorkspaceFileBackend {
 }
 
 impl WorkspaceFileBackend for ExecutorWorkspaceFileBackend {
+    async fn defer_file(&self, path: &str) -> Result<DeferredWorkspaceFile> {
+        self.freeze_deferred_file(path).await.map_err(file_error)
+    }
     async fn apply_patch(
         &self,
         cwd: String,

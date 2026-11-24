@@ -6,6 +6,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../app/app_graph.dart';
 import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../composer/composer.dart';
@@ -18,6 +19,7 @@ import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/plan_summary_card.dart';
 import 'timeline_media_connector.dart';
+import 'timeline_file_download.dart';
 import 'timeline_read_demand_viewport.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
@@ -75,6 +77,9 @@ class _TimelineConnectorBodyState
   Observation? _submissionsObservation;
   List<ComposerSubmission> _submissions = const [];
   String? _observedThreadId;
+  (TimelineFileDownloadStart Function(String), TimelineDisplayLease)?
+  _downloadOwner;
+  TimelineFileDownloadStart? _startFileDownload;
 
   void _observeSubmissions(String threadId) {
     _submissionsObservation?.cancel();
@@ -123,6 +128,16 @@ class _TimelineConnectorBodyState
     final observedView = state.asData?.value;
     final view = observedView?.threadId == threadId ? observedView : null;
     final lease = owner.lease(threadId);
+    final fileDownloads = ref.watch(
+      appGraphProvider.select((graph) => graph.fileDownloads),
+    );
+    final downloadOwner = fileDownloads == null || lease == null
+        ? null
+        : (fileDownloads, lease);
+    if (downloadOwner != _downloadOwner) {
+      _downloadOwner = downloadOwner;
+      _startFileDownload = downloadOwner?.$1(threadId);
+    }
     void link(String raw) {
       final url = safeExternalWebUrl(raw);
       if (url == null ||
@@ -237,7 +252,7 @@ class _TimelineConnectorBodyState
     }
 
     final plan = widget.planConfirmation;
-    return TimelineInitialHistoryContent(
+    final timeline = TimelineInitialHistoryContent(
       content: lease.initialHistoryContent,
       child: TimelineView(
         key: lease.chatKey,
@@ -341,5 +356,9 @@ class _TimelineConnectorBodyState
               ),
       ),
     );
+    final start = _startFileDownload;
+    return start == null
+        ? timeline
+        : TimelineFileDownloadScope(start: start, child: timeline);
   }
 }

@@ -465,9 +465,13 @@ void main() {
       for (final id in errors.keys) {
         expect(tester.widget<TextButton>(retry(id)).onPressed, isNull);
       }
+      scroll.jumpTo(0);
+      await tester.pump();
+      await tester.tap(thumbnail('image-0'));
+      await tester.pumpAndSettle();
       expect(
-        tester.widget<GestureDetector>(thumbnail('image-0')).onTap,
-        isNull,
+        find.byKey(StudioDriverKeys.viewImageDialog(displayId('image-0'))),
+        findsNothing,
       );
       await tester.pumpWidget(scene(retryAvailable: false));
       for (final id in errors.keys) {

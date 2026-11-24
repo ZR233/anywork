@@ -1867,6 +1867,27 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineRemoteImageOpen => '点击后加载并预览';
 
   @override
+  String get timelineRemoteImageLoading => '正在加载图片';
+
+  @override
+  String get timelineRemoteImageRejected => '无法加载此外部图片。';
+
+  @override
+  String get timelineFileDownload => '下载';
+
+  @override
+  String get timelineFileDownloadPause => '暂停下载';
+
+  @override
+  String get timelineFileDownloadResume => '继续下载';
+
+  @override
+  String get timelineFileDownloadStop => '停止下载';
+
+  @override
+  String get timelineFileDownloadComplete => '下载完成';
+
+  @override
   String get timelineJumpToLatest => '跳到最新';
 
   @override

@@ -11,4 +11,5 @@ image = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }

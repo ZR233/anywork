@@ -1982,6 +1982,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineRemoteImageOpen => 'Click to load and preview';
 
   @override
+  String get timelineRemoteImageLoading => 'Loading image';
+
+  @override
+  String get timelineRemoteImageRejected =>
+      'This external image cannot be loaded.';
+
+  @override
+  String get timelineFileDownload => 'Download';
+
+  @override
+  String get timelineFileDownloadPause => 'Pause download';
+
+  @override
+  String get timelineFileDownloadResume => 'Resume download';
+
+  @override
+  String get timelineFileDownloadStop => 'Stop download';
+
+  @override
+  String get timelineFileDownloadComplete => 'Download complete';
+
+  @override
   String get timelineJumpToLatest => 'Jump to latest';
 
   @override

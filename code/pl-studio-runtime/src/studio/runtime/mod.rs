@@ -37,6 +37,8 @@ mod current_reader;
 pub use current_reader::{CurrentBodyWatch, CurrentReader, CurrentWatch};
 mod delegation_models;
 mod directory_observation;
+mod file_display;
+pub use file_display::{DisplayDownloadOutcome, DisplayDownloadRequest};
 mod history;
 pub(crate) use history::history_turn;
 mod lifecycle;

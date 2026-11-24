@@ -5,7 +5,7 @@ use super::projection::ReplyProjection;
 use crate::bots::InboundWorkOutcome;
 use crate::channel_output::{ChannelDeliveryResult, ChannelTarget, FileDelivery};
 use crate::studio::StudioRuntime;
-use pl_tool::file_display::FileDisplayResult;
+use pl_tool::file_display::{AttachmentModality, FileDisplayResult, ResourceReference};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 
@@ -40,10 +40,12 @@ pub(super) async fn deliver_file_displays(
             return Err(InboundWorkOutcome::Interrupted);
         }
         if let Some(caption) = &receipt.caption
-            && receipt
-                .files
-                .iter()
-                .any(|file| matches!(file, FileDisplayResult::Ready { .. }))
+            && receipt.files.iter().any(|file| {
+                matches!(
+                    file,
+                    FileDisplayResult::Ready { .. } | FileDisplayResult::Deferred { .. }
+                )
+            })
         {
             record_result(
                 binding
@@ -54,32 +56,82 @@ pub(super) async fn deliver_file_displays(
             )?;
         }
         for (index, file) in receipt.files.iter().enumerate() {
-            let FileDisplayResult::Ready {
-                resource,
-                filename,
-                modality,
-                ..
-            } = file
-            else {
-                continue;
-            };
             if cancel.is_cancelled() {
                 return Err(InboundWorkOutcome::Interrupted);
             }
-            let bytes = runtime
-                .read_thread_attachment(run.thread_id.clone(), resource.id().into())
-                .await
-                .map_err(|error| InboundWorkOutcome::Recoverable {
-                    diagnostic: error.to_string(),
-                })?;
+            let (file, bytes) = match file {
+                FileDisplayResult::Ready {
+                    resource,
+                    filename,
+                    modality,
+                    ..
+                } => {
+                    let bytes = runtime
+                        .read_thread_attachment(run.thread_id.clone(), resource.id().into())
+                        .await
+                        .map_err(|error| InboundWorkOutcome::Recoverable {
+                            diagnostic: error.to_string(),
+                        })?;
+                    (
+                        FileDelivery {
+                            resource: resource.clone(),
+                            filename: filename.clone(),
+                            modality: *modality,
+                        },
+                        bytes,
+                    )
+                }
+                FileDisplayResult::Deferred {
+                    filename,
+                    target: source,
+                } => {
+                    if binding
+                        .deferred_file_limit()
+                        .is_none_or(|limit| source.size > limit)
+                    {
+                        failures.push(format!(
+                            "file item {index}: channel does not support this file size"
+                        ));
+                        continue;
+                    }
+                    let bytes = match runtime
+                        .read_deferred_display_for_channel(&run.thread_id, source, cancel)
+                        .await
+                    {
+                        Ok(Some(bytes)) => bytes,
+                        Ok(None) => return Err(InboundWorkOutcome::Interrupted),
+                        Err(error) => {
+                            failures.push(format!("file item {index}: {error}"));
+                            continue;
+                        }
+                    };
+                    let digest = hex::encode(Sha256::digest(&bytes));
+                    let resource = ResourceReference::new(
+                        format!("channel-file:{digest}"),
+                        format!("sha256:{digest}"),
+                        source.size,
+                        "application/octet-stream".into(),
+                    )
+                    .map_err(|error| InboundWorkOutcome::Recoverable {
+                        diagnostic: error.to_string(),
+                    })?;
+                    (
+                        FileDelivery {
+                            resource,
+                            filename: filename.clone(),
+                            modality: AttachmentModality::File,
+                        },
+                        bytes,
+                    )
+                }
+                FileDisplayResult::NetworkImage { .. } | FileDisplayResult::Failed { .. } => {
+                    continue;
+                }
+            };
             let result = binding
                 .send_file(
                     &operation(&run.thread_id, turn_id, call, Some(index), target),
-                    &FileDelivery {
-                        resource: resource.clone(),
-                        filename: filename.clone(),
-                        modality: *modality,
-                    },
+                    &file,
                     bytes,
                     cancel,
                 )

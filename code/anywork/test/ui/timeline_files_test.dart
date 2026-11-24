@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/file_reading_panel.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_file_download.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -40,6 +42,12 @@ Map<String, Object?> readyFile(String id, String name, String origin) => {
     if (origin == 'local') 'path': '/workspace/$name',
     if (origin == 'remote') 'path': '/never-a-local-path/$name',
   },
+};
+
+Map<String, Object?> deferredFile(String filename, int size) => {
+  'status': 'deferred',
+  'filename': filename,
+  'target': {'size': size, 'hostPrivate': 'must not reach UI or callbacks'},
 };
 
 String artifacts(List<Map<String, Object?>> files, {int version = 1}) =>
@@ -104,6 +112,39 @@ Widget app(Widget child) => ProviderScope(
     supportedLocales: AppLocalizations.supportedLocales,
     home: Scaffold(body: child),
   ),
+);
+
+class _Download implements TimelineFileDownload {
+  final written = StreamController<int>();
+  final result = Completer<void>();
+  final cleanup = Completer<void>();
+  int pauses = 0;
+  int resumes = 0;
+  int stops = 0;
+
+  @override
+  Stream<int> get progress => written.stream;
+
+  @override
+  Future<void> get finished => result.future;
+
+  @override
+  Future<void> pause() async => pauses++;
+
+  @override
+  Future<void> resume() async => resumes++;
+
+  @override
+  Future<void> stop() {
+    stops++;
+    return cleanup.future;
+  }
+
+  void close() => unawaited(written.close());
+}
+
+Finder _downloadButton(String label) => find.byWidgetPredicate(
+  (widget) => widget is IconButton && widget.tooltip == label,
 );
 
 void main() {
@@ -174,7 +215,7 @@ void main() {
       expect(value.files.first.attachment!.id, 'a');
       expect(
         () =>
-            TimelineFilesPresentation.fromArtifacts(artifacts([], version: 2)),
+            TimelineFilesPresentation.fromArtifacts(artifacts([], version: 3)),
         throwsFormatException,
       );
       final invalid = readyFile('c', 'invalid.md', 'local');
@@ -183,6 +224,324 @@ void main() {
         () => TimelineFilesPresentation.fromArtifacts(artifacts([invalid])),
         throwsFormatException,
       );
+    },
+  );
+
+  test(
+    'v2 accepts deferred size and HTTPS-image descriptor in original order',
+    () {
+      final entries = [
+        readyFile('a', 'first.md', 'archive'),
+        deferredFile('large.tar', 360),
+        {
+          'status': 'networkImage',
+          'filename': 'image.png',
+          'url': 'https://example.invalid/image.png',
+        },
+        {'status': 'failed', 'filename': 'missing.zip', 'message': 'denied'},
+      ];
+      final files = TimelineFilesPresentation.fromArtifacts(
+        artifacts(entries, version: 2),
+      ).files;
+      expect(files.map((file) => file.filename), [
+        'first.md',
+        'large.tar',
+        'image.png',
+        'missing.zip',
+      ]);
+      expect(files.map((file) => file.attachment?.id), ['a', null, null, null]);
+      expect(files[1].deferredSize, 360);
+      expect(files[1].localPath, isNull);
+      expect(files[2].networkImageUrl, 'https://example.invalid/image.png');
+      expect(files[3].error, 'denied');
+      for (final legacyUnknown in entries.skip(1).take(2)) {
+        expect(
+          () => TimelineFilesPresentation.fromArtifacts(
+            artifacts([legacyUnknown]),
+          ),
+          throwsFormatException,
+        );
+      }
+      expect(
+        () => TimelineFilesPresentation.fromArtifacts(
+          artifacts([deferredFile('invalid.tar', -1)], version: 2),
+        ),
+        throwsFormatException,
+      );
+    },
+  );
+
+  testWidgets(
+    'download picks a destination first, retains progress and waits for file commit',
+    (tester) async {
+      const channel = MethodChannel('io.github.zr233.anywork/file_dialogs');
+      final messenger = tester.binding.defaultBinaryMessenger;
+      addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+      final choices = [for (var i = 0; i < 3; i++) Completer<String?>()];
+      var chosen = 0;
+      final name = 'long-deferred-release-archive.tar.gz';
+      messenger.setMockMethodCallHandler(channel, (call) {
+        expect(call.method, 'saveFile');
+        expect(call.arguments, name);
+        return choices[chosen++].future;
+      });
+      final downloads = <_Download>[];
+      addTearDown(() {
+        for (final download in downloads) {
+          download.close();
+        }
+      });
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      final item = fileItem(
+        artifacts([
+          readyFile('a', 'first.md', 'archive'),
+          {
+            'status': 'failed',
+            'filename': 'missing.tgz',
+            'message': 'Unavailable',
+          },
+          deferredFile(name, 800),
+        ], version: 2),
+      );
+
+      await tester.pumpWidget(
+        app(
+          TimelineFileDownloadScope(
+            start: ({required itemId, required index, required destination}) {
+              expect(
+                (itemId, index, destination),
+                ('files-call', 2, '/picked/renamed.tar.gz'),
+              );
+              final download = _Download();
+              downloads.add(download);
+              return download;
+            },
+            child: TimelineAttachmentsConnector(
+              item: item,
+              resources: resources,
+              readAttachment: (_) async =>
+                  throw StateError('must not read archived bytes'),
+              isActive: () => true,
+            ),
+          ),
+        ),
+      );
+      expect(find.byTooltip(name), findsOneWidget);
+      expect(tester.widget<Text>(find.text(name)).maxLines, 1);
+      expect(find.text('无内置预览'), findsNothing);
+
+      final button = _downloadButton('下载');
+      await tester.tap(button);
+      await tester.pump();
+      expect(tester.widget<IconButton>(button).onPressed, isNull);
+      expect(downloads, isEmpty);
+      choices[0].complete(null);
+      await tester.pump();
+      expect(downloads, isEmpty);
+      expect(tester.widget<IconButton>(button).onPressed, isNotNull);
+
+      await tester.tap(button);
+      choices[1].complete('/picked/renamed.tar.gz');
+      await tester.pump();
+      final first = downloads.single;
+      first.written.add(200);
+      await tester.pump();
+      final progress = find.byType(CircularProgressIndicator);
+      expect(tester.widget<CircularProgressIndicator>(progress).value, 0.25);
+      expect(find.text('25%'), findsOneWidget);
+      await tester.tap(find.byTooltip('暂停下载'));
+      await tester.pump();
+      expect(first.pauses, 1);
+      expect(tester.widget<CircularProgressIndicator>(progress).value, 0.25);
+      expect(find.text('25%'), findsOneWidget);
+      await tester.tap(find.byTooltip('继续下载'));
+      await tester.pump();
+      expect(first.resumes, 1);
+      first.written.add(800);
+      await tester.pump();
+      expect(tester.widget<CircularProgressIndicator>(progress).value, 1);
+      expect(find.byTooltip('下载完成'), findsNothing);
+      first.result.completeError(StateError('disk full'));
+      await tester.pump();
+      expect(find.textContaining('disk full'), findsOneWidget);
+
+      await tester.tap(button);
+      choices[2].complete('/picked/renamed.tar.gz');
+      await tester.pump();
+      expect(downloads, hasLength(2));
+      expect(find.textContaining('disk full'), findsNothing);
+      downloads.last.result.complete();
+      await tester.pump();
+      expect(find.byTooltip('下载完成'), findsOneWidget);
+      expect(first.stops, 0);
+      expect(downloads.last.stops, 0);
+    },
+  );
+
+  testWidgets(
+    'stop awaits cleanup and scope replacement retires choices and transfers',
+    (tester) async {
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      final item = fileItem(
+        artifacts([deferredFile('remote.zip', 600)], version: 2),
+      );
+      final retired = _Download();
+      final current = _Download();
+      final disposed = _Download();
+      final lateChoice = Completer<String?>();
+      addTearDown(retired.close);
+      addTearDown(current.close);
+      addTearDown(disposed.close);
+      var selections = 0;
+      var oldStarts = 0;
+      TimelineFileDownload startOld({
+        required String itemId,
+        required int index,
+        required String destination,
+      }) {
+        oldStarts++;
+        return retired;
+      }
+
+      var newStarts = 0;
+      TimelineFileDownload startNew({
+        required String itemId,
+        required int index,
+        required String destination,
+      }) => newStarts++ == 0 ? current : disposed;
+
+      Future<String?> pick(String _) async =>
+          ++selections == 2 ? lateChoice.future : '/picked/remote.zip';
+      Widget scene(TimelineFileDownloadStart start) => app(
+        TimelineFileDownloadScope(
+          start: start,
+          pickSavePath: pick,
+          child: TimelineAttachmentsConnector(
+            item: item,
+            resources: resources,
+            readAttachment: null,
+            isActive: () => true,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(scene(startOld));
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(
+        oldStarts,
+        1,
+        reason: 'the direct download button is keyboard actionable',
+      );
+      await tester.pumpWidget(scene(startNew));
+      expect(retired.stops, 1);
+      retired.result.completeError(StateError('stale transfer'));
+      retired.cleanup.complete();
+      await tester.pump();
+      expect(find.textContaining('stale transfer'), findsNothing);
+
+      await tester.tap(find.byTooltip('下载'));
+      await tester.pump();
+      await tester.pumpWidget(scene(startOld));
+      lateChoice.complete('/picked/must-not-start.zip');
+      await tester.pump();
+      expect(oldStarts, 1);
+      expect(newStarts, 0);
+
+      await tester.pumpWidget(scene(startNew));
+      await tester.tap(find.byTooltip('下载'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('停止下载'));
+      current.result.completeError(StateError('expected cancellation'));
+      await tester.pump();
+      expect(current.stops, 1);
+      expect(find.byTooltip('下载'), findsNothing);
+      expect(
+        tester.widget<IconButton>(_downloadButton('停止下载')).onPressed,
+        isNull,
+      );
+      current.cleanup.complete();
+      await tester.pump();
+      expect(find.textContaining('expected cancellation'), findsNothing);
+
+      await tester.tap(find.byTooltip('下载'));
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      expect(disposed.stops, 1);
+      disposed.result.completeError(StateError('disposed'));
+      disposed.cleanup.complete();
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'HTTPS images start loading directly and explicit image opens zoom',
+    (tester) async {
+      const url = 'https://example.invalid/large-photo.png';
+      const badUrl = 'https://example.invalid/missing-photo.png';
+      final cache = PaintingBinding.instance.imageCache;
+      final frame = Completer<ImageInfo>();
+      final failure = Completer<ImageInfo>();
+      cache.putIfAbsent(
+        const NetworkImage(url),
+        () => OneFrameImageStreamCompleter(frame.future),
+      );
+      cache.putIfAbsent(
+        const NetworkImage(badUrl),
+        () => OneFrameImageStreamCompleter(failure.future),
+      );
+      addTearDown(() {
+        cache.evict(const NetworkImage(url));
+        cache.evict(const NetworkImage(badUrl));
+      });
+      final resources = TimelineImageResources(threadId: 'thread');
+      addTearDown(resources.release);
+      await tester.pumpWidget(
+        app(
+          Column(
+            children: [
+              TimelineAttachmentsConnector(
+                item: fileItem(
+                  artifacts([
+                    {
+                      'status': 'networkImage',
+                      'filename': 'large-photo.png',
+                      'url': url,
+                    },
+                    {
+                      'status': 'networkImage',
+                      'filename': 'unsafe.png',
+                      'url': 'http://example.invalid/unsafe.png',
+                    },
+                  ], version: 2),
+                ),
+                resources: resources,
+                readAttachment: null,
+                isActive: () => true,
+              ),
+              const TimelineRemoteImageConnector(url: badUrl),
+            ],
+          ),
+        ),
+      );
+      expect(find.text('正在加载图片'), findsNWidgets(2));
+      expect(find.text('无法加载此外部图片。'), findsOneWidget);
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawColor(const Color(0xff336677), ui.BlendMode.src);
+      final drawing = recorder.endRecording();
+      frame.complete(ImageInfo(image: drawing.toImageSync(20, 10)));
+      drawing.dispose();
+      failure.completeError(StateError('image missing'));
+      await tester.pumpAndSettle();
+      expect(find.text('正在加载图片'), findsNothing);
+      expect(find.text('无法加载此图片。'), findsOneWidget);
+      await tester.tap(find.image(const NetworkImage(url)));
+      await tester.pumpAndSettle();
+      expect(find.byType(InteractiveViewer), findsOneWidget);
     },
   );
 

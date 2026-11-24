@@ -92,7 +92,7 @@ class _TimelineImageViewState extends State<TimelineImageView> {
     // thumbnails, and must grow within the attachment Wrap's available width.
     return SizedBox.square(
       dimension: 120,
-      child: GestureDetector(
+      child: InkWell(
         key: StudioDriverKeys.viewImageThumbnail(widget._displayId),
         onTap: widget.active ? () => _showOriginal(context, provider) : null,
         child: ConstrainedBox(
@@ -118,40 +118,56 @@ class _TimelineImageViewState extends State<TimelineImageView> {
   }
 
   Future<void> _showOriginal(BuildContext context, MemoryImage provider) =>
-      showDialog<void>(
+      showTimelineImagePreview(
         context: context,
-        builder: (context) => Dialog(
-          key: widget.isTool
-              ? StudioDriverKeys.viewImageDialog(widget._entryId)
-              : StudioDriverKeys.timelineImageDialog(widget.attachment.id),
-          child: Column(
+        dialogKey: widget.isTool
+            ? StudioDriverKeys.viewImageDialog(widget._entryId)
+            : StudioDriverKeys.timelineImageDialog(widget.attachment.id),
+        filename: widget.attachment.filename ?? widget.attachment.mediaType,
+        image: Image(
+          image: provider,
+          fit: BoxFit.contain,
+          errorBuilder: (_, error, _) => Text('图片解码失败：$error'),
+        ),
+      );
+}
+
+Future<void> showTimelineImagePreview({
+  required BuildContext context,
+  required String filename,
+  required Widget image,
+  Key? dialogKey,
+}) => showDialog<void>(
+  context: context,
+  builder: (context) => Dialog(
+    key: dialogKey,
+    child: Column(
+      children: [
+        Padding(
+          padding: const EdgeInsetsDirectional.only(start: 16, end: 4),
+          child: Row(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      widget.attachment.filename ?? widget.attachment.mediaType,
-                    ),
-                  ),
-                  IconButton(
-                    key: StudioDriverKeys.timelineImageClose,
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
               Expanded(
-                child: InteractiveViewer(
-                  maxScale: 8,
-                  child: Image(
-                    image: provider,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, error, _) => Text('图片解码失败：$error'),
+                child: Tooltip(
+                  message: filename,
+                  child: Text(
+                    filename,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
+              ),
+              IconButton(
+                key: StudioDriverKeys.timelineImageClose,
+                tooltip: MaterialLocalizations.of(context).closeButtonTooltip,
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.close),
               ),
             ],
           ),
         ),
-      );
-}
+        Expanded(child: InteractiveViewer(maxScale: 8, child: image)),
+      ],
+    ),
+  ),
+);

@@ -3611,6 +3611,48 @@ abstract class AppLocalizations {
   /// **'Click to load and preview'**
   String get timelineRemoteImageOpen;
 
+  /// No description provided for @timelineRemoteImageLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading image'**
+  String get timelineRemoteImageLoading;
+
+  /// No description provided for @timelineRemoteImageRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'This external image cannot be loaded.'**
+  String get timelineRemoteImageRejected;
+
+  /// No description provided for @timelineFileDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Download'**
+  String get timelineFileDownload;
+
+  /// No description provided for @timelineFileDownloadPause.
+  ///
+  /// In en, this message translates to:
+  /// **'Pause download'**
+  String get timelineFileDownloadPause;
+
+  /// No description provided for @timelineFileDownloadResume.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume download'**
+  String get timelineFileDownloadResume;
+
+  /// No description provided for @timelineFileDownloadStop.
+  ///
+  /// In en, this message translates to:
+  /// **'Stop download'**
+  String get timelineFileDownloadStop;
+
+  /// No description provided for @timelineFileDownloadComplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Download complete'**
+  String get timelineFileDownloadComplete;
+
   /// No description provided for @timelineJumpToLatest.
   ///
   /// In en, this message translates to:

@@ -4,6 +4,7 @@ import '../infrastructure/demo/statistics/demo_statistics_feed.dart';
 import '../infrastructure/demo/studio_demo_api.dart';
 import '../infrastructure/frb/statistics/frb_statistics_feed.dart';
 import '../infrastructure/frb/studio_api.dart';
+import '../infrastructure/frb/studio_file_download.dart';
 import '../infrastructure/frb/studio_update_api.dart';
 import '../platform/clipboard_image_reader.dart';
 import 'app_graph.dart';
@@ -31,6 +32,15 @@ AppGraph createProductionAppGraph({
       progressScope: progress,
     ),
     acpBusinessPort: FrbAcpBusinessPort(ensureReady: runtime.ensureReady),
+    fileDownloads: (threadId) =>
+        ({required itemId, required index, required destination}) =>
+            FrbTimelineFileDownload.start(
+              ensureReady: runtime.ensureReady,
+              threadId: threadId,
+              itemId: itemId,
+              index: index,
+              destination: destination,
+            ),
     statisticsFeed: const FrbStatisticsFeedPort(),
     updateApi: FrbStudioUpdateApi(ensureReady: runtime.ensureReady),
     updatesEnabled:
