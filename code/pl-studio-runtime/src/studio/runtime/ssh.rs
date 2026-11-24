@@ -5,7 +5,6 @@ use anyhow::Result;
 use pl_tool::remote::{SshConnectionSnapshot, SshServerProfile};
 
 use crate::studio::records::WorkspaceRecord;
-use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
 
 use super::StudioRuntime;
 
@@ -218,55 +217,6 @@ impl StudioRuntime {
             .map_err(|error| anyhow::anyhow!(error))?;
         let canonical_path = workspace.canonical_path().to_string();
         let _guard = self.lifecycle_lock.lock().await;
-        if let Some(project) = self
-            .agent_facility
-            .product_events
-            .project_snapshot()
-            .await
-            .into_iter()
-            .find(|project| {
-                project.path == canonical_path && project.ssh_alias.as_deref() == Some(alias)
-            })
-        {
-            return Ok(project);
-        }
-        let name = canonical_path
-            .trim_end_matches('/')
-            .rsplit('/')
-            .next()
-            .filter(|name| !name.is_empty())
-            .unwrap_or("remote-workspace")
-            .to_string();
-        let now = crate::studio::unix_seconds();
-        let existing = self
-            .store
-            .find_project_by_path(&canonical_path, Some(alias))
-            .await?;
-        let (id, created_at, name) = existing
-            .map(|row| (row.id, row.created_at, row.name))
-            .unwrap_or_else(|| (crate::studio::ids::new_id("project"), now, name));
-        let delta = ProjectDirectoryRecord {
-            id: id.clone(),
-            kind: crate::WorkspaceKind::Project,
-            name: name.clone(),
-            path: canonical_path.clone(),
-            ssh_alias: Some(alias.to_string()),
-            created_at,
-            updated_at: now,
-            last_opened_at: Some(now),
-            closed: false,
-        };
-        self.agent_facility
-            .product_events
-            .commit_directory(DirectoryDelta::upsert_project(delta))
-            .await?;
-        Ok(WorkspaceRecord {
-            id,
-            kind: crate::WorkspaceKind::Project,
-            name,
-            path: canonical_path,
-            ssh_alias: Some(alias.to_string()),
-            updated_at: now,
-        })
+        self.commit_remote_project(alias, canonical_path).await
     }
 }

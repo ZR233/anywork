@@ -1704,14 +1704,7 @@ impl ProductEventBus {
         let project_upserts = delta
             .project_upserts
             .iter()
-            .map(|project| crate::WorkspaceRecord {
-                id: project.id.clone(),
-                kind: project.kind,
-                name: project.name.clone(),
-                path: project.path.clone(),
-                ssh_alias: project.ssh_alias.clone(),
-                updated_at: project.updated_at,
-            })
+            .map(|record| crate::WorkspaceRecord::from(record))
             .collect::<Vec<_>>();
         let project_changed = !project_upserts.is_empty() || !delta.project_removals.is_empty();
         let mut envelope = {
@@ -2180,14 +2173,7 @@ pub(super) mod tests {
     }
 
     pub(super) fn workspace(project: &ProjectDirectoryRecord) -> crate::WorkspaceRecord {
-        crate::WorkspaceRecord {
-            id: project.id.clone(),
-            kind: project.kind,
-            name: project.name.clone(),
-            path: project.path.clone(),
-            ssh_alias: project.ssh_alias.clone(),
-            updated_at: project.updated_at,
-        }
+        crate::WorkspaceRecord::from(project)
     }
 
     pub(super) fn query(

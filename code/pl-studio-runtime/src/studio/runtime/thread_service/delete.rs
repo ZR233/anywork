@@ -126,43 +126,37 @@ impl StudioRuntime {
             operation
         };
         let ids = operation.thread_ids.clone();
-        let _pins = self.residency.pin_many(ids.iter().cloned());
+        let mut pipeline = super::settlement::TreeSettlementPipeline::pin(self, ids.clone());
         if let Some((session, scope)) = &runtime_scope {
-            session.prepare_deletion(&ids);
+            session.prepare_deletion(pipeline.ids());
             scope.cancel_preparations();
         }
-        let _bots = self.bots.quiesce_archive_threads(&ids).await?;
+        pipeline.quiesce(self).await?;
         if operation.phase == DeletePhase::Sealed {
             let (session, scope) = runtime_scope
                 .as_ref()
                 .context("sealed deletion lost its original runtime responsibility")?;
-            for id in &ids {
-                self.title_tasks
-                    .cancel(
-                        id,
-                        super::super::thread_title::ThreadTitleCancellationCause::ThreadArchive,
-                    )
-                    .await;
-            }
-            tokio::time::timeout(
-                self.archive_settle_timeout(),
-                session.drain_archive_preparations(scope),
-            )
-            .await
-            .context("delete preparations did not join")??;
+            pipeline
+                .cancel_titles(
+                    self,
+                    super::super::thread_title::ThreadTitleCancellationCause::ThreadArchive,
+                )
+                .await;
+            pipeline
+                .join_scope(self, session, scope, "delete preparations did not join")
+                .await?;
             let tree = self.store.read_directory_tree(&root_id).await?;
-            ensure!(
-                tree.iter()
-                    .all(|thread| ids.contains(&thread.agent.thread_id)),
-                "delete scope gained an unfrozen member"
-            );
+            pipeline.ensure_frozen(
+                tree.iter().map(|thread| thread.agent.thread_id.as_str()),
+                "delete scope gained an unfrozen member",
+            )?;
             let archive = self
                 .freeze_thread_removal(ArchiveScope::Thread(root_id.clone()), &tree, &admitted)
                 .await?;
-            ensure!(
-                archive.thread_ids().iter().all(|id| ids.contains(id)),
-                "delete preparation escaped its frozen scope"
-            );
+            pipeline.ensure_frozen(
+                archive.thread_ids().iter().map(String::as_str),
+                "delete preparation escaped its frozen scope",
+            )?;
             // A preparation can bind only after the first durable deletion scope. Freeze that
             // original assignment after joining it, before any disposable or permanent removal.
             for member in delete_members(&archive) {

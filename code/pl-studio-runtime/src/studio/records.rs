@@ -372,6 +372,26 @@ pub struct WorkspaceRecord {
     pub updated_at: i64,
 }
 
+impl WorkspaceRecord {
+    pub(in crate::studio) fn from_directory_projection(
+        id: impl Into<String>,
+        kind: crate::WorkspaceKind,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        ssh_alias: Option<String>,
+        updated_at: i64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            path: path.into(),
+            ssh_alias,
+            updated_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRecord {

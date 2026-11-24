@@ -194,6 +194,19 @@ pub(in crate::studio) struct ProjectDirectoryRecord {
     pub(in crate::studio) closed: bool,
 }
 
+impl From<&ProjectDirectoryRecord> for crate::studio::records::WorkspaceRecord {
+    fn from(record: &ProjectDirectoryRecord) -> Self {
+        crate::studio::records::WorkspaceRecord::from_directory_projection(
+            record.id.clone(),
+            record.kind,
+            record.name.clone(),
+            record.path.clone(),
+            record.ssh_alias.clone(),
+            record.updated_at,
+        )
+    }
+}
+
 /// 在 writer 已开启的事务中幂等应用一次目录 delta。
 ///
 /// 同一 delta 经 [`StudioStore::persist_directory_summaries`] 幂等写入 canonical

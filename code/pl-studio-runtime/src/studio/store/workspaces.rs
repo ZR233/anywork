@@ -75,14 +75,14 @@ pub(in crate::studio) struct WorkspaceEntry {
 
 impl WorkspaceEntry {
     pub(in crate::studio) fn project(&self) -> WorkspaceRecord {
-        WorkspaceRecord {
-            id: self.id.clone(),
-            kind: self.kind,
-            name: self.name.clone(),
-            path: self.path.clone(),
-            ssh_alias: self.ssh_alias.clone(),
-            updated_at: self.updated_at,
-        }
+        WorkspaceRecord::from_directory_projection(
+            self.id.clone(),
+            self.kind,
+            self.name.clone(),
+            self.path.clone(),
+            self.ssh_alias.clone(),
+            self.updated_at,
+        )
     }
 }
 
