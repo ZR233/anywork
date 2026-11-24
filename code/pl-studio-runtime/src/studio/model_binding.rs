@@ -23,35 +23,30 @@ pub(crate) fn resolve_saved(
     Ok(route)
 }
 
-pub(crate) fn validate_media(
-    state: &ThreadSnapshot,
+pub(crate) fn validate_media<'a>(
+    content: impl IntoIterator<Item = &'a ContextContent>,
     model: &pl_model::model::ModelDefinition,
-    additional: &[ContextContent],
 ) -> Result<()> {
-    let history = state
-        .context
-        .records
-        .iter()
-        .flat_map(|record| &record.content);
-    let pending = state
-        .inputs
-        .iter()
-        .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
-        .flat_map(|record| &record.input.context);
-    pl_model::runtime::validate_attachment_content(history.chain(pending).chain(additional), model)
-        .map_err(|error| {
-            crate::PureError::ConfigError(format!(
-                "所选模型无法读取当前会话的附件，请选择支持这些附件的模型：{error}"
-            ))
-            .into()
-        })
+    pl_model::runtime::validate_attachment_content(content, model).map_err(|error| {
+        crate::PureError::ConfigError(format!("所选模型无法读取这些附件：{error}")).into()
+    })
 }
 
 pub(crate) fn validate_context(
     snapshot: &ThreadSnapshot,
     route: &ResolvedModelRoute,
 ) -> Result<ThreadModel> {
-    validate_media(snapshot, &route.model, &[])?;
+    let history = snapshot
+        .context
+        .records
+        .iter()
+        .flat_map(|record| &record.content);
+    let pending = snapshot
+        .inputs
+        .iter()
+        .filter(|record| record.state == pl_core::thread::input::InputState::Pending)
+        .flat_map(|record| &record.input.context);
+    validate_media(history.chain(pending), &route.model)?;
     let model = ThreadModel::new(
         pl_model::runtime::from_route(route)?,
         route.reasoning_config(),
@@ -159,7 +154,6 @@ impl NativeModelConfiguration {
     ) -> Result<Self> {
         let (config, revision) = config_owner.native_configuration()?;
         let route = resolve_saved(snapshot, &config)?;
-        validate_context(snapshot, &route)?;
         let model = deferred_update(&route, &config, config_owner.thread_mode_manager())?;
         Ok(Self {
             route,
@@ -229,7 +223,8 @@ impl NativeModelConfiguration {
             desired,
             model: apply_model.then_some(self.model),
             require_idle: false,
-            model_context_revision: apply_model.then_some(snapshot.context.revision),
+            // Validate replay in the turn's context preparation, after any old turn settles.
+            model_context_revision: None,
             tools: Some(RuntimeTools {
                 registrations,
                 binding: RuntimeBinding::new(binding),

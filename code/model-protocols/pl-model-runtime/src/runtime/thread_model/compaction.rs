@@ -39,6 +39,8 @@ fn decode_checkpoint(payload: &OpaquePayload) -> Result<NativeCheckpoint, ModelE
 pub enum ThreadCompactionStrategy {
     TextSummary,
     PreferNative,
+    /// Summarize for a different model without retaining the old turn's wire items.
+    PortableTextSummary,
 }
 
 /// Product wording and output budget; model adapters own all protocol conversion.
@@ -78,19 +80,23 @@ pub struct TextCompactionBinding {
     /// Last retained record in the committed replacement, not a generation timestamp.
     /// Older receipts may omit this; available assistant/checkpoint provenance remains usable.
     pub retained_through_record_id: Option<String>,
+    /// This summary has no replay-dependent assistant or tool tail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub portable: bool,
 }
 
 impl ThreadModel {
-    /// Finds the latest actual generation in committed history, without consulting selectors.
+    /// Finds the latest generation whose committed history still belongs to its source route.
     ///
     /// A summary precedes its retained execution proof in context order, although it was generated
     /// later. The existing summary receipt supplies that retention boundary; newly appended
-    /// assistant records after the boundary take precedence over the summary.
+    /// assistant records after the boundary take precedence over the summary. A portable
+    /// summary at the boundary ends the search without requiring another handoff.
     ///
     /// # Errors
     /// Rejects malformed model frames and native checkpoints. Missing old text-summary metadata
     /// leaves provenance unknown without blocking ordinary text processing.
-    pub fn latest_context_binding(
+    pub fn latest_replay_binding(
         records: &[ContextRecord],
         text_summary: Option<&TextCompactionBinding>,
     ) -> Result<Option<receipt::ModelCallBinding>, ModelError> {
@@ -107,7 +113,7 @@ impl ThreadModel {
             if let Some((summary_index, summary)) = summary
                 && (index == summary_index || boundary.is_some_and(|boundary| index <= boundary))
             {
-                return Ok(Some(summary.binding.clone()));
+                return Ok((!summary.portable).then(|| summary.binding.clone()));
             }
             let binding = if record.source == ContextSource::Assistant {
                 super::codec::record_receipt(record)?.map(|receipt| receipt.binding)
@@ -194,6 +200,7 @@ impl ThreadModel {
         request: ModelRequest,
         options: ThreadCompactionOptions,
     ) -> Result<ThreadCompaction, ModelError> {
+        let portable = options.strategy == ThreadCompactionStrategy::PortableTextSummary;
         let mut encoded = self.encode_request(&request).await?.completion;
         // Reduction has its own output policy; ordinary request capacity is resolved separately.
         encoded.max_tokens = None;
@@ -248,7 +255,11 @@ impl ThreadModel {
                         summary.accounting,
                         summary.model_observation,
                         summary.timing,
-                        ThreadCompactionStrategy::TextSummary,
+                        if portable {
+                            ThreadCompactionStrategy::PortableTextSummary
+                        } else {
+                            ThreadCompactionStrategy::TextSummary
+                        },
                     )
                 })
         };
@@ -355,11 +366,15 @@ impl ThreadModel {
         });
         // The last complete tool batch is immediate execution evidence. Reducing it to prose
         // alone makes an aggressively compacted agent repeatedly verify the same operation.
-        let latest_batch = request.context.records.iter().rposition(|record| {
-            record.source == ContextSource::Assistant
-                && record.turn_id.as_deref() == Some(request.turn_id.as_str())
-                && !record.tool_calls.is_empty()
-        });
+        let latest_batch = if portable {
+            None
+        } else {
+            request.context.records.iter().rposition(|record| {
+                record.source == ContextSource::Assistant
+                    && record.turn_id.as_deref() == Some(request.turn_id.as_str())
+                    && !record.tool_calls.is_empty()
+            })
+        };
         // Delegated inputs and the active task survive independently of summarizer quality.
         records.extend(
             request
@@ -368,7 +383,8 @@ impl ThreadModel {
                 .iter()
                 .enumerate()
                 .filter(|(index, record)| {
-                    (record.source == ContextSource::User
+                    (!portable
+                        && record.source == ContextSource::User
                         && record.turn_id.as_deref() == Some(request.turn_id.as_str()))
                         || matches!(&record.source, ContextSource::AgentMessage { purpose, .. } if *purpose != pl_core::context::AgentMessageKind::Report)
                         || (latest_batch.is_some_and(|start| *index >= start)

@@ -1536,7 +1536,7 @@ void main() {
             ?.revision ??
         -1;
 
-    testWidgets('运行中的根会话点击模型或强度选择器不打开菜单、不发命令', (tester) async {
+    testWidgets('运行中的根会话可保存模型与强度路由，随后仍可发送新消息', (tester) async {
       await openScenario(tester, status: ThreadStatusView.running);
       await pumpDock(tester);
 
@@ -1552,16 +1552,96 @@ void main() {
 
       await tester.tap(find.byKey(StudioDriverKeys.model));
       await tester.pumpAndSettle();
-      expect(find.byType(MenuItemButton), findsNothing, reason: '运行中不得打开模型菜单');
+      final options = modelOptions(view.accounts);
+      final currentRoute = view.displayRoute!;
+      final next = options.firstWhere(
+        (option) =>
+            option.accountId != currentRoute.accountId ||
+            option.modelId != currentRoute.modelId,
+      );
+      final nextKey = StudioDriverKeys.modelOption(
+        next.accountId,
+        next.modelId,
+      );
+      expect(find.byKey(nextKey), findsOneWidget, reason: '运行中应能打开模型菜单');
+      await tester.tap(find.byKey(nextKey));
+      await tester.pumpAndSettle();
+
+      var settled = workflowContainer
+          .read(_threadProjectionProvider(threadId))
+          .requireValue;
+      expect(settled.modelRoute?.accountId, next.accountId);
+      expect(settled.modelRoute?.modelId, next.modelId);
+      expect(settled.modelRoute?.revision, revisionBefore + 1);
+      expect(settled.routePending, isFalse);
+      expect(find.text(next.displayName), findsOneWidget);
+
+      final selectedModel = modelForRoute(
+        settled.accounts,
+        next.accountId,
+        next.modelId,
+      )!;
+      final targetEffort = selectedModel.reasoningEfforts
+          .where((effort) => effort != settled.modelRoute!.effort)
+          .firstOrNull;
+      expect(targetEffort, isNotNull, reason: '模型需要至少两个思考强度候选');
       await tester.tap(find.byKey(StudioDriverKeys.reasoningEffort));
       await tester.pumpAndSettle();
-      expect(find.byType(MenuItemButton), findsNothing, reason: '运行中不得打开强度菜单');
-      expect(
-        find.text('会话正在执行或等待处理，暂时无法切换模型。请停止当前执行或等待完成后重试。'),
-        findsOneWidget,
-        reason: '阻塞原因必须解释为运行中，而不是 workflow active',
+      await tester.tap(
+        find.byKey(StudioDriverKeys.reasoningEffortOption(targetEffort!)),
       );
-      expect(routeRevision(), revisionBefore, reason: '不得发出路由命令');
+      await tester.pumpAndSettle();
+
+      settled = workflowContainer
+          .read(_threadProjectionProvider(threadId))
+          .requireValue;
+      expect(settled.modelRoute?.effort, targetEffort);
+      expect(settled.modelRoute?.revision, revisionBefore + 2);
+      expect(settled.routePending, isFalse);
+
+      // 目录包含速度候选的模型才显示速度选择器；验证它也通过同一条 canonical
+      // 路由写入链收敛，不为没有候选的 Demo 模型制造虚假选项。
+      final tiers = selectedModel.descriptor.serviceTiers?.candidates ?? [];
+      final targetTier = tiers
+          .where((candidate) => candidate.id != settled.modelRoute!.serviceTier)
+          .firstOrNull;
+      if (targetTier != null) {
+        await tester.tap(find.byKey(ServiceTierSelector.selectorKey));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(ServiceTierSelector.optionKey(targetTier.id)),
+        );
+        await tester.pumpAndSettle();
+        settled = workflowContainer
+            .read(_threadProjectionProvider(threadId))
+            .requireValue;
+        expect(settled.modelRoute?.serviceTier, targetTier.id);
+        expect(settled.modelRoute?.revision, revisionBefore + 3);
+        expect(settled.routePending, isFalse);
+      }
+
+      final input = find.byKey(StudioDriverKeys.composerInput);
+      await tester.tap(input);
+      await tester.enterText(input, '切换路由后的新一轮消息');
+      await tester.pump();
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await tester.pump(const Duration(milliseconds: 50));
+      final submitted = workflowContainer
+          .read(_threadProjectionProvider(threadId))
+          .requireValue;
+      expect(submitted.isBusy, isTrue, reason: '新消息仍由原提交路径受理');
+      expect(submitted.modelRoute?.accountId, next.accountId);
+      expect(submitted.modelRoute?.modelId, next.modelId);
+      // Stop through the existing control so the Demo job releases its timers.
+      await tester.tap(find.byKey(StudioDriverKeys.composerStop));
+      await tester.pumpAndSettle();
+      expect(
+        workflowContainer
+            .read(_threadProjectionProvider(threadId))
+            .requireValue
+            .isBusy,
+        isFalse,
+      );
       await closeScenario(tester);
     });
 

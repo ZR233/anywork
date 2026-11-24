@@ -786,6 +786,13 @@ impl Owner {
         let phase = std::mem::replace(&mut run.phase, RunPhase::Preparing);
         match phase {
             RunPhase::Starting => {
+                // A model replacement can wait for open or old tool leases while the mailbox
+                // accepts the next input. Keep that input at the turn boundary until installation.
+                if self.state.runtime_bundle.preparing_model_identity.is_some() {
+                    run.phase = RunPhase::Starting;
+                    self.active = Some(run);
+                    return Ok(false);
+                }
                 if !matches!(run.reply, RunReply::Step(_) | RunReply::Compact(_)) {
                     let mut turns = self.state.turns.to_vec();
                     turns.push(TurnRecord {
