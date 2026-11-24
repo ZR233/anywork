@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, PoisonError};
-use std::time::Instant;
 
 use tokio::task::{JoinError, JoinHandle};
 
@@ -48,14 +47,17 @@ impl<I> Default for CommandLedger<I> {
 }
 
 impl<I: Clone + PartialEq> CommandLedger<I> {
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(super) fn get(&self, id: &str) -> Option<&I> {
         self.entries.get(id)
     }
@@ -198,20 +200,15 @@ impl<T> RetainedTask<T> {
     }
 
     /// `None` means another waiter currently holds the join mutex.
+    #[cfg(test)]
     pub(super) fn running_handle_retained(&self) -> Option<bool> {
         let slot = self.join.try_lock().ok()?;
         Some(slot.as_ref().is_some_and(|handle| !handle.is_finished()))
     }
 
+    #[cfg(test)]
     pub(super) fn join_wait_in_progress(&self) -> bool {
         self.join.try_lock().is_err()
-    }
-
-    pub(super) fn has_handle(&self) -> bool {
-        match self.join.try_lock() {
-            Ok(slot) => slot.is_some(),
-            Err(_) => true,
-        }
     }
 
     pub(super) fn finished(&self) -> bool {
@@ -220,6 +217,7 @@ impl<T> RetainedTask<T> {
             .is_ok_and(|slot| slot.as_ref().is_none_or(|handle| handle.is_finished()))
     }
 
+    #[cfg(test)]
     pub(super) async fn slot_is_empty(&self) -> bool {
         self.join.lock().await.is_none()
     }
@@ -306,7 +304,7 @@ pub(super) fn retained_output<T>(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn ledger_replays_same_intent_and_rejects_conflict_without_eviction() {

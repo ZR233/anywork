@@ -4,10 +4,7 @@ use crate::protocol::*;
 use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
 use anyhow::Result;
 use pl_model_auth::chatgpt::{ChatGptAuthError, ChatGptAuthorization, ChatGptCredentialRecord};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -537,6 +534,7 @@ mod tests {
     use super::retain_login;
     use super::*;
     use pl_model::config::AccountId;
+    use std::collections::BTreeMap;
 
     fn owned_task(
         owner: &ChatGptAuthRuntime,
