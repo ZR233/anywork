@@ -156,15 +156,11 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
         );
         None
     };
-    for row in db
-        .query_all_raw(statement("PRAGMA quick_check", vec![]))
-        .await?
-    {
-        ensure!(
-            row.try_get_by_index::<String>(0)? == "ok",
-            "calls database integrity check failed"
-        );
-    }
+    crate::studio::storage::sqlite_util::preflight_sqlite(
+        db,
+        "calls database integrity check failed",
+    )
+    .await?;
     let pending = Migrator {
         log_dir: PathBuf::new(),
     }

@@ -4,6 +4,7 @@ mod current_file;
 pub(crate) use current_file::{read_for_upgrade, verify_for_upgrade};
 pub(crate) mod current_writer;
 pub(crate) mod history;
+pub(crate) mod sqlite_util;
 pub(crate) mod state;
 pub(crate) mod thread_writer;
 pub(in crate::studio) mod tool_task;

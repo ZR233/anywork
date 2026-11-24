@@ -102,15 +102,8 @@ async fn preflight(db: &DatabaseConnection) -> anyhow::Result<()> {
             "bot ledger schema is missing; existing data preserved"
         );
     }
-    for row in db
-        .query_all_raw(statement("PRAGMA quick_check", vec![]))
-        .await?
-    {
-        anyhow::ensure!(
-            row.try_get_by_index::<String>(0)? == "ok",
-            "bot ledger integrity check failed"
-        );
-    }
+    crate::studio::storage::sqlite_util::preflight_sqlite(db, "bot ledger integrity check failed")
+        .await?;
     if Migrator::get_pending_migrations_read_only(db)
         .await?
         .is_empty()
