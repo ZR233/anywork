@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::mode::{SavedThreadMode, ThreadModeId, ThreadModeManager, reconcile_workflow_for_turn};
 use crate::plan_tool::AgentSessionPlanRuntimeSnapshot;
 use crate::protocol::AcpWorkflowStateSnapshot;
@@ -56,9 +59,17 @@ pub(crate) struct AcpWorkflowPlanOwner {
     is_root: bool,
     resources_dir: PathBuf,
     thread_modes: ThreadModeManager,
-    inner: Mutex<AcpWorkflowStateInner>,
-    persist_gate: AsyncMutex<()>,
+    inner: Arc<Mutex<AcpWorkflowStateInner>>,
+    /// Shared by the owner task that writes, commits memory, and notifies.
+    /// Caller cancellation abandons only the wait, not this transaction.
+    persist_gate: Arc<AsyncMutex<()>>,
     updates: watch::Sender<Option<AcpWorkflowStateSnapshot>>,
+    #[cfg(test)]
+    persist_pause: Arc<AtomicBool>,
+    #[cfg(test)]
+    persist_entered: Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    persist_release: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for AcpWorkflowPlanOwner {
@@ -143,9 +154,15 @@ impl AcpWorkflowPlanOwner {
             is_root,
             resources_dir,
             thread_modes,
-            inner: Mutex::new(AcpWorkflowStateInner { workflow, plan }),
-            persist_gate: AsyncMutex::new(()),
+            inner: Arc::new(Mutex::new(AcpWorkflowStateInner { workflow, plan })),
+            persist_gate: Arc::new(AsyncMutex::new(())),
             updates,
+            #[cfg(test)]
+            persist_pause: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            persist_entered: Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            persist_release: Arc::new(tokio::sync::Notify::new()),
         });
         if initial_workflow_created {
             owner.persist_workflow().await?;
@@ -196,11 +213,10 @@ impl AcpWorkflowPlanOwner {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.snapshot_locked(&guard, &modes)
+        Self::snapshot_locked(&guard, &modes)
     }
 
     fn snapshot_locked(
-        &self,
         guard: &AcpWorkflowStateInner,
         modes: &crate::mode::ThreadModeRegistrySnapshot,
     ) -> AcpWorkflowStateSnapshot {
@@ -292,105 +308,42 @@ impl AcpWorkflowPlanOwner {
             return Ok(None);
         }
         let now = crate::studio::unix_seconds();
-        let (changed, prompt_header, snapshot, turn_block) = {
-            let modes = self.thread_modes.snapshot();
-            let mut guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let thread_id = self.thread_id.clone();
+        let modes = self.thread_modes.snapshot();
+        self.commit_record(move |guard| {
             let plan_snapshot = Plan::from_record(guard.plan.clone())
                 .unwrap_or_default()
                 .snapshot();
-            let Some(wf) = guard.workflow.as_mut() else {
-                return Ok(None);
+            let Some(current) = guard.workflow.clone() else {
+                return Ok(PreparedRecord::Ready(None));
             };
-            let registered = wf
+            let registered = current
                 .saved_mode
                 .registered()
                 .map_err(|err| anyhow::anyhow!("invalid frozen ACP mode: {err}"))?;
-            let before = wf.state.clone();
+            let before = current.state.clone();
             let next_state = reconcile_workflow_for_turn(
-                Some(wf.state.clone()),
+                Some(current.state.clone()),
                 &registered,
-                &self.thread_id,
+                &thread_id,
                 now,
             )
             .map_err(|err| anyhow::anyhow!("reconcile ACP workflow failed: {err}"))?
             .unwrap_or_default();
-            let changed = next_state != before;
-            wf.state = next_state;
-
+            let state_changed = next_state != before;
             let prompt_hash =
-                pl_core::context::content_hash(wf.saved_mode.definition.prompt.as_bytes());
-            let mode_prompt_changed = wf.injected_prompt_hash.as_ref() != Some(&prompt_hash);
-            wf.injected_prompt_hash = Some(prompt_hash);
-
-            let mode_prompt_section =
-                if mode_prompt_changed && !wf.saved_mode.definition.prompt.trim().is_empty() {
-                    Some(format!(
-                        "Mode `{}` (`{}`) instructions:\n{}",
-                        wf.saved_mode.definition.display_name,
-                        wf.mode_id,
-                        wf.saved_mode.definition.prompt.trim()
-                    ))
-                } else {
-                    None
-                };
-
-            let machine_json = wf.state.current_run.as_ref().map(|run| {
-                let graph = wf.saved_mode.definition.workflow.as_ref();
-                let current_state =
-                    graph.and_then(|g| g.states.iter().find(|s| s.id == run.current_state_id));
-                let outgoing: Vec<Value> = graph
-                    .map(|g| {
-                        g.transitions
-                            .iter()
-                            .filter(|t| t.source_state_id == run.current_state_id)
-                            .map(|t| {
-                                serde_json::json!({
-                                    "targetStateId": t.target_state_id,
-                                    "guard": t.guard,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                serde_json::json!({
-                    "modeId": wf.mode_id,
-                    "modeDisplayName": wf.saved_mode.definition.display_name,
-                    "runId": run.run_id,
-                    "revision": wf.state.revision,
-                    "lifecycle": run.lifecycle,
-                    "currentState": current_state,
-                    "allowedTransitions": outgoing,
-                })
-            });
-            let plan_json = serde_json::json!({
-                "state": plan_snapshot.state,
-                "revision": plan_snapshot.revision,
-                "hasDocument": plan_snapshot.document.is_some(),
-            });
-            let block = format!(
-                "[Studio Host State]\n{}{}\nPlan: {}\nUse `anywork_workflow_*` (when workflow is present) and `anywork_plan_*` MCP tools to inspect or advance states. In `planning`, clarify design conflicts first, then submit an ELI5 plan via `anywork_plan_transition(targetState=\"awaitingConfirmation\", force=false)`. In `reviewing`, call `anywork_plan_current` to read the full Plan document and instruct reviewers from it.\n",
-                mode_prompt_section
-                    .as_ref()
-                    .map_or(String::new(), |s| format!("{s}\n\n")),
-                machine_json.as_ref().map_or_else(
-                    || "Workflow: none".to_string(),
-                    |v| format!("Workflow: {v}")
-                ),
-                plan_json,
-            );
-            let snap = self.snapshot_locked(&guard, &modes);
-            (changed || mode_prompt_changed, changed, snap, block)
-        };
-        if changed {
-            self.persist_workflow().await?;
-        }
-        if prompt_header {
-            self.updates.send_replace(Some(snapshot));
-        }
-        Ok(Some(turn_block))
+                pl_core::context::content_hash(current.saved_mode.definition.prompt.as_bytes());
+            let mode_prompt_changed = current.injected_prompt_hash.as_ref() != Some(&prompt_hash);
+            let mut next = current;
+            next.state = next_state;
+            next.injected_prompt_hash = Some(prompt_hash);
+            let block = studio_host_state_block(&next, &plan_snapshot, mode_prompt_changed);
+            if !state_changed && !mode_prompt_changed {
+                return Ok(PreparedRecord::Ready(Some(block)));
+            }
+            write_workflow(&guard.plan, next, &modes, state_changed, Some(block))
+        })
+        .await
     }
 
     pub(crate) async fn set_mode(
@@ -400,28 +353,31 @@ impl AcpWorkflowPlanOwner {
     ) -> Result<AcpWorkflowStateSnapshot> {
         ensure!(self.is_root, "only root ACP session owns workflow Mode");
         let now = crate::studio::unix_seconds();
-        let snapshot = {
-            let modes = self.thread_modes.snapshot();
-            let mut guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let modes = self.thread_modes.snapshot();
+        let saved_mode = SavedThreadMode::capture(registered, None);
+        let descriptor_id = registered.descriptor().id.clone();
+        self.commit_record(move |guard| {
             let previous_state = guard.workflow.as_ref().map(|wf| wf.state.clone());
             let next_state =
                 crate::mode::state::archive_workflow_for_mode_change(previous_state, &mode_id, now)
                     .map_err(|err| anyhow::anyhow!("archive ACP workflow on mode change: {err}"))?
                     .unwrap_or_default();
-            guard.workflow = Some(PersistedAcpWorkflow {
-                mode_id: registered.descriptor().id.clone(),
-                saved_mode: SavedThreadMode::capture(registered, None),
+            let workflow = PersistedAcpWorkflow {
+                mode_id: descriptor_id,
+                saved_mode,
                 state: next_state,
                 injected_prompt_hash: None,
-            });
-            self.snapshot_locked(&guard, &modes)
-        };
-        self.persist_workflow().await?;
-        self.updates.send_replace(Some(snapshot.clone()));
-        Ok(snapshot)
+            };
+            let snapshot = AcpWorkflowPlanOwner::snapshot_locked(
+                &AcpWorkflowStateInner {
+                    workflow: Some(workflow.clone()),
+                    plan: guard.plan.clone(),
+                },
+                &modes,
+            );
+            write_workflow(&guard.plan, workflow, &modes, true, snapshot)
+        })
+        .await
     }
 
     pub(crate) async fn workflow_current_json(&self) -> Result<Value, AcpWorkflowPlanError> {
@@ -450,47 +406,38 @@ impl AcpWorkflowPlanOwner {
         identity: WorkflowOperation,
         argument_hash: String,
     ) -> Result<Value, AcpWorkflowPlanError> {
-        let (response, changed, snapshot) = {
-            let modes = self.thread_modes.snapshot();
-            let mut guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let wf = guard
+        let modes = self.thread_modes.snapshot();
+        self.commit_record(move |guard| {
+            let workflow = guard
                 .workflow
-                .as_mut()
+                .as_ref()
                 .ok_or_else(|| AcpWorkflowPlanError("ACP agent has no active workflow".into()))?;
-            let registered = wf
+            let registered = workflow
                 .saved_mode
                 .registered()
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             if registered.workflow().is_none() {
-                return Err(AcpWorkflowPlanError(
-                    "Selected Mode has no workflow graph".into(),
-                ));
+                return Err(
+                    AcpWorkflowPlanError("Selected Mode has no workflow graph".into()).into(),
+                );
             }
-            let before = wf.state.clone();
-            let mut machine = WorkflowMachine::new(registered, wf.state.clone());
+            let before = workflow.state.clone();
+            let mut machine = WorkflowMachine::new(registered, workflow.state.clone());
             let response = machine
                 .apply_transition(input, &identity, argument_hash)
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             let next = machine.state();
-            let changed = next != before;
-            wf.state = next;
             let value = serde_json::to_value(&response)
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
-            let snap = changed.then(|| self.snapshot_locked(&guard, &modes));
-            (value, changed, snap)
-        };
-        if changed {
-            self.persist_workflow()
-                .await
-                .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
-            if let Some(snap) = snapshot {
-                self.updates.send_replace(Some(snap));
+            if next == before {
+                return Ok(PreparedRecord::Ready(value));
             }
-        }
-        Ok(response)
+            let mut updated = workflow.clone();
+            updated.state = next;
+            write_workflow(&guard.plan, updated, &modes, true, value)
+        })
+        .await
+        .map_err(|err| AcpWorkflowPlanError(err.to_string()))
     }
 
     pub(crate) async fn workflow_restart(
@@ -499,47 +446,38 @@ impl AcpWorkflowPlanOwner {
         identity: WorkflowOperation,
         argument_hash: String,
     ) -> Result<Value, AcpWorkflowPlanError> {
-        let (response, changed, snapshot) = {
-            let modes = self.thread_modes.snapshot();
-            let mut guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let wf = guard
+        let modes = self.thread_modes.snapshot();
+        self.commit_record(move |guard| {
+            let workflow = guard
                 .workflow
-                .as_mut()
+                .as_ref()
                 .ok_or_else(|| AcpWorkflowPlanError("ACP agent has no active workflow".into()))?;
-            let registered = wf
+            let registered = workflow
                 .saved_mode
                 .registered()
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             if registered.workflow().is_none() {
-                return Err(AcpWorkflowPlanError(
-                    "Selected Mode has no workflow graph".into(),
-                ));
+                return Err(
+                    AcpWorkflowPlanError("Selected Mode has no workflow graph".into()).into(),
+                );
             }
-            let before = wf.state.clone();
-            let mut machine = WorkflowMachine::new(registered, wf.state.clone());
+            let before = workflow.state.clone();
+            let mut machine = WorkflowMachine::new(registered, workflow.state.clone());
             let response = machine
                 .apply_restart(input, &identity, argument_hash)
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             let next = machine.state();
-            let changed = next != before;
-            wf.state = next;
             let value = serde_json::to_value(&response)
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
-            let snap = changed.then(|| self.snapshot_locked(&guard, &modes));
-            (value, changed, snap)
-        };
-        if changed {
-            self.persist_workflow()
-                .await
-                .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
-            if let Some(snap) = snapshot {
-                self.updates.send_replace(Some(snap));
+            if next == before {
+                return Ok(PreparedRecord::Ready(value));
             }
-        }
-        Ok(response)
+            let mut updated = workflow.clone();
+            updated.state = next;
+            write_workflow(&guard.plan, updated, &modes, true, value)
+        })
+        .await
+        .map_err(|err| AcpWorkflowPlanError(err.to_string()))
     }
 
     fn workflow_machine(&self) -> Result<WorkflowMachine, AcpWorkflowPlanError> {
@@ -575,19 +513,80 @@ impl AcpWorkflowPlanOwner {
             };
             serde_json::to_vec_pretty(wf)?
         };
-        atomic_write_bytes(&self.resources_dir.join(WORKFLOW_FILE_NAME), &payload).await
+        write_bytes(self.resources_dir.join(WORKFLOW_FILE_NAME), payload).await
     }
 
-    async fn persist_plan(&self) -> Result<()> {
-        let _gate = self.persist_gate.lock().await;
-        let payload = {
-            let guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            serde_json::to_vec_pretty(&guard.plan)?
-        };
-        atomic_write_bytes(&self.resources_dir.join(PLAN_FILE_NAME), &payload).await
+    /// Computes under the persist gate, writes the clone, then commits memory and notifies.
+    ///
+    /// The spawned owner keeps the gate until that sequence finishes. Dropping the caller only
+    /// stops waiting; it does not roll back a write that has already been accepted.
+    async fn commit_record<T, F>(&self, prepare: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&AcpWorkflowStateInner) -> Result<PreparedRecord<T>> + Send + 'static,
+    {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let gate = Arc::clone(&self.persist_gate);
+        let inner = Arc::clone(&self.inner);
+        let updates = self.updates.clone();
+        let resources_dir = self.resources_dir.clone();
+        #[cfg(test)]
+        let pause = self.persist_test_pause();
+        tokio::spawn(async move {
+            let outcome = async {
+                let _gate = gate.lock().await;
+                let prepared = {
+                    let guard = inner
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    prepare(&guard)?
+                };
+                match prepared {
+                    PreparedRecord::Ready(value) => Ok(value),
+                    PreparedRecord::Write {
+                        bytes,
+                        install,
+                        snapshot,
+                        value,
+                    } => {
+                        #[cfg(test)]
+                        if let Some(pause) = pause {
+                            pause.entered.notify_one();
+                            pause.release.notified().await;
+                        }
+                        let path = resources_dir.join(install.file_name());
+                        write_bytes(path, bytes).await?;
+                        {
+                            let mut guard = inner
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            install.commit(&mut guard);
+                        }
+                        if let Some(snapshot) = snapshot {
+                            updates.send_replace(Some(snapshot));
+                        }
+                        Ok(value)
+                    }
+                }
+            }
+            .await;
+            let _ = tx.send(outcome);
+        });
+        rx.await
+            .context("ACP persist task ended before reporting a result")?
+    }
+
+    #[cfg(test)]
+    fn persist_test_pause(&self) -> Option<PersistTestPause> {
+        // The flag only selects this test hook. The notify itself is the synchronization edge.
+        if self.persist_pause.swap(false, Ordering::Relaxed) {
+            Some(PersistTestPause {
+                entered: Arc::clone(&self.persist_entered),
+                release: Arc::clone(&self.persist_release),
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -643,12 +642,9 @@ impl PlanHost for AcpWorkflowPlanOwner {
         let arg_hash = Some(pl_core::context::content_hash(
             serde_json::to_string(&args).unwrap_or_default().as_bytes(),
         ));
-        let (outcome, changed, snapshot) = {
-            let modes = self.thread_modes.snapshot();
-            let mut guard = self
-                .inner
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let modes = self.thread_modes.snapshot();
+        let now_ms = context.now_ms;
+        self.commit_record(move |guard| {
             let mut plan = Plan::from_record(guard.plan.clone())
                 .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
             let command = PlanTransitionCommand {
@@ -661,34 +657,419 @@ impl PlanHost for AcpWorkflowPlanOwner {
                 idempotency_key,
                 argument_hash: arg_hash,
                 actor: PlanActor::Agent,
-                timestamp_ms: context.now_ms,
+                timestamp_ms: now_ms,
             };
             let outcome = plan.transition(command);
-            let changed = outcome.accepted && !outcome.replayed;
-            if changed {
-                guard.plan = plan.into_record();
+            if !(outcome.accepted && !outcome.replayed) {
+                return Ok(PreparedRecord::Ready(outcome));
             }
-            let snap = changed.then(|| self.snapshot_locked(&guard, &modes));
-            (outcome, changed, snap)
-        };
-        if changed {
-            self.persist_plan()
-                .await
-                .map_err(|err| AcpWorkflowPlanError(err.to_string()))?;
-            if let Some(snap) = snapshot {
-                self.updates.send_replace(Some(snap));
-            }
-        }
-        Ok(outcome)
+            write_plan(guard.workflow.as_ref(), plan.into_record(), &modes, outcome)
+        })
+        .await
+        .map_err(|err| AcpWorkflowPlanError(err.to_string()))
     }
 }
 
-async fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+enum PreparedRecord<T> {
+    Ready(T),
+    Write {
+        bytes: Vec<u8>,
+        install: InstalledRecord,
+        snapshot: Option<AcpWorkflowStateSnapshot>,
+        value: T,
+    },
+}
+
+enum InstalledRecord {
+    Workflow(PersistedAcpWorkflow),
+    Plan(PlanRecord),
+}
+
+impl InstalledRecord {
+    fn file_name(&self) -> &'static str {
+        match self {
+            Self::Workflow(_) => WORKFLOW_FILE_NAME,
+            Self::Plan(_) => PLAN_FILE_NAME,
+        }
     }
-    let tmp = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
-    tokio::fs::write(&tmp, bytes).await?;
-    tokio::fs::rename(&tmp, path).await?;
-    Ok(())
+
+    fn commit(self, guard: &mut AcpWorkflowStateInner) {
+        match self {
+            Self::Workflow(workflow) => guard.workflow = Some(workflow),
+            Self::Plan(plan) => guard.plan = plan,
+        }
+    }
+}
+
+#[cfg(test)]
+struct PersistTestPause {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+fn write_workflow<T>(
+    current_plan: &PlanRecord,
+    workflow: PersistedAcpWorkflow,
+    modes: &crate::mode::ThreadModeRegistrySnapshot,
+    notify: bool,
+    value: T,
+) -> Result<PreparedRecord<T>> {
+    let bytes = serde_json::to_vec_pretty(&workflow)?;
+    let snapshot = notify.then(|| {
+        AcpWorkflowPlanOwner::snapshot_locked(
+            &AcpWorkflowStateInner {
+                workflow: Some(workflow.clone()),
+                plan: current_plan.clone(),
+            },
+            modes,
+        )
+    });
+    Ok(PreparedRecord::Write {
+        bytes,
+        install: InstalledRecord::Workflow(workflow),
+        snapshot,
+        value,
+    })
+}
+
+fn write_plan<T>(
+    current_workflow: Option<&PersistedAcpWorkflow>,
+    plan: PlanRecord,
+    modes: &crate::mode::ThreadModeRegistrySnapshot,
+    value: T,
+) -> Result<PreparedRecord<T>> {
+    let bytes = serde_json::to_vec_pretty(&plan)?;
+    let snapshot = AcpWorkflowPlanOwner::snapshot_locked(
+        &AcpWorkflowStateInner {
+            workflow: current_workflow.cloned(),
+            plan: plan.clone(),
+        },
+        modes,
+    );
+    Ok(PreparedRecord::Write {
+        bytes,
+        install: InstalledRecord::Plan(plan),
+        snapshot: Some(snapshot),
+        value,
+    })
+}
+
+fn studio_host_state_block(
+    workflow: &PersistedAcpWorkflow,
+    plan: &PlanSnapshot,
+    include_mode_prompt: bool,
+) -> String {
+    let mode_prompt_section =
+        if include_mode_prompt && !workflow.saved_mode.definition.prompt.trim().is_empty() {
+            Some(format!(
+                "Mode `{}` (`{}`) instructions:\n{}",
+                workflow.saved_mode.definition.display_name,
+                workflow.mode_id,
+                workflow.saved_mode.definition.prompt.trim()
+            ))
+        } else {
+            None
+        };
+    let machine_json = workflow.state.current_run.as_ref().map(|run| {
+        let graph = workflow.saved_mode.definition.workflow.as_ref();
+        let current_state =
+            graph.and_then(|g| g.states.iter().find(|s| s.id == run.current_state_id));
+        let outgoing: Vec<Value> = graph
+            .map(|g| {
+                g.transitions
+                    .iter()
+                    .filter(|t| t.source_state_id == run.current_state_id)
+                    .map(|t| {
+                        serde_json::json!({
+                            "targetStateId": t.target_state_id,
+                            "guard": t.guard,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        serde_json::json!({
+            "modeId": workflow.mode_id,
+            "modeDisplayName": workflow.saved_mode.definition.display_name,
+            "runId": run.run_id,
+            "revision": workflow.state.revision,
+            "lifecycle": run.lifecycle,
+            "currentState": current_state,
+            "allowedTransitions": outgoing,
+        })
+    });
+    let plan_json = serde_json::json!({
+        "state": plan.state,
+        "revision": plan.revision,
+        "hasDocument": plan.document.is_some(),
+    });
+    format!(
+        "[Studio Host State]\n{}{}\nPlan: {}\nUse `anywork_workflow_*` (when workflow is present) and `anywork_plan_*` MCP tools to inspect or advance states. In `planning`, clarify design conflicts first, then submit an ELI5 plan via `anywork_plan_transition(targetState=\"awaitingConfirmation\", force=false)`. In `reviewing`, call `anywork_plan_current` to read the full Plan document and instruct reviewers from it.\n",
+        mode_prompt_section
+            .as_ref()
+            .map_or(String::new(), |section| format!("{section}\n\n")),
+        machine_json.as_ref().map_or_else(
+            || "Workflow: none".to_string(),
+            |value| format!("Workflow: {value}")
+        ),
+        plan_json,
+    )
+}
+
+async fn write_bytes(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
+    let display = path.display().to_string();
+    tokio::task::spawn_blocking(move || pl_tool::workspace::write_file_atomically(&path, &bytes))
+        .await
+        .with_context(|| format!("join ACP state persist `{display}`"))?
+        .with_context(|| format!("persist ACP state `{display}`"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use pl_tool_plan::{PlanHost, PlanState, PlanTransitionArgs};
+    use tokio::time::timeout;
+
+    use super::{
+        AcpPlanToolContext, AcpWorkflowPlanOwner, PLAN_FILE_NAME, PersistedAcpWorkflow,
+        WORKFLOW_FILE_NAME,
+    };
+    use crate::mode::ThreadModeManager;
+    use crate::studio::thread::register_builtins;
+    use crate::workflow_tool::machine::{CompletionInput, TransitionInput, WorkflowOperation};
+
+    async fn started_owner(dir: &Path) -> anyhow::Result<Arc<AcpWorkflowPlanOwner>> {
+        let modes = ThreadModeManager::default();
+        register_builtins(&modes)?;
+        let owner = AcpWorkflowPlanOwner::load_or_init(
+            "thread-persist".into(),
+            true,
+            dir.to_path_buf(),
+            modes,
+            None,
+        )
+        .await?;
+        owner.reconcile_run_for_turn().await?;
+        Ok(owner)
+    }
+
+    fn workflow_on_disk(dir: &Path) -> PersistedAcpWorkflow {
+        let bytes = std::fs::read(dir.join(WORKFLOW_FILE_NAME)).expect("workflow file");
+        serde_json::from_slice(&bytes).expect("workflow json")
+    }
+
+    fn state_id(workflow: &PersistedAcpWorkflow) -> String {
+        workflow
+            .state
+            .current_run
+            .as_ref()
+            .expect("active run")
+            .current_state_id
+            .clone()
+    }
+
+    fn force_to_planning(owner_dir: &Path) -> TransitionInput {
+        let workflow = workflow_on_disk(owner_dir);
+        let run = workflow.state.current_run.expect("active run");
+        TransitionInput {
+            expected_run_id: run.run_id,
+            expected_revision: workflow.state.revision,
+            expected_state_id: run.current_state_id,
+            target_state_id: "planning".into(),
+            force: true,
+            completion: CompletionInput {
+                reason: "force".into(),
+                summary: "move".into(),
+                evidence: vec!["e".into()],
+            },
+        }
+    }
+
+    fn operation(call_id: &str) -> WorkflowOperation {
+        WorkflowOperation {
+            turn_id: "turn-1".into(),
+            call_id: call_id.into(),
+        }
+    }
+
+    fn plan_args(force: bool) -> PlanTransitionArgs {
+        PlanTransitionArgs {
+            target_state: PlanState::Approved,
+            content: Some("# Plan\n\n- step".into()),
+            feedback: None,
+            reason: Some("commit".into()),
+            force,
+            expected_revision: Some(0),
+            idempotency_key: None,
+        }
+    }
+
+    fn plan_context(call_id: &str) -> AcpPlanToolContext {
+        AcpPlanToolContext {
+            call_id: call_id.into(),
+            turn_id: "turn-1".into(),
+            now_ms: 1_700_000_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_workflow_and_plan_do_not_persist_or_notify() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let owner = started_owner(dir.path()).await?;
+        let mut updates = owner.subscribe();
+        updates.borrow_and_update();
+        let before = std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?;
+
+        let again = owner.reconcile_run_for_turn().await?;
+        assert!(again.is_some());
+        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+
+        let current = owner.workflow_current_json().await?;
+        let rejected = owner
+            .workflow_transition(
+                TransitionInput {
+                    expected_run_id: current["runId"].as_str().unwrap().to_string(),
+                    expected_revision: current["revision"].as_u64().unwrap() + 1,
+                    expected_state_id: current["currentStateId"].as_str().unwrap().to_string(),
+                    target_state_id: "planning".into(),
+                    force: true,
+                    completion: CompletionInput {
+                        reason: "stale".into(),
+                        summary: "stale".into(),
+                        evidence: Vec::new(),
+                    },
+                },
+                operation("reject-workflow"),
+                "hash-reject".into(),
+            )
+            .await?;
+        assert_eq!(rejected["accepted"], false);
+        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+
+        let rejected_plan = owner
+            .transition(plan_args(false), plan_context("reject-plan"))
+            .await?;
+        assert!(!rejected_plan.accepted);
+        assert_eq!(owner.snapshot().plan.expect("plan").revision, 0);
+        assert!(!dir.path().join(PLAN_FILE_NAME).exists());
+        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn readonly_directory_does_not_advance_memory_or_notification() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let owner = started_owner(dir.path()).await?;
+        let before = std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?;
+        let before_state = state_id(&workflow_on_disk(dir.path()));
+        let mut updates = owner.subscribe();
+        updates.borrow_and_update();
+        let mode = std::fs::metadata(dir.path())?.permissions().mode();
+        let restore = RestorePermissions {
+            path: dir.path().to_path_buf(),
+            mode,
+        };
+        let mut readonly = std::fs::metadata(dir.path())?.permissions();
+        readonly.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), readonly)?;
+
+        let workflow_error = owner
+            .workflow_transition(
+                force_to_planning(dir.path()),
+                operation("readonly-workflow"),
+                "hash-readonly-workflow".into(),
+            )
+            .await
+            .expect_err("workflow persist must fail");
+        assert!(
+            workflow_error.to_string().contains("persist ACP state"),
+            "{workflow_error}"
+        );
+        let plan_error = owner
+            .transition(plan_args(true), plan_context("readonly-plan"))
+            .await
+            .expect_err("plan persist must fail");
+        assert!(
+            plan_error.to_string().contains("persist ACP state"),
+            "{plan_error}"
+        );
+
+        assert_eq!(state_id(&workflow_on_disk(dir.path())), before_state);
+        assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+        assert_eq!(
+            owner.snapshot().run.expect("run").current_state_id,
+            before_state
+        );
+        assert_eq!(owner.snapshot().plan.expect("plan").revision, 0);
+        assert!(!dir.path().join(PLAN_FILE_NAME).exists());
+        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+        drop(restore);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caller_cancel_still_commits_persisted_workflow() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let owner = started_owner(dir.path()).await?;
+        let before = std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?;
+        let before_state = state_id(&workflow_on_disk(dir.path()));
+        let mut updates = owner.subscribe();
+        updates.borrow_and_update();
+        owner
+            .persist_pause
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let worker = Arc::clone(&owner);
+        let input = force_to_planning(dir.path());
+        let running = tokio::spawn(async move {
+            worker
+                .workflow_transition(input, operation("cancel-workflow"), "hash-cancel".into())
+                .await
+        });
+        timeout(Duration::from_secs(5), owner.persist_entered.notified())
+            .await
+            .expect("persist task should reach the gate");
+        running.abort();
+        let joined = timeout(Duration::from_secs(5), running)
+            .await
+            .expect("cancelled caller should stop waiting");
+        assert!(joined.expect_err("caller task").is_cancelled());
+        assert_eq!(state_id(&workflow_on_disk(dir.path())), before_state);
+        assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+        assert_eq!(
+            owner.snapshot().run.expect("run").current_state_id,
+            before_state
+        );
+        assert_eq!(updates.has_changed().expect("workflow watch"), false);
+
+        owner.persist_release.notify_one();
+        timeout(Duration::from_secs(5), updates.changed())
+            .await
+            .expect("background commit should notify")?;
+        assert_eq!(
+            owner.snapshot().run.expect("run").current_state_id,
+            "planning"
+        );
+        assert_eq!(state_id(&workflow_on_disk(dir.path())), "planning");
+        assert_ne!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+        Ok(())
+    }
+
+    struct RestorePermissions {
+        path: PathBuf,
+        mode: u32,
+    }
+
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            let _ =
+                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+        }
+    }
 }
