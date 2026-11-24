@@ -1,3 +1,34 @@
+//! Studio 对 Thread 领域的产品内置实现。
+
+// 随 Studio 二进制发布的内置 Thread Mode 注册入口。
+use std::sync::Arc;
+
+use crate::mode::{
+    ThreadModeManager, ThreadModeRegistrySnapshot, ThreadModeSource, ThreadModeSourceId,
+    ThreadModeSourceKind,
+};
+use anyhow::{Context, Result};
+
+const BUILTIN_SOURCE_ID: &str = "studio.builtin";
+
+pub(crate) fn register_builtins(
+    manager: &ThreadModeManager,
+) -> Result<Arc<ThreadModeRegistrySnapshot>> {
+    let registrations = [REGISTRATION]
+        .into_iter()
+        .map(|registration| registration.to_registration())
+        .collect::<Result<Vec<_>, _>>()?;
+    manager
+        .replace_source(
+            ThreadModeSource {
+                id: ThreadModeSourceId::new(BUILTIN_SOURCE_ID)?,
+                kind: ThreadModeSourceKind::Builtin,
+            },
+            registrations,
+        )
+        .context("failed to register built-in Thread Modes")
+}
+
 use crate::mode::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
     StaticWorkflowTransition,
@@ -248,7 +279,7 @@ const fn edge(
     }
 }
 
-pub const WORKFLOW: StaticWorkflowDefinition = StaticWorkflowDefinition {
+const WORKFLOW: StaticWorkflowDefinition = StaticWorkflowDefinition {
     title: "自动",
     goal: "评估任务复杂度并自动选择直接处理（必要时无缝升级规划）或完整任务工程流程，确保可靠交付。",
     initial_state_id: "triage",
@@ -256,7 +287,7 @@ pub const WORKFLOW: StaticWorkflowDefinition = StaticWorkflowDefinition {
     transitions: TRANSITIONS,
 };
 
-pub const REGISTRATION: StaticThreadModeRegistration = StaticThreadModeRegistration {
+pub(crate) const REGISTRATION: StaticThreadModeRegistration = StaticThreadModeRegistration {
     id: "mode.auto",
     display_name: "自动",
     description: "根据需求复杂度自动选择直接处理或完整规划验证流程，并支持简单处理中途升级规划",
