@@ -101,7 +101,7 @@ impl StudioThreadTools {
     }
     /// Transfers an explicitly selected catalog, without constructing standard capabilities.
     /// Optional capability builders remain disabled for this restricted catalog.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub fn selected(store: FileResourceStore, registrations: Vec<Registration>) -> Self {
         Self {
             command_processes: None,

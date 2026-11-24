@@ -823,8 +823,7 @@ async fn write_bytes(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -960,27 +959,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn readonly_directory_does_not_advance_memory_or_notification() -> anyhow::Result<()> {
+    async fn blocked_state_path_does_not_advance_memory_or_notification() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
-        let owner = started_owner(dir.path()).await?;
-        let before = std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?;
-        let before_state = state_id(&workflow_on_disk(dir.path()));
+        let resources = dir.path().join("resources");
+        let saved = dir.path().join("saved");
+        let owner = started_owner(&resources).await?;
+        let before = std::fs::read(resources.join(WORKFLOW_FILE_NAME))?;
+        let before_state = state_id(&workflow_on_disk(&resources));
+        let transition = force_to_planning(&resources);
         let mut updates = owner.subscribe();
         updates.borrow_and_update();
-        let mode = std::fs::metadata(dir.path())?.permissions().mode();
-        let restore = RestorePermissions {
-            path: dir.path().to_path_buf(),
-            mode,
-        };
-        let mut readonly = std::fs::metadata(dir.path())?.permissions();
-        readonly.set_mode(0o555);
-        std::fs::set_permissions(dir.path(), readonly)?;
+        // Preserve the original files while making future writes fail on every platform.
+        std::fs::rename(&resources, &saved)?;
+        std::fs::write(&resources, b"block the state directory")?;
 
         let workflow_error = owner
             .workflow_transition(
-                force_to_planning(dir.path()),
-                operation("readonly-workflow"),
-                "hash-readonly-workflow".into(),
+                transition,
+                operation("blocked-workflow"),
+                "hash-blocked-workflow".into(),
             )
             .await
             .expect_err("workflow persist must fail");
@@ -989,7 +986,7 @@ mod tests {
             "{workflow_error}"
         );
         let plan_error = owner
-            .transition(plan_args(true), plan_context("readonly-plan"))
+            .transition(plan_args(true), plan_context("blocked-plan"))
             .await
             .expect_err("plan persist must fail");
         assert!(
@@ -997,16 +994,15 @@ mod tests {
             "{plan_error}"
         );
 
-        assert_eq!(state_id(&workflow_on_disk(dir.path())), before_state);
-        assert_eq!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
+        assert_eq!(std::fs::read(saved.join(WORKFLOW_FILE_NAME))?, before);
         assert_eq!(
             owner.snapshot().run.expect("run").current_state_id,
             before_state
         );
         assert_eq!(owner.snapshot().plan.expect("plan").revision, 0);
-        assert!(!dir.path().join(PLAN_FILE_NAME).exists());
+        assert!(!saved.join(PLAN_FILE_NAME).exists());
+        assert_eq!(std::fs::read(&resources)?, b"block the state directory");
         assert!(!updates.has_changed().expect("workflow watch"));
-        drop(restore);
         Ok(())
     }
 
@@ -1056,17 +1052,5 @@ mod tests {
         assert_eq!(state_id(&workflow_on_disk(dir.path())), "planning");
         assert_ne!(std::fs::read(dir.path().join(WORKFLOW_FILE_NAME))?, before);
         Ok(())
-    }
-
-    struct RestorePermissions {
-        path: PathBuf,
-        mode: u32,
-    }
-
-    impl Drop for RestorePermissions {
-        fn drop(&mut self) {
-            let _ =
-                std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
-        }
     }
 }

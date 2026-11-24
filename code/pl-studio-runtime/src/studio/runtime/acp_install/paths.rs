@@ -413,7 +413,9 @@ fn link_rejected(stage: AcpInstallStage) -> AcpInstallFailure {
 
 #[cfg(test)]
 mod tests {
-    use super::{AcpInstallStage, apply_directory_mode, create_directory};
+    #[cfg(unix)]
+    use super::apply_directory_mode;
+    use super::{AcpInstallStage, create_directory};
 
     #[test]
     fn directory_errors_keep_the_caller_stage() {

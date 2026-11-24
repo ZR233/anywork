@@ -48,7 +48,7 @@ impl<I> Default for CommandLedger<I> {
 }
 
 impl<I: Clone + PartialEq> CommandLedger<I> {
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -217,7 +217,7 @@ impl<T> RetainedTask<T> {
         Some(slot.as_ref().is_some_and(|handle| !handle.is_finished()))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) fn join_wait_in_progress(&self) -> bool {
         self.join.try_lock().is_err()
     }

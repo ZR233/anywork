@@ -302,7 +302,7 @@ void main() {
 
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('shows agent state, actions, and diagnostics in the layout', (
+  testWidgets('shows agent states and stop actions in the layout', (
     tester,
   ) async {
     final graph = await _layoutGraph(tester);
@@ -317,13 +317,19 @@ void main() {
     expect(find.text('Executor · Model not recorded'), findsWidgets);
     expect(find.byIcon(Icons.stop_circle_outlined), findsNWidgets(2));
     expect(find.text('Waiting'), findsOneWidget);
-    expect(find.text('Failed'), findsOneWidget);
+    final closingRow = find.byKey(StudioDriverKeys.agentRow('thread-closing'));
+    expect(
+      find.descendant(of: closingRow, matching: find.text('Closing')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(StudioDriverKeys.agentStop('thread-closing')),
+      findsNothing,
+    );
     expect(
       find.byTooltip('Stopped, waiting for the main agent to schedule'),
       findsOneWidget,
     );
-    expect(find.byTooltip('The synthetic member failed'), findsOneWidget);
-    expect(find.text('The synthetic member failed'), findsNothing);
     await _closeLayoutGraph(tester, graph);
   }, timeout: const Timeout(Duration(seconds: 30)));
 

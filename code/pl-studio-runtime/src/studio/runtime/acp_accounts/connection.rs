@@ -227,7 +227,7 @@ impl AccountConnection {
         self.observe_join(self.join.join().await)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(super) async fn close(&self) -> Result<()> {
         self.close_until(self.cleanup.deadline()).await
     }
