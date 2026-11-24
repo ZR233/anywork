@@ -84,16 +84,16 @@
 
 ## 11.6 内置自动工作模式（`mode.auto`）
 
-内置工作模式统一收敛为唯一的 **`mode.auto`（自动）**，并在初始 `triage` 阶段由智能体根据需求复杂度自动分流（简单处理中途发现复杂度超出预期时允许直接从 `simple` 升级至 `planning`）：
+内置工作模式统一收敛为唯一的 **`mode.auto`（自动）**，并在初始 `triage` 阶段由智能体根据需求复杂度、用户规划要求及与既有设计是否冲突自动分流（简单处理或后续执行阶段发现复杂度超出预期或与既有设计冲突时，允许直接切入或退回 `planning`）：
 
 ```text
 triage -> simple | planning
 simple -> planning | completed
-planning -> editing_documents
-editing_documents -> working
-working -> editing_documents | integrating
-integrating -> editing_documents | working | reviewing
-reviewing -> working | editing_documents | completed
+planning -> editing_documents | working
+editing_documents -> planning | working
+working -> planning | editing_documents | integrating | reviewing
+integrating -> planning | editing_documents | working | reviewing
+reviewing -> planning | editing_documents | working | completed
 所有非终态 -> stopped
 completed、stopped 为终态
 ```
@@ -101,17 +101,17 @@ completed、stopped 为终态
 在 `mode.auto` 中：
 以下是内置模式的阶段语义；指令装配归属见 [12](./12-collaboration.md#124-任务模式task-mode协作编排契约)，阶段本身不分配代理数量或改变工具权限。
 
-规划不等于禁止准备探索环境：在已有授权和实际写权限内，可配置当前项目所需的 LSP 等工具，仍保持当前规划阶段，不提前实施业务变更。准备范围与计划批准的边界见 [13](./13-plan.md#任务模式规划阶段门控)，准备者与只读探索者的责任见 [12](./12-collaboration.md#规划阶段的环境准备与探索交接)。
+规划不等于禁止准备探索环境：在已有授权和实际写权限内，可配置当前项目所需的 LSP 等工具，仍保持当前规划阶段，不提前实施业务变更。准备范围与计划批准的边界见 [13](./13-plan.md#135-与工作模式提示词及桌面界面的协作边界)，准备者与只读探索者的责任见 [12](./12-collaboration.md#规划阶段的环境准备与探索交接)。
 
-1. **`triage`（评估分流阶段）**：作为入口评估用户意图与需求复杂度；目标单一且影响面小的问题切入 `simple`，需要多步协调、方案取舍或设计确认的任务切入 `planning`。
-2. **`simple`（简单处理阶段）**：直接完成探索、修改、必要验证并收尾至 `completed`；若执行过程中发现复杂度或改动范围超出预期，可直接转换至 `planning` 转入正式规划工作流。
-3. **`planning`（规划阶段）**：核对目标与现场，不把任何已有文档或规约作为裁定方案合理性的权威依据；指出不合理或与新需求冲突之处并给出修改建议，按用户未读过代码的前提解释概念与取舍（讨论与解释约定见 [20.6](./20-config.md#206-提示词配置)）。`Plan` 状态机由独立工具包 `pl-tool-plan`（`plan_*` 工具，见 [13](./13-plan.md)）管理，不再与工作流阶段强绑定；仅在复杂方案需要用户审批确认时调用 `plan_transition` 提请确认。
-4. **`editing_documents`（设计阶段）**：按角色所有权同步受影响设计与接口，使其与批准计划一致；无契约变化时核对适用性，不为过阶段制造文档改动。
-5. **`working`（实施阶段）**：交付计划内实现、真实版本及必要交接证据；按协作契约裁决实质阻塞，停工轮次不算完成。可以把适用的集中验证与审查明确交接到后续阶段。
-6. **`integrating`（核对成果阶段）**：核对成果、依赖、工作区及实际整合操作；区分已有有效证据与待执行项。未解决的集成问题返回实施阶段，不因阶段变化重跑已证明的检查。
-7. **`reviewing`（整体验收阶段）**：记录目标、当前版本与证据对应的最终判断。代码缺陷返回 `working`，设计偏差返回 `editing_documents`；资源回收结果属于 `completed` 的阶段证据。
+1. **`triage`（评估分流阶段）**：作为入口最小核实用户目标、约束、影响范围及现有设计与文档。仅当范围小、目标明确、与既有设计无冲突且用户未要求先出计划时切入 `simple`；凡涉及跨模块/多阶段/重构/高风险、用户要求先出计划或讨论方案、或与既有设计/文档/契约存在冲突时，一律先通过 `workflow_transition` 切入 `planning`（禁止在仍处于 `triage` 时就提前调用会挂起轮次的 `request_user_input` 或 `plan_transition`）。
+2. **`simple`（直接处理阶段）**：直接完成探索、修改、必要验证并收尾至 `completed`；若执行过程中发现复杂度/改动范围/风险超出预期、用户要求出计划，或实现方法/用户要求与已有设计冲突，立刻停止受影响修改、保留现场并切入 `planning`。
+3. **`planning`（规划阶段）**：核对目标与现场，不把任何已有文档或规约作为裁定方案合理性的权威依据，也不暗中违背设计。若发现用户要求或候选实现方法与已有设计冲突（或存在影响方向的未决取舍），先独占调用顶层 `request_user_input` 用通俗语言说明原设计、冲突点、可选做法与利弊并请用户裁定；方案明确后**必须**独占调用顶层 `plan_transition(targetState: "awaitingConfirmation", content: ..., force: false)` 按默认 **ELI5 规则**（面向未读过代码的读者先讲目标效果、现状与冲突、关键概念解释、分步做法与理由、非目标与取舍、可核验验收标准）提交计划确认（若原 Plan 已为 `approved`，先切 `drafting` 再切 `awaitingConfirmation`；禁止只在普通正文或 `<proposed_plan>` 写计划，禁止提确认时传 `force=true`，禁止与 `exec` 等其他工具同批调用）。待宿主 Plan 达到 `approved` 后（非交互或用户显式免确认除外），再推进至 `editing_documents` 或 `working`。
+4. **`editing_documents`（设计阶段）**：按已批准计划同步受影响设计与接口，使其与批准计划一致；无契约变化时核对适用性即可，不为过阶段制造文档改动。若梳理文档时发现方案缺口或与既有设计产生新冲突，暂停改写、保留现场并退回 `planning` 询问用户并重出计划。
+5. **`working`（实施阶段）**：严格按已批准计划与既定设计交付实现、真实版本及必要交接证据；按协作契约裁决实质阻塞，停工轮次不算完成。执行中发现实现方法与已有设计、契约或已批准计划冲突时，禁止以代码暗中覆盖设计，暂停受影响改动、保留现场及有效证据，沿返工边退回 `planning` 询问并重新出计划；若仅需同步既定方案内设计文档，沿 `working -> editing_documents` 处理。可以把适用的集中验证与审查明确交接到后续阶段。
+6. **`integrating`（核对成果阶段）**：核对成果、依赖、工作区及实际整合操作；区分已有有效证据与待执行项。实现缺陷回退 `working`，既定方案内文档偏差回退 `editing_documents`，暴露与既有设计冲突或需调整总体方案时暂停受影响整合、保留现场并退回 `planning` 询问用户重出计划；不因阶段变化重跑已证明的检查。
+7. **`reviewing`（整体验收阶段）**：进入后先读取当前最新 Plan 正文（核对 `studio.plan.document` / `pl.plan` 投影中的 `markdown` 正文，投影缺失、无正文或不确定是否最新时通过 `exec` 调用 `tools.plan_current({})`——或按顶层声明调用 `plan_current`——读取），依据 Plan 的目标、非目标边界、冲突裁定、风险点与验收标准定制审查清单与核查方法；委派 `reviewer` 时随完整适用 Plan（及实施期调整）明确交代审什么、怎么审及通过/打回判据，主代理直接复核时同样按 Plan 逐项核对，并记录目标、当前版本与证据对应的最终判断。实现未满足 Plan 返回 `working`，文档偏差返回 `editing_documents`，发现设计冲突或根本方案缺陷返回 `planning`（询问并重出计划）；适用评价及资源回收结果属于 `completed` 的阶段证据。
 
-**正常推进与设计返工分别判断**：`working` 或 `integrating` 中已确认需要修订设计时，可直接返回 `editing_documents`，不要求先满足“实现全部交付”或“集成已完成”的前向条件，也不重启整个运行实例。返工转换记录问题证据、裁定及受影响任务，保留现场、已有成果与仍有效的验证；依赖新设计的实施暂停，根智能体完成设计同步后明确安排续跑。仅需解释既有契约而无需改设计时，可在当前阶段裁定并继续。涉及目标、范围或关键决策变化时仍遵循计划确认契约，不以返工边绕过授权。
+**正常推进与冲突/设计返工分别判断**：`editing_documents`、`working`、`integrating` 或 `reviewing` 中已确认需要修订既有设计文档或与既有设计冲突时，可直接沿对应返工边回到 `editing_documents` 或 `planning`，不要求先满足“实现全部交付”或“集成已完成”的前向条件，也不重启整个运行实例。返工转换记录问题证据、裁定及受影响任务，保留现场、已有成果与仍有效的验证；依赖新设计或新裁定的实施暂停，按冲突闭环询问用户并重新确认计划、同步设计后再续跑。仅需解释既有契约而无需改设计时，可在当前阶段裁定并继续。涉及目标、范围、设计与核心方案冲突时遵循询问与计划确认契约，不以返工边或实现改动绕过授权。
 
 阶段说明、完成标准与转换守卫只描述本阶段成果和必要证据，不重复通用协作合同或加入推荐组织策略的隐藏门槛。所有非强制切换仍须沿合法边转换；确需跳过或重整阶段时可通过 `workflow_transition` 显式传入 `force: true`。
 

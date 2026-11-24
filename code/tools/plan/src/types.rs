@@ -198,7 +198,7 @@ pub struct PlanHistoryResponse {
 pub struct PlanTransitionArgs {
     /// Target Plan state (`drafting`, `awaitingConfirmation`, `revisionRequested`, `approved`).
     pub target_state: PlanState,
-    /// Markdown Plan content. Required when transitioning to `awaitingConfirmation` if no plan document exists yet, or when supplying an updated plan.
+    /// Markdown Plan content, written in ELI5 plain language by default (explain goal, current state/conflicts, steps, trade-offs, and checks simply; keep paths/symbols as supporting references) unless another style is requested. Required when transitioning to `awaitingConfirmation` if no plan document exists yet, or when supplying an updated plan.
     #[serde(default)]
     pub content: Option<String>,
     /// Revision feedback, required when transitioning to `revisionRequested` (unless `reason` is supplied).

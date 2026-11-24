@@ -30,7 +30,7 @@ pub fn plan_model_context_section(
         "lastRevisionFeedback": snapshot.last_revision_feedback,
         "allowedTransitions": snapshot.allowed_transitions,
         "allStates": snapshot.all_states,
-        "constraint": "Every agent owns one standalone Plan object independent of workflow. Latest host state overrides outdated summaries. Approval survives compaction and restart. Use plan_transition to switch Plan state when planning or confirmation is needed (pass force=true only for intentional out-of-path overrides).",
+        "constraint": "Every agent owns one standalone Plan object independent of workflow. Latest host state overrides outdated summaries. Approval survives compaction and restart. If the workflow is currently in `triage` (or another pre-planning state) and needs planning, call `exec` (`tools.workflow_transition` to `planning`) FIRST before calling `request_user_input` or `plan_transition`. Both `request_user_input` and `plan_transition` are exclusive top-level tools (never batch them with `exec` or other tools). In `planning`, write `content` in ELI5 plain language by default and call `plan_transition(targetState=\"awaitingConfirmation\", force=false)` to trigger user confirmation (never pass `force=true` when requesting confirmation; if currently `approved`, transition to `drafting` first). During `reviewing`, read the latest `studio.plan.document` / `document.markdown` (or call `tools.plan_current({})` via `exec` / top-level `plan_current` if missing) to guide verification and reviewers.",
     }))?;
     Ok(ModelContextSectionSnapshot {
         id: ContextSectionId::new(PLAN_CONTEXT_SECTION_ID)
