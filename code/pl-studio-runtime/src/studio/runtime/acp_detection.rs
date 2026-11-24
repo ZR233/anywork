@@ -43,6 +43,9 @@ struct Inner {
     /// Test-only launch inputs, never a process-global PATH or user config edit.
     #[cfg(test)]
     fixture_definition: Mutex<Option<crate::config::AcpServiceDefinition>>,
+    /// Synchronous stand-in for an observer that re-enters admission during emit.
+    #[cfg(test)]
+    emit_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 struct Slot {
@@ -90,8 +93,25 @@ impl AcpLocalDetectionRuntime {
                 }),
                 #[cfg(test)]
                 fixture_definition: Mutex::new(None),
+                #[cfg(test)]
+                emit_probe: Mutex::new(None),
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn set_emit_probe(&self, probe: impl Fn() + Send + Sync + 'static) {
+        *self
+            .inner
+            .emit_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(probe));
+    }
+
+    #[cfg(test)]
+    fn publish_checking_for_probe(&self) {
+        let mut admission = Published::lock(&self.inner);
+        admission.assign(AcpLocalDetectionState::Checking);
     }
 
     pub(crate) fn read_state(&self) -> AcpLocalDetectionSnapshot {
@@ -103,19 +123,21 @@ impl AcpLocalDetectionRuntime {
         request: StartAcpLocalDetectionRequest,
     ) -> Result<AcpLocalDetectionAcceptance> {
         super::StudioRuntime::validate_operation_id(&request.operation_id)?;
-        let mut slot = self.inner.lock();
-        if slot.closed {
+        let mut admission = Published::lock(&self.inner);
+        if admission.slot().closed {
             return Err(command_error(
                 StudioErrorCode::RuntimeStopped,
                 "运行时正在关闭，不能开始本机检测",
             ));
         }
-        if slot.snapshot.operation_id.as_deref() == Some(request.operation_id.as_str()) {
-            return Ok(acceptance(&slot, false));
+        if admission.slot().snapshot.operation_id.as_deref() == Some(request.operation_id.as_str())
+        {
+            return Ok(acceptance(admission.slot(), false));
         }
         // Poll only a finished join, by reference, before recycling the one slot.
         // Completion of the domain state alone is not evidence of task termination.
-        if let Some(operation) = slot.operation.clone() {
+        let existing = admission.slot().operation.clone();
+        if let Some(operation) = existing {
             let Ok(mut join) = operation.join.try_lock() else {
                 return Err(busy());
             };
@@ -128,14 +150,13 @@ impl AcpLocalDetectionRuntime {
                 };
                 *join = None;
                 if outcome.is_err() {
-                    self.inner
-                        .publish_locked(&mut slot, failed(AcpLocalDetectionFailureKind::Cleanup));
+                    admission.assign(failed(AcpLocalDetectionFailureKind::Cleanup));
                 }
             }
             if !operation.resources_released.load(Ordering::Acquire) {
                 return Err(busy());
             }
-            slot.operation = None;
+            admission.slot().operation = None;
         }
 
         let operation = Arc::new(Operation {
@@ -150,17 +171,16 @@ impl AcpLocalDetectionRuntime {
             #[cfg(test)]
             cleanup_pending: AtomicBool::new(false),
         });
-        slot.snapshot.operation_id = Some(operation.id.clone());
-        slot.operation = Some(Arc::clone(&operation));
-        self.inner
-            .publish_locked(&mut slot, AcpLocalDetectionState::Checking);
+        admission.slot().snapshot.operation_id = Some(operation.id.clone());
+        admission.slot().operation = Some(Arc::clone(&operation));
+        admission.assign(AcpLocalDetectionState::Checking);
         // Responsibility is visible before spawn, with no intervening await.
         let task = tokio::spawn(supervise(Arc::clone(&self.inner), Arc::clone(&operation)));
         *operation
             .join
             .try_lock()
             .expect("new detection join is idle") = Some(task);
-        Ok(acceptance(&slot, true))
+        Ok(acceptance(admission.slot(), true))
     }
 
     pub(crate) fn cancel(
@@ -169,8 +189,10 @@ impl AcpLocalDetectionRuntime {
     ) -> Result<AcpLocalDetectionAcceptance> {
         super::StudioRuntime::validate_operation_id(&request.operation_id)?;
         super::StudioRuntime::validate_operation_id(&request.target_operation_id)?;
-        let mut slot = self.inner.lock();
-        if slot.snapshot.operation_id.as_deref() != Some(request.target_operation_id.as_str()) {
+        let mut admission = Published::lock(&self.inner);
+        if admission.slot().snapshot.operation_id.as_deref()
+            != Some(request.target_operation_id.as_str())
+        {
             return Err(command_error(
                 StudioErrorCode::Conflict,
                 "检测操作已被替换，不能取消另一操作",
@@ -183,31 +205,30 @@ impl AcpLocalDetectionRuntime {
             ));
         }
         if !matches!(
-            slot.snapshot.state,
+            admission.slot().snapshot.state,
             AcpLocalDetectionState::Checking | AcpLocalDetectionState::Cancelling
         ) {
-            return Ok(acceptance(&slot, false));
+            return Ok(acceptance(admission.slot(), false));
         }
-        if let Some(operation) = &slot.operation {
+        if let Some(operation) = &admission.slot().operation {
             operation.cancel.cancel();
         }
-        let changed = slot.snapshot.state != AcpLocalDetectionState::Cancelling;
+        let changed = admission.slot().snapshot.state != AcpLocalDetectionState::Cancelling;
         if changed {
-            self.inner
-                .publish_locked(&mut slot, AcpLocalDetectionState::Cancelling);
+            admission.assign(AcpLocalDetectionState::Cancelling);
         }
-        Ok(acceptance(&slot, changed))
+        Ok(acceptance(admission.slot(), changed))
     }
 
     /// Synchronous shutdown gate, before waiting for sibling resource owners.
     pub(crate) fn signal_cancel(&self) {
-        let mut slot = self.inner.lock();
-        slot.closed = true;
-        if let Some(operation) = &slot.operation {
+        let mut admission = Published::lock(&self.inner);
+        admission.slot().closed = true;
+        let operation = admission.slot().operation.clone();
+        if let Some(operation) = operation {
             operation.cancel.cancel();
-            if slot.snapshot.state == AcpLocalDetectionState::Checking {
-                self.inner
-                    .publish_locked(&mut slot, AcpLocalDetectionState::Cancelling);
+            if admission.slot().snapshot.state == AcpLocalDetectionState::Checking {
+                admission.assign(AcpLocalDetectionState::Cancelling);
             }
         }
     }
@@ -249,20 +270,32 @@ impl Inner {
         self.slot.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn publish_locked(&self, slot: &mut Slot, state: AcpLocalDetectionState) {
-        slot.snapshot.state = state;
-        slot.snapshot.revision += 1;
-        // The event bus only enqueues; publication shares admission ordering.
-        self.events.emit(
-            crate::StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(
-                slot.snapshot.clone(),
-            )),
-        );
+    fn emit_snapshots(&self, snapshots: Vec<AcpLocalDetectionSnapshot>) {
+        for snapshot in snapshots {
+            #[cfg(test)]
+            self.run_emit_probe();
+            self.events.emit(
+                crate::StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(snapshot)),
+            );
+        }
+    }
+
+    #[cfg(test)]
+    fn run_emit_probe(&self) {
+        let probe = self
+            .emit_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(probe) = probe {
+            probe();
+        }
     }
 
     fn finish(&self, operation: &Arc<Operation>, state: AcpLocalDetectionState) {
-        let mut slot = self.lock();
-        if !slot
+        let mut admission = Published::lock(self);
+        if !admission
+            .slot()
             .operation
             .as_ref()
             .is_some_and(|current| Arc::ptr_eq(current, operation))
@@ -276,7 +309,46 @@ impl Inner {
         } else {
             state
         };
-        self.publish_locked(&mut slot, state);
+        admission.assign(state);
+    }
+}
+
+/// Updates admission under `slot`, then emits only after that lock is released.
+struct Published<'a> {
+    inner: &'a Inner,
+    slot: Option<MutexGuard<'a, Slot>>,
+    snapshots: Vec<AcpLocalDetectionSnapshot>,
+}
+
+impl<'a> Published<'a> {
+    fn lock(inner: &'a Inner) -> Self {
+        Self {
+            inner,
+            slot: Some(inner.lock()),
+            snapshots: Vec::new(),
+        }
+    }
+
+    fn slot(&mut self) -> &mut Slot {
+        self.slot.as_mut().expect("detection admission slot")
+    }
+
+    fn assign(&mut self, state: AcpLocalDetectionState) {
+        let snapshot = {
+            let slot = self.slot();
+            slot.snapshot.state = state;
+            slot.snapshot.revision += 1;
+            slot.snapshot.clone()
+        };
+        self.snapshots.push(snapshot);
+    }
+}
+
+impl Drop for Published<'_> {
+    fn drop(&mut self) {
+        self.slot.take();
+        self.inner
+            .emit_snapshots(std::mem::take(&mut self.snapshots));
     }
 }
 
@@ -982,5 +1054,52 @@ sys.stderr.flush()
         operation.cleanup_pending.store(false, Ordering::Release);
         fixture.finish().await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use super::*;
+    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::{ProductEventBus, StudioStore};
+
+    #[tokio::test]
+    async fn emit_releases_admission_before_a_synchronous_observer() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite"))
+            .await
+            .expect("store");
+        let writer = ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store.clone(), writer);
+        let runtime = AcpLocalDetectionRuntime::new(
+            store,
+            events,
+            pl_remote_helper::Executor::local().expect("local executor"),
+        );
+        let locked = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&locked);
+        let probe_runtime = runtime.clone();
+        runtime.set_emit_probe(move || {
+            let _slot = probe_runtime.inner.lock();
+            flag.store(true, Ordering::Release);
+        });
+
+        let publisher = runtime.clone();
+        let published = tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::task::spawn_blocking(move || publisher.publish_checking_for_probe()),
+        )
+        .await;
+        assert!(
+            published.is_ok(),
+            "synchronous observer could not re-lock admission during emit"
+        );
+        assert!(published.expect("join").is_ok());
+        assert!(locked.load(Ordering::Acquire));
+        assert_eq!(runtime.read_state().state, AcpLocalDetectionState::Checking);
     }
 }

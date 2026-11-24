@@ -414,6 +414,7 @@ impl AcpInstallRuntime {
     /// 取消并等待所有在途操作与版本检查收束；超时保留 join 句柄，绝不伪报已回收。
     pub(crate) async fn cancel_and_join(&self) -> Result<()> {
         self.signal_cancel();
+        let deadline = tokio::time::Instant::now() + JOIN_BUDGET;
         let mut issues: Vec<String> = Vec::new();
         let check_tasks: Vec<(AcpProvider, u64, tokio::task::JoinHandle<()>)> = {
             let mut registry = self.inner.lock();
@@ -428,12 +429,7 @@ impl AcpInstallRuntime {
                 .collect()
         };
         for (provider, generation, mut handle) in check_tasks {
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut handle => Some(result),
-                _ = &mut deadline => None,
-            };
+            let joined = join_until(&mut handle, deadline).await;
             match joined {
                 Some(Ok(())) => {
                     let mut registry = self.inner.lock();
@@ -510,12 +506,7 @@ impl AcpInstallRuntime {
                 ));
                 continue;
             };
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut lease.handle_mut() => Some(result),
-                _ = &mut deadline => None,
-            };
+            let joined = join_until(lease.handle_mut(), deadline).await;
             match joined {
                 Some(Ok(())) => {
                     // 真实 await 到终态：这里才允许发布 joined 事实；随后释放句柄归属。
@@ -580,12 +571,7 @@ impl AcpInstallRuntime {
                 ));
                 continue;
             };
-            let deadline = tokio::time::sleep(JOIN_BUDGET);
-            tokio::pin!(deadline);
-            let joined = tokio::select! {
-                result = &mut lease.handle_mut() => Some(result),
-                _ = &mut deadline => None,
-            };
+            let joined = join_until(lease.handle_mut(), deadline).await;
             match joined {
                 Some(Ok(())) => {
                     operation.mark_supervisor_joined();
@@ -831,5 +817,58 @@ impl Drop for JoinLease {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = Some(handle);
         }
+    }
+}
+
+/// 三个关闭循环共用同一个截止时间。已结束的句柄即使预算耗尽也先回收，不把终态留在槽里。
+async fn join_until(
+    handle: &mut tokio::task::JoinHandle<()>,
+    deadline: tokio::time::Instant,
+) -> Option<Result<(), tokio::task::JoinError>> {
+    if handle.is_finished() {
+        return Some(handle.await);
+    }
+    match tokio::time::timeout_at(deadline, &mut *handle).await {
+        Ok(result) => Some(result),
+        Err(_) if handle.is_finished() => Some(handle.await),
+        Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::join_until;
+
+    #[tokio::test]
+    async fn shared_deadline_reclaims_a_finished_handle_after_the_budget() {
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let mut finished = tokio::spawn(async move {
+            let _ = entered.send(());
+        });
+        observed.await.expect("finished task body");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !finished.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("finished join should become observable");
+
+        let mut pending = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let deadline = tokio::time::Instant::now();
+        let reclaimed = join_until(&mut finished, deadline)
+            .await
+            .expect("finished handle is reclaimed after the deadline");
+        assert!(reclaimed.is_ok());
+        assert!(
+            join_until(&mut pending, deadline).await.is_none(),
+            "the same exhausted deadline must not wait for a later handle"
+        );
+        pending.abort();
+        let _ = pending.await;
     }
 }

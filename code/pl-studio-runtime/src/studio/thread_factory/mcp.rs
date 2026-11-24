@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use crate::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
 use anyhow::Result;
@@ -41,6 +41,76 @@ type McpCloseResult = Result<(), Arc<ThreadAssemblyError>>;
 type McpCloseCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, McpCloseResult>>;
 
+/// Serializes projection pause/resume with snapshot publication.
+///
+/// The same thread may re-enter from a synchronous emit observer. A nested pause bumps the
+/// revision before the outer publish makes its final check, so the stale snapshot is dropped.
+struct ProjectionPublication {
+    state: Mutex<ProjectionPublicationState>,
+    available: Condvar,
+}
+
+struct ProjectionPublicationState {
+    holder: Option<std::thread::ThreadId>,
+    depth: u32,
+}
+
+struct ProjectionPublicationGuard<'a> {
+    publication: &'a ProjectionPublication,
+}
+
+impl ProjectionPublication {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(ProjectionPublicationState {
+                holder: None,
+                depth: 0,
+            }),
+            available: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> ProjectionPublicationGuard<'_> {
+        let thread = std::thread::current().id();
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            match state.holder {
+                Some(holder) if holder == thread => {
+                    state.depth = state.depth.saturating_add(1);
+                    return ProjectionPublicationGuard { publication: self };
+                }
+                Some(_) => {
+                    state = self
+                        .available
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+                None => {
+                    state.holder = Some(thread);
+                    state.depth = 1;
+                    return ProjectionPublicationGuard { publication: self };
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ProjectionPublicationGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .publication
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.depth = state.depth.saturating_sub(1);
+        if state.depth == 0 {
+            state.holder = None;
+            drop(state);
+            self.publication.available.notify_one();
+        }
+    }
+}
+
 pub(crate) struct ThreadMcpOwner {
     pub(super) thread_id: String,
     pub(super) lifetime: Arc<ThreadToolLifetime>,
@@ -56,6 +126,9 @@ pub(crate) struct ThreadMcpOwner {
     preparation: Mutex<Option<McpCloseCompletion>>,
     projection_ready: AtomicBool,
     projection_revision: AtomicU64,
+    projection_publication: ProjectionPublication,
+    #[cfg(test)]
+    refresh_probe: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     reconcile_requested: tokio::sync::Notify,
     shutdown: Mutex<Option<McpCloseCompletion>>,
 }
@@ -98,6 +171,9 @@ impl ThreadMcpOwner {
             preparation: Mutex::new(None),
             projection_ready: AtomicBool::new(true),
             projection_revision: AtomicU64::new(0),
+            projection_publication: ProjectionPublication::new(),
+            #[cfg(test)]
+            refresh_probe: Mutex::new(None),
             reconcile_requested: tokio::sync::Notify::new(),
             shutdown: Mutex::new(None),
         })
@@ -250,6 +326,7 @@ impl ThreadMcpOwner {
     }
 
     fn pause_projection(&self) {
+        let _publication = self.projection_publication.lock();
         let _state = self
             .state
             .lock()
@@ -259,11 +336,45 @@ impl ThreadMcpOwner {
     }
 
     fn resume_projection(&self) {
+        let _publication = self.projection_publication.lock();
         let _state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.projection_ready.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn set_refresh_probe(&self, probe: impl Fn() + Send + Sync + 'static) {
+        *self
+            .refresh_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(probe));
+    }
+
+    fn run_refresh_probe(&self) {
+        #[cfg(test)]
+        {
+            let probe = self
+                .refresh_probe
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            if let Some(probe) = probe {
+                probe();
+            }
+        }
+    }
+
+    fn projection_current(&self, revision: u64) -> bool {
+        revision == self.projection_revision.load(Ordering::Acquire)
+            && self.projection_ready.load(Ordering::Acquire)
+            && !self.lifetime.cancellation.is_cancelled()
+    }
+
+    fn emit_projection(&self, product_events: &ProductEventBus, snapshot: ThreadMcpStateSnapshot) {
+        let _publication = self.projection_publication.lock();
+        product_events.emit_thread_mcp_state(snapshot);
     }
 
     async fn finish_preparation(&self) -> McpCloseResult {
@@ -471,6 +582,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_connecting(&self, server_id: Option<&str>, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let servers = self
             .servers
             .lock()
@@ -509,6 +621,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_shutting_down(&self, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let mut guard = self
             .state
             .lock()
@@ -523,6 +636,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_closed(&self, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let mut guard = self
             .state
             .lock()
@@ -535,6 +649,7 @@ impl ThreadMcpOwner {
     }
 
     fn publish_reconnect_failure(&self, server_id: Option<&str>, product_events: &ProductEventBus) {
+        let _publication = self.projection_publication.lock();
         let servers = self
             .servers
             .lock()
@@ -590,14 +705,18 @@ impl ThreadMcpOwner {
                 server_state_from_availability(entry, availability, None)
             })
             .collect();
+        let _publication = self.projection_publication.lock();
+        // A synchronous observer can pause before this final check. The captured revision,
+        // not a new load, decides whether the snapshot computed above is still current.
+        self.run_refresh_probe();
+        if !self.projection_current(revision) {
+            return;
+        }
         let mut guard = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if revision != self.projection_revision.load(Ordering::Acquire)
-            || !self.projection_ready.load(Ordering::Acquire)
-            || self.lifetime.cancellation.is_cancelled()
-        {
+        if !self.projection_current(revision) {
             return;
         }
         // A definition/schema change can keep both tool count and availability unchanged.
@@ -607,15 +726,7 @@ impl ThreadMcpOwner {
             guard.servers = next_servers;
             let snapshot = guard.clone();
             drop(guard);
-            // ProductEventBus only enqueues broadcasts. Serialize that enqueue with
-            // pause_projection, not just the snapshot mutation.
-            let revision = self.projection_revision.load(Ordering::Acquire);
-            if revision == self.projection_revision.load(Ordering::Acquire)
-                && self.projection_ready.load(Ordering::Acquire)
-                && !self.lifetime.cancellation.is_cancelled()
-            {
-                product_events.emit_thread_mcp_state(snapshot);
-            }
+            product_events.emit_thread_mcp_state(snapshot);
         }
     }
 }
@@ -717,9 +828,7 @@ impl StudioThreadFactory {
                     .mcp
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(owner.clone());
-                self.services
-                    .product_events
-                    .emit_thread_mcp_state(initial_snapshot);
+                owner.emit_projection(&self.services.product_events, initial_snapshot);
 
                 match owner
                     .prepare_required(
@@ -785,9 +894,7 @@ impl StudioThreadFactory {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) =
                             Some(owner.clone());
-                        self.services
-                            .product_events
-                            .emit_thread_mcp_state(initial_snapshot);
+                        owner.emit_projection(&self.services.product_events, initial_snapshot);
                         owner
                     }
                 };
@@ -1216,6 +1323,54 @@ mod refresh_tests {
         );
         *resources.mcp.lock().unwrap() = Some(owner.clone());
         Ok(owner)
+    }
+
+    #[tokio::test]
+    async fn reentrant_pause_discards_the_snapshot_being_published() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let fixture = close_factory(&store)?;
+        let resources = Arc::new(NativeResources::default());
+        let owner = owner(
+            &fixture.factory,
+            &resources,
+            "projection-pause",
+            McpScope::Host,
+            temp.path(),
+        )?;
+        let paused = Arc::new(AtomicBool::new(false));
+        let probe_owner = Arc::clone(&owner);
+        let probe_flag = Arc::clone(&paused);
+        owner.set_refresh_probe(move || {
+            probe_owner.pause_projection();
+            probe_flag.store(true, Ordering::Release);
+        });
+        let mut events = fixture.factory.services.product_events.subscribe_internal();
+        let published = tokio::time::timeout(
+            Duration::from_secs(2),
+            owner.update_snapshot(&fixture.factory.services.product_events, true),
+        )
+        .await;
+        assert!(
+            published.is_ok(),
+            "reentrant pause deadlocked the projection publication gate"
+        );
+        assert!(paused.load(Ordering::Acquire));
+        assert!(!owner.projection_ready.load(Ordering::Acquire));
+        assert!(owner.projection_revision.load(Ordering::Acquire) >= 1);
+        let mut published_stale = false;
+        while let Ok(event) = events.try_recv() {
+            if let crate::StudioProductEventKind::ThreadMcpStateChanged(snapshot) = event.kind
+                && snapshot.thread_id == owner.thread_id
+            {
+                published_stale = true;
+            }
+        }
+        assert!(
+            !published_stale,
+            "a refresh snapshot must not be published after reentrant pause"
+        );
+        Ok(())
     }
 
     #[tokio::test]
