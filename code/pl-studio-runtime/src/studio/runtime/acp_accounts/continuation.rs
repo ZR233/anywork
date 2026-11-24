@@ -3,7 +3,7 @@
 use crate::{AcpAuthMethodKind, AcpAuthState, ContinueAcpAuthRequest, StudioErrorCode};
 use anyhow::Result;
 
-use super::super::acp_ops::{LedgerCheck, RetainedTask};
+use super::super::acp_ops::LedgerCheck;
 use super::admission::{AcpAccountAcceptance, AcpAccountRuntime};
 use super::mapping::{acp_error, ensure_operation_id, ledger_rejection};
 use super::registry::{AcceptedAction, AcceptedIntent};
@@ -150,6 +150,7 @@ impl AcpAccountRuntime {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::acp_ops::RetainedTask;
     use super::super::registry::Operation;
     use super::*;
     use crate::config::{

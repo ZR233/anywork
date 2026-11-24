@@ -45,7 +45,6 @@ struct UsageState {
     legacy_unbound: Option<String>,
 }
 
-#[derive(Default)]
 struct UsageTasks(RetainedTaskRegistry<AccountId, u64, Result<()>>);
 
 impl Default for UsageTasks {

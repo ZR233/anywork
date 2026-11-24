@@ -4,6 +4,7 @@
 //! poll. Replacing the active generation cancels the previous token but does not
 //! drop its handle. Close cancels admission and still joins the original tasks.
 
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -32,7 +33,7 @@ impl<P, T> std::ops::DerefMut for Registered<P, T> {
     }
 }
 
-pub(super) struct RetainedTaskRegistry<K, P, T = Result<()>> {
+pub(super) struct RetainedTaskRegistry<K, P, T = anyhow::Result<()>> {
     closing: bool,
     next_id: u64,
     active: BTreeMap<K, u64>,
@@ -62,16 +63,25 @@ where
         self.by_id.len()
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.by_id.is_empty()
     }
 
-    pub(super) fn get(&self, key: &K) -> Option<&Registered<P, T>> {
+    pub(super) fn get<Q>(&self, key: &Q) -> Option<&Registered<P, T>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let id = self.active.get(key)?;
         self.by_id.get(id)
     }
 
-    pub(super) fn get_mut(&mut self, key: &K) -> Option<&mut Registered<P, T>> {
+    pub(super) fn get_mut<Q>(&mut self, key: &Q) -> Option<&mut Registered<P, T>>
+    where
+        K: Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let id = *self.active.get(key)?;
         self.by_id.get_mut(&id)
     }
