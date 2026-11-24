@@ -8,7 +8,6 @@
 extern crate self as pl_studio_runtime;
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
-pub(crate) use studio::storage::history::schema::legacy_execution_item::LegacyTurn;
 pub(crate) use studio::thread_projection::{ExecutionItem, ExecutionKind, ExecutionShape};
 pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 // Execution/storage diagnostics may name the Core's opaque completion records.

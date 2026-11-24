@@ -255,7 +255,7 @@ async fn turn_index(db: &impl ConnectionTrait) -> Result<()> {
         for row in rows {
             let id: String = row.try_get("", "turn_id")?;
             let bytes: String = row.try_get("", "payload")?;
-            let old: crate::LegacyTurn = serde_json::from_str(&bytes)?;
+            let old: super::legacy_execution_item::LegacyTurn = serde_json::from_str(&bytes)?;
             let original = db.query_one_raw(statement(
                 "SELECT ordinal,last_write_seq,payload FROM history_items WHERE item_id=? AND kind='turn'",
                 vec![crate::studio::thread_projection::order::turn_id(&id).into()],

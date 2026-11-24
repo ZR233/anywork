@@ -1,7 +1,10 @@
 //! Frozen schema-24 storage for one-shot v2 TOML import and schema 24→25 migration.
 
 #[cfg(test)]
-use crate::{ExecutionItem, ExecutionKind, ExecutionShape, LegacyTurn};
+use crate::{
+    ExecutionItem, ExecutionKind, ExecutionShape,
+    studio::storage::history::schema::legacy_execution_item::LegacyTurn,
+};
 use std::{
     path::{Path, PathBuf},
     time::Duration,
