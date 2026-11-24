@@ -56,7 +56,6 @@ class StartModelSelectorView extends StatelessWidget {
           : null,
       fieldLabel: l10n.statusPlannerModel,
       selectorKey: StudioDriverKeys.model,
-      showSelectedBrand: true,
       unresolvedLabel: fallbackLabel,
       unresolvedLeading: isAcp
           ? AccountBrandMark(

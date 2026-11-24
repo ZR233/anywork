@@ -129,6 +129,15 @@ void main() {
           }
           expect(find.text('主智能体模型 · 模型一'), findsOneWidget);
         }
+        if (key == StudioDriverKeys.model) {
+          expect(
+            find.descendant(
+              of: find.byKey(key),
+              matching: find.byType(AccountBrandMark),
+            ),
+            findsNothing,
+          );
+        }
         await tester.tap(find.byKey(key));
         await tester.pump(const Duration(milliseconds: 300));
       }
@@ -139,14 +148,6 @@ void main() {
       );
       await tester.pump(const Duration(milliseconds: 300));
       expect(selections.last, ThreadModeId.fromId('mode.custom'));
-      if (width == 700) {
-        final brand = find.descendant(
-          of: find.byKey(StudioDriverKeys.model),
-          matching: find.byType(AccountBrandMark),
-        );
-        expect(brand, findsOneWidget);
-        expect(tester.widget<AccountBrandMark>(brand).iconKey, 'openai');
-      }
       await open(StudioDriverKeys.model);
       expect(
         find.byKey(StudioDriverKeys.modelCapabilityTags('account', 'two')),

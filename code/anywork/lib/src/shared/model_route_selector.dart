@@ -132,7 +132,6 @@ class ModelRouteSelector extends StatefulWidget {
     this.labelMaxWidth = 180,
     this.inMenu = false,
     this.optionKeyBuilder,
-    this.showSelectedBrand = false,
     this.unresolvedLeading,
     this.searchKey,
     this.menuFooter,
@@ -155,7 +154,6 @@ class ModelRouteSelector extends StatefulWidget {
   final double labelMaxWidth;
   final bool inMenu;
   final ModelSelectionOptionKeyBuilder? optionKeyBuilder;
-  final bool showSelectedBrand;
   final Widget? unresolvedLeading;
   final Key? searchKey;
   final ModelRouteMenuFooter? menuFooter;
@@ -181,15 +179,7 @@ class ModelRouteSelector extends StatefulWidget {
       selected: selected,
       canSelect: canSelect,
       label: StudioMenuLabel(
-        leading: selected == null
-            ? unresolvedLeading
-            : showSelectedBrand
-            ? AccountBrandMark(
-                fallbackName: selected.accountName,
-                iconKey: selected.accountIconKey,
-                size: triggerIconSize,
-              )
-            : null,
+        leading: selected == null ? unresolvedLeading : null,
         label: selectedLabel,
         enabled: canSelect,
         maxWidth: labelMaxWidth,
