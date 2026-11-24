@@ -265,10 +265,7 @@ impl StudioRuntime {
                 });
             }
             // Resource bytes are retained before admission; failures never delete user drafts or replay effects.
-            self.agent_facility
-                .product_events
-                .record_attachments(attachments.clone())
-                .await?;
+            self.store.record_attachments(attachments.clone()).await?;
             tracing::debug!(
                 target: "prompt_submission",
                 thread_id,

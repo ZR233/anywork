@@ -1303,7 +1303,7 @@ impl LiveOwner {
                         )?;
                         // Current starts a new runtime epoch; it must not replay R1 history into
                         // R2's live publication rights. Late facts query HistoryReader by owner.
-                        projection.restore_current(&thread, &snapshot).await?;
+                        projection.restore_current(&thread, &snapshot)?;
                         let baseline = projection.current_state();
                         Ok(RetainedProjection {
                             projection,
@@ -1467,8 +1467,7 @@ impl LiveOwner {
         let projected = self
             .retained
             .projection
-            .prepare(&self.thread, effect, &write.state, true)
-            .await;
+            .prepare(&self.thread, effect, &write.state, true);
         let (changes, prepared) = match projected {
             Ok(projected) => projected,
             Err(error) => {
@@ -1866,11 +1865,10 @@ impl LiveOwner {
         write: &Arc<HistoryExport>,
         snapshot: &ThreadSnapshot,
     ) -> Result<()> {
-        let projected = self
-            .retained
-            .projection
-            .prepare_committed(&self.thread, &write.effect, &write.state)
-            .await;
+        let projected =
+            self.retained
+                .projection
+                .prepare_committed(&self.thread, &write.effect, &write.state);
         let prepared = match projected {
             Ok(prepared) => prepared,
             Err(error) => {
@@ -1911,7 +1909,6 @@ impl LiveOwner {
         self.retained
             .projection
             .stream(&self.thread, snapshot)
-            .await
             .map_err(|error| anyhow::anyhow!("live Thread preview failed: {error}"))?;
         self.observe_runtime(snapshot).await?;
         self.observe_activity(snapshot).await?;

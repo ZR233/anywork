@@ -3,7 +3,9 @@
 use crate::{ExecutionItem, ExecutionShape};
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{ThreadRawItem, ThreadTurnItem};
+use crate::{
+    ThreadContentLifecycle, ThreadRawItem, ThreadTextChannel, ThreadTextItem, ThreadTurnItem,
+};
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, ThreadSnapshot, input::InputChange};
 
 use super::{ProjectionError, order};
@@ -147,16 +149,12 @@ pub(in crate::studio) fn project_effect_items(
                 .unwrap_or_default();
             let payload = &record.message.payload;
             let state = if payload.format() == "text/plain" && payload.version() == 1 {
-                ExecutionItem::completed_parent_agent_message(
-                    id.clone(),
-                    thread.id.clone(),
-                    turn_id.clone(),
+                ExecutionShape::Text(ThreadTextItem::new(
+                    ThreadTextChannel::ParentAgent,
                     payload.content().into(),
                     Vec::new(),
-                    created_at,
-                )
-                .state()
-                .clone()
+                    ThreadContentLifecycle::completed(created_at),
+                ))
             } else {
                 ExecutionShape::Raw(ThreadRawItem::stored(
                     vec![super::raw_payload(payload)],

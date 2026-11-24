@@ -62,26 +62,6 @@ impl ExecutionItem {
         )
     }
 
-    /// 创建一条来自当前 Thread 直接父代理的终态文本 Item。
-    pub fn completed_parent_agent_message(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        text: String,
-        attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
-    ) -> Self {
-        Self::completed_input_message(
-            id,
-            thread_id,
-            turn_id,
-            ThreadTextChannel::ParentAgent,
-            text,
-            attachments,
-            completed_at,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn completed_input_message(
         id: String,

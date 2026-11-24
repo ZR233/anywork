@@ -3746,10 +3746,7 @@ pub(crate) mod storage_fault_tests {
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         continue;
                     }
-                    match projection
-                        .prepare_committed(&thread, &write.effect, &write.state)
-                        .await
-                    {
+                    match projection.prepare_committed(&thread, &write.effect, &write.state) {
                         Ok(prepared) => {
                             if let Err(error) = channel.accept_prepared(Some(&write), prepared) {
                                 failed.insert(sequence);
@@ -3849,9 +3846,7 @@ pub(crate) mod storage_fault_tests {
             RuntimeEpoch::new(),
             store.history(&thread.id).await?.database_id().to_owned(),
         )?;
-        let prepared = projection
-            .prepare_committed(thread, &terminal.effect, &terminal.state)
-            .await?;
+        let prepared = projection.prepare_committed(thread, &terminal.effect, &terminal.state)?;
         let mut handed = (*prepared).clone();
         handed.parent_report = Some(Arc::new(message));
         let handed = Arc::new(handed);
@@ -3938,10 +3933,11 @@ mod writer_tests {
         async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
-            let prepared = self
-                .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared = self.projection.prepare_committed(
+                &self.sink.0.thread,
+                &write.effect,
+                &write.state,
+            )?;
             ensure!(
                 self.sink.0.channel.prepare(prepared.clone()),
                 "handoff refused"
@@ -4223,10 +4219,11 @@ mod writer_tests {
         fixture
             .sink
             .admit(&fixture.sink.0.thread.id, write.clone())?;
-        let prepared = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
+        let prepared = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
         let mut rejected = (*prepared).clone();
         let mut events = rejected.history_events.to_vec();
         let first = events.first_mut().context("input completion")?;
@@ -4302,14 +4299,16 @@ mod writer_tests {
     async fn reprojecting_an_unchanged_effect_keeps_semantics_before_admission() -> Result<()> {
         let mut fixture = Fixture::new("stable-payload").await?;
         let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
-        let first = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
-        let second = fixture
-            .projection
-            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
-            .await?;
+        let first = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
+        let second = fixture.projection.prepare_committed(
+            &fixture.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
         assert_eq!(first.history_events.len(), second.history_events.len());
         for (first, second) in first
             .history_events
@@ -4542,9 +4541,8 @@ mod writer_tests {
         let mut projection = live_projection(&reopened).await?;
         let next = ticket(id, 1);
         reopened.admit(id, next.clone())?;
-        let prepared = projection
-            .prepare_committed(&reopened.0.thread, &next.effect, &next.state)
-            .await?;
+        let prepared =
+            projection.prepare_committed(&reopened.0.thread, &next.effect, &next.state)?;
         reopened.0.channel.prepare(prepared);
         reopened.0.channel.await_handoff_durable(id, 1).await?;
         let page = store
@@ -4660,10 +4658,11 @@ mod batch_window_tests {
         async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
-            let prepared = self
-                .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared = self.projection.prepare_committed(
+                &self.sink.0.thread,
+                &write.effect,
+                &write.state,
+            )?;
             ensure!(
                 self.sink.0.channel.prepare(prepared.clone()),
                 "handoff refused"
@@ -4885,9 +4884,8 @@ mod watchdog_tests {
             let write = lock_progress(&sink.0).effects[(sequence - 1) as usize]
                 .write
                 .clone();
-            let prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.state)
-                .await?;
+            let prepared =
+                projection.prepare_committed(&sink.0.thread, &write.effect, &write.state)?;
             if sequence == 1 {
                 deferred_head = Some(prepared);
                 continue;
@@ -4921,9 +4919,7 @@ mod watchdog_tests {
         let explicit = channel.subscribe().borrow().clone();
         channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW * 2);
         assert_eq!(*channel.subscribe().borrow(), explicit);
-        let prepared = projection
-            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)
-            .await?;
+        let prepared = projection.prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)?;
         assert!(channel.prepare(prepared));
         drop(lease);
         store

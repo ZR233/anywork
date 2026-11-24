@@ -24,8 +24,7 @@ use crate::{
 };
 use pl_core::context::ContextContent;
 use pl_core::model::{
-    AggregateChannel, ModelProgress, ObservedItemKind, ObservedPart, ObservedPartIdentity,
-    ObservedPartKind,
+    AggregateChannel, ObservedItemKind, ObservedPart, ObservedPartIdentity, ObservedPartKind,
 };
 use pl_core::thread::{
     AttemptStatus, ExecutionPhase, ModelExecutionPhase, RequestAttempt, ThreadSnapshot, TurnRecord,
@@ -51,7 +50,7 @@ impl<'a> AdmittedActivity<'a> {
     ) -> Self {
         let mut parts = Vec::new();
         if let Some(progress) = &state.model_progress {
-            for (id, _, _, _, _, location) in active {
+            for (id, _, _, _, location) in active {
                 let Some(location) = location.filter(|location| {
                     location.generation == progress.progress.observation().generation
                 }) else {
@@ -993,45 +992,49 @@ fn same_body(left: &ThreadActivity, right: &ThreadActivity) -> bool {
         && left.tools == right.tools
 }
 
-/// 当前活动的共享来源；只保留共享句柄、活动身份和实时工具元数据。
-struct ActivitySource {
-    activity: ThreadActivity,
-    /// 活动指向的稳定 attempt 身份；内容段身份由实时投影与 writer 共用的 `order::*` 派生，因此与
-    /// canonical 条目一致。
-    /// 该 attempt 当前观察的**共享句柄**（只追加内容块的前缀链），克隆不复制正文。
-    progress: Option<ModelProgress>,
-    /// 活跃工具条目的键；只有它变化时才重建工具来源。
-    tool_key: Vec<ThreadActivityToolEntry>,
-    tools: Vec<ToolSource>,
-    source: ActivitySourceKey,
-}
-
-/// 来源签名：换活动、观察出现或消失时重新捕获来源。
-struct ActivitySourceKey {
-    identity: String,
+/// Changes to source versions invalidate the activity without retaining another copy of it.
+#[derive(PartialEq, Eq)]
+struct ObservedVersions {
     attempt_id: Option<String>,
-    observed: bool,
+    model: Option<(u32, u64)>,
+    tools: Vec<Option<u64>>,
 }
 
-impl ActivitySourceKey {
-    /// 两份来源是否指向同一个活动与同一组已经存在的观察事实。
-    fn same(&self, other: &Self) -> bool {
-        self.identity == other.identity
-            && self.attempt_id == other.attempt_id
-            && self.observed == other.observed
+impl ObservedVersions {
+    fn capture(state: &ThreadSnapshot, activity: &ThreadActivity) -> Self {
+        let attempt = activity_attempt(state, activity);
+        let model = attempt
+            .filter(|attempt| attempt.status == AttemptStatus::Running)
+            .and_then(|attempt| {
+                state
+                    .model_progress
+                    .as_ref()
+                    .filter(|progress| progress.attempt_id == attempt.attempt_id)
+            })
+            .map(|progress| {
+                (
+                    progress.progress.observation().generation,
+                    progress.progress.version(),
+                )
+            });
+        let tools = activity
+            .tools
+            .active
+            .iter()
+            .map(|entry| {
+                entry
+                    .task_id
+                    .as_ref()
+                    .and_then(|id| state.tool_progress.get(id))
+                    .map(pl_core::model::ToolProgress::version)
+            })
+            .collect();
+        Self {
+            attempt_id: attempt.map(|attempt| attempt.attempt_id.clone()),
+            model,
+            tools,
+        }
     }
-}
-
-/// 一条活跃工具调用的驻留来源：身份、参数事实与共享输出句柄。
-struct ToolSource {
-    entry: ThreadActivityToolEntry,
-    task_id: Option<String>,
-    /// 该调用的完整参数（调用已提交才有）；读不到时如实为 `None`，不填假参数。
-    arguments: Option<std::sync::Arc<pl_core::model::ContentBlock>>,
-    /// `None` 表示尚无观测；`Some` 的空 parts 表示生产者已发布空输出事实。
-    ///
-    /// 判空与截断都由共享内容块自己给出，读取时才知道字节数，不复制已观察正文。
-    task_output: Option<pl_core::model::ToolProgress>,
 }
 
 fn activity_attempt<'a>(
@@ -1055,36 +1058,6 @@ fn activity_attempt<'a>(
         })
 }
 
-fn shared_progress(state: &ThreadSnapshot, attempt: &RequestAttempt) -> Option<ModelProgress> {
-    if attempt.status != AttemptStatus::Running {
-        return None;
-    }
-    state
-        .model_progress
-        .as_ref()
-        .filter(|progress| progress.attempt_id == attempt.attempt_id)
-        .map(|progress| progress.progress.clone())
-}
-
-fn tool_sources(state: &ThreadSnapshot, entries: &[ThreadActivityToolEntry]) -> Vec<ToolSource> {
-    entries
-        .iter()
-        .map(|entry| {
-            let task = state
-                .tasks
-                .values()
-                .find(|task| task.call_id == entry.call_id);
-            ToolSource {
-                entry: entry.clone(),
-                task_id: task.map(|task| task.id.clone()),
-                arguments: call_arguments(state, &entry.call_id)
-                    .map(|text| pl_core::model::ContentBlock::from_text(&text)),
-                task_output: task.and_then(|task| state.tool_progress.get(&task.id).cloned()),
-            }
-        })
-        .collect()
-}
-
 /// 活动的唯一投影 owner 助手。
 ///
 /// 它把当前活动与共享正文来源的推导收敛到一处：只吃 owner 已发布的 `ThreadSnapshot`
@@ -1092,11 +1065,11 @@ fn tool_sources(state: &ThreadSnapshot, entries: &[ThreadActivityToolEntry]) -> 
 /// 驻留 Thread 一份），订阅与快照投影调用同一个 [`project_activity`]，因此活动定义只有一处。
 ///
 /// 活动本体是有界 typed 摘要（稳定身份 + 前台 kind + 有界最新逻辑行 + 活跃工具条目），版本覆盖这些
-/// 已发布事实及正文的共享进度版本，不按整段正文比较；快照只保留当前活动成员的共享观察句柄。
+/// 已发布事实及正文的共享进度版本，不按整段正文比较，也不重复保留正文。
 #[derive(Default)]
 pub(in crate::studio) struct ActivityProjection {
     previous: Option<ThreadActivity>,
-    source: Option<ActivitySource>,
+    versions: Option<ObservedVersions>,
     thinking_started_at: Option<ThinkingStartedAt>,
 }
 
@@ -1189,7 +1162,11 @@ impl ActivityProjection {
         } else {
             self.thinking_started_at = None;
         }
-        let source_changed = self.sync_source(state, activity.as_ref());
+        let versions = activity
+            .as_ref()
+            .map(|activity| ObservedVersions::capture(state, activity));
+        let source_changed = self.versions != versions;
+        self.versions = versions;
         if source_changed
             && let Some(act) = activity.as_mut()
             && let Some(previous) = self.previous.as_ref()
@@ -1198,97 +1175,18 @@ impl ActivityProjection {
         {
             act.revision = previous.revision.saturating_add(1);
         }
-        if let (Some(source), Some(activity)) = (self.source.as_mut(), activity.as_ref()) {
-            source.activity = activity.clone();
-        }
         self.previous = activity.clone();
         activity
     }
 
-    /// Refresh shared snapshots without materializing text. The returned change
-    /// covers content versions as well as the lightweight activity body.
-    fn sync_source(&mut self, state: &ThreadSnapshot, activity: Option<&ThreadActivity>) -> bool {
-        let Some(activity) = activity else {
-            self.source = None;
-            return false;
-        };
-        let attempt = activity_attempt(state, activity);
-        let progress = attempt.and_then(|attempt| shared_progress(state, attempt));
-        let source = ActivitySourceKey {
-            identity: activity.identity.clone(),
-            attempt_id: attempt.map(|attempt| attempt.attempt_id.clone()),
-            observed: progress.is_some(),
-        };
-        if self
-            .source
-            .as_ref()
-            .is_some_and(|detail| detail.source.same(&source))
-        {
-            let detail = self.source.as_mut().expect("checked above");
-            let progress_version =
-                |progress: &ModelProgress| (progress.observation().generation, progress.version());
-            let mut changed = detail.progress.as_ref().map(progress_version)
-                != progress.as_ref().map(progress_version);
-            // 共享句柄：克隆只增加一次 `Arc` 引用计数，正文不参与。
-            detail.progress = progress;
-            if detail.tool_key != activity.tools.active {
-                detail.tool_key = activity.tools.active.clone();
-                detail.tools = tool_sources(state, &activity.tools.active);
-                changed = true;
-            } else {
-                for tool in &mut detail.tools {
-                    let next = tool
-                        .task_id
-                        .as_ref()
-                        .and_then(|id| state.tool_progress.get(id).cloned());
-                    if tool
-                        .task_output
-                        .as_ref()
-                        .map(pl_core::model::ToolProgress::version)
-                        != next.as_ref().map(pl_core::model::ToolProgress::version)
-                    {
-                        tool.task_output = next;
-                        changed = true;
-                    }
-                }
-            }
-            return changed;
-        }
-        self.source = Some(ActivitySource {
-            activity: activity.clone(),
-            progress,
-            tool_key: activity.tools.active.clone(),
-            tools: tool_sources(state, &activity.tools.active),
-            source,
-        });
-        true
-    }
-
-    /// 该助手当前驻留的字节：上一条活动摘要、当前活动本体与它捕获的共享来源。
-    ///
-    /// 常驻共享句柄（克隆 `Arc` 不复制正文）与小型身份按已发布事实计量，不物化整段文本。
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        let mut bytes = self.previous.as_ref().map_or(0, activity_bytes);
-        if let Some(detail) = self.source.as_ref() {
-            bytes = bytes.saturating_add(activity_bytes(&detail.activity));
-            for tool in &detail.tools {
-                bytes = bytes
-                    .saturating_add(tool.entry.name.len() as u64)
-                    .saturating_add(tool.entry.summary.len() as u64)
-                    .saturating_add(
-                        tool.arguments
-                            .as_ref()
-                            .map_or(0, |arguments| arguments.len() as u64),
-                    )
-                    .saturating_add(
-                        // 共享内容块按已观察字节计量，不物化整段正文。
-                        tool.task_output
-                            .as_ref()
-                            .map_or(0, pl_core::model::ToolProgress::bytes),
-                    );
-            }
-        }
-        bytes
+        let activity = self.previous.as_ref().map_or(0, activity_bytes);
+        let versions = self.versions.as_ref().map_or(0, |versions| {
+            let attempt = versions.attempt_id.as_ref().map_or(0, |id| id.len() as u64);
+            let tools = (versions.tools.capacity() * std::mem::size_of::<Option<u64>>()) as u64;
+            attempt.saturating_add(tools)
+        });
+        activity.saturating_add(versions)
     }
 }
 
@@ -1454,9 +1352,9 @@ mod tests {
             );
             assert!(
                 projection
-                    .source
+                    .versions
                     .as_ref()
-                    .is_none_or(|source| source.progress.is_none())
+                    .is_none_or(|versions| versions.model.is_none())
             );
         }
         assert!(

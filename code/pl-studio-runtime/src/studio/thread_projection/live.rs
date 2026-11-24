@@ -307,7 +307,7 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
     /// Input admissions and transitions frozen from this effect's original observation cut.
-    pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
+    pub(in crate::studio) retained_resources: Arc<[RetainedResourceFact]>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
     pub(in crate::studio) parent_finish: Option<Arc<pl_tool::finish_turn::SavedFinishTurn>>,
@@ -390,7 +390,7 @@ fn history_sources(sources: &[crate::ChatSourceState]) -> Vec<HistorySourceHead>
 
 fn retained_resources(
     effect: &ThreadEffectBatch,
-) -> Result<Vec<super::history_facts::RetainedResourceFact>, ProjectionError> {
+) -> Result<Vec<RetainedResourceFact>, ProjectionError> {
     let mut facts = BTreeMap::new();
     let mut retain = |call_id: &str,
                       reference: pl_core::context::ResourceReference|
@@ -423,7 +423,7 @@ fn retained_resources(
                 .iter()
                 .find(|task| task.call_id == call_id)
                 .map(|task| task.turn_id.clone());
-            super::history_facts::RetainedResourceFact {
+            RetainedResourceFact {
                 call_id,
                 turn_id,
                 reference,
@@ -1218,7 +1218,7 @@ impl Fact {
 
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 mod current;
-mod provenance;
+pub(super) mod provenance;
 
 pub(in crate::studio) struct LiveProjection {
     #[cfg(test)]
@@ -1491,17 +1491,17 @@ impl LiveProjection {
     /// Returns a projection failure when the effect references facts this projection cannot resolve
     /// from memory. The caller reports it, so the durable barrier fails closed with the real reason
     /// instead of writing a timeline with a hole.
-    pub(in crate::studio) async fn prepare(
+    pub(in crate::studio) fn prepare(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
-        self.prepare_inner(thread, effect, state, deliver).await
+        self.prepare_inner(thread, effect, state, deliver)
     }
 
-    async fn prepare_inner(
+    fn prepare_inner(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
@@ -1527,9 +1527,8 @@ impl LiveProjection {
                 "injected failure after materialization".into(),
             ));
         }
-        let (history_events, history_sources_raw) = self
-            .complete_provenance(effect, state, &items, &completion_drafts, provenance, run)
-            .await?;
+        let (history_events, history_sources_raw) =
+            self.complete_provenance(effect, state, &items, &completion_drafts, provenance, run)?;
         let mut events = emit_feed.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
@@ -1574,14 +1573,13 @@ impl LiveProjection {
     ///
     /// # Errors
     /// Same as [`LiveProjection::prepare`].
-    pub(in crate::studio) async fn prepare_committed(
+    pub(in crate::studio) fn prepare_committed(
         &mut self,
         thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
         self.prepare_inner(thread, effect, state, false)
-            .await
             .map(|(_, prepared)| prepared)
     }
 
@@ -2050,7 +2048,7 @@ impl LiveProjection {
     /// The pure Current projector reads running model parts, running task invocations and progress,
     /// pending inputs and unconsumed inbox messages. It never consults History placement, archive
     /// completion, or a canonical final, so a History projection failure cannot hold Current behind.
-    pub(in crate::studio) async fn stream(
+    pub(in crate::studio) fn stream(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -3425,7 +3423,7 @@ mod append_only_history_tests {
         let mut opening = effect(1);
         opening.turn = Some(turn);
         opening.model_member_starts = Arc::from([opening_member]);
-        let (_, prepared_open) = projection.prepare(&thread, &opening, &state, false).await?;
+        let (_, prepared_open) = projection.prepare(&thread, &opening, &state, false)?;
         history.accept_batch(&prepared_open.history_events).await?;
 
         let observed = started("A").identity;
@@ -3434,7 +3432,7 @@ mod append_only_history_tests {
             attempt_id: "stateless-attempt".into(),
             progress: ModelProgress::new(0, vec![part]),
         });
-        projection.stream(&thread, &state).await?;
+        projection.stream(&thread, &state)?;
 
         let mut terminal = effect(2);
         let mut final_text = started("T");
@@ -3489,9 +3487,7 @@ mod append_only_history_tests {
             )?,
         }]);
 
-        let (_, prepared) = projection
-            .prepare(&thread, &terminal, &state, false)
-            .await?;
+        let (_, prepared) = projection.prepare(&thread, &terminal, &state, false)?;
         assert!(
             prepared
                 .history_events
@@ -3568,7 +3564,7 @@ mod append_only_history_tests {
         assert_eq!(text, b"REASONING_BODY");
 
         state.model_progress = None;
-        projection.stream(&thread, &state).await?;
+        projection.stream(&thread, &state)?;
         assert!(projection.current_state().as_ref().is_some_and(|current| {
             current
                 .projection()
@@ -3673,7 +3669,7 @@ mod append_only_history_tests {
             }),
             ..Default::default()
         };
-        let (_, p1) = projection.prepare(&thread, &effect1, &state, false).await?;
+        let (_, p1) = projection.prepare(&thread, &effect1, &state, false)?;
         assert!(p1.history_events.iter().any(|ev| {
             ev.kind == crate::history::HistoryEventKind::ToolCalled
                 && ev.call_id.as_deref() == Some(call_id.as_str())
@@ -3714,7 +3710,7 @@ mod append_only_history_tests {
             }),
             ..Default::default()
         };
-        let (_, p2) = projection.prepare(&thread, &effect2, &state, false).await?;
+        let (_, p2) = projection.prepare(&thread, &effect2, &state, false)?;
         let bg_count = p2
             .history_events
             .iter()
@@ -3731,7 +3727,7 @@ mod append_only_history_tests {
             tasks: Arc::from([task.clone()]),
             ..Default::default()
         };
-        let (_, p3) = projection.prepare(&thread, &effect3, &state, false).await?;
+        let (_, p3) = projection.prepare(&thread, &effect3, &state, false)?;
         assert!(
             p3.history_events.is_empty(),
             "sealed background_started must not repeat"
@@ -3757,7 +3753,7 @@ mod append_only_history_tests {
             tasks: Arc::from([task.clone()]),
             ..Default::default()
         };
-        let (_, p4) = projection.prepare(&thread, &effect4, &state, false).await?;
+        let (_, p4) = projection.prepare(&thread, &effect4, &state, false)?;
         let cancel_ev = p4
             .history_events
             .iter()
@@ -3820,7 +3816,7 @@ mod append_only_history_tests {
             deliveries: Arc::from([delivery]),
             ..Default::default()
         };
-        let (_, p5) = projection.prepare(&thread, &effect5, &state, false).await?;
+        let (_, p5) = projection.prepare(&thread, &effect5, &state, false)?;
         let completed_ev = p5
             .history_events
             .iter()
@@ -4139,8 +4135,8 @@ mod append_only_history_tests {
             tasks: Arc::from([task]),
             ..Default::default()
         };
-        projection.prepare(&thread, &effect, &state, false).await?;
-        projection.stream(&thread, &state).await?;
+        projection.prepare(&thread, &effect, &state, false)?;
+        projection.stream(&thread, &state)?;
         let current = projection.current_state().context("current State")?;
         let tool_id = super::super::order::tool_id(&invocation.call_id);
         let atom = current
@@ -4251,10 +4247,8 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            projection
-                .prepare(&thread, &start, &active_state, false)
-                .await?;
-            projection.stream(&thread, &active_state).await?;
+            projection.prepare(&thread, &start, &active_state, false)?;
+            projection.stream(&thread, &active_state)?;
             let current = projection.current_state().context("active compaction")?;
             let atom = current
                 .projection()
@@ -4282,10 +4276,8 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            projection
-                .prepare(&thread, &finish, &finished_state, false)
-                .await?;
-            projection.stream(&thread, &finished_state).await?;
+            projection.prepare(&thread, &finish, &finished_state, false)?;
+            projection.stream(&thread, &finished_state)?;
             let current = projection.current_state().context("settled compaction")?;
             assert!(
                 current
@@ -4305,4 +4297,13 @@ mod append_only_history_tests {
         }
         Ok(())
     }
+}
+
+/// Original ownership proof for a resource actually delivered or repaired in this effect.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RetainedResourceFact {
+    pub call_id: String,
+    pub turn_id: Option<String>,
+    pub reference: pl_core::context::ResourceReference,
 }

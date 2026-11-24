@@ -812,13 +812,6 @@ impl ProductEventBus {
         self.thread_index.lock().unwrap().metadata_signals.len()
     }
 
-    pub(in crate::studio) async fn record_attachments(
-        &self,
-        records: Vec<crate::studio::AttachmentRecord>,
-    ) -> Result<()> {
-        self.store.record_attachments(records).await
-    }
-
     pub async fn read_thread_directory(&self) -> Result<StudioThreadDirectoryState> {
         let index = self
             .thread_index
@@ -996,7 +989,8 @@ impl ProductEventBus {
     }
 
     /// 应用一次目录增量并发布 `ThreadDirectoryChanged` 事件（纯内存维护）。
-    pub async fn apply_thread_delta(
+    #[cfg(test)]
+    pub(crate) async fn apply_thread_delta(
         &self,
         upserted: Vec<SessionDirectoryRow>,
         removed: Vec<String>,
@@ -1004,6 +998,7 @@ impl ProductEventBus {
         Ok(self.publish_thread_delta(upserted, removed, Vec::new()))
     }
 
+    #[cfg(test)]
     fn publish_thread_delta(
         &self,
         upserted: Vec<SessionDirectoryRow>,
@@ -1017,6 +1012,7 @@ impl ProductEventBus {
         self.publish_thread_delta_locked(&mut index, upserted, removed, archived)
     }
 
+    #[cfg(test)]
     fn publish_thread_delta_locked(
         &self,
         index: &mut ThreadDirectoryIndex,
@@ -1056,6 +1052,7 @@ impl ProductEventBus {
     }
 
     /// 把行投影拆回会话/成员事实写入索引。
+    #[cfg(test)]
     fn index_insert_row(index: &mut ThreadDirectoryIndex, row: SessionDirectoryRow) {
         if index.deleted.contains(&row.thread_id)
             || index.deleted_sessions.contains(&row.session_id)
@@ -1129,6 +1126,7 @@ impl ProductEventBus {
         index.insert_agent(agent);
     }
 
+    #[cfg(test)]
     fn apply_explicit_close_row(index: &ThreadDirectoryIndex, row: &mut SessionDirectoryRow) {
         if index.explicitly_closed.contains(&row.agent_id)
             && let crate::AgentBackend::Native { status, .. } = &mut row.backend
@@ -1600,9 +1598,13 @@ impl ProductEventBus {
                 ..Default::default()
             });
             let ticket = self.writer.admitted_ticket();
+            let before_agents = index.agent_directory_entries();
+            Self::apply_explicit_close_agent(&index, &mut agent);
             let row = row_projection(&session, &agent);
-            let event =
-                self.publish_thread_delta_locked(&mut index, vec![row], Vec::new(), Vec::new());
+            index.insert_session(session);
+            index.insert_agent(agent);
+            self.publish_agent_directory_locked(&mut index, before_agents);
+            let event = self.emit_thread_delta_locked(&mut index, vec![row], Vec::new());
             (ticket, event)
         };
         self.writer.flush_through(ticket).await?;

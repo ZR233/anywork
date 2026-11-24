@@ -39,11 +39,11 @@ impl AgentState {
 /// 没有 active Turn 的 Agent。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct IdleAgentState;
+pub struct IdleAgentState {}
 
 impl IdleAgentState {
     pub fn new() -> Self {
-        Self
+        Self {}
     }
 }
 

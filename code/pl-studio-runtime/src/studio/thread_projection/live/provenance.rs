@@ -178,7 +178,7 @@ fn active_item_type(kind: ChatAtomKind) -> &'static str {
 
 impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
-    pub(in crate::studio) async fn restore_current(
+    pub(in crate::studio) fn restore_current(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
@@ -487,7 +487,7 @@ impl LiveProjection {
         Ok((staged, sources))
     }
 
-    pub(super) async fn complete_provenance(
+    pub(super) fn complete_provenance(
         &mut self,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
@@ -1053,4 +1053,35 @@ impl LiveProjection {
             sources,
         ))
     }
+}
+
+// Independent history visibility classification.
+pub(crate) fn work(atom: &ChatAtom) -> bool {
+    let background_tool = atom.kind == ChatAtomKind::ToolCall
+        && matches!(atom.source, ChatSourceId::BackgroundResult { .. })
+        && atom
+            .tool
+            .as_ref()
+            .is_some_and(|tool| tool.name != pl_tool::file_display::TOOL_SHOW_FILES);
+    background_tool
+        || (matches!(
+            atom.kind,
+            ChatAtomKind::Reasoning
+                | ChatAtomKind::ToolCall
+                | ChatAtomKind::FileChange
+                | ChatAtomKind::Skill
+        ) && atom.delivery != ChatDeliveryKind::Independent)
+}
+
+pub(crate) fn hidden(atom: &ChatAtom) -> bool {
+    !matches!(atom.source, ChatSourceId::InboxMessage { .. })
+        && (atom.kind == ChatAtomKind::Inference
+            || (atom.kind == ChatAtomKind::TurnReceipt
+                && matches!(
+                    atom.lifecycle,
+                    ChatAtomLifecycle::Terminal {
+                        outcome: ChatTerminalOutcome::Completed,
+                        ..
+                    }
+                )))
 }

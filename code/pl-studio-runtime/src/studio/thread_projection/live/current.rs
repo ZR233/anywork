@@ -112,7 +112,6 @@ pub(super) fn project(
                 id,
                 field,
                 block,
-                0,
                 atom.text_channel,
                 Some(ModelPartLocation { generation, index }),
             ));
@@ -150,7 +149,6 @@ pub(super) fn project(
                 id,
                 BodyKey::Body,
                 block,
-                0,
                 Some(ThreadTextChannel::Commentary),
                 None,
             ));
@@ -176,14 +174,13 @@ pub(super) fn project(
                 fields.insert(BodyKey::host(TOOL_RESULT_FIELD), progress.content());
             }
             let id = item.id.clone();
-            let ordinal = item.ordinal;
             let text_channel = None;
             let mut atom = crate::studio::runtime::chat_item::atom(&item);
             atom.started_at = None;
             atom.finished_at = None;
             atom.contents = atom_contents(owner_id, &id, &fields);
             for (field, block) in fields {
-                active.push((id.clone(), field, block, ordinal, text_channel, None));
+                active.push((id.clone(), field, block, text_channel, None));
             }
             atoms.push(atom);
         } else {
@@ -261,12 +258,11 @@ pub(super) fn project(
         let source = atom.source.clone();
         insert_completed_source(&mut sources, source.clone());
         let id = atom.id.clone();
-        let ordinal = item.ordinal;
         let text_channel = atom.text_channel;
         atom.contents = atom_contents(owner_id, &id, &fields);
         atoms.push(atom);
         for (field, block) in std::mem::take(&mut fields) {
-            active.push((id.clone(), field, block, ordinal, text_channel, None));
+            active.push((id.clone(), field, block, text_channel, None));
         }
     }
 
@@ -316,14 +312,7 @@ pub(super) fn project(
             contents: atom_contents(owner_id, &id, &fields),
             payload: None,
         });
-        active.push((
-            id,
-            BodyKey::Body,
-            block,
-            record.sequence,
-            text_channel,
-            None,
-        ));
+        active.push((id, BodyKey::Body, block, text_channel, None));
     }
 
     Ok(CurrentOriginals {

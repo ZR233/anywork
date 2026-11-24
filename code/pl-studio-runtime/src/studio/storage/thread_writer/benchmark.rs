@@ -123,10 +123,11 @@ impl WriterFixture {
             .channel
             .next_unprojected()
             .context("admitted benchmark effect is owed a live projection")?;
-        let prepared = active
-            .projection
-            .prepare_committed(&active.sink.0.thread, &write.effect, &write.state)
-            .await?;
+        let prepared = active.projection.prepare_committed(
+            &active.sink.0.thread,
+            &write.effect,
+            &write.state,
+        )?;
         ensure!(
             active.sink.0.channel.prepare(prepared),
             "benchmark projection handoff rejected"
