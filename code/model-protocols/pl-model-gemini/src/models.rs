@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use pl_model_wire::model::{
@@ -17,18 +16,14 @@ use pl_model_wire::model::{
 };
 use serde_json::Value;
 
-pub const RECOMMENDED_MODEL: &str = "gemini-3.7-flash";
+pub const RECOMMENDED_MODEL: &str = "gemini-4-hydrogen";
 
 const MAX_INLINE_MEDIA_BYTES: u64 = 15 * 1024 * 1024;
 const NATIVE_CONTEXT_FAMILY: &str = "gemini-generate-content";
 const PRICING_SOURCE: &str = "https://ai.google.dev/gemini-api/docs/pricing";
-const VERIFIED_AT: i64 = 1_763_942_400; // 2025-11-24 / verified baseline
-
-#[derive(Clone, Copy)]
-enum ThinkingControl {
-    Level(&'static [&'static str], &'static str),
-    Budget(&'static [(&'static str, u64)], &'static str),
-}
+const VERIFIED_AT: i64 = 1_795_478_400; // 2026-11-24 UTC
+const UNIFIED_CONTEXT_WINDOW: u64 = 1_048_576;
+const STREAMING_MAX_OUTPUT: u64 = 65_536;
 
 struct Definition {
     id: &'static str,
@@ -36,111 +31,69 @@ struct Definition {
     description: &'static str,
     context: u64,
     max_output: u64,
-    thinking: ThinkingControl,
-    pricing: Option<&'static [TokenPriceTier]>,
+    thinking_levels: &'static [&'static str],
+    default_thinking_level: &'static str,
+    pricing: TokenPriceTier,
 }
 
-const fn context_tiers(standard: TokenPriceTier, extended: TokenPriceTier) -> [TokenPriceTier; 2] {
-    const THRESHOLD: u64 = 200_000;
-    [
-        TokenPriceTier {
-            input_until: Some(THRESHOLD),
-            ..standard
-        },
-        TokenPriceTier {
-            input_from: THRESHOLD,
-            ..extended
-        },
-    ]
-}
-
-const RATES_3_7_FLASH: [TokenPriceTier; 1] = [TokenPriceTier::flat(0.75, 3.75, None, None)];
-const RATES_3_1_PRO: [TokenPriceTier; 2] = context_tiers(
-    TokenPriceTier::flat(2.0, 12.0, Some(0.2), None),
-    TokenPriceTier::flat(4.0, 18.0, Some(0.4), None),
-);
-const RATES_2_5_PRO: [TokenPriceTier; 2] = context_tiers(
-    TokenPriceTier::flat(1.25, 10.0, Some(0.125), None),
-    TokenPriceTier::flat(2.5, 15.0, Some(0.25), None),
-);
-const RATES_2_5_FLASH: [TokenPriceTier; 1] = [TokenPriceTier::flat(0.30, 2.50, Some(0.03), None)];
-const RATES_2_5_FLASH_LITE: [TokenPriceTier; 1] =
-    [TokenPriceTier::flat(0.10, 0.40, Some(0.01), None)];
-
-const LEVEL_3_STANDARD: &[&str] = &["low", "medium", "high"];
-const BUDGET_2_5_PRO: &[(&str, u64)] = &[("low", 1024), ("medium", 8192), ("high", 24576)];
-const BUDGET_2_5_FLASH: &[(&str, u64)] = &[
-    ("none", 0),
-    ("low", 1024),
-    ("medium", 8192),
-    ("high", 24576),
-];
+const LEVEL_STANDARD: &[&str] = &["low", "medium", "high"];
+const LEVEL_EXTENDED: &[&str] = &["low", "medium", "high", "xhigh"];
 
 const MODELS: &[Definition] = &[
     Definition {
         id: RECOMMENDED_MODEL,
-        name: "Gemini 3.7 Flash",
-        description: "Fast multimodal Gemini reasoning model for coding and agentic tool use.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Level(LEVEL_3_STANDARD, "medium"),
-        pricing: Some(&RATES_3_7_FLASH),
+        name: "Gemini 4 Hydrogen",
+        description: "Fast, cost-efficient Gemini 4 multimodal reasoning model for everyday coding and agentic workflows.",
+        context: UNIFIED_CONTEXT_WINDOW,
+        max_output: STREAMING_MAX_OUTPUT,
+        thinking_levels: LEVEL_EXTENDED,
+        default_thinking_level: "high",
+        pricing: TokenPriceTier::flat(1.50, 7.50, Some(0.075), None),
     },
     Definition {
-        id: "gemini-3-flash-preview",
-        name: "Gemini 3 Flash Preview",
-        description: "Preview Gemini 3 Flash multimodal reasoning model.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Level(LEVEL_3_STANDARD, "medium"),
-        pricing: None,
+        id: "gemini-4-neon",
+        name: "Gemini 4 Neon",
+        description: "Frontier-level Gemini 4 model balancing deep reasoning with fast end-to-end completion for complex coding and knowledge work.",
+        context: UNIFIED_CONTEXT_WINDOW,
+        max_output: STREAMING_MAX_OUTPUT,
+        thinking_levels: LEVEL_EXTENDED,
+        default_thinking_level: "high",
+        pricing: TokenPriceTier::flat(3.00, 15.00, Some(0.15), None),
     },
     Definition {
-        id: "gemini-3.1-pro-preview",
-        name: "Gemini 3.1 Pro Preview",
-        description: "High-capability Gemini 3.1 Pro multimodal reasoning model.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Level(LEVEL_3_STANDARD, "medium"),
-        pricing: Some(&RATES_3_1_PRO),
+        id: "gemini-4-argon",
+        name: "Gemini 4 Argon",
+        description: "Efficient Gemini 4 frontier reasoning model with faster responses and lower token spend per turn than Carbon.",
+        context: UNIFIED_CONTEXT_WINDOW,
+        // Streaming single-hop default limit is 65,536 (live /models metadata reports 32,768 for non-streaming hops).
+        max_output: STREAMING_MAX_OUTPUT,
+        thinking_levels: LEVEL_STANDARD,
+        default_thinking_level: "medium",
+        // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
+        pricing: TokenPriceTier::flat(4.00, 20.00, Some(0.20), None),
     },
     Definition {
-        id: "gemini-2.5-pro",
-        name: "Gemini 2.5 Pro",
-        description: "Gemini 2.5 Pro reasoning model for complex coding and analysis.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Budget(BUDGET_2_5_PRO, "medium"),
-        pricing: Some(&RATES_2_5_PRO),
-    },
-    Definition {
-        id: "gemini-2.5-flash",
-        name: "Gemini 2.5 Flash",
-        description: "Balanced Gemini 2.5 Flash model with optional thinking budget.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Budget(BUDGET_2_5_FLASH, "medium"),
-        pricing: Some(&RATES_2_5_FLASH),
-    },
-    Definition {
-        id: "gemini-2.5-flash-lite",
-        name: "Gemini 2.5 Flash-Lite",
-        description: "Ultra-low-latency Gemini 2.5 Flash-Lite model.",
-        context: 1_048_576,
-        max_output: 65_536,
-        thinking: ThinkingControl::Budget(BUDGET_2_5_FLASH, "none"),
-        pricing: Some(&RATES_2_5_FLASH_LITE),
+        id: "gemini-4-carbon",
+        name: "Gemini 4 Carbon",
+        description: "Strongest Gemini 4 reasoning model for complex software engineering, multimodal knowledge work, scientific reasoning, and cybersecurity defense.",
+        context: UNIFIED_CONTEXT_WINDOW,
+        // Streaming single-hop default limit is 65,536 (live /models metadata reports 32,768 for non-streaming hops).
+        max_output: STREAMING_MAX_OUTPUT,
+        thinking_levels: LEVEL_STANDARD,
+        default_thinking_level: "medium",
+        // Standard Paid Tier rate effective 2026-12-01 (introductory promo $2.00/$10.00/$0.10 runs through 2026-11-30).
+        pricing: TokenPriceTier::flat(4.00, 20.00, Some(0.20), None),
     },
 ];
 
 impl Definition {
     fn instantiate(&self, family: &ModelFamily) -> ModelDefinition {
-        let pricing = match self.pricing {
-            Some(tiers) => {
-                ModelPricing::published_at("USD", tiers.to_vec(), PRICING_SOURCE, VERIFIED_AT)
-            }
-            None => ModelPricing::Unknown,
-        };
+        let pricing = ModelPricing::published_at(
+            "USD",
+            vec![self.pricing.clone()],
+            PRICING_SOURCE,
+            VERIFIED_AT,
+        );
         let mut model = family.instantiate(ModelInstanceSpec {
             model_id: self.id,
             display_name: self.name,
@@ -150,60 +103,36 @@ impl Definition {
             max_output_tokens: Some(self.max_output),
             pricing,
         });
-        model.set_parameters(vec![thinking_effort_parameter(self.thinking)]);
+        model.set_parameters(vec![thinking_effort_parameter(
+            self.thinking_levels,
+            self.default_thinking_level,
+        )]);
         model
     }
 }
 
-fn thinking_effort_parameter(control: ThinkingControl) -> ModelParameter {
-    match control {
-        ThinkingControl::Level(candidates, default) => ModelParameter {
-            name: "effort".into(),
-            label: None,
-            default: Some(default.to_owned()),
-            candidates: candidates.iter().map(|&c| c.to_owned()).collect(),
-            candidate_display_names: Default::default(),
-            wire: candidates
-                .iter()
-                .map(|&c| {
-                    (
-                        c.to_owned(),
-                        ParameterWire {
-                            set: vec![WireAssignment {
-                                path: "generationConfig.thinkingConfig.thinkingLevel".into(),
-                                value: Value::String(c.to_owned()),
-                            }],
-                            remove: Vec::new(),
-                        },
-                    )
-                })
-                .collect(),
-        },
-        ThinkingControl::Budget(entries, default) => {
-            let mut wire = BTreeMap::new();
-            let mut candidates = Vec::with_capacity(entries.len());
-            for &(name, budget) in entries {
-                candidates.push(name.to_owned());
-                wire.insert(
-                    name.to_owned(),
+fn thinking_effort_parameter(candidates: &[&str], default: &str) -> ModelParameter {
+    ModelParameter {
+        name: "effort".into(),
+        label: None,
+        default: Some(default.to_owned()),
+        candidates: candidates.iter().map(|&c| c.to_owned()).collect(),
+        candidate_display_names: Default::default(),
+        wire: candidates
+            .iter()
+            .map(|&c| {
+                (
+                    c.to_owned(),
                     ParameterWire {
                         set: vec![WireAssignment {
-                            path: "generationConfig.thinkingConfig.thinkingBudget".into(),
-                            value: Value::from(budget),
+                            path: "generationConfig.thinkingConfig.thinkingLevel".into(),
+                            value: Value::String(c.to_owned()),
                         }],
                         remove: Vec::new(),
                     },
-                );
-            }
-            ModelParameter {
-                name: "effort".into(),
-                label: None,
-                default: Some(default.to_owned()),
-                candidates,
-                candidate_display_names: Default::default(),
-                wire,
-            }
-        }
+                )
+            })
+            .collect(),
     }
 }
 
@@ -287,7 +216,7 @@ static CATALOG: LazyLock<Result<BundledModelDefinition, ModelDefinitionError>> =
             .iter()
             .map(|model| model.instantiate(&family))
             .collect();
-        BundledModelDefinition::new(models, RECOMMENDED_MODEL, Some("medium"))
+        BundledModelDefinition::new(models, RECOMMENDED_MODEL, Some("high"))
     });
 
 pub fn bundled_definition() -> Result<BundledModelDefinition, ModelDefinitionError> {
@@ -299,11 +228,111 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_models_validate_cleanly() {
+    fn bundled_models_validate_cleanly_with_gemini_4_inventory_and_pricing() {
         let bundled = bundled_definition().unwrap();
-        assert_eq!(bundled.suggested_model, RECOMMENDED_MODEL);
-        for model in &bundled.models {
+        assert_eq!(bundled.suggested_model, "gemini-4-hydrogen");
+        assert_eq!(bundled.suggested_effort.as_deref(), Some("high"));
+
+        let slugs: Vec<&str> = bundled
+            .models
+            .iter()
+            .map(|model| model.base.slug.as_str())
+            .collect();
+        assert_eq!(
+            slugs,
+            [
+                "gemini-4-hydrogen",
+                "gemini-4-neon",
+                "gemini-4-argon",
+                "gemini-4-carbon",
+            ]
+        );
+
+        let expected = [
+            (
+                "gemini-4-hydrogen",
+                &["low", "medium", "high", "xhigh"][..],
+                "high",
+                1.50,
+                7.50,
+                0.075,
+            ),
+            (
+                "gemini-4-neon",
+                &["low", "medium", "high", "xhigh"][..],
+                "high",
+                3.00,
+                15.00,
+                0.15,
+            ),
+            (
+                "gemini-4-argon",
+                &["low", "medium", "high"][..],
+                "medium",
+                4.00,
+                20.00,
+                0.20,
+            ),
+            (
+                "gemini-4-carbon",
+                &["low", "medium", "high"][..],
+                "medium",
+                4.00,
+                20.00,
+                0.20,
+            ),
+        ];
+
+        for (model, (slug, efforts, default_effort, input, output, cache_read)) in
+            bundled.models.iter().zip(expected)
+        {
             model.validate().unwrap();
+            assert_eq!(model.base.slug, slug);
+            assert_eq!(model.base.context_window, Some(UNIFIED_CONTEXT_WINDOW));
+            assert_eq!(model.base.max_context_window, Some(UNIFIED_CONTEXT_WINDOW));
+            assert_eq!(model.extra.max_output_tokens, Some(STREAMING_MAX_OUTPUT));
+
+            let effort_param = model.effort_parameter().expect("effort parameter");
+            assert_eq!(effort_param.default.as_deref(), Some(default_effort));
+            assert_eq!(effort_param.candidates, efforts);
+            for candidate in efforts {
+                let wire = effort_param
+                    .wire_for(candidate)
+                    .expect("wire entry for effort candidate");
+                assert_eq!(
+                    wire.set,
+                    vec![WireAssignment {
+                        path: "generationConfig.thinkingConfig.thinkingLevel".into(),
+                        value: Value::String((*candidate).to_owned()),
+                    }]
+                );
+                assert!(wire.remove.is_empty());
+            }
+
+            let ModelPricing::Rates {
+                currency,
+                tiers,
+                weekly_adjustment,
+                source,
+                verified_at,
+            } = &model.extra.pricing
+            else {
+                panic!("expected published USD pricing for {slug}");
+            };
+            assert_eq!(currency, "USD");
+            assert!(weekly_adjustment.is_none());
+            assert_eq!(source, PRICING_SOURCE);
+            assert_eq!(*verified_at, VERIFIED_AT);
+            assert_eq!(tiers.len(), 1);
+            let tier = &tiers[0];
+            assert_eq!(tier.input_from, 0);
+            assert_eq!(tier.input_until, None);
+            assert_eq!(tier.output_from, 0);
+            assert_eq!(tier.output_until, None);
+            assert_eq!(tier.input_per_mtok, input);
+            assert_eq!(tier.output_per_mtok, output);
+            assert_eq!(tier.cache_read_per_mtok, Some(cache_read));
+            assert_eq!(tier.cache_write_per_mtok, None);
         }
     }
 }

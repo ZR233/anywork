@@ -160,7 +160,11 @@ selections or explicit compaction overrides.
 
 The built-in Google Gemini templates use native Gemini REST (`protocol = "gemini"`,
 wire API `gemini_generate_content`, credential header `x-goog-api-key`) and recommend
-`gemini-3.7-flash` (`medium` effort, 1M context, image/PDF/text inline input):
+`gemini-4-hydrogen` (`high` effort, 1M unified context, image/PDF/text inline input).
+The bundled catalog includes the Gemini 4 series: `gemini-4-hydrogen` and `gemini-4-neon`
+(default `high`; support `low`, `medium`, `high`, `xhigh`), plus `gemini-4-argon` and
+`gemini-4-carbon` (default `medium`; support `low`, `medium`, `high`). None of the Gemini 4
+models support `minimal`, and official Google endpoints use implicit prefix caching:
 
 - `vertex-ai`: Google Cloud Vertex AI Gemini (`base_url = "https://aiplatform.googleapis.com/v1/publishers/google"`,
   `bearer_token_env = "GCP_API_KEY"`, catalog `"vertex-ai"`). Vertex AI API Keys do not

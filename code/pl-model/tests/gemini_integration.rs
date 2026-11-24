@@ -8,7 +8,7 @@ use pl_model::{
         ToolResultReceipt, ToolResultRecord, ToolSpec,
     },
     config::{AccountConfig, AccountModelCatalogConfig, ModelCatalogId, builtin_account_catalog},
-    model::bundled_model_definition,
+    model::{PricingOutcome, bundled_model_definition, bundled_selection_guide},
     protocol::{
         WireApi,
         discovery::{ModelCatalogQuery, ModelCatalogQueryError, ModelCatalogQueryResult},
@@ -35,7 +35,7 @@ fn builtin_catalog_includes_and_validates_vertex_ai_and_gemini() {
         .expect("vertex-ai template");
     assert_eq!(vertex.credential_env.as_deref(), Some("GCP_API_KEY"));
     assert_eq!(vertex.model_catalog.as_str(), "vertex-ai");
-    assert_eq!(vertex.suggested_model_id, "gemini-3.7-flash");
+    assert_eq!(vertex.suggested_model_id, "gemini-4-hydrogen");
 
     let gemini = registry
         .templates
@@ -44,19 +44,35 @@ fn builtin_catalog_includes_and_validates_vertex_ai_and_gemini() {
         .expect("gemini template");
     assert_eq!(gemini.credential_env.as_deref(), Some("GEMINI_API_KEY"));
     assert_eq!(gemini.model_catalog.as_str(), "gemini");
-    assert_eq!(gemini.suggested_model_id, "gemini-3.7-flash");
+    assert_eq!(gemini.suggested_model_id, "gemini-4-hydrogen");
 
     let snap = registry.snapshot().expect("snapshot serializes");
     let vertex_desc = snap.templates.iter().find(|t| t.id == "vertex-ai").unwrap();
     assert!(!vertex_desc.supports_model_discovery);
     let gemini_desc = snap.templates.iter().find(|t| t.id == "gemini").unwrap();
     assert!(gemini_desc.supports_model_discovery);
-    let gemini_models = &snap.model_catalogs["gemini"].models;
-    assert!(
-        gemini_models
-            .iter()
-            .any(|m| m.transport.protocol == "gemini_generate_content")
-    );
+
+    let expected_ids = [
+        "gemini-4-hydrogen",
+        "gemini-4-neon",
+        "gemini-4-argon",
+        "gemini-4-carbon",
+    ];
+    for catalog_id in ["gemini", "vertex-ai"] {
+        let models = &snap.model_catalogs[catalog_id].models;
+        let ids: Vec<&str> = models.iter().map(|m| m.model_id.as_str()).collect();
+        assert_eq!(ids, expected_ids);
+        for m in models {
+            assert_eq!(m.transport.protocol, "gemini_generate_content");
+            let pricing = m
+                .pricing
+                .as_ref()
+                .expect("gemini 4 pricing must be populated");
+            assert_eq!(pricing.currency, "USD");
+            assert!(bundled_selection_guide(catalog_id, &m.model_id).is_some());
+        }
+        assert!(bundled_selection_guide(catalog_id, "gemini-3.7-flash").is_none());
+    }
 }
 
 #[tokio::test]
@@ -89,8 +105,8 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
                 json!({
                     "models": [
                         {
-                            "name": "models/gemini-3.7-flash",
-                            "displayName": "Gemini 3.7 Flash",
+                            "name": "models/gemini-4-hydrogen",
+                            "displayName": "Gemini 4 Hydrogen",
                             "supportedGenerationMethods": ["generateContent", "countTokens"],
                             "inputTokenLimit": 1048576,
                             "outputTokenLimit": 65536
@@ -106,11 +122,11 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
                 json!({
                     "models": [
                         {
-                            "name": "models/gemini-2.5-pro",
-                            "displayName": "Gemini 2.5 Pro",
+                            "name": "models/gemini-4-carbon",
+                            "displayName": "Gemini 4 Carbon",
                             "supportedGenerationMethods": ["generateContent"],
                             "inputTokenLimit": 1048576,
-                            "outputTokenLimit": 65536
+                            "outputTokenLimit": 32768
                         }
                     ]
                 })
@@ -160,27 +176,27 @@ async fn discovery_query_supports_gemini_pagination_with_x_goog_api_key_and_reje
         etag.is_none(),
         "multi-page discovery must not publish a single-page ETag"
     );
-    let flash = models
+    let hydrogen = models
         .iter()
-        .find(|m| m.base.slug == "gemini-3.7-flash")
-        .expect("gemini-3.7-flash present");
+        .find(|m| m.base.slug == "gemini-4-hydrogen")
+        .expect("gemini-4-hydrogen present");
     assert_eq!(
-        flash.extra.capabilities.output,
+        hydrogen.extra.capabilities.output,
         vec![pl_model::model::ModelModality::Text]
     );
     assert!(
-        flash
+        hydrogen
             .extra
             .capabilities
             .supports_input_modality(pl_model::model::ModelModality::File)
     );
 
-    let pro = models
+    let carbon = models
         .iter()
-        .find(|m| m.base.slug == "gemini-2.5-pro")
-        .expect("gemini-2.5-pro present");
+        .find(|m| m.base.slug == "gemini-4-carbon")
+        .expect("gemini-4-carbon present");
     assert_eq!(
-        pro.extra.capabilities.output,
+        carbon.extra.capabilities.output,
         vec![pl_model::model::ModelModality::Text]
     );
 
@@ -240,7 +256,7 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
 
             let sse = if step == 0 {
                 concat!(
-                    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Checking tool\",\"thought\":true}]}}],\"modelVersion\":\"gemini-3.7-flash\",\"responseId\":\"g-1\"}\n\n",
+                    "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Checking tool\",\"thought\":true}]}}],\"modelVersion\":\"gemini-4-hydrogen\",\"responseId\":\"g-1\"}\n\n",
                     "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"q\":\"hi\"},\"id\":\"call_abc\"},\"thoughtSignature\":\"SIG_XYZ\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":12,\"candidatesTokenCount\":4,\"thoughtsTokenCount\":6,\"totalTokenCount\":22}}\n\n"
                 )
             } else {
@@ -259,7 +275,7 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
     let model = bundled
         .models
         .into_iter()
-        .find(|m| m.base.slug == "gemini-3.7-flash")
+        .find(|m| m.base.slug == "gemini-4-hydrogen")
         .unwrap();
     assert_eq!(
         model.extra.binding.transport.protocol,
@@ -328,6 +344,11 @@ async fn runtime_executes_gemini_multimodal_tool_roundtrip_over_mock_http() {
     assert_eq!(resp1.tool_calls[0].name, "lookup");
     assert_eq!(resp1.accounting.usage.output_tokens, Some(10));
     assert_eq!(resp1.accounting.usage.reasoning_tokens, Some(6));
+    assert_eq!(resp1.accounting.usage.cache_read_tokens, Some(0));
+    assert!(matches!(
+        resp1.accounting.pricing,
+        PricingOutcome::Estimated { .. }
+    ));
 
     let isolation = pl_model::runtime::binding_cache_namespace("acct-vertex", runtime.endpoint());
     req.append_response_from(&resp1, Some(&isolation)).unwrap();

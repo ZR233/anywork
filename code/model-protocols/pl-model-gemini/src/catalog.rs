@@ -149,8 +149,8 @@ mod tests {
         let json = br#"{
             "models": [
                 {
-                    "name": "models/gemini-2.5-flash",
-                    "displayName": "Gemini 2.5 Flash",
+                    "name": "models/gemini-4-hydrogen",
+                    "displayName": "Gemini 4 Hydrogen",
                     "description": "Fast reasoning model",
                     "inputTokenLimit": 1048576,
                     "outputTokenLimit": 65536,
@@ -169,10 +169,10 @@ mod tests {
         let page = parse_page(json).unwrap();
         assert_eq!(page.next_page_token.as_deref(), Some("page-2"));
         assert_eq!(page.records.len(), 2);
-        assert_eq!(page.records[0].id, "gemini-2.5-flash");
+        assert_eq!(page.records[0].id, "gemini-4-hydrogen");
         assert_eq!(
             page.records[0].display_name.as_deref(),
-            Some("Gemini 2.5 Flash")
+            Some("Gemini 4 Hydrogen")
         );
         assert_eq!(page.records[0].context_window, Some(Some(1_048_576)));
         assert_eq!(page.records[0].max_output_tokens, Some(Some(65_536)));
