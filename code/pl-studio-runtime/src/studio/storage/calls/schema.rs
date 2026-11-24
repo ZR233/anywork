@@ -62,7 +62,7 @@ pub(super) async fn inspect_existing(path: &Path) -> Result<()> {
     )
     .await?;
     let db = Database::connect(options).await?;
-    let result = admit(&db)
+    let result = preflight(&db)
         .await
         .map_err(|error| crate::studio::startup::migration_error("calls", "preflight", error));
     let close = db.close().await;
@@ -72,7 +72,7 @@ pub(super) async fn inspect_existing(path: &Path) -> Result<()> {
 }
 
 pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Result<()> {
-    preflight(db)
+    admit(db)
         .await
         .map_err(|error| crate::studio::startup::migration_error("calls", "preflight", error))?;
     let migrator = Migrator {
@@ -90,14 +90,12 @@ pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Resu
             "calls", step, error,
         ));
     }
-    // v8/v10 migrations already applied on an existing file do not run again.
-    // Repeat the column fills here so a database that stopped at v10 before the
-    // fill existed still reaches the current read path.
-    backfill_requested_service_tier(db).await.map_err(|error| {
-        crate::studio::startup::migration_error("calls", "requested service tier", error)
-    })?;
-    backfill_summary_content_hash(db).await.map_err(|error| {
-        crate::studio::startup::migration_error("calls", "summary content hash", error)
+    finish_summary_maintenance(db).await.map_err(|error| {
+        crate::studio::startup::migration_error(
+            "calls",
+            "summary and service tier maintenance",
+            error,
+        )
     })?;
     retry_pending_cleanup(db, root_dir).await.map_err(|error| {
         crate::studio::startup::migration_error("calls", "legacy blob cleanup", error)
@@ -554,6 +552,28 @@ async fn backfill_requested_service_tier(db: &impl ConnectionTrait) -> Result<()
         vec![ACP_TEXT_ESTIMATE.to_owned().into()],
     ))
     .await?;
+    Ok(())
+}
+
+async fn finish_summary_maintenance(db: &DatabaseConnection) -> Result<()> {
+    // Calls schema versions are tracked in calls_meta. The SQLite header marks
+    // this maintenance for files whose v8/v10 migrations have already run.
+    let tx = db.begin().await?;
+    let revision: i64 = tx
+        .query_one_raw(statement("PRAGMA user_version", vec![]))
+        .await?
+        .context("calls maintenance revision missing")?
+        .try_get("", "user_version")?;
+    match revision {
+        0 => {
+            backfill_requested_service_tier(&tx).await?;
+            backfill_summary_content_hash(&tx).await?;
+            tx.execute_unprepared("PRAGMA user_version=1").await?;
+        }
+        1 => {}
+        _ => bail!("unsupported calls maintenance revision {revision}"),
+    }
+    tx.commit().await?;
     Ok(())
 }
 

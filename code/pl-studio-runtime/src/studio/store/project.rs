@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -442,7 +441,7 @@ async fn connect_read_only_database(path: &Path) -> Result<DatabaseConnection> {
 async fn inspect_database(path: &Path) -> Result<()> {
     let database = connect_read_only_database(path).await?;
     let version = async {
-        super::schema::admit(&database).await?;
+        super::schema::preflight(&database).await?;
         database_schema_version(&database).await
     }
     .await;
@@ -491,7 +490,7 @@ async fn validate_database_version(db: &DatabaseConnection, expected_version: i6
 
     let actual = schema_fingerprint(db).await?;
     let expected = expected_schema_fingerprint().await?;
-    if actual != expected {
+    if actual != *expected {
         return Err(StudioDatabaseError::CorruptDatabase {
             reason: "incompatible schema fingerprint".into(),
         }
@@ -511,17 +510,22 @@ async fn database_schema_version(db: &impl sea_orm::ConnectionTrait) -> Result<i
     Ok(row.try_get("", "user_version")?)
 }
 
-async fn expected_schema_fingerprint() -> Result<String> {
-    static FINGERPRINT: OnceLock<String> = OnceLock::new();
-    if let Some(fingerprint) = FINGERPRINT.get() {
-        return Ok(fingerprint.clone());
-    }
-    let database = connect_memory().await?;
-    migrate(&database).await?;
-    let fingerprint = schema_fingerprint(&database).await;
-    database.close().await?;
-    let fingerprint = fingerprint?;
-    Ok(FINGERPRINT.get_or_init(|| fingerprint).clone())
+async fn expected_schema_fingerprint() -> Result<&'static String> {
+    static FINGERPRINT: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
+    FINGERPRINT
+        .get_or_try_init(|| async {
+            let database = connect_memory().await?;
+            let fingerprint = async {
+                migrate(&database).await?;
+                schema_fingerprint(&database).await
+            }
+            .await;
+            let close = database.close().await;
+            let fingerprint = fingerprint?;
+            close?;
+            Ok(fingerprint)
+        })
+        .await
 }
 
 async fn schema_fingerprint(db: &DatabaseConnection) -> Result<String> {

@@ -5,7 +5,7 @@ use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaMana
 
 pub(in crate::studio) const STUDIO_DATABASE_SCHEMA_VERSION: i64 = 27;
 
-pub(super) async fn admit(db: &DatabaseConnection) -> Result<()> {
+async fn admit(db: &DatabaseConnection) -> Result<()> {
     let version = version(db).await?;
     if version == 0 {
         ensure!(db.query_one_raw(Statement::from_string(DatabaseBackend::Sqlite, "SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1")).await?.is_none(), "unversioned nonempty Studio database; existing data preserved");
@@ -84,7 +84,7 @@ pub(super) async fn load_legacy_retirements(
 }
 
 pub(super) async fn migrate(db: &DatabaseConnection) -> Result<()> {
-    preflight(db).await.map_err(|error| {
+    admit(db).await.map_err(|error| {
         crate::studio::startup::migration_error("Studio product", "preflight", error)
     })?;
     if let Err(error) = Migrator::up(db, None).await {

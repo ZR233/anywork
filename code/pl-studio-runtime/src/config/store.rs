@@ -436,10 +436,6 @@ impl ConfigStore {
 }
 
 pub(super) fn parse_current_config(content: &str) -> Result<StudioConfig> {
-    parse_config(content)
-}
-
-fn parse_config(content: &str) -> Result<StudioConfig> {
     let document =
         super::document_migration::load_current_main(Path::new(STUDIO_CONFIG_FILE_NAME), content)
             .map_err(|error| PureError::ConfigError(error.to_string()))?;

@@ -970,18 +970,6 @@ impl MigratesTo<MainV30> for MainV29 {
     }
 }
 
-impl IntoDomain<MainV27> for MainV27 {
-    fn into_domain(self) -> Self {
-        self
-    }
-}
-
-impl IntoDomain<MainV28> for MainV28 {
-    fn into_domain(self) -> Self {
-        self
-    }
-}
-
 #[cfg(test)]
 impl MainV27 {
     pub(crate) fn from_config(config: &super::super::StudioConfig) -> Result<Self> {
@@ -1034,12 +1022,6 @@ impl MigratesTo<MainV31> for MainV30 {
             ui: doc.ui,
             acp: doc.acp,
         })
-    }
-}
-
-impl IntoDomain<MainV31> for MainV31 {
-    fn into_domain(self) -> Self {
-        self
     }
 }
 
