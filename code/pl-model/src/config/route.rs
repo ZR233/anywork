@@ -177,7 +177,7 @@ impl AgentModelConfig {
             });
         };
         let support = model.type_support(crate::model::ModelType::Text);
-        // 禁用是用户的 desired 意图：声明仍合法，但当前不可用于执行。
+        // 禁用成员仍是合法声明，但当前不可用于执行。
         if !model.enabled {
             return Ok(ModelRouteAvailability::ModelDisabled {
                 account_id: route.account_id.clone(),

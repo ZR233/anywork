@@ -245,12 +245,15 @@ slug = "my-model"
 Optional user edits such as `base.display_name`, `base.max_context_window` and `extra.pricing` apply to this account. Leave inherited fields out of the file.
 
 `[models.accounts.<id>.model_enabled_overrides]` maps exact model IDs to booleans.
-An absent key means enabled for bundled, online and manual models. An incomplete
-or empty online inventory does not automatically disable declared bundled models.
-Explicit `false` remains disabled across refreshes and restarts; removing an
-override restores enabled. There is no need to write `true` for every model.
-Enablement cannot create an unknown model or bypass capability/credential
-validation. Model IDs and metadata are account-local.
+An absent key uses automatic enablement. Models in the latest successful online
+inventory and independent manual models are enabled by default. A bundled ID
+missing from that inventory is disabled by default, including after a successful
+empty list. Before any successful inventory, bundled models default to enabled.
+A failed refresh keeps the last successful inventory. To force-enable a bundled
+model, turn it on in the account's model list or set its exact ID to `true` in
+this table. A `false` entry disables the model. Removing an entry restores
+automatic enablement. Model availability still requires valid capabilities and
+credentials.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
 integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value across all protocols (Gemini, OpenAI, and compatible endpoints). For bundled models and members matching an account’s bundled catalog ID, the automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at `auto_compact_token_limit` when supplied. For online models without a bundled counterpart and unbundled manual models, an omitted `auto_compact_token_limit` defaults to `min(256000, floor(window * 90%))` when context is declared (or stays disabled if 90% floors to `0`) and `256000` when context is unknown, without writing the fallback into `config.toml`; an explicit `auto_compact_token_limit` is still honored (capped at 90% when context is known). Unknown context and prices can be omitted.

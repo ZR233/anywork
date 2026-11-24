@@ -40,9 +40,8 @@ fn selectable_ids(account: &AccountConfig) -> Vec<String> {
         .collect()
 }
 
-/// 不完整或空的在线名单不改变默认启用意图；用户显式关闭仍然阻止路由。
 #[test]
-fn bundled_models_stay_enabled_after_successful_empty_inventory() {
+fn bundled_models_missing_from_a_successful_inventory_require_explicit_enablement() {
     let mut account = openai_account();
     assert!(member(&account, "gpt-6-luna").enabled);
     account.set_model_catalog_overlay(Vec::new()).unwrap();
@@ -51,15 +50,15 @@ fn bundled_models_stay_enabled_after_successful_empty_inventory() {
         missing.origin,
         pl_model::config::AccountModelOrigin::Bundled
     );
-    assert!(missing.enabled);
+    assert!(!missing.enabled);
     assert!(
         account
             .effective_catalog(None)
             .unwrap()
             .iter()
-            .all(|entry| entry.enabled)
+            .all(|entry| !entry.enabled)
     );
-    assert!(selectable_ids(&account).contains(&"gpt-6-luna".into()));
+    assert!(selectable_ids(&account).is_empty());
     assert!(
         account
             .model_selection_guide("gpt-6-luna")
@@ -78,14 +77,27 @@ fn bundled_models_stay_enabled_after_successful_empty_inventory() {
         accounts: [(account_id.clone(), account)].into(),
         routes: [(role.clone(), route.clone())].into(),
     };
-    assert!(config.resolve_route(role.clone(), &route).is_ok());
+    assert_eq!(
+        config.route_availability(&route).unwrap(),
+        ModelRouteAvailability::ModelDisabled {
+            account_id: account_id.clone(),
+            model_id: route.model_id.clone(),
+        }
+    );
+    assert!(config.resolve_route(role.clone(), &route).is_err());
+    config
+        .accounts
+        .get_mut(&account_id)
+        .unwrap()
+        .set_model_enabled("gpt-6-luna", true)
+        .unwrap();
     let bytes = serde_json::to_vec(&config.accounts[&account_id]).unwrap();
     let mut reopened: AccountConfig = serde_json::from_slice(&bytes).unwrap();
     reopened.set_model_catalog_overlay(Vec::new()).unwrap();
     assert!(member(&reopened, "gpt-6-luna").enabled);
-    reopened.set_model_enabled("gpt-6-luna", false).unwrap();
     config.accounts.insert(account_id, reopened);
-    assert!(config.resolve_route(role, &route).is_err());
+    config.reconcile_model_catalog().unwrap();
+    assert!(config.resolve_route(role, &route).is_ok());
     assert_eq!(config.routes.values().next(), Some(&route));
 }
 
@@ -327,12 +339,9 @@ fn resolved_catalog_cache_keeps_disabled_members_unselectable() {
     let account = config.accounts.values_mut().next().unwrap();
     assert!(member(account, "gpt-6-astra").enabled);
     assert!(!member(account, "gpt-6-luna").enabled);
-    assert!(member(account, "gpt-6-sol").enabled);
+    assert!(!member(account, "gpt-6-sol").enabled);
     account.set_model_enabled("gpt-6-astra", false).unwrap();
-    let selectable = selectable_ids(account);
-    assert!(!selectable.contains(&"gpt-6-luna".into()));
-    assert!(!selectable.contains(&"gpt-6-astra".into()));
-    assert!(selectable.contains(&"gpt-6-sol".into()));
+    assert!(selectable_ids(account).is_empty());
 }
 
 /// 显式开启不修复未知上下文，撤下的线上独有成员也不能靠覆盖变成库存。
