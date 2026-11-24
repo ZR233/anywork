@@ -133,6 +133,114 @@ fn accept_observation(provider: &mut AccountConfig, mut models: Vec<ModelDefinit
 }
 
 #[tokio::test]
+async fn online_priority_orders_the_account_catalog_and_its_selectable_models() {
+    let server = Server::responses(vec![
+        http(
+            200,
+            "",
+            &json!({"models":[
+                {"slug":"test-z-first","priority":-1},
+                {"slug":"test-m-tie","priority":4},
+                {"slug":"test-a-unranked","priority":"0"},
+                {"slug":"test-b-tie","priority":4},
+                {"slug":"test-c-unranked"}
+            ]})
+            .to_string(),
+        ),
+        http(
+            200,
+            "",
+            &json!({"data":[
+                {"id":"test-z-first"},
+                {"id":"test-m-tie"},
+                {"id":"test-c-unranked"},
+                {"id":"test-b-tie"},
+                {"id":"test-a-unranked"}
+            ]})
+            .to_string(),
+        ),
+    ])
+    .await;
+    let account = provider(&server.url, pl_model::protocol::providers::openai::ID);
+    let query = ModelCatalogQuery::for_account(&account).unwrap();
+    let account_id = AccountId::new("ranked").unwrap();
+    let mut config = AgentModelConfig {
+        accounts: [(account_id.clone(), account)].into(),
+        routes: Default::default(),
+    };
+    let test_models = |entries: Vec<pl_model::config::AccountModelEntry>| {
+        entries
+            .into_iter()
+            .map(|entry| entry.model.base.slug)
+            .filter(|id| id.starts_with("test-"))
+            .collect::<Vec<_>>()
+    };
+
+    let account = config.accounts.get_mut(&account_id).unwrap();
+    let cache = ModelCatalogQueryCache {
+        identity: query.identity().into(),
+        etag: None,
+        models: updated(query.execute(None).await.unwrap()),
+    };
+    accept_observation(account, cache.models.clone(), 1);
+    account.set_model_enabled("test-m-tie", false).unwrap();
+    let ranked = [
+        "test-z-first",
+        "test-b-tie",
+        "test-m-tie",
+        "test-a-unranked",
+        "test-c-unranked",
+    ];
+    assert_eq!(
+        test_models(account.effective_catalog(None).unwrap()),
+        ranked
+    );
+    config.reconcile_model_catalog().unwrap();
+    let account = config.accounts.get_mut(&account_id).unwrap();
+    let catalog = account.effective_catalog(None).unwrap();
+    assert_eq!(
+        catalog
+            .iter()
+            .take(3)
+            .map(|entry| entry.model.base.slug.as_str())
+            .collect::<Vec<_>>(),
+        ranked[..3]
+    );
+    assert_eq!(test_models(catalog), ranked);
+    assert_eq!(
+        test_models(account.selectable_catalog(Some(ModelType::Text)).unwrap()),
+        [
+            "test-z-first",
+            "test-b-tie",
+            "test-a-unranked",
+            "test-c-unranked"
+        ]
+    );
+
+    accept_observation(
+        account,
+        updated(query.execute(Some(&cache)).await.unwrap()),
+        2,
+    );
+    config.reconcile_model_catalog().unwrap();
+    assert_eq!(
+        test_models(
+            config.accounts[&account_id]
+                .effective_catalog(None)
+                .unwrap()
+        ),
+        [
+            "test-a-unranked",
+            "test-b-tie",
+            "test-c-unranked",
+            "test-m-tie",
+            "test-z-first"
+        ]
+    );
+    server.finish().await;
+}
+
+#[tokio::test]
 async fn online_service_tiers_follow_the_account_catalog() {
     let payload = json!({"models":[{
         "slug":"gpt-6.2-sol",
@@ -2309,7 +2417,7 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
         .effective_catalog(None)
         .unwrap()
         .into_iter()
-        .filter(|entry| entry.origin != pl_model::config::AccountModelOrigin::Bundled)
+        .filter(|entry| entry.enabled)
         .map(|entry| entry.model)
         .collect::<Vec<_>>();
     assert_eq!(
@@ -2347,14 +2455,15 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
     let mut expected = definition.models.clone();
     expected.push(manual);
     expected.sort_by(|a, b| a.base.slug.cmp(&b.base.slug));
+    assert_eq!(config.effective_models(None).unwrap(), expected);
     assert_eq!(
         config
             .selectable_catalog(None)
             .unwrap()
             .into_iter()
-            .map(|entry| entry.model)
+            .map(|entry| entry.model.base.slug)
             .collect::<Vec<_>>(),
-        expected
+        ["manual"]
     );
     if let pl_model::config::AccountModelCatalogConfig::Bundled {
         additional_models, ..
@@ -2362,15 +2471,14 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
     {
         additional_models.push(known.clone().into());
     }
-    assert_eq!(
-        config
-            .effective_catalog(None)
-            .unwrap()
-            .iter()
-            .filter(|entry| entry.model.base.slug == known.base.slug)
-            .count(),
-        1
-    );
+    let catalog = config.effective_catalog(None).unwrap();
+    let mut matches = catalog
+        .iter()
+        .filter(|entry| entry.model.base.slug == known.base.slug);
+    let edited = matches.next().unwrap();
+    assert!(matches.next().is_none());
+    assert_eq!(edited.origin, pl_model::config::AccountModelOrigin::Manual);
+    assert!(!edited.enabled);
     let empty = discover(
         json!({"data":[]}),
         pl_model::protocol::providers::deepseek::ID,
@@ -2383,17 +2491,7 @@ async fn overlay_keeps_bundled_manual_models_and_prices_join_only_local_exact_id
     );
     fresh.set_model_catalog_overlay(empty).unwrap();
     assert!(!fresh.effective_catalog(None).unwrap().is_empty());
-    let mut expected = bundled_model_definition("deepseek").unwrap().models;
-    expected.sort_by(|a, b| a.base.slug.cmp(&b.base.slug));
-    assert_eq!(
-        fresh
-            .selectable_catalog(None)
-            .unwrap()
-            .into_iter()
-            .map(|entry| entry.model)
-            .collect::<Vec<_>>(),
-        expected
-    );
+    assert!(fresh.selectable_catalog(None).unwrap().is_empty());
 }
 
 #[tokio::test]

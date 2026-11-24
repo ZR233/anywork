@@ -25,6 +25,9 @@ see the ACP section in the main configuration reference, not remote agent setup.
 
 An account model needs only `base.slug`. Set `base.supports_parallel_tool_calls`
 to override the catalog declaration for parallel tool calls.
+After a successful online catalog refresh, use the account's model switch or
+[`model_enabled_overrides`](references/main-config.md) to enable a bundled model
+that the provider omits.
 
 When editing a Mode, Agent Profile or ACP account through Studio, open its current document before saving. Another editor can save a different document independently. If the same document changed, keep your draft and reopen the current version to reconcile the edits. A new document requires an unused ID. Ordinary settings switches and sidebar pins save individual changes.
 

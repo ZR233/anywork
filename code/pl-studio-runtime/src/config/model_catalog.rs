@@ -23,7 +23,7 @@ use super::{ConfigPaths, StudioConfig};
 use crate::Result;
 
 const CACHE_BYTES_LIMIT: usize = 8 * 1024 * 1024;
-const NORMALIZATION_REVISION: u32 = 6;
+const NORMALIZATION_REVISION: u32 = 7;
 /// On-disk schema of `model.json`. Schema 3 also records whether the snapshot was verified by a
 /// complete response of the recorded query identity or adopted from the retired query identity.
 const CACHE_SCHEMA: u32 = 4;
