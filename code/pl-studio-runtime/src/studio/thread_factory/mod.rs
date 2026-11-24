@@ -14,6 +14,7 @@ mod lsp_binding;
 pub(crate) mod mcp;
 mod mcp_reconnect_tool;
 mod mcp_refresh_tool;
+mod native_assembly;
 pub(crate) mod recovery;
 mod restore_child;
 mod worktree_close;
