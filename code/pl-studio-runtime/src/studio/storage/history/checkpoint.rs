@@ -61,49 +61,18 @@ impl HistoryStore {
             &self.writer().await?.db,
             &self.state.thread_id,
             super::schema::Preparation::ModelAccess,
-            None,
-            crate::studio::startup::storage_layout::bot_roots::for_history(
-                &self.state.path,
-                &self.state.thread_id,
-            )
-            .await?,
         )
         .await?;
         self.checkpoint().await
     }
 
-    /// The owner supplies verified Mode/Agent facts; SeaORM commits this named migration and its
-    /// completion record together. Candidate construction has no storage or external side effects.
+    /// Marks the unreachable lifecycle names applied and runs the remaining real receipt step.
     #[cfg(test)]
-    pub(crate) async fn prepare_execution_identity(
-        &self,
-        migrate: impl FnOnce(&mut pl_core::thread::ThreadSnapshot) -> Result<()>,
-    ) -> Result<ThreadCheckpoint> {
-        let candidate = {
-            let original = self
-                .prepare_model_access()
-                .await?
-                .context("recovery checkpoint is absent")?;
-            let mut migrated = original.clone();
-            migrate(&mut migrated.state).map_err(|error| {
-                crate::studio::startup::migration_error(
-                    "history",
-                    super::schema::EXECUTION_IDENTITY,
-                    error,
-                )
-            })?;
-            std::sync::Arc::new((original, migrated))
-        };
+    pub(crate) async fn prepare_execution_identity(&self) -> Result<ThreadCheckpoint> {
         super::schema::prepare_with_bot_root(
             &self.writer().await?.db,
             &self.state.thread_id,
             super::schema::Preparation::ExecutionIdentity,
-            Some(candidate),
-            crate::studio::startup::storage_layout::bot_roots::for_history(
-                &self.state.path,
-                &self.state.thread_id,
-            )
-            .await?,
         )
         .await?;
         self.checkpoint()

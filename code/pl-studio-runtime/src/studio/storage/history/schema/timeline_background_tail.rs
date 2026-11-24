@@ -62,8 +62,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -90,8 +88,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()

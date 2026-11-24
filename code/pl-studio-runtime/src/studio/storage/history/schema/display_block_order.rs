@@ -263,14 +263,12 @@ mod tests {
             let (_dir, db) = work_snapshots::tests::fixture().await?;
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .up(&db, Some(1))
             .await?;
             db.execute_unprepared(damage).await?;
             let before = snapshot(&db).await?;
-            let error = super::super::prepare(&db, THREAD, Preparation::Schema, None)
+            let error = super::super::prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .expect_err("inconsistent schema22 must be rejected before migration");
             assert!(format!("{error:#}").contains(diagnostic), "{error:#}");

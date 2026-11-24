@@ -260,8 +260,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -612,8 +610,6 @@ mod tests {
         // original background correction's own Applied transaction.
         Migrator {
             thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
         }
         .up(&db, Some(1))
         .await?;

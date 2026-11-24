@@ -3208,7 +3208,7 @@ mod storage_fault_tests {
                  BEGIN SELECT RAISE(ABORT, 'injected review checkpoint failure'); END;",
                 )
                 .await?;
-            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema, None)
+            let error = schema::prepare(&connection.db, &id, schema::Preparation::Schema)
                 .await
                 .expect_err("checkpoint failure must fail the representation migration");
             assert!(
@@ -3229,7 +3229,7 @@ mod storage_fault_tests {
                 .db
                 .execute_unprepared("DROP TRIGGER reject_review_upgrade")
                 .await?;
-            schema::prepare(&connection.db, &id, schema::Preparation::Schema, None).await?;
+            schema::prepare(&connection.db, &id, schema::Preparation::Schema).await?;
             let migrated = checkpoint::read(&connection.db, &id)
                 .await?
                 .context("migrated checkpoint")?;
@@ -3332,7 +3332,7 @@ mod storage_fault_tests {
             .await?;
         // Reproduce a v8 DB which already completed *all* published lifecycle steps. The new
         // content step must still run without asking for a new execution-identity candidate.
-        store.prepare_execution_identity(|_| Ok(())).await?;
+        store.prepare_execution_identity().await?;
         let mut legacy =
             serde_json::to_value(store.checkpoint().await?.context("saved checkpoint")?)?;
         // The migration normalizes the legacy envelope, then inserts the current typed usage.

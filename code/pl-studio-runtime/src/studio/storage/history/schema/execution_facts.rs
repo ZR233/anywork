@@ -815,8 +815,6 @@ mod tests {
         let db = Database::connect(options).await?;
         let migrator = Migrator {
             thread_id: THREAD.into(),
-            bot_root: None,
-            execution_identity: None,
         };
         let steps = migrator
             .migrations()
@@ -908,7 +906,7 @@ mod tests {
         let before = originals(&db).await?;
         db.execute_unprepared("CREATE TRIGGER reject_legacy_evidence BEFORE INSERT ON history_fact_receipts WHEN NEW.kind='legacy_execution_record' BEGIN SELECT RAISE(ABORT,'injected evidence save failure'); END;").await?;
         assert!(
-            super::super::prepare(&db, THREAD, Preparation::Schema, None)
+            super::super::prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .is_err()
         );
@@ -918,11 +916,11 @@ mod tests {
         assert!(db.query_one_raw(statement("SELECT 1 AS present FROM sqlite_schema WHERE type='table' AND name='execution_lifecycle'",vec![])).await?.is_none());
         db.execute_unprepared("DROP TRIGGER reject_legacy_evidence")
             .await?;
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(version(&db).await?, 24);
         assert!(!old_table(&db).await?);
         assert_eq!(originals(&db).await?, before);
-        super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
+        super::super::prepare(&db, THREAD, Preparation::Schema).await?;
         let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
         let heads = store.legacy_evidence_heads(None, 10).await?;
         assert_eq!(
@@ -983,7 +981,7 @@ mod tests {
             format!("DROP TABLE execution_lifecycle;{}",execution_lifecycle::CREATE.replace("kind TEXT NOT NULL","kind TEXT COLLATE NOCASE NOT NULL")),
         ] {
             let (dir,db)=fixture().await?;seed(&db).await?;
-            super::super::prepare(&db,THREAD,Preparation::Schema,None).await?;
+            super::super::prepare(&db, THREAD, Preparation::Schema).await?;
             let originals=originals(&db).await?;
             db.execute_unprepared(&damage).await?;
             let schema=| |statement("SELECT json_group_array(sql) AS definition FROM (SELECT sql FROM sqlite_schema ORDER BY type,name)",vec![]);
@@ -1005,7 +1003,7 @@ mod tests {
         db.execute_unprepared("INSERT INTO history_fact_receipts(item_id,revision,kind,digest,payload,last_write_seq) VALUES('occupied',1,'legacy_execution_record','uninterpreted','{}',1)").await?;
         let before = originals(&db).await?;
         assert!(
-            super::super::prepare(&db, THREAD, Preparation::Schema, None)
+            super::super::prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .is_err()
         );
@@ -1030,7 +1028,7 @@ mod tests {
         )?;
         super::super::write_published_checkpoint(&db, &checkpoint).await?;
         let before = originals(&db).await?;
-        let error = super::super::prepare(&db, THREAD, Preparation::Schema, None)
+        let error = super::super::prepare(&db, THREAD, Preparation::Schema)
             .await
             .unwrap_err();
         assert!(format!("{error:#}").contains("history fence"), "{error:#}");

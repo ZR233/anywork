@@ -82,8 +82,6 @@ mod tests {
     fn migrator() -> Migrator {
         Migrator {
             thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
         }
     }
 
@@ -342,13 +340,13 @@ mod tests {
         assert_ne!(head.generation, old_head);
         db.close().await?;
         let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         // Later published source/tail steps may rotate their generation before archiving.
         let generation = timeline::archived_generation(&db).await?;
         assert!(!generation.is_empty());
         db.close().await?;
         let db = connect(&path, crate::studio::paths::SqliteFileMode::ReadWrite).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(timeline::archived_generation(&db).await?, generation);
         db.close().await?;
         Ok(())

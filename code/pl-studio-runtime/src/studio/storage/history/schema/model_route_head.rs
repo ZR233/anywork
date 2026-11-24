@@ -110,8 +110,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                bot_root: None,
-                execution_identity: None,
             }
             .migrations()
             .into_iter()
@@ -272,7 +270,7 @@ mod tests {
         let before = retained(&db).await?;
         let mut expected = checkpoint::read(&db, THREAD).await?.unwrap();
         assert!(model_route::saved(&legacy_checkpoint()?.state).is_err());
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         assert_eq!(retained(&db).await?, before);
         let recovered = checkpoint::read(&db, THREAD).await?.unwrap();
@@ -332,15 +330,13 @@ mod tests {
         assert!(
             Migrator {
                 thread_id: THREAD.into(),
-                bot_root: None,
-                execution_identity: None
             }
             .get_pending_migrations_read_only(&db)
             .await?
             .iter()
             .any(|step| step.name() == MODEL_ACCESS)
         );
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         Ok(())
     }
 
@@ -349,7 +345,7 @@ mod tests {
     -> Result<()> {
         let (_dir, db) = source().await?;
         seed(&db).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let original = checkpoint::read(&db, THREAD).await?.unwrap();
         let mut migrated = original.clone();
         migrated.state.extensions.insert(
@@ -414,11 +410,7 @@ mod tests {
          BEGIN SELECT RAISE(ABORT,'controlled head backfill failure'); END",
         )
         .await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
+        assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
         assert_eq!(version(&db).await?, 12);
         assert_eq!(retained(&db).await?, before);
         validate_source(&db).await?;
@@ -441,7 +433,7 @@ mod tests {
             .is_none()
         );
         db.execute_unprepared("DROP TRIGGER reject_head").await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         assert_eq!(
             checkpoint::read_model_route_head(&db)
@@ -490,9 +482,7 @@ mod tests {
             ))
             .await?;
             assert!(
-                prepare(&db, THREAD, Preparation::Schema, None)
-                    .await
-                    .is_err(),
+                prepare(&db, THREAD, Preparation::Schema).await.is_err(),
                 "{damage}"
             );
             assert_eq!(version(&db).await?, 12);
@@ -512,7 +502,7 @@ mod tests {
                 vec![original.into(), original_hash.into()],
             ))
             .await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         }
         Ok(())
@@ -523,7 +513,7 @@ mod tests {
     {
         let (_dir, db) = source().await?;
         seed(&db).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let original = db
             .query_one_raw(statement(
                 "SELECT payload FROM session_checkpoint WHERE id=1",
@@ -604,7 +594,7 @@ mod tests {
         write_published_checkpoint(&db, &original).await?;
         db.execute_unprepared("UPDATE history_meta SET applied_write_seq=9")
             .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert!(checkpoint::read_model_route_head(&db).await?.is_none());
         let row = db
             .query_one_raw(statement(

@@ -92,8 +92,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -122,8 +120,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -153,8 +149,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -466,8 +460,6 @@ mod tests {
         // its own transaction. Freeze their completed boundary for the backfill story.
         Migrator {
             thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
         }
         .up(&db, Some(2))
         .await?;
@@ -1181,8 +1173,6 @@ mod tests {
         }
         let migrator = Migrator {
             thread_id: THREAD.into(),
-            execution_identity: None,
-            bot_root: None,
         };
         let pending = migrator.get_pending_migrations_read_only(db).await?;
         assert!(

@@ -747,8 +747,6 @@ mod tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
@@ -963,7 +961,7 @@ mod tests {
         let old = seed_active_members(&db, "live-turn").await?;
         assert_eq!(old.previews.len(), 4);
         let originals = active_originals(&db).await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let migrated = archived_current(&db).await?;
         assert_eq!(migrated.atoms.len(), 5);
         for part in 1..=5 {
@@ -1003,9 +1001,7 @@ mod tests {
         db.execute_unprepared("DELETE FROM history_items WHERE item_id='live-5'")
             .await?;
         let originals = active_originals(&db).await?;
-        let error = prepare(&db, THREAD, Preparation::Schema, None)
-            .await
-            .unwrap_err();
+        let error = prepare(&db, THREAD, Preparation::Schema).await.unwrap_err();
         assert!(
             format!("{error:#}").contains("canonical checkpoint"),
             "{error:#}"
@@ -1018,9 +1014,7 @@ mod tests {
         let (_dir, db) = source().await?;
         let old = seed_active_members(&db, &"t".repeat(CHAT_BATCH_MAX_BYTES as usize)).await?;
         let originals = active_originals(&db).await?;
-        let error = prepare(&db, THREAD, Preparation::Schema, None)
-            .await
-            .unwrap_err();
+        let error = prepare(&db, THREAD, Preparation::Schema).await.unwrap_err();
         assert!(format!("{error:#}").contains("budget"), "{error:#}");
         assert_eq!(version(&db).await?, 13);
         validate_source(&db).await?;
@@ -1068,7 +1062,7 @@ mod tests {
             .await?;
             db.execute_unprepared("UPDATE history_meta SET applied_write_seq=5")
                 .await?;
-            prepare(&db, THREAD, Preparation::Schema, None).await?;
+            prepare(&db, THREAD, Preparation::Schema).await?;
             let source = ChatSourceId::ForegroundTurn {
                 turn_id: "turn".into(),
             };
@@ -1108,7 +1102,7 @@ mod tests {
         )
         .await?;
         for _ in 0..2 {
-            let failure = prepare(&db, THREAD, Preparation::Schema, None)
+            let failure = prepare(&db, THREAD, Preparation::Schema)
                 .await
                 .expect_err("pending migration cannot adopt its pre-existing output");
             assert!(
@@ -1177,7 +1171,7 @@ mod tests {
         ))
         .await?;
 
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
         let tool = conversation::read_item(&db, "tool").await?;
         assert_eq!(
@@ -1306,11 +1300,7 @@ mod tests {
             vec![current_bytes.clone().into()],
         ))
         .await?;
-        assert!(
-            prepare(&db, THREAD, Preparation::Schema, None)
-                .await
-                .is_err()
-        );
+        assert!(prepare(&db, THREAD, Preparation::Schema).await.is_err());
         assert_eq!(version(&db).await?, 13);
         validate_source(&db).await?;
         assert_eq!(
@@ -1364,7 +1354,7 @@ mod tests {
         // Observation of an ended Turn proves its lifecycle, not when it started/ended.
         db.execute_unprepared("UPDATE history_meta SET applied_write_seq=5")
             .await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         let origin = ChatSourceId::ForegroundTurn {
             turn_id: "turn".into(),
         };
@@ -1411,7 +1401,7 @@ mod tests {
         let (_dir, db) = source().await?;
         insert(&db, 1, "unsupported-turn", "turn").await?;
         db.execute_unprepared("UPDATE conversation_items SET payload=CAST('{\"contract\":\"anywork.chat/1\",\"type\":\"turn\",\"turnId\":\"turn\",\"data\":{\"unsupported\":true}}' AS BLOB)").await?;
-        prepare(&db, THREAD, Preparation::Schema, None).await?;
+        prepare(&db, THREAD, Preparation::Schema).await?;
         assert_eq!(
             sources::read(
                 &db,
@@ -1453,8 +1443,6 @@ mod background_tests {
         fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
             Migrator {
                 thread_id: THREAD.into(),
-                execution_identity: None,
-                bot_root: None,
             }
             .migrations()
             .into_iter()
