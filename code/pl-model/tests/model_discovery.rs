@@ -979,7 +979,15 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     assert!(lower.contains("x-account: synthetic-account\r\n"));
     let model = &models[0];
     assert_eq!(model.base.slug, "unregistered-Future-ID");
-    assert_eq!(model.resolve_context(None).context_window, None);
+    assert_eq!(
+        model
+            .resolve_context(
+                None,
+                pl_model::model::AutoCompactDefaultPolicy::UnbundledOrManual
+            )
+            .context_window,
+        None
+    );
     assert_eq!(model.extra.max_output_tokens, None);
     assert!(model.supported_efforts().is_empty());
     assert!(!model.extra.capabilities.temperature);
@@ -1006,6 +1014,10 @@ async fn current_endpoint_prefix_query_auth_and_safe_identity_are_used() {
     );
     assert_eq!(descriptor.context_window, None);
     assert_eq!(descriptor.max_context_window, None);
+    assert_eq!(
+        descriptor.context.auto_compact_limit,
+        Some(pl_model::model::DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT)
+    );
     assert_eq!(descriptor.max_output_tokens, None);
     assert_eq!(descriptor.pricing, None);
     assert_eq!(descriptor.reasoning, None);
@@ -1240,7 +1252,12 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         assert_eq!(descriptor.context_window, Some(64000));
         assert_eq!(descriptor.context.auto_compact_limit, Some(expected_limit));
         assert_eq!(
-            model.resolve_context(None).auto_compact_limit,
+            model
+                .resolve_context(
+                    None,
+                    pl_model::model::AutoCompactDefaultPolicy::UnbundledOrManual
+                )
+                .auto_compact_limit,
             Some(expected_limit)
         );
         assert_eq!(descriptor.pricing, None);
@@ -1505,7 +1522,15 @@ async fn vendor_typed_catalog_boundaries_do_not_leak_envelopes_fields_or_prices(
             unknown.extra.binding.request.media.is_empty(),
             "{kind:?} must not fabricate a media profile"
         );
-        assert_eq!(unknown.resolve_context(None).context_window, None);
+        assert_eq!(
+            unknown
+                .resolve_context(
+                    None,
+                    pl_model::model::AutoCompactDefaultPolicy::UnbundledOrManual
+                )
+                .context_window,
+            None
+        );
     }
 
     // OpenAI-compatible 共同契约可用，但 xAI 的 context_length 不生效。
@@ -1839,7 +1864,10 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     assert_eq!(descriptor.max_context_window, Some(2_000_000));
     assert_eq!(descriptor.context.auto_compact_limit, Some(1_800_000));
     assert_eq!(
-        entry.model.resolve_context(None).auto_compact_limit,
+        entry
+            .model
+            .resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled)
+            .auto_compact_limit,
         Some(1_800_000)
     );
     assert!(descriptor.capabilities.reasoning);
@@ -1856,7 +1884,9 @@ async fn online_declarations_override_builtin_metadata_across_successful_polls()
     assert_eq!(narrowed[0].base.context_window, Some(300_000));
     assert_eq!(narrowed[0].base.max_context_window, Some(300_000));
     assert_eq!(
-        narrowed[0].resolve_context(None).auto_compact_limit,
+        narrowed[0]
+            .resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled)
+            .auto_compact_limit,
         Some(270_000)
     );
 
@@ -3086,7 +3116,15 @@ async fn standard_fallback_and_sparse_user_edits_preserve_codex_metadata() {
         model.base.supported_reasoning_levels.as_ref().unwrap()[0].fields["description"],
         "Future tier"
     );
-    assert_eq!(model.resolve_context(None).auto_compact_limit, Some(244800));
+    assert_eq!(
+        model
+            .resolve_context(
+                None,
+                pl_model::model::AutoCompactDefaultPolicy::UnbundledOrManual
+            )
+            .auto_compact_limit,
+        Some(244800)
+    );
     assert_eq!(
         serde_json::to_value(&account).unwrap()["catalog"],
         desired["catalog"]

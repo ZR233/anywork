@@ -306,12 +306,22 @@ mod tests {
                 Some(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT)
             );
             assert_eq!(
-                model.resolve_context(None).auto_compact_limit,
+                model
+                    .resolve_context(
+                        None,
+                        pl_model_wire::model::AutoCompactDefaultPolicy::Bundled
+                    )
+                    .auto_compact_limit,
                 Some(DEFAULT_AUTO_COMPACT_TOKEN_LIMIT)
             );
             assert_eq!(model.max_auto_compact_override(), Some(943_718));
             assert_eq!(
-                model.resolve_context(Some(700_000)).auto_compact_limit,
+                model
+                    .resolve_context(
+                        Some(700_000),
+                        pl_model_wire::model::AutoCompactDefaultPolicy::Bundled
+                    )
+                    .auto_compact_limit,
                 Some(700_000)
             );
 

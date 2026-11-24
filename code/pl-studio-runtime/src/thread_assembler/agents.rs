@@ -1555,7 +1555,7 @@ pub(crate) mod archive_tests {
                 "archive fixture",
                 "http://127.0.0.1:0",
             ),
-            context: info.resolve_context(None),
+            context: info.resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled),
             model: info,
             effort: None,
             service_tier: None,

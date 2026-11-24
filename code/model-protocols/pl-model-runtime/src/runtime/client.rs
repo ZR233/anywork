@@ -93,7 +93,8 @@ impl ModelRuntime {
             .build()
             .map_err(|e| PureError::HttpError(e.to_string()))?;
 
-        let mut context = model.resolve_context(None);
+        let mut context =
+            model.resolve_context(None, crate::model::AutoCompactDefaultPolicy::Bundled);
         context.auto_compact_limit = None;
         Ok(Self {
             context,

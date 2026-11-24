@@ -14,10 +14,11 @@ pub use definition::validate_inventory;
 pub use definition::{BundledModelDefinition, ModelDefinitionError};
 pub use family::ModelFamily;
 pub use info::{
-    ChatRequestOptions, GeminiRequestOptions, MaxTokensField, MediaMixPolicy, MediaRepresentation,
-    MediaWireFormat, ModelBinding, ModelDefinition, ModelExtras, ModelMediaInputProfile,
-    ModelProtocolOptions, ModelRequestProfile, ModelTransportProfile, ResponsesMaxTokensField,
-    ResponsesRequestOptions, TruncationMode, TruncationPolicy,
+    AutoCompactDefaultPolicy, ChatRequestOptions, DEFAULT_FALLBACK_AUTO_COMPACT_LIMIT,
+    GeminiRequestOptions, MaxTokensField, MediaMixPolicy, MediaRepresentation, MediaWireFormat,
+    ModelBinding, ModelDefinition, ModelExtras, ModelMediaInputProfile, ModelProtocolOptions,
+    ModelRequestProfile, ModelTransportProfile, ResponsesMaxTokensField, ResponsesRequestOptions,
+    TruncationMode, TruncationPolicy,
 };
 pub use observation::{ModelMetadataField, ModelObservation, ModelParameterDefaultObservation};
 pub use profile_error::ModelProfileError;

@@ -1090,7 +1090,8 @@ mod mode_migration_tests {
             role: crate::config::root_agent_route_id(),
             account_id: AccountId::new("migration-account")?,
             endpoint,
-            context: model_info.resolve_context(None),
+            context: model_info
+                .resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled),
             model: model_info,
             effort: None,
             service_tier: None,

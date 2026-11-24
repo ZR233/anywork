@@ -253,7 +253,7 @@ Enablement cannot create an unknown model or bypass capability/credential
 validation. Model IDs and metadata are account-local.
 
 `[models.accounts.<id>.catalog.auto_compact_overrides]` maps model IDs to positive
-integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value. The automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at the provider’s explicit `auto_compact_token_limit` when supplied. Unknown context and prices can be omitted.
+integer thresholds up to 90% of the known maximum context (inclusive, rounded down). Removing the key restores the current automatic value across all protocols (Gemini, OpenAI, and compatible endpoints). For bundled models and members matching an account’s bundled catalog ID, the automatic default takes 90% of the provider’s `context_window` (or `max_context_window` if absent) and caps it at `auto_compact_token_limit` when supplied. For online models without a bundled counterpart and unbundled manual models, an omitted `auto_compact_token_limit` defaults to `min(256000, floor(window * 90%))` when context is declared (or stays disabled if 90% floors to `0`) and `256000` when context is unknown, without writing the fallback into `config.toml`; an explicit `auto_compact_token_limit` is still honored (capped at 90% when context is known). Unknown context and prices can be omitted.
 
 ## Credentials
 

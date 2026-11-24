@@ -88,8 +88,14 @@ pub struct ImageGenerationService {
 
 impl AccountModelEntry {
     pub fn new(model: ModelDefinition, origin: AccountModelOrigin) -> Self {
+        let default_policy = match origin {
+            AccountModelOrigin::Bundled => crate::model::AutoCompactDefaultPolicy::Bundled,
+            AccountModelOrigin::Online | AccountModelOrigin::Manual => {
+                crate::model::AutoCompactDefaultPolicy::UnbundledOrManual
+            }
+        };
         Self {
-            context: model.resolve_context(None),
+            context: model.resolve_context(None, default_policy),
             model,
             origin,
             enabled: true,
@@ -401,22 +407,14 @@ impl AccountConfig {
         let catalog = if let Some(catalog) = &self.resolved_catalog {
             catalog.clone()
         } else {
-            apply_connection_overrides(
+            let mut entries = apply_connection_overrides(
                 self.catalog_membership(registry)?,
                 self.connection_overrides(),
                 self.discovery_profile()?.is_some(),
                 self.model_overrides(),
-            )?
-            .into_iter()
-            .map(|mut entry| {
-                entry.context = entry.model.resolve_context(
-                    self.auto_compact_overrides()
-                        .get(&entry.model.base.slug)
-                        .copied(),
-                );
-                entry
-            })
-            .collect()
+            )?;
+            self.resolve_entries_context(&mut entries)?;
+            entries
         };
         Ok(catalog
             .into_iter()
@@ -931,15 +929,7 @@ impl AccountConfig {
                 limit.expect("positive override is present"),
             );
         }
-        let override_limit = self.auto_compact_overrides().get(model).copied();
-        if let Some(catalog) = &mut self.resolved_catalog {
-            for entry in catalog
-                .iter_mut()
-                .filter(|entry| entry.model.base.slug == model)
-            {
-                entry.context = entry.model.resolve_context(override_limit);
-            }
-        }
+        self.refresh_resolved_catalog_context(Some(model))?;
         Ok(())
     }
 
@@ -967,16 +957,51 @@ impl AccountConfig {
                 return Err(PureError::ConfigError(format!("unknown model: {model}")));
             }
         }
-        let limits = candidate.auto_compact_overrides().clone();
-        if let Some(catalog) = &mut candidate.resolved_catalog {
-            for entry in catalog {
-                entry.context = entry
-                    .model
-                    .resolve_context(limits.get(&entry.model.base.slug).copied());
-            }
-        }
+        candidate.refresh_resolved_catalog_context(None)?;
         *self = candidate;
         Ok(())
+    }
+
+    pub(crate) fn resolve_entries_context(&self, entries: &mut [AccountModelEntry]) -> Result<()> {
+        let bundled_slugs = self.bundled_model_slugs()?;
+        apply_entries_context(entries, &bundled_slugs, self.auto_compact_overrides(), None);
+        Ok(())
+    }
+
+    fn refresh_resolved_catalog_context(&mut self, only_model: Option<&str>) -> Result<()> {
+        if self.resolved_catalog.is_none() {
+            return Ok(());
+        }
+        let bundled_slugs = self.bundled_model_slugs()?;
+        let overrides = self.auto_compact_overrides().clone();
+        if let Some(catalog) = &mut self.resolved_catalog {
+            apply_entries_context(catalog, &bundled_slugs, &overrides, only_model);
+        }
+        Ok(())
+    }
+
+    fn bundled_model_slugs(&self) -> Result<BTreeSet<String>> {
+        match &self.catalog {
+            AccountModelCatalogConfig::Bundled { catalog, .. } => {
+                Ok(builtin_model_catalog(catalog)?
+                    .models
+                    .into_iter()
+                    .map(|model| model.base.slug)
+                    .collect())
+            }
+            AccountModelCatalogConfig::Explicit { .. } => Ok(BTreeSet::new()),
+        }
+    }
+
+    fn auto_compact_default_policy(
+        model_id: &str,
+        bundled_slugs: &BTreeSet<String>,
+    ) -> crate::model::AutoCompactDefaultPolicy {
+        if bundled_slugs.contains(model_id) {
+            crate::model::AutoCompactDefaultPolicy::Bundled
+        } else {
+            crate::model::AutoCompactDefaultPolicy::UnbundledOrManual
+        }
     }
 
     fn auto_compact_overrides_mut(&mut self) -> &mut BTreeMap<String, u64> {
@@ -1202,6 +1227,23 @@ impl AccountConfig {
                 }
             }
         }
+    }
+}
+
+fn apply_entries_context(
+    entries: &mut [AccountModelEntry],
+    bundled_slugs: &BTreeSet<String>,
+    overrides: &BTreeMap<String, u64>,
+    only_model: Option<&str>,
+) {
+    for entry in entries {
+        if only_model.is_some_and(|model| entry.model.base.slug != model) {
+            continue;
+        }
+        let policy =
+            AccountConfig::auto_compact_default_policy(&entry.model.base.slug, bundled_slugs);
+        let override_limit = overrides.get(&entry.model.base.slug).copied();
+        entry.context = entry.model.resolve_context(override_limit, policy);
     }
 }
 

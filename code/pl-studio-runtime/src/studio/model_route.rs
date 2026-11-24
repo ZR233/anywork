@@ -232,7 +232,8 @@ pub(crate) fn unavailable_placeholder(
         Some(entry) => (entry.model, entry.context),
         None => {
             let model = pl_model::model::ModelDefinition::compatible(&selector.model_id);
-            let context = model.resolve_context(None);
+            let context =
+                model.resolve_context(None, pl_model::model::AutoCompactDefaultPolicy::Bundled);
             (model, context)
         }
     };
