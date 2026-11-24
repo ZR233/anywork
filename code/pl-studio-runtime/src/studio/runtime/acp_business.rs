@@ -31,7 +31,7 @@ mod mixed_tests {
     async fn peer_opening(fixture: &Fixture) -> Result<()> {
         tokio::time::timeout(Duration::from_secs(20), async {
             while !tokio::fs::try_exists(fixture.home.path().join("opening")).await? {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
             }
             Ok::<_, anyhow::Error>(())
         })
@@ -92,14 +92,6 @@ mod mixed_tests {
         );
         assert_eq!(session.delegation_mode, delegation.mode);
         assert_eq!(session.delegation_preference, delegation.preference);
-        eprintln!(
-            "Session preserved through child publication: session={}, title={}, mode={:?}, preference={:?}, sessionCount={}",
-            session.session_id,
-            session.title,
-            session.delegation_mode,
-            session.delegation_preference,
-            sessions.len()
-        );
         Ok(())
     }
 
@@ -190,20 +182,10 @@ mod mixed_tests {
             for owner in runtime.sessions.resident_sessions() {
                 for id in owner.acp_roots_for_workspace(workspace) {
                     if let Some(resources) = owner.resident_acp(&id)? {
-                        let outcome = resources.close().await;
-                        eprintln!(
-                            "ACP failure cleanup: thread={id}, localComplete={}, outcome={outcome:?}",
-                            outcome.local_complete
-                        );
+                        let _ = resources.close().await;
                     }
                 }
-                let report = owner.close_session().await;
-                for (id, error) in report.iter() {
-                    eprintln!(
-                        "original Session close retry failed: thread={id}, error={:#}",
-                        anyhow::Error::from(error.clone())
-                    );
-                }
+                let _ = owner.close_session().await;
             }
         }
         match result {
@@ -215,9 +197,7 @@ mod mixed_tests {
                 }
             },
             Err(panic) => {
-                if let Err(error) = cleanup {
-                    eprintln!("runtime shutdown after test panic failed: {error:#}");
-                }
+                let _ = cleanup;
                 std::panic::resume_unwind(panic)
             }
         }
@@ -381,59 +361,97 @@ mod mixed_tests {
             .await
             .context("reload original mixed StudioRuntime")?;
             let result = std::panic::AssertUnwindSafe(async {
-            let parent = runtime.ensure_thread_owner(caller.thread_id.as_str()).await
-                .context("restore Native parent from mixed public directory")?;
-            let owner = runtime.session_of(caller.thread_id.as_str())
-                .context("reconstructed Native parent owner")?;
-            let resources = owner.native_resources(&parent)?;
-            let profiles = runtime.config_runtime.agent_profiles_snapshot()?;
-            let selection = crate::studio::delegation::saved(&parent.snapshot())?
-                .context("reconstructed parent delegation")?;
-            let host = owner.native_agent_host(caller, &resources, &profiles, selection)?;
-            let restored_identity = runtime.agent_facility.product_events
-                .member_identity(&caller.session_id, &child.agent_id)
-                .context("reconstructed public child identity")?;
-            assert_eq!(restored_identity.thread_id, child.thread_id);
-            assert_eq!(restored_identity.parent_agent_id.as_ref(), Some(&caller.agent_id));
-            assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
-            let accepted = host.send(call(&host, caller, "runtime-rebuilt-send"), AgentMessage {
-                id: "after-runtime-reconstruction".into(),
-                target: child.agent_id.to_string(),
-                message: "task after full runtime reconstruction".into(),
-            }).await.context("restore ACP child after full runtime reconstruction")?;
-            assert!(accepted.sequence.is_none());
-            let restored = owner.resident_acp(child.thread_id.as_str())?
-                .context("ACP child restored by original send owner")?;
-            assert_ne!(restored.generation, old_generation);
-            let completed = completion(&restored, 0).await?;
-            assert_eq!(completed.completion_sequence, 1);
-            let stale = wait_report(&host, caller, &child.agent_id, "rebuilt-stale-cursor",
-                Some(old_cursor.clone())).await.expect_err("cursor must bind the previous resource generation");
-            assert!(stale.to_string().contains("invalid or stale agent report cursor"), "{stale}");
-            let latest = wait_report(&host, caller, &child.agent_id, "rebuilt-latest", None).await?;
-            assert!(!latest.timed_out && !latest.gap);
-            assert_eq!(latest.reports.len(), 1);
-            assert_eq!(latest.reports[0]["generation"], restored.generation);
-            assert_eq!(latest.reports[0]["completionSequence"], completed.completion_sequence);
-            assert_eq!(latest.reports[0]["summary"], completed.summary);
-            assert_eq!(latest.reports[0]["result"], serde_json::to_value(&completed.result)?);
-            assert!(latest.cursor.is_some());
-            assert_ne!(latest.cursor.as_deref(), Some(old_cursor.as_str()));
-            let new_message_id = native_inbox_report(&runtime, caller, child,
-                &restored, &completed).await?;
-            assert_ne!(new_message_id, old_message_id);
-            eprintln!("full StudioRuntime reconstruction: oldGeneration={old_generation}, newGeneration={}, completionSequence={}, oldMessage={old_message_id}, newMessage={new_message_id}, staleCursorRejected=true, sameProcess=true",
-                restored.generation, completed.completion_sequence);
-
-            let closed = host.close(call(&host, caller, "close-rebuilt-child"),
-                child.agent_id.as_str(), Default::default()).await?;
-            assert!(closed.error.is_none(), "{closed:?}");
-            assert!(closed.agents[0].execution_closed);
-            assert!(closed.agents[0].worktree_cleanup.is_terminal());
-            assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
-            assert!(owner.observed_thread(caller.thread_id.as_str()).is_some());
-            Ok(())
-        }).catch_unwind().await;
+                let parent = runtime
+                    .ensure_thread_owner(caller.thread_id.as_str())
+                    .await
+                    .context("restore Native parent from mixed public directory")?;
+                let owner = runtime
+                    .session_of(caller.thread_id.as_str())
+                    .context("reconstructed Native parent owner")?;
+                let resources = owner.native_resources(&parent)?;
+                let profiles = runtime.config_runtime.agent_profiles_snapshot()?;
+                let selection = crate::studio::delegation::saved(&parent.snapshot())?
+                    .context("reconstructed parent delegation")?;
+                let host = owner.native_agent_host(caller, &resources, &profiles, selection)?;
+                let restored_identity = runtime
+                    .agent_facility
+                    .product_events
+                    .member_identity(&caller.session_id, &child.agent_id)
+                    .context("reconstructed public child identity")?;
+                assert_eq!(restored_identity.thread_id, child.thread_id);
+                assert_eq!(
+                    restored_identity.parent_agent_id.as_ref(),
+                    Some(&caller.agent_id)
+                );
+                assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
+                let accepted = host
+                    .send(
+                        call(&host, caller, "runtime-rebuilt-send"),
+                        AgentMessage {
+                            id: "after-runtime-reconstruction".into(),
+                            target: child.agent_id.to_string(),
+                            message: "task after full runtime reconstruction".into(),
+                        },
+                    )
+                    .await
+                    .context("restore ACP child after full runtime reconstruction")?;
+                assert!(accepted.sequence.is_none());
+                let restored = owner
+                    .resident_acp(child.thread_id.as_str())?
+                    .context("ACP child restored by original send owner")?;
+                assert_ne!(restored.generation, old_generation);
+                let completed = completion(&restored, 0).await?;
+                assert_eq!(completed.completion_sequence, 1);
+                let stale = wait_report(
+                    &host,
+                    caller,
+                    &child.agent_id,
+                    "rebuilt-stale-cursor",
+                    Some(old_cursor.clone()),
+                )
+                .await
+                .expect_err("cursor must bind the previous resource generation");
+                assert!(
+                    stale
+                        .to_string()
+                        .contains("invalid or stale agent report cursor"),
+                    "{stale}"
+                );
+                let latest =
+                    wait_report(&host, caller, &child.agent_id, "rebuilt-latest", None).await?;
+                assert!(!latest.timed_out && !latest.gap);
+                assert_eq!(latest.reports.len(), 1);
+                assert_eq!(latest.reports[0]["generation"], restored.generation);
+                assert_eq!(
+                    latest.reports[0]["completionSequence"],
+                    completed.completion_sequence
+                );
+                assert_eq!(latest.reports[0]["summary"], completed.summary);
+                assert_eq!(
+                    latest.reports[0]["result"],
+                    serde_json::to_value(&completed.result)?
+                );
+                assert!(latest.cursor.is_some());
+                assert_ne!(latest.cursor.as_deref(), Some(old_cursor.as_str()));
+                let new_message_id =
+                    native_inbox_report(&runtime, caller, child, &restored, &completed).await?;
+                assert_ne!(new_message_id, old_message_id);
+                let closed = host
+                    .close(
+                        call(&host, caller, "close-rebuilt-child"),
+                        child.agent_id.as_str(),
+                        Default::default(),
+                    )
+                    .await?;
+                assert!(closed.error.is_none(), "{closed:?}");
+                assert!(closed.agents[0].execution_closed);
+                assert!(closed.agents[0].worktree_cleanup.is_terminal());
+                assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
+                assert!(owner.observed_thread(caller.thread_id.as_str()).is_some());
+                Ok(())
+            })
+            .catch_unwind()
+            .await;
             close_runtime(&runtime, &fixture.workspace.id, result).await
         })
     }
@@ -442,10 +460,6 @@ mod mixed_tests {
     async fn native_and_acp_roots_share_real_acp_child_control_and_retirement() -> Result<()> {
         for native in [true, false] {
             let fixture = Fixture::new("replay").await?;
-            eprintln!(
-                "mixed ACP child fixture: native={native}, home={}",
-                fixture.home.path().display()
-            );
             let scenario = async {
                 save_profile(&fixture)?;
                 let (owner, caller, host) = host(&fixture, native).await?;
@@ -673,10 +687,6 @@ mod mixed_tests {
                 } else {
                     None
                 };
-                eprintln!(
-                    "ACP resource reconstruction: oldGeneration={old_generation}, newGeneration={}, reusedCompletionSequence={}, staleCursorRejected=true",
-                    restored.generation, cold_completed.completion_sequence
-                );
                 assert!(
                     child_host
                         .list(call(&child_host, &identity, "stale-host"))
@@ -718,10 +728,6 @@ mod mixed_tests {
                 assert!(owner.acp_identity(caller.thread_id.as_str()).is_some());
                 Ok(())
             };
-            eprintln!(
-                "mixed child scenario future bytes={}",
-                std::mem::size_of_val(&scenario)
-            );
             let result = std::panic::AssertUnwindSafe(scenario).catch_unwind().await;
             close_fixture(&fixture, result)
                 .await
@@ -888,8 +894,6 @@ mod mixed_tests {
         assert_eq!(owner.resident_acp(caller.thread_id.as_str())?.unwrap().instance, parent_instance);
         assert_eq!(provider.live_status().accepted, 1);
         assert_eq!(provider.live_status().rejected, 0);
-        eprintln!("ACP->Native saved failed report: child={}, turn={turn_id}, terminalSequence={terminal_sequence}, messageId={}, cursor={:?}",
-            identity.agent_id, report.id, observed.cursor);
         let closed = host.close(call(&host, &caller, "close-native"), agent.as_str(), Default::default()).await?;
         assert!(closed.error.is_none(), "{closed:?}");
         assert!(closed.agents[0].execution_closed);
@@ -1616,7 +1620,7 @@ mod tests {
         let open = fixture.open().await?;
         timeout(Duration::from_secs(15), async {
             while !fixture.home.path().join("opening").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await?;
@@ -1770,7 +1774,7 @@ mod tests {
             assert_ne!(first.observation.is_some(), second.observation.is_some());
             timeout(Duration::from_secs(15), async {
                 while !fixture.home.path().join("opening").exists() {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    tokio::task::yield_now().await;
                 }
             })
             .await?;
@@ -2309,7 +2313,7 @@ mod tests {
         let open = fixture.open().await?;
         timeout(Duration::from_secs(15), async {
             while !fixture.home.path().join("initializing").exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await?;
@@ -2490,7 +2494,17 @@ mod tests {
             .await?
             .context("cold ACP workflow graph")?;
         assert_eq!(cold_graph.mode_id, crate::mode::ThreadModeId::auto());
-        assert_eq!(cold_graph.states.len(), 9);
+        let definition = restarted
+            .read_thread_mode_definition(&crate::mode::ThreadModeId::auto())
+            .context("auto mode definition")?;
+        let workflow = definition
+            .document
+            .definition
+            .workflow
+            .as_ref()
+            .context("auto mode workflow")?;
+        assert_eq!(cold_graph.states.len(), workflow.states.len());
+        assert_eq!(cold_graph.edges.len(), workflow.transitions.len());
 
         // Reopen persisted ACP thread via Load and verify state restoration.
         let mut open2 = restarted

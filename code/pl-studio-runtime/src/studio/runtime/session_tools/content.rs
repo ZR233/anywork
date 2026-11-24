@@ -621,5 +621,13 @@ mod tests {
         let decoded: Cursor = decode(&token).unwrap();
         assert_eq!(decoded.session_id.as_deref(), Some("s"));
         assert_eq!(decoded.history_cursor.as_deref(), Some("h"));
+        let foreign = encode(&Match {
+            session_id: "other".into(),
+            event_id: "e".into(),
+            snippet: "not a cursor".into(),
+        })
+        .unwrap();
+        assert!(decode::<Cursor>(&foreign).is_err());
+        assert!(decode::<Cursor>("not-a-token").is_err());
     }
 }

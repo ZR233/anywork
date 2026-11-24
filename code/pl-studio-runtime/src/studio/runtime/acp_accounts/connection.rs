@@ -827,7 +827,7 @@ mod tests {
     async fn marker(path: &std::path::Path) {
         tokio::time::timeout(Duration::from_secs(15), async {
             while !path.exists() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await
@@ -841,7 +841,7 @@ mod tests {
                 {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::task::yield_now().await;
             }
         })
         .await

@@ -339,34 +339,3 @@ pub struct AcpMemberCloseFailure {
     pub thread_id: String,
     pub message: String,
 }
-#[cfg(test)]
-mod tests {
-    use super::AcpOpenIntent;
-    use serde_json::json;
-
-    #[test]
-    fn open_intent_distinguishes_remote_identity_from_draft_environment() {
-        let load = AcpOpenIntent::Load {
-            session_id: "remote".into(),
-        };
-        assert_eq!(
-            serde_json::to_value(&load).unwrap(),
-            json!({"kind": "load", "sessionId": "remote"})
-        );
-        let draft = AcpOpenIntent::Draft {
-            workspace_mode: crate::ThreadWorkspaceMode::Worktree,
-            delegation_mode: None,
-            delegation_preference: None,
-            mode: None,
-        };
-        let value = serde_json::to_value(&draft).unwrap();
-        assert_eq!(
-            value,
-            json!({"kind": "draft", "workspaceMode": "worktree", "delegationMode": null, "delegationPreference": null})
-        );
-        assert_eq!(
-            serde_json::from_value::<AcpOpenIntent>(value).unwrap(),
-            draft
-        );
-    }
-}

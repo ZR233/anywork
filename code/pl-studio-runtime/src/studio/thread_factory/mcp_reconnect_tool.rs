@@ -59,9 +59,7 @@ impl TypedTool for ReconnectMcpTool {
         input: Self::Args,
         context: CallContext,
     ) -> Result<Self::Output, Self::Error> {
-        if input.server_id.trim().is_empty() {
-            return Err(ToolError::new(ReconnectMcpError::EmptyServerId));
-        }
+        reject_blank_server_id(&input.server_id).map_err(ToolError::new)?;
         let owner = self
             .owner
             .upgrade()
@@ -103,4 +101,51 @@ pub(super) fn registration(
             owner: Arc::downgrade(owner),
         }))),
     )
+}
+
+fn reject_blank_server_id(server_id: &str) -> Result<(), ReconnectMcpError> {
+    if server_id.trim().is_empty() {
+        Err(ReconnectMcpError::EmptyServerId)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_agent_tool::typed::decode_json;
+
+    #[test]
+    fn reconnect_arguments_reject_missing_mistyped_and_extra_fields() {
+        let rejected = [
+            ("{}", "missing field"),
+            ("{\"serverId\":null}", "invalid type"),
+            ("{\"serverId\":7}", "invalid type"),
+            (
+                "{\"serverId\":\"fixture\",\"threadId\":\"other\"}",
+                "unknown field",
+            ),
+        ];
+        for (raw, marker) in rejected {
+            let error = decode_json::<ReconnectMcpInput>(raw).expect_err(raw);
+            let rendered = error.to_string();
+            assert!(
+                rendered.contains(marker),
+                "{raw} rendered {rendered}, expected {marker}"
+            );
+        }
+        let accepted = decode_json::<ReconnectMcpInput>("{\"serverId\":\"fixture\"}")
+            .expect("known field decodes before owner lookup");
+        assert_eq!(accepted.server_id, "fixture");
+    }
+
+    #[test]
+    fn blank_server_id_is_rejected_before_owner_lookup() {
+        for server_id in ["", "   ", "\n\t"] {
+            let error = reject_blank_server_id(server_id).expect_err(server_id);
+            assert!(error.to_string().contains("non-empty"), "{error}");
+        }
+        assert!(reject_blank_server_id("fixture").is_ok());
+    }
 }

@@ -35,6 +35,9 @@ pub struct StudioStore {
     attachment_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
     history_admission: std::sync::Arc<tokio::sync::RwLock<()>>,
     paths: StudioPaths,
+    // Only the in-memory test store owns a temporary home. Drop recycles it after the
+    // database fields above have closed their files.
+    memory_home: Option<tempfile::TempDir>,
 }
 
 pub use error::{SessionLayoutMigrationFailed, StudioDatabaseError};

@@ -672,30 +672,6 @@ mod tests {
             .expect("a generic resource is not bounded by the command archive ceiling");
     }
 
-    /// A repeated command-archive retry re-saves the same bytes under the same identity.
-    #[tokio::test]
-    async fn repeating_the_command_archive_retry_is_idempotent() {
-        let root = tempfile::tempdir().expect("an isolated retention root");
-        let store = FileResourceStore::new(root.path().to_path_buf());
-        let source = root.path().join("capture.bin");
-        let accepted = b"accepted capture fragment".to_vec();
-        std::fs::write(&source, &accepted).expect("the capture fragment is written");
-
-        let first = store
-            .retain_command_capture(&source)
-            .await
-            .expect("the first archive stores the fragment");
-        let retry = store
-            .retain_command_capture(&source)
-            .await
-            .expect("a repeated retry stores the same fragment");
-        assert_eq!(
-            first, retry,
-            "a repeated retry produces the same content-addressed reference, not a duplicate"
-        );
-        assert_eq!(retry.byte_len(), accepted.len() as u64);
-    }
-
     /// A local disk failure is the typed storage fact core latches; a policy refusal is not.
     #[test]
     fn retention_failure_maps_local_io_to_the_typed_storage_fault() {

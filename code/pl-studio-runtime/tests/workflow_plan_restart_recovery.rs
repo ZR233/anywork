@@ -314,8 +314,15 @@ async fn native_workflow_and_plan_state_recover_after_shutdown_and_restart() -> 
         .context("restored workflow graph")?;
     assert_eq!(graph.mode_id, ThreadModeId::auto());
     assert_eq!(graph.initial_state_id, "triage");
-    assert_eq!(graph.states.len(), 9);
-    assert_eq!(graph.edges.len(), 27);
+    let definition = restarted.read_thread_mode_definition(&ThreadModeId::auto())?;
+    let workflow = definition
+        .document
+        .definition
+        .workflow
+        .as_ref()
+        .context("auto mode workflow")?;
+    assert_eq!(graph.states.len(), workflow.states.len());
+    assert_eq!(graph.edges.len(), workflow.transitions.len());
 
     let plan = rt.plan.context("restored plan snapshot")?;
     assert_eq!(

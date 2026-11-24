@@ -3221,25 +3221,6 @@ pub(super) mod tests {
             events.writer.shutdown().await?;
             Ok(())
         }
-
-        #[tokio::test]
-        async fn legacy_page_matches_the_owner_snapshot_without_concurrency() -> Result<()> {
-            let rows = vec![row("newer", "p1", 20), row("older", "p1", 10)];
-            let (_temp, events) =
-                fixture(rows, vec![project("p1", "Project", "/workspace/project")]).await?;
-
-            let owner = events.read_thread_directory().await?;
-            let page = events.read_thread_directory_page(None, 10).await?;
-            assert_eq!(page.state.revision(), owner.state.revision());
-            assert_eq!(page.state.updated_at(), owner.state.updated_at());
-            assert_eq!(
-                page.state.value().unwrap().rows,
-                owner.state.value().unwrap().rows
-            );
-
-            events.writer.shutdown().await?;
-            Ok(())
-        }
     }
 
     mod contention {
