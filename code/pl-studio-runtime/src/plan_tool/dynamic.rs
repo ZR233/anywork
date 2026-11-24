@@ -7,13 +7,13 @@ use super::types::{
 };
 use crate::plan_tool::state::AgentSessionPlanOptions;
 use crate::thread_assembler::ThreadAssemblyError;
+use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
 use pl_agent_tool::typed::TypedTool;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     model::ToolPresentationContract,
-    thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -277,14 +277,8 @@ where
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(PlanPayloadError::Unsupported {
-                format: input.format().into(),
-                version: input.version(),
-            }));
-        }
-        let args: T::Args =
-            pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+        let input = JsonToolInput::new(&input)?;
+        let args: T::Args = input.decode()?;
         let saved = context.extensions.get(PLAN_EXTENSION);
         let expected_extension_revision = saved.map(|record| record.revision);
         let previous = match saved {
@@ -295,7 +289,7 @@ where
             "{}/{}/{}",
             context.thread_id, context.turn_id, context.call_id
         );
-        let argument_hash = pl_core::context::content_hash(input.content().as_bytes());
+        let argument_hash = input.argument_hash();
         let interaction_id = context.interaction_id();
         let now_secs = crate::studio::unix_seconds();
 
@@ -313,22 +307,17 @@ where
             .tool
             .execute(args, StudioPlanCallContext(Arc::clone(&shared)))
             .await?;
-        let text = serde_json::to_string(&result).map_err(ToolError::new)?;
-        let mut output = ToolOutput::new(
-            OpaquePayload::new("pl.studio.plan-result", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        );
+        let mut output = json_output("pl.studio.plan-result", &result)?;
         let mut guard = shared
             .lock()
             .map_err(|_| ToolError::new(PlanPayloadError::Context))?;
         if guard.next != previous {
-            output = output.with_extension_mutations(vec![ExtensionMutation::Put {
-                id: PLAN_EXTENSION.into(),
-                expected_revision: expected_extension_revision,
-                payload: encode_plan_state(&guard.next)?,
-            }]);
+            output = put_extension(
+                output,
+                PLAN_EXTENSION,
+                expected_extension_revision,
+                encode_plan_state(&guard.next)?,
+            );
         }
         if let Some(prompt) = guard.interaction.take() {
             output = output.with_interaction(prompt);

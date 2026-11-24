@@ -799,25 +799,14 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
         input: pl_core::context::OpaquePayload,
         context: AgentCallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
-        use pl_core::{
-            context::{ContextContent, OpaquePayload},
-            tool::{ToolOutput, opaque::ToolError},
-        };
+        use crate::tool_json::{JsonToolInput, json_output};
+        use pl_core::tool::opaque::ToolError;
         use pl_tool_plan::PlanHost;
 
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "unsupported input payload {} v{}",
-                    input.format(),
-                    input.version()
-                ),
-            )));
-        }
+        let input = JsonToolInput::new(&input)?;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
@@ -829,20 +818,17 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
         };
         let value = match self.kind {
             AcpPlanToolKind::Current => {
-                let _: pl_tool_plan::PlanEmptyArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: pl_tool_plan::PlanEmptyArgs = input.decode()?;
                 serde_json::to_value(self.owner.current(plan_ctx).await.map_err(ToolError::new)?)
                     .map_err(ToolError::new)?
             }
             AcpPlanToolKind::Next => {
-                let _: pl_tool_plan::PlanEmptyArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: pl_tool_plan::PlanEmptyArgs = input.decode()?;
                 serde_json::to_value(self.owner.next(plan_ctx).await.map_err(ToolError::new)?)
                     .map_err(ToolError::new)?
             }
             AcpPlanToolKind::History => {
-                let args: pl_tool_plan::PlanHistoryArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: pl_tool_plan::PlanHistoryArgs = input.decode()?;
                 serde_json::to_value(
                     self.owner
                         .history(args, plan_ctx)
@@ -852,8 +838,7 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 .map_err(ToolError::new)?
             }
             AcpPlanToolKind::Transition => {
-                let args: pl_tool_plan::PlanTransitionArgs =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: pl_tool_plan::PlanTransitionArgs = input.decode()?;
                 let outcome = self
                     .owner
                     .transition(args, plan_ctx)
@@ -875,13 +860,7 @@ impl pl_agent_tool::Tool for AcpPlanBindingTool {
                 val
             }
         };
-        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        ))
+        json_output("application/json", &value)
     }
 }
 
@@ -906,90 +885,67 @@ impl pl_agent_tool::Tool for AcpWorkflowBindingTool {
         input: pl_core::context::OpaquePayload,
         context: AgentCallContext,
     ) -> Result<pl_core::tool::ToolOutput, pl_core::tool::opaque::ToolError> {
+        use crate::tool_json::{JsonToolInput, json_output};
         use crate::workflow_tool::{
             WorkflowOperationKind,
             machine::{EmptyInput, RestartInput, TransitionInput, WorkflowOperation},
         };
-        use pl_core::{
-            context::{ContextContent, OpaquePayload},
-            tool::{ToolOutput, opaque::ToolError},
-        };
+        use pl_core::tool::opaque::ToolError;
 
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "unsupported input payload {} v{}",
-                    input.format(),
-                    input.version()
-                ),
-            )));
-        }
-        let arg_hash = pl_core::context::content_hash(input.content().as_bytes());
+        let input = JsonToolInput::new(&input)?;
+        let arg_hash = input.argument_hash();
         let op = WorkflowOperation {
             turn_id: context.call_id.clone(),
             call_id: context.call_id,
         };
         let value = match self.kind {
             WorkflowOperationKind::Current => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_current_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Next => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_next_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Graph => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_graph_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::History => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 self.owner
                     .workflow_history_json()
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Transition => {
-                let args: TransitionInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: TransitionInput = input.decode()?;
                 self.owner
                     .workflow_transition(args, op, arg_hash)
                     .await
                     .map_err(ToolError::new)?
             }
             WorkflowOperationKind::Restart => {
-                let args: RestartInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let args: RestartInput = input.decode()?;
                 self.owner
                     .workflow_restart(args, op, arg_hash)
                     .await
                     .map_err(ToolError::new)?
             }
         };
-        let text = serde_json::to_string(&value).map_err(ToolError::new)?;
-        Ok(ToolOutput::new(
-            OpaquePayload::new("application/json", 1, text.clone()).map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        ))
+        json_output("application/json", &value)
     }
 }
 

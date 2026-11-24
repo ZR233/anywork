@@ -16,6 +16,7 @@ pub use pl_core::chat::{ChatError, ChatItem, ChatKey};
 pub use pl_core::model::ContentBlock;
 mod hash;
 mod toml_schema;
+mod tool_json;
 
 pub mod agent;
 pub mod approval;

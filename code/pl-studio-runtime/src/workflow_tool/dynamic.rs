@@ -3,12 +3,12 @@ use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
 use crate::thread_assembler::ThreadAssemblyError;
+use crate::tool_json::{JsonToolInput, json_output, put_extension};
 use crate::workflow_tool::WorkflowSessionState;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
-    context::{ContextContent, OpaquePayload},
+    context::OpaquePayload,
     model::ToolPresentationContract,
-    thread::extensions::ExtensionMutation,
     tool::{
         ToolOutput,
         opaque::{CallContext, Registration, ToolError},
@@ -75,32 +75,32 @@ impl WorkflowOperationKind {
     pub(crate) fn definition(self) -> Result<ToolDefinition, pl_agent_tool::DefinitionError> {
         let (name, description, schema) = match self {
             Self::Current => (
-                "workflow_current",
+                super::TOOL_WORKFLOW_CURRENT,
                 "Read the current workflow run, state and CAS revision.",
                 pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Next => (
-                "workflow_next",
+                super::TOOL_WORKFLOW_NEXT,
                 "Read direct next workflow transitions and their guards.",
                 pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Graph => (
-                "workflow_graph",
+                super::TOOL_WORKFLOW_GRAPH,
                 "Read the frozen workflow graph used by this Thread's tools.",
                 pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::History => (
-                "workflow_history",
+                super::TOOL_WORKFLOW_HISTORY,
                 "Read saved workflow transitions and archive receipts.",
                 pl_agent_tool::typed::input_schema_for::<EmptyInput>(),
             ),
             Self::Transition => (
-                "workflow_transition",
+                super::TOOL_WORKFLOW_TRANSITION,
                 "Complete the current workflow state and transition along a valid edge (or set force=true to jump to any valid state ID in the graph). Call this tool alone.",
                 pl_agent_tool::typed::input_schema_for::<TransitionInput>(),
             ),
             Self::Restart => (
-                "workflow_restart",
+                super::TOOL_WORKFLOW_RESTART,
                 "Archive the current run and begin a new lineage using run, revision and state CAS. Call this tool alone.",
                 pl_agent_tool::typed::input_schema_for::<RestartInput>(),
             ),
@@ -109,12 +109,12 @@ impl WorkflowOperationKind {
     }
     fn id(self) -> &'static str {
         match self {
-            Self::Current => "workflow_current",
-            Self::Next => "workflow_next",
-            Self::Graph => "workflow_graph",
-            Self::History => "workflow_history",
-            Self::Transition => "workflow_transition",
-            Self::Restart => "workflow_restart",
+            Self::Current => super::TOOL_WORKFLOW_CURRENT,
+            Self::Next => super::TOOL_WORKFLOW_NEXT,
+            Self::Graph => super::TOOL_WORKFLOW_GRAPH,
+            Self::History => super::TOOL_WORKFLOW_HISTORY,
+            Self::Transition => super::TOOL_WORKFLOW_TRANSITION,
+            Self::Restart => super::TOOL_WORKFLOW_RESTART,
         }
     }
 }
@@ -142,12 +142,7 @@ impl Tool for ThreadWorkflowTool {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
-        if input.format() != "application/json" || input.version() != 1 {
-            return Err(ToolError::new(WorkflowPayloadError::Unsupported {
-                format: input.format().into(),
-                version: input.version(),
-            }));
-        }
+        let input = JsonToolInput::new(&input)?;
         let saved = context
             .extensions
             .get(WORKFLOW_EXTENSION)
@@ -174,14 +169,13 @@ impl Tool for ThreadWorkflowTool {
             turn_id: context.turn_id,
             call_id: context.call_id,
         };
-        let hash = pl_core::context::content_hash(input.content().as_bytes());
+        let hash = input.argument_hash();
         let response = match self.kind {
             WorkflowOperationKind::Current
             | WorkflowOperationKind::Next
             | WorkflowOperationKind::Graph
             | WorkflowOperationKind::History => {
-                let _: EmptyInput =
-                    pl_agent_tool::typed::decode_json(input.content()).map_err(ToolError::new)?;
+                let _: EmptyInput = input.decode()?;
                 match self.kind {
                     WorkflowOperationKind::Current => machine.current_snapshot(&previous),
                     WorkflowOperationKind::Next => machine.next_snapshot(&previous),
@@ -194,42 +188,26 @@ impl Tool for ThreadWorkflowTool {
             }
             WorkflowOperationKind::Transition => serde_json::to_value(
                 machine
-                    .apply_transition(
-                        pl_agent_tool::typed::decode_json(input.content())
-                            .map_err(ToolError::new)?,
-                        &identity,
-                        hash,
-                    )
+                    .apply_transition(input.decode()?, &identity, hash)
                     .map_err(ToolError::new)?,
             )
             .map_err(ToolError::new)?,
             WorkflowOperationKind::Restart => serde_json::to_value(
                 machine
-                    .apply_restart(
-                        pl_agent_tool::typed::decode_json(input.content())
-                            .map_err(ToolError::new)?,
-                        &identity,
-                        hash,
-                    )
+                    .apply_restart(input.decode()?, &identity, hash)
                     .map_err(ToolError::new)?,
             )
             .map_err(ToolError::new)?,
         };
-        let text = serde_json::to_string(&response).map_err(ToolError::new)?;
-        let mut output = ToolOutput::new(
-            OpaquePayload::new("pl.studio.workflow-result", 1, text.clone())
-                .map_err(ToolError::new)?,
-            vec![ContextContent::Text {
-                text: Arc::from(text),
-            }],
-        );
+        let mut output = json_output("pl.studio.workflow-result", &response)?;
         let next = machine.state();
         if next != previous {
-            output = output.with_extension_mutations(vec![ExtensionMutation::Put {
-                id: WORKFLOW_EXTENSION.into(),
-                expected_revision: Some(saved.revision),
-                payload: encode_workflow_state(&next)?,
-            }]);
+            output = put_extension(
+                output,
+                WORKFLOW_EXTENSION,
+                Some(saved.revision),
+                encode_workflow_state(&next)?,
+            );
         }
         Ok(output)
     }
