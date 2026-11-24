@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::studio::records::DirectoryMember;
 use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
-use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
+use crate::studio::store::thread_archive::ArchiveScope;
 
 use super::super::StudioRuntime;
 use super::super::thread_title::{
@@ -536,15 +536,14 @@ impl StudioRuntime {
         let session = self.session_for_roots(std::slice::from_ref(&thread_id))?;
         let scope = session.seal_archive_scope(std::slice::from_ref(&thread_id))?;
         let admitted = scope.preparation_identities(&thread.session.workspace_id);
-        let mut admitted_ids = scope.thread_ids();
-        admitted_ids.extend(
-            thread_tree
-                .iter()
-                .map(|thread| thread.agent.thread_id.clone()),
+        let mut pipeline = super::settlement::TreeSettlementPipeline::pin(
+            self,
+            scope.thread_ids().into_iter().chain(
+                thread_tree
+                    .iter()
+                    .map(|thread| thread.agent.thread_id.clone()),
+            ),
         );
-        admitted_ids.sort();
-        admitted_ids.dedup();
-        let _pins = self.residency.pin_many(admitted_ids.iter().cloned());
         let next_root = next_project_root(&roots, &thread_id);
         let frozen = self
             .freeze_thread_archive(
@@ -553,35 +552,28 @@ impl StudioRuntime {
                 &admitted,
             )
             .await?;
-        admitted_ids.extend(frozen.thread_ids());
+        pipeline.extend_ids(frozen.thread_ids());
         scope.cancel_preparations();
-        admitted_ids.sort();
-        admitted_ids.dedup();
-        let _bot_archive = self.bots.quiesce_archive_threads(&admitted_ids).await?;
-        for id in &admitted_ids {
-            self.title_tasks
-                .cancel(id, ThreadTitleCancellationCause::ThreadArchive)
-                .await;
-        }
+        pipeline.quiesce(self).await?;
+        pipeline
+            .cancel_titles(self, ThreadTitleCancellationCause::ThreadArchive)
+            .await;
         // 归档先结束整棵树的活动工作（design/01 §1.4）：中断当前 Turn、丢弃未消费输入，
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
-        self.end_thread_tree_work(&admitted_ids).await?;
-        tokio::time::timeout(
-            self.archive_settle_timeout(),
-            session.drain_archive_preparations(&scope),
-        )
-        .await
-        .context("archive preparations did not join")??;
+        self.end_thread_tree_work(pipeline.ids()).await?;
+        pipeline
+            .join_scope(self, &session, &scope, "archive preparations did not join")
+            .await?;
         let (_, _, settled_tree) = self
             .load_thread_archive_scope(&thread_id)
             .await?
             .context("sealed archive root disappeared")?;
-        anyhow::ensure!(
+        pipeline.ensure_frozen(
             settled_tree
                 .iter()
-                .all(|thread| admitted_ids.contains(&thread.agent.thread_id)),
-            "archive member has no frozen preparation responsibility"
-        );
+                .map(|thread| thread.agent.thread_id.as_str()),
+            "archive member has no frozen preparation responsibility",
+        )?;
         // A preparation may have durably published just before the registry seal. Preserve its
         // original physical binding before any deletion; unpublished failures were joined above.
         let mut archive = self
@@ -596,15 +588,10 @@ impl StudioRuntime {
             .map(|thread| thread.agent.thread_id.clone())
             .collect::<Vec<_>>();
         // 关闭与保存不得探测或清理物理工作树；目录归档只在整棵树关闭成功后发布。
-        if archive.phase == ArchivePhase::Sealed {
-            self.retire_archived_thread_tree(&removed_thread_ids)
-                .await?;
-            self.retire_private_archive_members(&mut archive).await?;
-        }
         // Saved/Cleaned already own the durable stop/save/retirement ACKs. Reopening a cold
         // writer on retry would recreate temp through directory projection after its cleanup ACK.
-        self.archive_save_confirmed(&mut archive).await?;
-        self.clean_archive_temps(&mut archive).await?;
+        self.finish_sealed_archive(&mut archive, &removed_thread_ids)
+            .await?;
         let committed = self
             .agent_facility
             .product_events
