@@ -52,7 +52,6 @@ pub(crate) enum DeliveryExceptionReason {
     TargetUnavailable,
     AdmissionRejected(Vec<String>),
     IdentityConflict,
-    IdentityUnverifiable,
     StorageUnavailable(Vec<String>),
     SendUnconfirmed(Vec<String>),
     WorkspaceCheckRejected(WorkspaceFailure),
@@ -204,8 +203,7 @@ impl ReviewDeliveryFact {
             | DeliveryExceptionReason::MissingFrozenBaseline
             | DeliveryExceptionReason::TargetChanged
             | DeliveryExceptionReason::TargetUnavailable
-            | DeliveryExceptionReason::IdentityConflict
-            | DeliveryExceptionReason::IdentityUnverifiable => None,
+            | DeliveryExceptionReason::IdentityConflict => None,
         };
         ensure!(
             sources.is_none_or(|sources| sources.len() <= 8

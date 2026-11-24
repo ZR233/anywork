@@ -2340,7 +2340,7 @@ mod tests {
 
     async fn bot_workspace_completion(paths: &StudioPaths, thread: &str) -> Result<bool> {
         let store = StudioStore::prepare_database(&paths.database()).await?;
-        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let writer = crate::studio::storage::write_behind::ThreadWriteBehindWriter::new(store.clone());
         let events = crate::studio::ProductEventBus::new(store.clone(), writer.clone());
         let config = crate::config::ConfigRuntime::initialize(crate::config::ConfigStore::new(
             crate::config::ConfigPaths::from_config_dir(paths.home()),

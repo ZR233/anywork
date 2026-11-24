@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 pub(super) struct ThreadToolAssembly<'a> {
     pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
-    pub assignment: Option<&'a crate::AgentWorkspaceAssignmentSnapshot>,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -22,7 +21,6 @@ pub(super) struct ThreadToolAssembly<'a> {
     pub root_thread_id: &'a str,
     pub workspace: ToolWorkspace,
     pub store: FileResourceStore,
-    pub helper_source: crate::worker_assets::RemoteHelperSource,
 }
 
 pub(super) struct PreparedThreadTools {
@@ -76,12 +74,13 @@ impl StudioThreadFactory {
     pub(super) async fn prepare_thread_tools(
         &self,
         mut assembly: ThreadToolAssembly<'_>,
+        assignment: Option<&crate::AgentWorkspaceAssignmentSnapshot>,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         assembly.workspace =
             super::session_files::bind_thread_session_files(assembly.workspace, assembly.thread_id);
 
         let binding = super::tool_bindings::ToolBinding {
-            assignment: assembly.assignment.cloned(),
+            assignment: assignment.cloned(),
             workspace_usage: assembly.workspace_usage.downgrade(),
             lifetime: std::sync::Arc::new(super::tool_bindings::ThreadToolLifetime::new(
                 self.lsp_binding_updates(),
@@ -171,7 +170,6 @@ impl StudioThreadFactory {
         preparation: CatalogPreparation,
     ) -> Result<PreparedThreadTools, ThreadAssemblyError> {
         let ThreadToolAssembly {
-            assignment: _,
             workspace_usage,
             thread_id,
             cancellation,
@@ -181,7 +179,6 @@ impl StudioThreadFactory {
             root_thread_id,
             workspace,
             store,
-            helper_source,
         } = assembly;
         let bot = match &preparation {
             CatalogPreparation::Initial => {
@@ -335,7 +332,6 @@ impl StudioThreadFactory {
             StudioWorkspaceTools {
                 binding,
                 store,
-                helper_source: helper_source.clone(),
                 host_scratch: self
                     .services
                     .store

@@ -189,7 +189,6 @@ impl SessionRuntime {
     /// terminal operation. History rows that have no marker are not inferred as owed deliveries.
     pub(crate) async fn acknowledge_parent_reports(
         &self,
-        _store: &crate::studio::StudioStore,
         child: &crate::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
         if let Some(parent) = child.parent_thread_id.as_deref()
@@ -1514,10 +1513,7 @@ mod storage_fault_tests {
                     vec![("child".into(), WorkspaceRelease::Preserve)]
                 );
                 assert_eq!(
-                    fixture
-                        .owner
-                        .acknowledge_parent_reports(&store, &child)
-                        .await?,
+                    fixture.owner.acknowledge_parent_reports(&child).await?,
                     ParentReportAcknowledgement::Absent
                 );
                 let SavedMessageIdentity {
@@ -1609,7 +1605,7 @@ mod storage_fault_tests {
             assert_eq!(
                 fixture
                     .owner
-                    .acknowledge_parent_reports(store, &saved.child)
+                    .acknowledge_parent_reports(&saved.child)
                     .await?,
                 ParentReportAcknowledgement::Absent
             );

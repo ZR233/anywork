@@ -434,19 +434,20 @@ impl StudioThreadFactory {
         let tools_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", "starting");
         let mut prepared = self
-            .prepare_thread_tools(ThreadToolAssembly {
-                assignment: None,
-                workspace_usage: workspace_usage.clone(),
-                thread_id: id,
-                cancellation: &cancellation,
-                config: &config,
-                route: &route,
-                project: &project,
-                root_thread_id: &thread.root_thread_id,
-                workspace,
-                store: store.clone(),
-                helper_source: self.services.helper_source.clone(),
-            })
+            .prepare_thread_tools(
+                ThreadToolAssembly {
+                    workspace_usage: workspace_usage.clone(),
+                    thread_id: id,
+                    cancellation: &cancellation,
+                    config: &config,
+                    route: &route,
+                    project: &project,
+                    root_thread_id: &thread.root_thread_id,
+                    workspace,
+                    store: store.clone(),
+                },
+                None,
+            )
             .await?;
         tracing::debug!(target: "thread_preparation", thread_id = id, stage = "tools", elapsed_ms = tools_started.elapsed().as_millis() as u64, "completed");
         prepared.tools = prepared
