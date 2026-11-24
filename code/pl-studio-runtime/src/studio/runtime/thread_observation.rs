@@ -638,35 +638,22 @@ impl ThreadObservations {
     }
 
     pub(super) fn install(&self) -> Result<()> {
-        let observations = Arc::downgrade(&self.0);
         self.0
             .projector
             .sessions
             .upgrade()
             .context("Session table closed")?
-            .push_installer(Arc::new(move |session| {
-                let observations = observations
-                    .upgrade()
-                    .ok_or(crate::thread_assembler::ThreadAssemblyError::Closed)?;
-                ThreadObservations(observations)
-                    .install_session(session)
-                    .map_err(
-                        |source| crate::thread_assembler::ThreadAssemblyError::Resource {
-                            operation: "install session observations",
-                            source: source.into_boxed_dyn_error(),
-                        },
-                    )
-            }))?;
+            .push_assignment(self.session_assignment())?;
         Ok(())
     }
 
-    fn install_session(&self, session: &crate::session::SessionRuntime) -> Result<()> {
+    fn session_assignment(&self) -> crate::thread_assembler::SessionAssignment {
         let owner = Arc::downgrade(&self.0);
         let draining = owner.clone();
         let synchronizing = owner.clone();
         let closing = owner.clone();
         let terminal = owner.clone();
-        session.observe_assembly(
+        crate::thread_assembler::SessionAssignment::observation(
             move |id, thread, resources| {
                 if let Some(owner) = owner.upgrade() {
                     ThreadObservations(owner).observe(id, thread, resources);
@@ -737,8 +724,7 @@ impl ThreadObservations {
                         )
                 })
             },
-        )?;
-        Ok(())
+        )
     }
 
     fn cancel_for_deletion(&self, id: &str) {

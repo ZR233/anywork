@@ -585,36 +585,6 @@ impl SessionRuntime {
         }));
         Ok(())
     }
-    pub(crate) fn set_acp_business(
-        &self,
-        business: crate::studio::runtime::acp_business::AcpBusinessOwner,
-    ) -> Result<(), ThreadAssemblyError> {
-        let mut state = self.0.state();
-        let services = state
-            .agent_services
-            .as_mut()
-            .ok_or(ThreadAssemblyError::Closed)?;
-        // Installers replace the original service snapshot. In-flight operations keep the
-        // exact leases they captured, as they did when this bundle was cloned by value.
-        Arc::make_mut(services).acp_business = Some(business);
-        Ok(())
-    }
-    /// Installs the runtime's Recovery publisher for internal activation failures.
-    ///
-    /// Installed once, after the runtime owns its Recovery registry, so an internal scheduling
-    /// failure reports the same diagnosis an explicit activation would.
-    pub(crate) fn set_workspace_recovery(
-        &self,
-        publisher: Option<WorkspaceRecoveryPublisher>,
-    ) -> Result<(), ThreadAssemblyError> {
-        let mut state = self.0.state();
-        let services = state
-            .agent_services
-            .as_mut()
-            .ok_or(ThreadAssemblyError::Closed)?;
-        Arc::make_mut(services).workspace_recovery = publisher;
-        Ok(())
-    }
 
     pub(super) fn agent_profiles_snapshot(
         &self,

@@ -468,3 +468,47 @@ impl super::SessionRuntime {
         ))
     }
 }
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestChildFactory;
+
+#[cfg(test)]
+impl StudioChildFactory for TestChildFactory {
+    type Admission = ();
+
+    async fn admit(
+        &self,
+        _profile_id: &str,
+        _delegation: crate::DelegationSettings,
+        _selection: Option<crate::NewThreadModelRoute>,
+    ) -> Result<(), ThreadAssemblyError> {
+        Err(ThreadAssemblyError::Closed)
+    }
+
+    async fn prepare(
+        &self,
+        _request: ChildThreadRequest,
+        _admission: Self::Admission,
+    ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
+        Err(ThreadAssemblyError::Closed)
+    }
+
+    async fn discard_unpublished(
+        &self,
+        _id: &str,
+        _usage: Option<&super::WorkspaceUsageLease>,
+        _disposition: WorkspaceRelease,
+    ) -> Result<(), ThreadAssemblyError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl super::SessionAssignment {
+    pub(crate) fn test_factory() -> Self {
+        Self(super::AssignmentKind::Factory(ChildFactory::new(
+            TestChildFactory,
+        )))
+    }
+}

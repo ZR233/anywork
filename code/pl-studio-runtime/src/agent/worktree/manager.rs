@@ -240,28 +240,40 @@ impl WorktreeManager {
         });
         if exists {
             if registration.is_none_or(|entry| entry.prunable) {
-                return Err(WorktreeError::IdentityMismatch(format!(
-                    "registration does not name the existing managed checkout: \
-                     managed_path={:?}, repo_root={:?}, normalized_target={target:?}, \
-                     matched_registration_prunable={:?}, registered_count={}, \
-                     first_registrations={:?}",
-                    handle.path,
-                    self.repo_root,
-                    registration.map(|entry| entry.prunable),
-                    registered.len(),
-                    registered
-                        .iter()
-                        .take(8)
-                        .map(|entry| (
-                            &entry.path,
+                let matched_prunable = registration
+                    .map(|entry| entry.prunable)
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "none".to_string());
+                let registration_sample = registered
+                    .iter()
+                    .take(8)
+                    .map(|entry| {
+                        format!(
+                            "path={}, normalized={:?}, prunable={}",
+                            entry.path,
                             super::backend::resolved_git_path(
                                 &entry.path,
                                 &self.repo_root.to_string_lossy()
                             ),
                             entry.prunable,
-                        ))
-                        .collect::<Vec<_>>(),
-                )));
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                tracing::warn!(
+                    target: "worktree",
+                    reason = "registration_missing_or_prunable",
+                    managed_path = %handle.path.display(),
+                    repo_root = %self.repo_root.display(),
+                    normalized_target = %target,
+                    matched_prunable = %matched_prunable,
+                    registered_count = registered.len(),
+                    registration_sample = %registration_sample,
+                    "worktree registration does not name the existing managed checkout"
+                );
+                return Err(WorktreeError::IdentityMismatch(
+                    "registration does not name the existing managed checkout".into(),
+                ));
             }
             let site = self.git_common_dir(&handle.path).await?;
             let repository = self.git_common_dir(&self.repo_root).await?;
@@ -465,5 +477,154 @@ fn safe_component(raw: &str) -> String {
         "agent".into()
     } else {
         value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use futures::FutureExt;
+
+    use super::super::{WorktreeBackend, WorktreeCreateFailure, WorktreeError, WorktreeStatus};
+    use super::{WorktreeHandle, WorktreeManager};
+
+    #[derive(Debug)]
+    struct ListedCheckout {
+        list: String,
+    }
+
+    impl ListedCheckout {
+        fn unused(&self) -> WorktreeError {
+            WorktreeError::InvalidResource("identity fixture does not run this git command".into())
+        }
+    }
+
+    impl WorktreeBackend for ListedCheckout {
+        fn is_ancestor<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+            _ancestor: &'a str,
+            _descendant: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<bool, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn resolve_repo_root<'a>(
+            &'a self,
+            _path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<PathBuf, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn create_parent<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+            _target_path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<(), WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn path_exists<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+            _path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<bool, WorktreeError>> {
+            async move { Ok(true) }.boxed()
+        }
+
+        fn create<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+            _target_path: &'a Path,
+            _base_commit: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<(), WorktreeCreateFailure>> {
+            async move { Err(WorktreeCreateFailure::may_have_created(self.unused())) }.boxed()
+        }
+
+        fn resolve_head<'a>(
+            &'a self,
+            _worktree_path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<String, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn status<'a>(
+            &'a self,
+            _worktree_path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<WorktreeStatus, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn remove<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+            _target_path: &'a Path,
+            _force: bool,
+        ) -> futures::future::BoxFuture<'a, Result<(), WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn worktree_list<'a>(
+            &'a self,
+            _repo_root: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<String, WorktreeError>> {
+            let list = self.list.clone();
+            async move { Ok(list) }.boxed()
+        }
+
+        fn git_common_dir<'a>(
+            &'a self,
+            _path: &'a Path,
+        ) -> futures::future::BoxFuture<'a, Result<String, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+
+        fn worktree_backlink<'a>(
+            &'a self,
+            _path: &'a Path,
+            _common_dir: &'a str,
+        ) -> futures::future::BoxFuture<'a, Result<String, WorktreeError>> {
+            async move { Err(self.unused()) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn prunable_registration_diagnostic_keeps_checkout_paths_out_of_the_error() {
+        let repo = PathBuf::from("/var/identity-token/repo");
+        let path = repo.join(".anywork/worktrees/thread-token/session");
+        let list = format!(
+            "worktree {}\nprunable\n\nworktree /var/identity-token/other\n",
+            path.display()
+        );
+        let manager = WorktreeManager::new(repo, Arc::new(ListedCheckout { list }));
+        let error = manager
+            .verify(&WorktreeHandle {
+                path,
+                base_commit: "abc".into(),
+            })
+            .await
+            .expect_err("prunable registration is not the managed checkout");
+        let display = error.to_string();
+        let diagnostic = error.safe_diagnostic();
+        assert!(
+            display.contains("registration does not name the existing managed checkout"),
+            "{display}"
+        );
+        assert!(
+            diagnostic.contains("registration does not name the existing managed checkout"),
+            "{diagnostic}"
+        );
+        for leaked in ["identity-token", "thread-token", "/var/"] {
+            assert!(
+                !display.contains(leaked),
+                "display leaked {leaked}: {display}"
+            );
+            assert!(
+                !diagnostic.contains(leaked),
+                "diagnostic leaked {leaked}: {diagnostic}"
+            );
+        }
     }
 }

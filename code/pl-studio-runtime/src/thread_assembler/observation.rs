@@ -62,6 +62,88 @@ impl std::fmt::Debug for AssemblyObservation {
         f.write_str("AssemblyObservation")
     }
 }
+impl AssemblyObservation {
+    pub(super) fn from_callbacks(
+        observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
+        + Send
+        + Sync
+        + 'static,
+        drain: impl Fn(
+            String,
+            ClosePurpose,
+        ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        current_turn: Option<Arc<CurrentTurnLookup>>,
+        before_close: impl Fn(
+            String,
+            ThreadHandle,
+            ClosePurpose,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        synchronize: impl Fn(
+            String,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self(
+            Arc::new(observe),
+            Arc::new(drain),
+            current_turn,
+            Arc::new(before_close),
+            Arc::new(synchronize),
+        )
+    }
+}
+impl super::SessionAssignment {
+    pub(crate) fn observation(
+        observe: impl Fn(String, ThreadHandle, Arc<crate::session::NativeResources>)
+        + Send
+        + Sync
+        + 'static,
+        drain: impl Fn(
+            String,
+            ClosePurpose,
+        ) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        current_turn: Option<Arc<CurrentTurnLookup>>,
+        before_close: impl Fn(
+            String,
+            ThreadHandle,
+            ClosePurpose,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+        synchronize: impl Fn(
+            String,
+        )
+            -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self(super::AssignmentKind::Observation(
+            AssemblyObservation::from_callbacks(
+                observe,
+                drain,
+                current_turn,
+                before_close,
+                synchronize,
+            ),
+        ))
+    }
+}
 impl SessionRuntime {
     pub(crate) fn observe_assembly(
         &self,
@@ -102,12 +184,12 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Closed);
         }
-        state.observation = Some(AssemblyObservation(
-            Arc::new(observe),
-            Arc::new(drain),
+        state.observation = Some(AssemblyObservation::from_callbacks(
+            observe,
+            drain,
             current_turn,
-            Arc::new(before_close),
-            Arc::new(synchronize),
+            before_close,
+            synchronize,
         ));
         Ok(())
     }

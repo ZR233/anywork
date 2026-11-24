@@ -160,9 +160,9 @@ pub(in crate::studio) async fn prepare_workspace(
                 manager = WorktreeManager::new(repository_root.clone(), backend);
             }
             let base_commit = manager.clean_spawn_head(&caller_root).await?;
-            if manager.git_common_dir(&caller_root).await?.is_none()
-                || manager.git_common_dir(&caller_root).await?
-                    != manager.git_common_dir(&repository_root).await?
+            let caller_common = manager.git_common_dir(&caller_root).await?;
+            if caller_common.is_none()
+                || caller_common != manager.git_common_dir(&repository_root).await?
             {
                 return Err(lifecycle_error(
                     "caller execution checkout differs from the resolved Git repository",
@@ -177,8 +177,10 @@ pub(in crate::studio) async fn prepare_workspace(
                 &ownership,
             );
 
-            let identity =
-                WorkspaceIdentity::canonical(endpoint, workspace_path_text(&path, remote)?)?;
+            let identity = WorkspaceIdentity::canonical(
+                endpoint.clone(),
+                workspace_path_text(&path, remote)?,
+            )?;
             worktrees.assign_workspace(request.usage, identity.clone())?;
             request
                 .store
@@ -191,7 +193,7 @@ pub(in crate::studio) async fn prepare_workspace(
             // 远端 lease 的仓库根与 worktree 路径必须记录为 POSIX：会话工作区根、workspace
             // 打开参数与 git 路径参数都从该记录派生，宿主分隔符不得进入 durable 事实。
             let repository_root_text = workspace_path_text(&repository_root, remote)?;
-            let mut durable = WorktreeLease {
+            let durable = WorktreeLease {
                 revision: 1,
                 state: WorktreeLeaseState::Prepared,
                 owner_kind: WorktreeLeaseOwnerKind::Child,
@@ -214,6 +216,13 @@ pub(in crate::studio) async fn prepare_workspace(
                     "caller execution identity or HEAD changed before worktree creation",
                 ));
             }
+            prepare_repository_worktree_pool(
+                ssh_manager,
+                request.project.ssh_alias.as_deref(),
+                &repository_root,
+                &endpoint,
+            )
+            .await?;
             worktrees.record_durable(durable.clone()).await?;
             worktrees.preserve_workspace_resources(&child_id, identity);
             let handle = create_prepared_worktree(
@@ -228,18 +237,26 @@ pub(in crate::studio) async fn prepare_workspace(
                 },
             )
             .await?;
-            let handle_path_text = workspace_path_text(&handle.path, remote)?;
-            durable.path = handle_path_text.clone();
+            if !workspace_paths_equal(&handle.path, &path, remote)? {
+                let mut retained = durable;
+                retained.transition(WorktreeLeaseState::Preserved);
+                worktrees.record_durable(retained).await?;
+                return Err(WorktreeError::IdentityMismatch(
+                    "created child path differs from its original allocation".into(),
+                )
+                .into());
+            }
+            let path_text = durable.path.clone();
 
             (
                 AgentWorkspaceAssignmentSnapshot {
                     mode,
                     project_root: project_root_text,
-                    root: handle_path_text.clone(),
+                    root: path_text.clone(),
                     writable_paths: None,
                     worktree: Some(AgentWorktreeSnapshot {
                         repository_root: repository_root_text,
-                        path: handle_path_text,
+                        path: path_text,
                         base_commit,
                     }),
                     review_target: None,
