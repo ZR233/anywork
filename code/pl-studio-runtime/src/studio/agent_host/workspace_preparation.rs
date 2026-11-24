@@ -177,8 +177,10 @@ pub(in crate::studio) async fn prepare_workspace(
                 &ownership,
             );
 
-            let identity =
-                WorkspaceIdentity::canonical(endpoint, workspace_path_text(&path, remote)?)?;
+            let identity = WorkspaceIdentity::canonical(
+                endpoint.clone(),
+                workspace_path_text(&path, remote)?,
+            )?;
             worktrees.assign_workspace(request.usage, identity.clone())?;
             request
                 .store

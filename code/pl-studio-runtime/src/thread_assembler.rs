@@ -356,12 +356,139 @@ impl State {
 
 pub(crate) type SessionCloseReport = Arc<Vec<(String, Arc<ThreadAssemblyError>)>>;
 
-/// Fields mutated by session installers. Restoring them is the table's rollback for a failed install.
+/// Prepared session installation data. The table checks and commits these slots; it does not run callbacks.
 #[derive(Clone)]
-pub(crate) struct InstallerSlots {
-    agent_services: Option<Arc<agent_services::AgentServices>>,
-    observation: Option<observation::AssemblyObservation>,
-    child_factory: Option<children::ChildFactory>,
+pub(crate) struct SessionAssignment(AssignmentKind);
+
+#[derive(Clone)]
+enum AssignmentKind {
+    Services {
+        services: Arc<agent_services::AgentServices>,
+        child_factory: children::ChildFactory,
+    },
+    Observation(observation::AssemblyObservation),
+    WorkspaceRecovery(WorkspaceRecoveryPublisher),
+    #[cfg(test)]
+    Factory(children::ChildFactory),
+}
+
+impl SessionAssignment {
+    fn kind(&self) -> &AssignmentKind {
+        &self.0
+    }
+
+    pub(crate) fn services(
+        config: crate::config::ConfigRuntime,
+        store: crate::studio::StudioStore,
+        events: crate::studio::ProductEventBus,
+        factory: crate::studio::StudioThreadFactory,
+        performance: crate::studio::ModelPerformanceOwner,
+        recovery: crate::studio::StudioRecoveryRegistry,
+        acp_business: crate::studio::runtime::acp_business::AcpBusinessOwner,
+    ) -> Self {
+        let child_factory = children::ChildFactory::new(children::ConfiguredChildFactory::new(
+            config.clone(),
+            factory.clone(),
+        ));
+        Self(AssignmentKind::Services {
+            services: Arc::new(agent_services::AgentServices {
+                factory,
+                config,
+                store,
+                events,
+                performance,
+                recovery,
+                operations: Default::default(),
+                workspace_recovery: None,
+                acp_business: Some(acp_business),
+            }),
+            child_factory,
+        })
+    }
+
+    pub(crate) fn workspace_recovery(publisher: WorkspaceRecoveryPublisher) -> Self {
+        Self(AssignmentKind::WorkspaceRecovery(publisher))
+    }
+}
+
+/// Outcome of admitting one assignment onto one generation.
+pub(crate) enum AssignmentAdmission {
+    Ready,
+    /// The generation is already leaving and is not an installation target.
+    Skipping,
+    Rejected(ThreadAssemblyError),
+}
+
+pub(crate) struct AssignmentGuard<'a> {
+    state: std::sync::MutexGuard<'a, State>,
+}
+
+impl AssignmentGuard<'_> {
+    pub(crate) fn admission(&self, assignment: &SessionAssignment) -> AssignmentAdmission {
+        if self.state.closing {
+            return AssignmentAdmission::Skipping;
+        }
+        match self.reject_reason(assignment) {
+            Some(error) => AssignmentAdmission::Rejected(error),
+            None => AssignmentAdmission::Ready,
+        }
+    }
+
+    pub(crate) fn accepts(
+        &self,
+        assignment: &SessionAssignment,
+    ) -> Result<(), ThreadAssemblyError> {
+        self.reject_reason(assignment).map_or(Ok(()), Err)
+    }
+
+    pub(crate) fn commit(&mut self, assignment: &SessionAssignment) {
+        match assignment.kind() {
+            AssignmentKind::Services {
+                services,
+                child_factory,
+            } => {
+                self.state.agent_services = Some(Arc::clone(services));
+                self.state.child_factory = Some(child_factory.clone());
+            }
+            AssignmentKind::Observation(observation) => {
+                self.state.observation = Some(observation.clone());
+            }
+            AssignmentKind::WorkspaceRecovery(publisher) => {
+                let services = self
+                    .state
+                    .agent_services
+                    .as_mut()
+                    .expect("recovery admission requires agent services");
+                // In-flight operations keep the leases they already captured.
+                Arc::make_mut(services).workspace_recovery = Some(publisher.clone());
+            }
+            #[cfg(test)]
+            AssignmentKind::Factory(factory) => {
+                self.state.child_factory = Some(factory.clone());
+            }
+        }
+    }
+
+    fn reject_reason(&self, assignment: &SessionAssignment) -> Option<ThreadAssemblyError> {
+        let busy =
+            self.state.closing || !self.state.entries.is_empty() || !self.state.creating.is_empty();
+        let rejected = match assignment.kind() {
+            AssignmentKind::Services { .. } => {
+                busy || self.state.agent_services.is_some() || self.state.child_factory.is_some()
+            }
+            AssignmentKind::Observation(_) => busy || self.state.observation.is_some(),
+            AssignmentKind::WorkspaceRecovery(_) => {
+                busy || self
+                    .state
+                    .agent_services
+                    .as_ref()
+                    .is_none_or(|services| services.workspace_recovery.is_some())
+            }
+            #[cfg(test)]
+            AssignmentKind::Factory(_) => busy || self.state.child_factory.is_some(),
+        };
+        rejected.then_some(ThreadAssemblyError::Closed)
+    }
 }
 
 type CloseCompletion =
@@ -775,28 +902,26 @@ impl SessionRuntime {
         Ok(())
     }
 
-    /// Installer-owned slots. `push_installer` restores this snapshot when a later callback fails,
-    /// so a rejected installer cannot leave some generations mutated and others untouched.
-    pub(crate) fn installer_slots(&self) -> InstallerSlots {
-        let state = self.0.state();
-        InstallerSlots {
-            agent_services: state.agent_services.clone(),
-            observation: state.observation.clone(),
-            child_factory: state.child_factory.clone(),
-        }
-    }
-
-    pub(crate) fn restore_installer_slots(&self, slots: InstallerSlots) {
-        let mut state = self.0.state();
-        state.agent_services = slots.agent_services;
-        state.observation = slots.observation;
-        state.child_factory = slots.child_factory;
-    }
-
     #[cfg(test)]
     pub(crate) fn test_enter_closing(&self) {
         let mut life = self.0.life();
         life.phase = crate::session::SessionPhase::Closing;
+    }
+
+    pub(crate) fn lock_assignment(&self) -> AssignmentGuard<'_> {
+        AssignmentGuard {
+            state: self.0.state(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_observation(&self) -> bool {
+        self.0.state().observation.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_has_child_factory(&self) -> bool {
+        self.0.state().child_factory.is_some()
     }
 
     /// Validates history, opens a fresh model session, binds tools/services and publishes once.

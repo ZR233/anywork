@@ -118,21 +118,15 @@ impl StudioRuntime {
         let service_factory = thread_factory.clone();
         let service_performance = model_performance.clone();
         let service_recovery = recovery.clone();
-        sessions.push_installer(std::sync::Arc::new(move |session| {
-            session.set_agent_services(
-                service_config.clone(),
-                service_store.clone(),
-                service_events.clone(),
-                service_factory.clone(),
-                service_performance.clone(),
-                service_recovery.clone(),
-            )?;
-            session.set_acp_business(acp_business.clone())?;
-            session.set_child_factory(crate::thread_assembler::ConfiguredChildFactory::new(
-                service_config.clone(),
-                service_factory.clone(),
-            ))
-        }))?;
+        sessions.push_assignment(crate::thread_assembler::SessionAssignment::services(
+            service_config,
+            service_store,
+            service_events,
+            service_factory,
+            service_performance,
+            service_recovery,
+            acp_business,
+        ))?;
         let thread_observations = super::super::thread_observation::ThreadObservations::new(
             super::super::thread_observation::ObservationServices {
                 config: config_runtime.clone(),
