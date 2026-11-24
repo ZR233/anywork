@@ -14138,6 +14138,318 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Managed server & updates'**
   String get acpManagedServerTitle;
+
+  /// No description provided for @timelineTurnFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn failed'**
+  String get timelineTurnFailed;
+
+  /// No description provided for @timelineTurnCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn completed'**
+  String get timelineTurnCompleted;
+
+  /// No description provided for @timelineTurnBudgetLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn reached budget limit'**
+  String get timelineTurnBudgetLimited;
+
+  /// No description provided for @timelineTurnOutcomeFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn · {state}'**
+  String timelineTurnOutcomeFallback(String state);
+
+  /// No description provided for @timelineOutcomeNoMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'No error details were provided.'**
+  String get timelineOutcomeNoMessage;
+
+  /// No description provided for @timelineOutcomeTechnicalDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Technical details'**
+  String get timelineOutcomeTechnicalDetails;
+
+  /// No description provided for @timelineOutcomeRawRecord.
+  ///
+  /// In en, this message translates to:
+  /// **'Public raw record'**
+  String get timelineOutcomeRawRecord;
+
+  /// No description provided for @timelineOutcomeCopyMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy error message'**
+  String get timelineOutcomeCopyMessage;
+
+  /// No description provided for @timelineOutcomeCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied'**
+  String get timelineOutcomeCopied;
+
+  /// No description provided for @timelineOutcomeShowMore.
+  ///
+  /// In en, this message translates to:
+  /// **'Show full message'**
+  String get timelineOutcomeShowMore;
+
+  /// No description provided for @timelineOutcomeShowLess.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse'**
+  String get timelineOutcomeShowLess;
+
+  /// No description provided for @timelineFailureCategoryProvider.
+  ///
+  /// In en, this message translates to:
+  /// **'Model provider'**
+  String get timelineFailureCategoryProvider;
+
+  /// No description provided for @timelineFailureCategoryProviderCapacity.
+  ///
+  /// In en, this message translates to:
+  /// **'Provider capacity'**
+  String get timelineFailureCategoryProviderCapacity;
+
+  /// No description provided for @timelineFailureCategoryTool.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool execution'**
+  String get timelineFailureCategoryTool;
+
+  /// No description provided for @timelineFailureCategoryValidation.
+  ///
+  /// In en, this message translates to:
+  /// **'Input validation'**
+  String get timelineFailureCategoryValidation;
+
+  /// No description provided for @timelineFailureCategoryProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Protocol'**
+  String get timelineFailureCategoryProtocol;
+
+  /// No description provided for @timelineFailureCategoryInternal.
+  ///
+  /// In en, this message translates to:
+  /// **'Internal'**
+  String get timelineFailureCategoryInternal;
+
+  /// No description provided for @timelineProviderKindAuth.
+  ///
+  /// In en, this message translates to:
+  /// **'Authentication'**
+  String get timelineProviderKindAuth;
+
+  /// No description provided for @timelineProviderKindAuthz.
+  ///
+  /// In en, this message translates to:
+  /// **'Authorization'**
+  String get timelineProviderKindAuthz;
+
+  /// No description provided for @timelineProviderKindCapacity.
+  ///
+  /// In en, this message translates to:
+  /// **'Capacity'**
+  String get timelineProviderKindCapacity;
+
+  /// No description provided for @timelineProviderKindConfig.
+  ///
+  /// In en, this message translates to:
+  /// **'Configuration'**
+  String get timelineProviderKindConfig;
+
+  /// No description provided for @timelineProviderKindTransport.
+  ///
+  /// In en, this message translates to:
+  /// **'Network transport'**
+  String get timelineProviderKindTransport;
+
+  /// No description provided for @timelineProviderKindProtocol.
+  ///
+  /// In en, this message translates to:
+  /// **'Response protocol'**
+  String get timelineProviderKindProtocol;
+
+  /// No description provided for @timelineRetryableHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Retryable'**
+  String get timelineRetryableHint;
+
+  /// No description provided for @timelineRetryAfterSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry after {seconds}s'**
+  String timelineRetryAfterSeconds(int seconds);
+
+  /// No description provided for @timelineRetryPermanent.
+  ///
+  /// In en, this message translates to:
+  /// **'Not auto-retried'**
+  String get timelineRetryPermanent;
+
+  /// No description provided for @timelineBudgetLimitModelStep.
+  ///
+  /// In en, this message translates to:
+  /// **'Model steps'**
+  String get timelineBudgetLimitModelStep;
+
+  /// No description provided for @timelineBudgetLimitToolCall.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool calls'**
+  String get timelineBudgetLimitToolCall;
+
+  /// No description provided for @timelineBudgetLimitWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait steps'**
+  String get timelineBudgetLimitWait;
+
+  /// No description provided for @timelineBudgetLimitWallClock.
+  ///
+  /// In en, this message translates to:
+  /// **'Wall-clock duration'**
+  String get timelineBudgetLimitWallClock;
+
+  /// No description provided for @timelineBudgetLimitAgentCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent count'**
+  String get timelineBudgetLimitAgentCount;
+
+  /// No description provided for @timelineBudgetLimitAgentDepth.
+  ///
+  /// In en, this message translates to:
+  /// **'Subagent depth'**
+  String get timelineBudgetLimitAgentDepth;
+
+  /// No description provided for @timelineBudgetLimitFinalization.
+  ///
+  /// In en, this message translates to:
+  /// **'Finalization'**
+  String get timelineBudgetLimitFinalization;
+
+  /// No description provided for @timelineBudgetLimitMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Execution stopped after reaching the {limit} limit.'**
+  String timelineBudgetLimitMessage(String limit);
+
+  /// No description provided for @timelineBudgetUsageModelSteps.
+  ///
+  /// In en, this message translates to:
+  /// **'Steps {count}'**
+  String timelineBudgetUsageModelSteps(int count);
+
+  /// No description provided for @timelineBudgetUsageToolCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Tools {count}'**
+  String timelineBudgetUsageToolCalls(int count);
+
+  /// No description provided for @timelineBudgetUsageWaitCalls.
+  ///
+  /// In en, this message translates to:
+  /// **'Waits {count}'**
+  String timelineBudgetUsageWaitCalls(int count);
+
+  /// No description provided for @timelineBudgetRolloverSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Context compacted'**
+  String get timelineBudgetRolloverSucceeded;
+
+  /// No description provided for @timelineBudgetRolloverFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Context compaction failed: {error}'**
+  String timelineBudgetRolloverFailed(String error);
+
+  /// No description provided for @timelineDetailCategory.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get timelineDetailCategory;
+
+  /// No description provided for @timelineDetailProviderKind.
+  ///
+  /// In en, this message translates to:
+  /// **'Failure type'**
+  String get timelineDetailProviderKind;
+
+  /// No description provided for @timelineDetailCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Error code'**
+  String get timelineDetailCode;
+
+  /// No description provided for @timelineDetailHttpStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'HTTP status'**
+  String get timelineDetailHttpStatus;
+
+  /// No description provided for @timelineDetailRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry policy'**
+  String get timelineDetailRetry;
+
+  /// No description provided for @timelineDetailDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Duration'**
+  String get timelineDetailDuration;
+
+  /// No description provided for @timelineDetailBudgetKind.
+  ///
+  /// In en, this message translates to:
+  /// **'Limit reached'**
+  String get timelineDetailBudgetKind;
+
+  /// No description provided for @timelineDetailRollover.
+  ///
+  /// In en, this message translates to:
+  /// **'Context rollover'**
+  String get timelineDetailRollover;
+
+  /// No description provided for @timelineOutcomeStatusFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get timelineOutcomeStatusFailed;
+
+  /// No description provided for @timelineOutcomeStatusDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'Denied'**
+  String get timelineOutcomeStatusDenied;
+
+  /// No description provided for @timelineOutcomeStatusCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get timelineOutcomeStatusCancelled;
+
+  /// No description provided for @timelineOutcomeStatusCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get timelineOutcomeStatusCompleted;
+
+  /// No description provided for @timelineOutcomeStatusSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Succeeded'**
+  String get timelineOutcomeStatusSucceeded;
 }
 
 class _AppLocalizationsDelegate

@@ -7984,4 +7984,174 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpManagedServerTitle => 'Managed server & updates';
+
+  @override
+  String get timelineTurnFailed => 'Turn failed';
+
+  @override
+  String get timelineTurnCompleted => 'Turn completed';
+
+  @override
+  String get timelineTurnBudgetLimited => 'Turn reached budget limit';
+
+  @override
+  String timelineTurnOutcomeFallback(String state) {
+    return 'Turn · $state';
+  }
+
+  @override
+  String get timelineOutcomeNoMessage => 'No error details were provided.';
+
+  @override
+  String get timelineOutcomeTechnicalDetails => 'Technical details';
+
+  @override
+  String get timelineOutcomeRawRecord => 'Public raw record';
+
+  @override
+  String get timelineOutcomeCopyMessage => 'Copy error message';
+
+  @override
+  String get timelineOutcomeCopied => 'Copied';
+
+  @override
+  String get timelineOutcomeShowMore => 'Show full message';
+
+  @override
+  String get timelineOutcomeShowLess => 'Collapse';
+
+  @override
+  String get timelineFailureCategoryProvider => 'Model provider';
+
+  @override
+  String get timelineFailureCategoryProviderCapacity => 'Provider capacity';
+
+  @override
+  String get timelineFailureCategoryTool => 'Tool execution';
+
+  @override
+  String get timelineFailureCategoryValidation => 'Input validation';
+
+  @override
+  String get timelineFailureCategoryProtocol => 'Protocol';
+
+  @override
+  String get timelineFailureCategoryInternal => 'Internal';
+
+  @override
+  String get timelineProviderKindAuth => 'Authentication';
+
+  @override
+  String get timelineProviderKindAuthz => 'Authorization';
+
+  @override
+  String get timelineProviderKindCapacity => 'Capacity';
+
+  @override
+  String get timelineProviderKindConfig => 'Configuration';
+
+  @override
+  String get timelineProviderKindTransport => 'Network transport';
+
+  @override
+  String get timelineProviderKindProtocol => 'Response protocol';
+
+  @override
+  String get timelineRetryableHint => 'Retryable';
+
+  @override
+  String timelineRetryAfterSeconds(int seconds) {
+    return 'Retry after ${seconds}s';
+  }
+
+  @override
+  String get timelineRetryPermanent => 'Not auto-retried';
+
+  @override
+  String get timelineBudgetLimitModelStep => 'Model steps';
+
+  @override
+  String get timelineBudgetLimitToolCall => 'Tool calls';
+
+  @override
+  String get timelineBudgetLimitWait => 'Wait steps';
+
+  @override
+  String get timelineBudgetLimitWallClock => 'Wall-clock duration';
+
+  @override
+  String get timelineBudgetLimitAgentCount => 'Subagent count';
+
+  @override
+  String get timelineBudgetLimitAgentDepth => 'Subagent depth';
+
+  @override
+  String get timelineBudgetLimitFinalization => 'Finalization';
+
+  @override
+  String timelineBudgetLimitMessage(String limit) {
+    return 'Execution stopped after reaching the $limit limit.';
+  }
+
+  @override
+  String timelineBudgetUsageModelSteps(int count) {
+    return 'Steps $count';
+  }
+
+  @override
+  String timelineBudgetUsageToolCalls(int count) {
+    return 'Tools $count';
+  }
+
+  @override
+  String timelineBudgetUsageWaitCalls(int count) {
+    return 'Waits $count';
+  }
+
+  @override
+  String get timelineBudgetRolloverSucceeded => 'Context compacted';
+
+  @override
+  String timelineBudgetRolloverFailed(String error) {
+    return 'Context compaction failed: $error';
+  }
+
+  @override
+  String get timelineDetailCategory => 'Source';
+
+  @override
+  String get timelineDetailProviderKind => 'Failure type';
+
+  @override
+  String get timelineDetailCode => 'Error code';
+
+  @override
+  String get timelineDetailHttpStatus => 'HTTP status';
+
+  @override
+  String get timelineDetailRetry => 'Retry policy';
+
+  @override
+  String get timelineDetailDuration => 'Duration';
+
+  @override
+  String get timelineDetailBudgetKind => 'Limit reached';
+
+  @override
+  String get timelineDetailRollover => 'Context rollover';
+
+  @override
+  String get timelineOutcomeStatusFailed => 'Failed';
+
+  @override
+  String get timelineOutcomeStatusDenied => 'Denied';
+
+  @override
+  String get timelineOutcomeStatusCancelled => 'Cancelled';
+
+  @override
+  String get timelineOutcomeStatusCompleted => 'Completed';
+
+  @override
+  String get timelineOutcomeStatusSucceeded => 'Succeeded';
 }

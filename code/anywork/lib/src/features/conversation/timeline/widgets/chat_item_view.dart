@@ -13,6 +13,7 @@ import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/timeline_outcome_presentation.dart';
 import '../state/tool_presentation.dart';
 import '../tools/tool_item_registry.dart';
 import '../tools/tool_item_view.dart';
@@ -20,6 +21,7 @@ import '../views/plan_receipt_view.dart';
 import 'timeline_content_range_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
+import 'timeline_outcome_card.dart';
 import 'timeline_plain_text.dart';
 import 'timeline_reasoning_view.dart';
 import 'timeline_display_unit_view.dart';
@@ -384,6 +386,7 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _thinking(BuildContext context) {
     final outcome = item.data['outcome'];
     final state = outcome is Map<String, Object?> ? outcome['kind'] : null;
+    final outcomeSummary = parseTimelineOutcome(outcome);
     final nonemptyBodies = item.bodies.where(
       (body) =>
           body.byteLength > 0 &&
@@ -400,6 +403,7 @@ class _ChatItemViewState extends State<ChatItemView> {
         ? summaries.map((body) => body.text!).join(' ')
         : null;
     final atom = item.atom;
+    final isIssue = state == 'failed' || state == 'budgetLimited';
     return TimelineReasoningView(
       summary: summary,
       summaryBuilder: inlineSummary
@@ -424,9 +428,7 @@ class _ChatItemViewState extends State<ChatItemView> {
             TerminalChatAtom(:final outcome) => outcome.name,
             _ => null,
           },
-      diagnostic: state == null || state == 'completed'
-          ? null
-          : const JsonEncoder.withIndent('  ').convert(outcome),
+      diagnostic: outcomeSummary.plainDiagnostic,
       initiallyExpanded: widget.initiallyExpanded,
       onExpansionChanged: widget.onExpansionChanged,
       body: bodies.isEmpty
@@ -437,7 +439,10 @@ class _ChatItemViewState extends State<ChatItemView> {
               children: [
                 for (final body in bodies)
                   _body(body, disclosed: true, showCopy: false),
-                _outcomeNotice(outcome),
+                TimelineOutcomeNotice(
+                  summary: outcomeSummary,
+                  isIssue: isIssue,
+                ),
               ],
             ),
     );
@@ -655,20 +660,36 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _turn(BuildContext context) {
     final outcome = chatObject(item.data['outcome'], 'turn.outcome');
     final state = chatString(outcome['kind'], 'turn.outcome.kind');
+    final summary = parseTimelineOutcome(outcome);
+    if (state == 'failed') {
+      return TimelineErrorCard.failure(
+        itemId: item.id,
+        summary: summary,
+        rawRecord: _rawRecord(),
+      );
+    }
+    if (state == 'budgetLimited') {
+      return TimelineErrorCard.budgetLimited(
+        itemId: item.id,
+        summary: summary,
+        rawRecord: _rawRecord(),
+      );
+    }
     final title = switch (state) {
-      'completed' => '轮次已完成',
-      'failed' => '轮次失败',
-      'cancelled' || 'interrupted' => context.l10n.timelineTurnStopped,
-      'budgetLimited' => '轮次达到预算上限',
-      _ => '轮次 · $state',
+      'completed' => context.l10n.timelineTurnCompleted,
+      'cancelled' || 'interrupted' => localizedTurnCancellationCause(
+        context,
+        summary.cancellation?.causeKind,
+        targetTurnId: summary.cancellation?.targetTurnId,
+      ),
+      _ => context.l10n.timelineTurnOutcomeFallback(state),
     };
     return _disclosure(
       state == 'cancelled' || state == 'interrupted'
           ? Icons.stop_circle_outlined
           : Icons.account_tree_outlined,
       title,
-      [_outcomeNotice(outcome), _rawRecord()],
-      issue: state == 'failed' || state == 'budgetLimited',
+      [TimelineOutcomeNotice(summary: summary), _rawRecord()],
     );
   }
 
@@ -824,23 +845,38 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _agent(BuildContext context) {
     final identity = chatObject(item.data['identity'], 'agent.identity');
     final outcome = chatObject(item.data['outcome'], 'agent.outcome');
+    final summary = parseTimelineOutcome(outcome);
+    final rawStatus = outcome['kind'];
+    final statusLabel = rawStatus is String
+        ? localizedOutcomeStatus(context, rawStatus)
+        : '未知状态';
+    final isIssue = rawStatus == 'failed' || rawStatus == 'denied';
     return _disclosure(
       Icons.smart_toy_outlined,
-      '${identity['role'] ?? '智能体'} · ${outcome['kind'] ?? '未知状态'}',
-      [_metadata(identity), _outcomeNotice(outcome), _rawRecord()],
-      issue: outcome['kind'] == 'failed' || outcome['kind'] == 'denied',
+      '${identity['role'] ?? '智能体'} · $statusLabel',
+      [
+        TimelineOutcomeNotice(summary: summary, isIssue: isIssue),
+        _metadata(identity),
+        _rawRecord(),
+      ],
+      issue: isIssue,
     );
   }
 
   Widget _inference(BuildContext context) {
     final model = chatString(item.data['model'], 'inference.model');
     final outcome = chatObject(item.data['outcome'], 'inference.outcome');
-    return _disclosure(
-      Icons.model_training_outlined,
-      '$model · ${outcome['kind'] ?? '未知状态'}',
-      [_metadata(item.data), _outcomeNotice(outcome), _rawRecord()],
-      issue: outcome['kind'] == 'failed',
-    );
+    final summary = parseTimelineOutcome(outcome);
+    final rawStatus = outcome['kind'];
+    final statusLabel = rawStatus is String
+        ? localizedOutcomeStatus(context, rawStatus)
+        : '未知状态';
+    final isIssue = rawStatus == 'failed';
+    return _disclosure(Icons.model_training_outlined, '$model · $statusLabel', [
+      TimelineOutcomeNotice(summary: summary, isIssue: isIssue),
+      _metadata(item.data),
+      _rawRecord(),
+    ], issue: isIssue);
   }
 
   Widget _raw(BuildContext context) {
@@ -871,25 +907,6 @@ class _ChatItemViewState extends State<ChatItemView> {
     text: const JsonEncoder.withIndent('  ').convert(value),
     horizontalScroll: false,
   );
-  Widget _outcomeNotice(Object? value) {
-    if (value == null) return const SizedBox.shrink();
-    final outcome = chatObject(value, 'outcome');
-    final kind = outcome['kind'];
-    final data = outcome['data'];
-    if (kind == 'completed' || kind == 'succeeded') {
-      return const SizedBox.shrink();
-    }
-    return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('${kind ?? '未知状态'}', style: context.text.bodySmall),
-          if (data != null) _metadata(data),
-        ],
-      ),
-    );
-  }
 
   Widget _media() =>
       widget.attachmentBuilder?.call(item) ?? const SizedBox.shrink();
@@ -900,7 +917,7 @@ class _ChatItemViewState extends State<ChatItemView> {
       child: TimelineActivityDisclosure(
         titleBuilder: (context, expanded) => TimelineActivityRow(
           icon: Icons.data_object_outlined,
-          label: '公开原始记录',
+          label: context.l10n.timelineOutcomeRawRecord,
           expanded: expanded,
         ),
         children: [

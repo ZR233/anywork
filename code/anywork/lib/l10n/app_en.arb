@@ -3825,5 +3825,106 @@
   },
   "acpUpgradeCheckFailed": "Update check failed. Try again.",
   "acpUpgradeRetryCheck": "Retry check",
-  "acpManagedServerTitle": "Managed server & updates"
+  "acpManagedServerTitle": "Managed server & updates",
+  "timelineTurnFailed": "Turn failed",
+  "timelineTurnCompleted": "Turn completed",
+  "timelineTurnBudgetLimited": "Turn reached budget limit",
+  "timelineTurnOutcomeFallback": "Turn · {state}",
+  "@timelineTurnOutcomeFallback": {
+    "placeholders": {
+      "state": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineOutcomeNoMessage": "No error details were provided.",
+  "timelineOutcomeTechnicalDetails": "Technical details",
+  "timelineOutcomeRawRecord": "Public raw record",
+  "timelineOutcomeCopyMessage": "Copy error message",
+  "timelineOutcomeCopied": "Copied",
+  "timelineOutcomeShowMore": "Show full message",
+  "timelineOutcomeShowLess": "Collapse",
+  "timelineFailureCategoryProvider": "Model provider",
+  "timelineFailureCategoryProviderCapacity": "Provider capacity",
+  "timelineFailureCategoryTool": "Tool execution",
+  "timelineFailureCategoryValidation": "Input validation",
+  "timelineFailureCategoryProtocol": "Protocol",
+  "timelineFailureCategoryInternal": "Internal",
+  "timelineProviderKindAuth": "Authentication",
+  "timelineProviderKindAuthz": "Authorization",
+  "timelineProviderKindCapacity": "Capacity",
+  "timelineProviderKindConfig": "Configuration",
+  "timelineProviderKindTransport": "Network transport",
+  "timelineProviderKindProtocol": "Response protocol",
+  "timelineRetryableHint": "Retryable",
+  "timelineRetryAfterSeconds": "Retry after {seconds}s",
+  "@timelineRetryAfterSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineRetryPermanent": "Not auto-retried",
+  "timelineBudgetLimitModelStep": "Model steps",
+  "timelineBudgetLimitToolCall": "Tool calls",
+  "timelineBudgetLimitWait": "Wait steps",
+  "timelineBudgetLimitWallClock": "Wall-clock duration",
+  "timelineBudgetLimitAgentCount": "Subagent count",
+  "timelineBudgetLimitAgentDepth": "Subagent depth",
+  "timelineBudgetLimitFinalization": "Finalization",
+  "timelineBudgetLimitMessage": "Execution stopped after reaching the {limit} limit.",
+  "@timelineBudgetLimitMessage": {
+    "placeholders": {
+      "limit": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineBudgetUsageModelSteps": "Steps {count}",
+  "@timelineBudgetUsageModelSteps": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetUsageToolCalls": "Tools {count}",
+  "@timelineBudgetUsageToolCalls": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetUsageWaitCalls": "Waits {count}",
+  "@timelineBudgetUsageWaitCalls": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetRolloverSucceeded": "Context compacted",
+  "timelineBudgetRolloverFailed": "Context compaction failed: {error}",
+  "@timelineBudgetRolloverFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineDetailCategory": "Source",
+  "timelineDetailProviderKind": "Failure type",
+  "timelineDetailCode": "Error code",
+  "timelineDetailHttpStatus": "HTTP status",
+  "timelineDetailRetry": "Retry policy",
+  "timelineDetailDuration": "Duration",
+  "timelineDetailBudgetKind": "Limit reached",
+  "timelineDetailRollover": "Context rollover",
+  "timelineOutcomeStatusFailed": "Failed",
+  "timelineOutcomeStatusDenied": "Denied",
+  "timelineOutcomeStatusCancelled": "Cancelled",
+  "timelineOutcomeStatusCompleted": "Completed",
+  "timelineOutcomeStatusSucceeded": "Succeeded"
 }

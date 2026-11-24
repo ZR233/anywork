@@ -420,6 +420,8 @@ void main() {
         timelineWaitPanelPreview,
         timelineWaitDetailsPreview,
         timelineChildrenPreview,
+        timelineErrorShowcasePreview,
+        timelineErrorNarrowPreview,
       ]) {
         await tester.pumpWidget(preview());
         await tester.pumpAndSettle();

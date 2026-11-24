@@ -743,6 +743,85 @@ abstract final class TimelinePreviewFixtures {
     bodies: [body('tool.arguments', '{"future":true}')],
   );
 
+  static final failedTurnOverloaded = item(
+    'preview-turn-failed-overloaded',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'failed',
+        'data': {
+          'startedAt': 1795483393,
+          'completedAt': 1795483527,
+          'failure': {
+            'category': 'provider',
+            'providerKind': 'unknown',
+            'code': 'overloaded',
+            'message': '该模型当前访问量过大，请您稍后再试[2026112409252610a0f9ae03204283]',
+            'retry': {'kind': 'permanent'},
+          },
+        },
+      },
+    },
+  );
+
+  static final failedTurnRetryable503 = item(
+    'preview-turn-failed-503',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'failed',
+        'data': {
+          'startedAt': 1795484000,
+          'completedAt': 1795484008,
+          'failure': {
+            'category': 'providerCapacity',
+            'providerKind': 'transport',
+            'code': 'service_unavailable',
+            'httpStatus': 503,
+            'message': 'Upstream model gateway returned 503 Service Unavailable while streaming response.',
+            'retry': {'kind': 'retryable', 'retryAfterMs': 5000},
+          },
+        },
+      },
+    },
+  );
+
+  static final budgetLimitedTurn = item(
+    'preview-turn-budget-limited',
+    'turn',
+    const {
+      'outcome': {
+        'kind': 'budgetLimited',
+        'data': {
+          'startedAt': 1795485000,
+          'completedAt': 1795485145,
+          'limit': {
+            'kind': 'modelStep',
+            'usage': {
+              'modelSteps': 24,
+              'toolCalls': 41,
+              'waitCalls': 2,
+              'elapsedMs': 145000,
+            },
+          },
+          'rollover': {'kind': 'succeeded'},
+        },
+      },
+    },
+  );
+
+  static final cancelledTurn = item('preview-turn-cancelled', 'turn', const {
+    'outcome': {
+      'kind': 'cancelled',
+      'data': {
+        'startedAt': 1795486000,
+        'requestedAt': 1795486012,
+        'completedAt': 1795486013,
+        'cause': {'kind': 'userRequested'},
+      },
+    },
+  });
+
   static const contentReference = ContentRef(
     databaseId: 'preview-database',
     target: ItemPayloadTarget(itemId: 'preview-deferred'),

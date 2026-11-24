@@ -3188,5 +3188,106 @@
   "acpUpgradeIncompatibleMajor": "官方已发布 v{version}（需更新应用以支持大版本 2）",
   "acpUpgradeCheckFailed": "版本检查失败，请重试",
   "acpUpgradeRetryCheck": "重试检查",
-  "acpManagedServerTitle": "受管组件与版本"
+  "acpManagedServerTitle": "受管组件与版本",
+  "timelineTurnFailed": "轮次失败",
+  "timelineTurnCompleted": "轮次已完成",
+  "timelineTurnBudgetLimited": "轮次达到预算上限",
+  "timelineTurnOutcomeFallback": "轮次 · {state}",
+  "@timelineTurnOutcomeFallback": {
+    "placeholders": {
+      "state": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineOutcomeNoMessage": "未提供详细错误信息。",
+  "timelineOutcomeTechnicalDetails": "技术详情",
+  "timelineOutcomeRawRecord": "公开原始记录",
+  "timelineOutcomeCopyMessage": "复制错误信息",
+  "timelineOutcomeCopied": "已复制",
+  "timelineOutcomeShowMore": "展开全部",
+  "timelineOutcomeShowLess": "收起",
+  "timelineFailureCategoryProvider": "模型服务",
+  "timelineFailureCategoryProviderCapacity": "服务容量",
+  "timelineFailureCategoryTool": "工具执行",
+  "timelineFailureCategoryValidation": "参数校验",
+  "timelineFailureCategoryProtocol": "协议异常",
+  "timelineFailureCategoryInternal": "内部错误",
+  "timelineProviderKindAuth": "身份认证",
+  "timelineProviderKindAuthz": "权限不足",
+  "timelineProviderKindCapacity": "服务繁忙 / 限流",
+  "timelineProviderKindConfig": "配置错误",
+  "timelineProviderKindTransport": "网络传输",
+  "timelineProviderKindProtocol": "响应协议",
+  "timelineRetryableHint": "可重试",
+  "timelineRetryAfterSeconds": "建议 {seconds} 秒后重试",
+  "@timelineRetryAfterSeconds": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineRetryPermanent": "不自动重试",
+  "timelineBudgetLimitModelStep": "模型步数",
+  "timelineBudgetLimitToolCall": "工具调用次数",
+  "timelineBudgetLimitWait": "等待步数",
+  "timelineBudgetLimitWallClock": "运行耗时",
+  "timelineBudgetLimitAgentCount": "子智能体数量",
+  "timelineBudgetLimitAgentDepth": "子智能体层级",
+  "timelineBudgetLimitFinalization": "收尾阶段",
+  "timelineBudgetLimitMessage": "已达到{limit}上限，本轮执行已停止。",
+  "@timelineBudgetLimitMessage": {
+    "placeholders": {
+      "limit": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineBudgetUsageModelSteps": "模型 {count} 步",
+  "@timelineBudgetUsageModelSteps": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetUsageToolCalls": "工具 {count} 次",
+  "@timelineBudgetUsageToolCalls": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetUsageWaitCalls": "等待 {count} 次",
+  "@timelineBudgetUsageWaitCalls": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "timelineBudgetRolloverSucceeded": "已整理上下文",
+  "timelineBudgetRolloverFailed": "上下文整理失败：{error}",
+  "@timelineBudgetRolloverFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "timelineDetailCategory": "错误来源",
+  "timelineDetailProviderKind": "细分类型",
+  "timelineDetailCode": "错误码",
+  "timelineDetailHttpStatus": "HTTP 状态",
+  "timelineDetailRetry": "重试策略",
+  "timelineDetailDuration": "耗时",
+  "timelineDetailBudgetKind": "触发上限",
+  "timelineDetailRollover": "上下文整理",
+  "timelineOutcomeStatusFailed": "失败",
+  "timelineOutcomeStatusDenied": "已拒绝",
+  "timelineOutcomeStatusCancelled": "已取消",
+  "timelineOutcomeStatusCompleted": "已完成",
+  "timelineOutcomeStatusSucceeded": "已成功"
 }
