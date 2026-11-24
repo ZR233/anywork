@@ -13,8 +13,6 @@ import '../../../../presentation/providers/mode_catalog_store.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/project_store.dart';
 import '../../../../presentation/providers/settings_store.dart';
-import '../../../../presentation/view_models/timeline_session_owner.dart';
-import '../../timeline/view_models/timeline_view_model.dart';
 import '../state/composer_input_state.dart';
 import '../state/composer_view_state.dart';
 import 'composer_actions.dart';
@@ -209,18 +207,9 @@ class ComposerViewModel extends _$ComposerViewModel implements ComposerActions {
     }
     switch (target) {
       case ThreadComposerTarget(:final threadId):
-        final timeline = ref.read(timelineSessionOwnerProvider);
-        final lease = timeline.lease(threadId);
         final owner = _client.drafts.existingComposer(threadId);
         if (owner == null) return;
-        _run(() {
-          // Hand off the input before publishing any local display intent.
-          final submission = owner.submit();
-          if (lease != null) {
-            timeline.prepareComposerSubmissionDisplay(threadId, lease: lease);
-          }
-          return submission;
-        });
+        _run(owner.submit);
       case StartComposerTarget(:final workspaceId):
         final owner = _client.drafts.startDraft;
         _run(() async {

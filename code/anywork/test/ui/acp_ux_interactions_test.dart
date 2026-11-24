@@ -7,6 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/patch_presentat
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -334,12 +335,19 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Scroll to top where u-short and u-long reside.
-    final listFinder = find.byType(ListView);
-    final controller = tester.widget<ListView>(listFinder).controller!;
-    await tester.drag(listFinder, const Offset(0, 600));
-    await tester.pumpAndSettle();
-    controller.jumpTo(0);
+    final controller = tester
+        .widget<ListView>(find.byType(ListView))
+        .controller!;
+    expect(controller.position.extentAfter, lessThan(1));
+    final messageList = find.byWidgetPredicate(
+      (widget) => widget is Scrollable && widget.controller == controller,
+    );
+    await tester.scrollUntilVisible(
+      find.text('短消息不折叠'),
+      -300,
+      scrollable: messageList,
+      maxScrolls: 20,
+    );
     await tester.pumpAndSettle();
 
     // Long user bubble is auto-folded while short user bubble has no toggle.
@@ -361,13 +369,7 @@ void main() {
     await tester.pump();
     expect(copied, '短消息不折叠');
 
-    // Scroll slightly down via user drag near top so jump-to-latest stays aware of running.
-    await tester.drag(listFinder, const Offset(0, -40));
-    await tester.pumpAndSettle();
-    expect(
-      find.byKey(const ValueKey('acp-jump-latest:msg-thread')),
-      findsOneWidget,
-    );
+    expect(find.byKey(StudioDriverKeys.timelineReturnLatest), findsOneWidget);
     expect(find.text('跳到最新 · 运行中'), findsOneWidget);
 
     await tester.pump(const Duration(seconds: 2));

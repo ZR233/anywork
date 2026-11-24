@@ -311,7 +311,12 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: children,
         );
-        return liveResponse ? _response(body) : body;
+        return liveResponse
+            ? ConversationResponseView(
+                startedAt: widget.atom.startedAt,
+                child: body,
+              )
+            : body;
       },
     );
   }
@@ -533,12 +538,6 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
       widget.atom.lifecycle is ActiveChatAtom;
 
   Widget _response(Widget body) {
-    if (_isLiveStreamingText) {
-      return ConversationResponseView(
-        startedAt: widget.atom.startedAt,
-        child: body,
-      );
-    }
     if ((widget.atom.kind == ChatAtomKind.text ||
             widget.atom.kind == ChatAtomKind.input) &&
         SelectionContainer.maybeOf(context) == null) {

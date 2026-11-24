@@ -28,7 +28,7 @@ class AcpTimelineConnector extends ConsumerWidget {
     return AcpConversationContentView(
       threadId: threadId,
       header: header,
-      contentIdentity: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
+      outputRevision: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
       planCard: header.hasPlan
           ? AcpPlanCardConnector(threadId: threadId)
           : null,

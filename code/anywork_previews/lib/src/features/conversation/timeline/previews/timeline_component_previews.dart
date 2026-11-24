@@ -18,6 +18,7 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_ui_con
 import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_current_views.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_attachments_view.dart';
@@ -30,6 +31,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_outc
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_plain_text.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
+import 'package:anywork/src/shared/latest_scroll.dart';
 
 import 'timeline_preview_fixtures.dart';
 import 'model_request_wait_preview.dart';
@@ -914,6 +916,155 @@ Widget timelineTextCopyPreview() => _timelinePreviewHost(
   ),
 );
 
+@Preview(
+  name: '回到最新 / 主时间线与实时正文',
+  group: 'Timeline · 组合视图',
+  size: Size(960, 720),
+)
+Widget timelineFollowLatestPreview() =>
+    _timelinePreviewHost(const _FollowLatestPreview());
+
+class _FollowLatestPreview extends StatefulWidget {
+  const _FollowLatestPreview();
+
+  @override
+  State<_FollowLatestPreview> createState() => _FollowLatestPreviewState();
+}
+
+class _FollowLatestPreviewState extends State<_FollowLatestPreview> {
+  static const _thread = 'follow-latest-preview';
+  static const _reports = [
+    ('数据源', '加载两份区域出库清单，字段和编码均可读取。'),
+    ('必填项', '商品编号、数量和目的地字段通过校验。'),
+    ('异常记录', '发现两条缺少批号的记录，已移入待核实列表。'),
+    ('库存核对', '确认预留库存，等待复核重复单号。'),
+    ('重复单据', '已定位来源相同的单据，保留较早确认的版本。'),
+    ('数量复核', '清单小计与分仓汇总一致。'),
+    ('装运安排', '已核对计划发车时间，补录两条备注。'),
+    ('导出预检', '文件名和输出目录已准备，正在核对最后一批。'),
+    ('当前结果', '通过 48 条，待核实 2 条。'),
+  ];
+  static const _response =
+      '正在检查最后一批出库数据。\n\n'
+      '华东仓的清单已完成交叉核对，目的地与发货计划一致。\n\n'
+      '华南仓有两条记录需要补批号。已标记这两条，其他记录可以继续处理。\n\n'
+      '抽查了重复单据的来源，保留较早确认的版本。\n\n'
+      '当前进度：准备汇总本次检查的异常记录。';
+  final _controls = _PreviewTimelineControls(
+    messages: [
+      for (final (index, (title, text)) in _reports.indexed)
+        _report(index, title, text),
+    ],
+  );
+  var _mode = TimelineDisplayMode.live;
+  var _output = 0;
+  final _pending = <Message>[];
+
+  static Message _report(int index, String title, String text) {
+    final value = TimelinePreviewFixtures.item(
+      'follow-report-$index',
+      'text',
+      const {'channel': 'final'},
+      sealedAt: 1735689600 + index * 60,
+      bodies: [
+        TimelinePreviewFixtures.body('part.text.0', '**$title**\n\n$text'),
+      ],
+    );
+    return Message.custom(
+      id: value.id,
+      authorId: value.authorId,
+      createdAt: value.createdAt,
+      metadata: {chatItemPresentationKey: value},
+    );
+  }
+
+  Future<void> _append() async {
+    setState(() => _output++);
+    final report = _report(
+      _reports.length + _output,
+      '最新校验结果',
+      '第 $_output 批补充结果已写入，异常记录已汇总。',
+    );
+    if (_mode == TimelineDisplayMode.history) {
+      setState(() => _pending.add(report));
+    } else {
+      await _controls.controller.insertMessage(report, animated: false);
+    }
+  }
+
+  Future<bool> _resume() async {
+    if (_pending.isNotEmpty) {
+      final messages = List<Message>.of(_pending);
+      await _controls.controller.insertAllMessages(messages, animated: false);
+      if (!mounted) return false;
+      _pending.removeRange(0, messages.length);
+    }
+    if (!mounted) return false;
+    setState(() => _mode = TimelineDisplayMode.live);
+    return true;
+  }
+
+  @override
+  void dispose() {
+    _controls.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => LatestScrollScope(
+    child: Column(
+      children: [
+        Align(
+          alignment: AlignmentDirectional.centerEnd,
+          child: TextButton(onPressed: _append, child: const Text('追加模拟输出')),
+        ),
+        Expanded(
+          child: TimelineView(
+            threadId: _thread,
+            view: TimelineSessionViewState(
+              threadId: _thread,
+              generation: 1,
+              mode: _mode,
+              connection: TimelineConnectionPhase.ready,
+              hasNewOutput: _pending.isNotEmpty,
+            ),
+            controls: _controls,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: _resume,
+            onEnterHistory: () =>
+                setState(() => _mode = TimelineDisplayMode.history),
+            onRetryConnection: () {},
+            onLink: (_) {},
+            isSafeLink: (_) => false,
+            remoteImageBuilder: (_, _) => const SizedBox.shrink(),
+          ),
+        ),
+        const ReturnToLatestButton(),
+        SizedBox(
+          height: 192,
+          child: ConversationActivityBar(
+            children: [
+              Flexible(
+                child: ConversationResponseView(
+                  child: TimelineMarkdown(
+                    id: 'follow-live-output',
+                    text:
+                        '$_response${[for (var i = 1; i <= _output; i++) '\n\n已接收第 $i 批补充结果。'].join()}',
+                    onLink: (_) {},
+                    isSafeLink: (_) => false,
+                    imageBuilder: (_, _) => const SizedBox.shrink(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class _TimelineCombinedPreview extends StatefulWidget {
   const _TimelineCombinedPreview({this.messages});
   final List<Message> Function()? messages;
@@ -947,7 +1098,7 @@ class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
     controls: controls,
     onLoadOlder: () async {},
     onRetryOlder: () async {},
-    onReturnLive: () async {},
+    onReturnLive: () async => true,
     onEnterHistory: () {},
     onRetryConnection: () {},
     onLink: (_) {},

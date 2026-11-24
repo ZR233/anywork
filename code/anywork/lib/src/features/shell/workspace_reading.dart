@@ -195,7 +195,13 @@ class _WorkspaceReadingState extends ConsumerState<_WorkspaceReading> {
     }
     return Stack(
       children: [
-        Positioned.fill(child: timeline),
+        Positioned.fill(
+          child: Visibility(
+            visible: panel == null,
+            maintainState: true,
+            child: timeline,
+          ),
+        ),
         if (panel != null) Positioned.fill(child: panel),
       ],
     );

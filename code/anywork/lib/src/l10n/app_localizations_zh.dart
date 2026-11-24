@@ -1908,7 +1908,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineFileDownloadComplete => '下载完成';
 
   @override
-  String get timelineJumpToLatest => '跳到最新';
+  String get timelineJumpToLatest => '回到最新';
+
+  @override
+  String get timelineJumpToLatestWithNewOutput => '有新输出 · 回到最新';
 
   @override
   String get timelineNew => '新内容';
@@ -1918,9 +1921,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineActivityNotLoaded => '尚有活动未载入';
-
-  @override
-  String get timelineBackToLive => '回到实时';
 
   @override
   String get timelineDetailUnavailable => '此内容已不可用';
@@ -5996,9 +5996,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get conversationActivityResponding => '正在输出';
-
-  @override
-  String get conversationActivityFollowOutput => '跟随输出';
 
   @override
   String get timelineBackgroundResults => '后台结果';

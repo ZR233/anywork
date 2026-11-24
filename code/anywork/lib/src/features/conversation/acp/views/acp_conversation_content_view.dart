@@ -1,9 +1,9 @@
-import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../shared/latest_scroll.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../timeline/widgets/timeline_activity_row.dart';
 import '../../timeline/widgets/timeline_reasoning_view.dart';
@@ -13,10 +13,6 @@ import '../widgets/acp_message_actions.dart';
 import '../widgets/acp_tool_card.dart';
 
 /// Pure conversation reading stream for ACP sessions.
-///
-/// Enforces the `1040px` centered reading column, `680px` warm user message
-/// bubbles, `StudioNotice` banners, handshake/ready empty state with capability
-/// pills, and a floating "Jump to latest" pill when scrolled away from bottom.
 class AcpConversationContentView extends StatefulWidget {
   const AcpConversationContentView({
     super.key,
@@ -24,7 +20,7 @@ class AcpConversationContentView extends StatefulWidget {
     required this.header,
     required this.itemBuilder,
     this.planCard,
-    this.contentIdentity,
+    this.outputRevision,
     this.onInsertSlashCommand,
   });
 
@@ -32,7 +28,7 @@ class AcpConversationContentView extends StatefulWidget {
   final AcpTimelineHeaderViewState header;
   final IndexedWidgetBuilder itemBuilder;
   final Widget? planCard;
-  final Object? contentIdentity;
+  final Object? outputRevision;
   final ValueChanged<String>? onInsertSlashCommand;
 
   @override
@@ -42,118 +38,22 @@ class AcpConversationContentView extends StatefulWidget {
 
 class _AcpConversationContentViewState
     extends State<AcpConversationContentView> {
-  final ScrollController _scrollController = ScrollController();
-  bool _showJumpToLatest = false;
-  bool _userScrolledAway = false;
-  bool _hasUnseenUpdates = false;
+  final _scrollController = ScrollController(keepScrollOffset: false);
 
   @override
-  void initState() {
-    super.initState();
-    _scrollController.addListener(_onScroll);
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
-  @override
-  void didUpdateWidget(covariant AcpConversationContentView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.threadId != widget.threadId) {
-      _showJumpToLatest = false;
-      _userScrolledAway = false;
-      _hasUnseenUpdates = false;
-      return;
-    }
-    final contentChanged =
-        widget.header.itemCount > oldWidget.header.itemCount ||
-        !identical(widget.contentIdentity, oldWidget.contentIdentity);
-    if (contentChanged) {
-      if (_userScrolledAway || _showJumpToLatest) {
-        if (!_hasUnseenUpdates) {
-          setState(() => _hasUnseenUpdates = true);
-        }
-      } else {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_scrollController.hasClients) return;
-          final position = _scrollController.position;
-          if (position.maxScrollExtent > position.pixels) {
-            _scrollController.jumpTo(position.maxScrollExtent);
-          }
-        });
-      }
-    }
-  }
-
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final extentAfter = _scrollController.position.extentAfter;
-    final away = extentAfter > 160;
-    if (!away &&
-        (_showJumpToLatest || _userScrolledAway || _hasUnseenUpdates)) {
-      setState(() {
-        _showJumpToLatest = false;
-        _userScrolledAway = false;
-        _hasUnseenUpdates = false;
-      });
-    } else if (away && !_showJumpToLatest && _userScrolledAway) {
-      setState(() => _showJumpToLatest = true);
-    }
-  }
-
-  bool _handleScrollNotification(ScrollNotification notification) {
-    if (notification.depth != 0) return false;
-    if (notification is UserScrollNotification) {
-      if (notification.direction == ScrollDirection.forward) {
-        _userScrolledAway = true;
-      }
-      if (!_scrollController.hasClients) return false;
-      final away = _scrollController.position.extentAfter > 160;
-      if (away != _showJumpToLatest) {
-        setState(() {
-          _showJumpToLatest = away;
-          if (!away) {
-            _userScrolledAway = false;
-            _hasUnseenUpdates = false;
-          }
-        });
-      }
-    }
-    return false;
-  }
-
-  void _jumpToLatest() {
-    if (!_scrollController.hasClients) return;
-    setState(() {
-      _userScrolledAway = false;
-      _hasUnseenUpdates = false;
-      _showJumpToLatest = false;
-    });
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-    );
-  }
-
-  String _jumpToLatestLabel(BuildContext context) {
+  String _returnLabel(BuildContext context, bool hasNewOutput) {
     final l10n = context.l10n;
     final header = widget.header;
     if (header.pendingPermissionCount > 0) {
       return l10n.acpJumpToPendingPermission;
     }
-    if (header.running) {
-      return l10n.acpJumpToRunning;
-    }
-    if (_hasUnseenUpdates) {
-      return l10n.acpJumpToNewOutput;
-    }
-    return l10n.timelineJumpToLatest;
-  }
-
-  @override
-  void dispose() {
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
-    super.dispose();
+    if (header.running) return l10n.acpJumpToRunning;
+    return hasNewOutput ? l10n.acpJumpToNewOutput : l10n.timelineJumpToLatest;
   }
 
   List<Widget> _buildNotices(BuildContext context) {
@@ -238,153 +138,136 @@ class _AcpConversationContentViewState
   Widget build(BuildContext context) {
     final header = widget.header;
     final notices = _buildNotices(context);
-    final hasLeadingNotices = notices.isNotEmpty;
-    final showEmptyCenter =
-        header.itemCount == 0 && notices.isEmpty && widget.planCard == null;
-
-    if (showEmptyCenter) {
-      return LiveStatusMotionHost(
-        child: SelectionArea(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: _EmptySessionState(
-                header: header,
-                onInsertSlashCommand: widget.onInsertSlashCommand,
+    final planCard = widget.planCard;
+    final reading = header.itemCount == 0 && notices.isEmpty
+        ? SelectionArea(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: _EmptySessionState(
+                  header: header,
+                  onInsertSlashCommand: widget.onInsertSlashCommand,
+                ),
               ),
             ),
+          )
+        : _buildReadingList(header, notices);
+
+    return LiveStatusMotionHost(
+      child: LayoutBuilder(
+        builder: (context, constraints) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (planCard != null)
+              _buildPlanHeader(context, constraints, planCard),
+            Expanded(key: const ValueKey('acp-reading-area'), child: reading),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlanHeader(
+    BuildContext context,
+    BoxConstraints constraints,
+    Widget planCard,
+  ) {
+    final boundedPlan = constraints.hasBoundedHeight
+        ? ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: constraints.maxHeight <= 84.0
+                  ? constraints.maxHeight
+                  : (constraints.maxHeight * 0.55).clamp(84.0, 320.0),
+            ),
+            child: planCard,
+          )
+        : planCard;
+    return DecoratedBox(
+      key: ValueKey('acp-sticky-plan:${widget.threadId}'),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: context.colors.outlineVariant.withValues(alpha: 0.7),
           ),
         ),
-      );
-    }
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: _CenteredReadingConstraint(child: boundedPlan),
+      ),
+    );
+  }
 
-    final leadingCount = hasLeadingNotices ? 1 : 0;
+  Widget _buildReadingList(
+    AcpTimelineHeaderViewState header,
+    List<Widget> notices,
+  ) {
+    final leadingCount = notices.isEmpty ? 0 : 1;
     final showTrailingWelcome =
         header.itemCount > 0 &&
         !header.hasConversationalContent &&
         notices.isEmpty;
-    final trailingCount = showTrailingWelcome ? 1 : 0;
-    final totalCount = leadingCount + header.itemCount + trailingCount;
-
-    final listAndOverlay = Stack(
-      children: [
-        SelectionArea(
-          child: NotificationListener<ScrollNotification>(
-            onNotification: _handleScrollNotification,
-            child: ListView.builder(
+    final totalCount =
+        leadingCount + header.itemCount + (showTrailingWelcome ? 1 : 0);
+    return LatestScrollScope(
+      key: ValueKey(widget.threadId),
+      child: Column(
+        children: [
+          Expanded(
+            child: LatestScrollViewport(
               controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              itemCount: totalCount,
-              itemBuilder: (context, rawIndex) {
-                if (hasLeadingNotices && rawIndex == 0) {
-                  return _CenteredReadingConstraint(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (var i = 0; i < notices.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 8),
-                          notices[i],
-                        ],
-                        if (header.itemCount > 0) const SizedBox(height: 16),
-                      ],
-                    ),
-                  );
-                }
-                if (showTrailingWelcome && rawIndex == totalCount - 1) {
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 56, bottom: 24),
-                    child: Center(
-                      child: _EmptySessionState(
-                        header: header,
-                        onInsertSlashCommand: widget.onInsertSlashCommand,
-                      ),
-                    ),
-                  );
-                }
-                final itemIndex = rawIndex - leadingCount;
-                return _CenteredReadingConstraint(
-                  key: ValueKey(
-                    AcpViewKeyValues.timelineItem(widget.threadId, itemIndex),
-                  ),
-                  child: widget.itemBuilder(context, itemIndex),
-                );
-              },
-            ),
-          ),
-        ),
-        if (_showJumpToLatest)
-          Positioned(
-            bottom: 12,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: FilledButton.tonalIcon(
-                key: ValueKey('acp-jump-latest:${widget.threadId}'),
-                onPressed: _jumpToLatest,
-                icon: const Icon(Icons.arrow_downward_rounded, size: 16),
-                label: Text(_jumpToLatestLabel(context)),
-              ),
-            ),
-          ),
-      ],
-    );
-
-    final planCard = widget.planCard;
-    if (planCard == null) {
-      return LiveStatusMotionHost(child: listAndOverlay);
-    }
-    return LiveStatusMotionHost(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final boundedPlan = constraints.hasBoundedHeight
-              ? ConstrainedBox(
-                  constraints: BoxConstraints(
-                    maxHeight: constraints.maxHeight <= 84.0
-                        ? constraints.maxHeight
-                        : (constraints.maxHeight * 0.55).clamp(84.0, 320.0),
-                  ),
-                  child: planCard,
-                )
-              : planCard;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              DecoratedBox(
-                key: ValueKey('acp-sticky-plan:${widget.threadId}'),
-                decoration: BoxDecoration(
-                  color: context.colors.surface,
-                  border: Border(
-                    bottom: BorderSide(
-                      color: context.colors.outlineVariant.withValues(
-                        alpha: 0.7,
-                      ),
-                    ),
-                  ),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                  child: _CenteredReadingConstraint(child: boundedPlan),
-                ),
-              ),
-              Expanded(
-                child: header.itemCount == 0 && !hasLeadingNotices
-                    ? SelectionArea(
+              outputRevision: (header.itemCount, widget.outputRevision),
+              child: SelectionArea(
+                child: ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                  itemCount: totalCount,
+                  itemBuilder: (context, rawIndex) {
+                    if (leadingCount != 0 && rawIndex == 0) {
+                      return _CenteredReadingConstraint(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            for (var i = 0; i < notices.length; i++) ...[
+                              if (i > 0) const SizedBox(height: 8),
+                              notices[i],
+                            ],
+                            if (header.itemCount > 0)
+                              const SizedBox(height: 16),
+                          ],
+                        ),
+                      );
+                    }
+                    if (showTrailingWelcome && rawIndex == totalCount - 1) {
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 56, bottom: 24),
                         child: Center(
-                          child: Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: _EmptySessionState(
-                              header: header,
-                              onInsertSlashCommand: widget.onInsertSlashCommand,
-                            ),
+                          child: _EmptySessionState(
+                            header: header,
+                            onInsertSlashCommand: widget.onInsertSlashCommand,
                           ),
                         ),
-                      )
-                    : listAndOverlay,
+                      );
+                    }
+                    final itemIndex = rawIndex - leadingCount;
+                    return _CenteredReadingConstraint(
+                      key: ValueKey(
+                        AcpViewKeyValues.timelineItem(
+                          widget.threadId,
+                          itemIndex,
+                        ),
+                      ),
+                      child: widget.itemBuilder(context, itemIndex),
+                    );
+                  },
+                ),
               ),
-            ],
-          );
-        },
+            ),
+          ),
+          ReturnToLatestButton(labelBuilder: _returnLabel),
+        ],
       ),
     );
   }

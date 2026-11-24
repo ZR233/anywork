@@ -89,8 +89,8 @@ abstract final class StudioDriverKeys {
   static const timelineRetryOlder = ValueKey<String>(
     StudioDriverKeyValues.timelineRetryOlder,
   );
-  static const timelineReturnLive = ValueKey<String>(
-    StudioDriverKeyValues.timelineReturnLive,
+  static const timelineReturnLatest = ValueKey<String>(
+    StudioDriverKeyValues.timelineReturnLatest,
   );
   static const timelineNewOutput = ValueKey<String>(
     StudioDriverKeyValues.timelineNewOutput,

@@ -83,7 +83,7 @@ abstract final class StudioDriverKeyValues {
   static const timelineScrollable = 'timeline-scrollable';
   static const timelineLoadingOlder = 'timeline-loading-older';
   static const timelineRetryOlder = 'timeline-retry-older';
-  static const timelineReturnLive = 'timeline-return-live';
+  static const timelineReturnLatest = 'timeline-return-latest';
   static const timelineNewOutput = 'timeline-new-output';
   static const timelineDetailDialog = 'timeline-detail-dialog';
   static const timelineDetailText = 'timeline-detail-text';

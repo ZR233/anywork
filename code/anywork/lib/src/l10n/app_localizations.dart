@@ -3680,8 +3680,14 @@ abstract class AppLocalizations {
   /// No description provided for @timelineJumpToLatest.
   ///
   /// In en, this message translates to:
-  /// **'Jump to latest'**
+  /// **'Back to latest'**
   String get timelineJumpToLatest;
+
+  /// No description provided for @timelineJumpToLatestWithNewOutput.
+  ///
+  /// In en, this message translates to:
+  /// **'New output · Back to latest'**
+  String get timelineJumpToLatestWithNewOutput;
 
   /// No description provided for @timelineNew.
   ///
@@ -3700,12 +3706,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'More activity to load'**
   String get timelineActivityNotLoaded;
-
-  /// No description provided for @timelineBackToLive.
-  ///
-  /// In en, this message translates to:
-  /// **'Back to live'**
-  String get timelineBackToLive;
 
   /// No description provided for @timelineDetailUnavailable.
   ///
@@ -11294,12 +11294,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Generating response'**
   String get conversationActivityResponding;
-
-  /// No description provided for @conversationActivityFollowOutput.
-  ///
-  /// In en, this message translates to:
-  /// **'Follow output'**
-  String get conversationActivityFollowOutput;
 
   /// No description provided for @timelineBackgroundResults.
   ///

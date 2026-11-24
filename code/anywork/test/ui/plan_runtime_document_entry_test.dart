@@ -154,7 +154,9 @@ void main() {
       reason: '导航标题不再重复 Markdown 文档标题',
     );
 
-    final timelineElement = tester.element(find.byType(TimelineConnector));
+    final timelineFinder = find.byType(TimelineConnector, skipOffstage: false);
+    expect(find.byType(TimelineConnector), findsNothing);
+    final timelineElement = tester.element(timelineFinder);
     final planState = tester.state(find.byType(PlanDetailView));
     final scroll = tester
         .widget<SingleChildScrollView>(
@@ -169,19 +171,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
-    expect(
-      tester.element(find.byType(TimelineConnector)),
-      same(timelineElement),
-    );
+    expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
     tester.view.physicalSize = const Size(640, 900);
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
-    expect(
-      tester.element(find.byType(TimelineConnector)),
-      same(timelineElement),
-    );
+    expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
     tester.view.physicalSize = const Size(1200, 900);
     await tester.pumpAndSettle();
@@ -191,10 +187,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
-    expect(
-      tester.element(find.byType(TimelineConnector)),
-      same(timelineElement),
-    );
+    expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
     await tester.pumpAndSettle();
@@ -314,7 +307,8 @@ void main() {
       tester.getSize(find.byType(AgentWorkspacePane)).width,
       reason: '新待确认交互默认铺满会话阅读区，而非默认并排',
     );
-    final pendingTimeline = tester.element(find.byType(TimelineConnector));
+    expect(find.byType(TimelineConnector), findsNothing);
+    final pendingTimeline = tester.element(timelineFinder);
     final pendingPlanState = tester.state(find.byType(PlanDetailView));
     final feedback = tester.element(find.byKey(StudioDriverKeys.planApprove));
     await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
@@ -327,10 +321,7 @@ void main() {
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
     expect(tester.state(find.byType(PlanDetailView)), same(pendingPlanState));
-    expect(
-      tester.element(find.byType(TimelineConnector)),
-      same(pendingTimeline),
-    );
+    expect(tester.element(timelineFinder), same(pendingTimeline));
     expect(
       tester.element(find.byKey(StudioDriverKeys.planApprove)),
       same(feedback),

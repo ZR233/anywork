@@ -41,6 +41,7 @@ class StudioWorkspaceBody extends StatelessWidget {
   const StudioWorkspaceBody({
     required this.readingArea,
     required this.footer,
+    this.readingAction,
     this.overlays = const [],
     this.todoPanel,
     super.key,
@@ -48,6 +49,7 @@ class StudioWorkspaceBody extends StatelessWidget {
 
   final Widget readingArea;
   final Widget footer;
+  final Widget? readingAction;
 
   /// 覆盖在阅读区域上的瞬态提示（失败条、加载遮罩）；它们不参与布局分配。
   final List<Widget> overlays;
@@ -76,6 +78,7 @@ class StudioWorkspaceBody extends StatelessWidget {
                   ],
                 ),
               ),
+              ?readingAction,
               footer,
             ],
           ),
@@ -165,13 +168,22 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
       case ConversationBackendKind.native:
         break;
     }
+    return LatestScrollScope(child: _buildNativeWorkspace(threadId));
+  }
+
+  Widget _buildNativeWorkspace(String threadId) {
     final workspaceProvider = conversationWorkspaceProvider(
       threadId,
       needsOpen: widget.needsOpen,
     );
     final workspace = ref.watch(workspaceProvider);
     if (workspace == null) {
-      return TimelineConnector(threadId: threadId);
+      return Column(
+        children: [
+          Expanded(child: TimelineConnector(threadId: threadId)),
+          const ReturnToLatestButton(),
+        ],
+      );
     }
     final planHead = widget.needsOpen
         ? null
@@ -232,6 +244,7 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
                     Expanded(
                       child: StudioWorkspaceBody(
                         readingArea: readingArea,
+                        readingAction: const ReturnToLatestButton(),
                         overlays: [
                           if (workspace.loadError case final error?)
                             _ReadingErrorBanner(
