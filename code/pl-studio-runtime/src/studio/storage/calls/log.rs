@@ -550,22 +550,39 @@ impl CallLog {
                     break;
                 }
                 let record_bytes = &line[..line.len() - 1];
-                let Some(_locator) =
-                    deletion_locator(record_bytes, &segment.name, index + 1, offset)
-                else {
+                let record = match decoded_record(record_bytes) {
+                    Ok(record) => record,
+                    Err(error) => {
+                        if deletion_locator(record_bytes, &segment.name, index + 1, offset)
+                            .is_none()
+                        {
+                            offset += line.len();
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                };
+                let locator = event::CallLogLocator::from(&record);
+                if locator.thread_id.is_empty() {
+                    warn_unindexed_line(
+                        &segment.name,
+                        index + 1,
+                        offset,
+                        "empty_thread_id",
+                        None,
+                        None,
+                    );
                     offset += line.len();
                     continue;
-                };
-                let text = std::str::from_utf8(record_bytes)?;
-                let record = event::decode_record(text)?;
+                }
                 super::index_record(
                     &tx,
                     &record,
-                    &pl_core::context::content_hash(text.as_bytes()),
+                    &pl_core::context::content_hash(record_bytes),
                     &AppendedRecord {
                         segment: segment.name.clone(),
                         offset: offset as u64,
-                        length: text.len() as u64,
+                        length: record_bytes.len() as u64,
                     },
                     record.truncated,
                 )
@@ -681,6 +698,10 @@ fn deletion_locator(
         return None;
     }
     Some(record)
+}
+
+fn decoded_record(bytes: &[u8]) -> Result<event::CallLogRecord> {
+    event::decode_record(std::str::from_utf8(bytes)?)
 }
 
 fn warn_unindexed_line(

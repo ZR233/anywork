@@ -55,29 +55,16 @@ fn migrator() -> Result<&'static Migrator> {
 pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument<CatalogDocument>> {
     let target = current_version()?;
     let value = toml_schema::parse(path, content, ENTITY, target)?;
-    if value.get(SCHEMA_KEY).and_then(toml::Value::as_integer) == Some(6) {
-        let mut legacy = value.clone();
-        legacy.remove(SCHEMA_KEY);
-        let legacy: CatalogV6 = legacy.try_into().map_err(|error| {
-            toml_schema::migration_error(path, ENTITY, Some(6), target, "decode", error)
-        })?;
-        if legacy
-            .agents
-            .iter()
-            .any(|agent| matches!(agent.binding, FrozenAgentBinding::Acp { .. }))
-        {
-            return Err(toml_schema::migration_error(
-                path,
-                ENTITY,
-                Some(6),
-                target,
-                "validate",
-                anyhow::anyhow!(
-                    "legacy ACP member has no real remote session reference; original catalog must be retained"
-                ),
-            ));
-        }
+    let source = toml_schema::integer_header(&value, SCHEMA_KEY);
+    if source == Some(6) {
+        return load_v6_once(path, value, target);
     }
+    if source == Some(target) {
+        let current: CatalogV8 =
+            toml_schema::decode_current_table(path, value, ENTITY, SCHEMA_KEY)?;
+        return finish_loaded(path, current, target, target, false);
+    }
+    let historical = (source == Some(5)).then(|| value.clone());
     let loaded = toml_schema::load_table::<CatalogDocumentV1, CatalogV8>(
         path,
         value,
@@ -85,16 +72,61 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         ENTITY,
         SCHEMA_KEY,
     )?;
-    if loaded.source_version == 5 {
-        validate_v5_inheritance(path, content).map_err(|error| {
+    if let Some(historical) = historical {
+        validate_v5_inheritance(&historical).map_err(|error| {
             toml_schema::migration_error(path, ENTITY, Some(5), target, "validate", error)
         })?;
     }
-    let document = CatalogDocument::try_from(loaded.document).map_err(|error| {
+    finish_loaded(
+        path,
+        loaded.document,
+        loaded.source_version,
+        target,
+        loaded.migrated,
+    )
+}
+
+fn load_v6_once(
+    path: &Path,
+    mut value: toml::Table,
+    target: u32,
+) -> Result<LoadedDocument<CatalogDocument>> {
+    value.remove(SCHEMA_KEY);
+    let legacy: CatalogV6 = value.try_into().map_err(|error| {
+        toml_schema::migration_error(path, ENTITY, Some(6), target, "decode", error)
+    })?;
+    if legacy
+        .agents
+        .iter()
+        .any(|agent| matches!(agent.binding, FrozenAgentBinding::Acp { .. }))
+    {
+        return Err(toml_schema::migration_error(
+            path,
+            ENTITY,
+            Some(6),
+            target,
+            "validate",
+            anyhow::anyhow!(
+                "legacy ACP member has no real remote session reference; original catalog must be retained"
+            ),
+        ));
+    }
+    let current = MigratesTo::<CatalogV8>::migrate(MigratesTo::<CatalogV7>::migrate(legacy));
+    finish_loaded(path, current, 6, target, true)
+}
+
+fn finish_loaded(
+    path: &Path,
+    document: CatalogV8,
+    source_version: u32,
+    target: u32,
+    migrated: bool,
+) -> Result<LoadedDocument<CatalogDocument>> {
+    let document = CatalogDocument::try_from(document).map_err(|error| {
         toml_schema::migration_error(
             path,
             ENTITY,
-            Some(loaded.source_version),
+            Some(source_version),
             target,
             "construct",
             error,
@@ -104,7 +136,7 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
         toml_schema::migration_error(
             path,
             ENTITY,
-            Some(loaded.source_version),
+            Some(source_version),
             target,
             "validate",
             error,
@@ -112,15 +144,15 @@ pub(super) fn load_document(path: &Path, content: &str) -> Result<LoadedDocument
     })?;
     Ok(LoadedDocument {
         document,
-        source_version: loaded.source_version,
-        migrated: loaded.migrated,
+        source_version,
+        migrated,
     })
 }
 
 /// V6 drops inherited copies. Old root-only mode changes left legitimate stale child modes;
 /// the root owns the session mode, while the remaining ownership facts must still agree.
-fn validate_v5_inheritance(path: &Path, content: &str) -> Result<()> {
-    let mut value = toml_schema::parse(path, content, ENTITY, 6)?;
+fn validate_v5_inheritance(value: &toml::Table) -> Result<()> {
+    let mut value = value.clone();
     value.remove(SCHEMA_KEY);
     let document: CatalogV5 = value.try_into()?;
     for child in &document.entries {

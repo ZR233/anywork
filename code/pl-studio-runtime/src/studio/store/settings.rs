@@ -138,14 +138,28 @@ impl SettingsStore {
 async fn load_current(path: &Path, content: &str) -> Result<SettingsDocument> {
     let target = toml_schema::integer_version(SettingsDocument::VERSION)?;
     let table = toml_schema::parse(path, content, ENTITY, target)?;
-    migration::preflight(path, &table, target)?;
-    let loaded = toml_schema::load_table::<migration::SettingsV1, SettingsDocument>(
-        path,
-        table,
-        &migration::migrator()?,
-        ENTITY,
-        VERSION_KEY,
-    )?;
+    let loaded = if toml_schema::integer_header(&table, VERSION_KEY) == Some(target) {
+        toml_schema::LoadedDocument {
+            document: toml_schema::decode_current_table(path, table, ENTITY, VERSION_KEY)?,
+            source_version: target,
+            migrated: false,
+        }
+    } else if toml_schema::integer_header(&table, VERSION_KEY) == Some(1) {
+        toml_schema::LoadedDocument {
+            document: migration::migrate_v1(path, table, target)?,
+            source_version: 1,
+            migrated: true,
+        }
+    } else {
+        migration::preflight(path, &table, target)?;
+        toml_schema::load_table::<migration::SettingsV1, SettingsDocument>(
+            path,
+            table,
+            migration::migrator()?,
+            ENTITY,
+            VERSION_KEY,
+        )?
+    };
     validate(path, &loaded.document, loaded.source_version, target)?;
     if loaded.migrated {
         // Schema-only upgrade: the business revision and entry times are preserved and
