@@ -416,7 +416,7 @@ void main() {
     });
 
     test(
-      'deduplicates approval/stopping/storage/connection attentions cleanly',
+      'reconnecting is primary while approval, storage and errors stay visible',
       () {
         final view = LiveStatusMachine.project(
           threadId: 'thread-1',
@@ -473,11 +473,13 @@ void main() {
             .single;
         expect(storageAttention.severity, LiveStorageSeverity.resumeReady);
         expect(
+          presenting.presentation.primary,
+          const LiveReconnectingPhase(detail: 'Retrying'),
+        );
+        expect(
           presenting.presentation.attentions
-              .whereType<LiveConnectionAttention>()
-              .single
-              .status,
-          LiveConnectionStatus.reconnecting,
+              .whereType<LiveDisconnectedAttention>(),
+          isEmpty,
         );
         expect(
           presenting.presentation.attentions

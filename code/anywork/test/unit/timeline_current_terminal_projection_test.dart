@@ -77,6 +77,7 @@ void main() {
     final byId = TimelineCurrentProjection.overlayRecord(
       _record(),
       current: {'entity-1': _atom()},
+      currentByCall: const {},
       ownerId: 'run-1',
     );
     expect(byId.contentSource, isA<CurrentAtomSource>());
@@ -85,9 +86,11 @@ void main() {
     expect(byId.historyDetailEventId, isNull);
     expect(byId.immutableRecord?.historyEventId, 'event-1');
 
+    final differentAtom = _atom(id: 'different-atom-id');
     final byCallId = TimelineCurrentProjection.overlayRecord(
       _record(callId: 'call-1'),
-      current: {'different-atom-id': _atom(id: 'different-atom-id')},
+      current: {differentAtom.id: differentAtom},
+      currentByCall: {'call-1': differentAtom},
       ownerId: 'run-1',
     );
     expect(byCallId.contentSource, isA<CurrentAtomSource>());
@@ -96,6 +99,7 @@ void main() {
     final restored = TimelineCurrentProjection.overlayRecord(
       byId,
       current: const {},
+      currentByCall: const {},
       ownerId: 'run-1',
     );
     expect(restored.historyEventId, 'event-1');
@@ -112,6 +116,7 @@ void main() {
       final result = TimelineCurrentProjection.overlayRecord(
         protected,
         current: {'entity-1': _atom()},
+        currentByCall: const {},
         ownerId: 'run-1',
       );
       expect(result, same(protected));
@@ -120,6 +125,7 @@ void main() {
     final olderRun = TimelineCurrentProjection.overlayRecord(
       active,
       current: {'entity-1': _atom()},
+      currentByCall: const {},
       ownerId: 'run-2',
     );
     expect(olderRun, same(active));

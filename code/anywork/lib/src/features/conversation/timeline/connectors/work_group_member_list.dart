@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
-import '../state/timeline_current_projection.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_models.dart';
 import '../state/timeline_image_resources.dart';
@@ -14,8 +13,7 @@ import 'timeline_member_atom.dart';
 
 /// 历史工作组与实时状态栏开放工作组共用的成员列表连接器视图。
 ///
-/// 统一处理历史成员的加载进度、读取失败重试、封存占位文案，以及尚未落入分页切片的
-/// 实时 `CurrentAtom` 追加项去重叠加。
+/// 统一处理加载进度、读取失败重试和封存占位文案，成员由各自的监听入口刷新。
 class WorkGroupMemberList extends StatelessWidget {
   const WorkGroupMemberList({
     required this.controller,
@@ -33,7 +31,6 @@ class WorkGroupMemberList extends StatelessWidget {
     this.onCurrentContentLayout,
     this.onCurrentContentUnmounted,
     this.registerMemberDisplay,
-    this.extraLiveAtoms = const [],
     this.hideSealedCurrentPlaceholders = false,
     super.key,
   });
@@ -53,20 +50,12 @@ class WorkGroupMemberList extends StatelessWidget {
   final void Function(String, int)? onCurrentContentLayout;
   final void Function(String)? onCurrentContentUnmounted;
   final VoidCallback Function(TimelineMemberDisplay)? registerMemberDisplay;
-  final List<CurrentAtom> extraLiveAtoms;
   final bool hideSealedCurrentPlaceholders;
 
   @override
   Widget build(BuildContext context) {
     final activeController = controller;
     if (activeController == null) {
-      if (extraLiveAtoms.isNotEmpty) {
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [for (final atom in extraLiveAtoms) _buildExtraAtom(atom)],
-        );
-      }
       return Text(context.l10n.liveStatusMembersUnavailable);
     }
 
@@ -74,7 +63,6 @@ class WorkGroupMemberList extends StatelessWidget {
       listenable: activeController,
       builder: (context, _) {
         final l10n = context.l10n;
-        final extraAtoms = _unrepresentedLiveAtoms(activeController);
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -105,7 +93,7 @@ class WorkGroupMemberList extends StatelessWidget {
                   }
                   return TimelineMemberAtom(
                     key: ValueKey((
-                      blockReference ?? activeController.reference,
+                      blockReference,
                       entry.memberKey,
                       activeController.disclosure(entry.memberKey),
                     )),
@@ -127,50 +115,9 @@ class WorkGroupMemberList extends StatelessWidget {
                   );
                 },
               ),
-            for (final atom in extraAtoms) _buildExtraAtom(atom),
           ],
         );
       },
     );
   }
-
-  List<CurrentAtom> _unrepresentedLiveAtoms(
-    DisplayMemberController activeController,
-  ) {
-    if (extraLiveAtoms.isEmpty) return const [];
-    final representedIds = <String>{};
-    final representedCallIds = <String>{};
-    for (final entry in activeController.entries) {
-      representedIds.add(entry.record.atom.id);
-      final callId = entry.record.callId ?? entry.record.atom.tool?.callId;
-      if (callId != null) representedCallIds.add(callId);
-    }
-    return [
-      for (final atom in extraLiveAtoms)
-        if (!representedIds.contains(atom.id) &&
-            (atom.tool?.callId == null ||
-                !representedCallIds.contains(atom.tool!.callId)))
-          atom,
-    ];
-  }
-
-  Widget _buildExtraAtom(CurrentAtom atom) => TimelineMemberAtom(
-    key: ValueKey(('live-atom', atom.id)),
-    record: DisplayRecord(
-      atom: TimelineCurrentProjection.toChatAtom(atom),
-      contentSource: const CurrentAtomSource(),
-      currentContents: atom.contents,
-    ),
-    displayId: atom.id,
-    threadId: threadId,
-    currentReader: currentReader,
-    retirement: retirement,
-    isActive: isActive,
-    images: images,
-    readAttachment: readAttachment,
-    executionPresent: true,
-    monotonicMicros: monotonicMicros,
-    onCurrentContentLayout: onCurrentContentLayout,
-    onCurrentContentUnmounted: onCurrentContentUnmounted,
-  );
 }

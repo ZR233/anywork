@@ -18,10 +18,23 @@ enum LiveStorageSeverity {
 /// 实时流同步连接状态。
 enum LiveConnectionStatus { connected, reconnecting, disconnected }
 
-/// 实时状态栏四选一主阶段。
+/// 实时状态栏的互斥主阶段。
 @immutable
 sealed class LiveStatusPrimaryPhase {
   const LiveStatusPrimaryPhase();
+}
+
+final class LiveReconnectingPhase extends LiveStatusPrimaryPhase {
+  const LiveReconnectingPhase({this.detail});
+
+  final String? detail;
+
+  @override
+  bool operator ==(Object other) =>
+      other is LiveReconnectingPhase && detail == other.detail;
+
+  @override
+  int get hashCode => detail.hashCode;
 }
 
 /// 主模型正在产出流式正文，可选附带未抑制的活动提示。
@@ -64,20 +77,18 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
 
 /// 开放工作组正在实时状态栏主区运行、等待或停止。
 final class LiveWorkPhase extends LiveStatusPrimaryPhase {
-  LiveWorkPhase({
+  const LiveWorkPhase({
     required this.id,
     required this.block,
-    List<CurrentAtom> liveWorkAtoms = const [],
     required this.mode,
     required this.timing,
     this.activity,
     this.thinkingSummary,
     required this.executionPresent,
-  }) : liveWorkAtoms = List.unmodifiable(liveWorkAtoms);
+  });
 
   final String id;
   final DisplayBlock block;
-  final List<CurrentAtom> liveWorkAtoms;
   final LiveWorkGroupMode mode;
   final WorkTiming timing;
   final ConversationActivityView? activity;
@@ -90,7 +101,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
       other is LiveWorkPhase &&
           id == other.id &&
           sameDisplayBlock(block, other.block) &&
-          listEquals(liveWorkAtoms, other.liveWorkAtoms) &&
           mode == other.mode &&
           timing == other.timing &&
           activity == other.activity &&
@@ -102,7 +112,6 @@ final class LiveWorkPhase extends LiveStatusPrimaryPhase {
     id,
     block.id,
     block.blockOrder,
-    Object.hashAll(liveWorkAtoms),
     mode,
     timing,
     activity,
@@ -204,21 +213,17 @@ final class LiveStorageAttention extends LiveStatusAttention {
   int get hashCode => Object.hash(activity, storage, severity);
 }
 
-final class LiveConnectionAttention extends LiveStatusAttention {
-  const LiveConnectionAttention({required this.status, this.detail});
+final class LiveDisconnectedAttention extends LiveStatusAttention {
+  const LiveDisconnectedAttention({this.detail});
 
-  final LiveConnectionStatus status;
   final String? detail;
 
   @override
   bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveConnectionAttention &&
-          status == other.status &&
-          detail == other.detail;
+      other is LiveDisconnectedAttention && detail == other.detail;
 
   @override
-  int get hashCode => Object.hash(status, detail);
+  int get hashCode => detail.hashCode;
 }
 
 final class LiveErrorAttention extends LiveStatusAttention {

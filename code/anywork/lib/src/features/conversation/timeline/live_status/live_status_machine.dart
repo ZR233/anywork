@@ -50,11 +50,7 @@ abstract final class LiveStatusMachine {
     final liveAtoms = executionPresent
         ? current?.currentAtoms ?? const <CurrentAtom>[]
         : const <CurrentAtom>[];
-    final liveWorkAtoms = <CurrentAtom>[
-      for (final atom in liveAtoms)
-        if (atom.lifecycle is ActiveChatAtom && _isLiveWorkKind(atom.kind))
-          atom,
-    ];
+    final liveWorkAtoms = workMembers(current);
     final liveResponseAtoms = <CurrentAtom>[
       for (final atom in liveAtoms)
         if (atom.lifecycle is ActiveChatAtom &&
@@ -97,6 +93,8 @@ abstract final class LiveStatusMachine {
         );
 
     final primary = _selectPrimaryPhase(
+      connectionStatus: inputs.connectionStatus,
+      connectionDetail: inputs.connectionDetail,
       execution: activeExecution,
       liveWork: liveWork,
       liveResponseAtoms: liveResponseAtoms,
@@ -172,6 +170,15 @@ abstract final class LiveStatusMachine {
       primaryActivity: primaryActivity,
     );
   }
+
+  static List<CurrentAtom> workMembers(CurrentAtomSnapshot? current) =>
+      current == null || !current.executionPresent
+      ? const []
+      : [
+          for (final atom in current.currentAtoms)
+            if (atom.lifecycle is ActiveChatAtom && _isLiveWorkKind(atom.kind))
+              atom,
+        ];
 
   static bool _isLiveWorkKind(ChatAtomKind kind) => switch (kind) {
     ChatAtomKind.reasoning ||
@@ -274,7 +281,6 @@ abstract final class LiveStatusMachine {
     return LiveWorkPhase(
       id: id,
       block: effectiveBlock,
-      liveWorkAtoms: liveWorkAtoms,
       mode: mode,
       timing: timing,
       activity: headerActivity,
@@ -311,6 +317,8 @@ abstract final class LiveStatusMachine {
   }
 
   static LiveStatusPrimaryPhase? _selectPrimaryPhase({
+    required LiveConnectionStatus connectionStatus,
+    required String? connectionDetail,
     required ConversationActivityView? execution,
     required LiveWorkPhase? liveWork,
     required List<CurrentAtom> liveResponseAtoms,
@@ -319,6 +327,9 @@ abstract final class LiveStatusMachine {
     required bool responseSuppressed,
     required bool compactingSuppressed,
   }) {
+    if (connectionStatus == LiveConnectionStatus.reconnecting) {
+      return LiveReconnectingPhase(detail: _nonEmpty(connectionDetail));
+    }
     final hasResponse =
         liveResponseAtoms.isNotEmpty ||
         (previewResponseText != null && previewResponseText.isNotEmpty);
@@ -402,12 +413,9 @@ abstract final class LiveStatusMachine {
       );
     }
 
-    if (connectionStatus != LiveConnectionStatus.connected) {
+    if (connectionStatus == LiveConnectionStatus.disconnected) {
       attentions.add(
-        LiveConnectionAttention(
-          status: connectionStatus,
-          detail: _nonEmpty(connectionDetail),
-        ),
+        LiveDisconnectedAttention(detail: _nonEmpty(connectionDetail)),
       );
     }
 

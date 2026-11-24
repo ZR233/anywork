@@ -4,6 +4,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_canonical_payload_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_current_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_history_projection.dart';
 import 'package:anywork/src/features/conversation/timeline/state/work_group_event_folder.dart';
@@ -300,17 +301,21 @@ void main() {
     // Before terminal event arrives, active row accepts Current overlay.
     final activeFold = WorkGroupEventFolder.fold(
       rangeEvents: [called, waiting],
-      currentAtoms: [liveAtom],
-      currentOwnerId: 'run-1',
-      groupClosed: false,
-      workRangeRunId: 'run-1',
     );
+    DisplayRecord overlay(DisplayRecord record) =>
+        TimelineCurrentProjection.overlayRecord(
+          record,
+          current: {liveAtom.id: liveAtom},
+          currentByCall: {callId: liveAtom},
+          ownerId: 'run-1',
+          fallbackRunId: 'run-1',
+        );
     expect(activeFold.missingCallIds, isEmpty);
     expect(activeFold.entries, hasLength(1));
     expect(activeFold.entries.single.memberKey, 'call:$callId');
     expect(activeFold.entries.single.memberOrder, 1);
     expect(
-      activeFold.entries.single.record.contentSource,
+      overlay(activeFold.entries.single.record).contentSource,
       isA<CurrentAtomSource>(),
     );
     expect(activeFold.entries.single.record.isTerminalHistory, isFalse);
@@ -318,10 +323,6 @@ void main() {
     // Once terminal event is folded, Current overlay immediately retires even on an open tail.
     final terminalFold = WorkGroupEventFolder.fold(
       rangeEvents: [called, waiting, backgrounded, completed],
-      currentAtoms: [liveAtom],
-      currentOwnerId: 'run-1',
-      groupClosed: false,
-      workRangeRunId: 'run-1',
     );
     expect(terminalFold.missingCallIds, isEmpty);
     expect(terminalFold.entries, hasLength(1));
@@ -329,6 +330,7 @@ void main() {
     expect(entry.memberKey, 'call:$callId');
     expect(entry.memberOrder, 1);
     expect(entry.record.isTerminalHistory, isTrue);
+    expect(overlay(entry.record), same(entry.record));
     expect(entry.record.contentSource, isA<CompletedOriginal>());
     expect(entry.record.currentContents, isEmpty);
 
@@ -428,10 +430,7 @@ void main() {
         afterSeq: 5,
         beforeSeq: null,
       ),
-      groupClosed: true,
       demand: const ReadDemand(maxItems: 16, maxBytes: 64 * 1024),
-      currentAtoms: () => const [],
-      currentOwnerId: () => null,
     );
 
     final batch = await members.next();

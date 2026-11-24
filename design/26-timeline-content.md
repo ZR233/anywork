@@ -114,13 +114,15 @@ Current 正文的打开失败或读取过期通过正文流交付，不作为原
 
 ## 26.9 实时状态与展示组件
 
-状态栏（`LiveStatusBar`）通过 `LiveStatusMachine` 从唯一 Current State、`liveOpenWork`、`DomainSyncStatus` 与持久化状态派生四选一主阶段（`LiveResponsePhase` / `LiveWorkPhase` / `LiveCompactingPhase` / `LiveActivityPhase`）和去重并发关注条（`LiveStatusAttention`），统一交由纯视图 `LiveStatusSurfaceView` 与共用 `WorkGroupMemberList` / `LiveStatusHeaderSpec` 呈现当前未封口实时工作区（直接吸纳正在运行、等待审批与停止中顶行状态）、流式助手正文（`ConversationResponseView`，开始即收束前序工作组）、实时压缩与正交关注提示；`projectConversationActivity` 同步透传 `wait` 呈现事实，计时超过 60 分钟自动按小时、超过 24 小时按天进位格式化。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、atoms、activity 和原 owner 状态（以 `executionActive` 统一界定）。无 active turn 的有效后台活动仍可显示。
+状态栏（`LiveStatusBar`）通过 `LiveStatusMachine` 从唯一 Current State、`liveOpenWork`、`DomainSyncStatus` 与持久化状态派生互斥主阶段（`LiveResponsePhase` / `LiveWorkPhase` / `LiveCompactingPhase` / `LiveActivityPhase` / `LiveReconnectingPhase`）和去重并发关注条（`LiveStatusAttention`），统一交由纯视图 `LiveStatusSurfaceView` 与共用 `WorkGroupMemberList` / `LiveStatusHeaderSpec` 呈现当前未封口实时工作区（直接吸纳正在运行、等待审批与停止中顶行状态）、流式助手正文（`ConversationResponseView`，开始即收束前序工作组）、实时压缩与正交关注提示；`projectConversationActivity` 同步透传 `wait` 呈现事实，计时超过 60 分钟自动按小时、超过 24 小时按天进位格式化。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、atoms、activity 和原 owner 状态（以 `executionActive` 统一界定）。无 active turn 的有效后台活动仍可显示。
 
 实时正文的同一个读取窗口每次更新只解码一次，正文就绪判断与渲染共用该文本。已经可见的窗口在追加文本或更新回调时保留首次可见布局证据。更换正文窗口或卸载时撤销原证据，新窗口在正文实际可见后重新报告。
 
 主时间线中已封口的 `WorkRange` 与实时栏中的未封口工作区均支持默认一行展示真实图标、单行摘要与经过时间；展开后才由工作组 ViewModel 拉取并折叠区间事件。隐藏或折叠撤销该视图自己的正文/媒体读取，不停止业务执行。工作组沿用 `WorkRange` 的 Unix 毫秒起止时间，实时栏开放工作区以当前 Unix 毫秒为上界，主时间线已封口历史工作组取区间末事件时间。先取毫秒差，再按整秒展示；时间缺失或倒序时显示“工作记录”。实时计时只是 UI 派生值，不写 Current 或 History。
 
 实时工作组展开后，标题固定在有界成员区上方，普通执行时沿用当前组的思考摘要。成员区读取期间继续显示可用成员，省略横向加载指示。历史工作组展开后随主时间线连续布局和滚动，并提供加载反馈。具体呈现见 [桌面界面规范](./19-studio-ui.md)。
+
+开放工作组只在区间历史引用变化时重新读取 History。成员控制器将最新 Current 叠加到最近接纳的完整历史结果，在历史事件到达前按相同的调用或实体身份显示实时成员。成员的内容引用、状态或正文变化由对应行单独消费。成员身份或顺序变化时更新列表结构，读取失败及重试按组显示。重连通过同一主阶段选择入口暂时取代实时工作组；恢复后按最新快照重新选择主阶段。
 
 组内成员折叠或不可展开时只显示一行活动入口：语义图标、主文案和可用的展开标记同行对齐。思考以单行行内 Markdown 显示概要，超长省略，读取状态与错误不增加第二行；无概要时使用真实状态或已知耗时。只有存在正文时才可展开思考。思考概要和正文均无独立复制按钮；展开后的正文仍可选择文字，长正文保留范围导航。工具及正式消息的复制行为不变。
 
