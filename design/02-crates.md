@@ -68,7 +68,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-mcp` | 传输无关的 Host MCP 服务、工具消费投影与领域调用端口、本地 IPC 契约及客户端，以及宿主原生 stdio 服务程序；不依赖 Studio runtime、Flutter/FRB、`pl-core`、`pl-model` 或 `pl-tool`，不拥有产品存储、成员目录或业务调度。Studio 实现该端口并持有原实例 IPC 服务 |
 | `pl-studio-update` | 稳定更新清单与来源校验、可信下载、安装缓存锁、长度/摘要/签名流式验证、只读安装包租约和安装器交接；不依赖 Studio runtime、模型、工具、配置或数据库，不持有产品更新状态机，也不决定应用退出 |
 | `pl-studio-statistics` | 模型性能快照与分页契约、同源不可变统计材料的发布、读取信用及关闭生命周期；不依赖 Studio runtime、模型、工具或数据库，不聚合计费事实，也不读取调用库。Runtime 原统计所有者串行提交单调版本并发布材料 |
-| `pl-studio-runtime` | Studio 传输无关产品协议与目录/成员描述（`SessionDescriptor`/`SessionDirectoryRow`/`AgentDescriptor`/`AgentDefinitionSnapshot`/`AgentBinding`）、TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式（`mode`）/工作流（`workflow_tool`）/计划（`plan_tool`）状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)）；精确重导出其公开签名引用的下层类型供上层适配器直接消费 |
+| `pl-studio-runtime` | Studio 传输无关产品协议、会话目录与成员定义（`SessionDirectoryRow`、`AgentDefinitionSnapshot`、`AgentBinding`）、TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式（`mode`）/工作流（`workflow_tool`）/计划（`plan_tool`）状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)）。公开签名引用的下层类型由本 crate 重导出，供上层适配器直接使用。 |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-studio-cli` | `anywk` 非交互式生产宿主；命令参数、输入预检、原生任务终态观察与退出编排，不拥有第二套智能体循环，见 [29](./29-cli-harbor.md) |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
