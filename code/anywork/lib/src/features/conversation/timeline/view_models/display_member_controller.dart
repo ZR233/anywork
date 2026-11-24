@@ -94,8 +94,7 @@ final class DisplayMemberController extends ChangeNotifier {
         if (atom.contents.isNotEmpty) atom.id: atom,
     };
     _currentByCall = {
-      for (final atom in _currentById.values)
-        if (atom.tool?.callId case final callId?) callId: atom,
+      for (final atom in _currentById.values) ?atom.tool?.callId: atom,
     };
     _publishRows(_qualification);
   }

@@ -64,7 +64,7 @@ final class LiveResponsePhase extends LiveStatusPrimaryPhase {
 
 /// 开放工作组正在实时状态栏主区运行、等待或停止。
 final class LiveWorkPhase extends LiveStatusPrimaryPhase {
-  LiveWorkPhase({
+  const LiveWorkPhase({
     required this.id,
     required this.block,
     required this.mode,
