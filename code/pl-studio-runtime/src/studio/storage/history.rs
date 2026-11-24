@@ -1,7 +1,7 @@
 //! Frozen schema-24 storage for one-shot v2 TOML import and schema 24→25 migration.
 
-#[cfg(test)]
 use super::sqlite_util::is_retryable_write;
+#[cfg(test)]
 use crate::{ExecutionItem, ExecutionKind, ExecutionShape, LegacyTurn};
 use std::{
     path::{Path, PathBuf},
