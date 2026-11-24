@@ -380,7 +380,7 @@ pub(crate) fn account_settings(
             .iter()
             .map(|(model_id, mode)| StudioModelConnectionSettings {
                 model_id: model_id.clone(),
-                connection_mode: connection_mode_label(*mode).to_string(),
+                connection_mode: mode.label().to_string(),
             })
             .collect(),
         model_auto_compact_limits: account

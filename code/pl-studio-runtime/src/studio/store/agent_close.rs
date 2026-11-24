@@ -11,7 +11,7 @@ use super::{
 use crate::studio::agent_host::worktree_lease::{
     WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 pub(super) use migration::upgrade_bindings;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 use serde::{Deserialize, Serialize};

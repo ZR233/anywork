@@ -49,7 +49,7 @@ mod tests {
             .await
             .expect("fresh database is intact");
 
-        db.close().await.expect("close memory database");
+        db.close_by_ref().await.expect("close memory database");
         let error = preflight_sqlite(&db, "integrity check failed")
             .await
             .expect_err("closed database must fail the pragma");

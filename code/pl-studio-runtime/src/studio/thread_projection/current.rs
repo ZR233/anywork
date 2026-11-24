@@ -847,7 +847,6 @@ impl CurrentState {
                     id,
                     key,
                     ContentBlock::from_text(&part.text),
-                    0,
                     atom.text_channel,
                     None,
                 ));
@@ -859,7 +858,6 @@ impl CurrentState {
                     id.clone(),
                     BodyKey::host(TOOL_ARGUMENTS_FIELD),
                     ContentBlock::from_text(&input.input),
-                    0,
                     None,
                     None,
                 ));
@@ -885,7 +883,6 @@ impl CurrentState {
                     id.clone(),
                     BodyKey::host(format!("{TOOL_RESULT_FIELD}:{}", part.id)),
                     ContentBlock::from_text(&part.text),
-                    0,
                     None,
                     None,
                 ));
@@ -1088,14 +1085,7 @@ mod tests {
                 &thread,
                 &state,
                 1,
-                [(
-                    "part".into(),
-                    BodyKey::Body,
-                    block.clone(),
-                    1,
-                    channel,
-                    None,
-                )],
+                [("part".into(), BodyKey::Body, block.clone(), channel, None)],
             )?;
             let preview = &current.projection().previews[0];
             let generation = current
@@ -1143,7 +1133,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [("active".into(), BodyKey::Body, block.clone(), 1, None, None)],
+            [("active".into(), BodyKey::Body, block.clone(), None, None)],
         )?;
         assert!(
             first
@@ -1160,14 +1150,7 @@ mod tests {
             &thread,
             &state,
             1,
-            [(
-                "active".into(),
-                BodyKey::Body,
-                appended.clone(),
-                1,
-                None,
-                None,
-            )],
+            [("active".into(), BodyKey::Body, appended.clone(), None, None)],
         )?;
         let content = next.contents.values().next().unwrap();
         assert!(
@@ -1187,14 +1170,7 @@ mod tests {
             &thread,
             &state,
             2,
-            [(
-                "active".into(),
-                BodyKey::Body,
-                appended.clone(),
-                1,
-                None,
-                None,
-            )],
+            [("active".into(), BodyKey::Body, appended.clone(), None, None)],
         )?;
         assert!(
             frozen.entries.is_empty(),
@@ -1213,7 +1189,6 @@ mod tests {
                 "active".into(),
                 BodyKey::Body,
                 ContentBlock::from_text(&appended.text()),
-                1,
                 None,
                 None,
             )],

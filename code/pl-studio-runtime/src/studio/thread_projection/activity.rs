@@ -24,7 +24,8 @@ use crate::{
 };
 use pl_core::context::ContextContent;
 use pl_core::model::{
-    AggregateChannel, ObservedItemKind, ObservedPart, ObservedPartIdentity, ObservedPartKind,
+    AggregateChannel, ModelProgress, ObservedItemKind, ObservedPart, ObservedPartIdentity,
+    ObservedPartKind,
 };
 use pl_core::thread::{
     AttemptStatus, ExecutionPhase, ModelExecutionPhase, RequestAttempt, ThreadSnapshot, TurnRecord,

@@ -16,7 +16,6 @@ use pl_core::{
 };
 use pl_model::completion::ToolCallPolicy;
 use pl_tool::binding::prepare_registration;
-use std::sync::Arc;
 
 /// Product-owned extension namespace; it is not a core schema or a database table.
 pub const WORKFLOW_EXTENSION: &str = "studio.workflow";
