@@ -330,18 +330,14 @@ impl StudioThreadFactory {
         let selected_mode = crate::studio::thread_projection::saved_mode(&saved)
             .map_err(|error| resource_error("read saved Mode", error))?
             .unwrap_or(directory_mode);
+        let catalog = self.services.thread_modes.snapshot();
         let mode = crate::mode::saved_registered_mode(&saved)
             .map_err(|error| resource_error("restore Mode snapshot", error))?
-            .or_else(|| self.services.thread_modes.snapshot().mode(&selected_mode))
+            .or_else(|| catalog.mode(&selected_mode))
             .or_else(|| {
-                matches!(selected_mode.as_str(), "mode.simple" | "mode.task")
-                    .then(|| {
-                        self.services
-                            .thread_modes
-                            .snapshot()
-                            .mode(&crate::mode::ThreadModeId::auto())
-                    })
-                    .flatten()
+                selected_mode
+                    .legacy_builtin_replacement()
+                    .and_then(|replacement| catalog.mode(&replacement))
             })
             .ok_or_else(|| ThreadAssemblyError::Identity(selected_mode.to_string()))?;
         let saved_route = crate::studio::model_route::saved(&saved)

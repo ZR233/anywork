@@ -101,23 +101,17 @@ impl AcpWorkflowPlanOwner {
                     .with_context(|| {
                         format!("decode ACP workflow state `{}`", wf_path.display())
                     })?;
-                if matches!(persisted.mode_id.as_str(), "mode.simple" | "mode.task")
-                    && let Some(auto_mode) = thread_modes.snapshot().mode(&ThreadModeId::auto())
+                if let Some(replacement) = persisted.mode_id.legacy_builtin_replacement()
+                    && let Some(auto_mode) = thread_modes.snapshot().mode(&replacement)
                 {
-                    persisted.mode_id = ThreadModeId::auto();
+                    persisted.mode_id = replacement;
                     persisted.saved_mode = SavedThreadMode::capture(&auto_mode, None);
                     initial_workflow_created = true;
                 }
                 Some(persisted)
             } else {
                 let resolved_mode_id = requested_mode
-                    .map(|id| {
-                        if matches!(id.as_str(), "mode.simple" | "mode.task") {
-                            ThreadModeId::auto()
-                        } else {
-                            id
-                        }
-                    })
+                    .map(|id| id.legacy_builtin_replacement().unwrap_or(id))
                     .unwrap_or_else(ThreadModeId::auto);
                 let catalog = thread_modes.snapshot();
                 let registered = catalog

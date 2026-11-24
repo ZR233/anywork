@@ -1016,11 +1016,7 @@ impl StudioRuntime {
             .workflow_plan
             .get()
             .ok_or_else(|| projection::preparation("ACP workflow owner is unavailable"))?;
-        let normalized = if matches!(mode_id.as_str(), "mode.simple" | "mode.task") {
-            crate::mode::ThreadModeId::auto()
-        } else {
-            mode_id
-        };
+        let normalized = mode_id.legacy_builtin_replacement().unwrap_or(mode_id);
         let catalog = self.thread_modes.snapshot();
         let registered = catalog
             .mode(&normalized)
