@@ -77,7 +77,7 @@ enum NativeAccountField { name, endpoint, credential }
 
 enum ManualModelField { id, name, contextWindow, maxOutputTokens }
 
-enum AccountWireApi { chatCompletions, responses }
+enum AccountWireApi { chatCompletions, responses, geminiGenerateContent }
 
 enum AcpAccountSource { local, command, managed }
 

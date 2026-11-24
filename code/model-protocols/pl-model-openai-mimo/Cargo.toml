@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pl-model-wire = { workspace = true }
 pl-model-openai-wire = { workspace = true }
 
 [dev-dependencies]

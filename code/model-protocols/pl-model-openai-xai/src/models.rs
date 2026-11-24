@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use pl_model_openai_wire::model::{
+use pl_model_wire::model::{
     BundledModelDefinition, MediaSendOrder, ModelDefinitionError, ModelInfo,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,

@@ -26,7 +26,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
-use pl_model_openai_wire::protocol::ProtocolEndpoint;
+use pl_model_wire::protocol::ProtocolEndpoint;
 
 /// 与运行时共享的精确取消类型重导出。
 pub use tokio_util::sync::CancellationToken;

@@ -1,0 +1,627 @@
+use std::collections::HashMap;
+
+use serde::Deserialize;
+use serde::Serialize;
+use serde_json::Map;
+use serde_json::Value;
+
+use crate::model::capabilities::{ModelCapabilities, ModelModality};
+use crate::model::parameter::ModelParameter;
+use crate::model::profile_error::ModelProfileError;
+use crate::protocol::{ConnectionMode, WireApi};
+
+/// OpenAI-family specialization of the common model declaration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModelInfo(pub super::ModelMetadata<ModelBinding>);
+
+impl std::ops::Deref for ModelInfo {
+    type Target = super::ModelMetadata<ModelBinding>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ModelInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub use pl_model_types::model::{TruncationMode, TruncationPolicy};
+
+/// Adapter binding kept separate from provider-neutral model metadata.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBinding {
+    pub transport: ModelTransportProfile,
+    pub request: ModelRequestProfile,
+}
+
+impl ModelBinding {
+    /// Changes wire API and its protocol-specific defaults together, preserving same-API options.
+    pub fn set_transport(&mut self, transport: ModelTransportProfile) {
+        let matches = matches!(
+            (&self.request.protocol, transport.protocol),
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
+                | (
+                    ModelProtocolOptions::GeminiGenerateContent(_),
+                    WireApi::GeminiGenerateContent
+                )
+        );
+        if !matches {
+            self.request.protocol = match transport.protocol {
+                WireApi::Responses => ModelProtocolOptions::Responses(Default::default()),
+                WireApi::ChatCompletions => {
+                    ModelProtocolOptions::ChatCompletions(Default::default())
+                }
+                WireApi::GeminiGenerateContent => {
+                    ModelProtocolOptions::GeminiGenerateContent(Default::default())
+                }
+            };
+        }
+        self.transport = transport;
+    }
+}
+
+/// 模型拥有的 API wire 与连接策略。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelTransportProfile {
+    pub protocol: WireApi,
+    pub supported_connection_modes: Vec<ConnectionMode>,
+    pub default_connection_mode: ConnectionMode,
+}
+
+impl ModelTransportProfile {
+    pub fn responses_websocket() -> Self {
+        Self {
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::WebSocket, ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::WebSocket,
+        }
+    }
+
+    pub fn responses_http() -> Self {
+        Self {
+            protocol: WireApi::Responses,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
+        }
+    }
+
+    pub fn chat_completions_http() -> Self {
+        Self {
+            protocol: WireApi::ChatCompletions,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
+        }
+    }
+
+    pub fn gemini_http() -> Self {
+        Self {
+            protocol: WireApi::GeminiGenerateContent,
+            supported_connection_modes: vec![ConnectionMode::Http],
+            default_connection_mode: ConnectionMode::Http,
+        }
+    }
+}
+
+impl Default for ModelTransportProfile {
+    fn default() -> Self {
+        Self::chat_completions_http()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelRequestProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_model: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub body: Map<String, Value>,
+    pub protocol: ModelProtocolOptions,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<ModelMediaInputProfile>,
+    #[serde(default, skip_serializing_if = "MediaMixPolicy::is_default")]
+    pub media_mix_policy: MediaMixPolicy,
+}
+
+impl ModelRequestProfile {
+    /// 所有字段均未设置时返回 true（用于字段级合并判断「用户未提供」）。
+    pub fn is_empty(&self) -> bool {
+        self.api_model.is_none()
+            && self.headers.is_empty()
+            && self.body.is_empty()
+            && self.protocol == ModelProtocolOptions::default()
+            && self.media.is_empty()
+            && self.media_mix_policy.is_default()
+    }
+
+    pub fn media_profile(&self, modality: ModelModality) -> Option<&ModelMediaInputProfile> {
+        self.media
+            .iter()
+            .find(|profile| profile.modality == modality)
+    }
+}
+
+/// Only options belonging to the selected wire API are representable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "api", rename_all = "camelCase")]
+pub enum ModelProtocolOptions {
+    Responses(ResponsesRequestOptions),
+    ChatCompletions(ChatRequestOptions),
+    GeminiGenerateContent(GeminiRequestOptions),
+}
+impl Default for ModelProtocolOptions {
+    fn default() -> Self {
+        Self::ChatCompletions(ChatRequestOptions::default())
+    }
+}
+/// Responses-only request controls.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResponsesRequestOptions {
+    pub programmatic_tool_calling: bool,
+    pub max_tokens_field: ResponsesMaxTokensField,
+}
+/// Chat-only request controls. Usage requests are independent of tool streaming.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRequestOptions {
+    pub parallel_tool_calls: bool,
+    pub max_tokens_field: MaxTokensField,
+    pub include_usage: bool,
+    pub tool_stream: bool,
+}
+/// Gemini native `generateContent` request controls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiRequestOptions {
+    #[serde(default)]
+    pub include_thoughts: bool,
+    #[serde(default = "default_true")]
+    pub use_parameters_json_schema: bool,
+}
+impl Default for GeminiRequestOptions {
+    fn default() -> Self {
+        Self {
+            include_thoughts: true,
+            use_parameters_json_schema: true,
+        }
+    }
+}
+const fn default_true() -> bool {
+    true
+}
+impl ModelRequestProfile {
+    pub fn responses() -> Self {
+        Self {
+            protocol: ModelProtocolOptions::Responses(ResponsesRequestOptions::default()),
+            ..Self::default()
+        }
+    }
+    pub fn gemini() -> Self {
+        Self {
+            protocol: ModelProtocolOptions::GeminiGenerateContent(GeminiRequestOptions::default()),
+            ..Self::default()
+        }
+    }
+    pub fn supports_programmatic_tool_calling(&self) -> bool {
+        matches!(&self.protocol, ModelProtocolOptions::Responses(options) if options.programmatic_tool_calling)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelMediaInputProfile {
+    pub modality: ModelModality,
+    pub wire: MediaWireFormat,
+    pub first_send: Vec<MediaRepresentation>,
+    pub replay: Vec<MediaRepresentation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaWireFormat {
+    ChatImageUrl,
+    ChatVideoUrl,
+    ChatFileUrl,
+    ResponsesInputImage,
+    ResponsesInputFile,
+    GeminiInlineImage,
+    GeminiInlineFile,
+}
+
+impl MediaWireFormat {
+    fn modality(self) -> ModelModality {
+        match self {
+            Self::ChatImageUrl | Self::ResponsesInputImage | Self::GeminiInlineImage => {
+                ModelModality::Image
+            }
+            Self::ChatVideoUrl => ModelModality::Video,
+            Self::ChatFileUrl | Self::ResponsesInputFile | Self::GeminiInlineFile => {
+                ModelModality::File
+            }
+        }
+    }
+
+    fn protocol(self) -> WireApi {
+        match self {
+            Self::ChatImageUrl | Self::ChatVideoUrl | Self::ChatFileUrl => WireApi::ChatCompletions,
+            Self::ResponsesInputImage | Self::ResponsesInputFile => WireApi::Responses,
+            Self::GeminiInlineImage | Self::GeminiInlineFile => WireApi::GeminiGenerateContent,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaRepresentation {
+    RemoteUrl,
+    ProviderFile,
+    DataUrl,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaMixPolicy {
+    #[default]
+    Any,
+    SingleModality,
+}
+
+impl MediaMixPolicy {
+    fn is_default(&self) -> bool {
+        *self == Self::Any
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MaxTokensField {
+    #[default]
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+impl MaxTokensField {
+    pub fn is_default(&self) -> bool {
+        *self == Self::MaxTokens
+    }
+}
+
+/// Controls how a Responses request serializes [`CompletionRequest::max_tokens`](crate::completion::CompletionRequest::max_tokens).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsesMaxTokensField {
+    #[default]
+    Omit,
+    MaxOutputTokens,
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+impl ResponsesMaxTokensField {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Omit
+    }
+}
+
+impl ModelInfo {
+    pub fn validate_media_contract(&self) -> Result<(), ModelProfileError> {
+        let mut modalities = Vec::new();
+        for capability in &self.capabilities.input {
+            if modalities.contains(&capability.modality) {
+                return Err(ModelProfileError::DuplicateInputModality {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            modalities.push(capability.modality);
+            if capability.modality == ModelModality::Text {
+                if !capability.sources.is_empty() {
+                    return Err(ModelProfileError::TextInputDeclaresMediaSources {
+                        model: self.model_id.clone(),
+                    });
+                }
+                continue;
+            }
+            let profile = self
+                .binding
+                .request
+                .media_profile(capability.modality)
+                .ok_or_else(|| ModelProfileError::ModalityWithoutMediaProfile {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                })?;
+            if capability.sources.is_empty() {
+                return Err(ModelProfileError::ModalityWithoutAdmittedSources {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if profile.first_send.is_empty() || profile.replay.is_empty() {
+                return Err(ModelProfileError::MissingSendOrReplayRepresentations {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if profile.wire.modality() != profile.modality {
+                return Err(ModelProfileError::WireModalityMismatch {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                    wire: profile.wire,
+                });
+            }
+            if profile.wire.protocol() != self.binding.transport.protocol {
+                return Err(ModelProfileError::WireProtocolMismatch {
+                    model: self.model_id.clone(),
+                    wire: profile.wire,
+                    protocol: self.binding.transport.protocol,
+                });
+            }
+            if has_duplicates(&profile.first_send) || has_duplicates(&profile.replay) {
+                return Err(ModelProfileError::RepeatedMediaRepresentation {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if profile.replay.contains(&MediaRepresentation::RemoteUrl) {
+                return Err(ModelProfileError::ReplayUsesRemoteUrl {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if capability
+                .sources
+                .contains(&crate::model::ModelInputSource::Local)
+                && !profile.first_send.iter().any(|representation| {
+                    matches!(
+                        representation,
+                        MediaRepresentation::ProviderFile | MediaRepresentation::DataUrl
+                    )
+                })
+            {
+                return Err(ModelProfileError::LocalSourceWithoutDurableRepresentation {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if profile.first_send.contains(&MediaRepresentation::RemoteUrl)
+                && !capability
+                    .sources
+                    .contains(&crate::model::ModelInputSource::RemoteUrl)
+            {
+                return Err(ModelProfileError::RemoteUrlStrategyWithoutAdmission {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+            if profile
+                .replay
+                .iter()
+                .all(|representation| *representation == MediaRepresentation::RemoteUrl)
+            {
+                return Err(ModelProfileError::ReplayNotDurable {
+                    model: self.model_id.clone(),
+                    modality: capability.modality,
+                });
+            }
+        }
+        let mut profile_modalities = Vec::new();
+        for profile in &self.binding.request.media {
+            if profile_modalities.contains(&profile.modality) {
+                return Err(ModelProfileError::DuplicateMediaProfile {
+                    model: self.model_id.clone(),
+                    modality: profile.modality,
+                });
+            }
+            profile_modalities.push(profile.modality);
+            if !self.capabilities.supports_input_modality(profile.modality) {
+                return Err(ModelProfileError::MediaProfileForUndeclaredModality {
+                    model: self.model_id.clone(),
+                    modality: profile.modality,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates a complete model binding and its price table before use.
+    /// # Errors
+    /// Returns the inconsistent transport, media or tariff contract, or a
+    /// non-positive default auto-compact token limit.
+    pub fn validate(&self) -> Result<(), ModelProfileError> {
+        if self.auto_compact_token_limit == Some(0) {
+            return Err(ModelProfileError::InvalidAutoCompactTokenLimit {
+                model: self.model_id.clone(),
+            });
+        }
+        if self.resolve_context(None).unavailable
+            == Some(crate::model::ModelContextUnavailable::InvalidParameters)
+            || self
+                .default_temperature
+                .is_some_and(|t| !t.is_finite() || t < 0.0)
+        {
+            return Err(ModelProfileError::InvalidBudget {
+                model: self.model_id.clone(),
+            });
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for parameter in &self.parameters {
+            let mut candidates = std::collections::BTreeSet::new();
+            if parameter.name.trim().is_empty()
+                || !names.insert(&parameter.name)
+                || parameter.candidates.is_empty()
+                || parameter
+                    .default
+                    .as_ref()
+                    .is_some_and(|value| !parameter.candidates.contains(value))
+                || parameter
+                    .candidates
+                    .iter()
+                    .any(|c| c.trim().is_empty() || !candidates.insert(c))
+                || parameter.wire.len() != candidates.len()
+                || parameter.wire.iter().any(|(candidate, wire)| {
+                    !candidates.contains(candidate)
+                        || wire.set.is_empty() && wire.remove.is_empty()
+                        || wire
+                            .set
+                            .iter()
+                            .map(|s| &s.path)
+                            .chain(&wire.remove)
+                            .any(|path| path.split('.').any(str::is_empty))
+                })
+            {
+                return Err(ModelProfileError::InvalidParameter {
+                    model: self.model_id.clone(),
+                });
+            }
+        }
+        self.binding.transport.validate(&self.model_id)?;
+        if !matches!(
+            (
+                &self.binding.request.protocol,
+                self.binding.transport.protocol
+            ),
+            (ModelProtocolOptions::Responses(_), WireApi::Responses)
+                | (
+                    ModelProtocolOptions::ChatCompletions(_),
+                    WireApi::ChatCompletions
+                )
+                | (
+                    ModelProtocolOptions::GeminiGenerateContent(_),
+                    WireApi::GeminiGenerateContent
+                )
+        ) {
+            return Err(ModelProfileError::ProtocolOptionsMismatch {
+                model: self.model_id.clone(),
+                protocol: self.binding.transport.protocol,
+            });
+        }
+        self.pricing
+            .validate()
+            .map_err(|source| ModelProfileError::InvalidPricing {
+                model: self.model_id.clone(),
+                source,
+            })?;
+        self.validate_media_contract()
+    }
+
+    /// Resolves the complete context policy. Consumers must reuse the catalog's frozen result.
+    pub fn resolve_context(
+        &self,
+        override_limit: Option<u64>,
+    ) -> crate::model::ModelContextResolution {
+        use crate::model::{
+            ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
+        };
+        let window = self.context_window.or(self.max_context_window);
+        let invalid = [
+            self.context_window,
+            self.max_context_window,
+            self.max_output_tokens,
+            self.auto_compact_token_limit,
+            override_limit,
+        ]
+        .contains(&Some(0))
+            || self
+                .context_window
+                .zip(self.max_context_window)
+                .is_some_and(|(current, maximum)| current > maximum);
+        let input = window.map(|window| window.saturating_sub(self.max_output_tokens.unwrap_or(0)));
+        let unavailable = if invalid {
+            Some(ModelContextUnavailable::InvalidParameters)
+        } else if window.is_none() {
+            Some(ModelContextUnavailable::WindowUnknown)
+        } else if input == Some(0) {
+            Some(ModelContextUnavailable::InputBudgetExhausted)
+        } else {
+            None
+        };
+        let safe = window
+            .zip(input)
+            .filter(|_| unavailable.is_none())
+            .map(|(window, input)| (((u128::from(window) * 90) / 100) as u64).min(input))
+            .filter(|limit| *limit > 0);
+        let selected = override_limit.or(self.auto_compact_token_limit).or(safe);
+        ModelContextResolution {
+            unavailable,
+            context_window: window,
+            input_token_limit: input.filter(|_| !invalid),
+            auto_compact_limit: selected
+                .zip(safe)
+                .map(|(selected, safe)| selected.min(safe)),
+            adjustment: selected
+                .zip(safe)
+                .filter(|(selected, safe)| selected > safe)
+                .map(|_| ModelContextAdjustment::SafetyLimit),
+        }
+    }
+
+    /// Basic compatible model with configurable local 32K/4K budgets.
+    pub fn compatible(model_id: &str) -> Self {
+        Self(crate::model::ModelMetadata {
+            observation: None,
+            model_id: model_id.to_string(),
+            display_name: model_id.to_string(),
+            description: None,
+            context_window: Some(32_000),
+            max_context_window: Some(32_000),
+            auto_compact_token_limit: None,
+            default_temperature: None,
+            max_output_tokens: Some(4096),
+            pricing: super::pricing::ModelPricing::Unknown,
+            parameters: Vec::new(),
+            binding: ModelBinding {
+                transport: ModelTransportProfile::default(),
+                request: ModelRequestProfile {
+                    protocol: ModelProtocolOptions::ChatCompletions(ChatRequestOptions {
+                        include_usage: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            },
+            capabilities: ModelCapabilities::text_only(),
+            truncation_policy: TruncationPolicy {
+                mode: TruncationMode::Bytes,
+                limit: 10_000,
+            },
+            base_instructions: String::new(),
+        })
+    }
+
+    /// 返回名为 "effort" 的参数声明，若模型未声明则返回 None。
+    pub fn effort_parameter(&self) -> Option<&ModelParameter> {
+        self.parameters
+            .iter()
+            .find(|parameter| parameter.name == "effort")
+    }
+
+    /// 返回 effort 参数的候选值字符串列表（GUI 下拉渲染用）。
+    /// 若模型未声明 effort 参数，返回空 Vec。
+    pub fn supported_efforts(&self) -> Vec<String> {
+        self.effort_parameter()
+            .map(|parameter| parameter.candidates.clone())
+            .unwrap_or_default()
+    }
+
+    /// 返回模型声明的默认 effort；未声明默认时使用候选首项。
+    pub fn default_effort(&self) -> Option<String> {
+        self.effort_parameter()
+            .and_then(|parameter| parameter.default_candidate(None))
+    }
+}
+
+fn has_duplicates<T: PartialEq>(values: &[T]) -> bool {
+    values
+        .iter()
+        .enumerate()
+        .any(|(index, value)| values[..index].contains(value))
+}

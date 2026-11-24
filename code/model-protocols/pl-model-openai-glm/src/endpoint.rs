@@ -1,4 +1,4 @@
-use pl_model_openai_wire::protocol::*;
+use pl_model_wire::protocol::*;
 
 pub const ID: ProtocolId = ProtocolId::from_static("zhipu");
 

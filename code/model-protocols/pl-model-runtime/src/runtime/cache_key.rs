@@ -70,6 +70,7 @@ impl PromptCacheScope {
                     match model.binding.transport.protocol {
                         WireApi::Responses => "responses",
                         WireApi::ChatCompletions => "chatCompletions",
+                        WireApi::GeminiGenerateContent => "geminiGenerateContent",
                     },
                 ] {
                     hash.update((part.len() as u64).to_le_bytes());
@@ -106,6 +107,7 @@ fn cache_digest(isolation: &str, thread_id: &str, model: &str, protocol: WireApi
         match protocol {
             WireApi::Responses => "responses",
             WireApi::ChatCompletions => "chatCompletions",
+            WireApi::GeminiGenerateContent => "geminiGenerateContent",
         },
     ] {
         hash.update((part.len() as u64).to_le_bytes());

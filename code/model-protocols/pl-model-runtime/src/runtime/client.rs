@@ -6,7 +6,8 @@ use crate::completion::{
 use crate::model::PricingMode;
 use crate::model::{ModelCapabilities, ModelInfo};
 use crate::protocol::{FileUploadCapability, ProtocolEndpoint, WireApi};
-use pl_model_openai_wire::files::FileUploadService;
+use pl_model_wire::files::FileUploadService;
+use pl_model_wire::wire_codec::WireCodec;
 use pl_protocol::PureError;
 use pl_protocol::Result;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ pub struct ModelRuntime {
     pub(super) endpoint: ProtocolEndpoint,
     pub(super) http_client: reqwest::Client,
     pub(super) model: ModelInfo,
+    pub(super) codec: &'static dyn WireCodec,
     pub(super) clock: Arc<dyn super::InferenceClock>,
     pub(super) pricing_mode: PricingMode,
     pub(super) upload: Option<&'static FileUploadService>,
@@ -31,12 +33,14 @@ impl ModelRuntime {
     /// Rejects invalid endpoint or model configuration.
     pub fn bind_route(
         route: crate::config::ResolvedModelRoute,
+        codec: &'static dyn WireCodec,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         let runtime = Self::bind(
             route.account_id.as_str(),
             route.endpoint,
             route.model,
+            codec,
             upload,
         )?
         .with_pricing_mode(route.pricing_mode);
@@ -53,6 +57,7 @@ impl ModelRuntime {
         account_id: impl Into<String>,
         endpoint: ProtocolEndpoint,
         model: ModelInfo,
+        codec: &'static dyn WireCodec,
         upload: Option<&'static FileUploadService>,
     ) -> Result<Self> {
         if match upload {
@@ -66,6 +71,12 @@ impl ModelRuntime {
         model
             .validate()
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
+        if !codec.supports_wire_api(model.binding.transport.protocol) {
+            return Err(PureError::ConfigError(format!(
+                "bound wire codec does not support wire API `{:?}`",
+                model.binding.transport.protocol
+            )));
+        }
         let account_id = account_id.into();
         if account_id.trim().is_empty() {
             return Err(PureError::ConfigError(
@@ -88,6 +99,7 @@ impl ModelRuntime {
             http_client,
             upload,
             model,
+            codec,
             clock: Arc::new(super::clock::SystemInferenceClock),
             pricing_mode: crate::model::PricingMode::Catalog,
         })

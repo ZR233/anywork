@@ -870,6 +870,7 @@ mod tests {
                     "zhipu" => "zhipu",
                     "mi_mo" => "miMo",
                     "xai" => "xai",
+                    "gemini" => "gemini",
                     _ => "openAiCompatible",
                 };
                 account.insert("adapter".into(), toml::Value::String(adapter.into()));

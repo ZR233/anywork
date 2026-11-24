@@ -3986,6 +3986,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions';
 
   @override
+  String get modelProtocolGeminiGenerateContent => 'Gemini GenerateContent';
+
+  @override
   String get modelConnectionWebSocket => 'WS';
 
   @override
@@ -3996,6 +3999,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsProtocolResponsesHttp => 'Responses (HTTP)';
+
+  @override
+  String get settingsProtocolGeminiGenerateContentHttp =>
+      'Gemini GenerateContent (HTTP)';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -4972,6 +4979,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolGemini => 'Google Gemini';
 
   @override
   String get accountProtocolCustom => 'Custom (OpenAI compatible)';

@@ -161,6 +161,17 @@ model settings to override that threshold; restoring automatic mode uses the
 built-in value. These recommendations do not replace saved routes, Thread model
 selections or explicit compaction overrides.
 
+The built-in Google Gemini templates use native Gemini REST (`protocol = "gemini"`,
+wire API `gemini_generate_content`, credential header `x-goog-api-key`) and recommend
+`gemini-3.7-flash` (`medium` effort, 1M context, image/PDF/text inline input):
+
+- `vertex-ai`: Google Cloud Vertex AI Gemini (`base_url = "https://aiplatform.googleapis.com/v1/publishers/google"`,
+  `bearer_token_env = "GCP_API_KEY"`, catalog `"vertex-ai"`). Vertex AI API Keys do not
+  expose publisher `/models` listing, so online discovery is disabled for this template.
+- `gemini`: Google Gemini Developer API / AI Studio (`base_url = "https://generativelanguage.googleapis.com/v1beta"`,
+  `bearer_token_env = "GEMINI_API_KEY"`, catalog `"gemini"`). Supports paginated `/models`
+  online discovery (`pageSize=1000`, `pageToken`).
+
 ### Prompt cache hints for compatible Responses endpoints
 
 A compatible endpoint does not inherit OpenAI service capabilities. After confirming

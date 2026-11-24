@@ -1,20 +1,20 @@
 //! Zhipu GLM 内建模型目录：通用 API 走 Chat Completions HTTP（effort 联动 thinking wire），
 //! Coding Plan 的 OpenAI Response 协议端点走 Responses HTTP（effort 透传 `reasoning.effort`）。
 
-use pl_model_openai_wire::model::pricing::{ModelPricing, TokenPriceTier};
+use pl_model_wire::model::pricing::{ModelPricing, TokenPriceTier};
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use pl_model_openai_wire::model::capabilities::{
+use pl_model_wire::model::capabilities::{
     ModelCapabilities, ModelInputCapability, ModelInputSource, ModelModality,
     PromptCacheModelCapabilities, ReasoningInterleaved, ToolCapabilities,
 };
-use pl_model_openai_wire::model::family::{ModelFamily, ModelInstanceSpec};
-use pl_model_openai_wire::model::info::{
+use pl_model_wire::model::family::{ModelFamily, ModelInstanceSpec};
+use pl_model_wire::model::info::{
     MediaWireFormat, ModelInfo, ModelRequestProfile, ModelTransportProfile, TruncationMode,
 };
-use pl_model_openai_wire::model::parameter::{ModelParameter, ParameterWire, WireAssignment};
+use pl_model_wire::model::parameter::{ModelParameter, ParameterWire, WireAssignment};
 
 const ZHIPU_GLM_DEFAULT_MODEL_MODEL_IDS: &[&str] = &[
     "glm-5.3",
@@ -180,7 +180,7 @@ fn zhipu_glm53_family() -> ModelFamily {
         zhipu_text_capabilities(),
         zhipu_glm53_effort_parameter(),
     );
-    if let pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(options) =
+    if let pl_model_wire::model::ModelProtocolOptions::ChatCompletions(options) =
         &mut family.request_profile.protocol
     {
         options.tool_stream = true;
@@ -195,14 +195,14 @@ fn zhipu_glm53_flash_family() -> ModelFamily {
         zhipu_vision_capabilities(),
         zhipu_glm53_effort_parameter(),
     );
-    if let pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(options) =
+    if let pl_model_wire::model::ModelProtocolOptions::ChatCompletions(options) =
         &mut family.request_profile.protocol
     {
         options.tool_stream = true;
     }
     family.request_profile = family.request_profile.with_image_media(
         MediaWireFormat::ChatImageUrl,
-        pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
+        pl_model_wire::model::MediaSendOrder::RemoteUrlFirst,
     );
     family
 }
@@ -215,7 +215,7 @@ fn zhipu_vision_family() -> ModelFamily {
     );
     family.request_profile = family.request_profile.with_image_media(
         MediaWireFormat::ChatImageUrl,
-        pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
+        pl_model_wire::model::MediaSendOrder::RemoteUrlFirst,
     );
     family
 }
@@ -240,8 +240,8 @@ fn zhipu_chat_family(
 
 fn chat_parallel_request_profile() -> ModelRequestProfile {
     ModelRequestProfile {
-        protocol: pl_model_openai_wire::model::ModelProtocolOptions::ChatCompletions(
-            pl_model_openai_wire::model::ChatRequestOptions {
+        protocol: pl_model_wire::model::ModelProtocolOptions::ChatCompletions(
+            pl_model_wire::model::ChatRequestOptions {
                 parallel_tool_calls: true,
                 ..Default::default()
             },
@@ -382,7 +382,7 @@ fn zhipu_capabilities(input: Vec<ModelInputCapability>) -> ModelCapabilities {
             programmatic_tool_calling: false,
         },
         interleaved: Some(ReasoningInterleaved {
-            field: pl_model_openai_wire::model::reasoning_fields::REASONING_CONTENT,
+            field: pl_model_wire::model::reasoning_fields::REASONING_CONTENT,
         }),
         prompt_cache: PromptCacheModelCapabilities::default(),
         instruction_snapshot_overrides: false,
@@ -424,7 +424,7 @@ fn zhipu_responses_family(
     if image {
         request_profile = request_profile.with_image_media(
             MediaWireFormat::ResponsesInputImage,
-            pl_model_openai_wire::model::MediaSendOrder::RemoteUrlFirst,
+            pl_model_wire::model::MediaSendOrder::RemoteUrlFirst,
         );
     }
     ModelFamily {
@@ -432,7 +432,7 @@ fn zhipu_responses_family(
         capabilities,
         truncation_mode: TruncationMode::Tokens,
         truncation_limit: 10_000,
-        parameters: vec![pl_model_openai_wire::model::effort_parameter(
+        parameters: vec![pl_model_wire::model::effort_parameter(
             "reasoning.effort",
             &["low", "high", "max"],
             None,

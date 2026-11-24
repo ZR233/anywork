@@ -1,0 +1,426 @@
+//! Canonical completion 请求、builder 与模型能力校验。
+
+use serde::{Deserialize, Serialize};
+
+use crate::completion::tool_schema::{ToolProjection, provider_compatible_tool};
+use crate::completion::usage::ReasoningConfig;
+use crate::completion::{AttachmentModality, ContentPart, Message, ModelContextItem, ToolSpec};
+use crate::model::{ModelCapabilities, ModelModality};
+use pl_protocol::PureError;
+
+/// Provider-neutral trusted instruction content for one completion request.
+///
+/// Callers assemble the complete trusted body (base, Agent/Mode roles, platform, config,
+/// skills and tool-scheduling rules) and hand it here without selecting a wire role. The
+/// vendor protocol adapter decides whether the content is sent as `system` or `developer`
+/// from the concrete protocol and wire API, never from a model name or endpoint URL.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemPrompt {
+    content: String,
+}
+
+impl SystemPrompt {
+    pub fn new(content: impl Into<String>) -> Self {
+        Self {
+            content: content.into(),
+        }
+    }
+
+    /// The complete provider-neutral instruction text.
+    pub fn content(&self) -> &str {
+        &self.content
+    }
+
+    pub fn into_string(self) -> String {
+        self.content
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionRequest {
+    pub system_prompt: Option<SystemPrompt>,
+    pub input: Vec<ModelContextItem>,
+    pub attachments: Vec<super::AttachmentInput>,
+    pub prepared_content: Vec<ResolvedAttachment>,
+    pub replay_spans: Vec<super::replay::ReplaySpan>,
+    pub tools: Vec<ToolSpec>,
+    pub tool_choice: String,
+    pub parallel_tool_calls: bool,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u64>,
+    pub reasoning: Option<ReasoningConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedAttachment {
+    pub attachment_id: String,
+    pub modality: AttachmentModality,
+    pub media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    pub sources: Vec<AttachmentRepresentation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AttachmentRepresentation {
+    DataUrl { base64: String },
+    RemoteUrl { url: String },
+    ProviderFile { file_id: String },
+}
+
+fn default_tool_choice() -> String {
+    "auto".into()
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionRequestBuilder {
+    request: CompletionRequest,
+}
+
+impl CompletionRequestBuilder {
+    pub fn system_prompt(mut self, system_prompt: SystemPrompt) -> Self {
+        self.request.system_prompt = Some(system_prompt);
+        self
+    }
+
+    pub fn maybe_system_prompt(mut self, system_prompt: Option<SystemPrompt>) -> Self {
+        self.request.system_prompt = system_prompt;
+        self
+    }
+
+    pub fn messages(mut self, messages: Vec<Message>) -> Self {
+        self.request.input = messages.into_iter().map(ModelContextItem::from).collect();
+        self
+    }
+
+    pub fn input(mut self, input: Vec<ModelContextItem>) -> Self {
+        self.request.input = input;
+        self
+    }
+
+    pub fn attachments(mut self, attachments: Vec<super::AttachmentInput>) -> Self {
+        self.request.attachments = attachments;
+        self
+    }
+
+    pub fn tools(mut self, tools: Vec<ToolSpec>) -> Self {
+        self.request.tools = tools;
+        self
+    }
+
+    pub fn tool_choice(mut self, tool_choice: impl Into<String>) -> Self {
+        self.request.tool_choice = tool_choice.into();
+        self
+    }
+
+    pub fn parallel_tool_calls(mut self, parallel_tool_calls: bool) -> Self {
+        self.request.parallel_tool_calls = parallel_tool_calls;
+        self
+    }
+
+    pub fn temperature(mut self, temperature: Option<f32>) -> Self {
+        self.request.temperature = temperature;
+        self
+    }
+
+    pub fn max_tokens(mut self, max_tokens: u64) -> Self {
+        self.request.max_tokens = Some(max_tokens);
+        self
+    }
+
+    pub fn maybe_max_tokens(mut self, max_tokens: Option<u64>) -> Self {
+        self.request.max_tokens = max_tokens;
+        self
+    }
+
+    pub fn reasoning(mut self, reasoning: Option<ReasoningConfig>) -> Self {
+        self.request.reasoning = reasoning;
+        self
+    }
+
+    pub fn build(self) -> CompletionRequest {
+        self.request
+    }
+}
+
+impl CompletionRequest {
+    /// Appends a completed assistant response without reducing its history to final text.
+    ///
+    /// # Errors
+    /// Rejects replay material that changes authority or disagrees with submitted calls.
+    pub fn append_response(
+        &mut self,
+        response: &super::CompletionResponse,
+    ) -> pl_protocol::Result<()> {
+        self.append_response_from(response, None)
+    }
+
+    /// 追加已提交响应，并记录产生该原生回放的 provider 隔离身份。
+    ///
+    /// 出站投影据此判断原生 reasoning 的 `encrypted_content` 能否被目标 provider 解释；
+    /// 隔离身份缺失时维持既有逐字回放语义。
+    pub fn append_response_from(
+        &mut self,
+        response: &super::CompletionResponse,
+        source_isolation: Option<&str>,
+    ) -> pl_protocol::Result<()> {
+        let Some(replay) = response.replay.as_ref() else {
+            self.input.extend(super::replay::recorded_input(response)?);
+            return Ok(());
+        };
+        let semantic = replay.semantic_input(response)?;
+        match replay {
+            super::AssistantReplay::Responses { output } => {
+                self.replay_spans.push(super::replay::ReplaySpan {
+                    start: self.input.len(),
+                    semantic: semantic.clone(),
+                    output: output.clone(),
+                    source_isolation: source_isolation.map(str::to_owned),
+                });
+            }
+            super::AssistantReplay::Gemini { parts } => {
+                self.replay_spans.push(super::replay::ReplaySpan {
+                    start: self.input.len(),
+                    semantic: semantic.clone(),
+                    output: parts.clone(),
+                    source_isolation: source_isolation.map(str::to_owned),
+                });
+            }
+            super::AssistantReplay::Chat { .. } => {}
+        }
+        self.input.extend(semantic);
+        Ok(())
+    }
+
+    pub fn validate_replay_spans(&self) -> pl_protocol::Result<()> {
+        let mut end = 0;
+        for span in &self.replay_spans {
+            let next = span
+                .start
+                .checked_add(span.semantic.len())
+                .ok_or_else(|| PureError::Protocol("replay span overflow".into()))?;
+            if span.start < end
+                || self.input.get(span.start..next) != Some(span.semantic.as_slice())
+            {
+                return Err(PureError::Protocol(
+                    "assistant replay differs from semantic input".into(),
+                ));
+            }
+            end = next;
+        }
+        Ok(())
+    }
+
+    pub fn builder() -> CompletionRequestBuilder {
+        CompletionRequestBuilder {
+            request: CompletionRequest {
+                system_prompt: None,
+                input: Vec::new(),
+                prepared_content: Vec::new(),
+                replay_spans: Vec::new(),
+                attachments: Vec::new(),
+                tools: Vec::new(),
+                tool_choice: default_tool_choice(),
+                parallel_tool_calls: false,
+                temperature: None,
+                max_tokens: None,
+                reasoning: None,
+            },
+        }
+    }
+
+    pub fn provider_compatible(mut self, projection: ToolProjection) -> Self {
+        self.tools = crate::completion::stable_tool_schemas(
+            self.tools
+                .into_iter()
+                .map(|tool| provider_compatible_tool(tool, projection))
+                .collect(),
+        );
+        self
+    }
+
+    pub fn validate_against(
+        &self,
+        model: &str,
+        capabilities: &ModelCapabilities,
+    ) -> pl_protocol::Result<()> {
+        let declared = self
+            .attachments
+            .iter()
+            .map(|input| ResolvedAttachment {
+                attachment_id: input.attachment_id.clone(),
+                modality: input.modality,
+                media_type: input.media_type.clone(),
+                filename: input.filename.clone(),
+                sources: Vec::new(),
+            })
+            .chain(self.prepared_content.iter().cloned())
+            .collect::<Vec<_>>();
+        let requirements = RequestRequirements::from_input(&self.input, &declared)?;
+        if requirements.text && !capabilities.supports_input_modality(ModelModality::Text) {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support text input",
+                model
+            )));
+        }
+        if requirements.image && !capabilities.supports_input_modality(ModelModality::Image) {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support image input",
+                model
+            )));
+        }
+        if requirements.video && !capabilities.supports_input_modality(ModelModality::Video) {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support video input",
+                model
+            )));
+        }
+        if requirements.file && !capabilities.supports_input_modality(ModelModality::File) {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support file input",
+                model
+            )));
+        }
+        if self.temperature.is_some() && !capabilities.supports_temperature() {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support temperature",
+                model
+            )));
+        }
+        if self
+            .reasoning
+            .as_ref()
+            .is_some_and(ReasoningConfig::is_enabled)
+            && !capabilities.supports_reasoning()
+        {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support reasoning",
+                model
+            )));
+        }
+        let has_function_tools = self.tools.iter().any(|tool| !tool.is_hosted());
+        if has_function_tools && !capabilities.supports_function_calling() {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support function calling",
+                model
+            )));
+        }
+        if has_function_tools
+            && self.parallel_tool_calls
+            && !capabilities.supports_parallel_tool_calls()
+        {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support parallel tool calls",
+                model
+            )));
+        }
+        if self.tools.iter().any(ToolSpec::is_web_search) && !capabilities.supports_web_search() {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support hosted web search",
+                model
+            )));
+        }
+        if self
+            .tools
+            .iter()
+            .any(ToolSpec::is_programmatic_tool_calling)
+            && !capabilities.supports_programmatic_tool_calling()
+        {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support programmatic tool calling",
+                model
+            )));
+        }
+        if self.tools.iter().any(ToolSpec::is_custom)
+            && (!capabilities.supports_custom_tools() || !capabilities.supports_freeform_tools())
+        {
+            return Err(PureError::ConfigError(format!(
+                "model {} does not support custom/freeform tools",
+                model
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct RequestRequirements {
+    text: bool,
+    image: bool,
+    video: bool,
+    file: bool,
+}
+
+impl RequestRequirements {
+    fn from_input(
+        input: &[ModelContextItem],
+        prepared_content: &[ResolvedAttachment],
+    ) -> pl_protocol::Result<Self> {
+        let mut requirements = Self::default();
+        for item in input {
+            if let ModelContextItem::ToolMedia { items } = item {
+                for item in items {
+                    requirements.record_attachment(
+                        &item.attachment.id,
+                        item.attachment.modality,
+                        prepared_content,
+                    )?;
+                }
+                continue;
+            }
+            let Some(message) = item.as_message() else {
+                continue;
+            };
+            for part in &message.content.parts {
+                match part {
+                    ContentPart::Text { text } => {
+                        if !text.is_empty() {
+                            requirements.text = true;
+                        }
+                    }
+                    ContentPart::Attachment {
+                        attachment_id,
+                        modality,
+                        ..
+                    } => {
+                        requirements.record_attachment(
+                            attachment_id,
+                            *modality,
+                            prepared_content,
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(requirements)
+    }
+
+    fn record_attachment(
+        &mut self,
+        attachment_id: &str,
+        modality: AttachmentModality,
+        prepared_content: &[ResolvedAttachment],
+    ) -> pl_protocol::Result<()> {
+        match modality {
+            AttachmentModality::Image => self.image = true,
+            AttachmentModality::Video => self.video = true,
+            AttachmentModality::File => self.file = true,
+        }
+        let prepared = prepared_content
+            .iter()
+            .find(|media| media.attachment_id == attachment_id)
+            .ok_or_else(|| {
+                PureError::ConfigError(format!(
+                    "attachment {attachment_id} must be prepared before model request"
+                ))
+            })?;
+        if prepared.modality != modality {
+            return Err(PureError::ConfigError(format!(
+                "attachment {attachment_id} modality does not match prepared media"
+            )));
+        }
+        Ok(())
+    }
+}

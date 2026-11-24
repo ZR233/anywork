@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 serde_json = { workspace = true }
+pl-model-wire = { workspace = true }
 pl-model-openai-wire = { workspace = true }
 
 [dev-dependencies]

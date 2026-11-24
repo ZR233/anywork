@@ -407,6 +407,7 @@ mod contract_tests {
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
             crate::model::ModelInfo::compatible("contract-model"),
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .expect("isolated model runtime");

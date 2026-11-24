@@ -3790,6 +3790,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions（对话补全）';
 
   @override
+  String get modelProtocolGeminiGenerateContent =>
+      'Gemini GenerateContent（原生接口）';
+
+  @override
   String get modelConnectionWebSocket => 'WS（WebSocket 长连接）';
 
   @override
@@ -3801,6 +3805,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsProtocolResponsesHttp => 'Responses（响应式接口，HTTP）';
+
+  @override
+  String get settingsProtocolGeminiGenerateContentHttp =>
+      'Gemini GenerateContent（原生接口，HTTP）';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -4715,6 +4723,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolGemini => 'Google Gemini';
 
   @override
   String get accountProtocolCustom => '自定义（OpenAI 兼容）';

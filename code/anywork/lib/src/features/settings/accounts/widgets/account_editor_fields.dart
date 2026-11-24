@@ -301,6 +301,8 @@ class AccountManualModelEditor extends StatelessWidget {
                     l10n.settingsProtocolChatCompletionsHttp,
                   AccountWireApi.responses =>
                     l10n.settingsProtocolResponsesHttp,
+                  AccountWireApi.geminiGenerateContent =>
+                    l10n.settingsProtocolGeminiGenerateContentHttp,
                 }),
                 selected: value.wireApi == api,
                 onSelected: (_) => onWireApiChanged(api),

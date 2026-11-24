@@ -1958,10 +1958,12 @@
   "settingsApiKeyOptional": "API key (optional)",
   "modelProtocolResponses": "Responses",
   "modelProtocolChatCompletions": "Chat Completions",
+  "modelProtocolGeminiGenerateContent": "Gemini GenerateContent",
   "modelConnectionWebSocket": "WS",
   "modelConnectionHttp": "HTTP",
   "settingsProtocolChatCompletionsHttp": "Chat Completions (HTTP)",
   "settingsProtocolResponsesHttp": "Responses (HTTP)",
+  "settingsProtocolGeminiGenerateContentHttp": "Gemini GenerateContent (HTTP)",
   "settingsAgentRouteUnavailable": "{route} (unavailable)",
   "@settingsAgentRouteUnavailable": {
     "placeholders": {
@@ -2402,6 +2404,7 @@
   "accountProtocolZhipu": "Zhipu",
   "accountProtocolMiMo": "MiMo",
   "accountProtocolXai": "xAI",
+  "accountProtocolGemini": "Google Gemini",
   "accountProtocolCustom": "Custom (OpenAI compatible)",
   "timelineWaitToolsTitle": "Waiting for tools",
   "timelineWaitMessagesTitle": "Waiting for a subagent or new message",

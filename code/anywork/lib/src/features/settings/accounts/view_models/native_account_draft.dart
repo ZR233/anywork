@@ -289,9 +289,11 @@ final class ManualModelDraft {
     name: model.displayName,
     context: model.contextWindow?.toString() ?? '',
     output: model.maxOutputTokens?.toString() ?? '',
-    wireApi: model.wireApi == 'responses'
-        ? AccountWireApi.responses
-        : AccountWireApi.chatCompletions,
+    wireApi: switch (model.wireApi) {
+      'responses' => AccountWireApi.responses,
+      'gemini_generate_content' => AccountWireApi.geminiGenerateContent,
+      _ => AccountWireApi.chatCompletions,
+    },
     connection: switch (connection) {
       null => AccountConnection.automatic,
       AccountConnectionMode.http => AccountConnection.http,
@@ -358,9 +360,11 @@ final class ManualModelDraft {
   AccountModelCommand get command => AccountModelCommand(
     modelId: id.trim(),
     displayName: name.trim().isEmpty ? id.trim() : name.trim(),
-    wireApi: wireApi == AccountWireApi.responses
-        ? 'responses'
-        : 'chat_completions',
+    wireApi: switch (wireApi) {
+      AccountWireApi.chatCompletions => 'chat_completions',
+      AccountWireApi.responses => 'responses',
+      AccountWireApi.geminiGenerateContent => 'gemini_generate_content',
+    },
     contextWindow: positiveAccountInteger(context),
     maxOutputTokens: positiveAccountInteger(output),
   );

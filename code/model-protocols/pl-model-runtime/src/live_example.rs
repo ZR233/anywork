@@ -8,8 +8,8 @@ use std::{
 };
 
 use clap::{Args, Subcommand, ValueEnum};
-use pl_model_openai_wire::catalog_http::{self, CatalogResponse};
-use pl_model_openai_wire::{
+use pl_model_wire::catalog_http::{self, CatalogResponse};
+use pl_model_wire::{
     adapter::Adapter,
     completion::{
         CompletionRequest, Message, MessageContent, MessageRole, ModelTextChannel, ReasoningConfig,
@@ -92,6 +92,7 @@ pub enum Wire {
     Chat,
     Responses,
     ResponsesWebsocket,
+    Gemini,
 }
 
 impl Wire {
@@ -99,12 +100,13 @@ impl Wire {
         match self {
             Self::Chat => WireApi::ChatCompletions,
             Self::Responses | Self::ResponsesWebsocket => WireApi::Responses,
+            Self::Gemini => WireApi::GeminiGenerateContent,
         }
     }
 
     fn connection(self) -> ConnectionMode {
         match self {
-            Self::Chat | Self::Responses => ConnectionMode::Http,
+            Self::Chat | Self::Responses | Self::Gemini => ConnectionMode::Http,
             Self::ResponsesWebsocket => ConnectionMode::WebSocket,
         }
     }
@@ -207,6 +209,14 @@ impl CommonCommand {
                 {
                     model.binding.request.protocol =
                         ModelProtocolOptions::Responses(Default::default());
+                } else if api == WireApi::GeminiGenerateContent
+                    && !matches!(
+                        model.binding.request.protocol,
+                        ModelProtocolOptions::GeminiGenerateContent(_)
+                    )
+                {
+                    model.binding.request.protocol =
+                        ModelProtocolOptions::GeminiGenerateContent(Default::default());
                 }
                 let tools: Vec<ToolSpec> = tools
                     .map(|path| {
@@ -263,8 +273,13 @@ impl CommonCommand {
                 let upload = adapter
                     .file_upload
                     .filter(|service| service.id == endpoint.service_capabilities.files);
-                let runtime =
-                    ModelRuntime::bind("manual-protocol-example", endpoint.clone(), model, upload)?;
+                let runtime = ModelRuntime::bind(
+                    "manual-protocol-example",
+                    endpoint.clone(),
+                    model,
+                    adapter.codec,
+                    upload,
+                )?;
                 let cancellation = CancellationToken::new();
                 let mut context =
                     ModelInvocationContext::default().with_cancellation(Some(cancellation.clone()));
@@ -329,7 +344,14 @@ impl CommonCommand {
                 );
             }
             Self::Models { .. } => {
-                let url = format!("{}/models", endpoint.base_url.trim_end_matches('/')).parse()?;
+                let mut url: reqwest::Url =
+                    format!("{}/models", endpoint.base_url.trim_end_matches('/')).parse()?;
+                if !adapter.discovery_query_params.is_empty() {
+                    let mut pairs = url.query_pairs_mut();
+                    for &(name, value) in adapter.discovery_query_params {
+                        pairs.append_pair(name, value);
+                    }
+                }
                 let headers = endpoint
                     .request_headers(endpoint.bearer_token.as_deref(), &Default::default())?;
                 let CatalogResponse::Updated { bytes, .. } =
@@ -338,9 +360,9 @@ impl CommonCommand {
                     return Err(ModelCatalogQueryError::UnexpectedNotModified.into());
                 };
                 let entries = discovery::models(
-                    (adapter.parse_catalog)(&bytes)?,
+                    (adapter.parse_catalog_page)(&bytes)?.records,
                     &ModelCatalogDiscovery {
-                        transport: pl_model_openai_wire::model::ModelTransportProfile {
+                        transport: pl_model_wire::model::ModelTransportProfile {
                             protocol: api,
                             default_connection_mode: wire.connection(),
                             supported_connection_modes: vec![wire.connection()],

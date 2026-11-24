@@ -320,6 +320,7 @@ mod tests {
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .unwrap();
@@ -520,6 +521,7 @@ mod tests {
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", fixture.base_url()),
             model,
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .unwrap();

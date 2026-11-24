@@ -506,9 +506,12 @@ pub(super) fn request(
                     .responses_context_items
                     .iter()
                     .any(|item| item.value["type"] == "reasoning")
-                    || matches!(&frame.receipt.response.replay,
-                        Some(crate::completion::AssistantReplay::Responses { output })
-                        if output.iter().any(|item| item["type"] == "reasoning"));
+                    || frame
+                        .receipt
+                        .response
+                        .replay
+                        .as_ref()
+                        .is_some_and(crate::completion::AssistantReplay::has_opaque_provider_state);
                 if native_reasoning
                     && !frame.receipt.binding.native_context_compatible(
                         &target,

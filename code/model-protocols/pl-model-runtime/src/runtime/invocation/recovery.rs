@@ -15,7 +15,7 @@ impl ModelRuntime {
         context: ModelInvocationContext,
         mut current: Option<&mut crate::runtime::current::CurrentProducer>,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
-        crate::runtime::context::validate(self.model.binding.transport.protocol, &request.input)?;
+        self.validate_context(&request.input)?;
         let admission = async {
             if let Some(cancellation) = &context.cancellation {
                 tokio::select! {
@@ -43,6 +43,7 @@ impl ModelRuntime {
             &self.endpoint,
             &self.model,
             &self.account_id,
+            self.codec,
             request,
         )?;
         let original_trace = context.trace.clone();

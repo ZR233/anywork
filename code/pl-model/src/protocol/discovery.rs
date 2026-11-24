@@ -1,21 +1,26 @@
 //! Endpoint-owned model discovery, independent of inference/model selection.
 
-pub(crate) use pl_model_openai_wire::discovery::enrich_unknown_model_fallback;
-use pl_model_openai_wire::{adapter::Adapter, discovery::models};
+pub(crate) use pl_model_wire::discovery::enrich_unknown_model_fallback;
+use pl_model_wire::{adapter::Adapter, catalog_http::CatalogResponse, discovery::models};
 
 use super::{ProtocolEndpoint, ProtocolId};
 use crate::{
     config::{AccountConfig, AccountModelCatalogConfig},
     model::ModelInfo,
 };
-use pl_model_openai_wire::transport;
 use reqwest::Url;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 pub use pl_protocol::ProviderFailureKind;
 
-pub use pl_model_openai_wire::discovery::ModelCatalogQueryError;
+pub use pl_model_wire::discovery::ModelCatalogQueryError;
+
+const MAX_DISCOVERY_PAGES: usize = 8;
+const MAX_DISCOVERY_TOTAL_BYTES: usize = 4 * 1024 * 1024;
 
 /// Only a successful, same-query observation may be used as a conditional request or metadata source.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +89,9 @@ impl ModelCatalogQuery {
         let endpoint = account
             .to_endpoint_with_registry(registry)
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
+        let adapter = registry
+            .resolve(&endpoint.protocol)
+            .map_err(|_| ModelCatalogQueryError::Unsupported)?;
         let mut url =
             Url::parse(&endpoint.base_url).map_err(|_| ModelCatalogQueryError::Configuration)?;
         if !matches!(url.scheme(), "http" | "https")
@@ -97,20 +105,22 @@ impl ModelCatalogQuery {
             .map_err(|_| ModelCatalogQueryError::Configuration)?
             .pop_if_empty()
             .push("models");
-        if endpoint
+        let has_client_version = endpoint
             .authorization
             .as_ref()
-            .is_some_and(|session| session.workspace_id().is_some())
-        {
-            url.query_pairs_mut()
-                .append_pair("client_version", env!("CARGO_PKG_VERSION"));
+            .is_some_and(|session| session.workspace_id().is_some());
+        if has_client_version || !adapter.discovery_query_params.is_empty() {
+            let mut pairs = url.query_pairs_mut();
+            if has_client_version {
+                pairs.append_pair("client_version", env!("CARGO_PKG_VERSION"));
+            }
+            for &(name, value) in adapter.discovery_query_params {
+                pairs.append_pair(name, value);
+            }
         }
-        let headers = transport::headers(
-            endpoint.bearer_token.as_deref(),
-            endpoint.http_headers.as_ref(),
-            &HashMap::new(),
-        )
-        .map_err(|_| ModelCatalogQueryError::Configuration)?;
+        let headers = endpoint
+            .request_headers(endpoint.bearer_token.as_deref(), &HashMap::new())
+            .map_err(|_| ModelCatalogQueryError::Configuration)?;
         // 当前身份包含厂商协议；同一 catalog/URL/headers 换成另一协议时，旧 decoder 的结果
         // 不能被复用。
         let identity = query_identity(
@@ -137,9 +147,6 @@ impl ModelCatalogQuery {
             url.as_str(),
             &headers,
         );
-        let adapter = registry
-            .resolve(&endpoint.protocol)
-            .map_err(|_| ModelCatalogQueryError::Unsupported)?;
         Ok(Self {
             adapter,
             endpoint,
@@ -213,14 +220,13 @@ impl ModelCatalogQuery {
             .endpoint
             .request_headers(token.as_deref(), &HashMap::new())
             .map_err(|_| ModelCatalogQueryError::Configuration)?;
-        let response = pl_model_openai_wire::catalog_http::fetch(
+        let response = pl_model_wire::catalog_http::fetch(
             self.url.clone(),
-            headers,
+            headers.clone(),
             previous.and_then(|cache| cache.etag.as_deref()),
         )
         .await?;
-        use pl_model_openai_wire::catalog_http::CatalogResponse;
-        let (bytes, etag) = match response {
+        let (bytes, page1_etag) = match response {
             CatalogResponse::Updated { bytes, etag } => (bytes, etag),
             CatalogResponse::NotModified { etag } => {
                 let previous = previous.ok_or(ModelCatalogQueryError::UnexpectedNotModified)?;
@@ -230,9 +236,46 @@ impl ModelCatalogQuery {
                 });
             }
         };
-        let records = (self.adapter.parse_catalog)(&bytes)?;
+        let mut total_bytes = bytes.len();
+        let first_page = (self.adapter.parse_catalog_page)(&bytes)?;
+        let mut all_records = first_page.records;
+        let mut next_token = first_page.next_page_token;
+        let mut page_count = 1_usize;
+
+        if let Some(token_param) = self.adapter.discovery_page_token_param {
+            let mut seen_tokens = HashSet::new();
+            while let Some(page_token) = next_token.take() {
+                if page_token.trim().is_empty() {
+                    break;
+                }
+                if !seen_tokens.insert(page_token.clone()) {
+                    return Err(ModelCatalogQueryError::Protocol);
+                }
+                if page_count >= MAX_DISCOVERY_PAGES {
+                    break;
+                }
+                let mut next_url = self.url.clone();
+                next_url
+                    .query_pairs_mut()
+                    .append_pair(token_param, &page_token);
+                let CatalogResponse::Updated { bytes, .. } =
+                    pl_model_wire::catalog_http::fetch(next_url, headers.clone(), None).await?
+                else {
+                    return Err(ModelCatalogQueryError::UnexpectedNotModified);
+                };
+                total_bytes = total_bytes
+                    .checked_add(bytes.len())
+                    .filter(|&sum| sum <= MAX_DISCOVERY_TOTAL_BYTES)
+                    .ok_or(ModelCatalogQueryError::TooLarge)?;
+                let page = (self.adapter.parse_catalog_page)(&bytes)?;
+                all_records.extend(page.records);
+                next_token = page.next_page_token;
+                page_count += 1;
+            }
+        }
+        let etag = if page_count == 1 { page1_etag } else { None };
         let models = models(
-            records,
+            all_records,
             &self.discovery,
             self.adapter.discovery,
             previous.map(|p| p.models.as_slice()),
@@ -246,7 +289,7 @@ impl ModelCatalogQuery {
     }
 }
 
-pub(crate) use pl_model_openai_wire::discovery::valid_discovery_transport;
+pub(crate) use pl_model_wire::discovery::valid_discovery_transport;
 
 /// Length-prefixed canonical query identity; vendor protocol is part of the current version.
 fn query_identity(
@@ -302,6 +345,11 @@ fn discovery_transport_id(profile: &crate::model::ModelTransportProfile) -> &'st
             crate::protocol::ConnectionMode::Http,
             [crate::protocol::ConnectionMode::Http],
         ) => "chat-completions-http",
+        (
+            crate::protocol::WireApi::GeminiGenerateContent,
+            crate::protocol::ConnectionMode::Http,
+            [crate::protocol::ConnectionMode::Http],
+        ) => "gemini-generate-content-http",
         _ => "unsupported",
     }
 }

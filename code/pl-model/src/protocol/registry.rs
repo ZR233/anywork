@@ -1,6 +1,6 @@
 use crate::protocol::ProtocolId;
 use crate::{PureError, Result};
-use pl_model_openai_wire::adapter::Adapter;
+use pl_model_wire::adapter::Adapter;
 
 const BUILTINS: &[&Adapter] = &[
     &pl_model_openai::adapter::ADAPTER,
@@ -9,6 +9,7 @@ const BUILTINS: &[&Adapter] = &[
     &pl_model_openai_deepseek::adapter::ADAPTER,
     &pl_model_openai_mimo::adapter::ADAPTER,
     &pl_model_openai_xai::adapter::ADAPTER,
+    &pl_model_gemini::adapter::ADAPTER,
 ];
 
 /// Providers are registered by the application at its composition root.
@@ -41,9 +42,9 @@ impl<'a> ProtocolRegistry<'a> {
 
     pub fn file_upload(
         &self,
-        id: &pl_model_openai_wire::protocol::FileUploadCapability,
-    ) -> Result<Option<&'static pl_model_openai_wire::files::FileUploadService>> {
-        use pl_model_openai_wire::protocol::FileUploadCapability;
+        id: &pl_model_wire::protocol::FileUploadCapability,
+    ) -> Result<Option<&'static pl_model_wire::files::FileUploadService>> {
+        use pl_model_wire::protocol::FileUploadCapability;
 
         if *id == FileUploadCapability::NONE {
             return Ok(None);

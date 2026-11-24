@@ -75,6 +75,9 @@ fn recovery_info(transport: ModelTransportProfile) -> ModelInfo {
             options.parallel_tool_calls = true;
             "reasoning_effort"
         }
+        ModelProtocolOptions::GeminiGenerateContent(_) => {
+            "generationConfig.thinkingConfig.thinkingLevel"
+        }
     };
     if matches!(
         info.binding.request.protocol,

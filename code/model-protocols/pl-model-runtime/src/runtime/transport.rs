@@ -1,1 +1,1 @@
-pub(crate) use pl_model_openai_wire::transport::*;
+pub(crate) use pl_model_wire::transport::*;

@@ -7143,6 +7143,12 @@ abstract class AppLocalizations {
   /// **'Chat Completions'**
   String get modelProtocolChatCompletions;
 
+  /// No description provided for @modelProtocolGeminiGenerateContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini GenerateContent'**
+  String get modelProtocolGeminiGenerateContent;
+
   /// No description provided for @modelConnectionWebSocket.
   ///
   /// In en, this message translates to:
@@ -7166,6 +7172,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Responses (HTTP)'**
   String get settingsProtocolResponsesHttp;
+
+  /// No description provided for @settingsProtocolGeminiGenerateContentHttp.
+  ///
+  /// In en, this message translates to:
+  /// **'Gemini GenerateContent (HTTP)'**
+  String get settingsProtocolGeminiGenerateContentHttp;
 
   /// No description provided for @settingsAgentRouteUnavailable.
   ///
@@ -8906,6 +8918,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'xAI'**
   String get accountProtocolXai;
+
+  /// No description provided for @accountProtocolGemini.
+  ///
+  /// In en, this message translates to:
+  /// **'Google Gemini'**
+  String get accountProtocolGemini;
 
   /// No description provided for @accountProtocolCustom.
   ///

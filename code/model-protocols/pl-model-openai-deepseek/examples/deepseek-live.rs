@@ -5,7 +5,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use pl_model_openai_deepseek::{tools, upload};
-use pl_model_openai_wire::{
+use pl_model_wire::{
     completion::{AttachmentInput, AttachmentModality, AttachmentSource},
     files::FileUploadRequest,
     protocol::WireApi,

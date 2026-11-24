@@ -174,12 +174,19 @@ mod cache_tests {
         model
             .binding
             .set_transport(ModelTransportProfile::responses_http());
-        ModelRuntime::bind("cache-account", endpoint, model, None).unwrap()
+        ModelRuntime::bind(
+            "cache-account",
+            endpoint,
+            model,
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
     fn cache_policy_applies_at_request_preparation() {
-        let (body, _) = runner(false)
+        let (prepared, _) = runner(false)
             .prepare_request_body(
                 CompletionRequest::builder().build(),
                 Some("caller-key"),
@@ -187,8 +194,7 @@ mod cache_tests {
             )
             .unwrap();
         assert!(
-            serde_json::to_value(body)
-                .unwrap()
+            serde_json::Value::Object(prepared.body)
                 .get("prompt_cache_key")
                 .is_none()
         );
@@ -326,7 +332,7 @@ mod chatgpt_tests {
         };
         let mut endpoint = pl_model_openai::endpoint::endpoint(None);
         endpoint.authorization = Some(
-            pl_model_openai_wire::authorization::EndpointAuthorization::new(
+            pl_model_wire::authorization::EndpointAuthorization::new(
                 ChatGptSession::new(
                     &record,
                     Arc::new(NoCredentialIo),
@@ -344,7 +350,14 @@ mod chatgpt_tests {
         info.capabilities.reasoning = true;
         (
             temp,
-            ModelRuntime::bind("wire", endpoint, info, None).unwrap(),
+            ModelRuntime::bind(
+                "wire",
+                endpoint,
+                info,
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
         )
     }
 
@@ -366,13 +379,13 @@ mod chatgpt_tests {
             .build()
     }
     fn body(runner: &ModelRuntime, request: CompletionRequest) -> serde_json::Value {
-        serde_json::to_value(
+        serde_json::Value::Object(
             runner
                 .prepare_request_body(request, None, &InvocationPurpose::Completion)
                 .unwrap()
-                .0,
+                .0
+                .body,
         )
-        .unwrap()
     }
 
     #[test]
@@ -720,6 +733,7 @@ mod chatgpt_tests {
             "wire",
             runner.endpoint.clone(),
             runner.model.clone(),
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .unwrap();

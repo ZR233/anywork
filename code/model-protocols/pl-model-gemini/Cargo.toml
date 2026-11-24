@@ -1,0 +1,19 @@
+[package]
+name = "pl-model-gemini"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pl-model-types = { workspace = true }
+pl-model-wire = { workspace = true }
+pl-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+pl-model-runtime = { workspace = true, features = ["live-examples"] }
+pretty_assertions = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }

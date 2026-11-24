@@ -5,7 +5,7 @@ mod headers;
 mod member;
 pub mod model;
 mod prompt;
-pub use headers::headers;
+pub use headers::{ApiKeyHeaderScheme, headers, headers_with_scheme};
 pub use member::ModelMemberState;
 pub use pl_protocol::{PureError, Result};
 pub use prompt::PromptPrefixChangedReason;

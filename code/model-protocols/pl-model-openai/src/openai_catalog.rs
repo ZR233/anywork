@@ -1,10 +1,10 @@
 //! OpenAI Models API (`data`/`id`) and the currently deployed Codex rich `models`/`slug`
 //! declaration. Codex-only defaults belong to this boundary only.
-use pl_model_openai_wire::discovery::reasoning::ReasoningDeclaration;
-use pl_model_openai_wire::discovery::{
+use pl_model_wire::discovery::reasoning::ReasoningDeclaration;
+use pl_model_wire::discovery::{
     Capabilities, ModelCatalogQueryError, Record, nullable, presentation_name,
 };
-use pl_model_openai_wire::model::*;
+use pl_model_wire::model::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -106,4 +106,13 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
         _ => return Err(ModelCatalogQueryError::Protocol),
     };
     records.into_iter().map(WireRecord::into_record).collect()
+}
+
+pub fn page(
+    bytes: &[u8],
+) -> Result<pl_model_wire::discovery::ParsedCatalogPage, ModelCatalogQueryError> {
+    Ok(pl_model_wire::discovery::ParsedCatalogPage {
+        records: records(bytes)?,
+        next_page_token: None,
+    })
 }

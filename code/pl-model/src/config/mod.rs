@@ -11,5 +11,5 @@ pub use account::*;
 pub use auth::*;
 pub use catalog::*;
 pub use descriptor::*;
-pub use pl_model_openai_wire::config::*;
+pub use pl_model_wire::config::*;
 pub use route::*;

@@ -3,10 +3,9 @@ use super::{OpenAiTransport, OpenedCompletionStream};
 use crate::completion::CompletionTraceContext;
 use crate::protocol::{ConnectionMode, WireApi};
 use crate::runtime::invocation_context::InvocationPurpose;
-use crate::runtime::openai::OpenAiRequestBody;
 use crate::runtime::transport_policy::RESPONSES_WEBSOCKET_IDLE_TIMEOUT;
 use crate::runtime::{ModelRuntime, ModelSession, responses_websocket, wire_capture};
-use futures::StreamExt;
+use pl_model_wire::wire_codec::PreparedHttpRequest;
 use pl_protocol::{PureError, Result};
 
 impl ModelRuntime {
@@ -35,7 +34,7 @@ impl ModelRuntime {
     }
     pub(super) fn stream_events(
         &self,
-        body: OpenAiRequestBody,
+        prepared: PreparedHttpRequest,
         session: ModelSession,
         trace: Option<CompletionTraceContext>,
         purpose: &InvocationPurpose,
@@ -43,6 +42,7 @@ impl ModelRuntime {
         let http_client = self.http_client.clone();
         let api_base = self.resolve_base_url();
         let endpoint = self.endpoint.clone();
+        let codec = self.codec;
         let model_headers = match purpose {
             InvocationPurpose::Completion => self.model.binding.request.headers.clone(),
             InvocationPurpose::RemoteCompaction { headers, .. } => headers.clone(),
@@ -51,7 +51,7 @@ impl ModelRuntime {
         let connection_key = self.connection_fingerprint();
         let transport = self.active_transport(&session, purpose);
         async move {
-            let expected_sent_model = body.sent_model()?;
+            let expected_sent_model = prepared.sent_model.clone();
             if endpoint.authorization.is_some()
                 && (transport != OpenAiTransport::Http || wire_api != WireApi::Responses)
             {
@@ -61,11 +61,11 @@ impl ModelRuntime {
             }
             let token = endpoint.resolve_bearer_token().await?;
             if transport == OpenAiTransport::ResponsesWebSocket {
-                let OpenAiRequestBody::Responses(body) = body else {
+                if wire_api != WireApi::Responses {
                     return Err(PureError::ConfigError(
                         "web_socket connection mode requires the Responses API".to_string(),
                     ));
-                };
+                }
                 let raw_stream = responses_websocket::stream_responses(
                     responses_websocket::StreamResponsesInput {
                         api_base,
@@ -74,7 +74,7 @@ impl ModelRuntime {
                         model_headers: &model_headers,
                         connection_key,
                         model_session: session,
-                        body,
+                        body: prepared.body,
                         expected_sent_model,
                         trace: trace.clone(),
                     },
@@ -90,28 +90,17 @@ impl ModelRuntime {
                     idle_timeout: Some(RESPONSES_WEBSOCKET_IDLE_TIMEOUT),
                 });
             }
-            let capture = wire_capture::capture_http(&body, trace.as_ref()).await?;
+            let capture = wire_capture::capture_http(&prepared, trace.as_ref()).await?;
             let headers = endpoint.request_headers(token.as_deref(), &model_headers)?;
-            let request = match body {
-                OpenAiRequestBody::Responses(body) => http_client
-                    .post(format!("{api_base}/responses"))
-                    .json(&body),
-                OpenAiRequestBody::Chat(body) => http_client
-                    .post(format!("{api_base}/chat/completions"))
-                    .json(&body),
-            };
-            // Resource and credential validation above must complete before granting this
-            // narrow official-session exception. Other routes keep strict media validation.
-            let content_type_policy = if endpoint.authorization.is_some() {
-                crate::runtime::transport::SseContentTypePolicy::AllowMissingForChatGpt
-            } else {
-                crate::runtime::transport::SseContentTypePolicy::Required
-            };
-            let stream = match crate::runtime::transport::sse(
+            let request = http_client
+                .post(format!("{api_base}{}", prepared.path_and_query))
+                .json(&prepared.body);
+            let stream = match crate::runtime::transport::sse_frames(
                 request
                     .headers(headers)
                     .header("accept", "text/event-stream"),
-                content_type_policy,
+                prepared.sse_content_type,
+                Some(codec),
             )
             .await
             {
@@ -129,31 +118,16 @@ impl ModelRuntime {
                 }
             };
 
-            let raw_stream = stream;
-            let raw_stream = wire_capture::observe_http_stream(raw_stream, capture);
-            let raw_stream = if wire_api == WireApi::Responses {
-                // HTTP has no continuation lease; close the body after the terminal response.
-                // WebSocket sources must still be fully drained so their lease can commit.
-                futures::stream::unfold((raw_stream, false), |(mut stream, ended)| async move {
-                    if ended {
-                        return None;
-                    }
-                    let event = stream.next().await?;
-                    let ended = event.as_ref().is_ok_and(|event| {
-                        matches!(
-                            event.kind.as_str(),
-                            "response.completed" | "response.failed" | "response.incomplete"
-                        )
-                    });
-                    Some((event, (stream, ended)))
-                })
-                .boxed()
-            } else {
-                raw_stream
-            };
+            let raw_stream = wire_capture::observe_http_stream(stream, capture);
             Ok(OpenedCompletionStream {
-                events: crate::stream::decode_raw_event_stream(wire_api, raw_stream, trace),
-                sent_model: expected_sent_model,
+                events: crate::stream::decode_wire_stream(
+                    codec.new_stream_decoder(wire_api),
+                    raw_stream,
+                    prepared.visible_output,
+                    prepared.close_on_terminal,
+                    trace,
+                ),
+                sent_model: prepared.sent_model,
                 idle_timeout: None,
             })
         }

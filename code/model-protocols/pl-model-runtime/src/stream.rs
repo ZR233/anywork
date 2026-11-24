@@ -6,14 +6,14 @@
 //! （`tool_stream`）与标签式可见输出（`tagged_output`）按各自职责维护。
 
 mod accumulator;
-use pl_model_openai_wire::completion::stream::chat_presentation;
-pub(crate) use pl_model_openai_wire::completion::stream::current;
+use pl_model_wire::completion::stream::chat_presentation;
+pub(crate) use pl_model_wire::completion::stream::current;
 
 pub(crate) mod decode;
-pub(crate) use pl_model_openai_wire::completion::stream::event;
+pub(crate) use pl_model_wire::completion::stream::event;
 mod lifecycle;
-pub(crate) use pl_model_openai_wire::completion::stream::replay;
-use pl_model_openai_wire::completion::stream::tagged_output;
+pub(crate) use pl_model_wire::completion::stream::replay;
+use pl_model_wire::completion::stream::tagged_output;
 mod tool_identity;
 mod tool_stream;
 
@@ -27,7 +27,9 @@ use pl_protocol::PureError;
 use crate::completion::CompletionTraceContext;
 
 pub(crate) use accumulator::StreamCompletionAccumulator;
-pub(crate) use decode::{CompletionEventStream, OpenAiRawEventStream, decode_raw_event_stream};
+pub(crate) use decode::{
+    CompletionEventStream, OpenAiRawEventStream, decode_raw_event_stream, decode_wire_stream,
+};
 pub(crate) use tool_stream::ToolStream;
 
 pub(crate) const MAX_COMPLETION_OUTPUT_BYTES: usize = 16 * 1024 * 1024;

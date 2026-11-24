@@ -1458,10 +1458,12 @@
   "settingsApiKeyOptional": "API 密钥（可选）",
   "modelProtocolResponses": "Responses（响应式接口）",
   "modelProtocolChatCompletions": "Chat Completions（对话补全）",
+  "modelProtocolGeminiGenerateContent": "Gemini GenerateContent（原生接口）",
   "modelConnectionWebSocket": "WS（WebSocket 长连接）",
   "modelConnectionHttp": "HTTP",
   "settingsProtocolChatCompletionsHttp": "Chat Completions（对话补全，HTTP）",
   "settingsProtocolResponsesHttp": "Responses（响应式接口，HTTP）",
+  "settingsProtocolGeminiGenerateContentHttp": "Gemini GenerateContent（原生接口，HTTP）",
   "settingsAgentRouteUnavailable": "{route}（不可用）",
   "@settingsAgentRouteUnavailable": {
     "placeholders": {
@@ -1902,6 +1904,7 @@
   "accountProtocolZhipu": "智谱",
   "accountProtocolMiMo": "MiMo",
   "accountProtocolXai": "xAI",
+  "accountProtocolGemini": "Google Gemini",
   "accountProtocolCustom": "自定义（OpenAI 兼容）",
   "timelineWaitToolsTitle": "等待工具完成",
   "timelineWaitMessagesTitle": "等待子代理或新消息",

@@ -10,7 +10,7 @@ use pl_model_openai_deepseek::tools::{
     CancellationToken, FetchRequest, FetchResponse, Observed, SearchRequest, ToolsClient,
     ToolsError, ToolsOptions,
 };
-use pl_model_openai_wire::protocol::ProtocolEndpoint;
+use pl_model_wire::protocol::ProtocolEndpoint;
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;

@@ -1,10 +1,10 @@
 //! DeepSeek 官方 `/models` 名单：`data`/`id`、自有预算、模态、`effort` 与明确能力。
 //! `models`/`slug` 等 OpenAI/Codex 专属形态不是合法 DeepSeek 名单。
-use pl_model_openai_wire::discovery::reasoning::ReasoningDeclaration;
-use pl_model_openai_wire::discovery::{
+use pl_model_wire::discovery::reasoning::ReasoningDeclaration;
+use pl_model_wire::discovery::{
     Capabilities, ModelCatalogQueryError, Record, nullable, presentation_name, required_id,
 };
-use pl_model_openai_wire::model::*;
+use pl_model_wire::model::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -85,4 +85,13 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
     }
     let records = envelope.data.ok_or(ModelCatalogQueryError::Protocol)?;
     records.into_iter().map(WireRecord::into_record).collect()
+}
+
+pub fn page(
+    bytes: &[u8],
+) -> Result<pl_model_wire::discovery::ParsedCatalogPage, ModelCatalogQueryError> {
+    Ok(pl_model_wire::discovery::ParsedCatalogPage {
+        records: records(bytes)?,
+        next_page_token: None,
+    })
 }

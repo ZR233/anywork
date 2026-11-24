@@ -1310,7 +1310,8 @@ mod test_support {
 mod current_tests {
     use super::test_support::apply_event;
     use super::*;
-    use crate::runtime::openai::{VisibleOutputProtocol, sse::OpenAiStreamDecoder};
+    use crate::runtime::openai::sse::OpenAiStreamDecoder;
+    use pl_model_wire::wire_codec::VisibleOutputProtocol;
     use serde_json::json;
 
     fn feed(

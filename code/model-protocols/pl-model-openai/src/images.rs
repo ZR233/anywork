@@ -24,7 +24,7 @@ use futures::StreamExt;
 use reqwest::Url;
 use serde::Deserialize;
 
-use pl_model_openai_wire::protocol::{ImageGenerationDialect, ProtocolEndpoint};
+use pl_model_wire::protocol::{ImageGenerationDialect, ProtocolEndpoint};
 
 pub use pl_protocol::ProviderFailureKind;
 
@@ -114,7 +114,7 @@ impl ImagesClient {
             .map(|capabilities| capabilities.dialect)
             .ok_or(ImagesError::Configuration)?;
         let url = endpoint_url(&endpoint.base_url, dialect)?;
-        let headers = pl_model_openai_wire::transport::headers(
+        let headers = pl_model_wire::transport::headers(
             endpoint.bearer_token.as_deref(),
             endpoint.http_headers.as_ref(),
             &HashMap::new(),
@@ -264,7 +264,7 @@ fn classify_transport_error(error: reqwest::Error) -> ImagesError {
         return ImagesError::Timeout;
     }
     // 复用推理传输的错误分类与脱敏，但不对外暴露其诊断文本。
-    match pl_model_openai_wire::transport::reqwest_error_to_pure(error) {
+    match pl_model_wire::transport::reqwest_error_to_pure(error) {
         pl_protocol::PureError::Provider(failure) => ImagesError::Transport { kind: failure.kind },
         _ => ImagesError::Configuration,
     }

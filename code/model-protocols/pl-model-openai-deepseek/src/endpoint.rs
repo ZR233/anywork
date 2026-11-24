@@ -1,4 +1,4 @@
-use pl_model_openai_wire::protocol::*;
+use pl_model_wire::protocol::*;
 
 pub const ID: ProtocolId = ProtocolId::from_static("deep_seek");
 
@@ -13,6 +13,7 @@ pub fn endpoint(base_url: Option<String>) -> ProtocolEndpoint {
         name: "DeepSeek".into(),
         base_url: base_url.unwrap_or_else(|| "https://api.deepseek.com".into()),
         bearer_token: None,
+        api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
         http_headers: None,
         tool_wire_policy: ToolWirePolicy::FunctionFallback,
         apply_patch_tool_type: None,

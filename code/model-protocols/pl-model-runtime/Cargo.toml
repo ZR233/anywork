@@ -9,6 +9,7 @@ live-examples = ["dep:clap", "tokio/signal"]
 
 [dependencies]
 clap = { workspace = true, optional = true }
+pl-model-wire = { workspace = true }
 pl-model-openai-wire = { workspace = true }
 pl-agent-tool = { workspace = true }
 base64 = { workspace = true }

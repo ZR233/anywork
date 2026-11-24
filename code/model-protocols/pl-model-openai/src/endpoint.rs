@@ -1,4 +1,4 @@
-use pl_model_openai_wire::protocol::*;
+use pl_model_wire::protocol::*;
 
 pub const ID: ProtocolId = ProtocolId::from_static("open_ai");
 
@@ -20,6 +20,7 @@ pub fn endpoint(base_url: Option<String>) -> ProtocolEndpoint {
         name: "OpenAI".into(),
         base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
         bearer_token: None,
+        api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
         http_headers: None,
         tool_wire_policy: ToolWirePolicy::NativeCustomTools,
         apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),

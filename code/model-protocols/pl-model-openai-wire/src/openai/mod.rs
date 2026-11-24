@@ -9,23 +9,9 @@ pub mod sse;
 pub mod usage;
 
 use request::build_openai_request_body;
+pub use pl_model_wire::wire_codec::VisibleOutputProtocol;
 pub use request::chatgpt::validate_request as validate_chatgpt_request;
 pub use request::{OpenAiRequestBody, sent_model_from_wire_body};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VisibleOutputProtocol {
-    NativePhases,
-    TaggedText,
-}
-
-impl VisibleOutputProtocol {
-    pub fn of(api: WireApi) -> Self {
-        match api {
-            WireApi::Responses => Self::NativePhases,
-            WireApi::ChatCompletions => Self::TaggedText,
-        }
-    }
-}
 
 pub fn build_request(
     api: WireApi,

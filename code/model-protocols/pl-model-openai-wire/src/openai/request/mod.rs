@@ -1,24 +1,22 @@
-use crate::completion::{Message, ModelContextItem};
+use crate::completion::CompletionRequest;
+use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
+use crate::protocol::{InstructionWireRole, WireApi};
+use pl_model_wire::completion::request_support::{
+    finalize_body, merge_base_body, messages_after_last_compaction, to_object_map,
+    validate_tool_history,
+};
 use pl_protocol::{PureError, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::completion::CompletionRequest;
-use crate::model::info::{ModelInfo, ResponsesMaxTokensField};
-use crate::protocol::InstructionWireRole;
-use crate::protocol::WireApi;
-
 mod body;
 mod chat;
 pub mod chatgpt;
-mod content;
 mod responses;
-mod tool_history;
 
-use body::{finalize_body, to_object_map};
 use chat::ChatRequestBody;
 use responses::ResponsesRequestBody;
-use tool_history::validate_tool_history;
+pub use pl_model_wire::completion::request_support::sent_model_from_wire_body;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
@@ -60,7 +58,7 @@ impl OpenAiRequestBody {
     }
     pub fn apply_compaction_body(&mut self, options: &Map<String, Value>) {
         match self {
-            Self::Responses(body) | Self::Chat(body) => body::merge_base_body(body, options),
+            Self::Responses(body) | Self::Chat(body) => merge_base_body(body, options),
         }
     }
 
@@ -80,15 +78,6 @@ impl OpenAiRequestBody {
             ));
         }
         Ok(())
-    }
-}
-
-pub fn sent_model_from_wire_body(body: &Map<String, Value>) -> Result<String> {
-    match body.get("model") {
-        Some(Value::String(model)) if !model.trim().is_empty() => Ok(model.clone()),
-        Some(Value::String(_)) => Err(protocol_error("final request body model must not be blank")),
-        Some(_) => Err(protocol_error("final request body model must be a string")),
-        None => Err(protocol_error("final request body model is required")),
     }
 }
 
@@ -143,19 +132,10 @@ pub fn build_openai_request_body(
             finalize_body(&mut body, model, &request.reasoning);
             Ok(OpenAiRequestBody::Chat(body))
         }
+        WireApi::GeminiGenerateContent => Err(protocol_error(
+            "OpenAI wire codec does not handle gemini_generate_content",
+        )),
     }
-}
-
-fn messages_after_last_compaction(input: &[ModelContextItem]) -> Vec<Message> {
-    let start = input
-        .iter()
-        .rposition(ModelContextItem::is_compaction)
-        .map_or(0, |index| index + 1);
-    input[start..]
-        .iter()
-        .filter_map(ModelContextItem::as_message)
-        .cloned()
-        .collect()
 }
 
 fn apply_responses_max_tokens_field(
