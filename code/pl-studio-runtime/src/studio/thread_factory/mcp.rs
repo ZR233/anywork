@@ -1125,7 +1125,6 @@ impl StudioThreadFactory {
         &self,
         owner: &Arc<ThreadMcpOwner>,
         resolved: &ResolvedThreadMcpSnapshot,
-        reset: Option<McpResetScope>,
     ) -> Result<()> {
         self.ensure_mcp_authorization(owner, &resolved.authorization)?;
         owner.pause_projection();
@@ -1140,22 +1139,10 @@ impl StudioThreadFactory {
             .iter()
             .map(|(id, entry)| (id.clone(), entry.server.clone()))
             .collect();
-        let result = if let Some(reset) = reset {
-            let target = match &reset {
-                McpResetScope::Server { server_id } => Some(server_id.as_str()),
-                McpResetScope::All => None,
-            };
-            owner.publish_connecting(target, &self.services.product_events);
-            owner
-                .runtime
-                .reset_authorized(reset, effective, resolved.authorization.clone())
-                .await
-        } else {
-            owner
-                .runtime
-                .reconcile_authorized(effective, resolved.authorization.clone())
-                .await
-        };
+        let result = owner
+            .runtime
+            .reconcile_authorized(effective, resolved.authorization.clone())
+            .await;
         // Check even when the lower layer rejected publication: supersession schedules the
         // existing owner, but never silently retries or turns an old result into success.
         self.ensure_mcp_authorization(owner, &resolved.authorization)?;
@@ -1177,7 +1164,7 @@ impl StudioThreadFactory {
             .map_err(|_| anyhow::anyhow!("failed to read MCP settings revision"))?
             .revision;
         let resolved = self.resolve_mcp_owner_snapshot(owner)?;
-        self.apply_mcp_snapshot(owner, &resolved, None).await?;
+        self.apply_mcp_snapshot(owner, &resolved).await?;
         owner.mark_settings_revision(settings_revision);
         Ok(resolved)
     }
@@ -2366,7 +2353,7 @@ mod refresh_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+    use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
     use crate::{McpEffectiveSource, McpExecutionLocation};
     use pl_tool::mcp::McpConnector;
     use pl_tool::mcp::config::{

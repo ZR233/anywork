@@ -431,16 +431,12 @@ impl StudioThreadFactory {
                 .clone(),
             None => self.services.local_executor.clone(),
         };
-        let backend = |_root: &Path,
-                       _canonical_repository: bool|
-         -> Result<Arc<dyn WorktreeBackend>, ReviewWorkspaceError> {
-            Ok(Arc::new(ExecutorWorktreeBackend::new(executor.clone())))
-        };
-        let resolver = backend(project_root, false)?;
+        let backend: Arc<dyn WorktreeBackend> =
+            Arc::new(ExecutorWorktreeBackend::new(executor.clone()));
+        let resolver = backend.as_ref();
         let repository_root =
-            WorktreeManager::resolve_repository_root(resolver.as_ref(), project_root).await?;
-        let repository =
-            WorktreeManager::new(repository_root.clone(), backend(&repository_root, true)?);
+            WorktreeManager::resolve_repository_root(resolver, project_root).await?;
+        let repository = WorktreeManager::new(repository_root.clone(), backend);
         Ok((repository_root, repository))
     }
 }

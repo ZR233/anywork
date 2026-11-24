@@ -2022,7 +2022,7 @@ impl ThreadDirectoryIndex {
 pub(super) mod tests {
     use super::*;
     use crate::studio::StudioStore;
-    use crate::studio::agent_host::ThreadWriteBehindWriter;
+    use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
     use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord, row_projection};
     use crate::studio::store::directory::ProjectDirectoryRecord;
     use std::sync::Mutex;

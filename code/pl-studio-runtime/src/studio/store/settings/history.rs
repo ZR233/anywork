@@ -47,7 +47,13 @@ where
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct SnapshotV2 {
-    pub(super) state: ResourceV2<SnapshotDataV2>,
+    state: ResourceV2<SnapshotDataV2>,
+}
+
+impl SnapshotV2 {
+    pub(super) fn revision_and_updated_at(&self) -> (u64, i64) {
+        (self.state.revision(), self.state.updated_at())
+    }
 }
 
 /// Mirror of the historical `AccountUsageStateData` wire.
@@ -311,7 +317,7 @@ pub(super) struct CacheV3 {
     pub(super) format_version: u32,
     pub(super) revision: u64,
     pub(super) updated_at: i64,
-    pub(super) accounts: Vec<BindingV3>,
+    accounts: Vec<BindingV3>,
     #[serde(default)]
     pub(super) legacy_unbound: Option<String>,
 }

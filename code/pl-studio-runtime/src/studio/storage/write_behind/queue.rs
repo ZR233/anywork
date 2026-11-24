@@ -32,11 +32,6 @@ pub(super) const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub(super) enum StudioMutation {
-    Directory(Box<StudioDirectoryMutation>),
-}
-
-#[derive(Debug, Clone)]
-pub(super) enum StudioDirectoryMutation {
     Delta(DirectoryDelta),
     WorktreeLease(crate::studio::agent_host::worktree_lease::WorktreeLease),
 }
@@ -46,11 +41,11 @@ pub(super) struct QueuedMutation {
     ticket: u64,
     accepted_at: tokio::time::Instant,
     bytes: usize,
-    pub(super) mutation: StudioMutation,
+    pub(super) mutation: Box<StudioMutation>,
 }
 
 impl QueuedMutation {
-    fn new(ticket: u64, mutation: StudioMutation) -> Self {
+    fn new(ticket: u64, mutation: Box<StudioMutation>) -> Self {
         let bytes = mutation.estimated_bytes();
         Self {
             ticket,
@@ -72,10 +67,9 @@ impl QueuedMutation {
 impl StudioMutation {
     /// 估算条目保留字节，用于队列与批次的压力预算。
     fn estimated_bytes(&self) -> usize {
-        let StudioMutation::Directory(directory) = self;
-        match directory.as_ref() {
-            StudioDirectoryMutation::Delta(delta) => directory_bytes(delta),
-            StudioDirectoryMutation::WorktreeLease(_) => 512,
+        match self {
+            StudioMutation::Delta(delta) => directory_bytes(delta),
+            StudioMutation::WorktreeLease(_) => 512,
         }
     }
 }
@@ -91,20 +85,14 @@ fn directory_bytes(delta: &DirectoryDelta) -> usize {
 }
 
 pub(super) fn queue_directory(ticket: u64, delta: DirectoryDelta) -> QueuedMutation {
-    QueuedMutation::new(
-        ticket,
-        StudioMutation::Directory(Box::new(StudioDirectoryMutation::Delta(delta))),
-    )
+    QueuedMutation::new(ticket, Box::new(StudioMutation::Delta(delta)))
 }
 
 pub(super) fn queue_worktree_lease(
     ticket: u64,
     lease: crate::studio::agent_host::worktree_lease::WorktreeLease,
 ) -> QueuedMutation {
-    QueuedMutation::new(
-        ticket,
-        StudioMutation::Directory(Box::new(StudioDirectoryMutation::WorktreeLease(lease))),
-    )
+    QueuedMutation::new(ticket, Box::new(StudioMutation::WorktreeLease(lease)))
 }
 
 /// 只把新的目录 delta 合并进队尾最近一个 Delta 条目；顺序不变，字节有界。
@@ -122,11 +110,8 @@ pub(super) fn try_coalesce_directory(
     if entry.bytes.saturating_add(incoming_bytes) > MAX_MERGE_BYTES {
         return false;
     }
-    // `StudioMutation` 目前只有 `Directory` 一种变体：这里用不可反驳的模式绑定，避免
-    // irrefutable let-else 的 unreachable else。将来新增变体时本行会变成编译错误，
-    // 提醒恢复"非目录条目不可合并"的分支判断。
-    let StudioMutation::Directory(existing) = &mut entry.mutation;
-    let StudioDirectoryMutation::Delta(existing) = existing.as_mut() else {
+    // 只有目录 delta 可合并；lease 条目不可合并。
+    let StudioMutation::Delta(existing) = entry.mutation.as_mut() else {
         return false;
     };
     merge_directory_delta(existing, incoming);

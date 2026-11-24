@@ -82,11 +82,6 @@ pub enum StudioRuntimeCommand {
         expected_revision: u64,
         at: i64,
     },
-    FailInitialize {
-        expected_revision: u64,
-        at: i64,
-        error: StateError,
-    },
     BeginShutdown {
         expected_revision: u64,
         at: i64,
@@ -109,9 +104,6 @@ impl StudioRuntimeCommand {
                 expected_revision, ..
             }
             | Self::FinishInitialize {
-                expected_revision, ..
-            }
-            | Self::FailInitialize {
                 expected_revision, ..
             }
             | Self::BeginShutdown {
@@ -183,10 +175,6 @@ impl StudioRuntimeSnapshot {
                 StudioRuntimeLifecycleState::Initializing(_),
                 StudioRuntimeCommand::FinishInitialize { at, .. },
             ) => StudioRuntimeLifecycleState::Ready(ReadyStudioRuntime::new(*at)),
-            (
-                StudioRuntimeLifecycleState::Initializing(_),
-                StudioRuntimeCommand::FailInitialize { at, error, .. },
-            ) => StudioRuntimeLifecycleState::Failed(FailedStudioRuntime::new(*at, error.clone())),
             (
                 StudioRuntimeLifecycleState::Ready(_) | StudioRuntimeLifecycleState::Failed(_),
                 StudioRuntimeCommand::BeginShutdown { at, .. },

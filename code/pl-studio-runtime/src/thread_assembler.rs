@@ -234,8 +234,6 @@ pub enum ThreadAssemblyError {
     InvalidatedBinding(String),
     #[error("message identity {0} conflicts with an accepted delivery")]
     MessageConflict(String),
-    #[error("message identity {0} is already accepted with an unverifiable body")]
-    MessageUnverifiable(String),
     #[error("Thread {thread_id} workspace is unavailable: {reason}")]
     Workspace { thread_id: String, reason: String },
     #[error("Thread is still being assembled: {0}")]

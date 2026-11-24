@@ -12,7 +12,7 @@ use crate::PureError;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::{PersistenceState, PersistenceStateSnapshot, StudioStore};
 
-use super::super::store_error;
+use super::store_error;
 use super::queue::{QueuedMutation, queue_directory, queue_worktree_lease, try_coalesce_directory};
 use super::state::update_healthy_state;
 use super::worker::supervise_writer;
@@ -47,8 +47,6 @@ pub(super) struct WriterShared {
     pub(super) admitted_ticket: AtomicU64,
     /// 已 durable 的最高连续 ticket；只在批次成功提交后前进。
     pub(super) durable_ticket: watch::Sender<u64>,
-    /// 任一 owner 的耐久修订推进时发布，供精确屏障等待。
-    pub(super) durable_progress: watch::Sender<u64>,
     pub(super) state: watch::Sender<PersistenceStateSnapshot>,
     pub(super) retry_notify: Notify,
     pub(super) stopping: AtomicBool,
@@ -88,7 +86,6 @@ pub(in crate::studio) struct ThreadWriteBehindWriter {
 impl ThreadWriteBehindWriter {
     pub(in crate::studio) fn new(store: StudioStore) -> Self {
         let (durable_ticket, _) = watch::channel(0u64);
-        let (durable_progress, _) = watch::channel(0u64);
         let (state, _) = watch::channel(PersistenceStateSnapshot::default());
         Self {
             shared: Arc::new(WriterShared {
@@ -102,7 +99,6 @@ impl ThreadWriteBehindWriter {
                 work_notify: Notify::new(),
                 admitted_ticket: AtomicU64::new(0),
                 durable_ticket,
-                durable_progress,
                 state,
                 retry_notify: Notify::new(),
                 stopping: AtomicBool::new(false),

@@ -735,7 +735,7 @@ fn rejected_selection(message: &str) -> StudioUpdatePreparationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+    use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
     use crate::{StudioProductEventKind, StudioProductTopic};
     use pl_studio_update::{StudioUpdateAsset, StudioUpdateError};
     use std::{

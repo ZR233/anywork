@@ -53,15 +53,15 @@ pub use pl_tool::skill::{
 };
 pub(crate) use pl_tool::skill::{SkillActivationCause, SkillActivationResourceBase};
 
+#[cfg(test)]
+pub(crate) use config::STUDIO_CONFIG_SCHEMA_VERSION;
 pub use config::{
     AccountId, ConfigPaths, ConfigRuntimeError, ConfigRuntimeSnapshot, ConfigStore,
     DeepSeekWebSearchConfig, McpCatalogResource, McpDocumentError, McpFileSpecV1, McpFileV1,
     ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig, StudioUiConfig,
     UserAgentProfile, WebSearchContextSize, WebSearchMode,
 };
-pub(crate) use config::{
-    ModelCatalogRuntimeSnapshot, STUDIO_CONFIG_SCHEMA_VERSION, WebSearchLocation,
-};
+pub(crate) use config::{ModelCatalogRuntimeSnapshot, WebSearchLocation};
 pub use error_mapping::{studio_error_from_anyhow, studio_error_from_anyhow_ref};
 pub use host_mcp_assets::HostMcpSource;
 pub use protocol::*;
@@ -111,13 +111,15 @@ pub use pl_model::config::{
     ModelDescriptor, ModelInputCapabilityDto, ModelInputSourceDto, ModelModalityDto,
     ModelOriginDto, ModelSelectionGuideDto, ModelSelectionSourceKindDto,
 };
+#[cfg(test)]
+pub(crate) use pl_model::model::PricingMode;
 pub use pl_model::model::{
     AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextUnavailable,
     ModelPricingDto, ModelType, ModelTypeExclusion, PricingOutcome, RuntimeCostAmount, UsageReport,
 };
-pub(crate) use pl_model::model::{PricingMode, UnpricedReason};
 pub use pl_model::runtime::PromptPrefixChangedReason;
 pub use pl_model_auth::chatgpt::ChatGptAccountInfo;
+#[cfg(test)]
 pub(crate) use pl_model_auth::chatgpt::CodexAccountInfo;
 pub use pl_protocol::{
     AgentBackendKind, AgentId, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,

@@ -64,9 +64,10 @@ pub(super) fn migrate_legacy(raw: &str) -> Result<AccountUsageSettingPayload> {
     match probe.format_version {
         None => {
             let snapshot: history::SnapshotV2 = serde_json::from_str(raw)?;
+            let (revision, updated_at) = snapshot.revision_and_updated_at();
             Ok(AccountUsageSettingPayload {
-                revision: snapshot.state.revision(),
-                updated_at: snapshot.state.updated_at(),
+                revision,
+                updated_at,
                 accounts: Vec::new(),
                 legacy_unbound: Some(raw.to_owned()),
             })

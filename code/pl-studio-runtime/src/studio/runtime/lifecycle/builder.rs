@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::config::ConfigRuntime;
-use crate::studio::agent_host::ThreadWriteBehindWriter;
+use crate::studio::storage::write_behind::ThreadWriteBehindWriter;
 use crate::studio::runtime_lock::RuntimeLockOwner;
 use crate::studio::{ProductEventBus, StudioRuntimeState, StudioStore};
 use pl_tool::mcp::McpConnector;
@@ -110,7 +110,6 @@ impl StudioRuntime {
                 skills: skills.clone(),
                 thread_modes: thread_modes.clone(),
                 ssh_manager: ssh_manager.clone(),
-                helper_source: helper_source.clone(),
                 bots: bots.clone(),
                 run_export: run_export.clone(),
             },

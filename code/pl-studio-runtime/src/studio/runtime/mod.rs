@@ -72,14 +72,13 @@ mod tool_refresh;
 pub use directory_observation::{ThreadMetadataObservation, ThreadsObservation};
 pub use product_subscription::StudioProductTopicSubscription;
 pub use run_export::{
-    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
-    EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
-    ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
-    ExportedContentV3, ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, ResultOutcome, ResultV3, RunExportOptions, RunExportReport,
-    RunExporter, RunInvocationV3, RunManifestV3, SealedMemberCutV3, SkillSearchManifestV3,
-    ThreadUsageExportV3, TimingReportV3, TraceSummaryV3, UsageCoverage, UsageExportV3,
-    UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
+    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3, EventBodyV3,
+    EventSourceV3, EventV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionLifecycleExportV3,
+    ExecutionOutcome, ExportSchemaV3, ExportedBlobV3, ExportedContentV3,
+    ExportedHistoryEventHeaderV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, ResultOutcome,
+    ResultV3, RunExportOptions, RunExportReport, RunExporter, RunInvocationV3, RunManifestV3,
+    SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
+    UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
     format_utc_rfc3339 as format_export_utc_rfc3339, sha256_hex as export_sha256_hex,
     validate_output_dir_preflight as validate_export_output_dir_preflight,
 };
@@ -284,7 +283,7 @@ struct StudioAgentFacility {
     product_events: ProductEventBus,
     /// agent framework 的 write-behind writer 句柄；framework 被 take 后关机仍能排空。
     persistence: std::sync::Arc<
-        tokio::sync::Mutex<Option<crate::studio::agent_host::ThreadWriteBehindWriter>>,
+        tokio::sync::Mutex<Option<crate::studio::storage::write_behind::ThreadWriteBehindWriter>>,
     >,
     run_export: Option<std::sync::Arc<run_export::RunExportCoordinator>>,
 }

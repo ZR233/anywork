@@ -207,7 +207,7 @@ impl ThreadMetadataObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
+    use crate::studio::{StudioStore, storage::write_behind::ThreadWriteBehindWriter};
 
     async fn fixture() -> Result<(tempfile::TempDir, ProductEventBus)> {
         let temp = tempfile::tempdir()?;
