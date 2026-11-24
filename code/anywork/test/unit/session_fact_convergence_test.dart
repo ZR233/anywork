@@ -109,7 +109,7 @@ void main() {
           prompt: '',
         ),
       ),
-      expectedRevision: 1,
+      expectedRevision: 0,
       operationId: const OperationId('seed-custom-mode-convergence'),
     );
     final customMode = ThreadModeId.fromId('mode.custom');

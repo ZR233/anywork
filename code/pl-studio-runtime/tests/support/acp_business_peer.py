@@ -11,6 +11,7 @@ probe_sessions = set()
 stdio_endpoints = set()
 stdio_capabilities = set()
 stdio_sessions = 0
+permission_prompts = {}
 def emit(value):
     sys.stdout.write(json.dumps(value) + '\n')
     sys.stdout.flush()
@@ -22,6 +23,12 @@ def title_update(sid, fields):
         'sessionId':sid,'update':{'sessionUpdate':'session_info_update', **fields}}})
 for line in sys.stdin:
     msg=json.loads(line)
+    if 'method' not in msg and msg.get('id') in permission_prompts:
+        sid, prompt_id = permission_prompts.pop(msg['id'])
+        (root / 'permission-outcome.json').write_text(json.dumps(msg['result']['outcome']))
+        update(sid, 'actual answer')
+        emit({'jsonrpc':'2.0','id':prompt_id,'result':{'stopReason':'end_turn'}})
+        continue
     method=msg['method']
     with (root / 'calls').open('a') as log:
         log.write(method + '\n')
@@ -138,6 +145,13 @@ for line in sys.stdin:
     elif method == 'session/prompt':
         sid=msg['params']['sessionId']
         assert sid
+        if (root / 'mode').read_text() == 'mcp-permission':
+            permission_id = 'permission-' + str(rid)
+            permission_prompts[permission_id] = (sid, rid)
+            request = json.loads((root / 'permission-request.json').read_text())
+            emit({'jsonrpc':'2.0','id':permission_id,'method':'session/request_permission',
+                  'params':{'sessionId':sid, **request}})
+            continue
         if (root / 'mode').read_text() == 'session-titles' and (root / 'title-updates.json').exists():
             for notification in json.loads((root / 'title-updates.json').read_text()):
                 title_update(notification.get('sessionId', sid), notification['fields'])

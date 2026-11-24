@@ -56,7 +56,7 @@ anywk exec-acp --studio-home ./run-home --cwd ./task --account my-acp \
   --skill-dir ./evaluation-skills
 ```
 
-`--prompt-file -` 支持标准输入；路径和技能来源规则与 `exec` 相同。ACP 不接受 Native 的 `--model`、`--mode`、`--reasoning-effort`、`--max-model-steps` 或 `--output-dir`。非打包运行要求 PATH 中已有与源码匹配的 `pl-studio-mcp`。权限请求一律拒绝并返回 3，不自动批准；观察缺口、断连、失败与非正常停止不会输出成功文本。关闭预算 30 秒，关闭失败返回 13，信号返回 130/143。
+`--prompt-file -` 支持标准输入；路径和技能来源规则与 `exec` 相同。ACP 不接受 Native 的 `--model`、`--mode`、`--reasoning-effort`、`--max-model-steps` 或 `--output-dir`。非打包运行要求 PATH 中已有与源码匹配的 `pl-studio-mcp`。业务会话即时答复符合条件的 Host MCP 权限请求。仍需用户确认的请求由 CLI 拒绝并返回 `3`。观察缺口、断连、失败与非正常停止不会输出成功文本。关闭预算 30 秒，关闭失败返回 13，信号返回 130/143。
 
 完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见各命令的 `--help`。
 

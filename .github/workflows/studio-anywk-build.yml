@@ -1,0 +1,106 @@
+name: Studio anywk Build
+
+on:
+  workflow_call:
+    inputs:
+      sourceSha:
+        required: true
+        type: string
+      platform:
+        description: Release target (windows-x64, linux-amd64, or macos-arm64).
+        required: true
+        type: string
+      artifactPrefix:
+        required: true
+        type: string
+      linuxImageRef:
+        type: string
+      linuxEnvironmentKey:
+        type: string
+    outputs:
+      artifactId:
+        value: ${{ jobs.compile.outputs.artifactId }}
+      archiveSha256:
+        value: ${{ jobs.compile.outputs.archiveSha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Compile anywk (${{ inputs.platform }})
+    runs-on: ${{ fromJSON('{"windows-x64":"windows-latest","linux-amd64":"ubuntu-latest","macos-arm64":"macos-15"}')[inputs.platform] }}
+    outputs:
+      artifactId: ${{ steps.archive.outputs.artifact-id }}
+      archiveSha256: ${{ steps.checkpoint.outputs.archiveSha256 }}
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sourceSha }}
+          persist-credentials: false
+
+      - name: Require the immutable source checkout
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.sourceSha }}
+        run: |
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ || "$(git rev-parse HEAD)" != "$SOURCE_SHA" ]]; then
+            printf 'anywk checkout does not match source SHA %s\n' "$SOURCE_SHA" >&2
+            exit 1
+          fi
+
+      - name: Set up cached native Rust build
+        if: runner.os != 'Linux'
+        uses: ./.github/actions/setup-studio-rust
+        with:
+          cache-key: release-anywk-${{ inputs.platform }}
+
+      - name: Restore the published Linux build environment
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/restore-linux-environment
+        with:
+          image-ref: ${{ inputs.linuxImageRef }}
+
+      - name: Cache Linux release CLI dependencies
+        if: runner.os == 'Linux'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-release-anywk-${{ inputs.linuxEnvironmentKey }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+          cache-bin: false
+      - name: Restore engineering-tool dependencies
+        if: runner.os == 'Linux'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          shared-key: linux-xtask-${{ inputs.linuxEnvironmentKey }}
+          cmd-format: bash docker/linux/scripts/run.sh "${{ env.LINUX_BUILD_IMAGE }}" {0}
+          save-if: false
+          cache-bin: false
+          workspaces: |
+            . -> target/xtask
+
+      - name: Build native release CLI
+        if: runner.os != 'Linux'
+        run: cargo xtask build-anywk --output target/studio-anywk
+      - name: Build Linux release CLI in the verified image
+        if: runner.os == 'Linux'
+        run: bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" cargo xtask build-anywk --output target/studio-anywk
+
+      - name: Archive CLI and identify tar payload
+        id: checkpoint
+        shell: bash
+        run: bash .github/scripts/studio-anywk-handoff.sh checkpoint
+      - name: Preserve anywk checkpoint
+        id: archive
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifactPrefix }}-anywk-${{ inputs.platform }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/anywk.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

@@ -94,6 +94,14 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  windows-anywk:
+    name: Compile standalone Windows x64 CLI
+    uses: ./.github/workflows/studio-anywk-build.yml
+    with:
+      sourceSha: ${{ github.sha }}
+      platform: windows-x64
+      artifactPrefix: rc-${{ github.sha }}
+
   compile:
     name: Compile Windows x64 checkpoint
     needs: helper
@@ -148,7 +156,7 @@ jobs:
           "version=$version" | Out-File $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Build GUI bundle and release tool
-        run: cargo xtask build-gui
+        run: cargo xtask build-gui --without-anywk
 
       - name: Archive runtime bundle and identify release tool
         id: checkpoint
@@ -179,10 +187,11 @@ jobs:
 
   package-check:
     name: Check prebuilt packaging without production credentials
-    needs: compile
+    needs: [compile, windows-anywk]
     runs-on: windows-latest
     env:
       RELEASE_VERSION: ${{ needs.compile.outputs.version }}
+      SOURCE_SHA: ${{ github.sha }}
       BUNDLE_ARTIFACT_ID: ${{ needs.compile.outputs.bundleArtifactId }}
       BUNDLE_SHA256: ${{ needs.compile.outputs.bundleSha256 }}
       TOOL_ARTIFACT_ID: ${{ needs.compile.outputs.toolArtifactId }}
@@ -228,6 +237,18 @@ jobs:
           . .github/scripts/studio-compile-handoff.ps1
           Restore-StudioReleaseTool
 
+      - name: Restore verified anywk checkpoint
+        uses: ./.github/actions/restore-studio-anywk
+        with:
+          artifact-id: ${{ needs.windows-anywk.outputs.artifactId }}
+          archive-sha256: ${{ needs.windows-anywk.outputs.archiveSha256 }}
+
+      - name: Assemble GUI from verified prebuilt inputs
+        shell: pwsh
+        run: |
+          & $env:STUDIO_RELEASE_TOOL assemble-gui --bundle $env:STUDIO_RELEASE_BUNDLE --anywk target/studio-anywk --source-sha $env:SOURCE_SHA
+          if ($LASTEXITCODE -ne 0) { throw "GUI assembly exited with $LASTEXITCODE" }
+
       - name: Install Inno Setup
         shell: pwsh
         run: |
@@ -257,12 +278,36 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  macos:
-    name: macOS arm64 package check
+  macos-anywk:
+    name: Compile standalone macOS arm64 CLI
+    uses: ./.github/workflows/studio-anywk-build.yml
+    with:
+      sourceSha: ${{ github.sha }}
+      platform: macos-arm64
+      artifactPrefix: rc-${{ github.sha }}
+
+  macos-compile:
+    name: Compile macOS arm64 GUI checkpoint
     needs: helper
     uses: ./.github/workflows/macos-release-build.yml
     with:
       sourceSha: ${{ github.sha }}
       helperX64Id: ${{ needs.helper.outputs.x64ArtifactId }}
       helperArm64Id: ${{ needs.helper.outputs.arm64ArtifactId }}
+      artifactPrefix: rc-${{ github.sha }}
+
+  macos:
+    name: macOS arm64 package check
+    needs: [macos-compile, macos-anywk]
+    uses: ./.github/workflows/macos-release-package.yml
+    with:
+      sourceSha: ${{ github.sha }}
+      version: ${{ needs.macos-compile.outputs.version }}
+      bundleArtifactId: ${{ needs.macos-compile.outputs.bundleArtifactId }}
+      bundleSha256: ${{ needs.macos-compile.outputs.bundleSha256 }}
+      toolArtifactId: ${{ needs.macos-compile.outputs.toolArtifactId }}
+      toolSha256: ${{ needs.macos-compile.outputs.toolSha256 }}
+      toolWorkspace: ${{ needs.macos-compile.outputs.toolWorkspace }}
+      anywkArtifactId: ${{ needs.macos-anywk.outputs.artifactId }}
+      anywkArchiveSha256: ${{ needs.macos-anywk.outputs.archiveSha256 }}
       artifactPrefix: rc-${{ github.sha }}

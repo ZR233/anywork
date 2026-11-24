@@ -41,6 +41,24 @@ pub(crate) enum Command {
     RunGui(RunGuiOptions),
     /// Build the current desktop app (release by default).
     BuildGui(BuildGuiOptions),
+    /// Build the release anywk binary and its bundle metadata.
+    BuildAnywk {
+        /// Directory that will contain the two CLI files.
+        #[arg(long, value_name = "PATH")]
+        output: std::path::PathBuf,
+    },
+    /// Add a prebuilt anywk to a release GUI bundle without compiling.
+    AssembleGui {
+        /// Path to the prebuilt GUI bundle for the current platform.
+        #[arg(long, value_name = "PATH")]
+        bundle: std::path::PathBuf,
+        /// Directory containing the prebuilt CLI binary and its metadata.
+        #[arg(long, value_name = "PATH")]
+        anywk: std::path::PathBuf,
+        /// Immutable source commit resolved by the CI workflow.
+        #[arg(long, value_name = "SHA")]
+        source_sha: String,
+    },
     /// Stage or verify a platform release; finalize Windows signatures.
     ReleaseGui {
         #[command(subcommand)]
@@ -197,6 +215,9 @@ pub(crate) struct BuildGuiOptions {
     /// Fail when refreshed generated GUI sources differ from Git.
     #[arg(long)]
     pub(crate) check_generated: bool,
+    /// Leave anywk for the release assembly runner to install.
+    #[arg(long, conflicts_with_all = ["debug", "demo", "no_clean"])]
+    pub(crate) without_anywk: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

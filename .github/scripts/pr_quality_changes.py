@@ -81,9 +81,12 @@ _RELEASE_EXACT = frozenset(
         "studio-version.txt",
         ".github/workflows/studio-release.yml",
         ".github/workflows/studio-release-publish.yml",
+        ".github/workflows/studio-anywk-build.yml",
         ".github/workflows/macos-release-build.yml",
+        ".github/workflows/macos-release-package.yml",
         ".github/workflows/rc-build.yml",
         ".github/workflows/pages.yml",
+        ".github/actions/restore-studio-anywk/action.yml",
     }
 )
 

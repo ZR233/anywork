@@ -3,7 +3,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use pl_acp::session::{Driver, Exit, Observer, OpenRequest, Session, SessionTitleUpdate};
+use pl_acp::session::{
+    Driver, Exit, Observer, OpenRequest, OpenSetup, Session, SessionTitleUpdate,
+};
 use tokio::sync::{Mutex, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -246,7 +248,7 @@ impl AcpResources {
         caller: crate::AgentId,
         is_root: bool,
         frontend: Option<crate::host_mcp_assets::HostMcpAsset>,
-    ) -> Result<pl_acp::session::schema::McpServer> {
+    ) -> Result<OpenSetup> {
         let mut current = self.host_mcp.lock().await;
         ensure!(
             !self.cancellation.is_cancelled() && current.is_none(),
@@ -273,7 +275,11 @@ impl AcpResources {
             .set(calls)
             .map_err(|_| anyhow::anyhow!("ACP Host MCP metrics already bound"))?;
         self.mcp_injected.store(true, Ordering::Release);
-        Ok(definition)
+        Ok(OpenSetup {
+            mcp_servers: vec![definition],
+            allow_once_for_tool: Some(service.permission_filter()),
+            instructions: None,
+        })
     }
 
     pub(crate) async fn host_mcp_frontend(&self) -> Result<crate::host_mcp_assets::HostMcpAsset> {

@@ -23,10 +23,10 @@ PR 质量门禁（PR Quality Gate）在发布配置受影响时对普通 PR 头�
 
 发布器按可恢复边界划分以下阶段：
 1. **Linux 辅助进程交叉构建作业**：从标签对应的精确提交，以单一作业定义的架构矩阵在两个 Linux runner 上并行编译两种 `musl` 架构的 `pl-remote-helper`。各实例分别生成二进制、SHA-256 摘要与协议元数据，仅作为当次工作流运行实例的内部构件传递，构件身份按架构隔离。RC 沿用相同矩阵构建契约。
-2. **Windows GUI 编译作业**：仅在辅助进程矩阵全部成功后，下载并校验两种架构的构件，执行消费已提交生成文件的确定性构建。编译成功即分别归档运行 bundle 与同一源码提交编译的小型发布工具，不等待后续下载、签名或外部溯源服务。运行 bundle 不包含调试符号或编译中间物；发布作业无需为取得工具而再次下载整个 bundle。缺少任一辅助进程构件或校验失败均终止构建。
-3. **Windows 打包与签名作业**：下载并强校验编译构件，显式使用其中的预构建发行包准备安装器（stage），不再编译 Flutter、Rust bridge 或发布工具。阶段内完成可选 Authenticode、Minisign 定稿及签名资产校验，成功后归档最终资产。缺失输入或校验失败直接终止，不回退编译。
-4. **Linux GUI 编译与预构建打包作业**：与 Windows 编译并行，消费同一次辅助进程矩阵的两个不可变构件身份及既有预构建资源入口，不再次编译辅助进程。编译成功即归档完整 Linux 运行 bundle 和同源码发布工具；打包仅消费校验过的预构建输入，生成 Debian 包及独立校验和，不回退编译。
-5. **macOS GUI 编译与预构建打包作业**：复用稳定版与 RC 的 `macos-release-build.yml`，消费同次辅助进程矩阵的两个构件，分别归档完整 `.app` 与同源码发布工具。下游核对构件 ID、生产者摘要及工具工作区后，通过 Apple `ditto` 生成保留签名、权限与 framework 符号链接的 ZIP；稳定发布不再独立解包复核，RC 仍执行该验证。
+2. **各平台 anywk 编译作业**：使用同一可复用工作流，在 Windows x64、Linux amd64 和 macOS arm64 的独立 runner 上从指定提交编译 release CLI，立即归档可执行文件和 `build-info.json`。Linux 使用同次解析并校验的构建镜像。CLI 编译可与辅助进程构建及本平台 GUI 编译重叠。
+3. **各平台 GUI 编译作业**：待两个辅助进程构件就绪后，核对输入，编译 release Rust bridge、原生工具和 Flutter App。CMake 或 Xcode 将 bridge 和辅助资源装入应用。作业分别归档待装入 `anywk` 的应用和同源码发布工具。应用归档省略调试符号与编译中间物，发布工具可以独立下载。稳定版与 RC 共用 macOS 编译打包工作流。
+4. **各平台装配与打包作业**：等待本平台 GUI 与 CLI 编译，以同次运行的构件 ID 和 SHA-256 校验应用、CLI 和发布工具，执行工具前核对其编译工作区。装配阶段核对 CLI 架构、版本、源码提交、构建环境和文件摘要，再写入应用资源目录。macOS 保留 framework 符号链接与执行权限，装入已签名 CLI 后重新签署外层 `.app`，并核验完整签名。缺失或无效的编译构件直接终止；打包 runner 只使用预构建输入。
+5. **平台成品**：Windows 生成安装器，执行可选 Authenticode、Minisign 定稿及签名资产校验。Linux 生成 Debian 包与独立校验和。macOS 通过 Apple `ditto` 生成保留签名、权限与 framework 符号链接的 ZIP；RC 另行解包验证。各平台打包成功后归档最终资产。
 6. **独立构建溯源作业**：仅消费已经归档并校验的最终 Windows 安装器、Linux Debian 包或 macOS ZIP，分别生成构建溯源证明（provenance attestation）。适用平台的证明均是正式发布必需前置条件；外部服务失败不得降级为跳过，但可独立重跑而不重复编译、打包或签名。
 7. **正式发布对账作业（Publish）**：等待适用平台的打包与溯源，下载最终构件并按精确 Release ID 对账——草稿 Release 可为空或仅含部分资产，但任何已存在资产的文件名、字节长度与 SHA-256 摘要必须与本地文件完全一致，仅允许补传缺失资产而严禁覆盖不同字节；全部资产核对一致后取消草稿状态并标记为 `latest`。失败重跑可复用原构件继续补传，幂等收敛。
 
@@ -68,7 +68,7 @@ PR 中可复用的工程工具和 remote helper 资源使用同次运行的明�
 
 构建环境中的 Git 与 OpenSSH 必须满足现有工作树和 SSH 消费者的真实能力要求，不能仅以命令存在或基础发行版的默认版本作为验收依据。运行容器保留宿主 UID/GID；该身份不必预置在镜像账户中。需要身份解析的系统工具通过容器内、无特权、临时的用户与组映射运行，不修改或挂载宿主账户文件，不以 root、扩大挂载或放宽权限规避身份问题。相关能力应在镜像冒烟中直接验证，而不是由 CI 消费者临时安装修补。
 
-正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有发布归档，不添加独立顶层资产。CLI 与 Rust bridge 使用相同的 Cargo 宿主目标和 release 编译目录，可复用编译产物。Linux 使用 GNU/glibc。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 不进入发布构建镜像或持续集成，其本地手动入口见[本地 Harbor 指南](../integrations/harbor/README.md)。
+正式原生桌面 bundle 同时包含 `bin/anywk`（Windows 为 `anywk.exe`，macOS 位于 `.app/Contents/Resources/bin/`）与 `build-info.json`；CLI 复用桌面产品版本、同次源码和现有公开发布归档。CI 中 CLI 与 Rust bridge 使用同一 Cargo 宿主目标和 release 配置，在独立的 runner 上编译；本地 `build-gui` 直接生成完整 bundle。Linux 使用 GNU/glibc。构建后及解包验证检查 CLI 架构、摘要、版本和导出格式声明。Linux Debian 包增加 `/usr/bin/anywk` 链接和系统证书依赖；macOS 压缩包不自动修改 shell 配置。Harbor 走本地手动入口，见[本地 Harbor 指南](../integrations/harbor/README.md)。
 
 ## 23.2 Windows 安装包与签名信任根
 

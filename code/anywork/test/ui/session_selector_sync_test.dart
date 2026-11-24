@@ -613,7 +613,7 @@ void main() {
           prompt: '',
         ),
       ),
-      expectedRevision: 1,
+      expectedRevision: 0,
       operationId: const OperationId('seed-custom-mode'),
     );
     graph.client.modeCatalog.apply(reply.catalog);
