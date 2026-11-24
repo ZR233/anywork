@@ -56,6 +56,7 @@ pub(crate) enum ClosePurpose {
     Delete,
 }
 mod published_resources;
+pub(crate) use published_resources::ArchiveScopeSeal;
 mod report_receiver;
 pub use children::{
     ChildThreadRequest, ConfiguredChildFactory, StudioChildFactory, StudioChildResources,

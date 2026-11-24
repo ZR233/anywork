@@ -11,9 +11,7 @@ use crate::studio::{
     store::thread_archive::{
         ArchiveMember, ArchivePhase, ArchiveScope, PrivateArchiveMember, ThreadArchiveOperation,
     },
-    store::thread_preparation::{
-        PreparationBinding, PreparationDisposition, PreparationIdentity, PreparationSave,
-    },
+    store::thread_preparation::{PreparationBinding, PreparationIdentity, PreparationSave},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
