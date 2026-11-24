@@ -13,6 +13,7 @@ KNOWN_JOBS = (
     "pr-title",
     "release-configuration",
     "rust-checks",
+    "platform-rust-checks",
     "linux-environment",
     "flutter-checks",
     "gui-generated",
@@ -20,8 +21,8 @@ KNOWN_JOBS = (
     "linux-test-inputs",
     "linux-desktop",
     "linux-native",
-    "windows-build",
-    "macos-build",
+    "pages-preview",
+    "rust-scale",
 )
 
 

@@ -20,6 +20,7 @@ def _results(**overrides: str) -> dict[str, str]:
         "pr-title": "skipped",
         "release-configuration": "skipped",
         "rust-checks": "skipped",
+        "platform-rust-checks": "skipped",
         "linux-environment": "skipped",
         "flutter-checks": "skipped",
         "gui-generated": "skipped",
@@ -27,8 +28,8 @@ def _results(**overrides: str) -> dict[str, str]:
         "linux-test-inputs": "skipped",
         "linux-desktop": "skipped",
         "linux-native": "skipped",
-        "windows-build": "skipped",
-        "macos-build": "skipped",
+        "pages-preview": "skipped",
+        "rust-scale": "skipped",
     }
     results.update(overrides)
     return results
@@ -76,9 +77,9 @@ class GateEvaluateTest(unittest.TestCase):
     def test_cancelled_optional_job_fails(self):
         errors = evaluate(
             ["changes", "docs-policy"],
-            _results(**{"docs-policy": "success", "macos-build": "cancelled"}),
+            _results(**{"docs-policy": "success", "platform-rust-checks": "cancelled"}),
         )
-        self.assertTrue(any("macos-build" in item for item in errors))
+        self.assertTrue(any("platform-rust-checks" in item for item in errors))
 
     def test_empty_required_jobs_fails(self):
         errors = evaluate([], _results())
@@ -136,14 +137,20 @@ class GateEvaluateTest(unittest.TestCase):
                     errors = evaluate(required, {**results, "linux-test-inputs": status})
                     self.assertTrue(any("linux-test-inputs" in error for error in errors))
 
-    def test_rust_plan_cannot_skip_either_native_platform(self):
-        plan = plan_from_paths(["code/pl-core/src/lib.rs"], event_name="push")
-        results = _results(**{job: "success" for job in plan["required_jobs"]})
-        self.assertEqual(evaluate(plan["required_jobs"], results), [])
-        for job in ("windows-build", "macos-build"):
-            with self.subTest(job=job):
-                errors = evaluate(plan["required_jobs"], {**results, job: "skipped"})
-                self.assertTrue(any(job in error for error in errors))
+    def test_selected_platform_and_specialized_jobs_must_succeed(self):
+        for path, job in (
+            ("code/pl-core/src/lib.rs", "platform-rust-checks"),
+            ("site/build.py", "pages-preview"),
+            (".github/workflows/rust-scale.yml", "rust-scale"),
+        ):
+            required = plan_from_paths([path], event_name="pull_request")["required_jobs"]
+            self.assertIn(job, required)
+            results = _results(**{name: "success" for name in required})
+            self.assertEqual(evaluate(required, results), [])
+            for status in ("skipped", "failure"):
+                with self.subTest(job=job, status=status):
+                    errors = evaluate(required, {**results, job: status})
+                    self.assertTrue(any(job in error for error in errors))
 
 if __name__ == "__main__":
     unittest.main()

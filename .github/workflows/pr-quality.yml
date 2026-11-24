@@ -10,8 +10,8 @@ on:
 
 permissions: {}
 
-# A newer commit on the same pull request cancels its superseded run. Branch pushes use
-# their own run id instead, so a queued run is never replaced by a newer one.
+# All PR jobs share one run so a new commit cancels even jobs whose paths are
+# absent from the new diff. Main pushes and merge groups keep independent runs.
 concurrency:
   group: pr-quality-${{ github.event_name == 'pull_request' && github.ref || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -37,10 +37,8 @@ jobs:
       remote_helpers: ${{ steps.plan.outputs.remote_helpers }}
       linux_desktop: ${{ steps.plan.outputs.linux_desktop }}
       linux_native: ${{ steps.plan.outputs.linux_native }}
-      windows_build: ${{ steps.plan.outputs.windows_build }}
-      macos_build: ${{ steps.plan.outputs.macos_build }}
-      windows_gui_build: ${{ steps.plan.outputs.windows_gui_build }}
-      macos_gui_build: ${{ steps.plan.outputs.macos_gui_build }}
+      pages_preview: ${{ steps.plan.outputs.pages_preview }}
+      rust_scale: ${{ steps.plan.outputs.rust_scale }}
       required_jobs: ${{ steps.plan.outputs.required_jobs }}
       plan: ${{ steps.plan.outputs.plan }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -88,6 +86,22 @@ jobs:
 
       - name: Check design index and local documentation links
         run: python3 .github/scripts/pr_quality_docs_policy.py
+
+  pages-preview:
+    name: Verify Pages bundle
+    needs: changes
+    if: needs.changes.outputs.pages_preview == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and verify static site
+        run: python3 site/build.py --out target/pages
 
   pr-title:
     name: Conventional PR title
@@ -224,6 +238,20 @@ jobs:
       sourceRef: ${{ github.sha }}
     permissions:
       contents: read
+
+  rust-scale:
+    name: Rust Scale Checks
+    needs: [changes, linux-environment]
+    if: needs.changes.outputs.rust_scale == 'true'
+    uses: ./.github/workflows/rust-scale-checks.yml
+    permissions:
+      contents: read
+    with:
+      environmentKey: ${{ needs.linux-environment.outputs.key }}
+      imageRef: ${{ needs.linux-environment.outputs.imageRef }}
+      imageId: ${{ needs.linux-environment.outputs.imageId }}
+      artifactId: ${{ needs.linux-environment.outputs.artifactId }}
+      archiveSha256: ${{ needs.linux-environment.outputs.archiveSha256 }}
 
   rust-checks:
     name: Rust quality, workspace tests and server (Linux)
@@ -590,7 +618,7 @@ jobs:
               --shard-index "$2" --shard-count 3 --output "$3"
           ' -- "$PR_QUALITY_XTASK" "$SHARD_INDEX" "$DESKTOP_TEST_OUTPUT"
       - name: Record disk usage after desktop build
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
           for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
@@ -601,7 +629,7 @@ jobs:
             fi
           done
       - name: Preserve desktop reports and runner logs
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-linux-${{ matrix.shard }}-${{ github.sha }}-${{ github.run_attempt }}
@@ -704,7 +732,7 @@ jobs:
               "$1" test-project --suite native --set full --output "$2"
           ' -- "$PR_QUALITY_XTASK" "$NATIVE_TEST_OUTPUT"
       - name: Record disk usage after native build
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           df -h "$GITHUB_WORKSPACE" "$RUNNER_TEMP"
           for directory in target "$CARGO_HOME" "$RUNNER_TEMP"; do
@@ -715,7 +743,7 @@ jobs:
             fi
           done
       - name: Preserve native reports and bounded diagnostics
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-linux-${{ github.sha }}-${{ github.run_attempt }}
@@ -729,16 +757,20 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  windows-build:
-    name: Clippy and GUI build (Windows)
-    needs: [changes, linux-inputs]
-    # Test-only Rust changes need host Clippy, but no Linux helper producer.
-    if: >-
-      !cancelled() && needs.changes.result == 'success' &&
-      needs.changes.outputs.windows_build == 'true' &&
-      (needs.changes.outputs.windows_gui_build != 'true' || needs.linux-inputs.result == 'success')
-    runs-on: windows-latest
-    timeout-minutes: 90
+  platform-rust-checks:
+    name: Rust Check and Clippy (${{ matrix.platform }})
+    needs: changes
+    if: needs.changes.outputs.rust_checks == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-latest
+          - platform: macOS
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -750,167 +782,37 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Restore this run's bundled helper inputs
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        uses: ./.github/actions/restore-quality-artifact
-        with:
-          kind: helpers
-          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
-          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
-          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
-      - name: Set up cached native Rust build
+      - name: Set up cached Rust toolchain
         uses: ./.github/actions/setup-studio-rust
-      - name: Set up Flutter
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
-          flutter-version: 3.50.0
-          channel: stable
-          cache: true
-      - name: Prepare Clippy for Rust changes
-        if: needs.changes.outputs.rust_checks == 'true'
+          cache-key: rust-checks-${{ runner.os }}
+      - name: Prepare Clippy
         run: rustup component add clippy
-      - name: Check Rust on Windows
-        if: needs.changes.outputs.rust_checks == 'true'
+      - name: Check isolated pl-core without default features
+        run: cargo check --locked -p pl-core --no-default-features --all-targets
+      - name: Check workspace Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Verify native Windows long-path identity
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked -p pl-remote-helper --test windows_paths
-      - name: Verify POSIX LSP configuration paths on Windows
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked -p pl-lsp --test posix_configuration
-      - name: Verify current overwrite on Windows
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo test --locked -p pl-studio-runtime --lib studio::storage::current_file::tests::current_is_self_contained_even_with_unreadable_history
-      - name: Verify Windows installer handoff from published and current clients
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        shell: pwsh
-        run: |
-          . .github/scripts/studio-package-tools.ps1
-          Install-StudioInnoSetup
-          $compiler = @('C:\Program Files (x86)\Inno Setup 6\ISCC.exe', 'C:\Program Files\Inno Setup 6\ISCC.exe') |
-            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-          .github/scripts/test-windows-updater.ps1 -Compiler $compiler -EvidenceDirectory (Join-Path $env:RUNNER_TEMP 'windows-updater')
-      - name: Compile the Release AOT application without running tests
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        run: cargo xtask build-gui
-
-      - name: Checkpoint the Release bundle and engineering tool
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        shell: pwsh
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          . .github/scripts/studio-compile-handoff.ps1
-          New-StudioCompileCheckpoint
-          $version = (Get-Content studio-version.txt -Raw).Trim()
-          Assert-StudioProductVersion -Executable (Join-Path $env:GITHUB_WORKSPACE 'dist/anywork-release/anywork.exe') -Version $version
-          Copy-Item 'target/xtask/debug/pl-xtask.exe' (Join-Path $env:RUNNER_TEMP 'pl-xtask.exe')
-          Copy-Item $env:GITHUB_OUTPUT (Join-Path $env:RUNNER_TEMP 'checkpoint.txt')
-          "sourceSha=$env:SOURCE_SHA`nversion=$version`nplatform=windows-x64`nflutterProfile=release`nbridgeProfile=release`nbuildCommand=cargo xtask build-gui" | Out-File (Join-Path $env:RUNNER_TEMP 'checkpoint.txt') -Append -Encoding utf8
-          Get-Content (Join-Path $env:RUNNER_TEMP 'checkpoint.txt') | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-      - name: Preserve the Release checkpoint without publishing
-        if: needs.changes.outputs.windows_gui_build == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: pr-release-windows-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/bundle.zip
-            ${{ runner.temp }}/checkpoint.txt
-            ${{ runner.temp }}/pl-xtask.exe
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 3
-
-  macos-build:
-    name: Clippy and GUI build (macOS)
-    needs: [changes, linux-inputs]
-    if: >-
-      !cancelled() && needs.changes.result == 'success' &&
-      needs.changes.outputs.macos_build == 'true' &&
-      (needs.changes.outputs.macos_gui_build != 'true' || needs.linux-inputs.result == 'success')
-    runs-on: macos-15
-    timeout-minutes: 90
-    env:
-      CARGO_INCREMENTAL: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-    permissions:
-      contents: read
-    steps:
-      - name: Check out the tested source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Restore this run's bundled helper inputs
-        if: needs.changes.outputs.macos_gui_build == 'true'
-        uses: ./.github/actions/restore-quality-artifact
-        with:
-          kind: helpers
-          artifact-id: ${{ needs.linux-inputs.outputs.helperArtifactId }}
-          sha256: ${{ needs.linux-inputs.outputs.helperArchiveSha256 }}
-          source-sha: ${{ needs.linux-inputs.outputs.helperSourceSha }}
-      - name: Set up cached native Rust build
-        uses: ./.github/actions/setup-studio-rust
-      - name: Set up Flutter
-        if: needs.changes.outputs.macos_gui_build == 'true'
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          flutter-version: 3.50.0
-          channel: stable
-          cache: true
-      - name: Prepare Clippy for Rust changes
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: rustup component add clippy
-      - name: Check Rust on macOS
-        if: needs.changes.outputs.rust_checks == 'true'
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Compile the Release AOT application without running tests
-        if: needs.changes.outputs.macos_gui_build == 'true'
-        run: cargo xtask build-gui
-
-      - name: Checkpoint the Release bundle and engineering tool
-        if: needs.changes.outputs.macos_gui_build == 'true'
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          bash .github/scripts/studio-macos-handoff.sh checkpoint
-          cp "$GITHUB_OUTPUT" "$RUNNER_TEMP/checkpoint.txt"
-          printf 'sourceSha=%s\nversion=%s\nplatform=macos-arm64\nflutterProfile=release\nbridgeProfile=release\nbuildCommand=cargo xtask build-gui\n' \
-            "$SOURCE_SHA" "$(cat studio-version.txt)" >> "$RUNNER_TEMP/checkpoint.txt"
-          cat "$RUNNER_TEMP/checkpoint.txt" >> "$GITHUB_STEP_SUMMARY"
-      - name: Preserve the Release checkpoint without publishing
-        if: needs.changes.outputs.macos_gui_build == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: pr-release-macos-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/macos-bundle.tar.gz
-            ${{ runner.temp }}/macos-tool.tar.gz
-            ${{ runner.temp }}/checkpoint.txt
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 3
 
   # Configure this stable aggregate as the repository required check.
   ci-gate:
     name: ci-gate
-    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.release_only != 'true')
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.release_only != 'true') }}
     needs:
       - changes
       - docs-policy
+      - pages-preview
       - pr-title
       - release-configuration
       - flutter-checks
       - linux-environment
       - rust-checks
+      - rust-scale
       - linux-inputs
       - linux-test-inputs
       - gui-generated
       - linux-desktop
       - linux-native
-      - windows-build
-      - macos-build
+      - platform-rust-checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -925,16 +827,17 @@ jobs:
           REQUIRED_JOBS: ${{ needs.changes.outputs.required_jobs }}
           CHANGES_RESULT: ${{ needs.changes.result }}
           DOCS_POLICY_RESULT: ${{ needs.docs-policy.result }}
+          PAGES_PREVIEW_RESULT: ${{ needs.pages-preview.result }}
           PR_TITLE_RESULT: ${{ needs.pr-title.result }}
           RELEASE_CONFIGURATION_RESULT: ${{ needs.release-configuration.result }}
           FLUTTER_CHECKS_RESULT: ${{ needs.flutter-checks.result }}
           LINUX_ENVIRONMENT_RESULT: ${{ needs.linux-environment.result }}
           RUST_CHECKS_RESULT: ${{ needs.rust-checks.result }}
+          RUST_SCALE_RESULT: ${{ needs.rust-scale.result }}
           LINUX_INPUTS_RESULT: ${{ needs.linux-inputs.result }}
           LINUX_TEST_INPUTS_RESULT: ${{ needs.linux-test-inputs.result }}
           GUI_GENERATED_RESULT: ${{ needs.gui-generated.result }}
           LINUX_DESKTOP_RESULT: ${{ needs.linux-desktop.result }}
           LINUX_NATIVE_RESULT: ${{ needs.linux-native.result }}
-          WINDOWS_BUILD_RESULT: ${{ needs.windows-build.result }}
-          MACOS_BUILD_RESULT: ${{ needs.macos-build.result }}
+          PLATFORM_RUST_CHECKS_RESULT: ${{ needs.platform-rust-checks.result }}
         run: python3 .github/scripts/pr_quality_gate.py

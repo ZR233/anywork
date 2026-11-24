@@ -83,19 +83,16 @@ class PlanFromPathsTest(unittest.TestCase):
         plan = self.plan("studio-version.txt", "CHANGELOG.md")
         self.assertEqual(self.enabled(plan), {"release_configuration", "docs_policy"})
 
-    def test_rust_production_keeps_platform_builds(self):
+    def test_rust_checks_do_not_pull_in_linux_bundle_inputs(self):
         for path in (
             "code/tools/filesystem/src/lib.rs",
             "code/pl-patch/src/lib.rs",
         ):
             with self.subTest(path=path):
                 plan = self.plan(path)
-                self.assertEqual(self.enabled(plan), {
-                    "rust_checks", "linux_environment", "linux_inputs",
-                    "remote_helpers", "windows_build", "macos_build",
-                    "windows_gui_build", "macos_gui_build",
-                })
-                self.assertIn("linux-inputs", plan["required_jobs"])
+                self.assertEqual(self.enabled(plan), {"rust_checks", "linux_environment"})
+                self.assertIn("platform-rust-checks", plan["required_jobs"])
+                self.assertNotIn("linux-inputs", plan["required_jobs"])
 
     def test_rust_desktop_dependencies_require_the_replacement_suite(self):
         for path in (
@@ -113,8 +110,8 @@ class PlanFromPathsTest(unittest.TestCase):
                     self.assertFalse(plan["linux_native"])
                     self.assertIn("linux-desktop", plan["required_jobs"])
                     self.assertIn("linux-test-inputs", plan["required_jobs"])
-                    self.assertTrue(plan["windows_gui_build"])
-                    self.assertTrue(plan["macos_gui_build"])
+                    self.assertTrue(plan["remote_helpers"])
+                    self.assertIn("platform-rust-checks", plan["required_jobs"])
 
     def test_rust_tests_and_their_support_need_no_gui_or_bundled_helpers(self):
         for path in (
@@ -131,9 +128,8 @@ class PlanFromPathsTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 plan = self.plan(path)
-                self.assertEqual(self.enabled(plan), {
-                    "rust_checks", "linux_environment", "windows_build", "macos_build",
-                })
+                self.assertEqual(self.enabled(plan), {"rust_checks", "linux_environment"})
+                self.assertIn("platform-rust-checks", plan["required_jobs"])
                 self.assertNotIn("linux-inputs", plan["required_jobs"])
         # Names alone do not prove that Rust excludes a module from production.
         for path in (
@@ -143,7 +139,6 @@ class PlanFromPathsTest(unittest.TestCase):
             "code/pl-studio-runtime/src/session/mod.rs",
             "code/anywork/rust/src/api/studio/handlers/chat.rs",
         ):
-            self.assertTrue(self.plan(path)["windows_gui_build"])
             self.assertTrue(self.plan(path)["linux_desktop"])
 
     def test_ui_tests_and_adapter_tests_only_need_the_app_suite(self):
@@ -214,22 +209,24 @@ class PlanFromPathsTest(unittest.TestCase):
             self.assertTrue(plan["gui_generated"])
             self.assertTrue(plan["linux_desktop"])
             self.assertTrue(plan["linux_native"])
-            self.assertTrue(plan["windows_gui_build"])
-            self.assertTrue(plan["macos_gui_build"])
+            self.assertTrue(plan["remote_helpers"])
             self.assertFalse(plan["client_checks"])
             self.assertFalse(plan["rust_checks"])
 
-    def test_platform_directory_changes_stay_on_that_platform(self):
+    def test_runner_changes_select_app_checks_and_linux_runner_selects_native_suites(self):
         for path, selected in (
-            ("code/anywork/linux/CMakeLists.txt", {"linux_desktop", "linux_native"}),
-            ("code/anywork/windows/runner/main.cpp", {"windows_build", "windows_gui_build"}),
-            ("code/anywork/macos/Runner/AppDelegate.swift", {"macos_build", "macos_gui_build"}),
+            ("code/anywork/linux/CMakeLists.txt", {
+                "linux_desktop", "linux_native", "linux_inputs", "remote_helpers",
+            }),
+            ("code/anywork/windows/runner/main.cpp", set()),
+            ("code/anywork/macos/Runner/AppDelegate.swift", set()),
         ):
             with self.subTest(path=path):
                 plan = self.plan(path)
                 self.assertEqual(self.enabled(plan), selected | {
-                    "flutter_checks", "linux_inputs", "remote_helpers", "linux_environment",
+                    "flutter_checks", "linux_environment",
                 })
+                self.assertNotIn("platform-rust-checks", plan["required_jobs"])
 
     def test_shared_runner_and_bridge_include_their_integration_consumers(self):
         for path in (
@@ -241,7 +238,7 @@ class PlanFromPathsTest(unittest.TestCase):
                 plan = self.plan(path)
                 for name in (
                     "flutter_checks", "linux_desktop", "linux_native",
-                    "windows_gui_build", "macos_gui_build", "remote_helpers",
+                    "remote_helpers",
                     "linux_inputs", "linux_environment",
                 ):
                     self.assertTrue(plan[name], name)
@@ -260,8 +257,29 @@ class PlanFromPathsTest(unittest.TestCase):
         self.assertTrue(native["linux_native"])
         self.assertFalse(native["linux_desktop"])
         self.assertTrue(native["gui_generated"])
-        self.assertTrue(native["windows_gui_build"])
-        self.assertTrue(native["macos_gui_build"])
+        self.assertTrue(native["remote_helpers"])
+
+    def test_specialized_pr_jobs_follow_the_current_diff(self):
+        cases = (
+            ("site/build.py", "pages-preview"),
+            ("design/assets/readme-overview.png", "pages-preview"),
+            ("code/anywork/assets/icon.png", "pages-preview"),
+            ("code/anywork/windows/runner/resources/app_icon.ico", "pages-preview"),
+            (".github/workflows/pages.yml", "pages-preview"),
+            (".github/workflows/rust-scale.yml", "rust-scale"),
+            (".github/workflows/rust-scale-checks.yml", "rust-scale"),
+        )
+        for path, job in cases:
+            with self.subTest(path=path):
+                flag = job.replace("-", "_")
+                pr_plan = self.plan("design/24-testing.md", path)
+                self.assertTrue(pr_plan[flag])
+                self.assertIn(job, pr_plan["required_jobs"])
+                if job == "rust-scale":
+                    self.assertIn("linux-environment", pr_plan["required_jobs"])
+                for event in ("push", "merge_group"):
+                    self.assertFalse(self.plan(path, event=event)[flag])
+                self.assertFalse(self.plan("design/24-testing.md")[flag])
 
     def test_mixed_paths_union_responsibilities(self):
         paths = [
@@ -295,7 +313,7 @@ class PlanFromPathsTest(unittest.TestCase):
         ):
             with self.subTest(paths=paths):
                 plan = self.plan(*paths)
-                self.assertEqual(self.enabled(plan), set(OUTPUT_FLAGS))
+                self.assertEqual(self.enabled(plan), set(OUTPUT_FLAGS) - {"pages_preview", "rust_scale"})
                 self.assertEqual(plan["required_jobs"].count("flutter-checks"), 1)
 
     def test_output_exposes_both_frontend_selections_to_workflow(self):
