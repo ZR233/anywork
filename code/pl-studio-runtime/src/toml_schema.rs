@@ -206,6 +206,57 @@ pub(crate) fn encode<D: Versioned + Serialize>(
     toml::to_string_pretty(&value).map_err(Into::into)
 }
 
+/// Current documents are admitted by their integer header and decoded as the current DTO.
+/// Historical chains stay on [`load`]; this path does not construct or run a migrator.
+pub(crate) fn decode_current<D>(
+    path: &Path,
+    content: &str,
+    entity: &'static str,
+    version_key: &'static str,
+) -> Result<D>
+where
+    D: Versioned + DeserializeOwned,
+{
+    let target = integer_version(D::VERSION).map_err(|error| chain_error(entity, error))?;
+    let table = parse(path, content, entity, target)?;
+    decode_current_table(path, table, entity, version_key)
+}
+
+/// Same current-header admission for a table the caller already parsed once.
+pub(crate) fn decode_current_table<D>(
+    path: &Path,
+    mut table: toml::Table,
+    entity: &'static str,
+    version_key: &'static str,
+) -> Result<D>
+where
+    D: Versioned + DeserializeOwned,
+{
+    let target = integer_version(D::VERSION).map_err(|error| chain_error(entity, error))?;
+    let found = integer_header(&table, version_key);
+    if found != Some(target) {
+        return Err(migration_error(
+            path,
+            entity,
+            found,
+            target,
+            "decode",
+            anyhow::anyhow!("unsupported document schema"),
+        ));
+    }
+    table.remove(version_key);
+    toml::Value::Table(table)
+        .try_into()
+        .map_err(|error| migration_error(path, entity, Some(target), target, "decode", error))
+}
+
+pub(crate) fn integer_header(table: &toml::Table, version_key: &str) -> Option<u32> {
+    match table.get(version_key) {
+        Some(toml::Value::Integer(version)) if *version >= 0 => u32::try_from(*version).ok(),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

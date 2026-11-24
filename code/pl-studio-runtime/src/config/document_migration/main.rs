@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -1158,7 +1159,10 @@ impl MainV35 {
         value
             .as_table_mut()
             .ok_or_else(|| anyhow::anyhow!("config DTO is not a table"))?
-            .insert(VERSION_KEY.into(), 35.into());
+            .insert(
+                VERSION_KEY.into(),
+                i64::from(super::super::STUDIO_CONFIG_SCHEMA_VERSION).into(),
+            );
         let config: super::super::StudioConfig = value.try_into()?;
         ensure!(
             config
@@ -1186,7 +1190,12 @@ impl MainV35 {
     }
 }
 
-fn migrator_to_v30() -> Result<Migrator> {
+fn migrator_to_v30() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    cached_migrator(&MIGRATOR, register_to_v30)
+}
+
+fn register_to_v30() -> Result<Migrator> {
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -1211,7 +1220,45 @@ fn migrator_to_v30() -> Result<Migrator> {
     Ok(migrator)
 }
 
-fn migrator() -> Result<Migrator> {
+fn migrator_to_v32() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    cached_migrator(&MIGRATOR, register_to_v32)
+}
+
+fn register_to_v32() -> Result<Migrator> {
+    let mut migrator = Migrator::new();
+    migrator
+        .register(
+            Migrator::define(ENTITY)
+                .with_keys(VERSION_KEY, "data")
+                .from::<MainV18>()
+                .step::<MainV19>()
+                .step::<MainV20>()
+                .step::<MainV21>()
+                .step::<MainV22>()
+                .step::<MainV23>()
+                .step::<MainV24>()
+                .step::<MainV25>()
+                .step::<MainV26>()
+                .step::<MainV27>()
+                .step::<MainV28>()
+                .step::<MainV29>()
+                .step::<MainV30>()
+                .step::<MainV31>()
+                .step::<MainV32>()
+                .into::<MainV32>(),
+        )
+        .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
+    Ok(migrator)
+}
+
+fn migrator() -> Result<&'static Migrator> {
+    static MIGRATOR: OnceLock<Migrator> = OnceLock::new();
+    cached_migrator(&MIGRATOR, register_current)
+}
+
+fn register_current() -> Result<Migrator> {
+    current_schema_version()?;
     let mut migrator = Migrator::new();
     migrator
         .register(
@@ -1241,20 +1288,202 @@ fn migrator() -> Result<Migrator> {
     Ok(migrator)
 }
 
+fn cached_migrator(
+    slot: &'static OnceLock<Migrator>,
+    build: impl FnOnce() -> Result<Migrator>,
+) -> Result<&'static Migrator> {
+    if let Some(migrator) = slot.get() {
+        return Ok(migrator);
+    }
+    let migrator = build()?;
+    Ok(slot.get_or_init(|| migrator))
+}
+
+fn current_schema_version() -> Result<u32> {
+    let version = toml_schema::integer_version(MainV35::VERSION)
+        .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
+    if version != super::super::STUDIO_CONFIG_SCHEMA_VERSION {
+        return Err(toml_schema::chain_error(
+            ENTITY,
+            anyhow::anyhow!("MainV35 schema does not match STUDIO_CONFIG_SCHEMA_VERSION"),
+        ));
+    }
+    Ok(version)
+}
+
 pub(crate) fn load_main(path: &Path, content: &str) -> Result<LoadedDocument<MainV35>> {
-    toml_schema::load::<MainV18, MainV35>(path, content, &migrator()?, ENTITY, VERSION_KEY)
+    Ok(admit_main(path, content)?.loaded)
 }
 
 pub(crate) fn load_current_main(path: &Path, content: &str) -> Result<MainV35> {
-    toml_schema::load::<MainV35, MainV35>(path, content, &migrator()?, ENTITY, VERSION_KEY)
-        .map(|loaded| loaded.document)
+    current_schema_version()?;
+    toml_schema::decode_current(path, content, ENTITY, VERSION_KEY)
+}
+
+/// One parse of a main document, retained so legacy extracts do not probe the text again.
+pub(crate) struct AdmittedMain {
+    pub(crate) loaded: LoadedDocument<MainV35>,
+    table: toml::Table,
+}
+
+pub(crate) fn admit_main(path: &Path, content: &str) -> Result<AdmittedMain> {
+    let target = current_schema_version()?;
+    let table = toml_schema::parse(path, content, ENTITY, target)?;
+    let loaded = if toml_schema::integer_header(&table, VERSION_KEY) == Some(target) {
+        LoadedDocument {
+            document: toml_schema::decode_current_table(path, table.clone(), ENTITY, VERSION_KEY)?,
+            source_version: target,
+            migrated: false,
+        }
+    } else {
+        toml_schema::load_table::<MainV18, MainV35>(
+            path,
+            table.clone(),
+            migrator()?,
+            ENTITY,
+            VERSION_KEY,
+        )?
+    };
+    Ok(AdmittedMain { loaded, table })
 }
 
 pub(crate) fn extract_legacy_acp_from_main(
     path: &Path,
     content: &str,
 ) -> Result<BTreeMap<String, crate::config::AcpServiceDefinition>> {
-    extract_historical_acp_accounts(path, content)?
+    acp_definitions(extract_historical_acp_accounts(path, content)?)
+}
+
+/// Frozen account/reference semantics for completing a protected pre-split journal.
+/// These ids are not filenames; only the later extraction into current documents applies
+/// the current filename validator.
+pub(crate) fn extract_historical_acp_accounts(
+    path: &Path,
+    content: &str,
+) -> Result<BTreeMap<String, wire::AcpAccountConfig>> {
+    admit_main(path, content)?.historical_acp_accounts(path)
+}
+
+/// Extracts the legacy `[mcp]` section when migrating a schema 18..=30 `config.toml` to 31.
+pub(crate) fn extract_legacy_mcp_from_main(
+    path: &Path,
+    content: &str,
+) -> Result<Option<wire::StudioMcpConfig>> {
+    admit_main(path, content)?.legacy_mcp(path)
+}
+
+/// Returns the legacy LSP server documents without decoding them through the mutable runtime
+/// configuration type. This keeps every schema-31 field value available to the migration.
+pub(crate) fn extract_legacy_lsp_from_main(
+    path: &Path,
+    content: &str,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    admit_main(path, content)?.legacy_lsp()
+}
+
+impl AdmittedMain {
+    pub(crate) fn legacy_mcp(&self, path: &Path) -> Result<Option<wire::StudioMcpConfig>> {
+        if self.loaded.source_version >= 31 {
+            return Ok(None);
+        }
+        let old = toml_schema::load_table::<MainV18, MainV30>(
+            path,
+            self.table.clone(),
+            migrator_to_v30()?,
+            ENTITY,
+            VERSION_KEY,
+        )?;
+        Ok(Some(old.document.0.mcp))
+    }
+
+    pub(crate) fn legacy_lsp(&self) -> Result<BTreeMap<String, Vec<u8>>> {
+        if self.loaded.source_version >= 32 {
+            return Ok(BTreeMap::new());
+        }
+        let Some(servers) = self
+            .table
+            .get("lsp")
+            .and_then(|lsp| lsp.get("servers"))
+            .and_then(toml::Value::as_table)
+        else {
+            return Ok(BTreeMap::new());
+        };
+        let mut documents = BTreeMap::new();
+        for (id, value) in servers {
+            let mut document = value
+                .as_table()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("legacy LSP server `{id}` must be a table"))?;
+            ensure!(
+                valid_lsp_server_id(id),
+                "invalid legacy LSP server id `{id}`"
+            );
+            // In schema 31, an absent operations field and an explicitly empty list both
+            // meant "all operations" when converted to a catalog server. The current
+            // document format uses an empty list to mean "no operations", so elide the
+            // semantically-default legacy encoding before migrating it.
+            if document
+                .get("operations")
+                .and_then(toml::Value::as_array)
+                .is_some_and(Vec::is_empty)
+            {
+                document.remove("operations");
+            }
+            document.insert("schema_version".into(), toml::Value::Integer(1));
+            document.insert("id".into(), toml::Value::String(id.clone()));
+            documents.insert(id.clone(), toml::to_string_pretty(&document)?.into_bytes());
+        }
+        Ok(documents)
+    }
+
+    pub(crate) fn historical_acp_accounts(
+        &self,
+        path: &Path,
+    ) -> Result<BTreeMap<String, wire::AcpAccountConfig>> {
+        if self.loaded.source_version >= 33 {
+            return Ok(BTreeMap::new());
+        }
+        let old = toml_schema::load_table::<MainV18, MainV32>(
+            path,
+            self.table.clone(),
+            migrator_to_v32()?,
+            ENTITY,
+            VERSION_KEY,
+        )?;
+        old.document
+            .0
+            .acp
+            .accounts
+            .into_iter()
+            .map(|(id, account)| {
+                ensure!(
+                    !id.trim().is_empty() && !id.chars().any(char::is_control),
+                    "invalid historical ACP account id"
+                );
+                // Schema <=32 checked the trimmed view at a frozen 200-byte limit.
+                // Keep the original name bytes, and do not inherit current-file policy.
+                let name = account.name.trim();
+                ensure!(
+                    !name.is_empty() && name.len() <= 200 && !name.chars().any(char::is_control),
+                    "invalid historical ACP account name"
+                );
+                Ok((id, account))
+            })
+            .collect()
+    }
+
+    pub(crate) fn legacy_acp_definitions(
+        &self,
+        path: &Path,
+    ) -> Result<BTreeMap<String, crate::config::AcpServiceDefinition>> {
+        acp_definitions(self.historical_acp_accounts(path)?)
+    }
+}
+
+fn acp_definitions(
+    accounts: BTreeMap<String, wire::AcpAccountConfig>,
+) -> Result<BTreeMap<String, crate::config::AcpServiceDefinition>> {
+    accounts
         .into_iter()
         .map(|(id, account)| {
             let definition = crate::config::AcpServiceDefinition::template(
@@ -1268,128 +1497,6 @@ pub(crate) fn extract_legacy_acp_from_main(
             Ok((id, definition))
         })
         .collect()
-}
-
-/// Frozen account/reference semantics for completing a protected pre-split journal.
-/// These ids are not filenames; only the later extraction into current documents applies
-/// the current filename validator.
-pub(crate) fn extract_historical_acp_accounts(
-    path: &Path,
-    content: &str,
-) -> Result<BTreeMap<String, wire::AcpAccountConfig>> {
-    let loaded = load_main(path, content)?;
-    if loaded.source_version >= 33 {
-        return Ok(BTreeMap::new());
-    }
-    let mut migrator = Migrator::new();
-    migrator
-        .register(
-            Migrator::define(ENTITY)
-                .with_keys(VERSION_KEY, "data")
-                .from::<MainV18>()
-                .step::<MainV19>()
-                .step::<MainV20>()
-                .step::<MainV21>()
-                .step::<MainV22>()
-                .step::<MainV23>()
-                .step::<MainV24>()
-                .step::<MainV25>()
-                .step::<MainV26>()
-                .step::<MainV27>()
-                .step::<MainV28>()
-                .step::<MainV29>()
-                .step::<MainV30>()
-                .step::<MainV31>()
-                .step::<MainV32>()
-                .into::<MainV32>(),
-        )
-        .map_err(|error| toml_schema::chain_error(ENTITY, error))?;
-    let old = toml_schema::load::<MainV18, MainV32>(path, content, &migrator, ENTITY, VERSION_KEY)?;
-    old.document
-        .0
-        .acp
-        .accounts
-        .into_iter()
-        .map(|(id, account)| {
-            ensure!(
-                !id.trim().is_empty() && !id.chars().any(char::is_control),
-                "invalid historical ACP account id"
-            );
-            // Schema <=32 checked the trimmed view at a frozen 200-byte limit.
-            // Keep the original name bytes, and do not inherit current-file policy.
-            let name = account.name.trim();
-            ensure!(
-                !name.is_empty() && name.len() <= 200 && !name.chars().any(char::is_control),
-                "invalid historical ACP account name"
-            );
-            Ok((id, account))
-        })
-        .collect()
-}
-
-/// Extracts the legacy `[mcp]` section when migrating a schema 18..=30 `config.toml` to 31.
-pub(crate) fn extract_legacy_mcp_from_main(
-    path: &Path,
-    content: &str,
-) -> Result<Option<wire::StudioMcpConfig>> {
-    let loaded = load_main(path, content)?;
-    if loaded.source_version >= 31 {
-        return Ok(None);
-    }
-    let v30 = toml_schema::load::<MainV18, MainV30>(
-        path,
-        content,
-        &migrator_to_v30()?,
-        ENTITY,
-        VERSION_KEY,
-    )?;
-    Ok(Some(v30.document.0.mcp))
-}
-
-/// Returns the legacy LSP server documents without decoding them through the mutable runtime
-/// configuration type. This keeps every schema-31 field value available to the migration.
-pub(crate) fn extract_legacy_lsp_from_main(
-    path: &Path,
-    content: &str,
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    let loaded = load_main(path, content)?;
-    if loaded.source_version >= 32 {
-        return Ok(BTreeMap::new());
-    }
-    let mut root: toml::Value = toml::from_str(content)?;
-    let Some(servers) = root
-        .get_mut("lsp")
-        .and_then(|lsp| lsp.get_mut("servers"))
-        .and_then(toml::Value::as_table_mut)
-    else {
-        return Ok(BTreeMap::new());
-    };
-    let mut documents = BTreeMap::new();
-    for (id, value) in std::mem::take(servers) {
-        let mut document = value
-            .as_table()
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("legacy LSP server `{id}` must be a table"))?;
-        ensure!(
-            valid_lsp_server_id(&id),
-            "invalid legacy LSP server id `{id}`"
-        );
-        // In schema 31, an absent operations field and an explicitly empty list both
-        // meant "all operations" when converted to a catalog server. The current
-        // document format uses an empty list to mean "no operations", so elide the
-        // semantically-default legacy encoding before migrating it.
-        if document
-            .get("operations")
-            .and_then(toml::Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            document.remove("operations");
-        }
-        document.insert("schema_version".into(), toml::Value::Integer(1));
-        document.insert("id".into(), toml::Value::String(id.clone()));
-        documents.insert(id, toml::to_string_pretty(&document)?.into_bytes());
-    }
-    Ok(documents)
 }
 
 fn valid_lsp_server_id(id: &str) -> bool {
@@ -1865,5 +1972,9 @@ enabled = false
                 .contains_key(&crate::mode::ThreadModeId::new("mode.custom_review").unwrap())
         );
         assert_eq!(migrated.mode_model_routes.len(), 2);
+        assert!(
+            load_current_main(Path::new("v34.toml"), &encoded_v34).is_err(),
+            "current admission must not upgrade schema 34"
+        );
     }
 }

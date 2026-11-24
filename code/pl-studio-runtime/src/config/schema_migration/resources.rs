@@ -13,10 +13,12 @@ use super::{
     write_protected,
 };
 use crate::config::credential::CredentialStore;
+use crate::config::document_migration::{AdmittedMain, admit_main};
 use crate::config::document_migration::{load_main, load_profile};
 use crate::config::{
     ConfigPaths, STUDIO_CONFIG_FILE_NAME, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
 };
+use crate::toml_schema::LoadedDocument;
 use crate::toml_schema::migration_error;
 
 pub(super) const VERSION: u32 = 2;
@@ -169,13 +171,14 @@ fn validate_profile(
     acp: &crate::config::AcpDefinitionsSnapshot,
     require_current: bool,
 ) -> Result<(u32, bool)> {
-    validate_profile_with_references(
+    let loaded = validate_profile_with_references(
         path,
         content,
         config,
         ProfileReferences::Current(acp),
         require_current,
-    )
+    )?;
+    Ok((loaded.source_version, loaded.migrated))
 }
 
 #[derive(Clone, Copy)]
@@ -195,7 +198,7 @@ fn validate_profile_with_references(
     config: &StudioConfig,
     references: ProfileReferences<'_>,
     require_current: bool,
-) -> Result<(u32, bool)> {
+) -> Result<LoadedDocument<crate::config::document_migration::ProfileV3>> {
     let loaded = load_profile(path, text(path, content, "agent-profile", 3)?)?;
     if require_current {
         ensure!(
@@ -204,7 +207,7 @@ fn validate_profile_with_references(
         );
     }
     let source = loaded.source_version;
-    let profile = loaded.document.into_profile().map_err(|error| {
+    let profile = loaded.document.clone().into_profile().map_err(|error| {
         migration_error(path, "agent-profile", Some(source), 3, "validate", error)
     })?;
     let profile_id = path
@@ -266,7 +269,7 @@ fn validate_profile_with_references(
             migration_error(path, "agent-profile", Some(source), 3, "references", error)
         })?;
     }
-    Ok((source, loaded.migrated))
+    Ok(loaded)
 }
 
 fn resource(
@@ -525,21 +528,11 @@ fn encode_fallback_legacy_mcp_server(
 
 fn prepare_legacy_mcp_plans(
     paths: &ConfigPaths,
-    original_main: &[u8],
+    admitted: &AdmittedMain,
     plans: &mut Vec<ResourcePlan>,
     resources: &mut Vec<Resource>,
 ) -> Result<()> {
-    let raw_main = text(
-        paths.config_file(),
-        original_main,
-        "studio-config",
-        STUDIO_CONFIG_SCHEMA_VERSION,
-    )?;
-    let Some(legacy_mcp) = crate::config::document_migration::extract_legacy_mcp_from_main(
-        paths.config_file(),
-        raw_main,
-    )?
-    else {
+    let Some(legacy_mcp) = admitted.legacy_mcp(paths.config_file())? else {
         return Ok(());
     };
     let host_base_cwd =
@@ -646,20 +639,11 @@ fn prepare_legacy_mcp_plans(
 
 fn prepare_legacy_lsp_plans(
     paths: &ConfigPaths,
-    original_main: &[u8],
+    admitted: &AdmittedMain,
     plans: &mut Vec<ResourcePlan>,
     resources: &mut Vec<Resource>,
 ) -> Result<()> {
-    let raw_main = text(
-        paths.config_file(),
-        original_main,
-        "studio-config",
-        STUDIO_CONFIG_SCHEMA_VERSION,
-    )?;
-    let documents = crate::config::document_migration::extract_legacy_lsp_from_main(
-        paths.config_file(),
-        raw_main,
-    )?;
+    let documents = admitted.legacy_lsp()?;
     for (id, candidate) in documents {
         ensure!(validate_lsp_id(&id), "invalid legacy LSP server id `{id}`");
         let relative_path = format!("lsp/host/{id}.toml");
@@ -720,19 +704,11 @@ fn decode_acp(relative: &str, bytes: &[u8]) -> Result<crate::config::AcpServiceD
 
 fn prepare_legacy_acp_plans(
     paths: &ConfigPaths,
-    original_main: &[u8],
+    admitted: &AdmittedMain,
     plans: &mut Vec<ResourcePlan>,
     resources: &mut Vec<Resource>,
 ) -> Result<()> {
-    let definitions = crate::config::document_migration::extract_legacy_acp_from_main(
-        paths.config_file(),
-        text(
-            paths.config_file(),
-            original_main,
-            "studio-config",
-            STUDIO_CONFIG_SCHEMA_VERSION,
-        )?,
-    )?;
+    let definitions = admitted.legacy_acp_definitions(paths.config_file())?;
     ensure_acp_parent(paths)?;
     for (id, definition) in definitions {
         let relative_path = format!("acp/{id}.toml");
@@ -802,7 +778,30 @@ pub(super) fn prepare(
     let mut plans = Vec::new();
     let mut resources = Vec::new();
     let (config, unchanged_main_hash) = if let Some(original) = original {
-        let (config, source, migrated) = main_document(paths.config_file(), original)?;
+        let raw = text(
+            paths.config_file(),
+            original,
+            "studio-config",
+            STUDIO_CONFIG_SCHEMA_VERSION,
+        )?;
+        let admitted = admit_main(paths.config_file(), raw)?;
+        let source = admitted.loaded.source_version;
+        let migrated = admitted.loaded.migrated;
+        let config = admitted
+            .loaded
+            .document
+            .clone()
+            .into_config()
+            .map_err(|error| {
+                migration_error(
+                    paths.config_file(),
+                    "studio-config",
+                    Some(source),
+                    STUDIO_CONFIG_SCHEMA_VERSION,
+                    "validate",
+                    error,
+                )
+            })?;
         if migrated {
             let candidate =
                 crate::config::document_migration::MainV35::from_config(&config)?.encode()?;
@@ -818,9 +817,9 @@ pub(super) fn prepare(
                 STUDIO_CONFIG_SCHEMA_VERSION,
             ));
             plans.push(plan);
-            prepare_legacy_mcp_plans(paths, original, &mut plans, &mut resources)?;
-            prepare_legacy_lsp_plans(paths, original, &mut plans, &mut resources)?;
-            prepare_legacy_acp_plans(paths, original, &mut plans, &mut resources)?;
+            prepare_legacy_mcp_plans(paths, &admitted, &mut plans, &mut resources)?;
+            prepare_legacy_lsp_plans(paths, &admitted, &mut plans, &mut resources)?;
+            prepare_legacy_acp_plans(paths, &admitted, &mut plans, &mut resources)?;
             (config, None)
         } else {
             (config, Some(digest(original)))
@@ -845,11 +844,16 @@ pub(super) fn prepare(
     names.sort();
     for path in names {
         let original = fs::read(&path)?;
-        let (source, migrated) = validate_profile(&path, &original, &config, &acp, false)?;
-        if !migrated {
+        let loaded = validate_profile_with_references(
+            &path,
+            &original,
+            &config,
+            ProfileReferences::Current(&acp),
+            false,
+        )?;
+        if !loaded.migrated {
             continue;
         }
-        let loaded = load_profile(&path, text(&path, &original, "agent-profile", 3)?)?;
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -862,7 +866,7 @@ pub(super) fn prepare(
         resources.push(resource(
             &plan,
             DocumentFamily::Profile,
-            (source != 0).then_some(source),
+            (loaded.source_version != 0).then_some(loaded.source_version),
             3,
         ));
         plans.push(plan);
@@ -1126,7 +1130,7 @@ fn commit(
                 } else {
                     ProfileReferences::Current(&acp)
                 };
-                let (source, migrated) = validate_profile_with_references(
+                let loaded = validate_profile_with_references(
                     &path,
                     &plan.original,
                     &config,
@@ -1134,12 +1138,12 @@ fn commit(
                     false,
                 )?;
                 ensure!(
-                    source == entry.source_version.unwrap_or(0) && migrated,
+                    loaded.source_version == entry.source_version.unwrap_or(0) && loaded.migrated,
                     "Profile original contradicts import journal"
                 );
                 if entry.target_version < 3 {
                     // Finish the recorded historical candidate before preparing the next upgrade.
-                    let (candidate_source, _) = validate_profile_with_references(
+                    let candidate = validate_profile_with_references(
                         &path,
                         &plan.candidate,
                         &config,
@@ -1147,7 +1151,7 @@ fn commit(
                         false,
                     )?;
                     ensure!(
-                        candidate_source == entry.target_version,
+                        candidate.source_version == entry.target_version,
                         "invalid protected V1 Profile candidate"
                     );
                 } else {
