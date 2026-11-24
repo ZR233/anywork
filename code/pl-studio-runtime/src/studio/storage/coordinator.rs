@@ -219,6 +219,11 @@ struct Inner {
     capacity: watch::Sender<u64>,
     state: watch::Sender<ThreadPersistenceSnapshot>,
     retry: Notify,
+    /// Explicit `state.prev.toml` fallback diagnostics, owned by this coordinator.
+    ///
+    /// A successful current save on the same instance clears the Thread's entry. Another
+    /// coordinator must not observe or clear it.
+    checkpoint_recovery: Mutex<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -258,6 +263,7 @@ impl Default for ThreadPersistenceCoordinator {
             capacity,
             state,
             retry: Notify::new(),
+            checkpoint_recovery: Mutex::new(BTreeMap::new()),
         }))
     }
 }
@@ -372,11 +378,17 @@ impl ThreadPersistenceCoordinator {
                 current: None,
             });
         let weak = Arc::downgrade(&self.0);
-        let writer = super::current_writer::CurrentWriter::new(
+        let recovery = Arc::downgrade(&self.0);
+        let writer = super::current_writer::CurrentWriter::with_saved_hook(
             super::current_file::CurrentFile::new(directory, thread_id.to_owned()),
             move || {
                 if let Some(inner) = weak.upgrade() {
                     ThreadPersistenceCoordinator(inner).refresh();
+                }
+            },
+            move |thread_id| {
+                if let Some(inner) = recovery.upgrade() {
+                    ThreadPersistenceCoordinator(inner).clear_checkpoint_recovery(thread_id);
                 }
             },
         );
@@ -758,6 +770,9 @@ impl ThreadPersistenceCoordinator {
     pub(crate) fn queue_snapshot(&self) -> crate::PersistenceQueueSnapshot {
         // Re-sample the real Current owners so snapshot age advances even without a new save.
         // This read does not publish to the watch channel, which would wake its own consumers.
+        // Recovery is cloned before the registry locks. record/clear take that map and then
+        // refresh, which takes the registry; the opposite order would deadlock.
+        let recovery = self.checkpoint_recovery_map();
         let threads = self
             .0
             .threads
@@ -768,7 +783,7 @@ impl ThreadPersistenceCoordinator {
             .calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let snapshot = aggregate(&threads, &calls);
+        let snapshot = aggregate(&threads, &calls, &recovery);
         crate::PersistenceQueueSnapshot {
             statistics_gap: snapshot.statistics_gap,
             pending_operations: snapshot
@@ -1193,6 +1208,7 @@ impl ThreadPersistenceCoordinator {
     fn refresh(&self) {
         #[cfg(test)]
         self.0.aggregate_count.fetch_add(1, Ordering::Relaxed);
+        let recovery = self.checkpoint_recovery_map();
         // Capture inside watch's publication lock so an older aggregate cannot
         // overtake a newer one. All callers release registry/calls locks first.
         self.0.state.send_modify(|snapshot| {
@@ -1206,8 +1222,39 @@ impl ThreadPersistenceCoordinator {
                 .calls
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            *snapshot = aggregate(&threads, &calls);
+            *snapshot = aggregate(&threads, &calls, &recovery);
         });
+    }
+
+    /// Records one explicit checkpoint fallback for this coordinator's Threads.
+    pub(crate) fn record_checkpoint_recovery(&self, thread_id: &str, diagnostic: String) {
+        self.0
+            .checkpoint_recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(thread_id.to_owned(), diagnostic);
+        self.refresh();
+    }
+
+    /// Clears the fallback diagnostic after the same coordinator saves current successfully.
+    pub(crate) fn clear_checkpoint_recovery(&self, thread_id: &str) {
+        let removed = self
+            .0
+            .checkpoint_recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(thread_id);
+        if removed.is_some() {
+            self.refresh();
+        }
+    }
+
+    fn checkpoint_recovery_map(&self) -> BTreeMap<String, String> {
+        self.0
+            .checkpoint_recovery
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -1240,10 +1287,10 @@ fn record_released_commits(incarnation: &mut IncarnationStatus, thread_id: &str)
 fn aggregate(
     threads: &BTreeMap<String, ThreadStatus>,
     calls: &CallsQueueMetrics,
+    recovery: &BTreeMap<String, String>,
 ) -> ThreadPersistenceSnapshot {
-    // `state.prev.toml` 回退由 checkpoint 层登记，随后成功保存会清除；它作为该 Thread 的
-    // 显式恢复诊断暴露，不升级为进程级阻塞错误。
-    let recovery = crate::studio::storage::state::checkpoint_recovery_snapshot();
+    // `state.prev.toml` fallback is recorded on this coordinator and cleared by its own save.
+    // It is that Thread's diagnostic, never a process-wide writer failure.
     let mut snapshot = ThreadPersistenceSnapshot {
         calls_admitted_ticket: calls.admitted_ticket,
         calls_processed_ticket: calls.processed_ticket,
@@ -1423,6 +1470,41 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn checkpoint_recovery_is_isolated_to_its_coordinator() {
+        let owner = ThreadPersistenceCoordinator::default();
+        let other = ThreadPersistenceCoordinator::default();
+        owner.record_checkpoint_recovery("thread-a", "recovered from prev".into());
+
+        let snapshot = owner.snapshot();
+        let row = snapshot
+            .threads
+            .iter()
+            .find(|thread| thread.thread_id == "thread-a")
+            .expect("recovery thread");
+        assert_eq!(row.last_error.as_deref(), Some("recovered from prev"));
+        assert!(
+            snapshot.error.is_none(),
+            "fallback must not block process drain"
+        );
+        assert!(
+            other
+                .snapshot()
+                .threads
+                .iter()
+                .all(|thread| thread.thread_id != "thread-a")
+        );
+
+        owner.clear_checkpoint_recovery("thread-a");
+        assert!(
+            owner
+                .snapshot()
+                .threads
+                .iter()
+                .all(|thread| thread.thread_id != "thread-a")
+        );
     }
 
     #[tokio::test]

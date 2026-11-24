@@ -2,7 +2,10 @@
 
 use super::sqlite_util::is_retryable_write;
 #[cfg(test)]
-use crate::{ExecutionItem, ExecutionKind, ExecutionShape, LegacyTurn};
+use crate::{
+    ExecutionItem, ExecutionKind, ExecutionShape,
+    studio::storage::history::schema::legacy_execution_item::LegacyTurn,
+};
 use std::{
     path::{Path, PathBuf},
     time::Duration,

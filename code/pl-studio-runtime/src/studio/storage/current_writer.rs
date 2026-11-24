@@ -197,6 +197,7 @@ struct Shared {
     changed: watch::Sender<CurrentSaveState>,
     close: Notify,
     on_change: Box<dyn Fn() + Send + Sync>,
+    on_saved: Box<dyn Fn(&str) + Send + Sync>,
     #[cfg(test)]
     observer_tasks: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -283,6 +284,14 @@ impl CurrentWriter {
         file: CurrentFile,
         on_change: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Self> {
+        Self::with_saved_hook(file, on_change, |_| {})
+    }
+
+    pub(super) fn with_saved_hook(
+        file: CurrentFile,
+        on_change: impl Fn() + Send + Sync + 'static,
+        on_saved: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Arc<Self> {
         let view = CurrentSaveState {
             runtime_epoch: None,
             lifecycle: CurrentLifecycle::Unbound,
@@ -310,6 +319,7 @@ impl CurrentWriter {
             changed,
             close: Notify::new(),
             on_change: Box::new(on_change),
+            on_saved: Box::new(on_saved),
             #[cfg(test)]
             observer_tasks: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
@@ -846,7 +856,7 @@ async fn publish(
         current_snapshot_age_ms = utc_millis().saturating_sub(captured_at).max(0),
         "current capture saved"
     );
-    super::state::clear_checkpoint_recovery(&thread_id);
+    (shared.on_saved)(&thread_id);
     shared.update(|state| {
         state.view.receipt = Some(receipt.clone());
         state.view.last_successful_capture_at = Some(captured_at);

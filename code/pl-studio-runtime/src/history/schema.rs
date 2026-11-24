@@ -22,14 +22,84 @@ fn known_legacy_versions() -> &'static std::collections::BTreeSet<String> {
     static VERSIONS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
         std::sync::OnceLock::new();
     VERSIONS.get_or_init(|| {
-        let mut versions: std::collections::BTreeSet<String> =
-            crate::studio::storage::history::frozen_v24_migrations("migration-ledger")
-                .into_iter()
-                .map(|step| step.name().to_owned())
-                .collect();
+        let mut versions: std::collections::BTreeSet<String> = FROZEN_V24_MIGRATION_NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
         versions.insert(MIGRATION_V25.to_owned());
         versions
     })
+}
+
+/// Names already recorded in `seaql_migrations` for a frozen v1..v24 history.
+///
+/// Schema 26 upgrade never executes these steps. SeaORM only needs the applied names in its
+/// migrator list so it can skip them; constructing the 34 migration structs just to read those
+/// names is startup work with no production effect.
+const FROZEN_V24_MIGRATION_NAMES: &[&str] = &[
+    "m20261026_000001_history_schema",
+    "m20261026_000002_history_input_presentation",
+    "m20261026_000003_history_input_bindings",
+    "m20261026_000004_history_context_sources",
+    "m20261026_000005_history_tool_answers",
+    "m20261026_000006_history_checkpoint_v5",
+    "m20261027_000001_history_retire_ordinals",
+    "m20261028_000001_history_metering_facts",
+    "m20261027_000002_history_producer_payloads",
+    "m20261027_000003_history_review_receipt",
+    "m20261027_000004_history_atomic_timeline",
+    "m20261028_000002_history_combined_content",
+    "m20261029_000001_history_demand_conversation",
+    "m20261101_000010_history_model_route_head",
+    "m20261102_000001_history_atom_metadata",
+    "m20261107_000001_history_member_read_metadata",
+    "m20261104_000001_history_background_results",
+    "m20261103_000001_history_timeline_items",
+    "m20261108_000001_history_timeline_thinking_summary",
+    "m20261108_000001_history_source_classification",
+    "m20261109_000001_history_timeline_background_tail",
+    "m20261109_000001_history_completion_boundary",
+    "m20261110_000001_history_immutable_completion_runs",
+    "m20261109_000001_display_snapshots",
+    "m20261111_000001_display_observations",
+    "m20261112_000001_history_tool_work",
+    "m20261112_000001_visible_tail_workgroups",
+    "m20261113_000001_work_snapshots",
+    "m20261113_000002_display_block_order",
+    "m20261114_000001_execution_facts",
+    "m20261027_000004_history_project_kind",
+    "m20261026_000007_history_model_access",
+    "m20261026_000007a_history_workspace_receipt",
+    "m20261026_000007b_history_bot_root_relocation",
+    "m20261026_000008_history_execution_identity",
+];
+
+fn applied_legacy_placeholders(applied: &[String]) -> Vec<Box<dyn MigrationTrait>> {
+    FROZEN_V24_MIGRATION_NAMES
+        .iter()
+        .filter(|name| applied.iter().any(|version| version == *name))
+        .map(|name| Box::new(AlreadyAppliedLegacy { name }) as Box<dyn MigrationTrait>)
+        .collect()
+}
+
+struct AlreadyAppliedLegacy {
+    name: &'static str,
+}
+
+impl MigrationName for AlreadyAppliedLegacy {
+    fn name(&self) -> &str {
+        self.name
+    }
+}
+
+#[sea_orm_migration::async_trait::async_trait]
+impl MigrationTrait for AlreadyAppliedLegacy {
+    async fn up(&self, _manager: &SchemaManager) -> std::result::Result<(), DbErr> {
+        Err(DbErr::Migration(format!(
+            "expected {} to already be applied before the Schema 26 upgrade",
+            self.name
+        )))
+    }
 }
 
 async fn legacy_versions(db: &DatabaseConnection) -> Result<Vec<String>> {
@@ -225,14 +295,7 @@ impl MigratorTraitSelf for Migrator {
                 source_watermark,
                 stage_report,
             } => {
-                let mut migrations: Vec<Box<dyn MigrationTrait>> = if legacy_versions.is_empty() {
-                    Vec::new()
-                } else {
-                    crate::studio::storage::history::frozen_v24_migrations(thread_id)
-                        .into_iter()
-                        .filter(|step| legacy_versions.iter().any(|v| v == step.name()))
-                        .collect()
-                };
+                let mut migrations = applied_legacy_placeholders(legacy_versions);
                 migrations.push(Box::new(MigrationV25Import {
                     thread_id: thread_id.clone(),
                     database_id: database_id.clone(),
@@ -251,14 +314,7 @@ impl MigratorTraitSelf for Migrator {
                 legacy_versions,
                 stage_v25_report,
             } => {
-                let mut migrations: Vec<Box<dyn MigrationTrait>> = if legacy_versions.is_empty() {
-                    Vec::new()
-                } else {
-                    crate::studio::storage::history::frozen_v24_migrations(thread_id)
-                        .into_iter()
-                        .filter(|step| legacy_versions.iter().any(|v| v == step.name()))
-                        .collect()
-                };
+                let mut migrations = applied_legacy_placeholders(legacy_versions);
                 // Dummy MigrationV25 placeholder if already in seaql_migrations (SeaORM skips applied names).
                 migrations.push(Box::new(AlreadyAppliedV25Placeholder));
                 migrations.push(Box::new(MigrationV26Upgrade {
@@ -543,4 +599,16 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         .map_err(|_| HistoryError::Integrity("negative history sequence".into()))?;
     tx.commit().await?;
     Ok((database_id, head))
+}
+
+#[cfg(test)]
+mod frozen_name_tests {
+    use super::FROZEN_V24_MIGRATION_NAMES;
+
+    #[test]
+    fn placeholder_names_match_the_frozen_v24_migrator() {
+        let migrations = crate::studio::storage::history::frozen_v24_migrations("ledger");
+        let actual: Vec<&str> = migrations.iter().map(|step| step.name()).collect();
+        assert_eq!(actual, FROZEN_V24_MIGRATION_NAMES);
+    }
 }
