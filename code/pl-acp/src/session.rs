@@ -4847,9 +4847,10 @@ mod tests {
             harness
                 .control
                 .send(PeerCommand::PermissionToolCall(
-                    Box::new(
-                        ToolCallUpdate::new(id, ToolCallUpdateFields::new()).name("host-tool"),
-                    ),
+                    Box::new(ToolCallUpdate::new(
+                        id,
+                        ToolCallUpdateFields::new().name("host-tool"),
+                    )),
                     options,
                 ))
                 .await
