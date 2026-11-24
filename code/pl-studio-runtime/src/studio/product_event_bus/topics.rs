@@ -31,6 +31,7 @@ pub(in crate::studio::product_event_bus) struct TopicLease<K> {
 }
 
 impl<K> TopicLease<K> {
+    #[cfg(test)]
     pub(in crate::studio::product_event_bus) fn generation(&self) -> u64 {
         self.generation
     }
@@ -149,7 +150,11 @@ where
 
 impl<K: Ord> TopicMap<watch::Sender<()>, K> {
     /// 没有接收者时回收空通道；否则只发布最新唤醒，不积压业务值。
-    pub(in crate::studio::product_event_bus) fn wake(&mut self, key: &K) {
+    pub(in crate::studio::product_event_bus) fn wake<Q>(&mut self, key: &Q)
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Ord + ?Sized,
+    {
         let idle = self
             .entries
             .get(key)

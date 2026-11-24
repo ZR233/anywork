@@ -54,7 +54,7 @@ impl PullSignal for AccountSignal {
     fn changed(
         &mut self,
     ) -> impl std::future::Future<Output = Result<(), watch::error::RecvError>> + Send {
-        async move { AccountSignal::changed(self).await }
+        AccountSignal::changed(self)
     }
 
     fn mark_current(&mut self) {

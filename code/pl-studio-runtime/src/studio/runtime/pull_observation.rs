@@ -30,7 +30,7 @@ impl PullSignal for ProductTopicSignal {
 
 impl PullSignal for ThreadMetadataSignal {
     fn changed(&mut self) -> impl Future<Output = Result<(), watch::error::RecvError>> + Send {
-        async move { self.receiver().changed().await }
+        self.receiver().changed()
     }
 
     fn mark_current(&mut self) {
