@@ -116,6 +116,10 @@ fn preflight_error(error: FeishuError) -> ChannelDeliveryResult {
 }
 
 impl ChannelOutputPort for FeishuOutputPort {
+    fn deferred_file_limit(&self) -> Option<u64> {
+        Some(super::protocol::files::FILE_UPLOAD_MAX_BYTES)
+    }
+
     async fn send_caption(
         &self,
         target: &ChannelTarget,

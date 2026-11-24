@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/local_file_dialogs.dart';
 import '../state/timeline_file_presentation.dart';
 import '../state/timeline_display_unit.dart';
@@ -356,11 +357,19 @@ class _TimelineAttachmentsConnectorState
       );
     }
     return TimelineAttachmentsView(
+      key: ValueKey(_generation),
       attachments: _attachments,
       files: _files?.files,
       caption: _files?.caption,
+      itemId: widget.item.id,
+      isActive: widget.isActive,
       busyIds: _busyIds,
       errors: _operationErrors,
+      networkImageBuilder: (file) => TimelineRemoteImageConnector(
+        url: file.networkImageUrl!,
+        filename: file.filename,
+        isActive: widget.isActive,
+      ),
       onOpen: FileReadingScope.maybeOf(context) == null
           ? null
           : (file) {
@@ -437,59 +446,104 @@ class _TimelineAttachmentsConnectorState
   }
 }
 
-class TimelineRemoteImageConnector extends StatefulWidget {
-  const TimelineRemoteImageConnector({super.key, required this.url});
+class TimelineRemoteImageConnector extends StatelessWidget {
+  const TimelineRemoteImageConnector({
+    super.key,
+    required this.url,
+    this.filename,
+    this.isActive,
+  });
   final String url;
-  @override
-  State<TimelineRemoteImageConnector> createState() =>
-      _TimelineRemoteImageConnectorState();
-}
-
-class _TimelineRemoteImageConnectorState
-    extends State<TimelineRemoteImageConnector> {
-  bool _load = false;
-  @override
-  void didUpdateWidget(covariant TimelineRemoteImageConnector oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.url != oldWidget.url) _load = false;
-  }
+  final String? filename;
+  final bool Function()? isActive;
 
   @override
   Widget build(BuildContext context) {
-    final uri = Uri.tryParse(widget.url);
+    final uri = Uri.tryParse(url);
     final allowed =
-        widget.url.length <= 8192 &&
-        !widget.url.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f) &&
+        url.length <= 8192 &&
+        !url.codeUnits.any((unit) => unit < 0x20 || unit == 0x7f) &&
         uri != null &&
         uri.scheme == 'https' &&
         uri.host.isNotEmpty &&
         uri.userInfo.isEmpty;
+    final l10n = context.l10n;
+    final name = filename;
     if (!allowed) {
-      return const MetaData(
-        metaData: ContentLayoutWitness.nonContent,
-        child: SelectionContainer.disabled(child: Text('外部图片不可加载')),
+      return _imageStatus(
+        context,
+        l10n.timelineRemoteImageRejected,
+        icon: Icons.broken_image_outlined,
       );
     }
-    if (!_load) {
-      return MetaData(
-        metaData: ContentLayoutWitness.nonContent,
-        child: SelectionContainer.disabled(
-          child: TextButton.icon(
-            onPressed: () => setState(() => _load = true),
-            icon: const Icon(Icons.image_outlined),
-            label: Text('加载外部图片 · ${uri.host}'),
-          ),
-        ),
-      );
-    }
-    return Image.network(
-      widget.url,
-      height: 240,
-      fit: BoxFit.contain,
-      errorBuilder: (_, _, _) => const MetaData(
-        metaData: ContentLayoutWitness.nonContent,
-        child: Text('外部图片加载失败'),
+    final provider = NetworkImage(url);
+    Widget failure(BuildContext context, Object error, StackTrace? stack) =>
+        _imageStatus(
+          context,
+          l10n.timelineImageLoadFailed,
+          icon: Icons.broken_image_outlined,
+        );
+
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxHeight: name == null ? 240 : 120),
+      child: Image(
+        image: provider,
+        fit: BoxFit.contain,
+        semanticLabel: name,
+        frameBuilder: (context, child, frame, _) {
+          if (frame == null) {
+            return _imageStatus(context, l10n.timelineRemoteImageLoading);
+          }
+          if (name == null) return child;
+          return InkWell(
+            onTap: (isActive?.call() ?? true)
+                ? () {
+                    if (!(isActive?.call() ?? true)) return;
+                    unawaited(
+                      showTimelineImagePreview(
+                        context: context,
+                        filename: name,
+                        image: Image(
+                          image: provider,
+                          fit: BoxFit.contain,
+                          errorBuilder: failure,
+                        ),
+                      ),
+                    );
+                  }
+                : null,
+            child: child,
+          );
+        },
+        errorBuilder: failure,
       ),
     );
   }
+
+  Widget _imageStatus(BuildContext context, String label, {IconData? icon}) =>
+      MetaData(
+        metaData: ContentLayoutWitness.nonContent,
+        child: SelectionContainer.disabled(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (icon == null)
+                  const SizedBox.square(
+                    dimension: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                else
+                  Icon(icon, color: Theme.of(context).colorScheme.error),
+                const SizedBox(height: 4),
+                Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
 }

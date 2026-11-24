@@ -28,7 +28,12 @@ struct AuthorizedFiles<B> {
 
 impl<B: WorkspaceFileBackend + 'static> domain::FileSource for AuthorizedFiles<B> {
     type Reference = ResourceReference;
+    type Deferred = super::DeferredWorkspaceFile;
     type Error = ToolError;
+
+    async fn defer_file(&self, path: &str) -> Result<Self::Deferred, ToolError> {
+        self.backend.defer_file(path).await.map_err(ToolError::new)
+    }
 
     async fn stat(&self, path: &str) -> Result<domain::FileStat, ToolError> {
         let stat = self
@@ -88,6 +93,9 @@ impl<B: WorkspaceFileBackend + 'static> domain::FileSource for AuthorizedFiles<B
                 },
             }),
             FileDisplayResult::Failed { message, .. } => Err(failure(&message)),
+            FileDisplayResult::Deferred { .. } | FileDisplayResult::NetworkImage { .. } => {
+                Err(failure("display item is not an archived resource"))
+            }
         }
     }
 }
@@ -156,16 +164,30 @@ impl<B: WorkspaceFileBackend + 'static, H: ToolMediaHost> TypedTool for ThreadSh
                 domain::FileResult::Failed { filename, message } => {
                     FileDisplayResult::Failed { filename, message }
                 }
+                domain::FileResult::Deferred { filename, target } => {
+                    FileDisplayResult::Deferred { filename, target }
+                }
+                domain::FileResult::NetworkImage { filename, url } => {
+                    FileDisplayResult::NetworkImage { filename, url }
+                }
             })
             .collect();
         let ready = files
             .iter()
             .filter(|file| matches!(file, FileDisplayResult::Ready { .. }))
             .count();
+        let deferred = files
+            .iter()
+            .filter(|file| matches!(file, FileDisplayResult::Deferred { .. }))
+            .count();
+        let previews = files
+            .iter()
+            .filter(|file| matches!(file, FileDisplayResult::NetworkImage { .. }))
+            .count();
         let mut model_context = vec![ContextContent::Text {
             text: format!(
-                "File display archived: {ready} ready, {} failed.",
-                files.len() - ready
+                "File display: {ready} archived, {previews} network previews, {deferred} deferred, {} failed.",
+                files.len() - ready - deferred - previews
             )
             .into(),
         }];

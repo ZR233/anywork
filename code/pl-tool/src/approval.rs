@@ -166,6 +166,7 @@ fn requested_paths_for_tool(name: &str, arguments: &serde_json::Value) -> Vec<St
                         .filter_map(|source| match source {
                             crate::file_display::ShowFileSource::Workspace { path } => Some(path),
                             crate::file_display::ShowFileSource::Attachment { .. } => None,
+                            crate::file_display::ShowFileSource::NetworkImage { .. } => None,
                         })
                         .collect()
                 })

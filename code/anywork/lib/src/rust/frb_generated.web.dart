@@ -23,6 +23,7 @@ import 'api/studio/handlers/attachment.dart';
 import 'api/studio/handlers/bots.dart';
 import 'api/studio/handlers/delegation.dart';
 import 'api/studio/handlers/external_state.dart';
+import 'api/studio/handlers/file_download.dart';
 import 'api/studio/handlers/lifecycle.dart';
 import 'api/studio/handlers/mode_editor.dart';
 import 'api/studio/handlers/persistence.dart';
@@ -111,6 +112,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription;
 
   CrossPlatformFinalizerArg
+  get rust_arc_decrement_strong_count_BridgeFileDownloadPtr => wire
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload;
+
+  CrossPlatformFinalizerArg
   get rust_arc_decrement_strong_count_BridgeHistoryReaderPtr => wire
       .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeHistoryReader;
 
@@ -170,6 +175,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeEventSubscription
   dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeFileDownload
+  dco_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     dynamic raw,
   );
 
@@ -242,6 +253,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeEventSubscription
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeFileDownload
+  dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     dynamic raw,
   );
 
@@ -324,6 +341,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeEventSubscription
   dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeFileDownload
+  dco_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     dynamic raw,
   );
 
@@ -2799,6 +2822,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeFaultedAgent dco_decode_bridge_faulted_agent(dynamic raw);
 
   @protected
+  BridgeFileDownloadPhase dco_decode_bridge_file_download_phase(dynamic raw);
+
+  @protected
+  BridgeFileDownloadStatus dco_decode_bridge_file_download_status(dynamic raw);
+
+  @protected
   BridgeFirstOutputSource dco_decode_bridge_first_output_source(dynamic raw);
 
   @protected
@@ -4853,6 +4882,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
   @protected
+  BridgeError? dco_decode_opt_box_autoadd_bridge_error(dynamic raw);
+
+  @protected
   BridgeHistoryAccounting? dco_decode_opt_box_autoadd_bridge_history_accounting(
     dynamic raw,
   );
@@ -5268,6 +5300,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeFileDownload
+  sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryReader
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeHistoryReader(
     SseDeserializer deserializer,
@@ -5336,6 +5374,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeEventSubscription
   sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeFileDownload
+  sse_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     SseDeserializer deserializer,
   );
 
@@ -5424,6 +5468,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeEventSubscription
   sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeFileDownload
+  sse_decode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     SseDeserializer deserializer,
   );
 
@@ -8599,6 +8649,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeFileDownloadPhase sse_decode_bridge_file_download_phase(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeFileDownloadStatus sse_decode_bridge_file_download_status(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeFirstOutputSource sse_decode_bridge_first_output_source(
     SseDeserializer deserializer,
   );
@@ -11107,6 +11167,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeError? sse_decode_opt_box_autoadd_bridge_error(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeHistoryAccounting? sse_decode_opt_box_autoadd_bridge_history_accounting(
     SseDeserializer deserializer,
   );
@@ -11640,6 +11705,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void
+  sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    BridgeFileDownload self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeHistoryReader(
     BridgeHistoryReader self,
     SseSerializer serializer,
@@ -11719,6 +11791,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
     BridgeEventSubscription self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    BridgeFileDownload self,
     SseSerializer serializer,
   );
 
@@ -11821,6 +11900,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
     BridgeEventSubscription self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void
+  sse_encode_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    BridgeFileDownload self,
     SseSerializer serializer,
   );
 
@@ -15521,6 +15607,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_file_download_phase(
+    BridgeFileDownloadPhase self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_file_download_status(
+    BridgeFileDownloadStatus self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_first_output_source(
     BridgeFirstOutputSource self,
     SseSerializer serializer,
@@ -18515,6 +18613,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_bridge_error(
+    BridgeError? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_bridge_history_accounting(
     BridgeHistoryAccounting? self,
     SseSerializer serializer,
@@ -19158,6 +19262,22 @@ class RustLibWire implements BaseWire {
       );
 
   void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+        ptr,
+      );
+
+  void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    int ptr,
+  ) => wasmModule
+      .rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+        ptr,
+      );
+
+  void
   rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeHistoryReader(
     int ptr,
   ) => wasmModule
@@ -19317,6 +19437,16 @@ extension type RustLibWasmModule._(JSObject _) implements JSObject {
 
   external void
   rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeEventSubscription(
+    int ptr,
+  );
+
+  external void
+  rust_arc_increment_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
+    int ptr,
+  );
+
+  external void
+  rust_arc_decrement_strong_count_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeFileDownload(
     int ptr,
   );
 

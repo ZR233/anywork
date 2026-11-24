@@ -21,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+use tokio::io::AsyncReadExt;
 
 fn required(name: &str) -> Result<String> {
     std::env::var(name).with_context(|| format!("{name} must be set for external SSH acceptance"))
@@ -264,7 +265,41 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
             .filter(|record| matches!(record.source, ContextSource::ToolResult { .. }))
             .flat_map(|record| &record.content)
             .all(|content| !matches!(content, ContextContent::Opaque { .. })));
-        ensure!(media.0.lock().unwrap().len() == 4, "missing source retained bytes or duplicates were dropped");
+        ensure!(media.0.lock().unwrap().len() == 3, "deferred/missing source retained bytes or preview duplicates were dropped");
+        ensure!(media.0.lock().unwrap().iter().all(|bytes| bytes != &binary),
+            "opaque source was eagerly retained during tool execution");
+        let FileDisplayResult::Deferred { filename, target } = &receipt.files[3]
+            else { anyhow::bail!("opaque source must be deferred: {:?}", receipt.files[3]); };
+        ensure!(filename == "opaque.bin" && target.size == binary.len() as u64);
+        ensure!(delivery.delivered_context.iter().filter(|part| matches!(part, ContextContent::Resource { .. })).count() == 3,
+            "deferred source became a model resource");
+        // Cold decoding and reconstructing the view of the original physical executor
+        // preserve the saved download fact without a temporary in-memory capability map.
+        let saved = serde_json::to_string(target)?;
+        let target = serde_json::from_str(&saved)?;
+        let download_backend = workspace.files();
+        let mut reader = download_backend.open_deferred_file(&target).await?;
+        let mut downloaded = Vec::new();
+        let mut chunk = [0; 3];
+        loop {
+            let count = reader.read(&mut chunk).await?;
+            if count == 0 { break; }
+            downloaded.extend_from_slice(&chunk[..count]);
+            ensure!(downloaded.len() as u64 <= target.size, "deferred stream exceeded saved size");
+        }
+        ensure!(downloaded == binary && downloaded.len() as u64 == target.size,
+            "deferred stream lost exact original bytes");
+        download_backend.validate_deferred_file(&target).await?;
+        std::fs::write(artifacts.join("3-opaque.bin"), &downloaded)?;
+        // A changed source must fail both re-open and the explicit EOF validation.
+        files.write_bytes_atomic("opaque.bin".into(), None, b"changed source with a different size").await?;
+        ensure!(download_backend.open_deferred_file(&target).await.is_err(), "changed source reopened");
+        ensure!(download_backend.validate_deferred_file(&target).await.is_err(), "changed source passed EOF verification");
+        files.remove_path("opaque.bin".into(), None, false).await?;
+        ensure!(download_backend.open_deferred_file(&target).await.is_err(), "deleted source reopened");
+        ensure!(download_backend.validate_deferred_file(&target).await.is_err(), "deleted source passed EOF verification");
+        println!("{}", serde_json::json!({"index":3,"filename":"opaque.bin","bytes":downloaded.len(),
+            "deferred":true,"notEagerlyRetained":true,"exactStreamVerified":true,"changedRejected":true,"deletedRejected":true}));
         std::fs::write(artifacts.join("receipt.json"), serde_json::to_vec_pretty(delivery.output.payload())?)?;
         // Remove/change actual remote sources before downloading through retained resource identities.
         files.write_text(WorkspaceFileWriteRequest {
@@ -272,7 +307,6 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
             content:"changed remote source, not the archived bytes".into(),
         }).await?;
         files.remove_path("valid.png".into(), None, false).await?;
-        files.remove_path("opaque.bin".into(), None, false).await?;
         let shadow = artifacts.join("local-shadow");
         std::fs::create_dir(&shadow)?;
         std::fs::write(shadow.join("report.md"), b"unrelated local namesake")?;
@@ -280,7 +314,6 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
         for (index, name, expected, modality) in [
             (0, "report.md", &md, pl_model::completion::AttachmentModality::File),
             (1, "valid.png", &png, pl_model::completion::AttachmentModality::Image),
-            (3, "opaque.bin", &binary, pl_model::completion::AttachmentModality::File),
             (4, "report.md", &md, pl_model::completion::AttachmentModality::File),
         ] {
             let FileDisplayResult::Ready { resource, filename, modality:actual, origin } = &receipt.files[index]

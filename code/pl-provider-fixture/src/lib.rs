@@ -2303,7 +2303,7 @@ pub fn gui_script() -> Vec<Step> {
             request: RequestMatch::ToolCompletion {
                 call_id: "file-display-call".into(),
                 tool_id: "show_files".into(),
-                marker: "File display archived: 3 ready, 0 failed.".into(),
+                marker: "File display: 3 archived, 0 network previews, 0 deferred, 0 failed.".into(),
                 step: 8,
             },
             reply: Reply::Sse(responses_text(

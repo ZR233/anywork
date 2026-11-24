@@ -14,6 +14,7 @@ import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
 
+import '../features/conversation/timeline/connectors/timeline_file_download.dart';
 import '../platform/clipboard_image_reader.dart';
 import '../platform/error_log.dart';
 import '../presentation/view_models/timeline_session_owner.dart';
@@ -36,6 +37,7 @@ class AppGraph {
     AccountUsagePort? accountUsage,
     AcpPort? acpPort,
     AcpBusinessPort? acpBusinessPort,
+    this.fileDownloads,
     StudioStartupHost? startupHost,
     ClipboardImageStager? clipboardImageStager,
   }) : startupHost = startupHost ?? ImmediateStudioStartupHost() {
@@ -106,6 +108,7 @@ class AppGraph {
   closeLifecycleRoot;
   late final ClientScope uiResources;
   final StudioStartupHost startupHost;
+  final TimelineFileDownloadStart Function(String threadId)? fileDownloads;
   ValueListenable<StudioStartupPhase> get startupProgress =>
       startupHost.progress;
   ValueListenable<StartupRecoveryReport?> get startupRecovery =>

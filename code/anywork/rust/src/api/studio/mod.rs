@@ -19,6 +19,9 @@ pub use self::handlers::acp_business::{
     configure_acp_session, interrupt_acp_session, list_acp_sessions, open_acp_session,
     prompt_acp_session, replace_acp_session, set_acp_session_mode,
 };
+pub use self::handlers::file_download::{
+    BridgeFileDownload, BridgeFileDownloadPhase, BridgeFileDownloadStatus, start_file_download,
+};
 pub use self::handlers::timeline::{
     BridgeCurrentBodyWatch, BridgeCurrentReader, BridgeCurrentWatch, BridgeHistoryReader,
     open_current_reader, open_history_reader,

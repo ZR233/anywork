@@ -2,6 +2,7 @@
 mod archive;
 mod thread;
 
+pub use crate::workspace_file::DeferredWorkspaceFile;
 pub use pl_core::context::ResourceReference;
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
 pub use pl_model::completion::AttachmentModality;
@@ -10,7 +11,7 @@ pub use thread::ThreadShowFilesTool;
 
 pub const TOOL_SHOW_FILES: &str = "show_files";
 pub const FILE_DISPLAY_FORMAT: &str = "pl.tool.files";
-pub const FILE_DISPLAY_VERSION: u32 = 1;
+pub const FILE_DISPLAY_VERSION: u32 = 2;
 pub const FILE_DISPLAY_PRESENTATION: &str = "builtin.show_files@1";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -33,6 +34,14 @@ pub enum FileDisplayResult {
         filename: String,
         message: String,
     },
+    Deferred {
+        filename: String,
+        target: DeferredWorkspaceFile,
+    },
+    NetworkImage {
+        filename: String,
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -53,7 +62,7 @@ pub fn saved_file_display_receipt(
     if payload.format() != FILE_DISPLAY_FORMAT {
         return Ok(None);
     }
-    if payload.version() != FILE_DISPLAY_VERSION {
+    if !matches!(payload.version(), 1 | FILE_DISPLAY_VERSION) {
         return Err(failure(&format!(
             "unsupported {FILE_DISPLAY_FORMAT} receipt version {}",
             payload.version()
@@ -69,8 +78,21 @@ pub fn saved_file_display_receipt(
         return Err(failure("invalid file display receipt"));
     }
     for file in &receipt.files {
-        if let FileDisplayResult::Ready { resource, .. } = file {
-            resource.validate().map_err(ToolError::new)?;
+        match file {
+            FileDisplayResult::Ready { resource, .. } => {
+                resource.validate().map_err(ToolError::new)?
+            }
+            FileDisplayResult::Failed { .. } => {}
+            FileDisplayResult::Deferred { .. } | FileDisplayResult::NetworkImage { .. }
+                if payload.version() == 1 =>
+            {
+                return Err(failure("v1 file display cannot contain v2 items"));
+            }
+            FileDisplayResult::NetworkImage { url, .. } => {
+                pl_tool_media::show_files::validate_network_image_url(url)
+                    .map_err(ToolError::new)?;
+            }
+            FileDisplayResult::Deferred { .. } => {}
         }
     }
     Ok(Some(receipt))

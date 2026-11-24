@@ -56,6 +56,11 @@ pub enum ChannelDeliveryResult {
 /// A source-selected sender owns authentication, authorization and durable replay.
 /// Construction must not send anything. Each method revalidates its source lease.
 pub trait ChannelOutputPort: Send + Sync {
+    /// The source owner advertises a bounded materialization limit for deferred files.
+    fn deferred_file_limit(&self) -> Option<u64> {
+        None
+    }
+
     fn send_caption(
         &self,
         target: &ChannelTarget,
@@ -77,6 +82,8 @@ pub trait ChannelOutputPort: Send + Sync {
 type OutputFuture<'a> = Pin<Box<dyn Future<Output = ChannelDeliveryResult> + Send + 'a>>;
 
 trait ErasedOutputPort: Send + Sync {
+    fn deferred_file_limit(&self) -> Option<u64>;
+
     fn send_caption<'a>(
         &'a self,
         target: &'a ChannelTarget,
@@ -95,6 +102,10 @@ trait ErasedOutputPort: Send + Sync {
 }
 
 impl<T: ChannelOutputPort> ErasedOutputPort for T {
+    fn deferred_file_limit(&self) -> Option<u64> {
+        ChannelOutputPort::deferred_file_limit(self)
+    }
+
     fn send_caption<'a>(
         &'a self,
         target: &'a ChannelTarget,
@@ -137,6 +148,10 @@ impl ChannelOutputBinding {
 
     pub fn target(&self) -> &ChannelTarget {
         &self.target
+    }
+
+    pub fn deferred_file_limit(&self) -> Option<u64> {
+        self.port.deferred_file_limit()
     }
 
     pub async fn send_caption(

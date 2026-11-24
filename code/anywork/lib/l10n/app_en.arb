@@ -834,6 +834,13 @@
     }
   },
   "timelineRemoteImageOpen": "Click to load and preview",
+  "timelineRemoteImageLoading": "Loading image",
+  "timelineRemoteImageRejected": "This external image cannot be loaded.",
+  "timelineFileDownload": "Download",
+  "timelineFileDownloadPause": "Pause download",
+  "timelineFileDownloadResume": "Resume download",
+  "timelineFileDownloadStop": "Stop download",
+  "timelineFileDownloadComplete": "Download complete",
   "timelineJumpToLatest": "Jump to latest",
   "timelineNew": "New",
   "timelineLoadEarlier": "Load earlier messages",

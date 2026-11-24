@@ -3,8 +3,11 @@ use pl_agent_tool::typed::TypedTool;
 use pl_tool_media_support::{CancellationToken, Media, MediaHost, MediaKind};
 use std::{error::Error, fmt, future::Future, marker::PhantomData, sync::Arc};
 
+#[cfg(test)]
+mod tests;
+
 pub const NAME: &str = "show_files";
-pub const DESCRIPTION: &str = "Display an ordered selection of workspace files or this Thread's archived attachments to the user. Workspace files are archived exactly, with no size limit; partial failures are reported in order. This does not read file contents into model context or require image input support. Use view_image to inspect an image yourself. Optional caption is trimmed and limited to 240 characters.";
+pub const DESCRIPTION: &str = "Display an ordered selection of workspace files, this Thread's archived attachments, or HTTPS network images to the user. Local files and remote image/Markdown previews retain exact original bytes; other remote files are deferred until download. Partial failures are reported in order. This does not read file contents into model context or require image input support. Use view_image to inspect an image yourself. Optional caption is trimmed and limited to 240 characters.";
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -23,6 +26,7 @@ pub struct Input {
 pub enum Source {
     Workspace { path: String },
     Attachment { attachment_id: String },
+    NetworkImage { url: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -51,15 +55,17 @@ pub struct File<R> {
 
 #[derive(Debug, serde::Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
-pub enum FileResult<R> {
+pub enum FileResult<R, D> {
     Ready(File<R>),
+    Deferred { filename: String, target: D },
+    NetworkImage { filename: String, url: String },
     Failed { filename: String, message: String },
 }
 
 #[derive(Debug, serde::Serialize)]
-pub struct Output<R> {
+pub struct Output<R, D> {
     pub caption: Option<String>,
-    pub files: Vec<FileResult<R>>,
+    pub files: Vec<FileResult<R, D>>,
 }
 
 pub struct FileStat {
@@ -70,9 +76,15 @@ pub struct FileStat {
 /// Archived lookup proves membership and returns validated, already retained resources.
 pub trait FileSource: Send + Sync + 'static {
     type Reference: Send + Sync + 'static;
+    type Deferred: Send + Sync + serde::Serialize + 'static;
     type Error: Error + Send + Sync + 'static;
 
     fn stat(&self, path: &str) -> impl Future<Output = Result<FileStat, Self::Error>> + Send;
+    /// Freezes an authorized remote file using metadata only, without reading its body.
+    fn defer_file(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<Self::Deferred, Self::Error>> + Send;
     /// Only a trusted physical backend may return a verified local absolute locator.
     fn local_file_path(
         &self,
@@ -157,7 +169,7 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
         &self,
         path: &str,
         context: &Context<S>,
-    ) -> Result<File<S::Reference>, DisplayError> {
+    ) -> Result<FileResult<S::Reference, S::Deferred>, DisplayError> {
         let stat = context
             .source
             .stat(path)
@@ -177,6 +189,18 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
             Some(path) => Origin::Local { path },
             None => Origin::Remote,
         };
+        let name = filename(path);
+        if matches!(origin, Origin::Remote) && !can_preview(&name) {
+            let target = context
+                .source
+                .defer_file(path)
+                .await
+                .map_err(DisplayError::caused)?;
+            return Ok(FileResult::Deferred {
+                filename: name,
+                target,
+            });
+        }
         // Freeze a verified local target instead of resolving the caller's symlink again.
         let read_path = match &origin {
             Origin::Local { path } => path.as_str(),
@@ -187,7 +211,6 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
             .read_bytes(read_path)
             .await
             .map_err(DisplayError::caused)?;
-        let name = filename(path);
         let classification_name = name.clone();
         let (bytes, media_type, modality) = tokio::task::spawn_blocking(move || {
             let image_expected = matches!(
@@ -231,12 +254,12 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> ShowFiles<S, H> {
             .await
             .map_err(DisplayError::caused)?;
         // A display is not model input: deliberately discard the host's model projection.
-        Ok(File {
+        Ok(FileResult::Ready(File {
             resource: retained.reference,
             filename: name,
             modality,
             origin,
-        })
+        }))
     }
 }
 
@@ -245,7 +268,7 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> TypedTool for ShowFi
     const DESCRIPTION: &'static str = DESCRIPTION;
     type Args = Input;
     type Context = Context<S>;
-    type Output = Output<S::Reference>;
+    type Output = Output<S::Reference, S::Deferred>;
     type Error = DisplayError;
 
     async fn execute(
@@ -271,6 +294,7 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> TypedTool for ShowFi
         if input.files.iter().any(|source| match source {
             Source::Workspace { path } => path.trim().is_empty(),
             Source::Attachment { attachment_id } => attachment_id.trim().is_empty(),
+            Source::NetworkImage { .. } => false,
         }) {
             return Err(DisplayError::invalid("file selectors must not be empty"));
         }
@@ -289,11 +313,28 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> TypedTool for ShowFi
                         .source
                         .archived_file(&attachment_id)
                         .await
+                        .map(FileResult::Ready)
                         .map_err(DisplayError::caused),
+                ),
+                Source::NetworkImage { url } => (
+                    "network-image".into(),
+                    validate_network_image_url(&url).map(|()| {
+                        let parsed = url::Url::parse(&url).expect("validated URL");
+                        let name = parsed
+                            .path_segments()
+                            .and_then(|segments| segments.filter(|s| !s.is_empty()).next_back())
+                            .map(filename)
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "network-image".into());
+                        FileResult::NetworkImage {
+                            filename: name,
+                            url,
+                        }
+                    }),
                 ),
             };
             files.push(match result {
-                Ok(file) => FileResult::Ready(file),
+                Ok(file) => file,
                 Err(error) => FileResult::Failed {
                     filename: name,
                     message: error.to_string().chars().take(512).collect(),
@@ -302,6 +343,45 @@ impl<S: FileSource, H: MediaHost<Reference = S::Reference>> TypedTool for ShowFi
         }
         Ok(Output { caption, files })
     }
+}
+
+/// Validates the original URL before the URL parser can normalize away controls.
+pub fn validate_network_image_url(value: &str) -> Result<(), DisplayError> {
+    if value.len() > 8192 || value.chars().any(char::is_control) {
+        return Err(DisplayError::invalid(
+            "invalid network image URL length or control character",
+        ));
+    }
+    // The parser normalizes an empty userinfo away. Its own syntax callback also
+    // reports that case, so credentials cannot disappear before validation.
+    let credentials = std::cell::Cell::new(false);
+    let on_violation = |violation| {
+        if violation == url::SyntaxViolation::EmbeddedCredentials {
+            credentials.set(true);
+        }
+    };
+    let url = url::Url::options()
+        .syntax_violation_callback(Some(&on_violation))
+        .parse(value)
+        .map_err(|_| DisplayError::invalid("invalid network image URL"))?;
+    if url.scheme() != "https"
+        || url.host_str().is_none_or(str::is_empty)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || credentials.get()
+    {
+        return Err(DisplayError::invalid(
+            "network image URL requires HTTPS, a host and no credentials",
+        ));
+    }
+    Ok(())
+}
+
+fn can_preview(name: &str) -> bool {
+    matches!(
+        extension(name).as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "md" | "markdown"
+    )
 }
 
 pub fn filename(path: &str) -> String {
@@ -322,7 +402,7 @@ fn file_type(filename: &str) -> (String, Modality) {
     let (mime, modality) = match extension(filename).as_str() {
         "pdf" => ("application/pdf", Modality::File),
         "txt" | "log" => ("text/plain", Modality::File),
-        "md" => ("text/markdown", Modality::File),
+        "md" | "markdown" => ("text/markdown", Modality::File),
         "json" => ("application/json", Modality::File),
         "csv" => ("text/csv", Modality::File),
         "mp4" => ("video/mp4", Modality::Video),
