@@ -4,8 +4,6 @@
 //! 缓存，不扫描文件、不周期轮询（design/18 §18.4）。资源与运行期 Agent directory
 //! 是两个领域，互不替代。
 
-use std::sync::{Arc, Mutex};
-
 use tokio::sync::watch;
 
 use crate::studio::unix_seconds;
@@ -13,6 +11,7 @@ use crate::{
     StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
 };
 
+use super::fs_util::{RevisionedState, WatchedResource};
 use super::{AgentProfileCatalog, ConfigPaths, StudioConfig};
 
 /// 已发布的 Agent Profiles 资源事实。
@@ -26,11 +25,23 @@ pub struct AgentProfilesSnapshot {
     pub catalog: AgentProfileCatalog,
 }
 
+impl RevisionedState for AgentProfilesSnapshot {
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn revision_mut(&mut self) -> &mut u64 {
+        &mut self.revision
+    }
+}
+
 /// canonical Agent Profiles 资源：缓存事实 + 变更唤醒通道。
+///
+/// 订阅通道的初始值就是已发布快照的 `revision`，首帧之后只有在目录内容真实变化时
+/// 才推进 revision 并通知观察者。
 #[derive(Clone)]
 pub struct AgentProfilesResource {
-    state: Arc<Mutex<AgentProfilesSnapshot>>,
-    updates: Arc<watch::Sender<u64>>,
+    resource: WatchedResource<AgentProfilesSnapshot>,
 }
 
 impl AgentProfilesResource {
@@ -41,28 +52,23 @@ impl AgentProfilesResource {
         acp: &super::AcpDefinitionsSnapshot,
     ) -> Self {
         let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
-        let (updates, _) = watch::channel(0);
         Self {
-            state: Arc::new(Mutex::new(AgentProfilesSnapshot {
+            resource: WatchedResource::new(AgentProfilesSnapshot {
                 revision: 1,
                 updated_at: unix_seconds(),
                 catalog,
-            })),
-            updates: Arc::new(updates),
+            }),
         }
     }
 
     /// 读取已发布资源；纯内存克隆，不触发文件系统访问。
     pub fn read(&self) -> AgentProfilesSnapshot {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+        self.resource.read()
     }
 
     /// 订阅资源变更唤醒；通道值为最新 revision。
     pub fn subscribe(&self) -> watch::Receiver<u64> {
-        self.updates.subscribe()
+        self.resource.subscribe()
     }
 
     /// 采用一次新的目录扫描；目录未变化时不提升 revision、不通知观察者。
@@ -73,19 +79,14 @@ impl AgentProfilesResource {
         acp: &super::AcpDefinitionsSnapshot,
     ) {
         let catalog = AgentProfileCatalog::discover_for_settings(paths, config, acp);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.catalog == catalog {
-            return;
-        }
-        state.revision = state.revision.saturating_add(1);
-        state.updated_at = unix_seconds();
-        state.catalog = catalog;
-        let revision = state.revision;
-        drop(state);
-        self.updates.send_replace(revision);
+        self.resource.publish(|state| {
+            if state.catalog == catalog {
+                return false;
+            }
+            state.updated_at = unix_seconds();
+            state.catalog = catalog;
+            true
+        });
     }
 }
 

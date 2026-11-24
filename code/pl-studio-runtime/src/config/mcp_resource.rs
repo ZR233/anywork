@@ -17,10 +17,13 @@ use pl_tool::mcp::config::{
     McpServerStatusKind, McpServerTransport, validate_mcp_identifier,
 };
 use pl_tool::workspace::write_file_atomically;
-use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
 use super::ConfigPaths;
+use super::fs_util::{
+    DirectoryError, DirectoryPresence, DocumentReadError, document_revision, ensure_regular_dir,
+    read_regular_file_bounded,
+};
 use super::mcp::build_builtin_effective_config;
 use super::mcp_document::{McpFileSpecV1, McpFileV1};
 
@@ -310,6 +313,33 @@ impl McpCatalogResource {
         }
     }
 
+    /// Adopts `scope` and, when it is `Host`, every tracked scope that inherits
+    /// from it (their effective servers can change without a local edit).
+    /// Returns the scope snapshot and every scope whose published scan changed,
+    /// starting with `scope` itself.
+    pub fn adopt_scan_with_inheritance(
+        &self,
+        paths: &ConfigPaths,
+        models: &pl_model::config::AgentModelConfig,
+        scope: &McpScope,
+    ) -> Result<(McpCatalogSnapshot, Vec<McpScope>)> {
+        let (snapshot, _) = self.adopt_scan(paths, models, scope)?;
+        let mut changed_scopes = vec![scope.clone()];
+        if matches!(scope, McpScope::Host) {
+            let inherited = self
+                .tracked_scopes()
+                .into_iter()
+                .filter(|tracked| !matches!(tracked, McpScope::Host))
+                .collect();
+            for changed in self.refresh_scopes(paths, models, inherited) {
+                if !changed_scopes.contains(&changed) {
+                    changed_scopes.push(changed);
+                }
+            }
+        }
+        Ok((snapshot, changed_scopes))
+    }
+
     /// Re-scans `Host` and all currently tracked scopes (plus any provided scopes), returning all scopes whose scan changed.
     pub fn refresh_all_scopes(
         &self,
@@ -317,17 +347,31 @@ impl McpCatalogResource {
         models: &pl_model::config::AgentModelConfig,
         extra_scopes: &[McpScope],
     ) -> Vec<McpScope> {
-        let mut scopes: BTreeSet<McpScope> = {
-            let guard = self
-                .scopes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard.keys().cloned().collect()
-        };
+        let mut scopes = self.tracked_scopes();
         scopes.insert(McpScope::Host);
         for extra in extra_scopes {
             scopes.insert(extra.clone());
         }
+        self.refresh_scopes(paths, models, scopes)
+    }
+
+    fn tracked_scopes(&self) -> BTreeSet<McpScope> {
+        self.scopes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Re-scans each scope in order. A scope whose directory cannot be read keeps
+    /// its last published scan and is not reported as changed.
+    fn refresh_scopes(
+        &self,
+        paths: &ConfigPaths,
+        models: &pl_model::config::AgentModelConfig,
+        scopes: BTreeSet<McpScope>,
+    ) -> Vec<McpScope> {
         let mut changed_scopes = Vec::new();
         for scope in scopes {
             if let Ok((_snapshot, changed)) = self.adopt_scan(paths, models, &scope)
@@ -428,48 +472,14 @@ impl McpCatalogResource {
         document: &McpDocumentRef,
     ) -> std::result::Result<McpDocumentContent, McpDocumentError> {
         let path = resolve_document_path(paths, document)?;
-        let meta = match fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(McpDocumentError::NotFound(format!(
-                    "MCP document '{}' does not exist",
-                    document.relative_path
-                )));
-            }
-            Err(error) => return Err(McpDocumentError::Io(error.to_string())),
-        };
-        if meta.file_type().is_symlink() {
-            return Err(McpDocumentError::ValidationFailed(format!(
-                "MCP document '{}' must not be a symlink",
-                document.relative_path
-            )));
-        }
-        if !meta.is_file() {
-            return Err(McpDocumentError::ValidationFailed(format!(
-                "MCP document '{}' is not a regular file",
-                document.relative_path
-            )));
-        }
-        if meta.len() > MAX_MCP_DOCUMENT_BYTES as u64 {
-            return Err(McpDocumentError::ValidationFailed(format!(
-                "MCP document '{}' exceeds 1 MiB limit",
-                document.relative_path
-            )));
-        }
-        let bytes = fs::read(&path).map_err(|error| McpDocumentError::Io(error.to_string()))?;
-        if bytes.len() > MAX_MCP_DOCUMENT_BYTES {
-            return Err(McpDocumentError::ValidationFailed(format!(
-                "MCP document '{}' exceeds 1 MiB limit",
-                document.relative_path
-            )));
-        }
-        let raw_toml = String::from_utf8(bytes.clone()).map_err(|error| {
+        let bytes = read_document_bytes(&path, document)?;
+        let revision = document_revision(&document.relative_path, &bytes);
+        let raw_toml = String::from_utf8(bytes).map_err(|error| {
             McpDocumentError::ValidationFailed(format!(
                 "MCP document '{}' is not valid UTF-8: {error}",
                 document.relative_path
             ))
         })?;
-        let revision = document_revision(&document.relative_path, &bytes);
         let (id, diagnostic) = match McpFileV1::parse_and_validate(&raw_toml, &document.scope) {
             Ok(parsed) => {
                 let filename = path
@@ -562,15 +572,8 @@ impl McpCatalogResource {
         write_file_atomically(&target_path, canonical_bytes)
             .map_err(|error| McpDocumentError::Io(error.to_string()))?;
         let doc_rev = document_revision(&doc_ref.relative_path, canonical_bytes);
-        let (snapshot, _) = self.adopt_scan(paths, models, &request.scope)?;
-        let mut changed_scopes = vec![request.scope.clone()];
-        if matches!(request.scope, McpScope::Host) {
-            for changed in self.refresh_all_scopes(paths, models, &[]) {
-                if !changed_scopes.contains(&changed) {
-                    changed_scopes.push(changed);
-                }
-            }
-        }
+        let (snapshot, changed_scopes) =
+            self.adopt_scan_with_inheritance(paths, models, &request.scope)?;
         Ok((
             McpDocumentCommitReceipt {
                 document: Some(doc_ref),
@@ -597,24 +600,7 @@ impl McpCatalogResource {
             ));
         }
         let target_path = resolve_document_path(paths, &request.document)?;
-        let meta = match fs::symlink_metadata(&target_path) {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(McpDocumentError::NotFound(format!(
-                    "MCP document '{}' does not exist",
-                    request.document.relative_path
-                )));
-            }
-            Err(error) => return Err(McpDocumentError::Io(error.to_string())),
-        };
-        if meta.file_type().is_symlink() {
-            return Err(McpDocumentError::ValidationFailed(format!(
-                "MCP document '{}' must not be a symlink",
-                request.document.relative_path
-            )));
-        }
-        let current_bytes =
-            fs::read(&target_path).map_err(|error| McpDocumentError::Io(error.to_string()))?;
+        let current_bytes = read_document_bytes(&target_path, &request.document)?;
         let actual_revision = document_revision(&request.document.relative_path, &current_bytes);
         if actual_revision != request.expected_revision {
             return Err(McpDocumentError::Conflict(format!(
@@ -662,15 +648,8 @@ impl McpCatalogResource {
         write_file_atomically(&target_path, canonical_bytes)
             .map_err(|error| McpDocumentError::Io(error.to_string()))?;
         let doc_rev = document_revision(&request.document.relative_path, canonical_bytes);
-        let (snapshot, _) = self.adopt_scan(paths, models, &request.document.scope)?;
-        let mut changed_scopes = vec![request.document.scope.clone()];
-        if matches!(request.document.scope, McpScope::Host) {
-            for changed in self.refresh_all_scopes(paths, models, &[]) {
-                if !changed_scopes.contains(&changed) {
-                    changed_scopes.push(changed);
-                }
-            }
-        }
+        let (snapshot, changed_scopes) =
+            self.adopt_scan_with_inheritance(paths, models, &request.document.scope)?;
         Ok((
             McpDocumentCommitReceipt {
                 document: Some(request.document.clone()),
@@ -692,39 +671,26 @@ impl McpCatalogResource {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let target_path = resolve_document_path(paths, &request.document)?;
-        let meta = match fs::symlink_metadata(&target_path) {
-            Ok(meta) => meta,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(McpDocumentError::NotFound(format!(
-                    "MCP document '{}' does not exist",
-                    request.document.relative_path
-                )));
+        // A symlink is removed without comparing its target's bytes; any other
+        // entry must still match the revision the caller saw.
+        match read_regular_file_bounded(&target_path, MAX_MCP_DOCUMENT_BYTES as u64) {
+            Ok(current_bytes) => {
+                let actual_revision =
+                    document_revision(&request.document.relative_path, &current_bytes);
+                if actual_revision != request.expected_revision {
+                    return Err(McpDocumentError::Conflict(format!(
+                        "MCP document '{}' revision conflict: expected {}, actual {actual_revision}",
+                        request.document.relative_path, request.expected_revision
+                    )));
+                }
             }
-            Err(error) => return Err(McpDocumentError::Io(error.to_string())),
-        };
-        if !meta.file_type().is_symlink() {
-            let current_bytes =
-                fs::read(&target_path).map_err(|error| McpDocumentError::Io(error.to_string()))?;
-            let actual_revision =
-                document_revision(&request.document.relative_path, &current_bytes);
-            if actual_revision != request.expected_revision {
-                return Err(McpDocumentError::Conflict(format!(
-                    "MCP document '{}' revision conflict: expected {}, actual {actual_revision}",
-                    request.document.relative_path, request.expected_revision
-                )));
-            }
+            Err(DocumentReadError::Symlink) => {}
+            Err(error) => return Err(read_document_error(error, &request.document)),
         }
 
         fs::remove_file(&target_path).map_err(|error| McpDocumentError::Io(error.to_string()))?;
-        let (snapshot, _) = self.adopt_scan(paths, models, &request.document.scope)?;
-        let mut changed_scopes = vec![request.document.scope.clone()];
-        if matches!(request.document.scope, McpScope::Host) {
-            for changed in self.refresh_all_scopes(paths, models, &[]) {
-                if !changed_scopes.contains(&changed) {
-                    changed_scopes.push(changed);
-                }
-            }
-        }
+        let (snapshot, changed_scopes) =
+            self.adopt_scan_with_inheritance(paths, models, &request.document.scope)?;
         Ok((
             McpDocumentCommitReceipt {
                 document: None,
@@ -733,6 +699,38 @@ impl McpCatalogResource {
             },
             changed_scopes,
         ))
+    }
+}
+
+/// Reads one document for a command with the shared shape and size rules. The
+/// messages name the document's canonical relative path, never an OS path.
+fn read_document_bytes(
+    path: &Path,
+    document: &McpDocumentRef,
+) -> std::result::Result<Vec<u8>, McpDocumentError> {
+    read_regular_file_bounded(path, MAX_MCP_DOCUMENT_BYTES as u64)
+        .map_err(|error| read_document_error(error, document))
+}
+
+fn read_document_error(error: DocumentReadError, document: &McpDocumentRef) -> McpDocumentError {
+    match error {
+        DocumentReadError::NotFound(_) => McpDocumentError::NotFound(format!(
+            "MCP document '{}' does not exist",
+            document.relative_path
+        )),
+        DocumentReadError::Symlink => McpDocumentError::ValidationFailed(format!(
+            "MCP document '{}' must not be a symlink",
+            document.relative_path
+        )),
+        DocumentReadError::NotRegularFile => McpDocumentError::ValidationFailed(format!(
+            "MCP document '{}' is not a regular file",
+            document.relative_path
+        )),
+        DocumentReadError::TooLarge { .. } => McpDocumentError::ValidationFailed(format!(
+            "MCP document '{}' exceeds 1 MiB limit",
+            document.relative_path
+        )),
+        DocumentReadError::Io(error) => McpDocumentError::Io(error.to_string()),
     }
 }
 
@@ -812,17 +810,6 @@ pub fn resolve_document_path(
 }
 
 /// A positive digest of the path and document bytes that round-trips through Dart's native int.
-pub fn document_revision(relative_path: &str, bytes: &[u8]) -> u64 {
-    let mut hasher = Sha256::new();
-    hasher.update(relative_path.as_bytes());
-    hasher.update([0]);
-    hasher.update(bytes);
-    let digest = hasher.finalize();
-    let mut raw = [0u8; 8];
-    raw.copy_from_slice(&digest[..8]);
-    (u64::from_be_bytes(raw) & i64::MAX as u64).max(1)
-}
-
 /// Initializes the 4 built-in Zhipu MCP files under `<StudioHome>/mcp/host/` once on a fresh installation
 /// where neither `config.toml` nor `mcp/host` exists yet.
 pub fn ensure_default_host_builtins_if_fresh(paths: &ConfigPaths) -> Result<()> {
@@ -840,29 +827,106 @@ pub fn ensure_default_host_builtins_if_fresh(paths: &ConfigPaths) -> Result<()> 
     Ok(())
 }
 
+/// Scope-level diagnostic: the scope itself could not be read, not one document.
+fn scope_read_error(
+    scope: &McpScope,
+    relative_path: &str,
+    message: impl Into<String>,
+) -> McpDocumentDiagnostic {
+    McpDocumentDiagnostic {
+        document: McpDocumentRef {
+            scope: scope.clone(),
+            relative_path: relative_path.to_owned(),
+        },
+        id: None,
+        code: "scope_read_error".to_owned(),
+        message: message.into(),
+    }
+}
+
+/// Catalog id displayed for a file when no declared id can be trusted.
+fn file_stem(file_name: &str) -> String {
+    file_name.trim_end_matches(".toml").to_owned()
+}
+
+/// Documents rejected while scanning one scope. Every rejection is recorded
+/// twice on purpose: the diagnostic explains it in the scope snapshot and the
+/// invalid catalog entry keeps the file visible and removable in the catalog.
+#[derive(Default)]
+struct ScanRejections {
+    diagnostics: Vec<McpDocumentDiagnostic>,
+    entries: Vec<McpCatalogEntry>,
+    in_ssh_scope: bool,
+}
+
+impl ScanRejections {
+    fn new(in_ssh_scope: bool) -> Self {
+        Self {
+            in_ssh_scope,
+            ..Self::default()
+        }
+    }
+
+    /// `diagnostic_id` is the id the diagnostic attributes; `entry_id` is what
+    /// the catalog displays, falling back to the file stem when no id is trusted.
+    fn push(
+        &mut self,
+        document: McpDocumentRef,
+        diagnostic_id: Option<String>,
+        entry_id: String,
+        code: &str,
+        message: String,
+    ) {
+        self.diagnostics.push(McpDocumentDiagnostic {
+            document: document.clone(),
+            id: diagnostic_id,
+            code: code.to_owned(),
+            message: message.clone(),
+        });
+        self.entries.push(invalid_catalog_entry(
+            entry_id,
+            document,
+            self.in_ssh_scope,
+            message,
+        ));
+    }
+
+    fn push_scope_error(
+        &mut self,
+        scope: &McpScope,
+        relative_path: &str,
+        message: impl Into<String>,
+    ) {
+        self.diagnostics
+            .push(scope_read_error(scope, relative_path, message));
+    }
+
+    /// The scan of a scope whose directory itself could not be read: no entry
+    /// is trusted and only the diagnostics are published.
+    fn into_scope_failure(self) -> ScopedMcpScan {
+        ScopedMcpScan {
+            entries: Vec::new(),
+            diagnostics: self.diagnostics,
+            effective_servers: BTreeMap::new(),
+            document_revisions: BTreeMap::new(),
+        }
+    }
+}
+
 pub fn scan_scope_catalog(
     paths: &ConfigPaths,
     models: &pl_model::config::AgentModelConfig,
     scope: &McpScope,
 ) -> Result<ScopedMcpScan> {
-    let host_scan = match scan_host_directory(paths, models) {
-        Ok(scan) => scan,
-        Err(error) => HostScanInternal {
-            valid_docs: BTreeMap::new(),
-            entries: Vec::new(),
-            diagnostics: vec![McpDocumentDiagnostic {
-                document: McpDocumentRef {
-                    scope: McpScope::Host,
-                    relative_path: "mcp/host".to_owned(),
-                },
-                id: None,
-                code: "scope_read_error".to_owned(),
-                message: format!("failed to read Host MCP directory: {error}"),
-            }],
-            effective_servers: BTreeMap::new(),
-            document_revisions: BTreeMap::new(),
-        },
-    };
+    let host_scan = scan_host_directory(paths, models).unwrap_or_else(|error| {
+        let mut scan = HostScanInternal::default();
+        scan.diagnostics.push(scope_read_error(
+            &McpScope::Host,
+            "mcp/host",
+            format!("failed to read Host MCP directory: {error}"),
+        ));
+        scan
+    });
     match scope {
         McpScope::Host => Ok(host_scan.into_scoped_scan()),
         McpScope::Ssh { ssh_alias } => {
@@ -876,6 +940,7 @@ pub fn scan_scope_catalog(
     }
 }
 
+#[derive(Default)]
 struct HostScanInternal {
     valid_docs: BTreeMap<String, (McpDocumentRef, McpFileV1)>,
     entries: Vec<McpCatalogEntry>,
@@ -904,29 +969,20 @@ fn scan_host_directory(
     models: &pl_model::config::AgentModelConfig,
 ) -> Result<HostScanInternal> {
     let host_dir = paths.mcp_host_dir();
-    match fs::symlink_metadata(&host_dir) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() {
-                return Err(PureError::ConfigError(
-                    "Host MCP directory must not be a symlink".to_owned(),
-                ));
-            }
-            if !meta.is_dir() {
-                return Err(PureError::ConfigError(
-                    "Host MCP path is not a directory".to_owned(),
-                ));
-            }
+    match ensure_regular_dir(&host_dir) {
+        Ok(DirectoryPresence::Absent) => return Ok(HostScanInternal::default()),
+        Ok(DirectoryPresence::Present) => {}
+        Err(DirectoryError::Symlink) => {
+            return Err(PureError::ConfigError(
+                "Host MCP directory must not be a symlink".to_owned(),
+            ));
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HostScanInternal {
-                valid_docs: BTreeMap::new(),
-                entries: Vec::new(),
-                diagnostics: Vec::new(),
-                effective_servers: BTreeMap::new(),
-                document_revisions: BTreeMap::new(),
-            });
+        Err(DirectoryError::NotDirectory) => {
+            return Err(PureError::ConfigError(
+                "Host MCP path is not a directory".to_owned(),
+            ));
         }
-        Err(error) => return Err(PureError::from(error)),
+        Err(DirectoryError::Io(error)) => return Err(error.into()),
     }
 
     let dir_entries = fs::read_dir(&host_dir).map_err(PureError::from)?;
@@ -947,8 +1003,7 @@ fn scan_host_directory(
     file_names.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut parsed_by_id: BTreeMap<String, Vec<(McpDocumentRef, McpFileV1)>> = BTreeMap::new();
-    let mut diagnostics = Vec::new();
-    let mut invalid_entries = Vec::new();
+    let mut rejections = ScanRejections::new(false);
     let mut document_revisions = BTreeMap::new();
 
     for (file_name, path) in file_names {
@@ -956,109 +1011,49 @@ fn scan_host_directory(
             scope: McpScope::Host,
             relative_path: format!("mcp/host/{file_name}"),
         };
-        let meta = match fs::symlink_metadata(&path) {
-            Ok(meta) => meta,
-            Err(error) => {
-                let message = format!("failed to inspect MCP file '{file_name}': {error}");
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: None,
-                    code: "io_error".to_owned(),
-                    message: message.clone(),
-                });
-                invalid_entries.push(invalid_catalog_entry(
-                    file_name.trim_end_matches(".toml").to_owned(),
-                    doc_ref,
-                    false,
-                    message,
-                ));
-                continue;
-            }
-        };
-        if meta.file_type().is_symlink() {
-            let message = format!("MCP entry '{file_name}' must not be a symlink");
-            diagnostics.push(McpDocumentDiagnostic {
-                document: doc_ref.clone(),
-                id: None,
-                code: "symlink_rejected".to_owned(),
-                message: message.clone(),
-            });
-            invalid_entries.push(invalid_catalog_entry(
-                file_name.trim_end_matches(".toml").to_owned(),
-                doc_ref,
-                false,
-                message,
-            ));
-            continue;
-        }
-        if !meta.is_file() {
-            let message = format!("MCP entry '{file_name}' is not a regular TOML file");
-            diagnostics.push(McpDocumentDiagnostic {
-                document: doc_ref.clone(),
-                id: None,
-                code: "invalid_document".to_owned(),
-                message: message.clone(),
-            });
-            invalid_entries.push(invalid_catalog_entry(
-                file_name.trim_end_matches(".toml").to_owned(),
-                doc_ref,
-                false,
-                message,
-            ));
-            continue;
-        }
-        if meta.len() > MAX_MCP_DOCUMENT_BYTES as u64 {
-            let message = format!("MCP file '{file_name}' exceeds 1 MiB limit");
-            diagnostics.push(McpDocumentDiagnostic {
-                document: doc_ref.clone(),
-                id: None,
-                code: "document_too_large".to_owned(),
-                message: message.clone(),
-            });
-            invalid_entries.push(invalid_catalog_entry(
-                file_name.trim_end_matches(".toml").to_owned(),
-                doc_ref,
-                false,
-                message,
-            ));
-            continue;
-        }
-
-        let bytes = match fs::read(&path) {
+        let bytes = match read_regular_file_bounded(&path, MAX_MCP_DOCUMENT_BYTES as u64) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                let message = format!("failed to read MCP file '{file_name}': {error}");
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: None,
-                    code: "io_error".to_owned(),
-                    message: message.clone(),
-                });
-                invalid_entries.push(invalid_catalog_entry(
-                    file_name.trim_end_matches(".toml").to_owned(),
+            Err(DocumentReadError::Symlink) => {
+                rejections.push(
                     doc_ref,
-                    false,
-                    message,
-                ));
+                    None,
+                    file_stem(&file_name),
+                    "symlink_rejected",
+                    format!("MCP entry '{file_name}' must not be a symlink"),
+                );
+                continue;
+            }
+            Err(DocumentReadError::NotRegularFile) => {
+                rejections.push(
+                    doc_ref,
+                    None,
+                    file_stem(&file_name),
+                    "invalid_document",
+                    format!("MCP entry '{file_name}' is not a regular TOML file"),
+                );
+                continue;
+            }
+            Err(DocumentReadError::TooLarge { .. }) => {
+                rejections.push(
+                    doc_ref,
+                    None,
+                    file_stem(&file_name),
+                    "document_too_large",
+                    format!("MCP file '{file_name}' exceeds 1 MiB limit"),
+                );
+                continue;
+            }
+            Err(DocumentReadError::NotFound(error) | DocumentReadError::Io(error)) => {
+                rejections.push(
+                    doc_ref,
+                    None,
+                    file_stem(&file_name),
+                    "io_error",
+                    format!("failed to read MCP file '{file_name}': {error}"),
+                );
                 continue;
             }
         };
-        if bytes.len() > MAX_MCP_DOCUMENT_BYTES {
-            let message = format!("MCP file '{file_name}' exceeds 1 MiB limit");
-            diagnostics.push(McpDocumentDiagnostic {
-                document: doc_ref.clone(),
-                id: None,
-                code: "document_too_large".to_owned(),
-                message: message.clone(),
-            });
-            invalid_entries.push(invalid_catalog_entry(
-                file_name.trim_end_matches(".toml").to_owned(),
-                doc_ref,
-                false,
-                message,
-            ));
-            continue;
-        }
         document_revisions.insert(
             doc_ref.relative_path.clone(),
             document_revision(&doc_ref.relative_path, &bytes),
@@ -1066,19 +1061,13 @@ fn scan_host_directory(
         let raw_toml = match std::str::from_utf8(&bytes) {
             Ok(content) => content,
             Err(error) => {
-                let message = format!("MCP file '{file_name}' is not valid UTF-8: {error}");
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: None,
-                    code: "invalid_utf8".to_owned(),
-                    message: message.clone(),
-                });
-                invalid_entries.push(invalid_catalog_entry(
-                    file_name.trim_end_matches(".toml").to_owned(),
+                rejections.push(
                     doc_ref,
-                    false,
-                    message,
-                ));
+                    None,
+                    file_stem(&file_name),
+                    "invalid_utf8",
+                    format!("MCP file '{file_name}' is not valid UTF-8: {error}"),
+                );
                 continue;
             }
         };
@@ -1092,17 +1081,14 @@ fn scan_host_directory(
             }
             Err(error) => {
                 let peeked_id = McpFileV1::peek_id(raw_toml);
-                let display_id = peeked_id
-                    .clone()
-                    .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                let message = error.to_string();
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: peeked_id,
-                    code: "invalid_document".to_owned(),
-                    message: message.clone(),
-                });
-                invalid_entries.push(invalid_catalog_entry(display_id, doc_ref, false, message));
+                let display_id = peeked_id.clone().unwrap_or_else(|| file_stem(&file_name));
+                rejections.push(
+                    doc_ref,
+                    peeked_id,
+                    display_id,
+                    "invalid_document",
+                    error.to_string(),
+                );
             }
         }
     }
@@ -1122,18 +1108,13 @@ fn scan_host_directory(
                 paths_list.join(", ")
             );
             for (doc_ref, _) in docs {
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: Some(id.clone()),
-                    code: "duplicate_id".to_owned(),
-                    message: message.clone(),
-                });
-                invalid_entries.push(invalid_catalog_entry(
-                    id.clone(),
+                rejections.push(
                     doc_ref,
-                    false,
+                    Some(id.clone()),
+                    id.clone(),
+                    "duplicate_id",
                     message.clone(),
-                ));
+                );
             }
             continue;
         }
@@ -1154,7 +1135,7 @@ fn scan_host_directory(
         }
     }
 
-    entries.extend(invalid_entries);
+    entries.extend(rejections.entries);
     entries.sort_by(|a, b| {
         a.id.cmp(&b.id).then_with(|| {
             a.document
@@ -1167,7 +1148,7 @@ fn scan_host_directory(
     Ok(HostScanInternal {
         valid_docs,
         entries,
-        diagnostics,
+        diagnostics: rejections.diagnostics,
         effective_servers,
         document_revisions,
     })
@@ -1185,6 +1166,7 @@ fn scan_ssh_directory_with_host(
     let ssh_key = crate::studio::paths::storage_key(ssh_alias, "SSH server")
         .map_err(|error| PureError::ConfigError(error.to_string()))?;
     let ssh_dir = paths.mcp_ssh_dir(ssh_alias)?;
+    let scope_path = format!("mcp/ssh/{ssh_key}");
 
     // Map canonical filename `<sha256(host_id)>.toml` -> `host_id` for all valid Host servers.
     let mut canonical_to_host_id = BTreeMap::new();
@@ -1194,54 +1176,37 @@ fn scan_ssh_directory_with_host(
     }
 
     let mut occupied_host_ids = BTreeSet::new();
+    let mut rejections = ScanRejections::new(true);
+    // Host-level read failures stay visible in every inheriting scope.
+    rejections.diagnostics.extend(
+        host_scan
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "scope_read_error")
+            .cloned(),
+    );
     let mut entries = Vec::new();
-    let mut diagnostics = host_scan
-        .diagnostics
-        .iter()
-        .filter(|d| d.code == "scope_read_error")
-        .cloned()
-        .collect::<Vec<_>>();
     let mut effective_servers = BTreeMap::new();
     let mut document_revisions = BTreeMap::new();
 
-    let ssh_dir_exists = match fs::symlink_metadata(&ssh_dir) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() || !meta.is_dir() {
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: McpDocumentRef {
-                        scope: scope.clone(),
-                        relative_path: format!("mcp/ssh/{ssh_key}"),
-                    },
-                    id: None,
-                    code: "scope_read_error".to_owned(),
-                    message: "SSH MCP path is not a regular directory".to_owned(),
-                });
-                return Ok(ScopedMcpScan {
-                    entries: Vec::new(),
-                    diagnostics,
-                    effective_servers: BTreeMap::new(),
-                    document_revisions: BTreeMap::new(),
-                });
-            }
-            true
+    let ssh_dir_exists = match ensure_regular_dir(&ssh_dir) {
+        Ok(DirectoryPresence::Present) => true,
+        Ok(DirectoryPresence::Absent) => false,
+        Err(DirectoryError::Symlink | DirectoryError::NotDirectory) => {
+            rejections.push_scope_error(
+                &scope,
+                &scope_path,
+                "SSH MCP path is not a regular directory",
+            );
+            return Ok(rejections.into_scope_failure());
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
-            diagnostics.push(McpDocumentDiagnostic {
-                document: McpDocumentRef {
-                    scope: scope.clone(),
-                    relative_path: format!("mcp/ssh/{ssh_key}"),
-                },
-                id: None,
-                code: "scope_read_error".to_owned(),
-                message: format!("failed to inspect SSH MCP directory: {error}"),
-            });
-            return Ok(ScopedMcpScan {
-                entries: Vec::new(),
-                diagnostics,
-                effective_servers: BTreeMap::new(),
-                document_revisions: BTreeMap::new(),
-            });
+        Err(DirectoryError::Io(error)) => {
+            rejections.push_scope_error(
+                &scope,
+                &scope_path,
+                format!("failed to inspect SSH MCP directory: {error}"),
+            );
+            return Ok(rejections.into_scope_failure());
         }
     };
 
@@ -1249,21 +1214,12 @@ fn scan_ssh_directory_with_host(
         let dir_entries = match fs::read_dir(&ssh_dir) {
             Ok(entries) => entries,
             Err(error) => {
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: McpDocumentRef {
-                        scope: scope.clone(),
-                        relative_path: format!("mcp/ssh/{ssh_key}"),
-                    },
-                    id: None,
-                    code: "scope_read_error".to_owned(),
-                    message: format!("failed to read SSH MCP directory: {error}"),
-                });
-                return Ok(ScopedMcpScan {
-                    entries: Vec::new(),
-                    diagnostics,
-                    effective_servers: BTreeMap::new(),
-                    document_revisions: BTreeMap::new(),
-                });
+                rejections.push_scope_error(
+                    &scope,
+                    &scope_path,
+                    format!("failed to read SSH MCP directory: {error}"),
+                );
+                return Ok(rejections.into_scope_failure());
             }
         };
         let mut raw_entries = Vec::new();
@@ -1271,21 +1227,12 @@ fn scan_ssh_directory_with_host(
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: McpDocumentRef {
-                            scope: scope.clone(),
-                            relative_path: format!("mcp/ssh/{ssh_key}"),
-                        },
-                        id: None,
-                        code: "scope_read_error".to_owned(),
-                        message: format!("failed to enumerate SSH MCP directory: {error}"),
-                    });
-                    return Ok(ScopedMcpScan {
-                        entries: Vec::new(),
-                        diagnostics,
-                        effective_servers: BTreeMap::new(),
-                        document_revisions: BTreeMap::new(),
-                    });
+                    rejections.push_scope_error(
+                        &scope,
+                        &scope_path,
+                        format!("failed to enumerate SSH MCP directory: {error}"),
+                    );
+                    return Ok(rejections.into_scope_failure());
                 }
             };
             let path = entry.path();
@@ -1305,116 +1252,43 @@ fn scan_ssh_directory_with_host(
             }
 
             let is_toml = path.extension().and_then(|ext| ext.to_str()) == Some("toml");
+            // Only TOML files and occupied Host slots are ever reported.
+            if !is_toml && matched_host_id.is_none() {
+                continue;
+            }
             let doc_ref = McpDocumentRef {
                 scope: scope.clone(),
                 relative_path: format!("mcp/ssh/{ssh_key}/{file_name}"),
             };
+            let slot_id = matched_host_id
+                .clone()
+                .unwrap_or_else(|| file_stem(&file_name));
 
-            let metadata = match fs::symlink_metadata(&path) {
-                Ok(meta) => meta,
-                Err(error) => {
-                    if is_toml || matched_host_id.is_some() {
-                        let display_id = matched_host_id
-                            .clone()
-                            .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                        let message =
-                            format!("failed to inspect SSH MCP entry '{file_name}': {error}");
-                        diagnostics.push(McpDocumentDiagnostic {
-                            document: doc_ref.clone(),
-                            id: matched_host_id,
-                            code: "io_error".to_owned(),
-                            message: message.clone(),
-                        });
-                        entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
-                    }
-                    continue;
-                }
-            };
-
-            if metadata.file_type().is_symlink() {
-                if is_toml || matched_host_id.is_some() {
-                    let display_id = matched_host_id
-                        .clone()
-                        .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                    let message = format!("SSH MCP entry '{file_name}' must not be a symlink");
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: doc_ref.clone(),
-                        id: matched_host_id,
-                        code: "symlink_rejected".to_owned(),
-                        message: message.clone(),
-                    });
-                    entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
-                }
-                continue;
-            }
-
-            if !metadata.is_file() {
-                if is_toml || matched_host_id.is_some() {
-                    let display_id = matched_host_id
-                        .clone()
-                        .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                    let message = format!("SSH MCP entry '{file_name}' is not a regular TOML file");
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: doc_ref.clone(),
-                        id: matched_host_id,
-                        code: "invalid_document".to_owned(),
-                        message: message.clone(),
-                    });
-                    entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
-                }
-                continue;
-            }
-
-            if !is_toml {
-                continue;
-            }
-
-            if metadata.len() > MAX_MCP_DOCUMENT_BYTES as u64 {
-                let display_id = matched_host_id
-                    .clone()
-                    .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                let message = format!("SSH MCP file '{file_name}' exceeds 1 MiB limit");
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: matched_host_id,
-                    code: "document_too_large".to_owned(),
-                    message: message.clone(),
-                });
-                entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
-                continue;
-            }
-
-            let bytes = match fs::read(&path) {
+            let bytes = match read_regular_file_bounded(&path, MAX_MCP_DOCUMENT_BYTES as u64) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    let display_id = matched_host_id
-                        .clone()
-                        .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                    let message = format!("failed to read SSH MCP file '{file_name}': {error}");
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: doc_ref.clone(),
-                        id: matched_host_id,
-                        code: "io_error".to_owned(),
-                        message: message.clone(),
-                    });
-                    entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
+                    let (code, message) = match error {
+                        DocumentReadError::Symlink => (
+                            "symlink_rejected",
+                            format!("SSH MCP entry '{file_name}' must not be a symlink"),
+                        ),
+                        DocumentReadError::NotRegularFile => (
+                            "invalid_document",
+                            format!("SSH MCP entry '{file_name}' is not a regular TOML file"),
+                        ),
+                        DocumentReadError::TooLarge { .. } => (
+                            "document_too_large",
+                            format!("SSH MCP file '{file_name}' exceeds 1 MiB limit"),
+                        ),
+                        DocumentReadError::NotFound(io) | DocumentReadError::Io(io) => (
+                            "io_error",
+                            format!("failed to read SSH MCP file '{file_name}': {io}"),
+                        ),
+                    };
+                    rejections.push(doc_ref, matched_host_id, slot_id, code, message);
                     continue;
                 }
             };
-            if bytes.len() > MAX_MCP_DOCUMENT_BYTES {
-                let display_id = matched_host_id
-                    .clone()
-                    .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                let message = format!("SSH MCP file '{file_name}' exceeds 1 MiB limit");
-                diagnostics.push(McpDocumentDiagnostic {
-                    document: doc_ref.clone(),
-                    id: matched_host_id,
-                    code: "document_too_large".to_owned(),
-                    message: message.clone(),
-                });
-                entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
-                continue;
-            }
             document_revisions.insert(
                 doc_ref.relative_path.clone(),
                 document_revision(&doc_ref.relative_path, &bytes),
@@ -1422,17 +1296,13 @@ fn scan_ssh_directory_with_host(
             let raw_toml = match std::str::from_utf8(&bytes) {
                 Ok(content) => content,
                 Err(error) => {
-                    let display_id = matched_host_id
-                        .clone()
-                        .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                    let message = format!("SSH MCP file '{file_name}' is not valid UTF-8: {error}");
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: doc_ref.clone(),
-                        id: matched_host_id,
-                        code: "invalid_utf8".to_owned(),
-                        message: message.clone(),
-                    });
-                    entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
+                    rejections.push(
+                        doc_ref,
+                        matched_host_id,
+                        slot_id,
+                        "invalid_utf8",
+                        format!("SSH MCP file '{file_name}' is not valid UTF-8: {error}"),
+                    );
                     continue;
                 }
             };
@@ -1461,13 +1331,13 @@ fn scan_ssh_directory_with_host(
                                 ),
                             )
                         };
-                        diagnostics.push(McpDocumentDiagnostic {
-                            document: doc_ref.clone(),
-                            id: Some(display_id.clone()),
-                            code,
-                            message: message.clone(),
-                        });
-                        entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
+                        rejections.push(
+                            doc_ref,
+                            Some(display_id.clone()),
+                            display_id,
+                            &code,
+                            message,
+                        );
                         continue;
                     }
 
@@ -1515,15 +1385,14 @@ fn scan_ssh_directory_with_host(
                     let display_id = matched_host_id
                         .clone()
                         .or(peeked_id.clone())
-                        .unwrap_or_else(|| file_name.trim_end_matches(".toml").to_owned());
-                    let message = error.to_string();
-                    diagnostics.push(McpDocumentDiagnostic {
-                        document: doc_ref.clone(),
-                        id: matched_host_id.or(peeked_id),
-                        code: "invalid_document".to_owned(),
-                        message: message.clone(),
-                    });
-                    entries.push(invalid_catalog_entry(display_id, doc_ref, true, message));
+                        .unwrap_or_else(|| file_stem(&file_name));
+                    rejections.push(
+                        doc_ref,
+                        matched_host_id.or(peeked_id),
+                        display_id,
+                        "invalid_document",
+                        error.to_string(),
+                    );
                 }
             }
         }
@@ -1548,6 +1417,7 @@ fn scan_ssh_directory_with_host(
         }
     }
 
+    entries.extend(rejections.entries);
     entries.sort_by(|a, b| {
         a.id.cmp(&b.id).then_with(|| {
             a.document
@@ -1559,7 +1429,7 @@ fn scan_ssh_directory_with_host(
 
     Ok(ScopedMcpScan {
         entries,
-        diagnostics,
+        diagnostics: rejections.diagnostics,
         effective_servers,
         document_revisions,
     })

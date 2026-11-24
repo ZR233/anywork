@@ -44,17 +44,15 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
     .await
 }
 
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
-
 use crate::WorkspaceKind;
 use anyhow::{Result, bail, ensure};
+use std::path::PathBuf;
 use version_migrate::Versioned;
 
 use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::StudioStore;
 use crate::studio::store::directory::DirectoryDelta;
-use crate::studio::toml_store::{self, RevisionedDocument};
+use crate::studio::toml_store::{self, RevisionedDocument, RevisionedTomlStore};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -108,44 +106,35 @@ impl RevisionedDocument for WorkspacesDocument {
 
 #[derive(Clone)]
 pub(in crate::studio) struct WorkspaceStore {
-    path: PathBuf,
-    inner: Arc<Mutex<WorkspacesDocument>>,
+    store: RevisionedTomlStore<WorkspacesDocument>,
 }
 
 impl WorkspaceStore {
     pub(in crate::studio) async fn load(path: PathBuf) -> Result<Self> {
-        let document = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => {
-                let loaded = schema::load_document(&path, &content)?;
-                if loaded.migrated {
-                    let contents =
-                        crate::toml_schema::encode(&loaded.document, schema::SCHEMA_KEY)?;
-                    let target = path.clone();
-                    tokio::task::spawn_blocking(move || {
-                        pl_tool::workspace::write_file_atomically(&target, contents.as_bytes())
-                    })
-                    .await??;
-                }
-                loaded.document
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => WorkspacesDocument {
+        let document = toml_store::load_document(
+            path.clone(),
+            || WorkspacesDocument {
                 revision: 1,
                 workspaces: Vec::new(),
             },
-            Err(error) => return Err(error.into()),
-        };
+            |path, content| async move {
+                let loaded = schema::load_document(&path, &content)?;
+                toml_store::persist_migrated(&path, loaded).await
+            },
+        )
+        .await?;
         Ok(Self {
-            path,
-            inner: Arc::new(Mutex::new(document)),
+            store: RevisionedTomlStore::new(path, document),
         })
     }
 
     pub(in crate::studio) fn entries(&self) -> Vec<WorkspaceEntry> {
-        self.lock().workspaces.clone()
+        self.store.lock().workspaces.clone()
     }
 
     pub(in crate::studio) fn get(&self, id: &str) -> Option<WorkspaceEntry> {
-        self.lock()
+        self.store
+            .lock()
             .workspaces
             .iter()
             .find(|entry| entry.id == id)
@@ -157,7 +146,8 @@ impl WorkspaceStore {
         path: &str,
         ssh_alias: Option<&str>,
     ) -> Option<WorkspaceEntry> {
-        self.lock()
+        self.store
+            .lock()
             .workspaces
             .iter()
             .find(|entry| entry.path == path && entry.ssh_alias.as_deref() == ssh_alias)
@@ -233,23 +223,14 @@ impl WorkspaceStore {
     /// 把当前内存文档写入 canonical 文件；文件已存在时不覆盖。
     /// 只有 migration 边界使用，用来补齐旧发布遗留的空缺文档；正常运行写入都经 apply_delta。
     pub(in crate::studio) async fn persist_if_absent(&self) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || toml_store::persist_if_absent(&inner, &path)).await?
+        self.store.persist_if_absent().await
     }
 
     async fn mutate(
         &self,
         change: impl FnOnce(&mut WorkspacesDocument) -> Result<bool> + Send + 'static,
     ) -> Result<()> {
-        let inner = self.inner.clone();
-        let path = self.path.clone();
-        tokio::task::spawn_blocking(move || toml_store::mutate_document(&inner, &path, change))
-            .await?
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, WorkspacesDocument> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+        self.store.mutate(change).await
     }
 }
 

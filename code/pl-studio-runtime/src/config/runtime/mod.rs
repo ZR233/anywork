@@ -618,22 +618,11 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let snapshot = self.read()?;
-        let (catalog, _) =
-            self.mcp_catalog
-                .adopt_scan(self.store.paths(), &snapshot.config.models, scope)?;
-        let mut changed_scopes = vec![scope.clone()];
-        if matches!(scope, McpScope::Host) {
-            for changed in self.mcp_catalog.refresh_all_scopes(
-                self.store.paths(),
-                &snapshot.config.models,
-                &[],
-            ) {
-                if !changed_scopes.contains(&changed) {
-                    changed_scopes.push(changed);
-                }
-            }
-        }
-        Ok((catalog, changed_scopes))
+        Ok(self.mcp_catalog.adopt_scan_with_inheritance(
+            self.store.paths(),
+            &snapshot.config.models,
+            scope,
+        )?)
     }
 
     /// Reload only a calling owner's effective scope, including the Host inheritance source.
