@@ -31,8 +31,6 @@ pub(in crate::studio) mod turns;
 
 mod checkpoint;
 #[cfg(test)]
-pub(crate) mod legacy_read;
-#[cfg(test)]
 pub(crate) use checkpoint::SessionAccounting;
 
 #[cfg(test)]
@@ -1704,14 +1702,10 @@ impl ChatHistory for HistoryStore {
         &self,
         request: &ContentReadRequest,
     ) -> std::result::Result<ContentWindow, ChatError> {
-        let connection = self
-            .reader()
-            .await
-            .map_err(chat_history_error)?
-            .ok_or_else(|| ChatError::NotFound("history database".into()))?;
-        conversation::read_content(&connection.db, request)
-            .await
-            .map_err(chat_history_error)
+        let _ = request;
+        Err(ChatError::InvalidArgument(
+            "frozen history no longer serves content ranges".into(),
+        ))
     }
 }
 
@@ -6717,19 +6711,20 @@ mod storage_fault_tests {
             .context("public answer manifest")?
             .0
             .clone();
-        let window = ChatHistory::read_content(
-            &store,
-            &ContentReadRequest {
-                epoch: pl_core::chat::TimelineEpoch::new("qa-test")?,
-                reference: pl_core::chat::ContentRef::Body(content),
-                offset: 0,
-                max_bytes: long_answer.len(),
-                generation: None,
-            },
-        )
-        .await?;
-        assert_eq!(window.bytes.as_bytes(), long_answer.as_bytes());
-        assert!(window.sealed);
+        let db = &store.reader().await?.context("history reader")?.db;
+        let manifest_row = db
+            .query_one_raw(statement(
+                "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+                vec![content.owner.as_str().into(), content.key.clone().into()],
+            ))
+            .await?
+            .context("public answer manifest row")?;
+        let manifest =
+            conversation::content::manifest(&manifest_row.try_get::<Vec<u8>>("", "payload")?)?;
+        assert!(manifest.sealed);
+        let bytes =
+            conversation::content::read_body_bytes(db, &content, 0, long_answer.len()).await?;
+        assert_eq!(bytes, long_answer.as_bytes());
         let mut changed = complete.clone();
         changed.payload = std::sync::Arc::from(b"{\"changed\":true}".as_slice());
         changed.header.byte_length = changed.payload.len() as u64;

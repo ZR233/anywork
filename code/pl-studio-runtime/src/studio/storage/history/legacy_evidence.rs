@@ -2,7 +2,7 @@
 use super::schema::v24_presentation_types::LegacyExecutionEvidence;
 use super::*;
 use crate::{ContentRange, ContentWindow};
-use pl_core::chat::{ChatError, ContentReadRequest};
+use pl_core::chat::ChatError;
 
 impl HistoryStore {
     pub(in crate::studio) async fn legacy_evidence_heads(
@@ -51,27 +51,38 @@ impl HistoryStore {
             vec![id.into(),integer(revision)?.into()],
         )).await?.context(ChatError::NotFound(id.into()))?;
         let length = u64::try_from(row.try_get::<i64>("", "byte_length")?)?;
-        let window = conversation::read_content(
-            &connection.db,
-            &ContentReadRequest {
-                epoch: pl_core::chat::TimelineEpoch::new(connection.database_id.clone())?,
-                reference: pl_core::chat::ContentRef::Body(pl_core::chat::ChatContentKey {
-                    owner: pl_core::chat::ChatKey::from_encoded(
-                        row.try_get("", "original_owner")?,
-                    )?,
-                    key: row.try_get("", "original_key")?,
-                }),
-                offset: range.offset,
-                max_bytes: range.max_bytes as usize,
-                generation: None,
-            },
-        )
-        .await?;
+        let key = pl_core::chat::ChatContentKey {
+            owner: pl_core::chat::ChatKey::from_encoded(
+                row.try_get::<String>("", "original_owner")?,
+            )?,
+            key: row.try_get("", "original_key")?,
+        };
+        let manifest_row = connection
+            .db
+            .query_one_raw(statement(
+                "SELECT payload FROM conversation_contents WHERE owner_key=? AND content_key=?",
+                vec![key.owner.as_str().into(), key.key.clone().into()],
+            ))
+            .await?
+            .context(ChatError::NotFound(key.key.clone()))?;
+        let manifest =
+            conversation::content::manifest(&manifest_row.try_get::<Vec<u8>>("", "payload")?)?;
         ensure!(
-            window.sealed && window.available_through == length,
+            manifest.sealed && manifest.byte_length == length,
             "legacy original content manifest differs from its receipt"
         );
-        let bytes = window.bytes.as_bytes().to_vec();
+        let remaining = length
+            .checked_sub(range.offset)
+            .context("legacy evidence offset exceeds its receipt")?;
+        let take = (range.max_bytes as u64).min(remaining);
+        ensure!(take > 0, "legacy evidence range is empty");
+        let bytes = conversation::content::read_body_bytes(
+            &connection.db,
+            &key,
+            range.offset,
+            usize::try_from(take)?,
+        )
+        .await?;
         Ok(ContentWindow {
             offset: range.offset,
             bytes,
