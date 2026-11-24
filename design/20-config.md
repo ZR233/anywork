@@ -27,6 +27,8 @@ ACP 用户定义的 command、args、env 和认证始终属于 Studio 宿主；S
 
 配置版本转换继续使用 TOML/Serde 与系统凭据服务：类型转换仅承担配置领域语义，多文件和凭据关联的联合提交继续遵循上述可恢复操作契约。SQLite 的结构与数据迁移统一由 SeaORM 官方迁移系统管理（见 [17.11](./17-studio-storage.md#1711-上下文来源与版本升级)），不将配置文件迁入数据库，也不以 SQL 事务代替跨文件、系统凭据的恢复协议。
 
+启动时校验版本键并直接解码当前主配置和用户 Profile。Settings、Catalog、附件清单和会话布局各自采用同样的当前版本读取方式。升级入口复用已构建的迁移链。配置迁移准备阶段共享同一次主文档解析的结果，用于目标配置与旧资源提取。
+
 历史配置版本迁移链摘要如下：
 - **版本 `18 → 19 → 20`**：`18 → 19` 从 `disabled_system_agents` 移除 `planner` 并保留五条模型路由；`19 → 20` 将旧 `planner` 路由复制为 `mode.simple` 与 `mode.task` 的默认路由，从 `models.routes` 中删除 `planner`，并保留四个系统子智能体路由、账号及凭据关联。
 - **版本 `20 → 21`**：将 `models.providers.<id>.capabilities.web_search.standalone = "deep_seek_anthropic_messages"` 改写为 `"deep_seek_tools_api"`，并按版本默认值补齐 `[deepseek_web_search]` 的 `fetch_enabled`。

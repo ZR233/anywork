@@ -276,7 +276,9 @@ pub(in super::super) async fn seed_current(
         }
     }
     if let Some(record) = state.extensions.get(crate::plan_tool::PLAN_EXTENSION) {
-        let plan = crate::plan_tool::decode_plan_state(&record.payload)?;
+        let migrated = crate::plan_tool::migrate_plan_payload(&record.payload)?;
+        let plan =
+            crate::plan_tool::decode_plan_state(migrated.as_ref().unwrap_or(&record.payload))?;
         let owner = ContentOwner::Current {
             domain: "plan".into(),
             id: "document".into(),
