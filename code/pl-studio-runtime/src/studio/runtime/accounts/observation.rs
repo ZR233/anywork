@@ -1,4 +1,5 @@
 use super::super::StudioRuntime;
+use super::super::pull_observation::{PullObservation, PullSignal, PullStep};
 use crate::StudioProductTopic;
 use crate::studio::product_event_bus::ProductTopicSignal;
 use crate::{
@@ -6,7 +7,7 @@ use crate::{
 };
 use anyhow::Result;
 use std::sync::Arc;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 /// A pull-only latest complete frame. There is no producer task, ACK, timer or unbounded port.
@@ -18,13 +19,10 @@ pub struct AccountObservation {
 struct ObservationInner {
     runtime: StudioRuntime,
     target: AccountObservationTarget,
-    cancellation: CancellationToken,
-    next: Mutex<ReadState>,
+    next: PullObservation<AccountSignal, AccountMemory>,
 }
 
-struct ReadState {
-    signal: Option<AccountSignal>,
-    initial: bool,
+struct AccountMemory {
     last: Option<ResourceStamp>,
     target_revision: Option<Option<u64>>,
 }
@@ -49,6 +47,18 @@ impl AccountSignal {
                 signal.borrow_and_update();
             }
         }
+    }
+}
+
+impl PullSignal for AccountSignal {
+    fn changed(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(), watch::error::RecvError>> + Send {
+        async move { AccountSignal::changed(self).await }
+    }
+
+    fn mark_current(&mut self) {
+        AccountSignal::mark_current(self);
     }
 }
 
@@ -97,17 +107,19 @@ pub(super) fn open(
             )
         }
     };
+    let cancellation = CancellationToken::new();
     Ok(AccountObservation {
         inner: Arc::new(ObservationInner {
             runtime,
             target,
-            cancellation: CancellationToken::new(),
-            next: Mutex::new(ReadState {
-                signal: Some(signal),
-                initial: true,
-                last: None,
-                target_revision: None,
-            }),
+            next: PullObservation::open(
+                signal,
+                AccountMemory {
+                    last: None,
+                    target_revision: None,
+                },
+                cancellation,
+            ),
         }),
     })
 }
@@ -116,71 +128,55 @@ impl AccountObservation {
     /// At most one in-flight call. The consumer reduces this frame before asking for the next.
     /// Dropping a wait cannot lose a frame: watch retains a wake and the next call rereads the owner.
     pub async fn next(&self) -> Result<Option<AccountDomainFrame>> {
-        let mut state = self.inner.next.try_lock().map_err(|_| {
-            StudioError::new(
-                StudioErrorCode::Busy,
-                "An account next read is already in flight",
-                true,
+        self.inner
+            .next
+            .next(
+                StudioError::new(
+                    StudioErrorCode::Busy,
+                    "An account next read is already in flight",
+                    true,
+                ),
+                |memory| {
+                    let target_revision = match &self.inner.target {
+                        AccountObservationTarget::Detail { identity } => Some(
+                            self.inner
+                                .runtime
+                                .config_runtime
+                                .account_configuration_revision(identity)?,
+                        ),
+                        AccountObservationTarget::Models { account_id } => Some(
+                            self.inner
+                                .runtime
+                                .config_runtime
+                                .account_catalog_revision(account_id)?,
+                        ),
+                        _ => None,
+                    };
+                    if target_revision.is_some() && target_revision == memory.target_revision {
+                        return Ok(PullStep::WaitAgain);
+                    }
+                    let frame = self.inner.runtime.read_account_domain(&self.inner.target)?;
+                    let stamp = stamp(&frame);
+                    if memory.last.as_ref().is_some_and(|old| old == stamp) {
+                        return Ok(PullStep::WaitAgain);
+                    }
+                    // There is no await between owner read, last-delivered stamp, and returning the frame.
+                    memory.last = Some(stamp.clone());
+                    memory.target_revision = target_revision;
+                    Ok(PullStep::Deliver(frame))
+                },
             )
-        })?;
-        loop {
-            if self.inner.cancellation.is_cancelled() {
-                return Ok(None);
-            }
-            if !state.initial {
-                let Some(signal) = state.signal.as_mut() else {
-                    return Ok(None);
-                };
-                tokio::select! {
-                    biased;
-                    _ = self.inner.cancellation.cancelled() => return Ok(None),
-                    changed = signal.changed() => { if changed.is_err() { return Ok(None); } }
-                }
-            }
-            state.initial = false;
-            if let Some(signal) = state.signal.as_mut() {
-                signal.mark_current();
-            }
-            let target_revision = match &self.inner.target {
-                AccountObservationTarget::Detail { identity } => Some(
-                    self.inner
-                        .runtime
-                        .config_runtime
-                        .account_configuration_revision(identity)?,
-                ),
-                AccountObservationTarget::Models { account_id } => Some(
-                    self.inner
-                        .runtime
-                        .config_runtime
-                        .account_catalog_revision(account_id)?,
-                ),
-                _ => None,
-            };
-            if target_revision.is_some() && target_revision == state.target_revision {
-                continue;
-            }
-            let frame = self.inner.runtime.read_account_domain(&self.inner.target)?;
-            let stamp = stamp(&frame);
-            if state.last.as_ref().is_some_and(|old| old == stamp) {
-                continue;
-            }
-            // There is no await between owner read, last-delivered stamp, and returning the frame.
-            state.last = Some(stamp.clone());
-            state.target_revision = target_revision;
-            return Ok(Some(frame));
-        }
+            .await
     }
 
     /// Seals admission and wakes an idle next read. It does not cancel any accepted business work.
     pub fn request_close(&self) {
-        self.inner.cancellation.cancel();
+        self.inner.next.request_close();
     }
 
     /// Waits for the actual next-read lease before releasing its original registered receiver.
     pub async fn close(&self) -> Result<()> {
-        self.request_close();
-        self.inner.next.lock().await.signal.take();
-        Ok(())
+        self.inner.next.close().await
     }
 }
 
