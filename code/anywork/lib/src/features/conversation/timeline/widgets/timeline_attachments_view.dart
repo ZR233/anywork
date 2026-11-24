@@ -43,7 +43,10 @@ class TimelineAttachmentsView extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       if (caption case final caption?) ...[
-        Text(caption),
+        Text(
+          caption,
+          style: TextStyle(color: Theme.of(context).colorScheme.onSurface),
+        ),
         const SizedBox(height: 8),
       ],
       Wrap(
@@ -181,6 +184,7 @@ class _FileCellState extends State<_FileCell> {
                       error,
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: colors.onSurface),
                     ),
                   ),
                 ],
@@ -277,7 +281,8 @@ class _FileCellState extends State<_FileCell> {
                             file.filename,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: colors.onSurface),
                           ),
                         ),
                       ),
@@ -309,28 +314,58 @@ class _FileCellState extends State<_FileCell> {
         ),
       );
     }
-    if (widget.busy ||
-        download?.selecting == true ||
-        download?.progress != null) {
+    final progress = download?.progress;
+    if (widget.busy || download?.selecting == true || progress != null) {
+      final percentage = progress == null
+          ? null
+          : '${(progress * 100).floor()}%';
       return SizedBox.square(
-        dimension: 56,
+        dimension: 60,
         child: Stack(
           alignment: Alignment.center,
           fit: StackFit.expand,
           children: [
             CircularProgressIndicator(
-              value: download?.progress,
-              strokeWidth: 3,
+              value: progress,
+              strokeWidth: 4,
+              strokeCap: StrokeCap.round,
+              color: colors.primary,
+              backgroundColor: colors.outlineVariant,
               semanticsLabel: download == null
                   ? null
                   : context.l10n.timelineFileDownload,
+              semanticsValue: percentage,
             ),
-            Icon(
-              download?.paused == true
-                  ? Icons.pause
-                  : timelineFileIcon(widget.file.filename),
-              size: 25,
-              color: colors.onSurfaceVariant,
+            Center(
+              child: ExcludeSemantics(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      download?.paused == true
+                          ? Icons.pause
+                          : timelineFileIcon(widget.file.filename),
+                      size: percentage == null ? 25 : 18,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    if (percentage != null)
+                      SizedBox(
+                        width: 44,
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            percentage,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: colors.onSurface,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),

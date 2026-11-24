@@ -349,10 +349,12 @@ void main() {
       await tester.pump();
       final progress = find.byType(CircularProgressIndicator);
       expect(tester.widget<CircularProgressIndicator>(progress).value, 0.25);
+      expect(find.text('25%'), findsOneWidget);
       await tester.tap(find.byTooltip('暂停下载'));
       await tester.pump();
       expect(first.pauses, 1);
       expect(tester.widget<CircularProgressIndicator>(progress).value, 0.25);
+      expect(find.text('25%'), findsOneWidget);
       await tester.tap(find.byTooltip('继续下载'));
       await tester.pump();
       expect(first.resumes, 1);

@@ -181,24 +181,11 @@ class _ShowFilesDownloadScene extends StatefulWidget {
 }
 
 class _ShowFilesDownloadSceneState extends State<_ShowFilesDownloadScene> {
-  static const _url = 'https://example.invalid/preview-landscape.png';
+  static const _url =
+      'https://raw.githubusercontent.com/ZR233/anywork/'
+      'd991f0804ed9178f51d31faa1db7d60679d60bba/code/anywork/assets/branding/anywork-startup-cat.png';
   static const _size = 80000000;
   static const _itemId = 'preview-show-files-download';
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Seed the same provider the production HTTPS image resolves. The preview
-    // remains interactive and deterministic without a remote image service.
-    final configuration = createLocalImageConfiguration(context);
-    PaintingBinding.instance.imageCache.putIfAbsent(
-      const NetworkImage(_url),
-      () =>
-          MemoryImage(TimelinePreviewFixtures.imageBytes)
-              .resolve(configuration)
-              .completer!,
-    );
-  }
 
   TimelineFileDownload _start({
     required String itemId,
@@ -234,7 +221,7 @@ class _ShowFilesDownloadSceneState extends State<_ShowFilesDownloadScene> {
           deferredSize: _size,
         ),
         const TimelineFileEntry(
-          filename: 'preview-landscape.png',
+          filename: 'anywork-startup-cat.png',
           networkImageUrl: _url,
         ),
         TimelineFileEntry.archived(TimelinePreviewFixtures.imageAttachment),
