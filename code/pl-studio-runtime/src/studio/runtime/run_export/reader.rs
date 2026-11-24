@@ -162,16 +162,7 @@ async fn stream_body_manifest<S: ContentBlobSink>(
             (None, blob)
         } else if let Some(reference) = &entry.reference {
             exported_body_ids.insert(reference.body_id.clone());
-            let blob = read_body_bytes(
-                history,
-                reference,
-                sink,
-                false,
-                false,
-                entry.media_type.clone(),
-            )
-            .await?
-            .1;
+            let blob = read_body_bytes(history, reference, sink, entry.media_type.clone()).await?;
             (Some(reference.clone()), blob)
         } else if entry.byte_length == 0 {
             let blob =
@@ -224,16 +215,8 @@ async fn stream_body_manifest<S: ContentBlobSink>(
                 continue;
             }
             let role = content_role_from_parts(&body.role, &body.body_key);
-            let blob = read_body_bytes(
-                history,
-                &body.reference,
-                sink,
-                false,
-                false,
-                body.media_type.clone(),
-            )
-            .await?
-            .1;
+            let blob =
+                read_body_bytes(history, &body.reference, sink, body.media_type.clone()).await?;
             let line = serde_json::to_vec(&ExportedContentV3 {
                 body_key: body.body_key,
                 native_ref: Some(body.reference),
@@ -318,19 +301,17 @@ fn original_fingerprint(
     Ok(hex::encode(hasher.finalize()))
 }
 
+/// Streams one History body into the sink. The media type is whatever the exported entry
+/// declares; nothing is inferred from the content.
 async fn read_body_bytes<S: ContentBlobSink>(
     history: &HistoryReader,
     reference: &HistoryEventBodyRef,
     sink: &mut S,
-    is_payload: bool,
-    collect: bool,
     explicit_media_type: Option<String>,
-) -> Result<(Option<Vec<u8>>, ExportedBlobV3)> {
+) -> Result<ExportedBlobV3> {
     let mut offset = 0_u64;
-    let mut bytes = collect.then(Vec::new);
     let mut writer = sink.begin_blob().await?;
     let mut utf8 = Utf8StreamValidator::default();
-    let mut first_non_ws = None;
     while offset < reference.byte_length {
         let max_bytes =
             (reference.byte_length - offset).min(u64::from(CONTENT_EXPORT_CHUNK_BYTES)) as u32;
@@ -344,29 +325,15 @@ async fn read_body_bytes<S: ContentBlobSink>(
                 && window.total_length == reference.byte_length,
             "History body range did not advance within its declared length"
         );
-        if first_non_ws.is_none() {
-            first_non_ws = window
-                .bytes
-                .iter()
-                .copied()
-                .find(|byte| !byte.is_ascii_whitespace());
-        }
         utf8.push(&window.bytes);
         writer.write_chunk(&window.bytes).await?;
-        if let Some(bytes) = &mut bytes {
-            bytes.extend_from_slice(&window.bytes);
-        }
         offset = offset
             .checked_add(window.bytes.len() as u64)
             .context("History body offset overflow")?;
     }
     let encoding = utf8.finish().to_string();
-    let media_type = explicit_media_type.or_else(|| {
-        (is_payload && encoding == "utf-8" && matches!(first_non_ws, Some(b'{') | Some(b'[')))
-            .then(|| "application/json".to_string())
-    });
-    let blob = writer.finish(media_type, encoding).await?;
-    Ok((bytes, blob))
+    let blob = writer.finish(explicit_media_type, encoding).await?;
+    Ok(blob)
 }
 
 /// Incremental UTF-8 validator across arbitrary History body window splits.

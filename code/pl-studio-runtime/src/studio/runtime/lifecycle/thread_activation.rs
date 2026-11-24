@@ -21,7 +21,7 @@ impl StudioRuntime {
         if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
             self.check_thread_execution_access(&self.read_owned_thread(id).await?.into())?;
             self.require_session(id)?.ensure_agent_admission_open(id)?;
-            self.residency.touch(id).await;
+            self.residency.touch(id);
             return Ok(thread);
         }
         let requested_activation = self.thread_factory.activation(id)?;
@@ -35,7 +35,7 @@ impl StudioRuntime {
         // another full StudioRuntime clone, across activation/recovery awaits.
         let _activation_pin = self.residency.pin_many([id.to_owned()]);
         if let Some(thread) = self.session_of(id).and_then(|session| session.thread(id)) {
-            self.residency.touch(id).await;
+            self.residency.touch(id);
             self.enforce_residency_limit().await;
             return Ok(thread);
         }
@@ -127,7 +127,7 @@ impl StudioRuntime {
                 return Err(error.into());
             }
             tracing::debug!(target: "thread_preparation", thread_id = %activated_id, stage = "assembler", elapsed_ms = assembler_started.elapsed().as_millis() as u64, "completed");
-            self.residency.touch(&activated_id).await;
+            self.residency.touch(&activated_id);
         }
         // 主会话载入/恢复时就地核对它自己的子成员：中断事实与待决摘要只在各自保存的检查点里
         // 读取并投影到目录，不激活成员、不重建工作区、不发模型请求（design/17）。
@@ -135,7 +135,7 @@ impl StudioRuntime {
         if restored_root.parent_thread_id.is_none() {
             self.thread_observations.reconcile_children(id).await?;
         }
-        self.residency.touch(id).await;
+        self.residency.touch(id);
         self.enforce_residency_limit().await;
         self.session_of(id)
             .and_then(|session| session.thread(id))

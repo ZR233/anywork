@@ -365,23 +365,20 @@ fn user_input(
                     .answers()
                     .iter()
                     .map(|answer| {
+                        // Secret questions redact both the stored answers and their count.
+                        let redacted = answer.is_redacted()
+                            || input
+                                .questions()
+                                .iter()
+                                .any(|q| q.id == answer.question_id() && q.is_secret);
                         Ok(AnswerDescriptor {
                             question_id: answer.question_id().to_owned(),
-                            answer_count: if answer.is_redacted()
-                                || input
-                                    .questions()
-                                    .iter()
-                                    .any(|q| q.id == answer.question_id() && q.is_secret)
-                            {
+                            answer_count: if redacted {
                                 0
                             } else {
                                 count(answer.answers().len())?
                             },
-                            redacted: answer.is_redacted()
-                                || input
-                                    .questions()
-                                    .iter()
-                                    .any(|q| q.id == answer.question_id() && q.is_secret),
+                            redacted,
                         })
                     })
                     .collect::<Result<_>>()?,

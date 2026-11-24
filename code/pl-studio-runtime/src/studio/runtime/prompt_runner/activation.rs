@@ -25,7 +25,7 @@ impl StudioRuntime {
         tokio::sync::OwnedMutexGuard<()>,
     )> {
         let started = std::time::Instant::now();
-        self.ensure_prompt_runtime_ready().await?;
+        self.ensure_prompt_runtime_ready()?;
         let thread = self.ensure_thread_owner(id).await?;
         let operation_started = std::time::Instant::now();
         let session = self.require_session(id)?;
@@ -63,19 +63,11 @@ impl StudioRuntime {
         Ok(())
     }
 
-    pub(in crate::studio::runtime) async fn register_new_thread(
-        &self,
-        thread: ThreadRecord,
-    ) -> Result<()> {
-        self.ensure_thread_owner(&thread.id).await?;
-        Ok(())
-    }
-
     pub(in crate::studio::runtime) async fn read_owned_thread(
         &self,
         thread_id: &str,
     ) -> Result<ThreadRecord> {
-        match self.find_owned_thread(thread_id).await? {
+        match self.find_owned_thread(thread_id)? {
             Some(record) => Ok(record),
             // An unknown Thread is an API-visible rejection, not an internal failure: the transports
             // must be able to answer 404 with a typed reason.
@@ -83,7 +75,7 @@ impl StudioRuntime {
         }
     }
 
-    pub(crate) async fn find_owned_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
+    pub(crate) fn find_owned_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
         let Some(thread) = self
             .agent_facility
             .product_events

@@ -257,7 +257,7 @@ impl StudioRuntime {
 
     /// 淘汰超出 LRU 容量且已保存的空闲驻留 actor；未保存时保留内存。
     pub(in crate::studio::runtime) async fn enforce_residency_limit(&self) {
-        let candidates = self.residency.over_capacity().await;
+        let candidates = self.residency.over_capacity();
         if candidates.is_empty() {
             return;
         }
@@ -273,9 +273,9 @@ impl StudioRuntime {
             };
             match Box::pin(session.evict_idle(&thread_id)).await {
                 Ok(true) => {
-                    self.residency.remove(&thread_id).await;
+                    self.residency.remove(&thread_id);
                 }
-                Ok(false) => self.residency.touch(&thread_id).await,
+                Ok(false) => self.residency.touch(&thread_id),
                 Err(error) => {
                     tracing::warn!(%thread_id, %error, "idle Thread eviction failed; owner retained")
                 }

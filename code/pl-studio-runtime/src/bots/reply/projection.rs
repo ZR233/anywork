@@ -37,21 +37,19 @@ impl ReplyProjection {
                 "reply projection exceeded its item or UTF-8 budget".into(),
             ));
         }
-        // 身份只在同名字段内比较：`id` 与 `member_id` 各自不得与先前项重复。
         let mut ids = HashSet::with_capacity(items.len());
         let mut member_ids = HashSet::with_capacity(items.len());
+        let mut terminal = false;
         for item in &items {
             if !ids.insert(item.id.as_str()) || !member_ids.insert(item.member_id.as_str()) {
                 return Err(gap("duplicate reply completion identity"));
             }
-        }
-        if items
-            .iter()
-            .filter(|item| matches!(&item.kind, ReplyItemKind::Terminal(_)))
-            .count()
-            > 1
-        {
-            return Err(gap("reply target has conflicting terminal messages"));
+            if matches!(&item.kind, ReplyItemKind::Terminal(_)) {
+                if terminal {
+                    return Err(gap("reply target has conflicting terminal messages"));
+                }
+                terminal = true;
+            }
         }
         self.items = items;
         self.covered = false;

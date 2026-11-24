@@ -9,9 +9,7 @@ use sea_orm::{
 
 use super::schema::{STUDIO_DATABASE_SCHEMA_VERSION, migrate};
 use crate::studio::catalog::CatalogStore;
-use crate::studio::paths::{
-    SqliteFileMode, StudioPaths, default_db_path, sqlite_family_paths, sqlite_file_options,
-};
+use crate::studio::paths::{SqliteFileMode, StudioPaths, sqlite_family_paths, sqlite_file_options};
 use crate::studio::records::WorkspaceRecord;
 use crate::studio::store::settings::SettingsStore;
 use crate::studio::store::workspaces::WorkspaceStore;
@@ -39,10 +37,6 @@ enum InstallationState {
 }
 
 impl StudioStore {
-    pub async fn default_app() -> Result<Self> {
-        Self::open_database(&default_db_path()?).await
-    }
-
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_database(path.as_ref()).await
     }
@@ -449,7 +443,8 @@ async fn inspect_database(path: &Path) -> Result<()> {
     .await;
     let validation = match version {
         Ok(STUDIO_DATABASE_SCHEMA_VERSION) => validate_database(&database).await,
-        // 上一个大版本的 v2 库可以在打开后原地升级；更早的 dev 版本仍交给启动入口。
+        // 上一个大版本的 v2 库可以在打开后原地升级；其余版本已在 preflight 以
+        // `UnsupportedSchema` 拒绝，这里只保留防御性兜底。
         Ok(0) => Ok(()),
         Ok(version)
             if (UPGRADEABLE_STUDIO_DATABASE_SCHEMA_VERSION..STUDIO_DATABASE_SCHEMA_VERSION)
@@ -457,7 +452,6 @@ async fn inspect_database(path: &Path) -> Result<()> {
         {
             Ok(())
         }
-        Ok(19..=21) => Err(StudioDatabaseError::StorageMigrationRequired.into()),
         Ok(found) => Err(StudioDatabaseError::UnsupportedSchema {
             found,
             supported: STUDIO_DATABASE_SCHEMA_VERSION,

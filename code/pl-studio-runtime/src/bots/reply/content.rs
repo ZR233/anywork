@@ -293,7 +293,7 @@ async fn decode_envelope(
                 return Ok(None);
             }
             let body = unique_body(&bodies, "body", detail, id)?;
-            let bytes = body.read(reader, true).await?;
+            let bytes = body.read(reader).await?;
             let preview = match String::from_utf8(bytes) {
                 Ok(text) => text,
                 Err(error) => {
@@ -329,7 +329,7 @@ async fn decode_envelope(
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| gap("file display lacks frozen tool call identity"))?;
                 let body = unique_body(&bodies, "tool.output-artifacts", detail, id)?;
-                let bytes = body.read(reader, true).await?;
+                let bytes = body.read(reader).await?;
                 let artifacts: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
                     .map_err(|error| gap(&format!("malformed display artifacts: {error}")))?;
                 let mut receipt = None;
@@ -429,10 +429,10 @@ impl Body {
         }
     }
 
-    async fn read(&self, reader: &HistoryReader, complete: bool) -> Result<Vec<u8>, FinalError> {
+    async fn read(&self, reader: &HistoryReader) -> Result<Vec<u8>, FinalError> {
         match (&self.inline_text, &self.reference) {
             (Some(text), None) => Ok(text.as_bytes().to_vec()),
-            (None, Some(reference)) => read_bytes(reader, reference, complete).await,
+            (None, Some(reference)) => read_bytes(reader, reference).await,
             _ => Err(gap("canonical reply body has no unique source")),
         }
     }
@@ -450,7 +450,6 @@ fn check_length(length: u64) -> Result<(), FinalError> {
 async fn read_bytes(
     reader: &HistoryReader,
     reference: &HistoryEventBodyRef,
-    complete: bool,
 ) -> Result<Vec<u8>, FinalError> {
     check_length(reference.byte_length)?;
     let mut bytes = Vec::new();
@@ -472,7 +471,7 @@ async fn read_bytes(
             ));
         }
         bytes.extend(window.bytes);
-        if bytes.len() as u64 == reference.byte_length || !complete {
+        if bytes.len() as u64 == reference.byte_length {
             return Ok(bytes);
         }
     }

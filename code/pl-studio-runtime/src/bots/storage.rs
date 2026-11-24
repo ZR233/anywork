@@ -299,11 +299,11 @@ impl BotStateStore {
             // 由调用方在下一等待前按真实字段计权。
             tx.commit().await.map_err(storage)?;
             // 身份行必须与派生 key 及本请求逐列一致：不从请求补或覆盖持久身份。
-            let stored_identity = strict_text(&row, "identity")?;
-            let stored_bot = strict_text(&row, "bot_id")?;
-            let stored_message = strict_text(&row, "message_id")?;
-            let stored_chat = strict_text(&row, "chat_id")?;
-            let stored_hash = strict_text(&row, "content_hash")?;
+            let stored_identity = stored_text(&row, "identity")?;
+            let stored_bot = stored_text(&row, "bot_id")?;
+            let stored_message = stored_text(&row, "message_id")?;
+            let stored_chat = stored_text(&row, "chat_id")?;
+            let stored_hash = stored_text(&row, "content_hash")?;
             if stored_identity != identity
                 || stored_bot != inbound.bot_id
                 || stored_message != inbound.message_id
@@ -321,11 +321,11 @@ impl BotStateStore {
                 // 身份行存在但工作行缺失：绑定/归属字段无从证明，不能借本次事件回填。
                 return Err(work_needs_recovery());
             };
-            let work_identity = strict_text(&work, "identity")?;
-            let work_bot = strict_text(&work, "bot_id")?;
-            let work_chat = strict_text(&work, "chat_id")?;
-            let work_message = strict_text(&work, "message_id")?;
-            let work_hash = strict_text(&work, "content_hash")?;
+            let work_identity = stored_text(&work, "identity")?;
+            let work_bot = stored_text(&work, "bot_id")?;
+            let work_chat = stored_text(&work, "chat_id")?;
+            let work_message = stored_text(&work, "message_id")?;
+            let work_hash = stored_text(&work, "content_hash")?;
             if work_identity != identity
                 || work_bot != inbound.bot_id
                 || work_chat != inbound.chat_id
@@ -349,16 +349,16 @@ impl BotStateStore {
                 chat_id: work_chat,
                 content_hash: work_hash,
                 // 路由、绑定与 fencing 判据只接受持久值本身；空串是合法业务值。
-                text: strict_text(&work, "text")?,
-                attachments: serde_json::from_str(&strict_text(&work, "attachments")?)
+                text: stored_text(&work, "text")?,
+                attachments: serde_json::from_str(&stored_text(&work, "attachments")?)
                     .map_err(|_| work_needs_recovery())?,
-                open_id: strict_text(&work, "open_id")?,
-                chat_kind: strict_text(&work, "chat_kind")?,
-                app_id: strict_text(&work, "app_id")?,
-                workspace_id: strict_text(&work, "workspace_id")?,
-                creation_id: strict_text(&work, "creation_id")?,
+                open_id: stored_text(&work, "open_id")?,
+                chat_kind: stored_text(&work, "chat_kind")?,
+                app_id: stored_text(&work, "app_id")?,
+                workspace_id: stored_text(&work, "workspace_id")?,
+                creation_id: stored_text(&work, "creation_id")?,
                 binding_revision: strict_watermark(&work, "binding_revision")?,
-                watch_input: strict_text(&work, "watch_input")?,
+                watch_input: stored_text(&work, "watch_input")?,
             }));
         }
         let pending = tx
@@ -456,11 +456,11 @@ impl BotStateStore {
         };
         // 行身份必须与派生 key 及调用键逐列一致；content_hash 同样严格解码，
         // 不把损坏或缺失默认成空串后继续认领。
-        let stored_identity = strict_text(&row, "identity")?;
-        let stored_bot = strict_text(&row, "bot_id")?;
-        let stored_chat = strict_text(&row, "chat_id")?;
-        let stored_message = strict_text(&row, "message_id")?;
-        let _content_hash = strict_text(&row, "content_hash")?;
+        let stored_identity = stored_text(&row, "identity")?;
+        let stored_bot = stored_text(&row, "bot_id")?;
+        let stored_chat = stored_text(&row, "chat_id")?;
+        let stored_message = stored_text(&row, "message_id")?;
+        let _content_hash = stored_text(&row, "content_hash")?;
         if stored_identity != identity
             || stored_bot != bot_id
             || stored_chat != chat_id
@@ -806,10 +806,10 @@ impl BotStateStore {
         rows.into_iter()
             .map(|row| {
                 // 派生 key 与列值必须自洽：坏 key 不能先被当成可恢复工作再变 Missing。
-                let identity: String = strict_text(&row, "identity")?;
-                let row_bot: String = strict_text(&row, "bot_id")?;
-                let row_chat: String = strict_text(&row, "chat_id")?;
-                let row_message: String = strict_text(&row, "message_id")?;
+                let identity: String = stored_text(&row, "identity")?;
+                let row_bot: String = stored_text(&row, "bot_id")?;
+                let row_chat: String = stored_text(&row, "chat_id")?;
+                let row_message: String = stored_text(&row, "message_id")?;
                 if row_bot != bot_id
                     || identity != inbound_identity(&row_bot, &row_chat, &row_message)
                 {
@@ -821,16 +821,16 @@ impl BotStateStore {
                     message_id: row_message,
                     content_hash: stored_text(&row, "content_hash")?,
                     text: stored_text(&row, "text")?,
-                    attachments: serde_json::from_str(&strict_text(&row, "attachments")?)
+                    attachments: serde_json::from_str(&stored_text(&row, "attachments")?)
                         .map_err(|_| work_needs_recovery())?,
                     open_id: stored_text(&row, "open_id")?,
                     chat_kind: stored_text(&row, "chat_kind")?,
                     // 绑定/路由/fencing 判据只接受持久值；空串（如尚无续接输入）是合法值。
-                    app_id: strict_text(&row, "app_id")?,
-                    workspace_id: strict_text(&row, "workspace_id")?,
-                    creation_id: strict_text(&row, "creation_id")?,
+                    app_id: stored_text(&row, "app_id")?,
+                    workspace_id: stored_text(&row, "workspace_id")?,
+                    creation_id: stored_text(&row, "creation_id")?,
                     binding_revision: strict_watermark(&row, "binding_revision")?,
-                    watch_input: strict_text(&row, "watch_input")?,
+                    watch_input: stored_text(&row, "watch_input")?,
                 })
             })
             .collect()
@@ -894,12 +894,12 @@ impl BotStateStore {
         // 等待保留，随后只由调用方按真实长度计权。
         tx.commit().await.map_err(storage)?;
         // 路由与创建身份只接受持久值：解码失败不得默认成 bound/空创建。
-        let stored_chat = strict_text(&row, "chat_id")?;
-        let status = strict_text(&row, "status")?;
-        let thread_id = strict_text(&row, "thread_id")?;
-        let stored_creation = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "workspace_id")?;
-        let diagnostic = strict_text(&row, "diagnostic")?;
+        let stored_chat = stored_text(&row, "chat_id")?;
+        let status = stored_text(&row, "status")?;
+        let thread_id = stored_text(&row, "thread_id")?;
+        let stored_creation = stored_text(&row, "creation_id")?;
+        let stored_project = stored_text(&row, "workspace_id")?;
+        let diagnostic = stored_text(&row, "diagnostic")?;
         // 水位同样严格解码：坏行不能继续被当成可用绑定。
         let _revision = strict_watermark(&row, "revision")?;
         let _generation = strict_watermark(&row, "generation")?;
@@ -957,10 +957,10 @@ impl BotStateStore {
             .map_err(storage)?;
         let (revision, generation) = if let Some(row) = existing {
             // 路由、创建身份与项目归属只接受持久值：解码失败不得默认成 bound 或空创建。
-            let status = strict_text(&row, "status")?;
-            let bound = strict_text(&row, "thread_id")?;
-            let stored_creation = strict_text(&row, "creation_id")?;
-            let stored_project = strict_text(&row, "workspace_id")?;
+            let status = stored_text(&row, "status")?;
+            let bound = stored_text(&row, "thread_id")?;
+            let stored_creation = stored_text(&row, "creation_id")?;
+            let stored_project = stored_text(&row, "workspace_id")?;
             // 水位只接受无损解码：缺列或损坏不得回退到 1 覆盖既有水位。
             let revision = strict_watermark(&row, "revision")?;
             let generation = strict_watermark(&row, "generation")?;
@@ -1071,14 +1071,14 @@ impl BotStateStore {
             Some(row) => {
                 // 只接受与查询键一致的持久行；状态分类先于归属判定，
                 // 迁移保留的 needs_attention 缺创建/项目是合法事实，不用当前请求补齐。
-                let stored_chat: String = strict_text(&row, "chat_id")?;
+                let stored_chat: String = stored_text(&row, "chat_id")?;
                 if stored_chat != chat_id {
                     return Err(corrupt_binding());
                 }
-                let stored_status: String = strict_text(&row, "status")?;
-                let stored_project: String = strict_text(&row, "workspace_id")?;
-                let stored_creation: String = strict_text(&row, "creation_id")?;
-                let thread_id = empty_to_none(strict_text(&row, "thread_id")?)
+                let stored_status: String = stored_text(&row, "status")?;
+                let stored_project: String = stored_text(&row, "workspace_id")?;
+                let stored_creation: String = stored_text(&row, "creation_id")?;
+                let thread_id = empty_to_none(stored_text(&row, "thread_id")?)
                     .filter(|value| value != "pending");
                 let revision = strict_watermark(&row, "revision")?;
                 // 已选水位两列都严格解码，不静默忽略 generation。
@@ -1111,7 +1111,7 @@ impl BotStateStore {
                     thread_id,
                     revision,
                     status: stored_status,
-                    diagnostic: empty_to_none(strict_text(&row, "diagnostic")?),
+                    diagnostic: empty_to_none(stored_text(&row, "diagnostic")?),
                 }
             }
             None => BindingProjection {
@@ -1226,10 +1226,10 @@ impl BotStateStore {
             tx.commit().await.map_err(storage)?;
             return Err(binding_needs_recovery());
         };
-        let status = strict_text(&row, "status")?;
-        let thread_id = strict_text(&row, "thread_id")?;
-        let creation_id = strict_text(&row, "creation_id")?;
-        let stored_project = strict_text(&row, "workspace_id")?;
+        let status = stored_text(&row, "status")?;
+        let thread_id = stored_text(&row, "thread_id")?;
+        let creation_id = stored_text(&row, "creation_id")?;
+        let stored_project = stored_text(&row, "workspace_id")?;
         let revision = strict_watermark(&row, "revision")?;
         let claimed = status == "creating"
             && thread_id.is_empty()
@@ -1266,18 +1266,18 @@ impl BotStateStore {
             .map_err(storage)?;
         row.map(|row| {
             // 操作身份与冻结 revision 是接续判据：损坏必须显式失败，不能默认化。
-            let stored_operation: String = strict_text(&row, "operation_id")?;
+            let stored_operation: String = stored_text(&row, "operation_id")?;
             if stored_operation != operation_id {
                 return Err(corrupt_binding());
             }
             Ok(BindingOperation {
                 operation_id: stored_operation,
-                bot_id: strict_text(&row, "bot_id")?,
-                chat_id: strict_text(&row, "chat_id")?,
-                content_hash: strict_text(&row, "content_hash")?,
+                bot_id: stored_text(&row, "bot_id")?,
+                chat_id: stored_text(&row, "chat_id")?,
+                content_hash: stored_text(&row, "content_hash")?,
                 expected_revision: strict_watermark(&row, "expected_revision")?,
-                creation_id: strict_text(&row, "creation_id")?,
-                thread_id: empty_to_none(strict_text(&row, "thread_id")?),
+                creation_id: stored_text(&row, "creation_id")?,
+                thread_id: empty_to_none(stored_text(&row, "thread_id")?),
             })
         })
         .transpose()
@@ -1774,11 +1774,6 @@ fn storage(error: impl std::fmt::Display) -> FeishuError {
 
 fn statement(sql: &str, values: Vec<Value>) -> Statement {
     Statement::from_sql_and_values(DatabaseBackend::Sqlite, sql, values)
-}
-
-/// 绑定记录的关键身份与水位只接受无损解码：损坏或回退默认值会让归属与合并水位失真。
-fn strict_text(row: &QueryResult, column: &str) -> Result<String, FeishuError> {
-    stored_text(row, column)
 }
 
 fn strict_watermark(row: &QueryResult, column: &str) -> Result<u64, FeishuError> {

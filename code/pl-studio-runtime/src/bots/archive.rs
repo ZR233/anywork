@@ -233,26 +233,6 @@ impl Drop for BotArchiveGuard {
     }
 }
 
-#[cfg(test)]
-type InboundDeletionPause = (
-    String,
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
-
-#[cfg(test)]
-#[derive(Default)]
-pub(super) struct DeletionTestHooks {
-    pub inbound: std::sync::Mutex<Option<InboundDeletionPause>>,
-    pub admission_attempt: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
-    pub ledger_clear: std::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
-}
-
 impl BotRuntime {
     pub(crate) async fn delete_threads(&self, ids: &[String]) -> Result<(), FeishuError> {
         let bots = self
@@ -265,34 +245,9 @@ impl BotRuntime {
             .collect::<Vec<_>>();
         for (id, bot) in bots {
             if let Some(bot) = bot {
-                #[cfg(test)]
-                if let Some(attempt) = self
-                    .inner
-                    .deletion_tests
-                    .admission_attempt
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take()
-                {
-                    let _ = attempt.send(());
-                }
                 // Inbound binding claims, frozen-body admission and ledger deletion share this
                 // same boundary. Reply join alone cannot observe an unregistered inbound writer.
                 let _admission = bot.admission.lock().await;
-                #[cfg(test)]
-                {
-                    let pause = self
-                        .inner
-                        .deletion_tests
-                        .ledger_clear
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .take();
-                    if let Some((entered, release)) = pause {
-                        let _ = entered.send(());
-                        let _ = release.await;
-                    }
-                }
                 bot.store.delete_threads(ids).await?;
             } else {
                 let path = self.inner.paths.bot_dir(&id).join("state.sqlite");

@@ -58,8 +58,6 @@ pub(crate) struct BotRuntimeInner {
     pub(crate) host: std::sync::Mutex<Option<std::sync::Weak<StudioRuntime>>>,
     pub(super) replies: Mutex<super::archive::BotReplyTasks>,
     pub(super) reply_archive_seals: std::sync::Mutex<BTreeMap<String, usize>>,
-    #[cfg(test)]
-    pub(super) deletion_tests: super::archive::DeletionTestHooks,
     pub(crate) reply_slots: Arc<Semaphore>,
     pub(crate) reply_cancel: CancellationToken,
     pub(crate) occupancy: OccupancyTasks,
@@ -126,8 +124,6 @@ impl BotRuntime {
                 host: std::sync::Mutex::new(None),
                 replies: Mutex::new(super::archive::BotReplyTasks::default()),
                 reply_archive_seals: std::sync::Mutex::new(BTreeMap::new()),
-                #[cfg(test)]
-                deletion_tests: Default::default(),
                 reply_slots: Arc::new(Semaphore::new(32)),
                 reply_cancel: CancellationToken::new(),
                 occupancy: OccupancyTasks::new(),

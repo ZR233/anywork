@@ -144,8 +144,8 @@ fn validated_bundled_assets() -> Result<Vec<BundledAsset>> {
         if is_main_skill_document(&path) {
             let content = std::str::from_utf8(asset.data.as_ref())
                 .with_context(|| format!("bundled Skill document is not UTF-8: {embedded_path}"))?;
-            pl_tool::skill::validate_skill_name(skill_name)
-                .with_context(|| format!("invalid bundled Skill directory name: {skill_name}"))?;
+            // The document validator also checks the frontmatter name, which must equal the
+            // directory name; a separate directory-name check would only repeat it.
             pl_tool::skill::validate_skill_document(content, Some(skill_name))
                 .with_context(|| format!("invalid bundled Skill document: {embedded_path}"))?;
             skill_documents.insert(skill_name.to_string());

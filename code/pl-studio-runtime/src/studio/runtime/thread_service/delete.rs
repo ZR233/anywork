@@ -143,7 +143,7 @@ impl StudioRuntime {
                 )
                 .await;
             pipeline
-                .join_scope(self, session, scope, "delete preparations did not join")
+                .join_scope(session, scope, "delete preparations did not join")
                 .await?;
             let tree = self.store.read_directory_tree(&root_id).await?;
             pipeline.ensure_frozen(
@@ -200,7 +200,7 @@ impl StudioRuntime {
             )
             .await?;
             for id in &ids {
-                self.residency.remove(id).await;
+                self.residency.remove(id);
             }
             // Git owns worktree removal. Dedicated execution and host roots are removed below
             // as a whole; archive temp migration/cleanup would only traverse them twice.

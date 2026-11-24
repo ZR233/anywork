@@ -224,7 +224,6 @@ impl AcpAccountRuntime {
         }
         for operation in operations {
             operation.cancel.cancel();
-            operation.cleanup_retry.notify_one();
         }
         self.inner.retirement_wake.notify_one();
     }
@@ -494,7 +493,6 @@ impl AcpAccountInner {
             cancel: tokio_util::sync::CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication,
-            cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),
         });
         let initial = super::mapping::initial_state(&request.action, &request.operation_id);
@@ -609,7 +607,6 @@ mod tests {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication: sender,
-            cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),
         }));
         slot.state = AcpAuthState::Checking {

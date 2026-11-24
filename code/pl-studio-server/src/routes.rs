@@ -724,7 +724,6 @@ async fn save_thread_mode_definition(
                 request.expected_revision,
                 request.document,
             )
-            .await
             .map_err(ApiError::from)?,
     ))
 }
@@ -743,7 +742,6 @@ async fn delete_thread_mode_definition(
                 request.expected_revision,
                 &parse_mode(&mode_id)?,
             )
-            .await
             .map_err(ApiError::from)?,
     ))
 }
@@ -757,7 +755,6 @@ async fn reload_thread_mode_definitions(
         state
             .runtime
             .reload_thread_mode_definitions(&request.operation_id, request.expected_revision)
-            .await
             .map_err(ApiError::from)?,
     ))
 }

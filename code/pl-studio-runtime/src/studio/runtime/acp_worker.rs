@@ -111,29 +111,13 @@ pub(super) struct AcpSpawnRequest {
     pub env: std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>,
 }
 
-/// 物理启动失败的步骤分类；只作为安全诊断标签，不含路径、命令或原始错误文本。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AcpSpawnStep {
-    /// 启动官方程序并接管其 stdio。
-    Process,
-}
-
-impl AcpSpawnStep {
-    /// 稳定的诊断标签；与 `Debug` 输出不同，它不随内部重构或平台变化。
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Process => "process",
-        }
-    }
-}
-
 /// 物理启动失败的安全类别；原始原因只作内部诊断。
 pub(super) enum AcpSpawnError {
     /// 程序路径不是绝对路径、不是文件或不可执行。
     MissingExecutable,
-    /// 启动步骤失败：`step` 是可公开的安全类别，`source` 只在进程内做有界诊断，
+    /// 启动官方程序进程失败：`source` 只在进程内做有界诊断，
     /// 绝不进入产品状态、日志正文或 UI（见 design/28 §28.1）。
-    Startup { step: AcpSpawnStep, source: String },
+    Startup { source: String },
     /// 启动前已经收到取消：不派生任何进程。
     Cancelled,
 }
@@ -148,9 +132,8 @@ impl std::fmt::Debug for AcpSpawnError {
         match self {
             Self::MissingExecutable => formatter.write_str("MissingExecutable"),
             Self::Cancelled => formatter.write_str("Cancelled"),
-            Self::Startup { step, source } => formatter
+            Self::Startup { source } => formatter
                 .debug_struct("Startup")
-                .field("step", step)
                 .field("source_bytes", &source.len())
                 .finish(),
         }
@@ -238,11 +221,9 @@ impl AcpWorker {
             .stderr(pl_remote_helper::Stdio::Piped);
         for (key, value) in request.env {
             let key = key.into_string().map_err(|_| AcpSpawnError::Startup {
-                step: AcpSpawnStep::Process,
                 source: "environment name is not UTF-8".into(),
             })?;
             let value = value.into_string().map_err(|_| AcpSpawnError::Startup {
-                step: AcpSpawnStep::Process,
                 source: "environment value is not UTF-8".into(),
             })?;
             command.env(key, value);
@@ -251,7 +232,6 @@ impl AcpWorker {
             .spawn()
             .await
             .map_err(|error| AcpSpawnError::Startup {
-                step: AcpSpawnStep::Process,
                 source: error.to_string(),
             })?;
         let stderr_stop = CancellationToken::new();
@@ -333,7 +313,6 @@ impl AcpWorker {
         let result = self.observe_exit().await;
         match result {
             Ok(()) => Reclaim::Stopped,
-            Err(issue) if self.settled.is_some() => Reclaim::Settled(issue),
             Err(issue) => Reclaim::Pending(issue),
         }
     }

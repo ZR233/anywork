@@ -19,39 +19,17 @@ pub(in crate::studio::runtime) struct ObservationSlot {
     readers: Mutex<Option<Vec<ReadRegistration>>>,
 }
 
-enum ReadRegistration {
-    Current(std::sync::Weak<super::super::current_reader::Inner>),
-}
-
-enum ReadOwner {
-    Current(super::super::CurrentReader),
-}
+/// A registered reader is only tracked while its owner is still alive.
+struct ReadRegistration(std::sync::Weak<super::super::current_reader::Inner>);
 
 impl ReadRegistration {
-    fn upgrade(&self) -> Option<ReadOwner> {
-        match self {
-            Self::Current(reader) => reader
-                .upgrade()
-                .map(|inner| ReadOwner::Current(super::super::CurrentReader { inner })),
-        }
+    fn upgrade(&self) -> Option<super::super::CurrentReader> {
+        self.0
+            .upgrade()
+            .map(|inner| super::super::CurrentReader { inner })
     }
     fn alive(&self) -> bool {
-        match self {
-            Self::Current(reader) => reader.strong_count() > 0,
-        }
-    }
-}
-
-impl ReadOwner {
-    fn request_close(&self) {
-        match self {
-            Self::Current(reader) => reader.request_close(),
-        }
-    }
-    async fn close(self) -> anyhow::Result<()> {
-        match self {
-            Self::Current(reader) => reader.close().await,
-        }
+        self.0.strong_count() > 0
     }
 }
 
@@ -79,7 +57,7 @@ impl ObservationSlot {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(readers) = readers.as_mut() {
             readers.retain(ReadRegistration::alive);
-            readers.push(ReadRegistration::Current(Arc::downgrade(&reader.inner)));
+            readers.push(ReadRegistration(Arc::downgrade(&reader.inner)));
         } else {
             reader.request_close();
         }

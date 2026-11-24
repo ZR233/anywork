@@ -70,13 +70,12 @@ impl TreeSettlementPipeline {
     /// keeps the caller's context; the inner join error is unchanged.
     pub(super) async fn join_scope(
         &self,
-        runtime: &StudioRuntime,
         session: &SessionRuntime,
         scope: &ArchiveScopeSeal,
         timeout_context: &'static str,
     ) -> Result<()> {
         tokio::time::timeout(
-            runtime.archive_settle_timeout(),
+            super::super::ARCHIVE_TREE_SETTLE_TIMEOUT,
             session.drain_archive_preparations(scope),
         )
         .await
@@ -87,11 +86,10 @@ impl TreeSettlementPipeline {
     /// Project archive joins every sealed root inside one shared close budget.
     pub(super) async fn join_scopes(
         &self,
-        runtime: &StudioRuntime,
         scopes: &[(SessionRuntime, ArchiveScopeSeal)],
         timeout_context: &'static str,
     ) -> Result<()> {
-        tokio::time::timeout(runtime.archive_settle_timeout(), async {
+        tokio::time::timeout(super::super::ARCHIVE_TREE_SETTLE_TIMEOUT, async {
             for (session, scope) in scopes {
                 session.drain_archive_preparations(scope).await?;
             }

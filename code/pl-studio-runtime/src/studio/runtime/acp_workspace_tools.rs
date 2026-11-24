@@ -302,7 +302,6 @@ impl WorkspaceTools {
 
     async fn invoke(
         self: Arc<Self>,
-        host: Arc<AgentHost>,
         context: AgentCallContext,
         name: String,
         input: OpaquePayload,
@@ -316,11 +315,6 @@ impl WorkspaceTools {
         if observer.is_cancelled() {
             return Err(ControlError::Closed);
         }
-        let business_context = AgentCallContext {
-            caller: context.caller,
-            call_id: context.call_id.clone(),
-            cancellation: cancellation.clone(),
-        };
         let owner = self.clone();
         let invocation = WorkspaceInvocation {
             owner_id: self.thread_id.clone(),
@@ -336,9 +330,6 @@ impl WorkspaceTools {
             .tasks
             .start(identity, cancellation, async move {
                 let output = async {
-                    host.authorize_workspace_call(&business_context)
-                        .await
-                        .map_err(ToolError::new)?;
                     let mut invocation = invocation;
                     if policy
                         .authorization
@@ -603,9 +594,7 @@ impl HostWorkspaceSink for McpWorkspaceSink<'_> {
                 let policy = policy.clone();
                 Box::pin(async move {
                     host.authorize_workspace_call(&context).await?;
-                    owner
-                        .invoke(host, context, name, input, policy, handle)
-                        .await
+                    owner.invoke(context, name, input, policy, handle).await
                 })
             },
         );

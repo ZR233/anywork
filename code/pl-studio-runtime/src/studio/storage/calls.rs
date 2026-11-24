@@ -1285,7 +1285,7 @@ async fn apply_batch(
     #[cfg(feature = "benchmarks")]
     shared
         .observation
-        .lock_acquired(false, lock_started.elapsed());
+        .write_lock_acquired(lock_started.elapsed());
     // Locator recovery is a prerequisite only for diagnostics, never for absolute costs.
     // Recovery commits independently before this batch; its pending segment responsibility
     // stays with the log on failure, while rejected diagnostics report the original error.

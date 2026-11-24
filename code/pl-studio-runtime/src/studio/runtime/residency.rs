@@ -7,14 +7,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::Mutex as AsyncMutex;
-
 /// 未选中、无显式 pin 的驻留 Thread actor 容量。
 const INACTIVE_RESIDENT_CAPACITY: usize = 4;
 
 #[derive(Clone)]
 pub(in crate::studio) struct ThreadResidency {
-    order: Arc<AsyncMutex<VecDeque<String>>>,
+    /// Every LRU operation is a short critical section without awaits, so a plain mutex is enough.
+    order: Arc<Mutex<VecDeque<String>>>,
     pinned: Arc<Mutex<HashMap<String, usize>>>,
     capacity: usize,
 }
@@ -35,29 +34,32 @@ impl Drop for ThreadResidencyPins {
 impl ThreadResidency {
     pub(in crate::studio) fn new() -> Self {
         Self {
-            order: Arc::new(AsyncMutex::new(VecDeque::new())),
+            order: Arc::new(Mutex::new(VecDeque::new())),
             pinned: Arc::new(Mutex::new(HashMap::new())),
             capacity: INACTIVE_RESIDENT_CAPACITY,
         }
     }
 
     /// 访问或驻留时移到队尾；不改变容量语义。
-    pub(in crate::studio) async fn touch(&self, thread_id: &str) {
-        let mut order = self.order.lock().await;
+    pub(in crate::studio) fn touch(&self, thread_id: &str) {
+        let mut order = self.order.lock().expect("residency order lock poisoned");
         order.retain(|id| id != thread_id);
         order.push_back(thread_id.to_string());
     }
 
     /// 移除已淘汰条目。
-    pub(in crate::studio) async fn remove(&self, thread_id: &str) {
-        self.order.lock().await.retain(|id| id != thread_id);
+    pub(in crate::studio) fn remove(&self, thread_id: &str) {
+        self.order
+            .lock()
+            .expect("residency order lock poisoned")
+            .retain(|id| id != thread_id);
     }
 
     /// 返回超出非 pin 容量的队首候选（按最久未使用排序）。
     ///
     /// 活跃订阅与当前选择由内部 pin 表达，不占用 inactive LRU 名额。
-    pub(in crate::studio) async fn over_capacity(&self) -> Vec<String> {
-        let order = self.order.lock().await;
+    pub(in crate::studio) fn over_capacity(&self) -> Vec<String> {
+        let order = self.order.lock().expect("residency order lock poisoned");
         let pinned = self.pinned.lock().expect("residency pinned lock poisoned");
         let inactive = order
             .iter()

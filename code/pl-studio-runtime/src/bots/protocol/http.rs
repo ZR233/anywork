@@ -1143,7 +1143,6 @@ mod resource_tests {
                 .host
                 .runtime
                 .bot_input_fact(&inbound.creation_id, &input_id)
-                .await
                 .context("post-quiesce read of the original stable bot input")?,
             BotInputRead::Absent,
             "the safe pre-core cancellation boundary did not submit a new input",

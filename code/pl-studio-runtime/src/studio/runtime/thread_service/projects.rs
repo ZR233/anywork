@@ -356,7 +356,7 @@ impl StudioRuntime {
                     && project.kind == WorkspaceKind::Standalone),
             "the standalone workspace cannot be archived"
         );
-        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
         let has_pending_archive = self
             .store
             .thread_archive(&ArchiveScope::Workspace(workspace_id.into()))
@@ -442,9 +442,9 @@ impl StudioRuntime {
             .cancel_titles(self, ThreadTitleCancellationCause::ProjectArchive)
             .await;
         pipeline
-            .join_scopes(self, &scopes, "project archive preparations did not join")
+            .join_scopes(&scopes, "project archive preparations did not join")
             .await?;
-        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
         pipeline.ensure_frozen(
             threads.iter().map(|thread| thread.agent.thread_id.as_str()),
             "project archive member has no frozen preparation responsibility",
@@ -522,7 +522,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
+    fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
         let threads = self.store.directory_members_for_project(workspace_id)?;
         Ok(threads)
     }
@@ -1262,11 +1262,10 @@ mod standalone_tests {
 
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let restored = runtime
-            .find_owned_thread(&first.id)
-            .await?
+            .find_owned_thread(&first.id)?
             .context("cold Thread")?;
         assert_eq!(restored.workspace_path, first.workspace_path);
-        runtime.register_new_thread(restored).await?;
+        runtime.ensure_thread_owner(&restored.id).await?;
         assert_eq!(
             runtime
                 .store
@@ -4696,7 +4695,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime
@@ -5007,7 +5006,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime

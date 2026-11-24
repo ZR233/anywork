@@ -113,7 +113,6 @@ impl StudioRuntime {
         let mut runtime_floor = (0, 0);
         let mut activity = None;
         let mut activity_floor = 0;
-        let cold_terminal = None;
         let mut annotate_route = false;
         let (effect_cut, active_turn, business_refs) = if let Some((
             state_rx,
@@ -286,11 +285,7 @@ impl StudioRuntime {
         feed.push_frame_update(ThreadSubscriptionUpdate::Snapshot {
             snapshot: Box::new(snapshot),
         })?;
-        if let Some(turn) = cold_terminal {
-            feed.reflect_terminal(turn)?;
-        } else {
-            feed.reflect_retained_turn()?;
-        }
+        feed.reflect_retained_turn()?;
         feed.ready_frames = feed.pending.len();
         Ok(feed)
     }

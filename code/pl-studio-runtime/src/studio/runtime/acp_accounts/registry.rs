@@ -184,8 +184,6 @@ pub(super) struct Operation {
     pub(super) cancel: CancellationToken,
     pub(super) cancel_requested: AtomicBool,
     pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
-    /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
-    pub(super) cleanup_retry: tokio::sync::Notify,
     /// supervisor 的真实 join 出口。借用等待，关闭 future 被取消也不会取走句柄。
     pub(super) join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -606,7 +604,6 @@ mod tests {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             authentication: tokio::sync::mpsc::channel(1).0,
-            cleanup_retry: tokio::sync::Notify::new(),
             join: tokio::sync::Mutex::new(None),
         })
     }

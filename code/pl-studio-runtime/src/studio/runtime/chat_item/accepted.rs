@@ -168,15 +168,6 @@ fn freeze_accepted(
     timestamp: i64,
     database_id: &str,
 ) -> Result<ChatDraft, ProjectionError> {
-    if item.thread_id.is_empty()
-        || database_id.is_empty()
-        || accepted_at.effect_seq == 0
-        || accepted_at.effect_seq > i64::MAX as u64
-    {
-        return Err(ProjectionError::History(
-            "accepted content has no reliable admission".into(),
-        ));
-    }
     let mut descriptor = serde_json::to_value(
         descriptor::item_descriptor(item)
             .map_err(|error| ProjectionError::History(error.to_string()))?,

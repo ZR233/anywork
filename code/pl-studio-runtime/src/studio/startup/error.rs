@@ -155,10 +155,7 @@ fn is_storage_migration(error: &anyhow::Error) -> bool {
             cause.is::<StorageMigrationFailed>()
                 || matches!(
                     cause.downcast_ref::<crate::StudioDatabaseError>(),
-                    Some(
-                        crate::StudioDatabaseError::UnsupportedSchema { .. }
-                            | crate::StudioDatabaseError::StorageMigrationRequired
-                    )
+                    Some(crate::StudioDatabaseError::UnsupportedSchema { .. })
                 )
         })
 }

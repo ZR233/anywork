@@ -1631,29 +1631,6 @@ impl BotRuntime {
                         .store
                         .binding_for_chat(&chat_id, bot_id, &workspace_id)
                         .await?;
-                    #[cfg(test)]
-                    {
-                        let pause = {
-                            let mut gate = self
-                                .inner
-                                .deletion_tests
-                                .inbound
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if gate
-                                .as_ref()
-                                .is_some_and(|(target, _, _)| target == &chat_id)
-                            {
-                                gate.take()
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some((_, entered, release)) = pause {
-                            let _ = entered.send(());
-                            let _ = release.await;
-                        }
-                    }
                     self.ensure_reply_admission(&workspace_id, &projection.creation_id)
                         .await?;
                     if let Some(target) = &projection.thread_id {
@@ -2943,7 +2920,6 @@ pub(super) mod archive_tests {
                         bound.bot_id, bound.chat_id, bound.message_id
                     ),
                 )
-                .await?
                 .eq(&crate::bots::BotInputRead::Absent)
         );
         fixture

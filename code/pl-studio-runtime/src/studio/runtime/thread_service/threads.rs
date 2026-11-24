@@ -7,10 +7,10 @@ use crate::studio::records::ThreadRecord;
 use crate::studio::store::directory::DirectoryDelta;
 use crate::studio::store::thread_archive::ArchiveScope;
 
-use super::super::StudioRuntime;
 use super::super::thread_title::{
     ThreadTitleCancellation, ThreadTitleCancellationCause, manual_title, provisional_title,
 };
+use super::super::{ARCHIVE_TREE_SETTLE_TIMEOUT, StudioRuntime};
 use super::super::{
     ArchiveThreadCommandReply, RenameThreadCommandReply, StudioArchiveThreadResult,
     StudioStartNewThreadRequest, StudioStartNewThreadResponse, StudioSubmitPromptRequest,
@@ -61,7 +61,7 @@ impl StudioRuntime {
         let mut admission = crate::Thread::placeholder(&thread_id);
         admission.workspace_id = workspace_id.into();
         self.check_thread_execution_access(&admission)?;
-        if let Some(existing) = self.find_owned_thread(&thread_id).await? {
+        if let Some(existing) = self.find_owned_thread(&thread_id)? {
             anyhow::ensure!(
                 existing.workspace_id == workspace_id,
                 "bot Thread identity is bound to another project"
@@ -125,7 +125,7 @@ impl StudioRuntime {
                 (id == agent.agent_id).then(|| agent.thread_id.clone())
             })?,
         );
-        if let Err(error) = self.register_new_thread(thread.clone()).await {
+        if let Err(error) = self.ensure_thread_owner(&thread.id).await {
             if let Some(exporter) = &self.agent_facility.run_export {
                 exporter
                     .unenroll_or_abort_root(&enrolled_root_id, "create_thread_activation_failed");
@@ -173,7 +173,7 @@ impl StudioRuntime {
         report(ThreadPreparationStage::CheckingProject, None, None);
         let ready_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", stage = "runtime_ready", "starting");
-        self.ensure_prompt_runtime_ready().await?;
+        self.ensure_prompt_runtime_ready()?;
         tracing::debug!(target: "thread_preparation", stage = "runtime_ready", elapsed_ms = ready_started.elapsed().as_millis() as u64, "completed");
         let drafts = self
             .attachment_drafts
@@ -221,7 +221,11 @@ impl StudioRuntime {
             .verify_project_workspace(&project)
             .await?;
         tracing::debug!(target: "thread_preparation", stage = "project", elapsed_ms = project_started.elapsed().as_millis() as u64, "completed");
-        self.ensure_mode_available(&request.mode)?;
+        anyhow::ensure!(
+            self.thread_modes.snapshot().mode(&request.mode).is_some(),
+            "selected Thread Mode `{}` is unavailable",
+            request.mode
+        );
 
         // D4：会话工作区在发布 Thread 之前就已确定。`worktree` 先做前置校验与物理创建，
         // 再记录 `active` lease；任一阶段失败都让命令失败且不留下已发布 Thread。
@@ -332,7 +336,7 @@ impl StudioRuntime {
         let thread = ThreadRecord::from_directory_thread(thread);
         let activation_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", thread_id = %thread.id, stage = "activation", "starting");
-        if let Err(error) = self.register_new_thread(thread.clone()).await {
+        if let Err(error) = self.ensure_thread_owner(&thread.id).await {
             if let Some(exporter) = &self.agent_facility.run_export {
                 exporter.unenroll_or_abort_root(&thread.id, "start_thread_activation_failed");
             }
@@ -422,7 +426,7 @@ impl StudioRuntime {
         Self::validate_operation_id(&operation_id)?;
         let title = manual_title(&title)?;
         let _lifecycle_guard = self.lifecycle_lock.lock().await;
-        self.ensure_prompt_runtime_ready().await?;
+        self.ensure_prompt_runtime_ready()?;
         let (mut session, agent) = self
             .agent_facility
             .product_events
@@ -562,7 +566,7 @@ impl StudioRuntime {
         // 再有界等待收束；无法结束时返回类型化失败并保留会话现场。
         self.end_thread_tree_work(pipeline.ids()).await?;
         pipeline
-            .join_scope(self, &session, &scope, "archive preparations did not join")
+            .join_scope(&session, &scope, "archive preparations did not join")
             .await?;
         let (_, _, settled_tree) = self
             .load_thread_archive_scope(&thread_id)
@@ -665,7 +669,7 @@ impl StudioRuntime {
         if let Some(session) = self.session_of(thread_id) {
             session.close(thread_id).await?;
         }
-        self.residency.remove(thread_id).await;
+        self.residency.remove(thread_id);
         self.agent_facility
             .product_events
             .commit_directory(DirectoryDelta::archive_sessions(vec![
@@ -763,7 +767,7 @@ impl StudioRuntime {
         }
         self.close_project_agent_trees(thread_ids).await?;
         for thread_id in thread_ids {
-            self.residency.remove(thread_id).await;
+            self.residency.remove(thread_id);
             let issues = self.recovery.retire_thread(thread_id);
             self.agent_facility
                 .product_events
@@ -836,14 +840,6 @@ impl StudioRuntime {
         Ok(roots)
     }
 
-    fn ensure_mode_available(&self, mode_id: &crate::mode::ThreadModeId) -> Result<()> {
-        anyhow::ensure!(
-            self.thread_modes.snapshot().mode(mode_id).is_some(),
-            "selected Thread Mode `{mode_id}` is unavailable"
-        );
-        Ok(())
-    }
-
     /// 未驻留即不 busy：钉住集合恢复保证有 pending 工作的 Thread 会被恢复，
     /// LRU 只淘汰空闲且已耐久化的 actor（design/17 §17.5）。
     pub(in crate::studio::runtime) async fn thread_is_busy(&self, thread_id: &str) -> Result<bool> {
@@ -909,7 +905,7 @@ impl StudioRuntime {
                 Err(error) => return Err(anyhow::Error::new(error)),
             }
         }
-        let deadline = tokio::time::Instant::now() + self.archive_settle_timeout();
+        let deadline = tokio::time::Instant::now() + ARCHIVE_TREE_SETTLE_TIMEOUT;
         loop {
             let mut still_busy = None;
             for thread_id in thread_ids {

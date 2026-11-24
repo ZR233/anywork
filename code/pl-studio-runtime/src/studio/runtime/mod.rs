@@ -306,11 +306,6 @@ impl StudioRuntime {
         self.model_performance.subscribe_statistics()
     }
 
-    /// 归档前结束会话树活动工作的有界等待上界。
-    fn archive_settle_timeout(&self) -> std::time::Duration {
-        ARCHIVE_TREE_SETTLE_TIMEOUT
-    }
-
     /// 读取配置 owner 已发布的 Agent Profiles 资源快照。
     ///
     /// 纯缓存读取（完整配置与逐文件诊断），不扫描文件；外部手改 Profile 后需显式
