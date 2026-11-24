@@ -61,6 +61,7 @@ extension StudioLocalizationsX on BuildContext {
       'zhipu' => l10n.accountProtocolZhipu,
       'mi_mo' => l10n.accountProtocolMiMo,
       'xai' => l10n.accountProtocolXai,
+      'gemini' => l10n.accountProtocolGemini,
       'open_ai_compatible' => l10n.accountProtocolCustom,
       _ => protocol,
     };
@@ -71,6 +72,7 @@ extension StudioLocalizationsX on BuildContext {
     return switch (protocol) {
       'responses' => l10n.modelProtocolResponses,
       'chat_completions' => l10n.modelProtocolChatCompletions,
+      'gemini_generate_content' => l10n.modelProtocolGeminiGenerateContent,
       _ => protocol,
     };
   }

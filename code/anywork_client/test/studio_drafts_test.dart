@@ -333,7 +333,6 @@ final class _DraftTransport extends AccountsTestTransport
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int expectedSettingsRevision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {

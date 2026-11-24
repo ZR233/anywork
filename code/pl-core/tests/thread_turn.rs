@@ -140,16 +140,15 @@ async fn replaced_tool_resources_are_closed_and_released_before_thread_close() {
     .expect("duplicate batch lost rejected candidates");
 
     let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
-    let mut rejected = Box::pin(thread.register_tools_if_extensions(
-        thread.snapshot().extension_sequence + 1,
-        vec![
-                Registration::prepare("rejected".into(), OpaquePayload::text("rejected"))
-                    .unwrap()
-                    .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
-                        events,
-                    ))),
-            ],
-    ));
+    let authorization = pl_core::tool::opaque::ToolAuthorization::unique();
+    authorization.revoke();
+    let rejected_tool = Registration::prepare("rejected".into(), OpaquePayload::text("rejected"))
+        .unwrap()
+        .attach(pl_core::tool::opaque::RuntimeTool::new(RetiringTool(
+            events,
+        )))
+        .with_authorization(authorization);
+    let mut rejected = Box::pin(thread.register_tools(vec![rejected_tool]));
     assert!(futures::poll!(&mut rejected).is_pending());
     drop(rejected);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -179,9 +178,7 @@ async fn revoked_late_registration_is_rejected_and_closed_by_original_owner() {
         .with_authorization(authorization.clone());
     authorization.revoke();
     assert!(matches!(
-        thread
-            .register_tools_if_extensions(thread.snapshot().extension_sequence, vec![candidate])
-            .await,
+        thread.register_tools(vec![candidate]).await,
         Err(ThreadError::ToolPermissionRevoked)
     ));
     tokio::time::timeout(std::time::Duration::from_secs(2), async {

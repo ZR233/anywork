@@ -101,7 +101,6 @@ fn enabled_by_default() -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateAcpAccountRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     /// Absent for creation; exact document revision for an update.
     pub expected_document_revision: Option<u64>,
     pub account: AcpAccountUpdate,
@@ -112,7 +111,6 @@ pub struct UpdateAcpAccountRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoveAcpAccountRequest {
     pub operation_id: String,
-    pub expected_revision: u64,
     pub account_id: String,
     pub expected_document_revision: u64,
 }

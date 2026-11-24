@@ -47,7 +47,6 @@ abstract interface class AccountConfigurationPort {
     required OperationId operationId,
   });
   Future<SettingsCommandReply> setAccountBillingKind(
-    int revision,
     String accountId,
     BillingKind? billingKind, {
     required OperationId operationId,
@@ -66,7 +65,6 @@ abstract interface class AccountConfigurationPort {
 
 abstract interface class AccountModelsPort {
   Future<SettingsCommandReply> setAccountModelEnabled(
-    int revision,
     String accountId,
     String modelId,
     bool enabled, {

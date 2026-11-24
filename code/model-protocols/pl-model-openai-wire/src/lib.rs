@@ -1,25 +1,12 @@
 //! OpenAI Chat Completions and Responses wire codecs.
-pub mod completion;
-pub mod config;
-pub mod discovery;
-mod discovery_error;
-mod discovery_policy;
-pub mod files;
-pub mod model;
+pub mod codec;
 pub mod openai;
-pub mod protocol;
-pub mod service_tiers;
-pub use pl_model_types::authorization;
-pub use pl_model_types::{ModelMemberState, PromptPrefixChangedReason, PureError, Result, headers};
 
-pub mod provider_error;
-pub mod transport;
+pub use codec::{OPENAI_WIRE_CODEC, OpenAiWireCodec};
+pub use openai::{
+    OpenAiRequestBody, build_request, sent_model_from_wire_body, sse, usage,
+    validate_chatgpt_request,
+};
+pub use pl_model_wire::wire_codec::VisibleOutputProtocol;
 
-pub mod generic_catalog;
-
-mod query_error;
-pub use query_error::query_transport_error;
-
-pub mod catalog_http;
-
-pub mod adapter;
+pub(crate) use pl_model_wire::{completion, model, protocol};

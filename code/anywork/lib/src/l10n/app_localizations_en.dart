@@ -524,6 +524,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => 'Archive';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return 'Archived “$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return 'Could not archive “$title”. $reason';
+  }
+
+  @override
   String get sidebarDeleteSession => 'Delete session';
 
   @override
@@ -537,6 +547,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => 'Delete permanently';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return 'Deleted “$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return 'Could not delete “$title”. $reason';
+  }
 
   @override
   String get sidebarRenameSession => 'Rename session';
@@ -2004,7 +2024,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineFileDownloadComplete => 'Download complete';
 
   @override
-  String get timelineJumpToLatest => 'Jump to latest';
+  String get timelineJumpToLatest => 'Back to latest';
+
+  @override
+  String get timelineJumpToLatestWithNewOutput => 'New output · Back to latest';
 
   @override
   String get timelineNew => 'New';
@@ -2014,9 +2037,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineActivityNotLoaded => 'More activity to load';
-
-  @override
-  String get timelineBackToLive => 'Back to live';
 
   @override
   String get timelineDetailUnavailable => 'This content is no longer available';
@@ -3979,6 +3999,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions';
 
   @override
+  String get modelProtocolGeminiGenerateContent =>
+      'Gemini API (generateContent)';
+
+  @override
   String get modelConnectionWebSocket => 'WS';
 
   @override
@@ -3989,6 +4013,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get settingsProtocolResponsesHttp => 'Responses (HTTP)';
+
+  @override
+  String get settingsProtocolGeminiGenerateContentHttp =>
+      'Gemini API (generateContent, HTTP)';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -4978,6 +5006,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolGemini => 'Google Gemini';
 
   @override
   String get accountProtocolCustom => 'Custom (OpenAI compatible)';
@@ -6328,9 +6359,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get conversationActivityResponding => 'Generating response';
-
-  @override
-  String get conversationActivityFollowOutput => 'Follow output';
 
   @override
   String get timelineBackgroundResults => 'Background results';
@@ -8221,4 +8249,96 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineToolDetailForceTransition => 'Forced';
+
+  @override
+  String get accountsGeminiModeAiStudio => 'AI Studio';
+
+  @override
+  String get accountsGeminiModeVertexAi => 'Vertex AI';
+
+  @override
+  String get accountsGeminiModeCustom => 'Custom endpoint';
+
+  @override
+  String get accountsGeminiHintAiStudio =>
+      'Access the Gemini API with a Google AI Studio API key (x-goog-api-key), including online model listing.';
+
+  @override
+  String get accountsGeminiHintVertexAi =>
+      'Access Gemini models with a Vertex AI API key (x-goog-api-key). The global endpoint is recommended.';
+
+  @override
+  String get accountsGeminiHintCustom =>
+      'Connect to a custom Gemini API (generateContent) endpoint using x-goog-api-key authentication.';
+
+  @override
+  String get accountsGeminiBadgeHeader => 'x-goog-api-key';
+
+  @override
+  String get accountsGeminiBadgeMultimodal => 'Multimodal';
+
+  @override
+  String get accountsGeminiBadgeDiscovery => 'Online catalog';
+
+  @override
+  String get accountsGeminiBadgeBundledCatalog => 'Built-in catalog';
+
+  @override
+  String get accountsGeminiBadgeImplicitCache => 'Implicit caching';
+
+  @override
+  String get accountsGeminiEndpointPresetsLabel => 'Endpoints';
+
+  @override
+  String get accountsGeminiPresetGlobal => 'global (Recommended)';
+
+  @override
+  String get accountsGeminiPresetAiStudioOfficial => 'Gemini API (v1beta)';
+
+  @override
+  String get accountsGeminiCredentialLabelVertex => 'Vertex AI API key';
+
+  @override
+  String get accountsGeminiCredentialLabelAiStudio => 'Gemini API key';
+
+  @override
+  String timelineDiffStatLabel(int additions, int deletions) {
+    return '$additions additions, $deletions deletions';
+  }
+
+  @override
+  String get timelinePatchCopyPath => 'Copy path';
+
+  @override
+  String get acpCopyMessage => 'Copy message';
+
+  @override
+  String get acpJumpToPendingPermission =>
+      'Jump to latest · Permission requested';
+
+  @override
+  String get acpJumpToRunning => 'Jump to latest · Running';
+
+  @override
+  String get acpJumpToNewOutput => 'Jump to latest · New output';
+
+  @override
+  String get acpPlanCompletedHeadline => 'Execution plan completed';
+
+  @override
+  String get acpSlashMenuLabel => 'Slash commands';
+
+  @override
+  String get acpSlashMenuNoMatches => 'No matching commands';
+
+  @override
+  String get acpHistorySearchHint => 'Search title, path, or session ID';
+
+  @override
+  String acpHistorySearchCount(int matched, int total) {
+    return '$matched of $total';
+  }
+
+  @override
+  String get acpHistorySearchEmpty => 'No matching external sessions';
 }

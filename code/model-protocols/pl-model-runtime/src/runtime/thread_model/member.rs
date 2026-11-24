@@ -7,7 +7,7 @@ use crate::completion::CompletionPresentationItem;
 pub(crate) const MEMBER_RECEIPT_FORMAT: &str = "pl.model.completed-member";
 pub(crate) const MEMBER_RECEIPT_VERSION: u32 = 1;
 
-pub use pl_model_openai_wire::ModelMemberState;
+pub use pl_model_wire::ModelMemberState;
 
 /// The same normalized member retained for the final response, without context or usage advancement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2237,7 +2237,7 @@ workspace_mode = "directory"
             profile.enabled = enabled;
             route.effort = Some("high".into());
             let (saved, _) = runtime
-                .save_user_agent_profile(runtime.read().unwrap().revision, "saved", &profile)
+                .save_user_agent_profile(None, "saved", &profile)
                 .unwrap();
             let profile_path = paths.agents_dir().join("saved.toml");
             let profile_bytes = fs::read(&profile_path).unwrap();
@@ -2323,8 +2323,15 @@ workspace_mode = "directory"
                 .expect("saved Native route")
                 .account_id = "deepseek".into();
             profile.description = "Repaired after account deletion".into();
+            let profiles = restarted.agent_profiles_snapshot().unwrap();
+            let opened = profiles
+                .catalog
+                .profiles
+                .iter()
+                .find(|profile| profile.definition.definition_id == "saved")
+                .unwrap();
             let (_, changed) = restarted
-                .save_user_agent_profile(restarted.read().unwrap().revision, "saved", &profile)
+                .save_user_agent_profile(Some(&opened.definition.revision), "saved", &profile)
                 .expect("the retained Profile can be repaired through the normal editor");
             assert!(changed);
             let repaired = restarted.agent_profiles_snapshot().unwrap();

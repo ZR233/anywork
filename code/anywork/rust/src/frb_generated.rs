@@ -2862,7 +2862,6 @@ fn wire__crate__api__studio__handlers__settings__apply_settings_field_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_input = <crate::api::studio::types::settings::SettingsFieldInput>::sse_decode(
                 &mut deserializer,
             );
@@ -2873,7 +2872,6 @@ fn wire__crate__api__studio__handlers__settings__apply_settings_field_impl(
                         let output_ok =
                             crate::api::studio::handlers::settings::apply_settings_field(
                                 api_operation_id,
-                                api_expected_settings_revision,
                                 api_input,
                             )
                             .await?;
@@ -6504,7 +6502,6 @@ fn wire__crate__api__studio__handlers__acp__remove_acp_account_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_account_id = <String>::sse_decode(&mut deserializer);
             let api_expected_document_revision = <u64>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -6513,7 +6510,6 @@ fn wire__crate__api__studio__handlers__acp__remove_acp_account_impl(
                     (move || async move {
                         let output_ok = crate::api::studio::handlers::acp::remove_acp_account(
                             api_operation_id,
-                            api_expected_settings_revision,
                             api_account_id,
                             api_expected_document_revision,
                         )
@@ -7086,7 +7082,6 @@ fn wire__crate__api__studio__handlers__acp__save_acp_account_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_expected_document_revision = <Option<u64>>::sse_decode(&mut deserializer);
             let api_account = <crate::api::studio::types::acp::BridgeAcpAccountUpdate>::sse_decode(
                 &mut deserializer,
@@ -7097,7 +7092,6 @@ fn wire__crate__api__studio__handlers__acp__save_acp_account_impl(
                     (move || async move {
                         let output_ok = crate::api::studio::handlers::acp::save_acp_account(
                             api_operation_id,
-                            api_expected_settings_revision,
                             api_expected_document_revision,
                             api_account,
                         )
@@ -7172,7 +7166,6 @@ fn wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_im
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_mode = <String>::sse_decode(&mut deserializer);
             deserializer.end();
             move |context| async move {
@@ -7181,7 +7174,6 @@ fn wire__crate__api__studio__handlers__settings__save_runtime_permission_mode_im
                         let output_ok =
                             crate::api::studio::handlers::settings::save_runtime_permission_mode(
                                 api_operation_id,
-                                api_expected_settings_revision,
                                 api_mode,
                             )
                             .await?;
@@ -7302,7 +7294,7 @@ fn wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_i
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
+            let api_expected_document_revision = <Option<String>>::sse_decode(&mut deserializer);
             let api_profile_id = <String>::sse_decode(&mut deserializer);
             let api_enabled = <bool>::sse_decode(&mut deserializer);
             let api_display_name = <String>::sse_decode(&mut deserializer);
@@ -7323,7 +7315,7 @@ fn wire__crate__api__studio__handlers__agent_profiles__save_user_agent_profile_i
                         let output_ok =
                             crate::api::studio::handlers::agent_profiles::save_user_agent_profile(
                                 api_operation_id,
-                                api_expected_settings_revision,
+                                api_expected_document_revision,
                                 api_profile_id,
                                 api_enabled,
                                 api_display_name,
@@ -7448,7 +7440,6 @@ fn wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_account_id = <String>::sse_decode(&mut deserializer);
             let api_billing_kind =
                 <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_decode(
@@ -7461,7 +7452,6 @@ fn wire__crate__api__studio__handlers__settings__set_account_billing_kind_impl(
                         let output_ok =
                             crate::api::studio::handlers::settings::set_account_billing_kind(
                                 api_operation_id,
-                                api_expected_settings_revision,
                                 api_account_id,
                                 api_billing_kind,
                             )
@@ -7599,7 +7589,6 @@ fn wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_account_id = <String>::sse_decode(&mut deserializer);
             let api_model_id = <String>::sse_decode(&mut deserializer);
             let api_enabled = <bool>::sse_decode(&mut deserializer);
@@ -7610,7 +7599,6 @@ fn wire__crate__api__studio__handlers__settings__set_account_model_enabled_impl(
                         let output_ok =
                             crate::api::studio::handlers::settings::set_account_model_enabled(
                                 api_operation_id,
-                                api_expected_settings_revision,
                                 api_account_id,
                                 api_model_id,
                                 api_enabled,
@@ -7875,7 +7863,6 @@ fn wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_operation_id = <String>::sse_decode(&mut deserializer);
-            let api_expected_settings_revision = <u64>::sse_decode(&mut deserializer);
             let api_profile_id = <String>::sse_decode(&mut deserializer);
             let api_enabled = <bool>::sse_decode(&mut deserializer);
             deserializer.end();
@@ -7885,7 +7872,6 @@ fn wire__crate__api__studio__handlers__agent_profiles__set_system_agent_enabled_
                         let output_ok =
                             crate::api::studio::handlers::agent_profiles::set_system_agent_enabled(
                                 api_operation_id,
-                                api_expected_settings_revision,
                                 api_profile_id,
                                 api_enabled,
                             )
@@ -20760,7 +20746,6 @@ impl SseDecode for crate::api::studio::types::command::BridgeSetThreadModelRoute
         let mut var_operationId = <String>::sse_decode(deserializer);
         let mut var_threadId = <String>::sse_decode(deserializer);
         let mut var_expectedModelRouteRevision = <u64>::sse_decode(deserializer);
-        let mut var_expectedSettingsRevision = <u64>::sse_decode(deserializer);
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_modelId = <String>::sse_decode(deserializer);
         let mut var_effort = <Option<String>>::sse_decode(deserializer);
@@ -20769,7 +20754,6 @@ impl SseDecode for crate::api::studio::types::command::BridgeSetThreadModelRoute
             operation_id: var_operationId,
             thread_id: var_threadId,
             expected_model_route_revision: var_expectedModelRouteRevision,
-            expected_settings_revision: var_expectedSettingsRevision,
             account_id: var_accountId,
             model_id: var_modelId,
             effort: var_effort,
@@ -28732,8 +28716,10 @@ impl SseDecode for crate::api::studio::types::settings::SettingsFieldInput {
                 return crate::api::studio::types::settings::SettingsFieldInput::SkillsExternalDirs{value: var_value};
             }
             10 => {
-                let mut var_value = <Vec<String>>::sse_decode(deserializer);
-                return crate::api::studio::types::settings::SettingsFieldInput::SkillsDisabled {
+                let mut var_id = <String>::sse_decode(deserializer);
+                let mut var_value = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::settings::SettingsFieldInput::SkillDisabled {
+                    id: var_id,
                     value: var_value,
                 };
             }
@@ -28763,12 +28749,20 @@ impl SseDecode for crate::api::studio::types::settings::SettingsFieldInput {
                 return crate::api::studio::types::settings::SettingsFieldInput::GeneralSidebarWidth{value: var_value};
             }
             16 => {
-                let mut var_value = <Vec<String>>::sse_decode(deserializer);
-                return crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedThreadIds{value: var_value};
+                let mut var_id = <String>::sse_decode(deserializer);
+                let mut var_value = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::settings::SettingsFieldInput::ThreadPinned {
+                    id: var_id,
+                    value: var_value,
+                };
             }
             17 => {
-                let mut var_value = <Vec<String>>::sse_decode(deserializer);
-                return crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedProjectIds{value: var_value};
+                let mut var_id = <String>::sse_decode(deserializer);
+                let mut var_value = <bool>::sse_decode(deserializer);
+                return crate::api::studio::types::settings::SettingsFieldInput::ProjectPinned {
+                    id: var_id,
+                    value: var_value,
+                };
             }
             18 => {
                 let mut var_value = <String>::sse_decode(deserializer);
@@ -43307,7 +43301,6 @@ impl flutter_rust_bridge::IntoDart
             self.expected_model_route_revision
                 .into_into_dart()
                 .into_dart(),
-            self.expected_settings_revision.into_into_dart().into_dart(),
             self.account_id.into_into_dart().into_dart(),
             self.model_id.into_into_dart().into_dart(),
             self.effort.into_into_dart().into_dart(),
@@ -48231,7 +48224,8 @@ crate::api::studio::types::settings::SettingsFieldInput::SkillsProjectDir{value}
 value.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::settings::SettingsFieldInput::SkillsExternalDirs{value} => { [9.into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::SkillsDisabled{value} => { [10.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::SkillDisabled{id,value} => { [10.into_dart(),
+id.into_into_dart().into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::settings::SettingsFieldInput::SkillsAutoLearnMinToolCalls{value} => { [11.into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
@@ -48243,9 +48237,11 @@ crate::api::studio::types::settings::SettingsFieldInput::GeneralLanguage{value} 
 value.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::settings::SettingsFieldInput::GeneralSidebarWidth{value} => { [15.into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedThreadIds{value} => { [16.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::ThreadPinned{id,value} => { [16.into_dart(),
+id.into_into_dart().into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
-crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedProjectIds{value} => { [17.into_dart(),
+crate::api::studio::types::settings::SettingsFieldInput::ProjectPinned{id,value} => { [17.into_dart(),
+id.into_into_dart().into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
 crate::api::studio::types::settings::SettingsFieldInput::WebSearchMode{value} => { [18.into_dart(),
 value.into_into_dart().into_dart()].into_dart() }
@@ -58078,7 +58074,6 @@ impl SseEncode for crate::api::studio::types::command::BridgeSetThreadModelRoute
         <String>::sse_encode(self.operation_id, serializer);
         <String>::sse_encode(self.thread_id, serializer);
         <u64>::sse_encode(self.expected_model_route_revision, serializer);
-        <u64>::sse_encode(self.expected_settings_revision, serializer);
         <String>::sse_encode(self.account_id, serializer);
         <String>::sse_encode(self.model_id, serializer);
         <Option<String>>::sse_encode(self.effort, serializer);
@@ -64198,7 +64193,8 @@ crate::api::studio::types::settings::SettingsFieldInput::SkillsProjectDir{value}
  }
 crate::api::studio::types::settings::SettingsFieldInput::SkillsExternalDirs{value} => { <i32>::sse_encode(9, serializer); <Vec<String>>::sse_encode(value, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::SkillsDisabled{value} => { <i32>::sse_encode(10, serializer); <Vec<String>>::sse_encode(value, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::SkillDisabled{id,value} => { <i32>::sse_encode(10, serializer); <String>::sse_encode(id, serializer);
+<bool>::sse_encode(value, serializer);
  }
 crate::api::studio::types::settings::SettingsFieldInput::SkillsAutoLearnMinToolCalls{value} => { <i32>::sse_encode(11, serializer); <u32>::sse_encode(value, serializer);
  }
@@ -64210,9 +64206,11 @@ crate::api::studio::types::settings::SettingsFieldInput::GeneralLanguage{value} 
  }
 crate::api::studio::types::settings::SettingsFieldInput::GeneralSidebarWidth{value} => { <i32>::sse_encode(15, serializer); <Option<u16>>::sse_encode(value, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedThreadIds{value} => { <i32>::sse_encode(16, serializer); <Vec<String>>::sse_encode(value, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::ThreadPinned{id,value} => { <i32>::sse_encode(16, serializer); <String>::sse_encode(id, serializer);
+<bool>::sse_encode(value, serializer);
  }
-crate::api::studio::types::settings::SettingsFieldInput::GeneralPinnedProjectIds{value} => { <i32>::sse_encode(17, serializer); <Vec<String>>::sse_encode(value, serializer);
+crate::api::studio::types::settings::SettingsFieldInput::ProjectPinned{id,value} => { <i32>::sse_encode(17, serializer); <String>::sse_encode(id, serializer);
+<bool>::sse_encode(value, serializer);
  }
 crate::api::studio::types::settings::SettingsFieldInput::WebSearchMode{value} => { <i32>::sse_encode(18, serializer); <String>::sse_encode(value, serializer);
  }

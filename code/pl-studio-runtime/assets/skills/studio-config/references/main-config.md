@@ -156,6 +156,17 @@ model settings to override that threshold; restoring automatic mode uses the
 current catalog default. These recommendations do not replace saved routes, Thread model
 selections or explicit compaction overrides.
 
+The built-in Google Gemini templates use native Gemini REST (`protocol = "gemini"`,
+wire API `gemini_generate_content`, credential header `x-goog-api-key`) and recommend
+`gemini-3.7-flash` (`medium` effort, 1M context, image/PDF/text inline input):
+
+- `vertex-ai`: Google Cloud Vertex AI Gemini (`base_url = "https://aiplatform.googleapis.com/v1/publishers/google"`,
+  `bearer_token_env = "GCP_API_KEY"`, catalog `"vertex-ai"`). Vertex AI API Keys do not
+  expose publisher `/models` listing, so online discovery is disabled for this template.
+- `gemini`: Google Gemini Developer API / AI Studio (`base_url = "https://generativelanguage.googleapis.com/v1beta"`,
+  `bearer_token_env = "GEMINI_API_KEY"`, catalog `"gemini"`). Supports paginated `/models`
+  online discovery (`pageSize=1000`, `pageToken`).
+
 A compatible Responses model can declare `base.input_modalities = ["text", "file"]`,
 `base.supports_parallel_tool_calls = true`, and `base.web_search_tool_type = "text"`.
 Use `extra.capabilities.input` only when you need to constrain sources or MIME types.

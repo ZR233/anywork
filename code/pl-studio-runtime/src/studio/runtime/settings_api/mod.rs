@@ -29,6 +29,16 @@ pub(crate) use view::{
 };
 use view::{normalized_optional, normalized_string_list};
 
+fn set_list_membership(list: &mut Vec<String>, id: String, present: bool) {
+    let id = id.trim();
+    if present && !id.is_empty() && !list.iter().any(|item| item == id) {
+        list.push(id.to_owned());
+        list.sort();
+    } else if !present {
+        list.retain(|item| item != id);
+    }
+}
+
 impl StudioRuntime {
     pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
         // 同一 Settings command 边界内取得配置与 ACP 投影：不会看到"提交已生效但身份未对齐"的中间态。
@@ -93,11 +103,11 @@ impl StudioRuntime {
         request: UpdateSettingsFieldRequest,
     ) -> Result<SettingsCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
-        if let SettingsFieldUpdate::GeneralPinnedProjectIds { value } = &request.update {
+        if let SettingsFieldUpdate::ProjectPinned { id, value: true } = &request.update {
             let projects = self.agent_facility.product_events.project_snapshot().await;
             anyhow::ensure!(
                 !projects.iter().any(|project| {
-                    project.kind == crate::WorkspaceKind::Standalone && value.contains(&project.id)
+                    project.kind == crate::WorkspaceKind::Standalone && id.trim() == project.id
                 }),
                 "the standalone workspace cannot be pinned"
             );
@@ -109,7 +119,7 @@ impl StudioRuntime {
                 | SettingsFieldUpdate::SkillsSystemEnabled { .. }
                 | SettingsFieldUpdate::SkillsProjectDir { .. }
                 | SettingsFieldUpdate::SkillsExternalDirs { .. }
-                | SettingsFieldUpdate::SkillsDisabled { .. }
+                | SettingsFieldUpdate::SkillDisabled { .. }
                 | SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { .. }
         );
         let effect = match &request.update {
@@ -117,15 +127,15 @@ impl StudioRuntime {
             | SettingsFieldUpdate::GeneralCompactTimeline { .. }
             | SettingsFieldUpdate::GeneralLanguage { .. }
             | SettingsFieldUpdate::GeneralSidebarWidth { .. }
-            | SettingsFieldUpdate::GeneralPinnedThreadIds { .. }
-            | SettingsFieldUpdate::GeneralPinnedProjectIds { .. } => CommandEffectPoint::Immediate,
+            | SettingsFieldUpdate::ThreadPinned { .. }
+            | SettingsFieldUpdate::ProjectPinned { .. } => CommandEffectPoint::Immediate,
             _ => CommandEffectPoint::FutureSession,
         };
         let mut changed = false;
         let update = request.update;
-        let state = self.config_runtime.update_with_effective(
-            request.expected_revision,
-            |desired, effective| {
+        let state = self
+            .config_runtime
+            .update_with_effective(None, |desired, effective| {
                 let mut config = desired.clone();
                 let route_validation_config = if matches!(
                     &update,
@@ -179,8 +189,8 @@ impl StudioRuntime {
                     SettingsFieldUpdate::SkillsExternalDirs { value } => {
                         config.skills.external_dirs = normalized_string_list(value);
                     }
-                    SettingsFieldUpdate::SkillsDisabled { value } => {
-                        config.skills.disabled = normalized_string_list(value);
+                    SettingsFieldUpdate::SkillDisabled { id, value } => {
+                        set_list_membership(&mut config.skills.disabled, id, value);
                     }
                     SettingsFieldUpdate::SkillsAutoLearnMinToolCalls { value } => {
                         config.skills.auto_learn_min_tool_calls = value;
@@ -202,21 +212,21 @@ impl StudioRuntime {
                         }
                         config.ui.sidebar_width = value;
                     }
-                    SettingsFieldUpdate::GeneralPinnedThreadIds { value } => {
-                        if value.len() > 64 {
+                    SettingsFieldUpdate::ThreadPinned { id, value } => {
+                        set_list_membership(&mut config.ui.pinned_thread_ids, id, value);
+                        if config.ui.pinned_thread_ids.len() > 64 {
                             return Err(crate::PureError::ConfigError(
                                 "at most 64 pinned sessions are supported".to_string(),
                             ));
                         }
-                        config.ui.pinned_thread_ids = normalized_string_list(value);
                     }
-                    SettingsFieldUpdate::GeneralPinnedProjectIds { value } => {
-                        if value.len() > 64 {
+                    SettingsFieldUpdate::ProjectPinned { id, value } => {
+                        set_list_membership(&mut config.ui.pinned_project_ids, id, value);
+                        if config.ui.pinned_project_ids.len() > 64 {
                             return Err(crate::PureError::ConfigError(
                                 "at most 64 pinned projects are supported".to_string(),
                             ));
                         }
-                        config.ui.pinned_project_ids = normalized_string_list(value);
                     }
                     SettingsFieldUpdate::WebSearchMode { value } => {
                         config.web_search.mode = parse_web_search_mode(&value)?;
@@ -356,8 +366,7 @@ impl StudioRuntime {
                 config.validate_declarations()?;
                 changed = desired != &config;
                 Ok(config)
-            },
-        )?;
+            })?;
         self.publish_settings_state()?;
         if mark_skills_stale {
             self.skills.mark_all_stale().await;
@@ -375,7 +384,7 @@ impl StudioRuntime {
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |config| {
+            .update_with_effective(None, |config, _| {
                 let mut config = config.clone();
                 changed = config.runtime.permission_mode != mode;
                 config.runtime.permission_mode = mode;
@@ -450,9 +459,9 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         let account_id = AccountId::new(request.account_id.clone())?;
         let mut changed = false;
-        let state = self.config_runtime.update_with_effective(
-            request.expected_revision,
-            |desired, effective| {
+        let state = self
+            .config_runtime
+            .update_with_effective(None, |desired, effective| {
                 let mut next = desired.clone();
                 // The effective account validates online membership. The config owner removes
                 // its non-persistent overlay before saving, without promoting discovered models.
@@ -470,8 +479,7 @@ impl StudioRuntime {
                 });
                 next.models.accounts.insert(account_id.clone(), account);
                 Ok(next)
-            },
-        )?;
+            })?;
         self.publish_settings_state()?;
         self.settings_command_reply(
             request.operation_id,
@@ -491,7 +499,7 @@ impl StudioRuntime {
         let mut changed = false;
         let state = self
             .config_runtime
-            .update(request.expected_revision, |desired| {
+            .update_with_effective(None, |desired, _| {
                 let mut next = desired.clone();
                 let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
                     crate::PureError::ConfigError(format!("unknown account: {account_id}"))
@@ -660,13 +668,6 @@ impl StudioRuntime {
         let thread = self.ensure_thread_owner(thread_id).await?;
         let state = thread.snapshot();
         let settings = self.config_runtime.read()?;
-        if settings.revision != request.expected_settings_revision {
-            return Err(crate::ConfigRuntimeError::StaleRevision {
-                expected: request.expected_settings_revision,
-                actual: settings.revision,
-            }
-            .into());
-        }
         let route_extension_id = crate::studio::model_route::MODEL_ROUTE_EXTENSION;
         let previous = state
             .extensions
@@ -739,50 +740,37 @@ impl StudioRuntime {
         let mut mode_default_saved = false;
         let mut warning = None;
         if update_mode_default {
-            for _ in 0..3 {
-                let latest = self.config_runtime.read()?;
-                let mut config = latest.canonical_config().clone();
-                let candidate = match validated_route(
-                    &latest.config,
-                    &format!("Thread Mode {mode}"),
-                    &request.account_id,
-                    &request.model_id,
-                    request.effort.as_deref(),
-                ) {
-                    Ok(candidate) => candidate,
-                    Err(error) => {
+            match self
+                .config_runtime
+                .update_with_effective(None, |desired, effective| {
+                    let candidate = validated_route(
+                        effective,
+                        &format!("Thread Mode {mode}"),
+                        &request.account_id,
+                        &request.model_id,
+                        request.effort.as_deref(),
+                    )
+                    .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
+                    let mut config = desired.clone();
+                    default_changed = config.mode_model_routes.get(&mode) != Some(&candidate);
+                    config.mode_model_routes.insert(mode.clone(), candidate);
+                    Ok(config)
+                }) {
+                Ok(updated) => {
+                    confirmed_settings = updated;
+                    mode_default_saved = true;
+                    if let Err(error) = self.publish_settings_state() {
                         warning = Some(format!(
-                            "current Thread was updated, but its Mode default was not saved: {error}"
+                            "current Thread and Mode default were saved, but the Settings event was not published: {error}"
                         ));
-                        break;
-                    }
-                };
-                config.mode_model_routes.insert(mode.clone(), candidate);
-                match self.config_runtime.replace(latest.revision, config) {
-                    Ok(updated) => {
-                        default_changed = latest.canonical_config() != updated.canonical_config();
-                        confirmed_settings = updated.clone();
-                        if let Err(error) = self.publish_settings_state() {
-                            warning = Some(format!(
-                                "current Thread and Mode default were saved, but the Settings event was not published: {error}"
-                            ));
-                        }
-                        mode_default_saved = true;
-                        break;
-                    }
-                    Err(crate::ConfigRuntimeError::StaleRevision { .. }) => continue,
-                    Err(error) => {
-                        warning = Some(format!(
-                            "current Thread was updated, but its Mode default was not saved: {error}"
-                        ));
-                        break;
                     }
                 }
-            }
-            if !mode_default_saved && warning.is_none() {
-                warning = Some(
-                    "current Thread was updated, but its Mode default conflicted repeatedly".into(),
-                );
+                Err(error) => {
+                    default_changed = false;
+                    warning = Some(format!(
+                        "current Thread was updated, but its Mode default was not saved: {error}"
+                    ));
+                }
             }
         }
         let snapshot = self.thread_snapshot(thread_id).await?;
@@ -922,11 +910,9 @@ mod tests {
             let state = thread.snapshot();
             let previous = &state.extensions[MODEL_ROUTE_EXTENSION];
             let mut selector = model_route::decode(&previous.payload)?;
-            let settings = runtime.read_settings()?.config;
             let update = runtime
                 .apply_settings_field(UpdateSettingsFieldRequest {
                     operation_id: "change-mode-default".into(),
-                    expected_revision: settings.revision,
                     update: SettingsFieldUpdate::ModeModel {
                         mode_id: crate::mode::ThreadModeId::auto().to_string(),
                         account_id: "child-fixture".into(),
@@ -939,7 +925,6 @@ mod tests {
                 |operation: &str, revision, tier: Option<&str>| SetThreadModelRouteRequest {
                     operation_id: operation.into(),
                     expected_model_route_revision: revision,
-                    expected_settings_revision: settings.revision,
                     account_id: "root-fixture".into(),
                     model_id: crate::runtime_test_support::MODEL.into(),
                     effort: None,
@@ -1025,7 +1010,6 @@ mod tests {
             let reply = runtime
                 .apply_settings_field(UpdateSettingsFieldRequest {
                     operation_id: format!("language-{index}"),
-                    expected_revision: before.revision,
                     update: SettingsFieldUpdate::GeneralLanguage { value: language },
                 })
                 .await?;
@@ -1039,19 +1023,30 @@ mod tests {
             assert_eq!(store.load()?, config);
             before = reply.snapshot.config;
         }
-        assert!(
+        let reply = runtime
+            .apply_settings_field(UpdateSettingsFieldRequest {
+                operation_id: "resize-sidebar".into(),
+                update: SettingsFieldUpdate::GeneralSidebarWidth { value: Some(380) },
+            })
+            .await?;
+        assert_eq!(
+            reply.snapshot.config.settings.general.language,
+            before.settings.general.language
+        );
+        assert_eq!(store.load()?.ui.sidebar_width, Some(380));
+        for (id, value) in [("one", true), ("two", true), ("one", false)] {
             runtime
                 .apply_settings_field(UpdateSettingsFieldRequest {
-                    operation_id: "stale-language".into(),
-                    expected_revision: before.revision - 1,
-                    update: SettingsFieldUpdate::GeneralLanguage {
-                        value: StudioUiLanguage::En,
+                    operation_id: format!("pin-{id}-{value}"),
+                    update: SettingsFieldUpdate::ThreadPinned {
+                        id: id.into(),
+                        value,
                     },
                 })
-                .await
-                .is_err()
-        );
-        assert_eq!(runtime.read_settings()?.config, before);
+                .await?;
+        }
+        assert_eq!(store.load()?.ui.pinned_thread_ids, ["two"]);
+        before = runtime.read_settings()?.config;
         runtime.shutdown_runtime().await?;
         let runtime = StudioRuntime::initialize(options()).await?;
         assert_eq!(runtime.read_settings()?.config.settings, before.settings);

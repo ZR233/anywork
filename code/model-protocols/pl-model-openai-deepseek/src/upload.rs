@@ -1,9 +1,9 @@
 //! DeepSeek Files 与独立搜索协议。
 
 pub async fn upload_file(
-    request: pl_model_openai_wire::files::FileUploadRequest<'_>,
-) -> pl_protocol::Result<Option<pl_model_openai_wire::files::UploadedFile>> {
-    use pl_model_openai_wire::transport;
+    request: pl_model_wire::files::FileUploadRequest<'_>,
+) -> pl_protocol::Result<Option<pl_model_wire::files::UploadedFile>> {
+    use pl_model_wire::transport;
     let part = reqwest::multipart::Part::bytes(request.bytes.to_vec())
         .file_name(
             request
@@ -60,15 +60,15 @@ pub async fn upload_file(
             "upload response has no file id".into(),
         ));
     }
-    Ok(Some(pl_model_openai_wire::files::UploadedFile {
+    Ok(Some(pl_model_wire::files::UploadedFile {
         id: file.id,
         expires_at: file.expires_at.unwrap_or(request.now.saturating_add(86400)),
     }))
 }
 
-pub static FILE_UPLOAD: pl_model_openai_wire::files::FileUploadService =
-    pl_model_openai_wire::files::FileUploadService {
-        id: pl_model_openai_wire::protocol::FileUploadCapability::from_static("deep_seek"),
+pub static FILE_UPLOAD: pl_model_wire::files::FileUploadService =
+    pl_model_wire::files::FileUploadService {
+        id: pl_model_wire::protocol::FileUploadCapability::from_static("deep_seek"),
         cache_revision: "deepseek:files-v2:86400",
         upload: |request| Box::pin(upload_file(request)),
     };

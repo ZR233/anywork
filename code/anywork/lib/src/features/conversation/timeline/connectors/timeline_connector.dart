@@ -316,13 +316,28 @@ class _TimelineConnectorBodyState
         onRetryOlder: () => active()
             ? owner.retryOlder(threadId, generation: lease.generation)
             : Future.value(),
-        onReturnLive: () =>
-            active() ? owner.returnToLive(threadId) : Future.value(),
+        onReturnLive: () async {
+          if (!mounted || !active()) return false;
+          try {
+            if (!await owner.returnToLive(threadId) || !mounted || !active()) {
+              return false;
+            }
+          } catch (_) {
+            // The owner publishes the connection failure and recovers its reader.
+            return false;
+          }
+          final committed = owner.source.value;
+          return committed?.threadId == threadId &&
+              committed?.generation == lease.generation &&
+              committed?.connection == TimelineConnectionPhase.ready &&
+              committed?.mode == TimelineDisplayMode.live &&
+              lease.mode == TimelineDisplayMode.live;
+        },
         onEnterHistory: () {
           if (active()) {
             unawaited(
               owner
-                  .dispatch(threadId, const TimelineEnterHistory())
+                  .enterHistory(threadId)
                   .catchError((Object _, StackTrace _) {}),
             );
           }

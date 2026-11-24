@@ -57,7 +57,12 @@ AcpTimelineHeaderViewState acpTimelineHeaderViewModel(
         ? false
         : hasConversationalAcpContent(state.content),
     hasPlan: state?.plan != null && state!.plan!.entries.isNotEmpty,
+    running: state?.activeRun != null,
+    pendingPermissionCount: state?.pendingPermissions.length ?? 0,
     capabilities: mapAcpCapabilities(state?.capabilities),
+    availableCommands: extractLatestAcpAvailableCommands(
+      state?.content ?? const [],
+    ),
     errorMessage: rawError == null ? null : formatAcpError(rawError),
     gapKind: mapAcpGapKind(state?.observationGap),
     historyKind: mapAcpHistoryOrigin(state?.history),

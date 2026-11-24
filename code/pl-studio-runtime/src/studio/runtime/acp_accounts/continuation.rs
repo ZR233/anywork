@@ -207,7 +207,6 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         };
         runtime.save_acp_account(crate::UpdateAcpAccountRequest {
             operation_id: "save-generic".into(),
-            expected_revision: runtime.config_runtime.read()?.revision,
             expected_document_revision: None,
             account: crate::AcpAccountUpdate {
                 account_id: definition.id,

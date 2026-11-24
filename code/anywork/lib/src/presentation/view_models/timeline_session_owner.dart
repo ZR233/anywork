@@ -6,7 +6,7 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
 import 'package:flutter/widgets.dart'
-    show AsyncSnapshot, ConnectionState, ScrollController, WidgetsBinding;
+    show AsyncSnapshot, ConnectionState, ScrollController;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
 import '../../domain/models/timeline_commands.dart';
@@ -124,7 +124,10 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int _mutations = 0;
   int _modeIntent = 0;
   int _liveWindowGeneration = 0;
-  bool _liveReturnPending = false;
+  int _historyScrollIntent = 0;
+  int? _liveReturnHistoryIntent;
+  bool get _liveReturnPending =>
+      _liveReturnHistoryIntent == _historyScrollIntent;
   Object? get queryCleanupError {
     if (_queryCleanupErrors.isEmpty) return null;
     if (_queryCleanupErrors.length == 1) {
@@ -190,13 +193,13 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int enterHistoryMode() {
     if (_retired) throw StateError('Timeline display is retired');
     _mode = TimelineDisplayMode.history;
-    _liveReturnPending = false;
+    _liveReturnHistoryIntent = null;
     return ++_modeIntent;
   }
 
   int requestLiveWindow() {
     if (_retired) throw StateError('Timeline display is retired');
-    _liveReturnPending = true;
+    _liveReturnHistoryIntent = _historyScrollIntent;
     return ++_modeIntent;
   }
 
@@ -1567,6 +1570,9 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       projection: activeProjection,
       loadedAtoms: current._loadedCurrentAtoms,
     );
+    final pagingBoundaryChanged =
+        current._mode == TimelineDisplayMode.live &&
+        (current._historyCut != page.cut || current._before != page.next);
     await current._mutate(() async {
       try {
         await current._presentation!.reconcileBlocks(partition.timelineBlocks);
@@ -1588,7 +1594,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       current._firstOrder = current._firstLoadedOrder;
       current._mode = TimelineDisplayMode.live;
       current._liveWindowGeneration++;
-      current._liveReturnPending = false;
+      current._liveReturnHistoryIntent = null;
       current._recordBatch(TimelineApplyPlacement.append);
     });
     if (!_ownsRead(read) ||
@@ -1615,7 +1621,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       connectionError: null,
       hasNewOutput: false,
       isLoadingOlder: clearPaging ? false : null,
-      olderError: clearPaging ? null : _unset,
+      olderError: clearPaging || pagingBoundaryChanged ? null : _unset,
     );
   }
 
@@ -1768,24 +1774,17 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     if (next != current) source.publish(next);
   }
 
-  Future<void> dispatch(String threadId, TimelineCommand command) {
+  Future<void> enterHistory(String threadId) async {
     final current = lease(threadId);
-    if (current == null) return Future.value();
-    switch (command) {
-      case TimelineEnterHistory():
-        return _enterHistory(current);
-      case TimelineReturnLive():
-        return returnToLive(threadId);
-    }
-  }
-
-  Future<void> _enterHistory(TimelineDisplayLease current) async {
+    if (current == null) return;
+    // Cancel even a return that is still waiting for the paging slot.
+    current._historyScrollIntent++;
     final read = _consumerObservation;
     try {
       await _serialize(() async {
         if (!identical(_current, current) || current.isRetired) return;
         final freezeCurrent = current._mode == TimelineDisplayMode.live;
-        final invalidateReturn = current._liveReturnPending;
+        final invalidateReturn = current._liveReturnHistoryIntent != null;
         if (!freezeCurrent && !invalidateReturn) return;
         current.enterHistoryMode();
         if (freezeCurrent) {
@@ -1807,31 +1806,34 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     }
   }
 
-  /// Rebuilds the live window from the same History reader after a history view.
-  Future<void> returnToLive(String threadId) {
+  /// Confirms the live window after admission by the original History reader.
+  Future<bool> returnToLive(String threadId) async {
     final current = lease(threadId);
     final read = _consumerObservation;
     if (current == null ||
         read == null ||
-        read.isCancelled ||
+        !_ownsRead(read) ||
         !identical(current.history, read.history)) {
-      return Future.value();
+      return false;
     }
-    if (current._mode == TimelineDisplayMode.live &&
-        !current._liveReturnPending &&
-        !(source.value?.hasNewOutput ?? false)) {
-      return Future.value();
-    }
-    return _readSlot((
+    final historyIntent = current._historyScrollIntent;
+    await _readSlot((
       current,
       current._liveWindowGeneration,
+      historyIntent,
       'return-live',
-    ), () => _reloadLatestWindow(current, read));
+    ), () => _reloadLatestWindow(current, read, historyIntent));
+    return _ownsRead(read) &&
+        identical(lease(threadId), current) &&
+        current._historyScrollIntent == historyIntent &&
+        current._mode == TimelineDisplayMode.live &&
+        !current._liveReturnPending;
   }
 
   Future<void> _reloadLatestWindow(
     TimelineDisplayLease current,
     _TimelineRead read,
+    int historyIntent,
   ) async {
     int? modeIntent;
     int? liveGeneration;
@@ -1840,7 +1842,13 @@ extension TimelineSessionAccess on TimelineSessionOwner {
       await _serialize(() async {
         if (!identical(_current, current) ||
             current.isRetired ||
-            !_ownsRead(read)) {
+            !_ownsRead(read) ||
+            current._historyScrollIntent != historyIntent) {
+          return;
+        }
+        if (current._mode == TimelineDisplayMode.live &&
+            !current._liveReturnPending &&
+            !(source.value?.hasNewOutput ?? false)) {
           return;
         }
         sourceMode = current._mode;
@@ -1901,43 +1909,17 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           current._modeIntent == requestedIntent &&
           current._mode == requestedMode &&
           current._liveReturnPending) {
+        current._liveReturnHistoryIntent = null;
         _publishState(
           connection: TimelineConnectionPhase.failed,
           connectionError: error is _TimelineApplyFailure ? error.cause : error,
-          hasNewOutput: true,
         );
-        _restart(read);
+        // A failed query never changed the loaded history. Keep the reading
+        // window so the same action can retry. A partial apply needs a new Set.
+        if (error is _TimelineApplyFailure) _restart(read);
         rethrow;
       }
     }
-  }
-
-  /// Returns a mounted composer to Chat's latest edge without waiting for paint.
-  void prepareComposerSubmissionDisplay(
-    String threadId, {
-    required TimelineDisplayLease lease,
-  }) {
-    bool current() =>
-        identical(this.lease(threadId), lease) &&
-        lease.isMounted &&
-        !lease.isRetired;
-    if (!current()) return;
-
-    final scroll = lease.scrollController;
-    if (scroll.hasClients &&
-        scroll.position.hasContentDimensions &&
-        scroll.position.viewportDimension > 0) {
-      scroll.jumpTo(scroll.position.minScrollExtent);
-    }
-
-    if (!current()) return;
-    if (lease._mode != TimelineDisplayMode.live ||
-        lease._liveReturnPending ||
-        (source.value?.hasNewOutput ?? false)) {
-      unawaited(returnToLive(threadId).catchError((Object _, StackTrace _) {}));
-    }
-    if (!current()) return;
-    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Future<void> loadOlder(String threadId, {required int generation}) =>
@@ -1953,15 +1935,12 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     if (current == null || current.generation != generation) {
       return Future.value();
     }
-    return _readSlot((current, current._modeIntent, 'history'), () async {
-      await _enterHistory(current);
-      if (!identical(_current, current) ||
-          current.isRetired ||
-          current._mode != TimelineDisplayMode.history) {
-        return;
-      }
-      await _loadOlder(current, retry: retry);
-    });
+    return _readSlot((
+      current,
+      current._historyScrollIntent,
+      current._liveWindowGeneration,
+      'older',
+    ), () => _loadOlder(current, retry: retry));
   }
 
   /// Main paging is single-flight and revalidates the captured display lease.
@@ -1999,53 +1978,83 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     TimelineDisplayLease current, {
     required bool retry,
   }) async {
-    // A different read intent may have queued this operation before selection
-    // retired its lease. Revalidate before publishing loading on the new page.
-    if (!identical(_current, current) || current.isRetired) return;
-    if (!current.hasOlder ||
-        current._before == null ||
-        current._mode != TimelineDisplayMode.history ||
-        (!retry && source.value?.olderError != null)) {
-      return;
-    }
-    final before = current._before!;
-    final modeIntent = current._modeIntent;
-    _publishState(isLoadingOlder: true, olderError: null);
+    final read = _consumerObservation;
+    if (read == null || !identical(current.history, read.history)) return;
+    bool active() =>
+        identical(_current, current) && !current.isRetired && _ownsRead(read);
+
+    ({
+      HistoryCut? cut,
+      String before,
+      TimelineDisplayMode mode,
+      int modeIntent,
+      int liveGeneration,
+      int maxRows,
+      int maxBytes,
+    })?
+    request;
+    // Capture after earlier commits, including the pause from the user scroll
+    // that requested this page. Automatic filling borrows the live cut.
+    await _serialize(() async {
+      final before = current._before;
+      final state = source.value;
+      if (!active() ||
+          !current.hasOlder ||
+          before == null ||
+          state?.connection != TimelineConnectionPhase.ready ||
+          (!retry && state?.olderError != null)) {
+        return;
+      }
+      final demand = _readDemand ?? current.demand;
+      final maxRows = current._mode == TimelineDisplayMode.live
+          ? min(demand.maxItems, current._historyRowLimit - current.loadedCount)
+          : demand.maxItems;
+      if (maxRows <= 0) return;
+      request = (
+        cut: current._historyCut,
+        before: before,
+        mode: current._mode,
+        modeIntent: current._modeIntent,
+        liveGeneration: current._liveWindowGeneration,
+        maxRows: maxRows,
+        maxBytes: demand.maxBytes,
+      );
+      _publishState(isLoadingOlder: true, olderError: null);
+    });
+    final window = request;
+    if (window == null) return;
+    bool ownsWindow() =>
+        active() &&
+        source.value?.connection == TimelineConnectionPhase.ready &&
+        current._historyCut == window.cut &&
+        current._before == window.before &&
+        current._mode == window.mode &&
+        current._modeIntent == window.modeIntent &&
+        current._liveWindowGeneration == window.liveGeneration;
+
     try {
       final scope = current._historyQueries;
       if (scope == null) {
         throw const StaleConversationScope();
       }
-      final cut = current._historyCut;
+      final cut = window.cut;
       if (cut == null) {
         throw const ConversationContinuityError(
           'History window has no fixed cut',
         );
       }
-      final demand = _readDemand ?? current.demand;
       final page = await scope.timelinePage(
         cut: cut,
-        cursor: before,
+        cursor: window.before,
         demand: HistoryDemand(
-          maxRows: demand.maxItems,
-          maxBytes: demand.maxBytes,
+          maxRows: window.maxRows,
+          maxBytes: window.maxBytes,
         ),
       );
-      if (!identical(_current, current) ||
-          current.isRetired ||
-          !scope.isActive) {
-        return;
-      }
+      if (!ownsWindow() || !scope.isActive) return;
       await _serialize(() async {
-        if (!identical(_current, current) ||
-            current.isRetired ||
-            !scope.isActive ||
-            current._before != before ||
-            current._modeIntent != modeIntent ||
-            current._mode != TimelineDisplayMode.history) {
-          return;
-        }
-        if (page.next == before ||
+        if (!ownsWindow() || !scope.isActive) return;
+        if (page.next == window.before ||
             page.items.any(
               (item) => switch (item) {
                 DividerTimelineItem(:final event) => event.eventId.isEmpty,
@@ -2063,6 +2072,12 @@ extension TimelineSessionAccess on TimelineSessionOwner {
           page.items.reversed,
           cut: cut,
         );
+        if (window.mode == TimelineDisplayMode.live &&
+            blocks.length > window.maxRows) {
+          throw const ConversationContinuityError(
+            'History older page exceeded the live window demand',
+          );
+        }
         var order = 0;
         final ids = <String>{};
         for (final block in blocks) {
@@ -2085,20 +2100,16 @@ extension TimelineSessionAccess on TimelineSessionOwner {
               blocks,
               TimelineApplyPlacement.prepend,
             );
-            await current._presentation!.trimNewest(
-              current.loadedCount > current._historyRowLimit
-                  ? current.loadedCount - current._historyRowLimit
-                  : 0,
-            );
+            if (window.mode == TimelineDisplayMode.history) {
+              await current._presentation!.trimNewest(
+                current.loadedCount - current._historyRowLimit,
+              );
+            }
           } catch (error) {
             throw _TimelineApplyFailure(error);
           }
         });
-        if (!identical(_current, current) ||
-            current.isRetired ||
-            !scope.isActive) {
-          return;
-        }
+        if (!ownsWindow() || !scope.isActive) return;
         if (blocks.isNotEmpty) {
           current._firstOrder = blocks.first.blockOrder;
         }
@@ -2106,13 +2117,8 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         current._hasOlder = page.next != null;
         current._recordBatch(TimelineApplyPlacement.prepend);
       });
-      if (identical(_current, current) &&
-          !current.isRetired &&
-          scope.isActive) {
-        _publishState(isLoadingOlder: false, olderError: null);
-      }
     } catch (error) {
-      if (identical(_current, current) && !current.isRetired) {
+      if (ownsWindow()) {
         _publishState(
           isLoadingOlder: false,
           olderError: error is _TimelineApplyFailure ? error.cause : error,

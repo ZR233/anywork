@@ -1,9 +1,9 @@
 //! xAI `/models`: `data`/`id`、`context_length`、官方 token 价格单位与
 //! `capabilities.reasoning_effort` / `default_reasoning_effort`。
-use pl_model_openai_wire::discovery::reasoning::ReasoningDeclaration;
-use pl_model_openai_wire::discovery::{ModelCatalogQueryError, Record, nullable};
-use pl_model_openai_wire::generic_catalog::{standard_record, with_standard_records};
-use pl_model_openai_wire::model::*;
+use pl_model_wire::discovery::reasoning::ReasoningDeclaration;
+use pl_model_wire::discovery::{ModelCatalogQueryError, Record, nullable};
+use pl_model_wire::generic_catalog::{standard_record, with_standard_records};
+use pl_model_wire::model::*;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -119,5 +119,14 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
         let mut record = standard_record(value)?;
         native.supplement(&mut record)?;
         Ok(record)
+    })
+}
+
+pub fn page(
+    bytes: &[u8],
+) -> Result<pl_model_wire::discovery::ParsedCatalogPage, ModelCatalogQueryError> {
+    Ok(pl_model_wire::discovery::ParsedCatalogPage {
+        records: records(bytes)?,
+        next_page_token: None,
     })
 }

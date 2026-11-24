@@ -1,5 +1,5 @@
 //! DeepSeek adds its Chat thinking switch to standard model-list entries.
-use pl_model_openai_wire::{
+use pl_model_wire::{
     discovery::{ModelCatalogQueryError, Record},
     generic_catalog::{standard_record, with_standard_records},
 };
@@ -9,5 +9,14 @@ pub fn records(bytes: &[u8]) -> Result<Vec<Record>, ModelCatalogQueryError> {
         let mut record = standard_record(value)?;
         record.thinking_base_body = true;
         Ok(record)
+    })
+}
+
+pub fn page(
+    bytes: &[u8],
+) -> Result<pl_model_wire::discovery::ParsedCatalogPage, ModelCatalogQueryError> {
+    Ok(pl_model_wire::discovery::ParsedCatalogPage {
+        records: records(bytes)?,
+        next_page_token: None,
     })
 }

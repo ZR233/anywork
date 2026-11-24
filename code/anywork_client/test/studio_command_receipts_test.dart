@@ -32,13 +32,11 @@ final class _RouteCall {
     this.threadId,
     this.modelId,
     this.expectedRouteRevision,
-    this.expectedSettingsRevision,
   );
   final OperationId operationId;
   final String threadId;
   final String modelId;
   final int expectedRouteRevision;
-  final int expectedSettingsRevision;
   final reply = Completer<ThreadModelRouteCommandReply>();
 }
 
@@ -81,8 +79,7 @@ final class _InteractionCall {
 }
 
 final class _SettingsCall {
-  _SettingsCall(this.revision, this.command, this.operationId);
-  final int revision;
+  _SettingsCall(this.command, this.operationId);
   final SettingsFieldCommand command;
   final OperationId operationId;
   final reply = Completer<SettingsCommandReply>();
@@ -134,13 +131,34 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   final deletes = StreamController<_DeleteCall>.broadcast();
   final archiveCalls = <_ArchiveCall>[];
   final deleteCalls = <_DeleteCall>[];
+  final restoreEntered = Completer<String>();
+  final restoreReply = Completer<SessionDirectoryRow>();
+  String? failingDirectoryThreadId;
   final compactions = <Completer<void>>[];
   final Completer<void> compactEntered = Completer<void>();
+  String expectedCompactionThreadId = 'thread';
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
   final Map<ProductTopic, StreamController<ProductTopicFrame>>
   topicSinksByTopic = {};
   final Map<ProductTopic, List<_TopicBinding>> topicBindings = {};
   final Map<(ProductTopic, int), Completer<_TopicBinding>> _topicOpening = {};
+
+  @override
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) {
+    if (threadId == failingDirectoryThreadId) {
+      return Future.error(StateError('Directory metadata unavailable'));
+    }
+    return super.openThreadObservation(threadId, resourceId: resourceId);
+  }
+
+  @override
+  Future<SessionDirectoryRow> restoreThread(String threadId) {
+    restoreEntered.complete(threadId);
+    return restoreReply.future;
+  }
 
   Future<_TopicBinding> topicBinding(ProductTopic topic, int index) async {
     final bindings = topicBindings[topic] ?? const <_TopicBinding>[];
@@ -178,11 +196,10 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
 
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int revision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) {
-    final call = _SettingsCall(revision, command, operationId);
+    final call = _SettingsCall(command, operationId);
     final index = settingsCalls.length;
     settingsCalls.add(call);
     _settingsEntered.remove(index)?.complete(call);
@@ -204,7 +221,7 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
 
   @override
   Future<void> compactThread(String threadId) {
-    expect(threadId, 'thread');
+    expect(threadId, expectedCompactionThreadId);
     final reply = Completer<void>();
     compactions.add(reply);
     if (!compactEntered.isCompleted) compactEntered.complete();
@@ -253,7 +270,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
@@ -264,7 +280,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
       threadId,
       modelId,
       expectedModelRouteRevision,
-      expectedSettingsRevision,
     );
     routes.add(call);
     routeCalls.add(call);
@@ -466,20 +481,13 @@ final class _RouteConflictTransport extends _Transport {
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
     String? serviceTier,
   }) async {
     attempts.add(
-      _RouteCall(
-        operationId,
-        threadId,
-        modelId,
-        expectedModelRouteRevision,
-        expectedSettingsRevision,
-      ),
+      _RouteCall(operationId, threadId, modelId, expectedModelRouteRevision),
     );
     if (attempts.length == 1) {
       throw const StudioFailure(
@@ -1479,7 +1487,7 @@ void main() {
       ),
       throwsA(same(_probeRejection)),
     );
-    expect(transport.settingsCalls.map((call) => call.revision), [1]);
+    expect(transport.settingsCalls, hasLength(1));
     expect(
       (transport.settingsCalls.single.command as InstructionUserCommand).value,
       'next-owner-input',
@@ -1492,101 +1500,34 @@ void main() {
     );
   });
 
-  test('settings owner change while acquiring CAS rejects the old read before publication or dispatch', () async {
-    final transport = _Transport();
-    final read = Completer<SettingsStateSnapshot>();
-    transport.settingsRead = () => read.future;
-    final client = await _client(transport);
-    client.applyBootstrap(
-      _bootstrap(
-        'loading-old',
-        const SettingsStateSnapshot.fromState(
-          state: UninitializedObservedResource<SettingsStateData>(updatedAt: 0),
+  test(
+    'a field patch can be sent before the settings snapshot loads',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      client.applyBootstrap(
+        _bootstrap(
+          'loading',
+          const SettingsStateSnapshot.fromState(
+            state: UninitializedObservedResource<SettingsStateData>(
+              updatedAt: 0,
+            ),
+          ),
         ),
-      ),
-    );
-    final old = client.settingsCommands.applySettingsField(
-      const InstructionUserCommand('old-owner-input'),
-    );
-    final rejected = expectLater(old, throwsStateError);
-    await transport.settingsReadEntered.future;
-    client.applyBootstrap(_bootstrap('next', _settings(1)));
-    read.complete(
-      SettingsStateSnapshot(
-        revision: 999,
-        instructions: const InstructionsSettingsView(user: 'late-old-read'),
-      ),
-    );
-    await rejected;
-    expect(transport.settingsCalls, isEmpty);
-    expect(client.settings.state.settingsRevision, 1);
-    expect(client.settings.state.canonical!.instructions.user, isEmpty);
-    expect(
-      client.settingsWrites.stamp,
-      const ResourceStamp(
-        resourceKey: 'settings',
-        ownerEpoch: 'next',
-        revision: 1,
-      ),
-    );
-    expect(
-      client.mutations.latest('settings:instructions:user')!.state.value.phase,
-      OperationPhase.rejected,
-    );
-    expect(
-      (await client.close(
+      );
+      await expectLater(
+        client.settingsCommands.applySettingsField(
+          const InstructionUserCommand('current intent'),
+        ),
+        throwsA(same(_probeRejection)),
+      );
+      expect(transport.settingsCalls, hasLength(1));
+      expect(transport.settingsReadEntered.isCompleted, isFalse);
+      await client.close(
         budget: ClientCloseBudget(const Duration(seconds: 30)),
-      )).complete,
-      isTrue,
-    );
-  });
-
-  test('settings owner change during conflict refresh does not retry or rebind the late canonical read', () async {
-    final transport = _Transport();
-    final read = Completer<SettingsStateSnapshot>();
-    transport.settingsRead = () => read.future;
-    const conflict = StudioFailure(
-      code: StudioFailureCode.staleRevision,
-      message: 'Old settings changed',
-      retryable: true,
-      correlationId: 'owner-conflict',
-    );
-    transport.settingsReply = (_) => Future.error(conflict);
-    final client = await _client(transport);
-    client.applyBootstrap(_bootstrap('old', _settings(99)));
-    final old = client.settingsCommands.applySettingsField(
-      const InstructionUserCommand('old-owner-input'),
-    );
-    final rejected = expectLater(old, throwsStateError);
-    await transport.settingsReadEntered.future;
-    client.applyBootstrap(_bootstrap('next', _settings(1)));
-    read.complete(
-      SettingsStateSnapshot(
-        revision: 100,
-        instructions: const InstructionsSettingsView(user: 'old-refresh'),
-      ),
-    );
-    await rejected;
-    expect(transport.settingsCalls.map((call) => call.revision), [99]);
-    expect(client.settings.state.settingsRevision, 1);
-    expect(client.settings.state.canonical!.instructions.user, isEmpty);
-    final operation = client.mutations
-        .latest('settings:instructions:user')!
-        .state
-        .value;
-    expect(
-      operation.phase,
-      OperationPhase.rejected,
-      reason: 'The old RPC was definitely rejected, even though its retry owner retired',
-    );
-    expect(operation.error, same(conflict));
-    expect(
-      (await client.close(
-        budget: ClientCloseBudget(const Duration(seconds: 30)),
-      )).complete,
-      isTrue,
-    );
-  });
+      );
+    },
+  );
 
   test('settings owner change joins a sent RPC but cannot apply its late response to the new owner', () async {
     final transport = _Transport()..settingsReply = (call) => call.reply.future;
@@ -1732,9 +1673,7 @@ void main() {
     runtime.seed(_settings(1));
     read.complete(_settings(100));
     await rejected;
-    expect(transport.routeCalls.map((call) => call.expectedSettingsRevision), [
-      99,
-    ]);
+    expect(transport.routeCalls, hasLength(1));
     expect(client.settings.state.settingsRevision, 1);
     final operation = client.mutations
         .latest('thread-route:thread')!
@@ -2209,6 +2148,7 @@ void main() {
 
       expect(transport.deleteCalls, hasLength(1));
       expect(client.selection.state.selectedThreadId, 'thread');
+      expect(client.conversations.visibleThreadId.value, 'thread');
       final operation = client.mutations.lookup(call.operationId)!.state.value;
       expect(operation.receipt, isNotNull);
       expect(operation.observed, isFalse);
@@ -2228,6 +2168,10 @@ void main() {
       await request;
 
       expect(client.selection.state.selectedThreadId, 'thread');
+      expect(
+        client.threadCommands.isThreadRemovalPending('already-absent'),
+        isFalse,
+      );
       final operation = client.mutations.lookup(call.operationId)!.state.value;
       expect(operation.phase, OperationPhase.rejected);
       expect(operation.receipt, isNull);
@@ -2255,17 +2199,36 @@ void main() {
   test(
     'delete releases the selected tree and follows its canonical next root',
     () async {
-      final transport = _Transport();
+      final transport = _Transport()..seedThread(_row(id: 'next-root'));
       final client = await _client(transport);
       final session = client.conversations.existingSession('thread')!;
       final request = client.threadCommands.deleteThread('thread');
       final call = await transport.deletes.stream.first;
+      expect(client.selection.state.selectedThreadId, 'next-root');
+      expect(session.isActive, isFalse);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isTrue);
+      await expectLater(
+        client.directoryCommands.selectThread('thread'),
+        throwsStateError,
+      );
+      await expectLater(
+        client.directoryCommands.restoreThread('thread'),
+        throwsStateError,
+      );
+      await expectLater(
+        client.threadCommands.archiveThread('thread'),
+        throwsStateError,
+      );
+      await expectLater(
+        client.threadCommands.deleteThread('thread'),
+        throwsStateError,
+      );
       call.reply.complete(
         DeleteThreadCommandReply(
           result: DeleteThreadResult(
             deletedRootId: 'thread',
             deletedThreadIds: const ['thread', 'child'],
-            nextRoot: _row(id: 'next-root', title: 'Next root'),
+            nextRoot: _row(id: 'stale-receipt-root'),
           ),
           receipt: _receipt(call.operationId, [
             _stamp('thread-directory', 2),
@@ -2276,11 +2239,209 @@ void main() {
 
       expect(client.selection.state.selectedThreadId, 'next-root');
       expect(session.isActive, isFalse);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isFalse);
       final operation = client.mutations.lookup(call.operationId)!.state.value;
       expect(operation.receipt, isNotNull);
       expect(operation.observed, isFalse);
       expect(operation.durable, isTrue);
       expect(operation.phase, OperationPhase.awaitingObservation);
+    },
+  );
+
+  test(
+    'restore already in flight refuses a competing delete of the same root',
+    () async {
+      final archived = _row(id: 'archived-root').copyWith(archived: true);
+      final transport = _Transport()..seedThread(archived);
+      final client = await _client(transport);
+      final restore = client.directoryCommands.restoreThread(archived.threadId);
+      expect(await transport.restoreEntered.future, archived.threadId);
+      await expectLater(
+        client.threadCommands.deleteThread(archived.threadId),
+        throwsStateError,
+      );
+      expect(transport.deleteCalls, isEmpty);
+      transport.restoreReply.complete(archived.copyWith(archived: false));
+      await restore;
+    },
+  );
+
+  for (final delete in [false, true]) {
+    test(
+      'candidate metadata failure leaves a draft and still dispatches ${delete ? 'delete' : 'archive'}',
+      () async {
+        final transport = _Transport()
+          ..seedThread(_row(id: 'unreadable'))
+          ..failingDirectoryThreadId = 'unreadable';
+        final client = await _client(transport);
+        Future<void> request;
+        if (delete) {
+          request = client.threadCommands.deleteThread('thread');
+          final call = await transport.deletes.stream.first;
+          expect(client.selection.state.selectedThreadId, isNull);
+          call.reply.complete(null);
+        } else {
+          request = client.threadCommands.archiveThread('thread');
+          final call = await transport.archives.stream.first;
+          expect(client.selection.state.selectedThreadId, isNull);
+          call.reply.complete(
+            ArchiveThreadCommandReply(
+              result: const ArchiveThreadResult(
+                archivedRootId: 'thread',
+                removedThreadIds: ['thread'],
+              ),
+              receipt: _receipt(call.operationId, [
+                _stamp('thread-directory', 2),
+              ]),
+            ),
+          );
+        }
+        await request;
+        expect(client.selection.state.selectedProjectId, 'project');
+        expect(client.selection.state.selectedThreadId, isNull);
+        expect(client.threadCommands.isThreadRemovalPending('thread'), isFalse);
+      },
+    );
+  }
+
+  test(
+    'an archive fallback read yields to a newer directory selection',
+    () async {
+      final candidateGate = Completer<void>();
+      final transport = _Transport()
+        ..seedThread(_row(id: 'candidate'))
+        ..seedThread(_row(id: 'later-choice'))
+        ..metadataOpenGates['candidate'] = candidateGate;
+      final client = await _client(transport);
+      addTearDown(() {
+        if (!candidateGate.isCompleted) candidateGate.complete();
+      });
+      final dispatch = transport.archives.stream.first;
+      final request = client.threadCommands.archiveThread('thread');
+      await transport.metadataOpenStarted('candidate');
+      expect(transport.archiveCalls, isEmpty);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isTrue);
+
+      await client.directoryCommands.selectThread('later-choice');
+      candidateGate.complete();
+      final call = await dispatch;
+      expect(client.selection.state.selectedThreadId, 'later-choice');
+      call.reply.complete(
+        ArchiveThreadCommandReply(
+          result: ArchiveThreadResult(
+            archivedRootId: 'thread',
+            removedThreadIds: const ['thread'],
+            nextRoot: _row(id: 'candidate'),
+          ),
+          receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+        ),
+      );
+      await request;
+      expect(client.selection.state.selectedThreadId, 'later-choice');
+    },
+  );
+
+  test(
+    'a running removal leaves other commands free and is skipped as a fallback',
+    () async {
+      final transport = _Transport()
+        ..seedThread(_row(id: 'pending-root'))
+        ..seedThread(_row(id: 'blocked-root'))
+        ..seedThread(_row(id: 'next-root'))
+        ..expectedCompactionThreadId = 'next-root';
+      final client = await _client(transport);
+      client.recovery.apply(
+        RecoveryStateSnapshot(
+          revision: 2,
+          values: const [
+            StudioRecoveryIssue(
+              id: 'blocked-access',
+              scope: RecoveryIssueScope.thread,
+              category: RecoveryIssueCategory.repository,
+              impact: RecoveryIssueImpact.accessBlocked,
+              availableActions: [],
+              threadId: 'blocked-root',
+              detail: 'Access blocked',
+            ),
+          ],
+        ),
+      );
+      final deletion = client.threadCommands.deleteThread('pending-root');
+      final delete = await transport.deletes.stream.first;
+      expect(client.selection.state.selectedThreadId, 'thread');
+
+      final archive = client.threadCommands.archiveThread('thread');
+      final call = await transport.archives.stream.first;
+      expect(client.selection.state.selectedThreadId, 'next-root');
+      expect(
+        client.threadCommands.isThreadRemovalPending('pending-root'),
+        isTrue,
+      );
+
+      final compaction = client.threadCommands.compactThread('next-root');
+      await transport.compactEntered.future;
+      transport.compactions.single.complete();
+      await compaction;
+
+      call.reply.complete(
+        ArchiveThreadCommandReply(
+          result: const ArchiveThreadResult(
+            archivedRootId: 'thread',
+            removedThreadIds: ['thread'],
+          ),
+          receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+        ),
+      );
+      await archive;
+      delete.reply.complete(null);
+      await deletion;
+      expect(client.selection.state.selectedThreadId, 'next-root');
+    },
+  );
+
+  test(
+    'directory observation can settle before the archive wait ends',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final metadata = client.threadDirectory.observeThread('thread');
+      addTearDown(metadata.release);
+      await metadata.state.waitFor((state) => state.frame != null);
+      final publishedPending = <bool>[];
+      final commandObservation = client.threadCommands.source.watch((_) {
+        publishedPending.add(
+          client.threadCommands.isThreadRemovalPending('thread'),
+        );
+      });
+      addTearDown(commandObservation.cancel);
+      final request = client.threadCommands.archiveThread('thread');
+      final call = await transport.archives.stream.first;
+      transport.emitThread(null, 'thread', revision: 2);
+      await metadata.state.waitFor((state) => state.frame?.stamp.revision == 2);
+      final operation = client.mutations.lookup(call.operationId)!;
+      bool? pendingWhenObserved;
+      final observation = operation.state.watch((state) {
+        if (state.observed) {
+          pendingWhenObserved = client.threadCommands.isThreadRemovalPending(
+            'thread',
+          );
+        }
+      });
+      addTearDown(observation.cancel);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isTrue);
+      call.reply.complete(
+        ArchiveThreadCommandReply(
+          result: const ArchiveThreadResult(
+            archivedRootId: 'thread',
+            removedThreadIds: ['thread'],
+          ),
+          receipt: _receipt(call.operationId, [_stamp('thread-directory', 2)]),
+        ),
+      );
+      await request;
+      expect(pendingWhenObserved, isTrue);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isFalse);
+      expect(publishedPending, [true, false]);
     },
   );
 
@@ -2332,7 +2493,7 @@ void main() {
   });
 
   test(
-    'a failed delete keeps the selected and visible session intact',
+    'a failed delete keeps the fallback draft and returns the failure',
     () async {
       final transport = _Transport();
       final client = await _client(transport);
@@ -2343,11 +2504,16 @@ void main() {
         throwsA(same(failure)),
       );
       final call = await transport.deletes.stream.first;
+      expect(client.selection.state.selectedProjectId, 'project');
+      expect(client.selection.state.selectedThreadId, isNull);
+      expect(session.isActive, isFalse);
       call.reply.completeError(failure);
       await request;
 
-      expect(client.selection.state.selectedThreadId, 'thread');
-      expect(session.isActive, isTrue);
+      expect(client.selection.state.selectedProjectId, 'project');
+      expect(client.selection.state.selectedThreadId, isNull);
+      expect(session.isActive, isFalse);
+      expect(client.threadCommands.isThreadRemovalPending('thread'), isFalse);
       final operation = client.mutations.lookup(call.operationId)!.state.value;
       expect(operation.phase, OperationPhase.unknownOutcome);
       expect(operation.error, same(failure));
@@ -2439,7 +2605,7 @@ void main() {
         transport.attempts.first.operationId,
       );
       expect(transport.attempts.last.expectedRouteRevision, 4);
-      expect(transport.attempts.last.expectedSettingsRevision, 2);
+
       expect(session.state.modelRoute?.revision, 4);
       transport.stateBindings.first.add(
         ThreadNotificationFrame(
@@ -3170,7 +3336,7 @@ void main() {
       final y = await enteredY;
       expect(y.operationId, isNot(x.operationId));
       expect(y.expectedRouteRevision, 2);
-      expect(y.expectedSettingsRevision, 2);
+
       expect(
         client.mutations.lookup(x.operationId)!.state.value.observed,
         isTrue,

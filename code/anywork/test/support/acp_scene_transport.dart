@@ -20,13 +20,11 @@ class AcpSceneTransport extends TestDemoStudioTransport {
 
   @override
   Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
   }) async => _committedAccountWrite(
     await super.saveAcpAccount(
-      expectedSettingsRevision,
       account,
       operationId: operationId,
       expectedDocumentRevision: expectedDocumentRevision,
@@ -35,13 +33,11 @@ class AcpSceneTransport extends TestDemoStudioTransport {
 
   @override
   Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,
   }) async => _committedAccountWrite(
     await super.removeAcpAccount(
-      expectedSettingsRevision,
       accountId,
       operationId: operationId,
       expectedDocumentRevision: expectedDocumentRevision,

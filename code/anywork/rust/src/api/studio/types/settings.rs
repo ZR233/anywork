@@ -123,8 +123,9 @@ pub enum SettingsFieldInput {
     SkillsExternalDirs {
         value: Vec<String>,
     },
-    SkillsDisabled {
-        value: Vec<String>,
+    SkillDisabled {
+        id: String,
+        value: bool,
     },
     SkillsAutoLearnMinToolCalls {
         value: u32,
@@ -141,11 +142,13 @@ pub enum SettingsFieldInput {
     GeneralSidebarWidth {
         value: Option<u16>,
     },
-    GeneralPinnedThreadIds {
-        value: Vec<String>,
+    ThreadPinned {
+        id: String,
+        value: bool,
     },
-    GeneralPinnedProjectIds {
-        value: Vec<String>,
+    ProjectPinned {
+        id: String,
+        value: bool,
     },
     WebSearchMode {
         value: String,
@@ -226,7 +229,7 @@ impl From<SettingsFieldInput> for pl_studio_runtime::SettingsFieldUpdate {
             SettingsFieldInput::SkillsExternalDirs { value } => {
                 Update::SkillsExternalDirs { value }
             }
-            SettingsFieldInput::SkillsDisabled { value } => Update::SkillsDisabled { value },
+            SettingsFieldInput::SkillDisabled { id, value } => Update::SkillDisabled { id, value },
             SettingsFieldInput::SkillsAutoLearnMinToolCalls { value } => {
                 Update::SkillsAutoLearnMinToolCalls { value }
             }
@@ -242,12 +245,8 @@ impl From<SettingsFieldInput> for pl_studio_runtime::SettingsFieldUpdate {
             SettingsFieldInput::GeneralSidebarWidth { value } => {
                 Update::GeneralSidebarWidth { value }
             }
-            SettingsFieldInput::GeneralPinnedThreadIds { value } => {
-                Update::GeneralPinnedThreadIds { value }
-            }
-            SettingsFieldInput::GeneralPinnedProjectIds { value } => {
-                Update::GeneralPinnedProjectIds { value }
-            }
+            SettingsFieldInput::ThreadPinned { id, value } => Update::ThreadPinned { id, value },
+            SettingsFieldInput::ProjectPinned { id, value } => Update::ProjectPinned { id, value },
             SettingsFieldInput::WebSearchMode { value } => Update::WebSearchMode { value },
             SettingsFieldInput::WebSearchContextSize { value } => {
                 Update::WebSearchContextSize { value }

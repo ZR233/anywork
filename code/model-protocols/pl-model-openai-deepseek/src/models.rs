@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use pl_model_openai_wire::model::{
+use pl_model_wire::model::{
     BundledModelDefinition, MediaSendOrder, ModelDefinitionError,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
@@ -12,7 +12,7 @@ use pl_model_openai_wire::model::{
     pricing::{DailyPriceWindow, ModelPricing, TokenPriceTier, WeeklyPriceAdjustment},
     reasoning_fields::REASONING_CONTENT,
 };
-use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
+use pl_model_wire::model::{CodexModel, TruncationPolicy};
 use serde_json::{Map, Value};
 
 const FLASH: &str = "deepseek-flash";
@@ -107,7 +107,7 @@ fn image_family(mut family: ModelFamily) -> ModelFamily {
     family
         .request_profile
         .media
-        .extend(pl_model_openai_wire::model::image_media_profiles(
+        .extend(pl_model_wire::model::image_media_profiles(
             MediaWireFormat::ResponsesInputImage,
             MediaSendOrder::ProviderFileFirst,
         ));

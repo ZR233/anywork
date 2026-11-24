@@ -6,7 +6,6 @@ import '../../../anywork_client.dart'
     show OperationHandle, OperationState, Observation;
 import '../anywork_client.dart';
 import '../stores/domain_sync.dart';
-import 'command_lane.dart';
 import '../../../accounts_ports.dart'
     show
         SettingsWriteCoordinator,
@@ -25,8 +24,8 @@ class SettingsCommands {
     return _run(
       mutationKey ?? settingsFieldMutationKey(command),
       target: settingsFieldTarget(command),
-      (revision, operationId) =>
-          _api.applySettingsField(revision, command, operationId: operationId),
+      (operationId) =>
+          _api.applySettingsField(command, operationId: operationId),
     );
   }
 
@@ -81,9 +80,8 @@ class SettingsCommands {
     await _run(
       'system-agent:$profileId',
       target: CommandTarget(label: profileId, enabled: enabled),
-      (revision, operationId) => _api.setSystemAgentEnabled(
+      (operationId) => _api.setSystemAgentEnabled(
         operationId: operationId,
-        expectedSettingsRevision: revision,
         profileId: profileId,
         enabled: enabled,
       ),
@@ -94,8 +92,8 @@ class SettingsCommands {
     await _run(
       'user-agent-profile:${draft.id}',
       target: CommandTarget(label: draft.id),
-      (revision, operationId) =>
-          _api.saveUserAgentProfile(revision, draft, operationId: operationId),
+      (operationId) =>
+          _api.saveUserAgentProfile(draft, operationId: operationId),
     );
   }
 
@@ -103,11 +101,8 @@ class SettingsCommands {
     await _run(
       'permission-mode',
       target: CommandTarget(label: mode.name),
-      (revision, operationId) => _api.saveRuntimePermissionMode(
-        revision,
-        mode,
-        operationId: operationId,
-      ),
+      (operationId) =>
+          _api.saveRuntimePermissionMode(mode, operationId: operationId),
     );
   }
 
@@ -136,14 +131,12 @@ class SettingsCommands {
 
   Future<SettingsStateSnapshot> _run(
     String key,
-    Future<SettingsCommandReply> Function(int revision, OperationId operationId)
-    request, {
+    Future<SettingsCommandReply> Function(OperationId operationId) request, {
     CommandTarget target = const CommandTarget(),
   }) {
     if (_client.isClosed) return Future.error(StateError('Client is closed'));
     final owner = _lane.captureOwner();
     var issued = false;
-    Object? requestFailure;
     // Latest intent is visible before queueing. An older ACK may still update
     // canonical and its own operation record, but cannot erase this intent.
     final operation = _client.mutations.begin(
@@ -155,19 +148,8 @@ class SettingsCommands {
     return _lane.enqueue(() async {
       try {
         _lane.requireOwner(owner);
-        final reply = await retryRevisionConflict(() async {
-          _lane.requireOwner(owner);
-          final revision = await _expectedSettingsRevision(owner);
-          _lane.requireOwner(owner);
-          issued = true;
-          requestFailure = null;
-          try {
-            return await request(revision, operation.id);
-          } catch (error) {
-            requestFailure = error;
-            rethrow;
-          }
-        }, refresh: () async => await refreshCanonical(owner: owner) != null);
+        issued = true;
+        final reply = await request(operation.id);
         if (reply.receipt.operationId != operation.id) {
           throw const StudioFailure(
             code: StudioFailureCode.protocol,
@@ -188,9 +170,8 @@ class SettingsCommands {
         if (operation.state.value.receipt != null) {
           operation.syncFailed(error);
         } else if (_knownRejection(error) ||
-            error is SettingsWriteOwnerChanged &&
-                (!issued || _knownRejection(requestFailure))) {
-          operation.reject(requestFailure ?? error);
+            error is SettingsWriteOwnerChanged && !issued) {
+          operation.reject(error);
         } else {
           operation.unknownOutcome(error);
         }
@@ -247,28 +228,7 @@ class SettingsCommands {
   Future<void> close() {
     return _lane.close();
   }
-
-  Future<int> _expectedSettingsRevision(SettingsWriteOwner owner) async {
-    _lane.requireOwner(owner);
-    final current = _client.settings.state;
-    if (_client.settingsWrites.stamp case final stamp?) return stamp.revision;
-    if (current.configLoaded) return current.settingsRevision;
-    final refreshed = await refreshCanonical(owner: owner);
-    _lane.requireOwner(owner);
-    final loaded = _client.settings.state;
-    if (refreshed == null || !loaded.configLoaded) {
-      throw _settingsNotReady;
-    }
-    return loaded.settingsRevision;
-  }
 }
-
-const StudioFailure _settingsNotReady = StudioFailure(
-  code: StudioFailureCode.notInitialized,
-  message: 'Settings are not available yet',
-  retryable: false,
-  correlationId: 'client-settings-not-ready',
-);
 
 String settingsFieldMutationKey(SettingsFieldCommand command) =>
     switch (command) {
@@ -285,15 +245,15 @@ String settingsFieldMutationKey(SettingsFieldCommand command) =>
       SkillsSystemEnabledCommand() => 'skills:system-enabled',
       SkillsProjectDirCommand() => 'skills:project-dir',
       SkillsExternalDirsCommand() => 'skills:external-dirs',
-      SkillsDisabledCommand() => 'skills:disabled',
+      SkillDisabledCommand(:final id) => 'skills:disabled:$id',
       SkillsAutoLearnMinToolCallsCommand() =>
         'skills:auto-learn-min-tool-calls',
       GeneralFollowActiveTurnCommand() => 'general:follow-active-turn',
       GeneralCompactTimelineCommand() => 'general:compact-timeline',
       GeneralLanguageCommand() => 'general:language',
       GeneralSidebarWidthCommand() => 'general:sidebar-width',
-      GeneralPinnedThreadIdsCommand() => 'general:pinned-thread-ids',
-      GeneralPinnedProjectIdsCommand() => 'general:pinned-project-ids',
+      ThreadPinnedCommand(:final id) => 'general:pinned-thread:$id',
+      ProjectPinnedCommand(:final id) => 'general:pinned-project:$id',
       WebSearchModeCommand() => 'web-search:mode',
       WebSearchContextSizeCommand() => 'web-search:context-size',
       WebSearchAllowedDomainsCommand() => 'web-search:allowed-domains',

@@ -1127,6 +1127,9 @@ class DemoStudioTransport extends StudioTransport
   int _continuationSequence = 0;
   final Map<String, ThreadModeId> _threadModes = {};
   int _threadModeCatalogRevision = 1;
+  final _modeDocumentRevisions = <String, int>{};
+  int _modeDocumentRevision(String id) =>
+      _modeDocumentRevisions[id] ?? (_modeDocuments.containsKey(id) ? 1 : 0);
   final Set<String> _readOnlyModeIds = {'mode.auto'};
   final Map<String, ModeDocument> _modeDocuments = {
     'mode.auto': const ModeDocument(
@@ -2449,13 +2452,11 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> saveAcpAccount(
-    int expectedSettingsRevision,
     AcpAccountUpdateView account, {
     required OperationId operationId,
     required BigInt? expectedDocumentRevision,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     if (account.accountId.trim().isEmpty || account.name.trim().isEmpty) {
       throw StudioFailure(
         code: StudioFailureCode.invalidArgument,
@@ -2508,13 +2509,11 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> removeAcpAccount(
-    int expectedSettingsRevision,
     String accountId, {
     required OperationId operationId,
     required BigInt expectedDocumentRevision,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     if (_demoAcpAccount(accountId).documentRevision !=
         expectedDocumentRevision) {
       throw const StudioFailure(
@@ -2835,7 +2834,6 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<SettingsCommandReply> setSystemAgentEnabled({
     required OperationId operationId,
-    required int expectedSettingsRevision,
     required String profileId,
     required bool enabled,
   }) async {
@@ -2852,7 +2850,6 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final changed = _disabledSystemAgents.contains(profileId) == enabled;
     if (enabled) {
       _disabledSystemAgents.remove(profileId);
@@ -2866,7 +2863,6 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> saveUserAgentProfile(
-    int expectedSettingsRevision,
     AgentProfileDraft draft, {
     required OperationId operationId,
   }) async {
@@ -2880,8 +2876,14 @@ class DemoStudioTransport extends StudioTransport
       throw ArgumentError.value(draft.id, 'id', 'reserved agent identifier');
     }
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final previous = _userAgentProfiles[draft.id];
+    if (draft.definition.revision != (previous?.definition.revision ?? '')) {
+      throw _demoModeFailure(
+        StudioFailureCode.staleRevision,
+        'Agent Profile changed',
+        retryable: false,
+      );
+    }
     _userAgentProfiles[draft.id] = AgentProfileView(
       definition: AgentDefinitionView(
         definitionId: draft.id,
@@ -2889,7 +2891,7 @@ class DemoStudioTransport extends StudioTransport
         description: draft.definition.description,
         whenToUse: draft.definition.whenToUse,
         source: '~/.anywork/agents/${draft.id}.toml',
-        revision: 'demo-user-${draft.id}',
+        revision: 'demo-user-${draft.id}-${_settingsRevision + 1}',
         contentHash: 'demo-user-${draft.id}',
       ),
       binding: draft.binding,
@@ -3432,8 +3434,8 @@ class DemoStudioTransport extends StudioTransport
         GeneralCompactTimelineCommand() ||
         GeneralLanguageCommand() ||
         GeneralSidebarWidthCommand() ||
-        GeneralPinnedThreadIdsCommand() ||
-        GeneralPinnedProjectIdsCommand() => EffectPoint.immediate,
+        ThreadPinnedCommand() ||
+        ProjectPinnedCommand() => EffectPoint.immediate,
         _ => EffectPoint.futureSession,
       };
 
@@ -3893,12 +3895,10 @@ class DemoStudioTransport extends StudioTransport
   /// object from a stale page snapshot.
   @override
   Future<SettingsCommandReply> applySettingsField(
-    int expectedSettingsRevision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final settings = before;
     switch (command) {
       case InstructionBaseOverrideCommand(:final value):
@@ -3933,8 +3933,14 @@ class DemoStudioTransport extends StudioTransport
         _skills = _skills.copyWith(projectDir: value);
       case SkillsExternalDirsCommand(:final value):
         _skills = _skills.copyWith(externalDirs: value);
-      case SkillsDisabledCommand(:final value):
-        _skills = _skills.copyWith(disabled: value);
+      case SkillDisabledCommand(:final id, :final value):
+        final items = _skills.disabled.toSet();
+        if (value) {
+          items.add(id);
+        } else {
+          items.remove(id);
+        }
+        _skills = _skills.copyWith(disabled: items.toList()..sort());
       case SkillsAutoLearnMinToolCallsCommand(:final value):
         _skills = _skills.copyWith(autoLearnMinToolCalls: value);
       case GeneralFollowActiveTurnCommand(:final value):
@@ -3945,10 +3951,22 @@ class DemoStudioTransport extends StudioTransport
         _general = _general.copyWith(language: value);
       case GeneralSidebarWidthCommand(:final value):
         _general = _general.copyWith(sidebarWidth: value ?? 336);
-      case GeneralPinnedThreadIdsCommand(:final value):
-        _general = _general.copyWith(pinnedThreadIds: value);
-      case GeneralPinnedProjectIdsCommand(:final value):
-        _general = _general.copyWith(pinnedProjectIds: value);
+      case ThreadPinnedCommand(:final id, :final value):
+        final items = _general.pinnedThreadIds.toSet();
+        if (value) {
+          items.add(id);
+        } else {
+          items.remove(id);
+        }
+        _general = _general.copyWith(pinnedThreadIds: items.toList()..sort());
+      case ProjectPinnedCommand(:final id, :final value):
+        final items = _general.pinnedProjectIds.toSet();
+        if (value) {
+          items.add(id);
+        } else {
+          items.remove(id);
+        }
+        _general = _general.copyWith(pinnedProjectIds: items.toList()..sort());
       case WebSearchModeCommand(:final value):
         _webSearch = _webSearch.withConfiguredValues(
           configuredMode: value,
@@ -4143,14 +4161,12 @@ class DemoStudioTransport extends StudioTransport
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
     String? serviceTier,
   }) async {
     final current = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final row = _sortedDirectoryRows()
         .where((candidate) => candidate.threadId == threadId)
         .firstOrNull;
@@ -4343,7 +4359,7 @@ class DemoStudioTransport extends StudioTransport
       );
     }
     return ModeDefinitionSnapshot(
-      revision: _threadModeCatalogRevision,
+      revision: _modeDocumentRevision(modeId),
       document: document,
       readOnly: _readOnlyModeIds.contains(modeId),
     );
@@ -4363,19 +4379,22 @@ class DemoStudioTransport extends StudioTransport
         retryable: false,
       );
     }
-    if (expectedRevision != _threadModeCatalogRevision) {
+    if (expectedRevision != _modeDocumentRevision(modeId)) {
       throw _demoModeFailure(
         StudioFailureCode.staleRevision,
-        'Mode catalog revision changed',
+        'Mode document changed',
         retryable: true,
       );
+    }
+    if (_modeDocuments[modeId] != document) {
+      _modeDocumentRevisions[modeId] = _threadModeCatalogRevision + 1;
     }
     _modeDocuments[modeId] = document;
     _emitModeCatalogUpdate();
     return _demoModeCommandReply(
       operationId,
       definition: ModeDefinitionSnapshot(
-        revision: _threadModeCatalogRevision,
+        revision: _modeDocumentRevision(modeId),
         document: document,
         readOnly: false,
       ),
@@ -4395,10 +4414,10 @@ class DemoStudioTransport extends StudioTransport
         retryable: false,
       );
     }
-    if (expectedRevision != _threadModeCatalogRevision) {
+    if (expectedRevision != _modeDocumentRevision(modeId)) {
       throw _demoModeFailure(
         StudioFailureCode.staleRevision,
-        'Mode catalog revision changed',
+        'Mode document changed',
         retryable: true,
       );
     }
@@ -4409,6 +4428,7 @@ class DemoStudioTransport extends StudioTransport
         retryable: false,
       );
     }
+    _modeDocumentRevisions.remove(modeId);
     _emitModeCatalogUpdate();
     return _demoModeCommandReply(operationId);
   }
@@ -6082,12 +6102,10 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> saveRuntimePermissionMode(
-    int expectedSettingsRevision,
     PermissionMode mode, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     _permissionMode = mode;
     _settingsRevision += 1;
     return _demoSettingsReply(operationId, before);
@@ -6164,14 +6182,12 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> setAccountModelEnabled(
-    int expectedSettingsRevision,
     String accountId,
     String modelId,
     bool enabled, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final account = before.accounts.where((a) => a.id == accountId).firstOrNull;
     if (account == null || !account.models.any((m) => m.modelId == modelId)) {
       throw const StudioFailure(
@@ -6203,13 +6219,11 @@ class DemoStudioTransport extends StudioTransport
 
   @override
   Future<SettingsCommandReply> setAccountBillingKind(
-    int expectedSettingsRevision,
     String accountId,
     BillingKind? billingKind, {
     required OperationId operationId,
   }) async {
     final before = _demoSettingsState();
-    _checkSettingsRevision(expectedSettingsRevision);
     final account = before.accounts.firstWhere((a) => a.id == accountId);
     _accounts = [
       for (final a in before.accounts)

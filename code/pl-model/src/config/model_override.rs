@@ -65,27 +65,28 @@ impl AccountModelOverride {
                 let transport = match protocol {
                     WireApi::Responses => ModelTransportProfile::responses_http(),
                     WireApi::ChatCompletions => ModelTransportProfile::chat_completions_http(),
+                    WireApi::GeminiGenerateContent => ModelTransportProfile::gemini_http(),
                 };
                 model.extra.binding.set_transport(transport);
             }
         }
         if !self.base.fields.is_empty() {
-            let mut record = pl_model_openai_wire::generic_catalog::rich_record(json!(self.base))
+            let mut record = pl_model_wire::generic_catalog::rich_record(json!(self.base))
                 .map_err(|_| {
-                crate::PureError::ConfigError(format!(
-                    "invalid Codex model declaration: {}",
-                    self.base.slug
-                ))
-            })?;
+                    crate::PureError::ConfigError(format!(
+                        "invalid Codex model declaration: {}",
+                        self.base.slug
+                    ))
+                })?;
             if self.base.fields.contains_key("supported_reasoning_levels")
                 && record.supports_reasoning.is_none()
             {
                 record.supports_reasoning = Some(!model.supported_efforts().is_empty());
             }
-            pl_model_openai_wire::discovery::apply_capabilities(
+            pl_model_wire::discovery::apply_capabilities(
                 &mut record,
                 model,
-                pl_model_openai_wire::discovery::DiscoveryPolicy::COMPATIBLE,
+                pl_model_wire::discovery::DiscoveryPolicy::COMPATIBLE,
                 false,
             );
         }

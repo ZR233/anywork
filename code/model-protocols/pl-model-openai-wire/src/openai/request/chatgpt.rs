@@ -34,7 +34,10 @@ pub(super) fn validate_model_overrides(
     original: &Map<String, Value>,
 ) -> Result<()> {
     let mut fixed = original.clone();
-    super::body::merge_base_body(&mut fixed, &model.extra.binding.request.body);
+    pl_model_wire::completion::request_support::merge_base_body(
+        &mut fixed,
+        &model.extra.binding.request.body,
+    );
     validate_body(&fixed, original)?;
     for parameter in model.parameters() {
         if parameter.name != "effort" {

@@ -6,6 +6,7 @@ import 'package:anywork/src/features/settings/accounts/accounts_views.dart';
 
 import 'account_preview_fixtures.dart';
 import 'account_list_preview_data.dart';
+import 'account_template_preview_fixtures.dart';
 
 Widget accountPreviewHost(
   Widget Function(ValueChanged<String> record) builder, {
@@ -272,8 +273,38 @@ class _NativeEditorScenarioState extends State<_NativeEditorScenario> {
         ),
       };
     }),
-    onTemplateChanged: (key) =>
-        widget.record('template: ${key.kind.name}/${key.id}'),
+    onTemplateChanged: (key) {
+      if (key.kind == AccountKind.native) {
+        final target = _value.templates.where((t) => t.key == key).firstOrNull;
+        if (target != null && target.content is NativeAccountTemplateContent) {
+          final native = target.content as NativeAccountTemplateContent;
+          setState(() {
+            _value = _value.copyWith(
+              templateKey: key,
+              name: AccountTextPresentation(
+                raw: target.name,
+                helper: target.description,
+              ),
+              endpoint: AccountTextPresentation(raw: native.defaultEndpoint),
+              credential: AccountTextPresentation(
+                raw: _value.credential.raw,
+                helper: AccountTemplatePreviewFixtures.credentialHelper(key.id),
+              ),
+              isOpenAiTemplate: key.id == 'openai',
+              protocolLabel: native.protocolLabel,
+              billing: AccountBillingPresentation(
+                effective: native.defaultBilling,
+                allowedOverrides: AccountPreviewFixtures.billingOverrides,
+              ),
+              declaredModels: AccountTemplatePreviewFixtures.declaredModels(
+                key.id,
+              ),
+            );
+          });
+        }
+      }
+      widget.record('template: ${key.kind.name}/${key.id}');
+    },
     onBillingChanged: (billing) => widget.record('billing: ${billing.name}'),
     onResetBilling: () => widget.record('reset billing'),
     onAddModel: () => widget.record('add manual model'),

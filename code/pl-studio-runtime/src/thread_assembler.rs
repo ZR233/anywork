@@ -910,7 +910,7 @@ impl SessionRuntime {
             let application = (!spec.initial_extensions.is_empty()
                 || !spec.initial_context.is_empty())
             .then(|| pl_core::thread::RuntimeApplication {
-                expected_sequence: snapshot.commit_sequence,
+                instruction_binding: None,
                 update: pl_core::thread::extensions::ApplicationUpdate {
                     mutations: spec
                         .initial_extensions
@@ -923,7 +923,7 @@ impl SessionRuntime {
                             },
                         )
                         .collect(),
-                    facts: snapshot.runtime_facts.to_vec(),
+                    facts: Vec::new(),
                 },
                 context: (!spec.initial_context.is_empty()).then_some(
                     pl_core::thread::ReplaceContext {
@@ -937,6 +937,7 @@ impl SessionRuntime {
                 base: thread.runtime_bundle_base(&snapshot),
                 desired: format!("initial:{}", spec.id).into(),
                 model: spec.model,
+                require_idle: false,
                 model_context_revision: None,
                 tools: Some(pl_core::thread::RuntimeTools {
                     registrations,

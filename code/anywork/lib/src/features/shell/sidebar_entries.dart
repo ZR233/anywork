@@ -1,51 +1,39 @@
 part of 'studio_shell.dart';
 
-Future<void> _archiveThreadFromSidebar(
+Future<bool?> _confirmThreadRemoval(
   BuildContext context,
-  AnyworkClient client,
-  String threadId,
-) async {
-  await showDialog<void>(
+  SessionDirectoryRow row, {
+  required bool deleting,
+}) {
+  return showDialog<bool>(
     context: context,
     barrierDismissible: false,
     builder: (context) => ThreadDestructiveActionDialog(
-      title: context.l10n.sidebarArchiveSessionConfirmTitle,
-      body: context.l10n.sidebarArchiveSessionConfirmBody,
-      actionLabel: context.l10n.sidebarArchiveSessionConfirmAction,
-      confirmKey: StudioDriverKeys.archiveThreadConfirm,
-      onConfirm: () => client.threadCommands.archiveThread(threadId),
+      key: deleting ? StudioDriverKeys.deleteThreadDialog(row.threadId) : null,
+      title: deleting
+          ? context.l10n.sidebarDeleteSessionConfirmTitle(row.title)
+          : context.l10n.sidebarArchiveSessionConfirmTitle,
+      body: deleting
+          ? context.l10n.sidebarDeleteSessionConfirmBody
+          : context.l10n.sidebarArchiveSessionConfirmBody,
+      actionLabel: deleting
+          ? context.l10n.sidebarDeleteSessionConfirmAction
+          : context.l10n.sidebarArchiveSessionConfirmAction,
+      confirmKey: deleting
+          ? StudioDriverKeys.deleteThreadConfirm(row.threadId)
+          : StudioDriverKeys.archiveThreadConfirm,
+      danger: deleting,
     ),
   );
 }
 
-Future<void> _deleteThreadFromSidebar(
-  BuildContext context,
-  AnyworkClient client,
-  SessionDirectoryRow row,
-) async {
-  await showDialog<void>(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => ThreadDestructiveActionDialog(
-      key: StudioDriverKeys.deleteThreadDialog(row.threadId),
-      title: context.l10n.sidebarDeleteSessionConfirmTitle(row.title),
-      body: context.l10n.sidebarDeleteSessionConfirmBody,
-      actionLabel: context.l10n.sidebarDeleteSessionConfirmAction,
-      confirmKey: StudioDriverKeys.deleteThreadConfirm(row.threadId),
-      danger: true,
-      onConfirm: () => client.threadCommands.deleteThread(row.threadId),
-    ),
-  );
-}
-
-class ThreadDestructiveActionDialog extends StatefulWidget {
+class ThreadDestructiveActionDialog extends StatelessWidget {
   const ThreadDestructiveActionDialog({
     super.key,
     required this.title,
     required this.body,
     required this.actionLabel,
     required this.confirmKey,
-    required this.onConfirm,
     this.danger = false,
   });
 
@@ -53,85 +41,38 @@ class ThreadDestructiveActionDialog extends StatefulWidget {
   final String body;
   final String actionLabel;
   final Key confirmKey;
-  final Future<void> Function() onConfirm;
   final bool danger;
-
-  @override
-  State<ThreadDestructiveActionDialog> createState() =>
-      _ThreadDestructiveActionDialogState();
-}
-
-class _ThreadDestructiveActionDialogState
-    extends State<ThreadDestructiveActionDialog> {
-  bool _pending = false;
-  String? _error;
-
-  Future<void> _confirm() async {
-    if (_pending) return;
-    setState(() {
-      _pending = true;
-      _error = null;
-    });
-    try {
-      await widget.onConfirm();
-      if (mounted) Navigator.of(context).pop(true);
-    } on Object catch (error) {
-      if (mounted) {
-        setState(() => _error = error.toString());
-      }
-    } finally {
-      if (mounted) setState(() => _pending = false);
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return PopScope(
-      canPop: !_pending,
-      child: AlertDialog(
-        title: Text(widget.title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.body),
-            if (_error case final error?) ...[
-              const SizedBox(height: 12),
-              Text(error, style: TextStyle(color: colors.error)),
-            ],
-          ],
+    void finish(bool confirmed) {
+      if (ModalRoute.of(context)?.isCurrent == true) {
+        Navigator.of(context).pop(confirmed);
+      }
+    }
+
+    return AlertDialog(
+      scrollable: true,
+      title: Text(title),
+      content: Text(body),
+      actions: [
+        TextButton(
+          onPressed: () => finish(false),
+          child: Text(context.l10n.commonCancel),
         ),
-        actions: [
-          TextButton(
-            onPressed: _pending ? null : () => Navigator.of(context).pop(),
-            child: Text(context.l10n.commonCancel),
-          ),
-          FilledButton(
-            key: widget.confirmKey,
-            style: widget.danger
-                ? FilledButton.styleFrom(
-                    backgroundColor: colors.error,
-                    foregroundColor: colors.onError,
-                  )
-                : null,
-            onPressed: _pending ? null : _confirm,
-            child: _pending
-                ? Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox.square(
-                        dimension: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(widget.actionLabel),
-                    ],
-                  )
-                : Text(widget.actionLabel),
-          ),
-        ],
-      ),
+        FilledButton(
+          key: confirmKey,
+          style: danger
+              ? FilledButton.styleFrom(
+                  backgroundColor: colors.error,
+                  foregroundColor: colors.onError,
+                )
+              : null,
+          onPressed: () => finish(true),
+          child: Text(actionLabel),
+        ),
+      ],
     );
   }
 }

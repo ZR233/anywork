@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
-use pl_model_openai_wire::model::{
-    BundledModelDefinition, ModelDefinition, ModelDefinitionError,
+use pl_model_wire::model::{
+    BundledModelDefinition, CodexModel, ModelDefinition, ModelDefinitionError, TruncationPolicy,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -14,7 +14,6 @@ use pl_model_openai_wire::model::{
     },
     pricing::{ModelPricing, TokenPriceTier},
 };
-use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 
 mod gpt_5_6_luna;
 mod gpt_5_6_sol;

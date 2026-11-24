@@ -66,11 +66,11 @@ pub struct RuntimeBundleState {
 }
 
 /// The exact owner and base from which a candidate was prepared.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RuntimeBundleBase {
     pub(super) epoch: current::RuntimeEpoch,
     pub(super) revision: u64,
-    pub(super) extension_sequence: u64,
+    pub extension_inputs: extensions::ExtensionInputs,
 }
 
 /// Frozen model factory and context policy. Core opens the session before installation.
@@ -110,7 +110,7 @@ pub struct RuntimeTools {
 /// An optional idle application transaction installed with the same runtime package.
 #[derive(Debug)]
 pub struct RuntimeApplication {
-    pub expected_sequence: u64,
+    pub instruction_binding: Option<extensions::InstructionRevisionBinding>,
     pub update: extensions::ApplicationUpdate,
     pub context: Option<ReplaceContext>,
 }
@@ -121,6 +121,7 @@ pub struct RuntimeBundle {
     pub base: RuntimeBundleBase,
     pub desired: Arc<str>,
     pub model: Option<RuntimeModel>,
+    pub require_idle: bool,
     pub model_context_revision: Option<u64>,
     pub tools: Option<RuntimeTools>,
     pub application: Option<RuntimeApplication>,
@@ -148,6 +149,7 @@ impl RuntimeBundle {
             base: thread.runtime_bundle_base(snapshot),
             desired: Arc::from(model.identity()),
             model: Some(model),
+            require_idle: false,
             model_context_revision: None,
             tools: None,
             application: None,
@@ -326,18 +328,16 @@ impl Owner {
         }
         if update.base.epoch != self.runtime_epoch
             || update.base.revision != self.state.runtime_bundle.revision
-            || update.base.extension_sequence != self.state.extension_sequence
+            || update
+                .base
+                .extension_inputs
+                .validate(&self.state.extensions)
+                .is_err()
             || !update.current()
         {
             return Err(ThreadError::StaleRuntimeBundle);
         }
-        if let Some(application) = &update.application {
-            if application.expected_sequence != self.state.commit_sequence {
-                return Err(ThreadError::ContextConflict {
-                    expected: application.expected_sequence,
-                    actual: self.state.commit_sequence,
-                });
-            }
+        if update.require_idle || update.application.is_some() {
             self.ensure_idle()?;
         }
         if let Some(expected) = update.model_context_revision
@@ -460,6 +460,7 @@ impl Owner {
                 &mut state,
                 application.update,
                 application.context,
+                application.instruction_binding,
                 fact_changes,
             )
         } else if fact_changes.is_empty() {

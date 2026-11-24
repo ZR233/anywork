@@ -122,7 +122,7 @@ pub(crate) struct NativeModelConfiguration {
     pub route: ResolvedModelRoute,
     pub model: RuntimeModel,
     pub config: crate::StudioConfig,
-    revision: (u64, u64),
+    revision: u64,
 }
 
 pub(crate) struct NativeBundleOwner<'a> {
@@ -134,30 +134,43 @@ pub(crate) struct NativeBundleOwner<'a> {
     pub snapshot: &'a ThreadSnapshot,
 }
 
+pub(crate) fn bundle_base(
+    thread: &pl_core::thread::ThreadHandle,
+    snapshot: &ThreadSnapshot,
+) -> pl_core::thread::RuntimeBundleBase {
+    let mut base = thread.runtime_bundle_base(snapshot);
+    base.extension_inputs = pl_core::thread::extensions::ExtensionInputs::capture(
+        &snapshot.extensions,
+        &[
+            "studio.mode",
+            super::model_route::MODEL_ROUTE_EXTENSION,
+            super::model_route::AGENT_PROFILE_EXTENSION,
+            super::workspace_receipt::EXTENSION,
+            super::delegation::EXTENSION,
+        ],
+    );
+    base
+}
+
 impl NativeModelConfiguration {
     pub fn resolve(
         config_owner: &crate::config::ConfigRuntime,
         snapshot: &ThreadSnapshot,
     ) -> Result<Self> {
-        let (settings, catalog) = config_owner.read_with_catalog()?;
-        let route = resolve_saved(snapshot, &settings.config)?;
+        let (config, revision) = config_owner.native_configuration()?;
+        let route = resolve_saved(snapshot, &config)?;
         validate_context(snapshot, &route)?;
-        let model = deferred_update(&route, &settings.config, config_owner.thread_mode_manager())?;
+        let model = deferred_update(&route, &config, config_owner.thread_mode_manager())?;
         Ok(Self {
             route,
             model,
-            config: settings.config,
-            revision: (settings.revision, catalog.revision),
+            config,
+            revision,
         })
     }
 
     pub fn desired(&self) -> String {
-        format!(
-            "{}:{}:{}",
-            self.revision.0,
-            self.revision.1,
-            self.model.identity()
-        )
+        format!("{}:{}", self.revision, self.model.identity())
     }
 
     pub async fn prepare_bundle(
@@ -212,9 +225,10 @@ impl NativeModelConfiguration {
             != Some(self.model.identity())
             || !snapshot.model_available;
         Ok(RuntimeBundle {
-            base: thread.runtime_bundle_base(snapshot),
+            base: bundle_base(thread, snapshot),
             desired,
             model: apply_model.then_some(self.model),
+            require_idle: false,
             model_context_revision: apply_model.then_some(snapshot.context.revision),
             tools: Some(RuntimeTools {
                 registrations,

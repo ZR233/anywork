@@ -491,6 +491,16 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => '归档';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return '已归档“$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return '无法归档“$title”。$reason';
+  }
+
+  @override
   String get sidebarDeleteSession => '删除会话';
 
   @override
@@ -504,6 +514,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => '永久删除';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return '已删除“$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return '无法删除“$title”。$reason';
+  }
 
   @override
   String get sidebarRenameSession => '重命名会话';
@@ -1888,7 +1908,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get timelineFileDownloadComplete => '下载完成';
 
   @override
-  String get timelineJumpToLatest => '跳到最新';
+  String get timelineJumpToLatest => '回到最新';
+
+  @override
+  String get timelineJumpToLatestWithNewOutput => '有新输出 · 回到最新';
 
   @override
   String get timelineNew => '新内容';
@@ -1898,9 +1921,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineActivityNotLoaded => '尚有活动未载入';
-
-  @override
-  String get timelineBackToLive => '回到实时';
 
   @override
   String get timelineDetailUnavailable => '此内容已不可用';
@@ -3783,6 +3803,10 @@ class AppLocalizationsZh extends AppLocalizations {
   String get modelProtocolChatCompletions => 'Chat Completions（对话补全）';
 
   @override
+  String get modelProtocolGeminiGenerateContent =>
+      'Gemini API（generateContent）';
+
+  @override
   String get modelConnectionWebSocket => 'WS（WebSocket 长连接）';
 
   @override
@@ -3794,6 +3818,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get settingsProtocolResponsesHttp => 'Responses（响应式接口，HTTP）';
+
+  @override
+  String get settingsProtocolGeminiGenerateContentHttp =>
+      'Gemini API（generateContent，HTTP）';
 
   @override
   String settingsAgentRouteUnavailable(String route) {
@@ -4720,6 +4748,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get accountProtocolXai => 'xAI';
+
+  @override
+  String get accountProtocolGemini => 'Google Gemini';
 
   @override
   String get accountProtocolCustom => '自定义（OpenAI 兼容）';
@@ -5985,9 +6016,6 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get conversationActivityResponding => '正在输出';
-
-  @override
-  String get conversationActivityFollowOutput => '跟随输出';
 
   @override
   String get timelineBackgroundResults => '后台结果';
@@ -7747,4 +7775,95 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineToolDetailForceTransition => '强制切换';
+
+  @override
+  String get accountsGeminiModeAiStudio => 'AI Studio';
+
+  @override
+  String get accountsGeminiModeVertexAi => 'Vertex AI';
+
+  @override
+  String get accountsGeminiModeCustom => '自定义端点';
+
+  @override
+  String get accountsGeminiHintAiStudio =>
+      '使用 Google AI Studio 的 Gemini API 密钥（x-goog-api-key），支持在线获取模型列表。';
+
+  @override
+  String get accountsGeminiHintVertexAi =>
+      '使用 Vertex AI API 密钥（x-goog-api-key）访问 Gemini 模型，推荐使用 global 端点。';
+
+  @override
+  String get accountsGeminiHintCustom =>
+      '使用自定义 Gemini API（generateContent）端点，通过 x-goog-api-key 鉴权。';
+
+  @override
+  String get accountsGeminiBadgeHeader => 'x-goog-api-key';
+
+  @override
+  String get accountsGeminiBadgeMultimodal => '多模态';
+
+  @override
+  String get accountsGeminiBadgeDiscovery => '在线目录';
+
+  @override
+  String get accountsGeminiBadgeBundledCatalog => '内置目录';
+
+  @override
+  String get accountsGeminiBadgeImplicitCache => '隐式缓存';
+
+  @override
+  String get accountsGeminiEndpointPresetsLabel => '端点';
+
+  @override
+  String get accountsGeminiPresetGlobal => 'global（推荐）';
+
+  @override
+  String get accountsGeminiPresetAiStudioOfficial => 'Gemini API (v1beta)';
+
+  @override
+  String get accountsGeminiCredentialLabelVertex => 'Vertex AI API 密钥';
+
+  @override
+  String get accountsGeminiCredentialLabelAiStudio => 'Gemini API 密钥';
+
+  @override
+  String timelineDiffStatLabel(int additions, int deletions) {
+    return '新增 $additions 行，删除 $deletions 行';
+  }
+
+  @override
+  String get timelinePatchCopyPath => '复制路径';
+
+  @override
+  String get acpCopyMessage => '复制消息';
+
+  @override
+  String get acpJumpToPendingPermission => '跳到最新 · 等待权限确认';
+
+  @override
+  String get acpJumpToRunning => '跳到最新 · 运行中';
+
+  @override
+  String get acpJumpToNewOutput => '跳到最新 · 有新输出';
+
+  @override
+  String get acpPlanCompletedHeadline => '执行计划已完成';
+
+  @override
+  String get acpSlashMenuLabel => '斜杠命令';
+
+  @override
+  String get acpSlashMenuNoMatches => '无匹配命令';
+
+  @override
+  String get acpHistorySearchHint => '搜索标题、路径或会话 ID';
+
+  @override
+  String acpHistorySearchCount(int matched, int total) {
+    return '$matched / $total';
+  }
+
+  @override
+  String get acpHistorySearchEmpty => '没有匹配的外部会话';
 }

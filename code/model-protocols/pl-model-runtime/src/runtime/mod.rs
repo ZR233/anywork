@@ -13,7 +13,7 @@ mod billing;
 mod invocation;
 mod invocation_context;
 pub(crate) use pl_model_openai_wire::openai;
-use pl_model_openai_wire::provider_error;
+use pl_model_wire::provider_error;
 mod responses_websocket;
 mod session;
 mod summary;

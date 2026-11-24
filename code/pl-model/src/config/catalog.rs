@@ -62,6 +62,7 @@ impl AccountCatalogRegistry {
         let openai = pl_model_openai::bundled_definition()?;
         let deepseek = pl_model_openai_deepseek::bundled_definition()?;
         let xai = pl_model_openai_xai::bundled_definition()?;
+        let gemini = pl_model_gemini::bundled_definition()?;
         let model_catalogs = [
             ModelCatalog {
                 id: ModelCatalogId::new("openai")?,
@@ -83,6 +84,18 @@ impl AccountCatalogRegistry {
                 discovery: Some(ModelCatalogDiscovery {
                     transport: crate::model::ModelTransportProfile::responses_http(),
                 }),
+            },
+            ModelCatalog {
+                id: ModelCatalogId::new("gemini")?,
+                models: gemini.models.clone(),
+                discovery: Some(ModelCatalogDiscovery {
+                    transport: crate::model::ModelTransportProfile::gemini_http(),
+                }),
+            },
+            ModelCatalog {
+                id: ModelCatalogId::new("vertex-ai")?,
+                models: gemini.models,
+                discovery: None,
             },
             model_catalog("zhipu", zhipu_models(), zhipu_default_model_ids())?,
             zhipu_responses_catalog(),
@@ -161,6 +174,32 @@ impl AccountCatalogRegistry {
                 "mimo",
             ),
         ];
+
+        let mut vertex_ai = template(
+            "vertex-ai",
+            crate::protocol::providers::gemini::vertex_endpoint(None),
+            &gemini.suggested_model,
+            "vertex-ai",
+            "GCP_API_KEY",
+            "Vertex AI Gemini API.",
+            "gemini",
+        );
+        vertex_ai.credential_label = "Vertex AI API key".to_owned();
+        vertex_ai.icon_key = Some("vertex".to_owned());
+        templates.push(vertex_ai);
+
+        let mut gemini_api = template(
+            "gemini",
+            crate::protocol::providers::gemini::gemini_api_endpoint(None),
+            &gemini.suggested_model,
+            "gemini",
+            "GEMINI_API_KEY",
+            "Google AI Studio Gemini API.",
+            "gemini",
+        );
+        gemini_api.credential_label = "Gemini API key".to_owned();
+        gemini_api.icon_key = Some("gemini".to_owned());
+        templates.push(gemini_api);
 
         let mut compatible = template(
             "openai-compatible",
@@ -596,6 +635,7 @@ fn protocol_label(protocol: WireApi) -> &'static str {
     match protocol {
         WireApi::Responses => "responses",
         WireApi::ChatCompletions => "chat_completions",
+        WireApi::GeminiGenerateContent => "gemini_generate_content",
     }
 }
 

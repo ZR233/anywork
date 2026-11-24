@@ -10,6 +10,7 @@ import 'dart:convert';
 import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
@@ -140,7 +141,7 @@ void main() {
         for (var i = 0; i < 40; i++)
           chatMessage('route-item-$i', completionSeq: firstPosition + i),
       ];
-      final routeCut = transport.fixedCut = HistoryCut('route-fixed-cut');
+      const routeCut = HistoryCut('route-fixture');
       transport.baseline = historyFixturePage(
         displayBatch([
           for (final entry in seeded) displaySingle(entry),
@@ -201,6 +202,13 @@ void main() {
       final composerStamp = composer.stamp;
 
       // Turn/执行事实可能伴随内容重同步；分页属于此刻实际挂载的展示代次。
+      await pumpClientUntil(
+        tester,
+        () =>
+            graph.timeline.source.value?.connection ==
+            TimelineConnectionPhase.ready,
+        'timeline ready for an older-page request',
+      );
       final oldLease = graph.timeline.lease('thread-main')!;
       expect(
         oldLease.hasOlder,
@@ -208,27 +216,27 @@ void main() {
         reason:
             'route fixture must leave older content: loaded=${oldLease.loadedCount}, reads=${transport.pageCalls}, demand=${oldLease.demand.maxItems}',
       );
-      final previousPageCalls = transport.pageCalls;
       final oldPage = Completer<HistoryTimelinePage>();
       addTearDown(() {
         if (!oldPage.isCompleted) {
           oldPage.complete(
             historyFixturePage(
               displayBatch([], placement: TimelineApplyPlacement.prepend),
-              cut: transport.fixedCut,
+              cut: transport.scriptedPageCut ?? routeCut,
             ),
           );
         }
       });
       transport.scriptedPage = oldPage;
-      final loading = tester
-          .widget<TimelineView>(find.byType(TimelineView))
-          .onLoadOlder();
+      final timeline = tester.widget<TimelineView>(find.byType(TimelineView));
+      timeline.onEnterHistory();
+      final loading = timeline.onLoadOlder();
       await pumpClientUntil(
         tester,
-        () => transport.pageCalls == previousPageCalls + 1,
+        () => transport.scriptedPage == null,
         'old page entered',
       );
+      final oldPageCut = transport.scriptedPageCut!;
       var hiddenFrames = 0;
       var hiddenAcks = 0;
 
@@ -326,7 +334,7 @@ void main() {
           displayBatch([
             displaySingle(chatMessage('late-old-page')),
           ], placement: TimelineApplyPlacement.prepend),
-          cut: routeCut,
+          cut: oldPageCut,
         ),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
@@ -710,7 +718,7 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   late String botProjectId;
   Completer<HistoryTimelinePage>? scriptedPage;
   HistoryTimelinePage? baseline;
-  HistoryCut fixedCut = HistoryCut('route-default-cut');
+  HistoryCut? scriptedPageCut;
   int pageCalls = 0;
 
   @override
@@ -723,20 +731,29 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       historyProtocolVersion: historyProtocolVersion,
     );
     final recording = reader as RecordingHistoryReader;
-    recording.onTimelinePage = (cut, cursor, demand) {
+    recording.onTimelinePage = (cut, cursor, demand) async {
       pageCalls++;
       if (threadId == 'thread-main' && cursor == null) {
         final page = baseline;
-        if (page != null) return Future.value(page);
+        if (page != null) {
+          return HistoryTimelinePage(
+            cut: cut ?? await recording.capture(),
+            items: page.items,
+            next: page.next,
+          );
+        }
       }
       final gate = scriptedPage;
-      scriptedPage = null;
-      return gate?.future ??
-          recording.inner.timelinePage(
-            cut: cut,
-            cursor: cursor,
-            demand: demand,
-          );
+      if (threadId == 'thread-main' && cursor != null && gate != null) {
+        scriptedPageCut = cut;
+        scriptedPage = null;
+        return gate.future;
+      }
+      return recording.inner.timelinePage(
+        cut: cut,
+        cursor: cursor,
+        demand: demand,
+      );
     };
     return recording;
   }

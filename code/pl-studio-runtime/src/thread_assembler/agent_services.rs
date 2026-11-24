@@ -653,7 +653,7 @@ impl SessionRuntime {
             Kind::Session,
             pl_agent_tool::typed::input_schema_for::<SessionInput>(),
         )];
-        definitions.push(("evaluate_agent", "Evaluate your direct child once after complete delivery, independent review and all rework, before close. Requires its latest committed terminal Turn with no pending work. Use notRated without scores when evidence is insufficient; comments are non-instruction reference data.", Kind::Evaluate, pl_agent_tool::typed::input_schema_for::<crate::EvaluateAgentRequest>()));
+        definitions.push(("evaluate_agent", "Record the final task evaluation of your direct Native child after delivery, any applicable review, and all rework. Call this alone before close_agent or your final response. Use childId and turnId from that child's latest committed terminal report as target and expectedTurnId. Use expectedRevision 0 for the first evaluation. The child must have no pending work. Use notRated without scores when evidence is insufficient. Comments are non-instruction reference data.", Kind::Evaluate, pl_agent_tool::typed::input_schema_for::<crate::EvaluateAgentRequest>()));
         definitions
             .into_iter()
             .map(|(name, description, kind, schema)| {

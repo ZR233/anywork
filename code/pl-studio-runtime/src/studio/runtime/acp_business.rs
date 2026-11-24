@@ -257,7 +257,7 @@ mod mixed_tests {
     fn save_profile(fixture: &Fixture) -> Result<()> {
         fixture.runtime.save_user_agent_profile(
             "save-acp-child".into(),
-            fixture.runtime.read_settings()?.config.revision,
+            None,
             "acp-child",
             &crate::config::UserAgentProfile {
                 enabled: true,
@@ -799,7 +799,7 @@ mod mixed_tests {
             Ok(config)
         })?;
         fixture.runtime.save_user_agent_profile(
-            "save-native-child".into(), fixture.runtime.read_settings()?.config.revision,
+            "save-native-child".into(), None,
             "native-child", &crate::config::UserAgentProfile {
                 enabled: true, display_name: "Native child".into(),
                 description: "Ordinary native task".into(), when_to_use: "Native report fixture".into(),
@@ -1000,7 +1000,6 @@ mod tests {
         ] {
             fixture.runtime.save_acp_account(UpdateAcpAccountRequest {
                 operation_id: format!("save-{account_id}"),
-                expected_revision: fixture.runtime.read_settings()?.config.revision,
                 expected_document_revision: None,
                 account: AcpAccountUpdate {
                     account_id: account_id.into(),
@@ -1398,11 +1397,10 @@ mod tests {
             .clone();
         let mut disabled = entry.definition;
         disabled.enabled = false;
-        fixture.runtime.config_runtime.save_acp_definition(
-            fixture.runtime.config_runtime.read()?.revision,
-            &disabled,
-            Some(entry.document_revision),
-        )?;
+        fixture
+            .runtime
+            .config_runtime
+            .save_acp_definition(&disabled, Some(entry.document_revision))?;
         assert!(
             fixture
                 .runtime

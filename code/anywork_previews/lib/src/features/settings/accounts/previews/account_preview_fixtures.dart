@@ -656,6 +656,33 @@ abstract final class AccountPreviewFixtures {
       iconKey: 'xai',
     ),
     AccountTemplatePresentation(
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'vertex-ai'),
+      name: 'Vertex AI',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'Google Gemini',
+        defaultEndpoint:
+            'https://aiplatform.googleapis.com/v1/publishers/google',
+        supportsModelDiscovery: false,
+        supportsUsageQuery: false,
+      ),
+      iconKey: 'vertex',
+      description: 'Vertex AI Gemini API.',
+    ),
+    AccountTemplatePresentation(
+      key: AccountTemplateKey(kind: AccountKind.native, id: 'gemini'),
+      name: 'AI Studio',
+      content: AccountTemplateContent.native(
+        defaultBilling: AccountBilling.metered,
+        protocolLabel: 'Google Gemini',
+        defaultEndpoint: 'https://generativelanguage.googleapis.com/v1beta',
+        supportsModelDiscovery: true,
+        supportsUsageQuery: false,
+      ),
+      iconKey: 'gemini',
+      description: 'Google AI Studio Gemini API.',
+    ),
+    AccountTemplatePresentation(
       key: AccountTemplateKey(kind: AccountKind.native, id: 'mimo-api'),
       name: 'MiMo API',
       content: AccountTemplateContent.native(

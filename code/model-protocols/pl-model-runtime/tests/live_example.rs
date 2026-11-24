@@ -1,6 +1,6 @@
 use clap::Parser;
-use pl_model_openai_wire::protocol::WireApi;
 use pl_model_runtime::live_example::{CommonCommand, Profile, Target, Wire};
+use pl_model_wire::protocol::WireApi;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 
 #[derive(Parser)]

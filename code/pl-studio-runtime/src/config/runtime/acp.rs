@@ -1,7 +1,4 @@
-use super::{
-    ConfigRuntime, ConfigRuntimeResult, ConfigRuntimeSnapshot, config_runtime_poisoned,
-    ensure_revision,
-};
+use super::{ConfigRuntime, ConfigRuntimeResult, ConfigRuntimeSnapshot, config_runtime_poisoned};
 use crate::config::{AcpDefinitionsSnapshot, AcpServiceDefinition};
 
 impl ConfigRuntime {
@@ -26,7 +23,6 @@ impl ConfigRuntime {
     /// A concurrent external edit is a conflict until explicitly reloaded.
     pub fn save_acp_definition(
         &self,
-        expected_settings_revision: u64,
         definition: &AcpServiceDefinition,
         expected_document_revision: Option<u64>,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
@@ -35,7 +31,6 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let current = self.read()?;
-        ensure_revision(expected_settings_revision, current.revision)?;
         let published =
             self.acp
                 .save(self.store.paths(), definition, expected_document_revision)?;
@@ -44,7 +39,6 @@ impl ConfigRuntime {
 
     pub fn delete_acp_definition(
         &self,
-        expected_settings_revision: u64,
         id: &str,
         expected_document_revision: u64,
     ) -> ConfigRuntimeResult<ConfigRuntimeSnapshot> {
@@ -53,7 +47,6 @@ impl ConfigRuntime {
             .lock()
             .map_err(|_| config_runtime_poisoned())?;
         let current = self.read()?;
-        ensure_revision(expected_settings_revision, current.revision)?;
         let published = self
             .acp
             .delete(self.store.paths(), id, expected_document_revision)?;

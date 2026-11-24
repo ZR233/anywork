@@ -2482,16 +2482,11 @@ fn write_copy_fixture_config(home: &Path, ready: &FixtureReady) -> Result<()> {
             ConfigRuntime::initialize(ConfigStore::new(ConfigPaths::from_config_dir(home)))?;
         // Disable copied executable definitions through their owner. Never launch
         // a source account, and keep its isolated document rather than deleting it.
-        let mut snapshot = runtime.read()?;
-        let definitions = snapshot.acp.definitions.clone();
+        let definitions = runtime.read()?.acp.definitions;
         for entry in definitions.values() {
             let mut definition = entry.definition.clone();
             definition.enabled = false;
-            snapshot = runtime.save_acp_definition(
-                snapshot.revision,
-                &definition,
-                Some(entry.document_revision),
-            )?;
+            runtime.save_acp_definition(&definition, Some(entry.document_revision))?;
         }
         drop(runtime);
     }

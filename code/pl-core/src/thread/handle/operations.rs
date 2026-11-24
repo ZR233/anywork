@@ -393,14 +393,7 @@ impl ThreadHandle {
         let snapshot = self.snapshot();
         let model = RuntimeModel::new(uuid::Uuid::new_v4().to_string(), factory, None);
         let mut update = RuntimeBundle::model_only(self, &snapshot, model);
-        update.application = Some(RuntimeApplication {
-            expected_sequence: snapshot.commit_sequence,
-            update: extensions::ApplicationUpdate {
-                mutations: Vec::new(),
-                facts: Vec::new(),
-            },
-            context: None,
-        });
+        update.require_idle = true;
         self.install_runtime_bundle(update)
             .await?
             .installed()
@@ -822,12 +815,12 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
-    /// Captures the owner generation, installed revision and producing extension sequence.
+    /// Captures the owner generation and installed revision.
     pub fn runtime_bundle_base(&self, snapshot: &ThreadSnapshot) -> RuntimeBundleBase {
         RuntimeBundleBase {
             epoch: self.runtime_epoch,
             revision: snapshot.runtime_bundle.revision,
-            extension_sequence: snapshot.extension_sequence,
+            extension_inputs: Default::default(),
         }
     }
 
@@ -878,35 +871,11 @@ impl ThreadHandle {
         &self,
         tools: Vec<crate::tool::opaque::Registration>,
     ) -> Result<(), ThreadError> {
-        self.transfer_tools(None, tools).await
-    }
-
-    /// Replaces the registry only if producer extensions still match the preparation snapshot.
-    /// Rejected candidates are closed before returning; pending calls retain frozen executors.
-    ///
-    /// # Errors
-    /// Returns `ExtensionSequenceConflict` without changing the registry when preparation is stale.
-    /// Also returns registration/owner errors, or `RejectedTools` retaining failed cleanup for retry.
-    pub async fn register_tools_if_extensions(
-        &self,
-        expected_extension_sequence: u64,
-        tools: Vec<crate::tool::opaque::Registration>,
-    ) -> Result<(), ThreadError> {
-        self.transfer_tools(Some(expected_extension_sequence), tools)
-            .await
-    }
-
-    async fn transfer_tools(
-        &self,
-        expected: Option<u64>,
-        tools: Vec<crate::tool::opaque::Registration>,
-    ) -> Result<(), ThreadError> {
         let batch = crate::tool::opaque::RegistrationBatch::new(tools);
         let (reply, response) = oneshot::channel();
         let result = match self
             .commands
             .send(Command::Control(super::mailbox::MailboxCommand::Register(
-                expected,
                 batch.clone(),
                 reply,
             )))

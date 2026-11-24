@@ -289,9 +289,11 @@ final class ManualModelDraft {
     name: model.displayName,
     context: model.contextWindow?.toString() ?? '',
     output: model.maxOutputTokens?.toString() ?? '',
-    wireApi: model.wireApi == 'responses'
-        ? AccountWireApi.responses
-        : AccountWireApi.chatCompletions,
+    wireApi: switch (model.wireApi) {
+      'responses' => AccountWireApi.responses,
+      'gemini_generate_content' => AccountWireApi.geminiGenerateContent,
+      _ => AccountWireApi.chatCompletions,
+    },
     connection: switch (connection) {
       null => AccountConnection.automatic,
       AccountConnectionMode.http => AccountConnection.http,
@@ -358,48 +360,59 @@ final class ManualModelDraft {
   AccountModelCommand get command => AccountModelCommand(
     modelId: id.trim(),
     displayName: name.trim(),
-    wireApi: wireApi == AccountWireApi.responses
-        ? 'responses'
-        : 'chat_completions',
+    wireApi: switch (wireApi) {
+      AccountWireApi.chatCompletions => 'chat_completions',
+      AccountWireApi.responses => 'responses',
+      AccountWireApi.geminiGenerateContent => 'gemini_generate_content',
+    },
     contextWindow: positiveAccountInteger(context),
     maxOutputTokens: positiveAccountInteger(output),
   );
   ManualAccountModelPresentation presentation(
     AccountStrings strings,
-    AccountModelView? descriptor,
-  ) => ManualAccountModelPresentation(
-    editorKey: editorKey,
-    id: AccountTextPresentation(
-      raw: id,
-      error: id.trim().isEmpty ? strings['required'] : null,
-    ),
-    name: AccountTextPresentation(raw: name),
-    contextWindow: AccountTextPresentation(
-      raw: context,
-      error: context.isNotEmpty && positiveAccountInteger(context) == null
-          ? strings['positiveInteger']
-          : null,
-    ),
-    maxOutputTokens: AccountTextPresentation(
-      raw: output,
-      error: output.isNotEmpty && positiveAccountInteger(output) == null
-          ? strings['positiveInteger']
-          : null,
-    ),
-    wireApi: wireApi,
-    allowedWireApis: AccountWireApi.values,
-    connection: connection,
-    allowedConnections: [
-      AccountConnection.automatic,
-      if (savedId == null ||
-          descriptor?.supportedConnectionModes.contains('http') == true)
-        AccountConnection.http,
-      if (savedId != null &&
-          descriptor?.supportedConnectionModes.contains('web_socket') == true)
-        AccountConnection.webSocket,
-    ],
-    canRemove: true,
-    canEditId: savedId == null,
-    error: validate(strings),
-  );
+    AccountModelView? descriptor, {
+    String? accountProtocol,
+  }) {
+    final isGeminiProtocol = accountProtocol == 'gemini';
+    return ManualAccountModelPresentation(
+      editorKey: editorKey,
+      id: AccountTextPresentation(
+        raw: id,
+        error: id.trim().isEmpty ? strings['required'] : null,
+      ),
+      name: AccountTextPresentation(raw: name),
+      contextWindow: AccountTextPresentation(
+        raw: context,
+        error: context.isNotEmpty && positiveAccountInteger(context) == null
+            ? strings['positiveInteger']
+            : null,
+      ),
+      maxOutputTokens: AccountTextPresentation(
+        raw: output,
+        error: output.isNotEmpty && positiveAccountInteger(output) == null
+            ? strings['positiveInteger']
+            : null,
+      ),
+      wireApi: wireApi,
+      allowedWireApis: isGeminiProtocol
+          ? const [AccountWireApi.geminiGenerateContent]
+          : const [AccountWireApi.chatCompletions, AccountWireApi.responses],
+      connection: connection,
+      allowedConnections: isGeminiProtocol
+          ? const [AccountConnection.automatic, AccountConnection.http]
+          : [
+              AccountConnection.automatic,
+              if (savedId == null ||
+                  descriptor?.supportedConnectionModes.contains('http') == true)
+                AccountConnection.http,
+              if (savedId != null &&
+                  descriptor?.supportedConnectionModes.contains('web_socket') ==
+                      true)
+                AccountConnection.webSocket,
+            ],
+      canRemove: true,
+      canEditId: savedId == null,
+      error: validate(strings),
+    );
+  }
 }

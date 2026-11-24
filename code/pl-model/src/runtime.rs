@@ -8,11 +8,10 @@ pub use pl_model_runtime::runtime::*;
 pub fn from_route(route: &ResolvedModelRoute) -> Result<ModelRuntime> {
     let registry = crate::protocol::builtin_protocols();
     let mut route = route.clone();
-    registry
-        .resolve(&route.endpoint.protocol)?
-        .bind(&mut route.endpoint, &mut route.model);
+    let adapter = registry.resolve(&route.endpoint.protocol)?;
+    adapter.bind(&mut route.endpoint, &mut route.model);
     let upload = registry.file_upload(&route.endpoint.service_capabilities.files)?;
-    ModelRuntime::bind_route(route, upload)
+    ModelRuntime::bind_route(route, adapter.codec, upload)
 }
 
 /// Binds an explicit account endpoint and model to their protocol services.
@@ -35,11 +34,10 @@ pub fn new_with_registry(
     mut model: ModelDefinition,
     registry: crate::protocol::ProtocolRegistry<'_>,
 ) -> Result<ModelRuntime> {
-    registry
-        .resolve(&endpoint.protocol)?
-        .bind(&mut endpoint, &mut model);
+    let adapter = registry.resolve(&endpoint.protocol)?;
+    adapter.bind(&mut endpoint, &mut model);
     let upload = registry.file_upload(&endpoint.service_capabilities.files)?;
-    ModelRuntime::bind(account_id, endpoint, model, upload)
+    ModelRuntime::bind(account_id, endpoint, model, adapter.codec, upload)
 }
 
 /// Constructs the host-facing completion client using the selected protocol.

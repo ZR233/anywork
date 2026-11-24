@@ -80,6 +80,61 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     }
   }
 
+  Future<void> _removeThread(
+    AnyworkClient client,
+    SessionDirectoryRow row, {
+    required bool deleting,
+    VoidCallback? showActiveSessions,
+  }) async {
+    final commands = client.threadCommands;
+    if (commands.isThreadRemovalPending(row.threadId)) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await _confirmThreadRemoval(
+      context,
+      row,
+      deleting: deleting,
+    );
+    if (confirmed != true || !mounted || !identical(_client, client)) return;
+    if (commands.isThreadRemovalPending(row.threadId)) return;
+
+    final l10n = context.l10n;
+    showActiveSessions?.call();
+    widget.onNavigate?.call();
+
+    Object? failure;
+    try {
+      await (deleting
+          ? commands.deleteThread(row.threadId)
+          : commands.archiveThread(row.threadId));
+    } catch (error) {
+      failure = error;
+    }
+    if (!messenger.mounted || !identical(_client, client) || client.isClosed) {
+      return;
+    }
+    final String message;
+    if (failure == null) {
+      message = deleting
+          ? l10n.sidebarDeleteSessionSucceeded(row.title)
+          : l10n.sidebarArchiveSessionSucceeded(row.title);
+    } else {
+      final reason = mounted
+          ? context.recoveryIssueFailureLabel(failure)
+          : failure.toString();
+      message = deleting
+          ? l10n.sidebarDeleteSessionResultFailed(row.title, reason)
+          : l10n.sidebarArchiveSessionResultFailed(row.title, reason);
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        showCloseIcon: true,
+        duration: Duration(seconds: failure == null ? 5 : 8),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final client = ref.watch(anyworkClientProvider);
@@ -224,7 +279,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
           }
         }),
       ),
-      onThreadAction: (project, row, action) => unawaited(
+      onThreadAction: (project, row, action, showActiveSessions) => unawaited(
         _run(() async {
           switch (action) {
             case SidebarThreadAction.pin:
@@ -236,9 +291,13 @@ class _SidebarState extends ConsumerState<_Sidebar> {
             case SidebarThreadAction.rename:
               await _renameThreadFromSidebar(context, client, row);
             case SidebarThreadAction.archive:
-              await _archiveThreadFromSidebar(context, client, row.threadId);
             case SidebarThreadAction.delete:
-              await _deleteThreadFromSidebar(context, client, row);
+              await _removeThread(
+                client,
+                row,
+                deleting: action == SidebarThreadAction.delete,
+                showActiveSessions: showActiveSessions,
+              );
             case SidebarThreadAction.copyWorkspace:
               await Clipboard.setData(ClipboardData(text: row.workspacePath));
             case SidebarThreadAction.openVsCode:
@@ -322,12 +381,6 @@ Future<void> _saveSidebarPreferences(
   String? threadId,
   String? workspaceId,
 }) async {
-  final threads = [...general.pinnedThreadIds];
-  final projects = [...general.pinnedProjectIds];
-  if (threadId != null && !threads.remove(threadId)) threads.add(threadId);
-  if (workspaceId != null && !projects.remove(workspaceId)) {
-    projects.add(workspaceId);
-  }
   final commands = ref.read(anyworkClientProvider).settingsCommands;
   // A previous width can still be in flight even when this intent equals the
   // observed snapshot. Let the Client's canonical command lane order both.
@@ -335,9 +388,19 @@ Future<void> _saveSidebarPreferences(
     await commands.applySettingsField(GeneralSidebarWidthCommand(width));
   }
   if (threadId != null) {
-    await commands.applySettingsField(GeneralPinnedThreadIdsCommand(threads));
+    await commands.applySettingsField(
+      ThreadPinnedCommand(
+        threadId,
+        !general.pinnedThreadIds.contains(threadId),
+      ),
+    );
   }
   if (workspaceId != null) {
-    await commands.applySettingsField(GeneralPinnedProjectIdsCommand(projects));
+    await commands.applySettingsField(
+      ProjectPinnedCommand(
+        workspaceId,
+        !general.pinnedProjectIds.contains(workspaceId),
+      ),
+    );
   }
 }

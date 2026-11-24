@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
+import 'account_gemini_connection.dart';
 import 'account_sections.dart';
 
 /// Shared editor page geometry. Drafts, navigation and saving stay caller-owned.
@@ -106,6 +107,7 @@ class AccountNativeConnectionFields extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
+    final isGemini = isGeminiAccountPresentation(value);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -127,7 +129,9 @@ class AccountNativeConnectionFields extends StatelessWidget {
                         NativeAccountField.name.name,
                       ),
                     ),
-                    value: value.name,
+                    value: isGemini
+                        ? value.name.copyWith(helper: null)
+                        : value.name,
                     enabled: !value.saving,
                     label: l10n.settingsDisplayName,
                     onChanged: (raw) => onChanged(NativeAccountField.name, raw),
@@ -161,10 +165,14 @@ class AccountNativeConnectionFields extends StatelessWidget {
                           NativeAccountField.credential.name,
                         ),
                       ),
-                      value: value.credential,
+                      value: isGemini
+                          ? value.credential.copyWith(helper: null)
+                          : value.credential,
                       enabled: !value.saving,
                       label: value.hasStoredCredential
                           ? l10n.settingsApiKeyKeepCurrent
+                          : isGemini
+                          ? geminiCredentialLabel(l10n, value)
                           : value.credentialRequired
                           ? l10n.settingsApiKey
                           : l10n.settingsApiKeyOptional,
@@ -301,6 +309,8 @@ class AccountManualModelEditor extends StatelessWidget {
                     l10n.settingsProtocolChatCompletionsHttp,
                   AccountWireApi.responses =>
                     l10n.settingsProtocolResponsesHttp,
+                  AccountWireApi.geminiGenerateContent =>
+                    l10n.settingsProtocolGeminiGenerateContentHttp,
                 }),
                 selected: value.wireApi == api,
                 onSelected: (_) => onWireApiChanged(api),

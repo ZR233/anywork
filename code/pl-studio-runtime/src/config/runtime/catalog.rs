@@ -263,6 +263,7 @@ impl ConfigRuntime {
         let mut state = self.state.write().map_err(|_| config_runtime_poisoned())?;
         let profiles_config = effective_config.clone();
         if let Some(config) = effective_config {
+            state.observe_native_config(&config);
             state.snapshot.config = config;
         }
         state.observations = next_observations;

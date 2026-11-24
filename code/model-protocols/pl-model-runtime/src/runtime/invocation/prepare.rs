@@ -1,8 +1,8 @@
 //! Input validation, attachment preparation and wire-body assembly.
 use crate::completion::{CompletionFailure, CompletionRequest, InferenceModelObservation};
 use crate::runtime::invocation_context::InvocationPurpose;
-use crate::runtime::openai::OpenAiRequestBody;
 use crate::runtime::{ModelInvocationContext, ModelRuntime};
+use pl_model_wire::wire_codec::{EncodeHttpRequestInput, PreparedHttpRequest};
 use pl_protocol::{PureError, Result};
 
 impl ModelRuntime {
@@ -55,7 +55,7 @@ impl ModelRuntime {
         request: CompletionRequest,
         prompt_cache_key: Option<&str>,
         purpose: &InvocationPurpose,
-    ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
+    ) -> Result<(PreparedHttpRequest, InferenceModelObservation)> {
         if request.service_tier.is_some() && !matches!(purpose, InvocationPurpose::Completion) {
             return Err(PureError::ConfigError(
                 "service_tier is only supported for completions".into(),
@@ -70,31 +70,24 @@ impl ModelRuntime {
             &self.endpoint,
             &self.model,
             &self.account_id,
+            self.codec,
             request,
         )?;
-        let mut body = crate::runtime::openai::build_request(
-            self.model.extra.binding.transport.protocol,
-            self.endpoint
-                .instruction_wire_role(self.model.extra.binding.transport.protocol),
-            &request,
-            &self.model,
+        let (compaction_body, is_compaction) = match purpose {
+            InvocationPurpose::RemoteCompaction { body, .. } => (Some(body), true),
+            InvocationPurpose::Completion => (None, false),
+        };
+        let prepared = self.codec.encode_http_request(EncodeHttpRequestInput {
+            endpoint: &self.endpoint,
+            model: &self.model,
+            request: &request,
             prompt_cache_key,
-            self.endpoint.authorization.is_some(),
-        )?;
-        if let InvocationPurpose::RemoteCompaction {
-            body: compaction, ..
-        } = purpose
-        {
-            body.apply_compaction_body(compaction);
-        }
-        body.reject_reserved_instruction_channel()?;
-        body.validate_prompt_cache_key(prompt_cache_key)?;
-        if matches!(purpose, InvocationPurpose::RemoteCompaction { .. }) {
-            body.prepare_compaction();
-        }
-        let sent_model = body.sent_model()?;
+            compaction_body,
+            is_compaction,
+        })?;
+        let sent_model = prepared.sent_model.clone();
         Ok((
-            body,
+            prepared,
             InferenceModelObservation {
                 configured_model: self.model.base.slug.clone(),
                 sent_model,

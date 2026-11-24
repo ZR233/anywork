@@ -5,6 +5,7 @@ import '../state/account_presentations.dart';
 import '../state/account_view_key_values.dart';
 import '../widgets/account_models_view.dart';
 import '../widgets/account_editor_fields.dart';
+import '../widgets/account_gemini_connection.dart';
 import '../widgets/account_sections.dart';
 import '../widgets/account_template_selector.dart';
 
@@ -194,6 +195,17 @@ class _NativeAccountEditorViewState extends State<NativeAccountEditorView> {
                   onCancel: widget.onCancelChatGptLogin,
                   onOpenAuthorization: widget.onOpenChatGptAuthorization,
                   onOpenUsage: widget.onOpenChatGptUsage,
+                ),
+                const SizedBox(height: 20),
+              ],
+              if (isGeminiAccountPresentation(value)) ...[
+                AccountGeminiConnectionPanel(
+                  value: value,
+                  onTemplateChanged: widget.onTemplateChanged,
+                  onEndpointPresetSelected: (endpoint) => widget.onFieldChanged(
+                    NativeAccountField.endpoint,
+                    endpoint,
+                  ),
                 ),
                 const SizedBox(height: 20),
               ],

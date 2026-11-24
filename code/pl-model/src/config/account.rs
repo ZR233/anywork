@@ -1010,11 +1010,11 @@ impl AccountConfig {
             )
             .map_err(|error| PureError::ConfigError(error.to_string()))?;
         }
+        let adapter = registry.resolve(&self.protocol)?;
         Ok(ProtocolEndpoint {
             protocol: self.protocol.clone(),
-            responses_instruction_role: registry
-                .resolve(&self.protocol)?
-                .responses_instruction_role,
+            responses_instruction_role: adapter.responses_instruction_role,
+            api_key_header: adapter.api_key_header,
             name: self.name.clone(),
             base_url: self.base_url.clone(),
             bearer_token: self.resolved_bearer_token(),

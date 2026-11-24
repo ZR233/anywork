@@ -435,12 +435,29 @@ mod contract_tests {
             Err(pl_protocol::PureError::ConfigError(_))
         ));
         let selected = route.clone().with_service_tier(Some("priority")).unwrap();
-        let frozen = ThreadModel::new(ModelRuntime::bind_route(selected, None).unwrap(), None);
+        let frozen = ThreadModel::new(
+            ModelRuntime::bind_route(selected, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
+                .unwrap(),
+            None,
+        );
         // A later UI/catalog selection changes another binding, not the already-bound Thread.
         route = route.with_service_tier(Some("ultrafast")).unwrap();
-        let newer = ThreadModel::new(ModelRuntime::bind_route(route.clone(), None).unwrap(), None);
+        let newer = ThreadModel::new(
+            ModelRuntime::bind_route(
+                route.clone(),
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
+            None,
+        );
         let standard = ThreadModel::new(
-            ModelRuntime::bind_route(route.with_service_tier(None).unwrap(), None).unwrap(),
+            ModelRuntime::bind_route(
+                route.with_service_tier(None).unwrap(),
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
             None,
         );
         let request = || ModelRequest {
@@ -476,8 +493,11 @@ mod contract_tests {
             unsupported.clone().with_service_tier(Some("priority")),
             Err(pl_protocol::PureError::ConfigError(_))
         ));
-        let unsupported =
-            ThreadModel::new(ModelRuntime::bind_route(unsupported, None).unwrap(), None);
+        let unsupported = ThreadModel::new(
+            ModelRuntime::bind_route(unsupported, &pl_model_openai_wire::OPENAI_WIRE_CODEC, None)
+                .unwrap(),
+            None,
+        );
         for (model, sent, recorded) in [
             (&frozen, Some("priority"), "tier:priority"),
             (&newer, Some("ultrafast"), "tier:ultrafast"),
@@ -506,6 +526,7 @@ mod contract_tests {
             "fixture",
             pl_model_openai::endpoint::compatible_endpoint("fixture", "http://127.0.0.1:1/v1"),
             crate::model::ModelDefinition::compatible("contract-model"),
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .expect("isolated model runtime");

@@ -50,7 +50,6 @@ pub struct BridgeSetThreadModelRouteRequest {
     pub operation_id: String,
     pub thread_id: String,
     pub expected_model_route_revision: u64,
-    pub expected_settings_revision: u64,
     pub account_id: String,
     pub model_id: String,
     pub effort: Option<String>,

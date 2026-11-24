@@ -174,7 +174,7 @@ void main() {
             controls: controls,
             onLoadOlder: () async {},
             onRetryOlder: () async {},
-            onReturnLive: () async {},
+            onReturnLive: () async => true,
             onEnterHistory: () {},
             onRetryConnection: () {},
             onLink: (_) {},

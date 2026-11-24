@@ -168,11 +168,11 @@ impl AccountEdit {
             }
             None => {
                 let current_custom = current.filter(|account| account.template_id().is_none());
+                let adapter = pl_model::protocol::builtin_protocols().resolve(&self.protocol)?;
                 let info = ProtocolEndpoint {
                     authorization: None,
-                    responses_instruction_role: pl_model::protocol::builtin_protocols()
-                        .resolve(&self.protocol)?
-                        .responses_instruction_role,
+                    responses_instruction_role: adapter.responses_instruction_role,
+                    api_key_header: adapter.api_key_header,
                     protocol: self.protocol.clone(),
                     name: name.clone(),
                     base_url: base_url.clone(),

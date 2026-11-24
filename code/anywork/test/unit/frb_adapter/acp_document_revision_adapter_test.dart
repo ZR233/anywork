@@ -22,20 +22,12 @@ final class _AcpDocumentBoundary implements RustLibApi {
       <
         ({
           String operationId,
-          BigInt settingsRevision,
           BigInt? documentRevision,
           acp_dto.BridgeAcpAccountUpdate account,
         })
       >[];
   final removals =
-      <
-        ({
-          String operationId,
-          BigInt settingsRevision,
-          BigInt documentRevision,
-          String accountId,
-        })
-      >[];
+      <({String operationId, BigInt documentRevision, String accountId})>[];
 
   @override
   Future<account_dto.BridgeAccountDomainFrame>
@@ -71,13 +63,11 @@ final class _AcpDocumentBoundary implements RustLibApi {
   Future<command_dto.BridgeSettingsCommandReply>
   crateApiStudioHandlersAcpSaveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     BigInt? expectedDocumentRevision,
     required acp_dto.BridgeAcpAccountUpdate account,
   }) async {
     saves.add((
       operationId: operationId,
-      settingsRevision: expectedSettingsRevision,
       documentRevision: expectedDocumentRevision,
       account: account,
     ));
@@ -89,13 +79,11 @@ final class _AcpDocumentBoundary implements RustLibApi {
   Future<command_dto.BridgeSettingsCommandReply>
   crateApiStudioHandlersAcpRemoveAcpAccount({
     required String operationId,
-    required BigInt expectedSettingsRevision,
     required String accountId,
     required BigInt expectedDocumentRevision,
   }) async {
     removals.add((
       operationId: operationId,
-      settingsRevision: expectedSettingsRevision,
       documentRevision: expectedDocumentRevision,
       accountId: accountId,
     ));
@@ -152,7 +140,6 @@ void main() {
       );
       await expectLater(
         transport.saveAcpAccount(
-          frame.stamp.revision,
           update,
           operationId: const OperationId('update-once'),
           expectedDocumentRevision: saved.documentRevision,
@@ -161,7 +148,6 @@ void main() {
       );
       final sent = api.saves.single;
       expect(sent.operationId, 'update-once');
-      expect(sent.settingsRevision, BigInt.from(9));
       expect(sent.documentRevision, revision);
       expect(sent.account.accountId, saved.accountId);
       expect(sent.account.name, 'Renamed');
@@ -173,7 +159,6 @@ void main() {
 
       await expectLater(
         transport.removeAcpAccount(
-          frame.stamp.revision,
           saved.accountId,
           operationId: const OperationId('remove-once'),
           expectedDocumentRevision: saved.documentRevision,
@@ -182,13 +167,11 @@ void main() {
       );
       expect(api.removals.single, (
         operationId: 'remove-once',
-        settingsRevision: BigInt.from(9),
         documentRevision: revision,
         accountId: saved.accountId,
       ));
       await expectLater(
         transport.saveAcpAccount(
-          frame.stamp.revision,
           update,
           operationId: const OperationId('create-once'),
           expectedDocumentRevision: null,

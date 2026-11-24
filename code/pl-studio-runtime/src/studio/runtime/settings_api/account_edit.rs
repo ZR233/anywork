@@ -214,6 +214,7 @@ fn parse_account_protocol(value: &str) -> Result<WireApi> {
     match value.trim() {
         "responses" => Ok(WireApi::Responses),
         "chat_completions" => Ok(WireApi::ChatCompletions),
+        "gemini_generate_content" => Ok(WireApi::GeminiGenerateContent),
         _ => Err(invalid_settings_argument("Unsupported model wire protocol")),
     }
 }

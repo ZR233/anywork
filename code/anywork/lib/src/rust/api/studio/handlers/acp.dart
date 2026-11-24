@@ -22,12 +22,10 @@ Future<BridgeAcpAccountCatalog> loadAcpAccountCatalog() =>
 /// 保存（新增或更新）一条 ACP 接入。
 Future<BridgeSettingsCommandReply> saveAcpAccount({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   BigInt? expectedDocumentRevision,
   required BridgeAcpAccountUpdate account,
 }) => RustLib.instance.api.crateApiStudioHandlersAcpSaveAcpAccount(
   operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
   expectedDocumentRevision: expectedDocumentRevision,
   account: account,
 );
@@ -35,12 +33,10 @@ Future<BridgeSettingsCommandReply> saveAcpAccount({
 /// 删除一条 ACP 接入；不注销官方账号、不删除其凭据。
 Future<BridgeSettingsCommandReply> removeAcpAccount({
   required String operationId,
-  required BigInt expectedSettingsRevision,
   required String accountId,
   required BigInt expectedDocumentRevision,
 }) => RustLib.instance.api.crateApiStudioHandlersAcpRemoveAcpAccount(
   operationId: operationId,
-  expectedSettingsRevision: expectedSettingsRevision,
   accountId: accountId,
   expectedDocumentRevision: expectedDocumentRevision,
 );

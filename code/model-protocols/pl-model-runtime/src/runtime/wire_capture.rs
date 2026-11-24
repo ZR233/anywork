@@ -15,7 +15,8 @@ use pl_protocol::{PureError, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::openai::OpenAiRequestBody;
+use pl_model_wire::wire_codec::{CapturedUsageObservation, PreparedHttpRequest};
+
 use super::openai::sse::SseStreamEvent;
 use crate::completion::CompletionTraceContext;
 
@@ -88,14 +89,38 @@ pub(crate) async fn capture_usage(
     event: &SseStreamEvent,
     trace: Option<&CompletionTraceContext>,
 ) -> Result<()> {
-    let Some(directory) = std::env::var_os(CAPTURE_DIRECTORY_ENV).map(PathBuf::from) else {
+    if std::env::var_os(CAPTURE_DIRECTORY_ENV).is_none() {
         return Ok(());
-    };
+    }
     let response = event.response.as_ref();
     let response_usage = response
         .and_then(|response| response.get("usage"))
         .and_then(super::openai::usage::ProviderTokenUsage::from_value);
     let Some(usage) = event.usage.as_ref().or(response_usage.as_ref()) else {
+        return Ok(());
+    };
+    let usage = serde_json::to_value(usage)?;
+    let observation = CapturedUsageObservation {
+        response_id: event
+            .id
+            .clone()
+            .or_else(|| response.and_then(|r| r.get("id")?.as_str().map(str::to_owned))),
+        model: event
+            .model
+            .clone()
+            .or_else(|| response.and_then(|r| r.get("model")?.as_str().map(str::to_owned))),
+        service_tier: response.and_then(|r| r.get("service_tier")?.as_str().map(str::to_owned)),
+        usage,
+    };
+    capture_usage_observation(&observation, trace).await
+}
+
+/// Captures pre-extracted numeric usage fields for any protocol decoder.
+pub(crate) async fn capture_usage_observation(
+    observation: &CapturedUsageObservation,
+    trace: Option<&CompletionTraceContext>,
+) -> Result<()> {
+    let Some(directory) = std::env::var_os(CAPTURE_DIRECTORY_ENV).map(PathBuf::from) else {
         return Ok(());
     };
     #[derive(Serialize)]
@@ -110,7 +135,7 @@ pub(crate) async fn capture_usage(
         response_id: Option<&'a str>,
         model: Option<&'a str>,
         service_tier: Option<&'a str>,
-        usage: &'a super::openai::usage::ProviderTokenUsage,
+        usage: &'a Value,
     }
     let receipt = UsageReceipt {
         schema_version: 2,
@@ -126,16 +151,10 @@ pub(crate) async fn capture_usage(
         session_id: trace.map(|trace| trace.session_id.as_str()),
         turn_id: trace.map(|trace| trace.turn_id.as_str()),
         inference_id: trace.map(|trace| trace.inference_id.as_str()),
-        response_id: event
-            .id
-            .as_deref()
-            .or_else(|| response.and_then(|r| r.get("id")?.as_str())),
-        model: event
-            .model
-            .as_deref()
-            .or_else(|| response.and_then(|r| r.get("model")?.as_str())),
-        service_tier: response.and_then(|r| r.get("service_tier")?.as_str()),
-        usage,
+        response_id: observation.response_id.as_deref(),
+        model: observation.model.as_deref(),
+        service_tier: observation.service_tier.as_deref(),
+        usage: &observation.usage,
     };
     let sequence = CAPTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
     let bytes = serde_json::to_vec_pretty(&receipt)?;
@@ -150,14 +169,11 @@ pub(crate) async fn capture_usage(
 }
 
 pub(super) async fn capture_http(
-    body: &OpenAiRequestBody,
+    prepared: &PreparedHttpRequest,
     trace: Option<&CompletionTraceContext>,
 ) -> Result<Option<HttpCaptureContext>> {
-    let (protocol, wire_body) = match body {
-        OpenAiRequestBody::Responses(body) => ("responsesHttp", Value::Object(body.clone())),
-        OpenAiRequestBody::Chat(body) => ("chatCompletions", Value::Object(body.clone())),
-    };
-    capture(protocol, "full", &wire_body, trace).await
+    let wire_body = Value::Object(prepared.body.clone());
+    capture(prepared.capture_protocol, "full", &wire_body, trace).await
 }
 
 pub(super) async fn capture_responses_websocket(
@@ -263,10 +279,10 @@ impl HttpCaptureContext {
     }
 }
 
-pub(super) fn observe_http_stream(
-    stream: BoxStream<'static, Result<SseStreamEvent>>,
+pub(super) fn observe_http_stream<T: Send + 'static>(
+    stream: BoxStream<'static, Result<T>>,
     capture: Option<HttpCaptureContext>,
-) -> BoxStream<'static, Result<SseStreamEvent>> {
+) -> BoxStream<'static, Result<T>> {
     let state = ObservedHttpStream {
         stream,
         capture,
@@ -313,8 +329,8 @@ pub(super) fn observe_http_stream(
     .boxed()
 }
 
-struct ObservedHttpStream {
-    stream: BoxStream<'static, Result<SseStreamEvent>>,
+struct ObservedHttpStream<T> {
+    stream: BoxStream<'static, Result<T>>,
     capture: Option<HttpCaptureContext>,
     saw_provider_event: bool,
     terminated: bool,

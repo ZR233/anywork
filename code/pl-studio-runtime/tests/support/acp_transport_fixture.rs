@@ -71,7 +71,6 @@ impl AcpTransportFixture {
         let workspace = runtime.open_project(&workspace).await?;
         runtime.save_acp_account(UpdateAcpAccountRequest {
             operation_id: "save-business-peer".into(),
-            expected_revision: runtime.read_settings()?.config.revision,
             expected_document_revision: None,
             account: AcpAccountUpdate {
                 account_id: "business-peer".into(),

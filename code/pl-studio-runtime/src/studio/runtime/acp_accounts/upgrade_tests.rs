@@ -101,11 +101,10 @@ async fn managed_upgrade_when_idle_retires_old_process_and_reconnects_cleanly() 
         let mut definition = entry.definition;
         definition.enabled = true;
         definition.launch = AcpLaunch::Template(ConfigAcpProvider::Antigravity);
-        fixture.runtime.config_runtime.save_acp_definition(
-            fixture.runtime.config_runtime.read()?.revision,
-            &definition,
-            Some(entry.document_revision),
-        )?;
+        fixture
+            .runtime
+            .config_runtime
+            .save_acp_definition(&definition, Some(entry.document_revision))?;
 
         let ready_v1 = wait_account_state(&fixture.runtime, "business-peer", |account| {
             matches!(account.connection, AcpConnectionState::Ready)
@@ -192,11 +191,10 @@ async fn managed_upgrade_defers_while_active_session_runs_then_switches_on_close
         let mut definition = entry.definition;
         definition.enabled = true;
         definition.launch = AcpLaunch::Template(ConfigAcpProvider::Antigravity);
-        fixture.runtime.config_runtime.save_acp_definition(
-            fixture.runtime.config_runtime.read()?.revision,
-            &definition,
-            Some(entry.document_revision),
-        )?;
+        fixture
+            .runtime
+            .config_runtime
+            .save_acp_definition(&definition, Some(entry.document_revision))?;
 
         let ready_v1 = wait_account_state(&fixture.runtime, "business-peer", |account| {
             matches!(account.connection, AcpConnectionState::Ready)

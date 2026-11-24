@@ -193,6 +193,8 @@
   "sidebarArchiveSessionConfirmTitle": "归档会话",
   "sidebarArchiveSessionConfirmBody": "归档将停止该会话及其子会话，删除专属工作树及其中的未提交内容，并清理临时文件。会话历史与附件将保留。",
   "sidebarArchiveSessionConfirmAction": "归档",
+  "sidebarArchiveSessionSucceeded": "已归档“{title}”",
+  "sidebarArchiveSessionResultFailed": "无法归档“{title}”。{reason}",
   "sidebarDeleteSession": "删除会话",
   "sidebarDeleteSessionConfirmTitle": "永久删除“{title}”及其全部子会话？",
   "@sidebarDeleteSessionConfirmTitle": {
@@ -204,6 +206,8 @@
   },
   "sidebarDeleteSessionConfirmBody": "这将永久删除该会话树的聊天记录、附件与资源、笔记与计划、报告与评价、调用统计、临时文件、产物及专属工作树，且无法恢复。普通项目目录不受影响。",
   "sidebarDeleteSessionConfirmAction": "永久删除",
+  "sidebarDeleteSessionSucceeded": "已删除“{title}”",
+  "sidebarDeleteSessionResultFailed": "无法删除“{title}”。{reason}",
   "sidebarRenameSession": "重命名会话",
   "sidebarRenameSessionTitle": "重命名会话",
   "sidebarRenameSessionInput": "会话标题",
@@ -709,11 +713,11 @@
   "timelineFileDownloadResume": "继续下载",
   "timelineFileDownloadStop": "停止下载",
   "timelineFileDownloadComplete": "下载完成",
-  "timelineJumpToLatest": "跳到最新",
+  "timelineJumpToLatest": "回到最新",
+  "timelineJumpToLatestWithNewOutput": "有新输出 · 回到最新",
   "timelineNew": "新内容",
   "timelineLoadEarlier": "加载更早消息",
   "timelineActivityNotLoaded": "尚有活动未载入",
-  "timelineBackToLive": "回到实时",
   "timelineDetailUnavailable": "此内容已不可用",
   "timelineReconnecting": "正在重新连接消息，当前内容已保留。",
   "timelineConnectionFailed": "消息同步失败，当前内容已保留。",
@@ -1461,10 +1465,12 @@
   "settingsApiKeyOptional": "API 密钥（可选）",
   "modelProtocolResponses": "Responses（响应式接口）",
   "modelProtocolChatCompletions": "Chat Completions（对话补全）",
+  "modelProtocolGeminiGenerateContent": "Gemini API（generateContent）",
   "modelConnectionWebSocket": "WS（WebSocket 长连接）",
   "modelConnectionHttp": "HTTP",
   "settingsProtocolChatCompletionsHttp": "Chat Completions（对话补全，HTTP）",
   "settingsProtocolResponsesHttp": "Responses（响应式接口，HTTP）",
+  "settingsProtocolGeminiGenerateContentHttp": "Gemini API（generateContent，HTTP）",
   "settingsAgentRouteUnavailable": "{route}（不可用）",
   "@settingsAgentRouteUnavailable": {
     "placeholders": {
@@ -1909,6 +1915,7 @@
   "accountProtocolZhipu": "智谱",
   "accountProtocolMiMo": "MiMo",
   "accountProtocolXai": "xAI",
+  "accountProtocolGemini": "Google Gemini",
   "accountProtocolCustom": "自定义（OpenAI 兼容）",
   "timelineWaitToolsTitle": "等待工具完成",
   "timelineWaitMessagesTitle": "等待子代理或新消息",
@@ -2442,7 +2449,6 @@
   "acpMethodAgentPlatformDesc": "连接到 Gemini Enterprise Agent Platform 企业部署",
   "acpServiceInfoSectionTitle": "受管服务与连接信息",
   "conversationActivityResponding": "正在输出",
-  "conversationActivityFollowOutput": "跟随输出",
   "timelineBackgroundResults": "后台结果",
   "planDocumentNotReady": "文档读取尚未就绪",
   "interactionDetailsTitle": "交互详情",
@@ -3311,5 +3317,53 @@
   "workflowGraphStateForced": "强制切换",
   "workflowGraphStateFinal": "终态",
   "timelineToolNamePlanTransition": "切换计划状态",
-  "timelineToolDetailForceTransition": "强制切换"
+  "timelineToolDetailForceTransition": "强制切换",
+  "accountsGeminiModeAiStudio": "AI Studio",
+  "accountsGeminiModeVertexAi": "Vertex AI",
+  "accountsGeminiModeCustom": "自定义端点",
+  "accountsGeminiHintAiStudio": "使用 Google AI Studio 的 Gemini API 密钥（x-goog-api-key），支持在线获取模型列表。",
+  "accountsGeminiHintVertexAi": "使用 Vertex AI API 密钥（x-goog-api-key）访问 Gemini 模型，推荐使用 global 端点。",
+  "accountsGeminiHintCustom": "使用自定义 Gemini API（generateContent）端点，通过 x-goog-api-key 鉴权。",
+  "accountsGeminiBadgeHeader": "x-goog-api-key",
+  "accountsGeminiBadgeMultimodal": "多模态",
+  "accountsGeminiBadgeDiscovery": "在线目录",
+  "accountsGeminiBadgeBundledCatalog": "内置目录",
+  "accountsGeminiBadgeImplicitCache": "隐式缓存",
+  "accountsGeminiEndpointPresetsLabel": "端点",
+  "accountsGeminiPresetGlobal": "global（推荐）",
+  "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",
+  "accountsGeminiCredentialLabelVertex": "Vertex AI API 密钥",
+  "accountsGeminiCredentialLabelAiStudio": "Gemini API 密钥",
+  "timelineDiffStatLabel": "新增 {additions} 行，删除 {deletions} 行",
+  "@timelineDiffStatLabel": {
+    "placeholders": {
+      "additions": {
+        "type": "int"
+      },
+      "deletions": {
+        "type": "int"
+      }
+    }
+  },
+  "timelinePatchCopyPath": "复制路径",
+  "acpCopyMessage": "复制消息",
+  "acpJumpToPendingPermission": "跳到最新 · 等待权限确认",
+  "acpJumpToRunning": "跳到最新 · 运行中",
+  "acpJumpToNewOutput": "跳到最新 · 有新输出",
+  "acpPlanCompletedHeadline": "执行计划已完成",
+  "acpSlashMenuLabel": "斜杠命令",
+  "acpSlashMenuNoMatches": "无匹配命令",
+  "acpHistorySearchHint": "搜索标题、路径或会话 ID",
+  "acpHistorySearchCount": "{matched} / {total}",
+  "@acpHistorySearchCount": {
+    "placeholders": {
+      "matched": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySearchEmpty": "没有匹配的外部会话"
 }

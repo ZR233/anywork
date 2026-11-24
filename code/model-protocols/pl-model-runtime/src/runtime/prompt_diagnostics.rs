@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::completion::{Message, ReasoningConfig, ToolSpec, stable_tool_schemas};
 use crate::protocol::{EffectivePromptCachePolicy, ProtocolEndpoint};
 
-pub use pl_model_openai_wire::PromptPrefixChangedReason;
+pub use pl_model_wire::PromptPrefixChangedReason;
 
 /// Thread 当前 prompt generation 的脱敏诊断快照。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

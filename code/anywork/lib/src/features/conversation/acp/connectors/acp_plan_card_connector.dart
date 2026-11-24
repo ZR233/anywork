@@ -19,6 +19,7 @@ class AcpPlanCardConnector extends ConsumerWidget {
     return AcpPlanCard(
       key: ValueKey(AcpViewKeyValues.planCard(threadId)),
       state: state,
+      initiallyExpanded: false,
     );
   }
 }

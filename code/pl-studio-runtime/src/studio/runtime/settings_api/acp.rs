@@ -1,6 +1,6 @@
 //! ACP 接入的 Settings 命令与认证命令入口。
 //!
-//! 保存/删除接入属于 Settings 写路径：沿用 ConfigRuntime 的 revision CAS 与原子提交，成功即
+//! 保存/删除接入属于 Settings 写路径：核对该 ACP 文件的版本并原子提交，成功即
 //! 返回 canonical 设置，绝不等待进程或登录。检查连接、登录与取消是独立的认证操作命令，返回
 //! 受理身份后由 owner 在后台推进（见 design/20 §20.2、design/28 §28.2）。
 
@@ -64,11 +64,9 @@ impl StudioRuntime {
             env: request.account.env,
         };
         let previous = self.config_runtime.read_acp_definitions();
-        let state = self.config_runtime.save_acp_definition(
-            request.expected_revision,
-            &account,
-            request.expected_document_revision,
-        )?;
+        let state = self
+            .config_runtime
+            .save_acp_definition(&account, request.expected_document_revision)?;
         let changed = previous != state.acp;
         // 连接身份若变化，旧代次在发布前被撤消；设置快照返回新的 connection revision。
         self.publish_settings_state()?;
@@ -90,11 +88,9 @@ impl StudioRuntime {
         Self::validate_operation_id(&request.operation_id)?;
         validate_acp_account_id(&request.account_id)
             .map_err(|_| invalid_settings_argument("ACP account id is invalid"))?;
-        let state = self.config_runtime.delete_acp_definition(
-            request.expected_revision,
-            &request.account_id,
-            request.expected_document_revision,
-        )?;
+        let state = self
+            .config_runtime
+            .delete_acp_definition(&request.account_id, request.expected_document_revision)?;
         let changed = true;
         self.publish_settings_state()?;
         self.settings_command_reply(

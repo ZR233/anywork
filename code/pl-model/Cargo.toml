@@ -9,7 +9,8 @@ default = []
 live-tests = []
 
 [dependencies]
-pl-model-openai-wire = { workspace = true }
+pl-model-wire = { workspace = true }
+pl-model-gemini = { workspace = true }
 pl-model-openai-mimo = { workspace = true }
 pl-model-openai-xai = { workspace = true }
 pl-model-openai-deepseek = { workspace = true }
@@ -28,6 +29,7 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
+pl-model-openai-wire = { workspace = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-util = { workspace = true }

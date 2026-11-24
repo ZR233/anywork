@@ -230,8 +230,7 @@ final class ModelsRepositoryImpl implements ModelsRepository {
     key:
         'model:enabled:${identity.accountId.length}:${identity.accountId}:${identity.modelId}',
     targets: _targets(identity),
-    request: (revision, operation) => port.setAccountModelEnabled(
-      revision,
+    request: (_, operation) => port.setAccountModelEnabled(
       identity.accountId,
       identity.modelId,
       enabled,
@@ -248,11 +247,13 @@ final class ModelsRepositoryImpl implements ModelsRepository {
         'model:compact:${identity.accountId.length}:${identity.accountId}:${identity.modelId}',
     draft: draft,
     targets: _targets(identity),
-    request: (revision, operation) => port.setAccountModelAutoCompact(
-      revision,
-      identity,
-      intent,
-      operationId: operation,
+    request: (withRevision, operation) => withRevision(
+      (revision) => port.setAccountModelAutoCompact(
+        revision,
+        identity,
+        intent,
+        operationId: operation,
+      ),
     ),
   );
   @override
@@ -263,11 +264,13 @@ final class ModelsRepositoryImpl implements ModelsRepository {
     key:
         'model:connection:${identity.accountId.length}:${identity.accountId}:${identity.modelId}',
     targets: _targets(identity),
-    request: (revision, operation) => port.setAccountModelConnection(
-      revision,
-      identity,
-      intent,
-      operationId: operation,
+    request: (withRevision, operation) => withRevision(
+      (revision) => port.setAccountModelConnection(
+        revision,
+        identity,
+        intent,
+        operationId: operation,
+      ),
     ),
   );
   @override
@@ -277,11 +280,13 @@ final class ModelsRepositoryImpl implements ModelsRepository {
     key:
         'model:remove:${identity.accountId.length}:${identity.accountId}:${identity.modelId}',
     targets: _targets(identity),
-    request: (revision, operation) => port.removeAccountModel(
-      revision,
-      identity.accountId,
-      identity.modelId,
-      operationId: operation,
+    request: (withRevision, operation) => withRevision(
+      (revision) => port.removeAccountModel(
+        revision,
+        identity.accountId,
+        identity.modelId,
+        operationId: operation,
+      ),
     ),
   );
 

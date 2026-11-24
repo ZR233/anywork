@@ -193,6 +193,14 @@
   "sidebarArchiveSessionConfirmTitle": "Archive session",
   "sidebarArchiveSessionConfirmBody": "Archiving stops this session and its child sessions, removes their dedicated worktrees including uncommitted content, and clears temporary files. Conversation history and attachments are kept.",
   "sidebarArchiveSessionConfirmAction": "Archive",
+  "sidebarArchiveSessionSucceeded": "Archived “{title}”",
+  "@sidebarArchiveSessionSucceeded": {
+    "placeholders": { "title": { "type": "String" } }
+  },
+  "sidebarArchiveSessionResultFailed": "Could not archive “{title}”. {reason}",
+  "@sidebarArchiveSessionResultFailed": {
+    "placeholders": { "title": { "type": "String" }, "reason": { "type": "String" } }
+  },
   "sidebarDeleteSession": "Delete session",
   "sidebarDeleteSessionConfirmTitle": "Permanently delete “{title}” and all its child sessions?",
   "@sidebarDeleteSessionConfirmTitle": {
@@ -204,6 +212,14 @@
   },
   "sidebarDeleteSessionConfirmBody": "This permanently deletes the tree’s chat history, attachments and resources, notes and plans, reports and evaluations, call statistics, temporary files, artifacts, and dedicated worktree. This cannot be undone. The ordinary project directory is not affected.",
   "sidebarDeleteSessionConfirmAction": "Delete permanently",
+  "sidebarDeleteSessionSucceeded": "Deleted “{title}”",
+  "@sidebarDeleteSessionSucceeded": {
+    "placeholders": { "title": { "type": "String" } }
+  },
+  "sidebarDeleteSessionResultFailed": "Could not delete “{title}”. {reason}",
+  "@sidebarDeleteSessionResultFailed": {
+    "placeholders": { "title": { "type": "String" }, "reason": { "type": "String" } }
+  },
   "sidebarRenameSession": "Rename session",
   "sidebarRenameSessionTitle": "Rename session",
   "sidebarRenameSessionInput": "Session title",
@@ -841,11 +857,11 @@
   "timelineFileDownloadResume": "Resume download",
   "timelineFileDownloadStop": "Stop download",
   "timelineFileDownloadComplete": "Download complete",
-  "timelineJumpToLatest": "Jump to latest",
+  "timelineJumpToLatest": "Back to latest",
+  "timelineJumpToLatestWithNewOutput": "New output · Back to latest",
   "timelineNew": "New",
   "timelineLoadEarlier": "Load earlier messages",
   "timelineActivityNotLoaded": "More activity to load",
-  "timelineBackToLive": "Back to live",
   "timelineDetailUnavailable": "This content is no longer available",
   "timelineReconnecting": "Reconnecting messages… Current content is preserved.",
   "timelineConnectionFailed": "Unable to synchronize messages. Current content is preserved.",
@@ -1893,10 +1909,12 @@
   "settingsApiKeyOptional": "API key (optional)",
   "modelProtocolResponses": "Responses",
   "modelProtocolChatCompletions": "Chat Completions",
+  "modelProtocolGeminiGenerateContent": "Gemini API (generateContent)",
   "modelConnectionWebSocket": "WS",
   "modelConnectionHttp": "HTTP",
   "settingsProtocolChatCompletionsHttp": "Chat Completions (HTTP)",
   "settingsProtocolResponsesHttp": "Responses (HTTP)",
+  "settingsProtocolGeminiGenerateContentHttp": "Gemini API (generateContent, HTTP)",
   "settingsAgentRouteUnavailable": "{route} (unavailable)",
   "@settingsAgentRouteUnavailable": {
     "placeholders": {
@@ -2341,6 +2359,7 @@
   "accountProtocolZhipu": "Zhipu",
   "accountProtocolMiMo": "MiMo",
   "accountProtocolXai": "xAI",
+  "accountProtocolGemini": "Google Gemini",
   "accountProtocolCustom": "Custom (OpenAI compatible)",
   "timelineWaitToolsTitle": "Waiting for tools",
   "timelineWaitMessagesTitle": "Waiting for a subagent or new message",
@@ -2986,7 +3005,6 @@
   "acpMethodAgentPlatformDesc": "Connect to a Gemini Enterprise Agent Platform deployment",
   "acpServiceInfoSectionTitle": "Managed server and connection",
   "conversationActivityResponding": "Generating response",
-  "conversationActivityFollowOutput": "Follow output",
   "timelineBackgroundResults": "Background results",
   "planDocumentNotReady": "The document reader is not ready yet.",
   "interactionDetailsTitle": "Interaction details",
@@ -3948,5 +3966,53 @@
   "workflowGraphStateForced": "Forced",
   "workflowGraphStateFinal": "Final",
   "timelineToolNamePlanTransition": "Plan transition",
-  "timelineToolDetailForceTransition": "Forced"
+  "timelineToolDetailForceTransition": "Forced",
+  "accountsGeminiModeAiStudio": "AI Studio",
+  "accountsGeminiModeVertexAi": "Vertex AI",
+  "accountsGeminiModeCustom": "Custom endpoint",
+  "accountsGeminiHintAiStudio": "Access the Gemini API with a Google AI Studio API key (x-goog-api-key), including online model listing.",
+  "accountsGeminiHintVertexAi": "Access Gemini models with a Vertex AI API key (x-goog-api-key). The global endpoint is recommended.",
+  "accountsGeminiHintCustom": "Connect to a custom Gemini API (generateContent) endpoint using x-goog-api-key authentication.",
+  "accountsGeminiBadgeHeader": "x-goog-api-key",
+  "accountsGeminiBadgeMultimodal": "Multimodal",
+  "accountsGeminiBadgeDiscovery": "Online catalog",
+  "accountsGeminiBadgeBundledCatalog": "Built-in catalog",
+  "accountsGeminiBadgeImplicitCache": "Implicit caching",
+  "accountsGeminiEndpointPresetsLabel": "Endpoints",
+  "accountsGeminiPresetGlobal": "global (Recommended)",
+  "accountsGeminiPresetAiStudioOfficial": "Gemini API (v1beta)",
+  "accountsGeminiCredentialLabelVertex": "Vertex AI API key",
+  "accountsGeminiCredentialLabelAiStudio": "Gemini API key",
+  "timelineDiffStatLabel": "{additions} additions, {deletions} deletions",
+  "@timelineDiffStatLabel": {
+    "placeholders": {
+      "additions": {
+        "type": "int"
+      },
+      "deletions": {
+        "type": "int"
+      }
+    }
+  },
+  "timelinePatchCopyPath": "Copy path",
+  "acpCopyMessage": "Copy message",
+  "acpJumpToPendingPermission": "Jump to latest · Permission requested",
+  "acpJumpToRunning": "Jump to latest · Running",
+  "acpJumpToNewOutput": "Jump to latest · New output",
+  "acpPlanCompletedHeadline": "Execution plan completed",
+  "acpSlashMenuLabel": "Slash commands",
+  "acpSlashMenuNoMatches": "No matching commands",
+  "acpHistorySearchHint": "Search title, path, or session ID",
+  "acpHistorySearchCount": "{matched} of {total}",
+  "@acpHistorySearchCount": {
+    "placeholders": {
+      "matched": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "acpHistorySearchEmpty": "No matching external sessions"
 }

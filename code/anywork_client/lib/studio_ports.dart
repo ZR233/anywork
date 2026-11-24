@@ -152,12 +152,10 @@ abstract class StudioTransport
   Future<List<AgentProfileView>> readAgentProfiles();
   Future<SettingsCommandReply> setSystemAgentEnabled({
     required OperationId operationId,
-    required int expectedSettingsRevision,
     required String profileId,
     required bool enabled,
   });
   Future<SettingsCommandReply> saveUserAgentProfile(
-    int expectedSettingsRevision,
     AgentProfileDraft draft, {
     required OperationId operationId,
   });
@@ -243,7 +241,6 @@ abstract class StudioTransport
     required OperationId operationId,
     required String threadId,
     required int expectedModelRouteRevision,
-    required int expectedSettingsRevision,
     required String accountId,
     required String modelId,
     String? effort,
@@ -342,7 +339,6 @@ abstract class StudioTransport
     required OperationId operationId,
   });
   Future<SettingsCommandReply> saveRuntimePermissionMode(
-    int expectedSettingsRevision,
     PermissionMode mode, {
     required OperationId operationId,
   });
@@ -351,7 +347,6 @@ abstract class StudioTransport
   );
   Future<DelegationModelDetail> getDelegationModel(DelegationModelKey key);
   Future<SettingsCommandReply> applySettingsField(
-    int expectedSettingsRevision,
     SettingsFieldCommand command, {
     required OperationId operationId,
   });

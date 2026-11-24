@@ -47,6 +47,7 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
   final CommandLane _stopLane = CommandLane();
   final Set<Observation> _operationObservations = {};
   final Map<String, _ContinuationIntent> _continuationIntents = {};
+  final Set<String> _pendingThreadRemovals = {};
 
   /// 同一 `(threadId, executionId)` 的停止登记：至多一个在途 + 至多一个排队重试。
   final Map<String, _StopFlight> _stopFlights = {};
@@ -1130,96 +1131,95 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     });
   }
 
-  Future<void> archiveThread(String threadId) {
-    _ensureOpen();
-    final navigationGeneration = _client.selection.navigationGeneration;
-    final key = 'archive:$threadId';
-    final operation = _client.mutations.begin(target: key);
-    _begin(key, label: threadId);
-    _watchObservation(operation, () => _clear(key));
-    return _lane.enqueue(() async {
-      final row = await _readThread(threadId);
-      final recoveryIssue = _accessBlockerForThread(threadId);
-      if (recoveryIssue != null) {
-        final failure = recoveryIssue.blockedFailure();
-        _failOperation(operation, failure);
-        if (_isLatest(operation)) _fail(key, threadId, failure);
-        throw failure;
-      }
-      if (row == null || !row.isRootRow) {
-        operation.reject(StateError('Thread archive is unavailable'));
-        if (_isLatest(operation)) _clear(key);
-        return;
-      }
-      try {
-        final response = await _api.archiveThread(
-          threadId,
-          operationId: operation.id,
-        );
-        operation.accept(response.receipt.toCommitReceipt());
-        _replaceRemovedThreadIfCurrent(
-          response.result.removedThreadIds,
-          nextRootId: response.result.nextRoot?.threadId,
-          navigationGeneration: navigationGeneration,
-        );
-      } catch (error) {
-        _failOperation(operation, error);
-        if (_isLatest(operation)) _fail(key, threadId, error);
-        rethrow;
-      }
-    });
-  }
+  /// True while an archive or delete call is still settling for this root.
+  bool isThreadRemovalPending(String threadId) =>
+      _pendingThreadRemovals.contains(threadId);
+
+  Future<void> archiveThread(String threadId) =>
+      _removeThread(threadId, delete: false);
 
   /// Permanently deletes the backend-authoritative root and its whole tree.
   ///
   /// The target may be archived and absent from the active directory, so the
   /// backend owns root/child validation. A null reply means there was no
   /// remaining deletion responsibility and carries no command receipt.
-  Future<void> deleteThread(String threadId) {
+  Future<void> deleteThread(String threadId) =>
+      _removeThread(threadId, delete: true);
+
+  Future<void> _removeThread(String threadId, {required bool delete}) async {
     _ensureOpen();
+    if (isThreadRemovalPending(threadId)) {
+      throw StateError('Thread removal is pending');
+    }
+    if (_client.directoryCommands.isThreadRestorePending(threadId)) {
+      throw StateError('Thread restore is pending');
+    }
     final navigationGeneration = _client.selection.navigationGeneration;
-    final key = 'delete:$threadId';
-    final operation = _client.mutations.begin(target: key);
-    _begin(key, label: threadId);
-    _watchObservation(operation, () => _clear(key));
-    return _lane.enqueue(() async {
+    final key = '${delete ? 'delete' : 'archive'}:$threadId';
+    // Track before publishing pending so a synchronous listener can safely
+    // reenter close. The transport wait is independent of the command queue.
+    return _lane.run(() async {
+      _pendingThreadRemovals.add(threadId);
+      final operation = _client.mutations.begin(target: key);
+      Object? failure;
+      var issued = false;
       try {
-        final response = await _api.deleteThread(
-          threadId,
-          operationId: operation.id,
-        );
-        if (response == null) {
-          operation.reject(StateError('Thread no longer exists'));
-          if (_isLatest(operation)) _clear(key);
-          return;
+        _begin(key, label: threadId);
+        SessionDirectoryRow? root;
+        if (!delete) {
+          root = await _readThread(threadId);
+          _throwIfAccessBlockedForThread(
+            threadId,
+            workspaceId: root?.workspaceId,
+          );
+          if (root == null || !root.isRootRow || root.archived) {
+            throw StateError('Thread archive is unavailable');
+          }
         }
-        operation.accept(response.receipt.toCommitReceipt());
-        _replaceRemovedThreadIfCurrent(
-          response.result.deletedThreadIds,
-          nextRootId: response.result.nextRoot?.threadId,
+        await _client.directoryCommands.selectBeforeThreadRemoval(
+          threadId,
+          root: root,
           navigationGeneration: navigationGeneration,
         );
+        _ensureOpen();
+        if (root != null) {
+          _throwIfAccessBlockedForThread(
+            threadId,
+            workspaceId: root.workspaceId,
+          );
+        }
+        issued = true;
+        final receipt = delete
+            ? (await _api.deleteThread(
+                threadId,
+                operationId: operation.id,
+              ))?.receipt
+            : (await _api.archiveThread(
+                threadId,
+                operationId: operation.id,
+              )).receipt;
+        if (receipt == null) {
+          operation.reject(StateError('Thread no longer exists'));
+        } else {
+          operation.accept(receipt.toCommitReceipt());
+        }
       } catch (error) {
-        _failOperation(operation, error);
-        if (_isLatest(operation)) _fail(key, threadId, error);
+        failure = error;
+        if (issued) {
+          _failOperation(operation, error);
+        } else {
+          operation.reject(error);
+        }
         rethrow;
+      } finally {
+        _pendingThreadRemovals.remove(threadId);
+        if (failure == null) {
+          _clear(key);
+        } else {
+          _fail(key, threadId, failure);
+        }
       }
     });
-  }
-
-  void _replaceRemovedThreadIfCurrent(
-    Iterable<String> removedThreadIds, {
-    required String? nextRootId,
-    required int navigationGeneration,
-  }) {
-    if (_client.isClosed ||
-        !_client.selection.isCurrentNavigation(navigationGeneration)) {
-      return;
-    }
-    final selected = _client.selection.state.selectedThreadId;
-    if (selected == null || !removedThreadIds.contains(selected)) return;
-    _client.conversations.setVisibleThread(null);
-    _client.selection.replaceRemovedThread(nextRootId);
   }
 
   Future<void> _applyThreadModelRoute({
@@ -1332,9 +1332,6 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
       operationId: operationId,
       threadId: threadId,
       expectedModelRouteRevision: route.revision,
-      expectedSettingsRevision:
-          _client.settingsWrites.stamp?.revision ??
-          _client.settings.state.settingsRevision,
       accountId: accountId,
       modelId: modelId,
       effort: effort ?? target.reasoningEfforts.firstOrNull,
@@ -1621,12 +1618,14 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
     }
   }
 
-  StudioRecoveryIssue? _accessBlockerForThread(String threadId) =>
-      recoveryIssueBlockingAccess(
-        _client.recovery.state.value?.values ?? const [],
-        workspaceId: _workspaceIdForThread(threadId),
-        threadId: threadId,
-      );
+  StudioRecoveryIssue? _accessBlockerForThread(
+    String threadId, {
+    String? workspaceId,
+  }) => recoveryIssueBlockingAccess(
+    _client.recovery.state.value?.values ?? const [],
+    workspaceId: workspaceId ?? _workspaceIdForThread(threadId),
+    threadId: threadId,
+  );
 
   StudioRecoveryIssue? _executionBlockerForThread(String threadId) =>
       recoveryIssueBlockingExecution(
@@ -1641,8 +1640,8 @@ class ThreadCommands extends ReadModel<ThreadCommandBoard>
         workspaceId: workspaceId,
       );
 
-  void _throwIfAccessBlockedForThread(String threadId) {
-    final issue = _accessBlockerForThread(threadId);
+  void _throwIfAccessBlockedForThread(String threadId, {String? workspaceId}) {
+    final issue = _accessBlockerForThread(threadId, workspaceId: workspaceId);
     if (issue != null) throw issue.blockedFailure();
   }
 

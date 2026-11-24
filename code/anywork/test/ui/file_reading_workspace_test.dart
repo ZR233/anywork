@@ -225,7 +225,11 @@ void main() {
           () => find.text('notes.md').evaluate().isNotEmpty,
           'production file card',
         );
-        final timeline = tester.element(find.byType(TimelineConnector));
+        final timelineFinder = find.byType(
+          TimelineConnector,
+          skipOffstage: false,
+        );
+        final timeline = tester.element(timelineFinder);
         final sourceFinder = find.ancestor(
           of: find.text('notes.md'),
           matching: find.byType(TimelineAttachmentsConnector),
@@ -249,7 +253,8 @@ void main() {
           closeTo(width, 1),
         );
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
-        expect(tester.element(find.byType(TimelineConnector)), same(timeline));
+        expect(find.byType(TimelineConnector), findsNothing);
+        expect(tester.element(timelineFinder), same(timeline));
         await tester.tap(find.byTooltip('恢复分栏'));
         await tester.pump();
         expect(
@@ -262,7 +267,7 @@ void main() {
           tester.getSize(find.byType(FileReadingPanel)).width,
           closeTo(600, 1),
         );
-        expect(tester.element(find.byType(TimelineConnector)), same(timeline));
+        expect(tester.element(timelineFinder), same(timeline));
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
         Future<void>? revokedRead;
         if (revokeDuringRead) {
@@ -309,10 +314,7 @@ void main() {
           await tester.tap(close);
           await tester.pump();
           expect(find.byType(FileReadingPanel), findsNothing);
-          expect(
-            tester.element(find.byType(TimelineConnector)),
-            same(timeline),
-          );
+          expect(tester.element(timelineFinder), same(timeline));
         }
         expect(tester.takeException(), isNull);
         // Retiring the real Thread lease revokes the retained production reader.

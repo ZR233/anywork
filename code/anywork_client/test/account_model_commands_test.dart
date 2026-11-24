@@ -58,7 +58,7 @@ final class _Call {
     this.billingKind,
   });
   final String kind;
-  final int revision;
+  final int? revision;
   final String accountId;
   final String? modelId;
   final bool? enabled;
@@ -97,7 +97,6 @@ final class _Transport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> setAccountModelEnabled(
-    int revision,
     String accountId,
     String modelId,
     bool enabled, {
@@ -105,7 +104,7 @@ final class _Transport extends AccountsTestTransport {
   }) {
     final call = _Call(
       'enabled',
-      revision,
+      null,
       accountId,
       operationId,
       modelId: modelId,
@@ -117,14 +116,13 @@ final class _Transport extends AccountsTestTransport {
 
   @override
   Future<SettingsCommandReply> setAccountBillingKind(
-    int revision,
     String accountId,
     BillingKind? billingKind, {
     required OperationId operationId,
   }) {
     final call = _Call(
       'billing',
-      revision,
+      null,
       accountId,
       operationId,
       billingKind: billingKind,
@@ -171,7 +169,7 @@ AccountSummary _summary(AccountsTestRuntime runtime) =>
 const _enabledKey = 'model:enabled:7:account:online';
 
 void main() {
-  test('rapid enabled intents survive CAS refresh and preserve unrelated canonical fields', () async {
+  test('rapid enabled intents preserve concurrent account fields without a settings refresh', () async {
     final transport = _Transport();
     final client = _client(transport);
     final firstCall = transport.calls.stream.first;
@@ -187,7 +185,6 @@ void main() {
     final secondId = client.board.latest(_enabledKey)!.id;
     final call = await firstCall;
     expect(call.operationId, firstId);
-    expect(call.revision, 1);
     final concurrent = _account.copyWith(
       baseUrl: 'https://changed.invalid',
       hasBearerToken: true,
@@ -200,26 +197,13 @@ void main() {
         ),
       },
     );
-    transport.refreshed = _snapshot(2, concurrent);
-    final retryCall = transport.calls.stream.first;
-    call.reply.completeError(
-      const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'Concurrent settings',
-        retryable: true,
-        correlationId: 'remote-conflict',
-      ),
-    );
-    final retry = await retryCall;
-    expect(retry.operationId, firstId);
-    expect(retry.revision, 2);
-    expect(retry.enabled, isFalse);
+    expect(call.enabled, isFalse);
     final disabled = concurrent.copyWith(
       modelEnabledOverrides: const {'online': false},
       models: [_model.copyWith(enabled: false), _manual],
     );
     final secondCall = transport.calls.stream.first;
-    retry.complete(_snapshot(3, disabled));
+    call.complete(_snapshot(3, disabled));
     await first;
     expect(
       client.board.latest(_enabledKey)!.id,
@@ -241,15 +225,10 @@ void main() {
     final next = await secondCall;
     expect(next.operationId, secondId);
     expect(next.operationId, isNot(firstId));
-    expect(next.revision, 3);
     expect(next.enabled, isTrue);
     next.complete(_snapshot(4, concurrent));
     await second;
-    expect(
-      transport.refreshes,
-      2,
-      reason: 'CAS retries refresh the target detail and its independent model source, not an aggregate bootstrap',
-    );
+    expect(transport.refreshes, 0);
     final detail =
         client.domains.accounts.details(_identity).value.value!
             as NativeAccountDetails;

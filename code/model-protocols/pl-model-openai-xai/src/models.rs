@@ -1,7 +1,8 @@
 use std::sync::LazyLock;
 
-use pl_model_openai_wire::model::{
-    BundledModelDefinition, MediaSendOrder, ModelDefinition, ModelDefinitionError,
+use pl_model_wire::model::{
+    BundledModelDefinition, CodexModel, MediaSendOrder, ModelDefinition, ModelDefinitionError,
+    TruncationPolicy,
     capabilities::{
         ModelCapabilities, ModelInputCapability, ModelInputLimits, ModelInputSource, ModelModality,
         ToolCapabilities,
@@ -11,7 +12,6 @@ use pl_model_openai_wire::model::{
     info::{MediaWireFormat, ModelRequestProfile, ModelTransportProfile, TruncationMode},
     pricing::{ModelPricing, TokenPriceTier},
 };
-use pl_model_openai_wire::model::{CodexModel, TruncationPolicy};
 
 const RECOMMENDED_MODEL: &str = "grok-4.7";
 const COMMON_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh"];

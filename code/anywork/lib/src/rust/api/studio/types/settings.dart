@@ -1541,9 +1541,10 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   const factory SettingsFieldInput.skillsExternalDirs({
     required List<String> value,
   }) = SettingsFieldInput_SkillsExternalDirs;
-  const factory SettingsFieldInput.skillsDisabled({
-    required List<String> value,
-  }) = SettingsFieldInput_SkillsDisabled;
+  const factory SettingsFieldInput.skillDisabled({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_SkillDisabled;
   const factory SettingsFieldInput.skillsAutoLearnMinToolCalls({
     required int value,
   }) = SettingsFieldInput_SkillsAutoLearnMinToolCalls;
@@ -1558,12 +1559,14 @@ sealed class SettingsFieldInput with _$SettingsFieldInput {
   }) = SettingsFieldInput_GeneralLanguage;
   const factory SettingsFieldInput.generalSidebarWidth({int? value}) =
       SettingsFieldInput_GeneralSidebarWidth;
-  const factory SettingsFieldInput.generalPinnedThreadIds({
-    required List<String> value,
-  }) = SettingsFieldInput_GeneralPinnedThreadIds;
-  const factory SettingsFieldInput.generalPinnedProjectIds({
-    required List<String> value,
-  }) = SettingsFieldInput_GeneralPinnedProjectIds;
+  const factory SettingsFieldInput.threadPinned({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_ThreadPinned;
+  const factory SettingsFieldInput.projectPinned({
+    required String id,
+    required bool value,
+  }) = SettingsFieldInput_ProjectPinned;
   const factory SettingsFieldInput.webSearchMode({required String value}) =
       SettingsFieldInput_WebSearchMode;
   const factory SettingsFieldInput.webSearchContextSize({String? value}) =

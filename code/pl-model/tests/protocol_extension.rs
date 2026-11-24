@@ -3,14 +3,14 @@ use pl_model::{
     config::{AccountConfig, ModelCatalogId},
     model::{ModelDefinition, ModelRequestProfile},
     protocol::{
-        InstructionWireRole, ProtocolEndpoint, ProtocolId, ProtocolRegistry,
+        ApiKeyHeaderScheme, InstructionWireRole, ProtocolEndpoint, ProtocolId, ProtocolRegistry,
         discovery::{ModelCatalogQuery, ModelCatalogQueryResult},
     },
     runtime::{ModelInvocationContext, new_with_registry},
 };
-use pl_model_openai_wire::{
+use pl_model_wire::{
     adapter::Adapter,
-    discovery::{DiscoveryPolicy, ModelCatalogQueryError, Record},
+    discovery::{DiscoveryPolicy, ModelCatalogQueryError, ParsedCatalogPage, Record},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::{Value, json};
@@ -18,8 +18,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static EXTENSION: Adapter = Adapter {
     id: ProtocolId::from_static("fixture_openai_derivative"),
+    codec: &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+    api_key_header: ApiKeyHeaderScheme::AuthorizationBearer,
     responses_instruction_role: InstructionWireRole::System,
     discovery: DiscoveryPolicy::COMPATIBLE,
+    discovery_query_params: &[],
+    discovery_page_token_param: None,
     file_upload: None,
     hosted_search_label: None,
     on_base_url_override: None,
@@ -28,17 +32,20 @@ static EXTENSION: Adapter = Adapter {
             .body
             .insert("fixture_option".into(), json!("variant"));
     }),
-    parse_catalog: |bytes| {
+    parse_catalog_page: |bytes| {
         let body: Value =
             serde_json::from_slice(bytes).map_err(|_| ModelCatalogQueryError::Protocol)?;
         let slug = body
             .get("fixtureSlug")
             .and_then(Value::as_str)
             .ok_or(ModelCatalogQueryError::Protocol)?;
-        Ok(vec![Record {
-            id: slug.into(),
-            ..Record::default()
-        }])
+        Ok(ParsedCatalogPage {
+            records: vec![Record {
+                id: slug.into(),
+                ..Record::default()
+            }],
+            next_page_token: None,
+        })
     },
 };
 

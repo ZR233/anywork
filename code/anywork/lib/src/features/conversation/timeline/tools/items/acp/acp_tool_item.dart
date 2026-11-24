@@ -1,7 +1,11 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../../../app/theme/studio_tokens.dart';
 import '../../../../../../l10n/app_localizations.dart';
+import '../../../../../../l10n/studio_l10n.dart';
 import '../../../../../../shared/studio_chrome.dart';
 import '../../../state/patch_presentation.dart';
 import '../../../state/tool_presentation.dart';
@@ -198,6 +202,7 @@ class AcpToolItem extends TimelineToolItemAdapter {
                   icon: Icons.place_outlined,
                   text: location,
                   style: metaStyle,
+                  copyText: location,
                 ),
               for (final terminal in terminals)
                 _AcpToolMetaRow(
@@ -273,15 +278,46 @@ class AcpToolItem extends TimelineToolItemAdapter {
   );
 }
 
-class _AcpToolMetaRow extends StatelessWidget {
-  const _AcpToolMetaRow({required this.icon, required this.text, this.style});
+class _AcpToolMetaRow extends StatefulWidget {
+  const _AcpToolMetaRow({
+    required this.icon,
+    required this.text,
+    this.style,
+    this.copyText,
+  });
 
   final IconData icon;
   final String text;
   final TextStyle? style;
+  final String? copyText;
+
+  @override
+  State<_AcpToolMetaRow> createState() => _AcpToolMetaRowState();
+}
+
+class _AcpToolMetaRowState extends State<_AcpToolMetaRow> {
+  bool _copied = false;
+  Timer? _timer;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _copy(String value) {
+    unawaited(Clipboard.setData(ClipboardData(text: value)));
+    _timer?.cancel();
+    setState(() => _copied = true);
+    _timer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = context.l10n;
+    final copyValue = widget.copyText;
     return Padding(
       padding: const EdgeInsets.only(bottom: 2),
       child: Row(
@@ -289,10 +325,36 @@ class _AcpToolMetaRow extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 3),
-            child: Icon(icon, size: 13, color: context.colors.onSurfaceVariant),
+            child: Icon(
+              widget.icon,
+              size: 13,
+              color: context.colors.onSurfaceVariant,
+            ),
           ),
           const SizedBox(width: 6),
-          Expanded(child: Text(text, style: style, softWrap: true)),
+          Expanded(
+            child: Text(widget.text, style: widget.style, softWrap: true),
+          ),
+          if (copyValue != null && copyValue.trim().isNotEmpty)
+            Tooltip(
+              message: _copied
+                  ? l10n.timelineOutcomeCopied
+                  : l10n.timelinePatchCopyPath,
+              child: InkWell(
+                onTap: () => _copy(copyValue),
+                borderRadius: const BorderRadius.all(Radius.circular(4)),
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Icon(
+                    _copied ? Icons.check_rounded : Icons.content_copy_rounded,
+                    size: 13,
+                    color: _copied
+                        ? context.colors.primary
+                        : context.colors.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

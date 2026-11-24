@@ -611,6 +611,7 @@ pub enum ProtocolKind {
     Zhipu,
     MiMo,
     Xai,
+    Gemini,
     #[default]
     OpenAiCompatible,
 }

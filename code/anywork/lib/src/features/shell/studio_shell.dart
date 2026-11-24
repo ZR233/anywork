@@ -52,6 +52,7 @@ import '../conversation/timeline/connectors/timeline_read_demand_viewport.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/connectors/file_reading_panel.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
+import '../../shared/latest_scroll.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'sidebar/sidebar_views.dart';
@@ -199,7 +200,7 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                   440.0,
                 );
             final width = desiredWidth.clamp(300.0, maximumWidth);
-            return Scaffold(
+            final scaffold = Scaffold(
               key: _scaffoldKey,
               onDrawerChanged: (_) =>
                   _sidebarKey.currentState?.retireNavigation(),
@@ -354,6 +355,19 @@ class _StudioShellState extends ConsumerState<StudioShell> {
                   ],
                 ),
               ),
+            );
+            // The floating surface follows the conversation area as the
+            // sidebar resizes or moves into a drawer.
+            return SnackBarTheme(
+              data: SnackBarTheme.of(context).copyWith(
+                insetPadding: EdgeInsetsDirectional.fromSTEB(
+                  overlay ? 16 : width + _sidebarDividerWidth + 16,
+                  0,
+                  16,
+                  12,
+                ).resolve(Directionality.of(context)),
+              ),
+              child: scaffold,
             );
           },
         );

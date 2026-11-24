@@ -175,12 +175,19 @@ mod cache_tests {
             .extra
             .binding
             .set_transport(ModelTransportProfile::responses_http());
-        ModelRuntime::bind("cache-account", endpoint, model, None).unwrap()
+        ModelRuntime::bind(
+            "cache-account",
+            endpoint,
+            model,
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+            None,
+        )
+        .unwrap()
     }
 
     #[test]
     fn cache_policy_applies_at_request_preparation() {
-        let (body, _) = runner(false)
+        let (prepared, _) = runner(false)
             .prepare_request_body(
                 CompletionRequest::builder().build(),
                 Some("caller-key"),
@@ -188,8 +195,7 @@ mod cache_tests {
             )
             .unwrap();
         assert!(
-            serde_json::to_value(body)
-                .unwrap()
+            serde_json::Value::Object(prepared.body)
                 .get("prompt_cache_key")
                 .is_none()
         );
@@ -341,16 +347,14 @@ pub(in crate::runtime) mod chatgpt_tests {
             refresh_in_flight: false,
         };
         let mut endpoint = pl_model_openai::endpoint::endpoint(None);
-        endpoint.authorization = Some(
-            pl_model_openai_wire::authorization::EndpointAuthorization::new(
-                ChatGptSession::new(
-                    &record,
-                    Arc::new(NoCredentialIo),
-                    temp.path().join("must-not-lock"),
-                )
-                .unwrap(),
-            ),
-        );
+        endpoint.authorization = Some(pl_model_wire::authorization::EndpointAuthorization::new(
+            ChatGptSession::new(
+                &record,
+                Arc::new(NoCredentialIo),
+                temp.path().join("must-not-lock"),
+            )
+            .unwrap(),
+        ));
         let mut info = crate::model::ModelDefinition::compatible("fixture-model");
         info.extra.binding.transport = crate::model::ModelTransportProfile::responses_http();
         info.extra.binding.request = crate::model::ModelRequestProfile::responses();
@@ -360,7 +364,14 @@ pub(in crate::runtime) mod chatgpt_tests {
         info.extra.capabilities.reasoning = true;
         (
             temp,
-            ModelRuntime::bind("wire", endpoint, info, None).unwrap(),
+            ModelRuntime::bind(
+                "wire",
+                endpoint,
+                info,
+                &pl_model_openai_wire::OPENAI_WIRE_CODEC,
+                None,
+            )
+            .unwrap(),
         )
     }
 
@@ -380,11 +391,11 @@ pub(in crate::runtime) mod chatgpt_tests {
         entry: serde_json::Value,
         previous: Option<&[crate::model::ModelDefinition]>,
     ) -> Vec<crate::model::ModelDefinition> {
-        let records = pl_model_openai_wire::generic_catalog::openai_records(
+        let records = pl_model_wire::generic_catalog::openai_records(
             &serde_json::to_vec(&json!({"models":[entry]})).unwrap(),
         )
         .unwrap();
-        pl_model_openai_wire::discovery::models(
+        pl_model_wire::discovery::models(
             records,
             &crate::config::ModelCatalogDiscovery {
                 transport: crate::model::ModelTransportProfile::responses_http(),
@@ -629,13 +640,13 @@ pub(in crate::runtime) mod chatgpt_tests {
             .build()
     }
     fn body(runner: &ModelRuntime, request: CompletionRequest) -> serde_json::Value {
-        serde_json::to_value(
+        serde_json::Value::Object(
             runner
                 .prepare_request_body(request, None, &InvocationPurpose::Completion)
                 .unwrap()
-                .0,
+                .0
+                .body,
         )
-        .unwrap()
     }
 
     #[test]
@@ -999,6 +1010,7 @@ pub(in crate::runtime) mod chatgpt_tests {
             "wire",
             runner.endpoint.clone(),
             runner.model.clone(),
+            &pl_model_openai_wire::OPENAI_WIRE_CODEC,
             None,
         )
         .unwrap();

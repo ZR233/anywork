@@ -179,7 +179,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
     );
     _openedModeId = id;
     _modeId = id;
-    _revision = _client.modeCatalog.state.revision;
+    _revision = 0;
     _savedDocument = null;
     _savedJson = '';
     _jsonApplied = true;
@@ -346,14 +346,10 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
       if (reply == null || _closed) return false;
       final snapshot = reply.definition;
       if (snapshot == null) {
-        final jsonText = _encode(document);
-        _savedDocument = document;
-        _savedJson = jsonText;
-        _revision = reply.catalog.revision;
-        _publish(document: document, jsonText: jsonText, dirty: false);
-      } else {
-        _adoptSnapshot(snapshot, resetHistory: false);
+        _publish(error: 'Saved Mode definition is missing from the reply');
+        return false;
       }
+      _adoptSnapshot(snapshot, resetHistory: false);
       return true;
     } finally {
       if (!_closed && generation == _generation) _publish(busy: false);
@@ -420,9 +416,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
       final reply = await _execute(
         'reload',
         (operationId) => _client.transport.reloadThreadModeDefinitions(
-          expectedRevision: _client.modeCatalog.state.loaded
-              ? _client.modeCatalog.state.revision
-              : _revision,
+          expectedRevision: _client.modeCatalog.state.revision,
           operationId: operationId,
         ),
       );
@@ -430,7 +424,7 @@ class ModeEditorOwner extends ReadModel<ModeEditorState> {
       if (modeId == null ||
           !reply.catalog.modes.any((mode) => mode.id == modeId)) {
         _modeId = null;
-        _revision = reply.catalog.revision;
+        _revision = 0;
         _savedDocument = null;
         _savedJson = '';
         _jsonApplied = true;
