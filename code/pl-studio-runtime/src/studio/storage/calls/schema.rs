@@ -62,7 +62,7 @@ pub(super) async fn inspect_existing(path: &Path) -> Result<()> {
     )
     .await?;
     let db = Database::connect(options).await?;
-    let result = preflight(&db)
+    let result = admit(&db)
         .await
         .map_err(|error| crate::studio::startup::migration_error("calls", "preflight", error));
     let close = db.close().await;
@@ -96,8 +96,23 @@ pub(super) async fn initialize(db: &DatabaseConnection, root_dir: &Path) -> Resu
     Ok(())
 }
 async fn preflight(db: &DatabaseConnection) -> Result<()> {
+    let version = admitted_version(db).await?;
+    crate::studio::storage::sqlite_util::preflight_sqlite(
+        db,
+        "calls database integrity check failed",
+    )
+    .await?;
+    pending_matches(db, version).await
+}
+
+async fn admit(db: &DatabaseConnection) -> Result<()> {
+    let version = admitted_version(db).await?;
+    pending_matches(db, version).await
+}
+
+async fn admitted_version(db: &DatabaseConnection) -> Result<Option<i64>> {
     let manager = SchemaManager::new(db);
-    let version = if manager.has_table("calls_meta").await? {
+    if manager.has_table("calls_meta").await? {
         let version = format_version(db).await?;
         ensure!(
             (1..=CALLS_SCHEMA_VERSION).contains(&version),
@@ -142,7 +157,7 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
                 );
             }
         }
-        Some(version)
+        Ok(Some(version))
     } else {
         ensure!(db.query_one_raw(statement("SELECT 1 FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'seaql_migrations' LIMIT 1", vec![])).await?.is_none(), "unversioned nonempty calls database; existing data preserved");
         ensure!(
@@ -154,13 +169,11 @@ async fn preflight(db: &DatabaseConnection) -> Result<()> {
             .is_empty(),
             "calls schema is missing; existing data preserved"
         );
-        None
-    };
-    crate::studio::storage::sqlite_util::preflight_sqlite(
-        db,
-        "calls database integrity check failed",
-    )
-    .await?;
+        Ok(None)
+    }
+}
+
+async fn pending_matches(db: &DatabaseConnection, version: Option<i64>) -> Result<()> {
     let pending = Migrator {
         log_dir: PathBuf::new(),
     }
