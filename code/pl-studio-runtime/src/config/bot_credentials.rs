@@ -103,6 +103,96 @@ impl BotCredentialCapability {
         self.store.persist_bot_protected(bot_id, &encoded)
     }
 
+    pub(crate) fn upsert_version(
+        &self,
+        bot_id: &str,
+        kind: BotCredentialRefKind,
+        version: BotSecretVersion,
+    ) -> Result<BotProtectedPersist, BotCredentialIoError> {
+        let mut payload = match self.load_source(bot_id, kind) {
+            Ok(payload) => payload.unwrap_or_default(),
+            Err(error) if error.kind == BotCredentialIoKind::Missing => {
+                BotProtectedPayload::default()
+            }
+            Err(error) => return Err(error),
+        };
+        payload.upsert(version)?;
+        self.persist_source(bot_id, kind, &payload)
+    }
+
+    pub(crate) fn collect_versions(
+        &self,
+        bot_id: &str,
+        current: Option<&BotCredentialRef>,
+        candidate: Option<&str>,
+        committed: bool,
+    ) -> Result<(), BotCredentialIoError> {
+        for kind in [BotCredentialRefKind::System, BotCredentialRefKind::Session] {
+            let selected = current.filter(|reference| reference.kind == kind);
+            if committed && selected.is_none() {
+                self.recycle_source(bot_id, kind)?;
+                continue;
+            }
+            let Some(mut payload) = self.load_source(bot_id, kind)? else {
+                continue;
+            };
+            let before = payload.versions.len();
+            payload.versions.retain(|version| {
+                if committed {
+                    selected.is_some_and(|reference| reference.version == version.id)
+                } else {
+                    candidate != Some(version.id.as_str())
+                }
+            });
+            if payload.versions.is_empty() {
+                self.recycle_source(bot_id, kind)?;
+            } else if payload.versions.len() != before {
+                self.persist_source(bot_id, kind, &payload)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn load_source(
+        &self,
+        bot_id: &str,
+        kind: BotCredentialRefKind,
+    ) -> Result<Option<BotProtectedPayload>, BotCredentialIoError> {
+        match kind {
+            BotCredentialRefKind::System => self.load_system_payload(bot_id),
+            BotCredentialRefKind::Session => self.load_lease_payload(bot_id),
+        }
+    }
+
+    fn persist_source(
+        &self,
+        bot_id: &str,
+        kind: BotCredentialRefKind,
+        payload: &BotProtectedPayload,
+    ) -> Result<BotProtectedPersist, BotCredentialIoError> {
+        match kind {
+            BotCredentialRefKind::System => self.persist_system(bot_id, payload),
+            BotCredentialRefKind::Session => {
+                self.persist_lease(bot_id, payload)?;
+                Ok(BotProtectedPersist::SessionOnly)
+            }
+        }
+    }
+
+    fn recycle_source(
+        &self,
+        bot_id: &str,
+        kind: BotCredentialRefKind,
+    ) -> Result<(), BotCredentialIoError> {
+        match kind {
+            BotCredentialRefKind::System => match self.recycle_system(bot_id) {
+                Err(error) if error.kind == BotCredentialIoKind::Missing => Ok(()),
+                result => result,
+            },
+            BotCredentialRefKind::Session => self.recycle_lease(bot_id),
+        }
+    }
+
     pub(crate) fn persist_lease(
         &self,
         bot_id: &str,
@@ -257,11 +347,6 @@ impl BotProtectedPayload {
         }
         self.versions.push(version);
         Ok(())
-    }
-
-    pub(crate) fn retain_referenced(&mut self, keep: &[String]) {
-        self.versions
-            .retain(|version| keep.iter().any(|id| id == &version.id));
     }
 }
 

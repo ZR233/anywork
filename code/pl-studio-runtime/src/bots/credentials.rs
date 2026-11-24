@@ -671,56 +671,16 @@ fn persist_version(
         app_id: app_id.to_string(),
         secret: secret.to_string(),
     };
-    match prefer {
-        BotCredentialRefKind::System => persist_system_candidate(credentials, bot_id, candidate),
-        BotCredentialRefKind::Session => persist_lease_candidate(credentials, bot_id, candidate),
-    }
-}
-
-fn persist_system_candidate(
-    credentials: &BotCredentialCapability,
-    bot_id: &str,
-    candidate: BotSecretVersion,
-) -> Result<crate::config::BotProtectedPersist, FeishuError> {
-    let system_payload = match credentials.load_system_payload(bot_id) {
-        Ok(payload) => payload.unwrap_or_default(),
-        Err(error) if error.kind == BotCredentialIoKind::Missing => BotProtectedPayload::default(),
-        Err(error) if error.kind == BotCredentialIoKind::Unavailable => {
-            return persist_lease_candidate(credentials, bot_id, candidate);
+    if prefer == BotCredentialRefKind::System {
+        match credentials.upsert_version(bot_id, prefer, candidate.clone()) {
+            Ok(persist) => return Ok(persist),
+            Err(error) if error.kind == BotCredentialIoKind::Unavailable => {}
+            Err(error) => return Err(map_io(error)),
         }
-        Err(error) => return Err(map_io(error)),
-    };
-    let lease_candidate = candidate.clone();
-    let mut payload = system_payload;
-    payload.upsert(candidate).map_err(map_io)?;
-    match credentials.persist_system(bot_id, &payload) {
-        Ok(persist) => Ok(persist),
-        Err(error) if error.kind == BotCredentialIoKind::Unavailable => {
-            persist_lease_candidate(credentials, bot_id, lease_candidate)
-        }
-        Err(error) => Err(map_io(error)),
     }
-}
-
-fn persist_lease_candidate(
-    credentials: &BotCredentialCapability,
-    bot_id: &str,
-    candidate: BotSecretVersion,
-) -> Result<crate::config::BotProtectedPersist, FeishuError> {
-    let mut payload = match credentials.load_lease_payload(bot_id) {
-        Ok(Some(payload)) => payload,
-        Ok(None)
-        | Err(BotCredentialIoError {
-            kind: BotCredentialIoKind::Missing,
-            ..
-        }) => BotProtectedPayload::default(),
-        Err(error) => return Err(map_io(error)),
-    };
-    payload.upsert(candidate).map_err(map_io)?;
     credentials
-        .persist_lease(bot_id, &payload)
-        .map_err(map_io)?;
-    Ok(crate::config::BotProtectedPersist::SessionOnly)
+        .upsert_version(bot_id, BotCredentialRefKind::Session, candidate)
+        .map_err(map_io)
 }
 
 fn recover_operation(
@@ -1065,18 +1025,18 @@ fn wrap_opaque(
     let persist = if prefer_system {
         match credentials.persist_system(&config.id, &payload) {
             Ok(persist) => persist,
-            Err(error) if error.kind == BotCredentialIoKind::Unavailable => {
-                persist_lease_candidate(
-                    credentials,
+            Err(error) if error.kind == BotCredentialIoKind::Unavailable => credentials
+                .upsert_version(
                     &config.id,
+                    BotCredentialRefKind::Session,
                     BotSecretVersion {
                         id: intent.version.clone(),
                         bot_id: config.id.clone(),
                         app_id: config.feishu().app_id.clone(),
                         secret: secret.to_string(),
                     },
-                )?
-            }
+                )
+                .map_err(map_io)?,
             Err(error) => return Err(map_io(error)),
         }
     } else {
@@ -1095,90 +1055,15 @@ fn finish_cleanup(
     keep: Option<&BotCredentialRef>,
     committed: bool,
 ) -> Result<(), FeishuError> {
-    gc_source(
-        credentials,
-        &journal.bot_id,
-        keep,
-        journal.candidate_version.as_deref(),
-        committed,
-        BotCredentialRefKind::System,
-    )?;
-    gc_source(
-        credentials,
-        &journal.bot_id,
-        keep,
-        journal.candidate_version.as_deref(),
-        committed,
-        BotCredentialRefKind::Session,
-    )?;
+    credentials
+        .collect_versions(
+            &journal.bot_id,
+            keep,
+            journal.candidate_version.as_deref(),
+            committed,
+        )
+        .map_err(map_io)?;
     remove_journal(dir)
-}
-
-fn gc_source(
-    credentials: &BotCredentialCapability,
-    bot_id: &str,
-    current: Option<&BotCredentialRef>,
-    candidate_version: Option<&str>,
-    committed: bool,
-    kind: BotCredentialRefKind,
-) -> Result<(), FeishuError> {
-    if committed && current.map(|item| item.kind) != Some(kind) {
-        return recycle_kind(credentials, bot_id, kind);
-    }
-    let loaded = match kind {
-        BotCredentialRefKind::System => credentials.load_system_payload(bot_id).map_err(map_io)?,
-        BotCredentialRefKind::Session => credentials.load_lease_payload(bot_id).map_err(map_io)?,
-    };
-    let Some(mut payload) = loaded else {
-        return Ok(());
-    };
-    let before = payload.clone();
-    if committed {
-        let keep = current
-            .filter(|selected| selected.kind == kind)
-            .map(|selected| vec![selected.version.clone()])
-            .unwrap_or_default();
-        payload.retain_referenced(&keep);
-    } else if let Some(candidate) = candidate_version {
-        payload.versions.retain(|version| version.id != candidate);
-    }
-    if payload.versions.is_empty() {
-        return recycle_kind(credentials, bot_id, kind);
-    }
-    if payload == before {
-        return Ok(());
-    }
-    match kind {
-        BotCredentialRefKind::System => {
-            credentials
-                .persist_system(bot_id, &payload)
-                .map_err(map_io)?;
-        }
-        BotCredentialRefKind::Session => {
-            credentials
-                .persist_lease(bot_id, &payload)
-                .map_err(map_io)?;
-        }
-    }
-    Ok(())
-}
-
-fn recycle_kind(
-    credentials: &BotCredentialCapability,
-    bot_id: &str,
-    kind: BotCredentialRefKind,
-) -> Result<(), FeishuError> {
-    match kind {
-        BotCredentialRefKind::System => {
-            if let Err(error) = credentials.recycle_system(bot_id)
-                && error.kind != BotCredentialIoKind::Missing
-            {
-                return Err(map_io(error));
-            }
-            Ok(())
-        }
-        BotCredentialRefKind::Session => credentials.recycle_lease(bot_id).map_err(map_io),
-    }
 }
 
 fn actual_config(dir: &Path) -> Result<Option<BotConfigFile>, FeishuError> {
