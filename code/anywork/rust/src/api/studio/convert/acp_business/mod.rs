@@ -319,7 +319,6 @@ pub(crate) fn close(v: p::AcpBusinessClose) -> R<BridgeAcpBusinessClose> {
         cleanup_timed_out: v.cleanup_timed_out,
         remote_close_error: v.remote_close_error.map(failure).transpose()?,
         sdk_error: v.sdk_error.map(failure).transpose()?,
-        worker_error: v.worker_error,
         driver_error: v.driver_error,
         unfinished_prompt: v.unfinished_prompt.map(Into::into),
         unfinished_controls: v.unfinished_controls,
@@ -951,7 +950,6 @@ mod tests {
             cleanup_timed_out: true,
             remote_close_error: Some(failure.clone()),
             sdk_error: None,
-            worker_error: Some("pending".into()),
             driver_error: None,
             unfinished_prompt: Some(p::AcpRunId {
                 instance: 9,

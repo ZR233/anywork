@@ -329,14 +329,10 @@ fn bridge_acp_failure_code(
             BridgeAcpAuthFailureCode::ResourceLimit
         }
         pl_studio_runtime::AcpAuthFailureCode::Cancelled => BridgeAcpAuthFailureCode::Cancelled,
-        pl_studio_runtime::AcpAuthFailureCode::StaleOperation => {
-            BridgeAcpAuthFailureCode::StaleOperation
-        }
         pl_studio_runtime::AcpAuthFailureCode::ConfigChanged => {
             BridgeAcpAuthFailureCode::ConfigChanged
         }
         pl_studio_runtime::AcpAuthFailureCode::Cleanup => BridgeAcpAuthFailureCode::Cleanup,
-        pl_studio_runtime::AcpAuthFailureCode::Internal => BridgeAcpAuthFailureCode::Internal,
     }
 }
 

@@ -372,19 +372,15 @@ extension BridgeAgentStatePatterns on BridgeAgentState {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAgentState_Idle value)?  idle,TResult Function( BridgeAgentState_Queued value)?  queued,TResult Function( BridgeAgentState_Running value)?  running,TResult Function( BridgeAgentState_WaitingTool value)?  waitingTool,TResult Function( BridgeAgentState_WaitingInteraction value)?  waitingInteraction,TResult Function( BridgeAgentState_Cancelling value)?  cancelling,TResult Function( BridgeAgentState_Closing value)?  closing,TResult Function( BridgeAgentState_Closed value)?  closed,TResult Function( BridgeAgentState_Faulted value)?  faulted,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAgentState_Idle value)?  idle,TResult Function( BridgeAgentState_Running value)?  running,TResult Function( BridgeAgentState_WaitingInteraction value)?  waitingInteraction,TResult Function( BridgeAgentState_Closing value)?  closing,TResult Function( BridgeAgentState_Closed value)?  closed,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle() when idle != null:
-return idle(_that);case BridgeAgentState_Queued() when queued != null:
-return queued(_that);case BridgeAgentState_Running() when running != null:
-return running(_that);case BridgeAgentState_WaitingTool() when waitingTool != null:
-return waitingTool(_that);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
-return waitingInteraction(_that);case BridgeAgentState_Cancelling() when cancelling != null:
-return cancelling(_that);case BridgeAgentState_Closing() when closing != null:
+return idle(_that);case BridgeAgentState_Running() when running != null:
+return running(_that);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
+return waitingInteraction(_that);case BridgeAgentState_Closing() when closing != null:
 return closing(_that);case BridgeAgentState_Closed() when closed != null:
-return closed(_that);case BridgeAgentState_Faulted() when faulted != null:
-return faulted(_that);case _:
+return closed(_that);case _:
   return orElse();
 
 }
@@ -402,19 +398,15 @@ return faulted(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAgentState_Idle value)  idle,required TResult Function( BridgeAgentState_Queued value)  queued,required TResult Function( BridgeAgentState_Running value)  running,required TResult Function( BridgeAgentState_WaitingTool value)  waitingTool,required TResult Function( BridgeAgentState_WaitingInteraction value)  waitingInteraction,required TResult Function( BridgeAgentState_Cancelling value)  cancelling,required TResult Function( BridgeAgentState_Closing value)  closing,required TResult Function( BridgeAgentState_Closed value)  closed,required TResult Function( BridgeAgentState_Faulted value)  faulted,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAgentState_Idle value)  idle,required TResult Function( BridgeAgentState_Running value)  running,required TResult Function( BridgeAgentState_WaitingInteraction value)  waitingInteraction,required TResult Function( BridgeAgentState_Closing value)  closing,required TResult Function( BridgeAgentState_Closed value)  closed,}){
 final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle():
-return idle(_that);case BridgeAgentState_Queued():
-return queued(_that);case BridgeAgentState_Running():
-return running(_that);case BridgeAgentState_WaitingTool():
-return waitingTool(_that);case BridgeAgentState_WaitingInteraction():
-return waitingInteraction(_that);case BridgeAgentState_Cancelling():
-return cancelling(_that);case BridgeAgentState_Closing():
+return idle(_that);case BridgeAgentState_Running():
+return running(_that);case BridgeAgentState_WaitingInteraction():
+return waitingInteraction(_that);case BridgeAgentState_Closing():
 return closing(_that);case BridgeAgentState_Closed():
-return closed(_that);case BridgeAgentState_Faulted():
-return faulted(_that);}
+return closed(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -428,19 +420,15 @@ return faulted(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAgentState_Idle value)?  idle,TResult? Function( BridgeAgentState_Queued value)?  queued,TResult? Function( BridgeAgentState_Running value)?  running,TResult? Function( BridgeAgentState_WaitingTool value)?  waitingTool,TResult? Function( BridgeAgentState_WaitingInteraction value)?  waitingInteraction,TResult? Function( BridgeAgentState_Cancelling value)?  cancelling,TResult? Function( BridgeAgentState_Closing value)?  closing,TResult? Function( BridgeAgentState_Closed value)?  closed,TResult? Function( BridgeAgentState_Faulted value)?  faulted,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAgentState_Idle value)?  idle,TResult? Function( BridgeAgentState_Running value)?  running,TResult? Function( BridgeAgentState_WaitingInteraction value)?  waitingInteraction,TResult? Function( BridgeAgentState_Closing value)?  closing,TResult? Function( BridgeAgentState_Closed value)?  closed,}){
 final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle() when idle != null:
-return idle(_that);case BridgeAgentState_Queued() when queued != null:
-return queued(_that);case BridgeAgentState_Running() when running != null:
-return running(_that);case BridgeAgentState_WaitingTool() when waitingTool != null:
-return waitingTool(_that);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
-return waitingInteraction(_that);case BridgeAgentState_Cancelling() when cancelling != null:
-return cancelling(_that);case BridgeAgentState_Closing() when closing != null:
+return idle(_that);case BridgeAgentState_Running() when running != null:
+return running(_that);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
+return waitingInteraction(_that);case BridgeAgentState_Closing() when closing != null:
 return closing(_that);case BridgeAgentState_Closed() when closed != null:
-return closed(_that);case BridgeAgentState_Faulted() when faulted != null:
-return faulted(_that);case _:
+return closed(_that);case _:
   return null;
 
 }
@@ -457,18 +445,14 @@ return faulted(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeIdleAgent field0)?  idle,TResult Function( BridgeQueuedAgent field0)?  queued,TResult Function( BridgeRunningAgent field0)?  running,TResult Function( BridgeWaitingToolAgent field0)?  waitingTool,TResult Function( BridgeWaitingInteractionAgent field0)?  waitingInteraction,TResult Function( BridgeCancellingAgent field0)?  cancelling,TResult Function( BridgeClosingAgent field0)?  closing,TResult Function( BridgeClosedAgent field0)?  closed,TResult Function( BridgeFaultedAgent field0)?  faulted,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeIdleAgent field0)?  idle,TResult Function( BridgeRunningAgent field0)?  running,TResult Function( BridgeWaitingInteractionAgent field0)?  waitingInteraction,TResult Function( BridgeClosingAgent field0)?  closing,TResult Function( BridgeClosedAgent field0)?  closed,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle() when idle != null:
-return idle(_that.field0);case BridgeAgentState_Queued() when queued != null:
-return queued(_that.field0);case BridgeAgentState_Running() when running != null:
-return running(_that.field0);case BridgeAgentState_WaitingTool() when waitingTool != null:
-return waitingTool(_that.field0);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
-return waitingInteraction(_that.field0);case BridgeAgentState_Cancelling() when cancelling != null:
-return cancelling(_that.field0);case BridgeAgentState_Closing() when closing != null:
+return idle(_that.field0);case BridgeAgentState_Running() when running != null:
+return running(_that.field0);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
+return waitingInteraction(_that.field0);case BridgeAgentState_Closing() when closing != null:
 return closing(_that.field0);case BridgeAgentState_Closed() when closed != null:
-return closed(_that.field0);case BridgeAgentState_Faulted() when faulted != null:
-return faulted(_that.field0);case _:
+return closed(_that.field0);case _:
   return orElse();
 
 }
@@ -486,18 +470,14 @@ return faulted(_that.field0);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeIdleAgent field0)  idle,required TResult Function( BridgeQueuedAgent field0)  queued,required TResult Function( BridgeRunningAgent field0)  running,required TResult Function( BridgeWaitingToolAgent field0)  waitingTool,required TResult Function( BridgeWaitingInteractionAgent field0)  waitingInteraction,required TResult Function( BridgeCancellingAgent field0)  cancelling,required TResult Function( BridgeClosingAgent field0)  closing,required TResult Function( BridgeClosedAgent field0)  closed,required TResult Function( BridgeFaultedAgent field0)  faulted,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeIdleAgent field0)  idle,required TResult Function( BridgeRunningAgent field0)  running,required TResult Function( BridgeWaitingInteractionAgent field0)  waitingInteraction,required TResult Function( BridgeClosingAgent field0)  closing,required TResult Function( BridgeClosedAgent field0)  closed,}) {final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle():
-return idle(_that.field0);case BridgeAgentState_Queued():
-return queued(_that.field0);case BridgeAgentState_Running():
-return running(_that.field0);case BridgeAgentState_WaitingTool():
-return waitingTool(_that.field0);case BridgeAgentState_WaitingInteraction():
-return waitingInteraction(_that.field0);case BridgeAgentState_Cancelling():
-return cancelling(_that.field0);case BridgeAgentState_Closing():
+return idle(_that.field0);case BridgeAgentState_Running():
+return running(_that.field0);case BridgeAgentState_WaitingInteraction():
+return waitingInteraction(_that.field0);case BridgeAgentState_Closing():
 return closing(_that.field0);case BridgeAgentState_Closed():
-return closed(_that.field0);case BridgeAgentState_Faulted():
-return faulted(_that.field0);}
+return closed(_that.field0);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -511,18 +491,14 @@ return faulted(_that.field0);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeIdleAgent field0)?  idle,TResult? Function( BridgeQueuedAgent field0)?  queued,TResult? Function( BridgeRunningAgent field0)?  running,TResult? Function( BridgeWaitingToolAgent field0)?  waitingTool,TResult? Function( BridgeWaitingInteractionAgent field0)?  waitingInteraction,TResult? Function( BridgeCancellingAgent field0)?  cancelling,TResult? Function( BridgeClosingAgent field0)?  closing,TResult? Function( BridgeClosedAgent field0)?  closed,TResult? Function( BridgeFaultedAgent field0)?  faulted,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeIdleAgent field0)?  idle,TResult? Function( BridgeRunningAgent field0)?  running,TResult? Function( BridgeWaitingInteractionAgent field0)?  waitingInteraction,TResult? Function( BridgeClosingAgent field0)?  closing,TResult? Function( BridgeClosedAgent field0)?  closed,}) {final _that = this;
 switch (_that) {
 case BridgeAgentState_Idle() when idle != null:
-return idle(_that.field0);case BridgeAgentState_Queued() when queued != null:
-return queued(_that.field0);case BridgeAgentState_Running() when running != null:
-return running(_that.field0);case BridgeAgentState_WaitingTool() when waitingTool != null:
-return waitingTool(_that.field0);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
-return waitingInteraction(_that.field0);case BridgeAgentState_Cancelling() when cancelling != null:
-return cancelling(_that.field0);case BridgeAgentState_Closing() when closing != null:
+return idle(_that.field0);case BridgeAgentState_Running() when running != null:
+return running(_that.field0);case BridgeAgentState_WaitingInteraction() when waitingInteraction != null:
+return waitingInteraction(_that.field0);case BridgeAgentState_Closing() when closing != null:
 return closing(_that.field0);case BridgeAgentState_Closed() when closed != null:
-return closed(_that.field0);case BridgeAgentState_Faulted() when faulted != null:
-return faulted(_that.field0);case _:
+return closed(_that.field0);case _:
   return null;
 
 }
@@ -601,74 +577,6 @@ as BridgeIdleAgent,
 /// @nodoc
 
 
-class BridgeAgentState_Queued extends BridgeAgentState {
-  const BridgeAgentState_Queued(this.field0): super._();
-
-
-@override final  BridgeQueuedAgent field0;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeAgentState_QueuedCopyWith<BridgeAgentState_Queued> get copyWith => _$BridgeAgentState_QueuedCopyWithImpl<BridgeAgentState_Queued>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentState_Queued&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeAgentState.queued(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeAgentState_QueuedCopyWith<$Res> implements $BridgeAgentStateCopyWith<$Res> {
-  factory $BridgeAgentState_QueuedCopyWith(BridgeAgentState_Queued value, $Res Function(BridgeAgentState_Queued) _then) = _$BridgeAgentState_QueuedCopyWithImpl;
-@useResult
-$Res call({
- BridgeQueuedAgent field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeAgentState_QueuedCopyWithImpl<$Res>
-    implements $BridgeAgentState_QueuedCopyWith<$Res> {
-  _$BridgeAgentState_QueuedCopyWithImpl(this._self, this._then);
-
-  final BridgeAgentState_Queued _self;
-  final $Res Function(BridgeAgentState_Queued) _then;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeAgentState_Queued(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeQueuedAgent,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
 class BridgeAgentState_Running extends BridgeAgentState {
   const BridgeAgentState_Running(this.field0): super._();
 
@@ -737,74 +645,6 @@ as BridgeRunningAgent,
 /// @nodoc
 
 
-class BridgeAgentState_WaitingTool extends BridgeAgentState {
-  const BridgeAgentState_WaitingTool(this.field0): super._();
-
-
-@override final  BridgeWaitingToolAgent field0;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeAgentState_WaitingToolCopyWith<BridgeAgentState_WaitingTool> get copyWith => _$BridgeAgentState_WaitingToolCopyWithImpl<BridgeAgentState_WaitingTool>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentState_WaitingTool&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeAgentState.waitingTool(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeAgentState_WaitingToolCopyWith<$Res> implements $BridgeAgentStateCopyWith<$Res> {
-  factory $BridgeAgentState_WaitingToolCopyWith(BridgeAgentState_WaitingTool value, $Res Function(BridgeAgentState_WaitingTool) _then) = _$BridgeAgentState_WaitingToolCopyWithImpl;
-@useResult
-$Res call({
- BridgeWaitingToolAgent field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeAgentState_WaitingToolCopyWithImpl<$Res>
-    implements $BridgeAgentState_WaitingToolCopyWith<$Res> {
-  _$BridgeAgentState_WaitingToolCopyWithImpl(this._self, this._then);
-
-  final BridgeAgentState_WaitingTool _self;
-  final $Res Function(BridgeAgentState_WaitingTool) _then;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeAgentState_WaitingTool(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeWaitingToolAgent,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
 class BridgeAgentState_WaitingInteraction extends BridgeAgentState {
   const BridgeAgentState_WaitingInteraction(this.field0): super._();
 
@@ -864,74 +704,6 @@ class _$BridgeAgentState_WaitingInteractionCopyWithImpl<$Res>
   return _then(BridgeAgentState_WaitingInteraction(
 null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
 as BridgeWaitingInteractionAgent,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeAgentState_Cancelling extends BridgeAgentState {
-  const BridgeAgentState_Cancelling(this.field0): super._();
-
-
-@override final  BridgeCancellingAgent field0;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeAgentState_CancellingCopyWith<BridgeAgentState_Cancelling> get copyWith => _$BridgeAgentState_CancellingCopyWithImpl<BridgeAgentState_Cancelling>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentState_Cancelling&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeAgentState.cancelling(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeAgentState_CancellingCopyWith<$Res> implements $BridgeAgentStateCopyWith<$Res> {
-  factory $BridgeAgentState_CancellingCopyWith(BridgeAgentState_Cancelling value, $Res Function(BridgeAgentState_Cancelling) _then) = _$BridgeAgentState_CancellingCopyWithImpl;
-@useResult
-$Res call({
- BridgeCancellingAgent field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeAgentState_CancellingCopyWithImpl<$Res>
-    implements $BridgeAgentState_CancellingCopyWith<$Res> {
-  _$BridgeAgentState_CancellingCopyWithImpl(this._self, this._then);
-
-  final BridgeAgentState_Cancelling _self;
-  final $Res Function(BridgeAgentState_Cancelling) _then;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeAgentState_Cancelling(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeCancellingAgent,
   ));
 }
 
@@ -1068,74 +840,6 @@ class _$BridgeAgentState_ClosedCopyWithImpl<$Res>
   return _then(BridgeAgentState_Closed(
 null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
 as BridgeClosedAgent,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class BridgeAgentState_Faulted extends BridgeAgentState {
-  const BridgeAgentState_Faulted(this.field0): super._();
-
-
-@override final  BridgeFaultedAgent field0;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$BridgeAgentState_FaultedCopyWith<BridgeAgentState_Faulted> get copyWith => _$BridgeAgentState_FaultedCopyWithImpl<BridgeAgentState_Faulted>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentState_Faulted&&(identical(other.field0, field0) || other.field0 == field0));
-}
-
-
-@override
-int get hashCode {
-    return Object.hash(runtimeType,field0);
-}
-
-@override
-String toString() {
-    return 'BridgeAgentState.faulted(field0: $field0)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $BridgeAgentState_FaultedCopyWith<$Res> implements $BridgeAgentStateCopyWith<$Res> {
-  factory $BridgeAgentState_FaultedCopyWith(BridgeAgentState_Faulted value, $Res Function(BridgeAgentState_Faulted) _then) = _$BridgeAgentState_FaultedCopyWithImpl;
-@useResult
-$Res call({
- BridgeFaultedAgent field0
-});
-
-
-
-
-}
-/// @nodoc
-class _$BridgeAgentState_FaultedCopyWithImpl<$Res>
-    implements $BridgeAgentState_FaultedCopyWith<$Res> {
-  _$BridgeAgentState_FaultedCopyWithImpl(this._self, this._then);
-
-  final BridgeAgentState_Faulted _self;
-  final $Res Function(BridgeAgentState_Faulted) _then;
-
-/// Create a copy of BridgeAgentState
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? field0 = null,}) {
-  return _then(BridgeAgentState_Faulted(
-null == field0 ? _self.field0 : field0 // ignore: cast_nullable_to_non_nullable
-as BridgeFaultedAgent,
   ));
 }
 

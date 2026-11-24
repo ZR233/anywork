@@ -389,7 +389,6 @@ Future<void> runAgyLoadOnly({
               .map((v) => v.threadId)
               .toList(),
           'sdkErrorPresent': close.sdkError != null,
-          'workerErrorPresent': close.workerError != null,
           'driverErrorPresent': close.driverError != null,
           'remoteCloseErrorPresent': close.remoteCloseError != null,
         };
@@ -398,7 +397,6 @@ Future<void> runAgyLoadOnly({
         expect(close.unfinishedPrompt, isNull);
         expect(close.ownerFailures, isEmpty);
         expect(close.sdkError, isNull);
-        expect(close.workerError, isNull);
         expect(close.driverError, isNull);
       });
     } else {

@@ -27,7 +27,6 @@ const _scheduledWithExecution = 'thread-child-scheduled-exec';
 const _scheduledIdle = 'thread-child-scheduled-idle';
 const _cancellingChild = 'thread-child-cancelling';
 const _preparingChild = 'thread-child-preparing';
-const _faultedChild = 'thread-child-faulted';
 const _closingChild = 'thread-child-closing';
 const _execution = AgentExecutionView(
   id: 'child-execution',
@@ -520,8 +519,12 @@ void main() {
       _agent(
         threadId: _cancellingChild,
         task: 'Settling member',
-        state: const CancellingStudioAgent('child-turn'),
-        execution: _execution,
+        state: const RunningStudioAgent('child-turn'),
+        execution: const AgentExecutionView(
+          id: 'child-execution-stopping',
+          phase: AgentExecutionPhase.stopping,
+          turnId: 'child-turn',
+        ),
         canStop: true,
         awaitingScheduling: true,
       ),
@@ -533,23 +536,9 @@ void main() {
         awaitingScheduling: true,
       ),
       _agent(
-        threadId: _faultedChild,
-        task: 'Faulted member',
-        state: const FaultedStudioAgent(
-          failure: AgentStateError(
-            code: 'failed',
-            message: 'failed',
-            retryable: false,
-          ),
-          diagnosticTurnId: 'child-turn',
-        ),
-        execution: _execution,
-        canStop: true,
-      ),
-      _agent(
         threadId: _closingChild,
         task: 'Closing member',
-        state: const ClosingStudioAgent(turnId: 'child-turn'),
+        state: const ClosingStudioAgent(),
         execution: const AgentExecutionView(
           id: 'child-execution-closing',
           phase: AgentExecutionPhase.stopping,
@@ -621,19 +610,11 @@ void main() {
           .data,
       'Waiting',
     );
-    // 故障与正在关闭成员没有当前工作：遗留执行与停止资格都不产生任何运行控制。
-    for (final threadId in [_faultedChild, _closingChild]) {
-      expect(
-        find.byKey(StudioDriverKeys.agentStop(threadId)),
-        findsNothing,
-        reason: '终态成员没有可点停止：$threadId',
-      );
-      expect(
-        find.byKey(StudioDriverKeys.agentStopNote(threadId)),
-        findsNothing,
-        reason: '终态成员不显示正在停止或等待调度说明：$threadId',
-      );
-    }
+    expect(find.byKey(StudioDriverKeys.agentStop(_closingChild)), findsNothing);
+    expect(
+      find.byKey(StudioDriverKeys.agentStopNote(_closingChild)),
+      findsNothing,
+    );
     await _close(tester, graph);
   });
 

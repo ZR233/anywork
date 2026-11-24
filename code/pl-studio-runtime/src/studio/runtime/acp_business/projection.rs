@@ -280,7 +280,6 @@ pub(super) fn close(outcome: super::AcpCloseOutcome) -> AcpBusinessClose {
             .as_ref()
             .and_then(|exit| exit.sdk_error.clone())
             .map(|error| failure(sdk::Error::Rpc(error))),
-        worker_error: outcome.worker_error,
         driver_error: outcome.driver_error,
         unfinished_prompt: exit
             .as_ref()

@@ -10,7 +10,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'runtime.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeActiveTurn {
   final String threadId;
@@ -146,39 +146,15 @@ sealed class BridgeAgentState with _$BridgeAgentState {
 
   const factory BridgeAgentState.idle(BridgeIdleAgent field0) =
       BridgeAgentState_Idle;
-  const factory BridgeAgentState.queued(BridgeQueuedAgent field0) =
-      BridgeAgentState_Queued;
   const factory BridgeAgentState.running(BridgeRunningAgent field0) =
       BridgeAgentState_Running;
-  const factory BridgeAgentState.waitingTool(BridgeWaitingToolAgent field0) =
-      BridgeAgentState_WaitingTool;
   const factory BridgeAgentState.waitingInteraction(
     BridgeWaitingInteractionAgent field0,
   ) = BridgeAgentState_WaitingInteraction;
-  const factory BridgeAgentState.cancelling(BridgeCancellingAgent field0) =
-      BridgeAgentState_Cancelling;
   const factory BridgeAgentState.closing(BridgeClosingAgent field0) =
       BridgeAgentState_Closing;
   const factory BridgeAgentState.closed(BridgeClosedAgent field0) =
       BridgeAgentState_Closed;
-  const factory BridgeAgentState.faulted(BridgeFaultedAgent field0) =
-      BridgeAgentState_Faulted;
-}
-
-class BridgeCancellingAgent {
-  final String turnId;
-
-  const BridgeCancellingAgent({required this.turnId});
-
-  @override
-  int get hashCode => turnId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeCancellingAgent &&
-          runtimeType == other.runtimeType &&
-          turnId == other.turnId;
 }
 
 class BridgeClosedAgent {
@@ -197,24 +173,18 @@ class BridgeClosedAgent {
 }
 
 class BridgeClosingAgent {
-  final String? turnId;
-  final BridgeStateError? error;
-
-  const BridgeClosingAgent({this.turnId, this.error});
+  const BridgeClosingAgent();
 
   static Future<BridgeClosingAgent> default_() => RustLib.instance.api
       .crateApiStudioTypesRuntimeBridgeClosingAgentDefault();
 
   @override
-  int get hashCode => turnId.hashCode ^ error.hashCode;
+  int get hashCode => 0;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeClosingAgent &&
-          runtimeType == other.runtimeType &&
-          turnId == other.turnId &&
-          error == other.error;
+      other is BridgeClosingAgent && runtimeType == other.runtimeType;
 }
 
 class BridgeDegradedResource {
@@ -299,24 +269,6 @@ class BridgeFailedRuntimeState {
           runtimeType == other.runtimeType &&
           failedAt == other.failedAt &&
           error == other.error;
-}
-
-class BridgeFaultedAgent {
-  final BridgeStateError error;
-  final String? diagnosticTurnId;
-
-  const BridgeFaultedAgent({required this.error, this.diagnosticTurnId});
-
-  @override
-  int get hashCode => error.hashCode ^ diagnosticTurnId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeFaultedAgent &&
-          runtimeType == other.runtimeType &&
-          error == other.error &&
-          diagnosticTurnId == other.diagnosticTurnId;
 }
 
 class BridgeIdleAgent {
@@ -463,22 +415,6 @@ sealed class BridgeLspServerState with _$BridgeLspServerState {
   }) = BridgeLspServerState_Unavailable;
   const factory BridgeLspServerState.disabled({required String message}) =
       BridgeLspServerState_Disabled;
-}
-
-class BridgeQueuedAgent {
-  final String turnId;
-
-  const BridgeQueuedAgent({required this.turnId});
-
-  @override
-  int get hashCode => turnId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeQueuedAgent &&
-          runtimeType == other.runtimeType &&
-          turnId == other.turnId;
 }
 
 class BridgeReadyResource {
@@ -820,22 +756,6 @@ class BridgeWaitingInteractionAgent {
           runtimeType == other.runtimeType &&
           turnId == other.turnId &&
           interactionId == other.interactionId;
-}
-
-class BridgeWaitingToolAgent {
-  final String turnId;
-
-  const BridgeWaitingToolAgent({required this.turnId});
-
-  @override
-  int get hashCode => turnId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeWaitingToolAgent &&
-          runtimeType == other.runtimeType &&
-          turnId == other.turnId;
 }
 
 enum BridgeWorktreeInspection {

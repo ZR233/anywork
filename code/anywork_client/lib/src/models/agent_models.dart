@@ -52,39 +52,16 @@ sealed class StudioAgentState {
   const StudioAgentState();
 
   bool get isActive => switch (this) {
-    QueuedStudioAgent() ||
-    RunningStudioAgent() ||
-    WaitingToolStudioAgent() ||
-    WaitingInteractionStudioAgent() ||
-    CancellingStudioAgent() => true,
-    IdleStudioAgent() ||
-    ClosingStudioAgent() ||
-    ClosedStudioAgent() ||
-    FaultedStudioAgent() => false,
+    RunningStudioAgent() || WaitingInteractionStudioAgent() => true,
+    IdleStudioAgent() || ClosingStudioAgent() || ClosedStudioAgent() => false,
   };
 
   String get label => switch (this) {
     IdleStudioAgent() => 'idle',
-    QueuedStudioAgent() => 'queued',
     RunningStudioAgent() => 'running',
-    WaitingToolStudioAgent() => 'waitingTool',
     WaitingInteractionStudioAgent() => 'waitingInteraction',
-    CancellingStudioAgent() => 'cancelling',
     ClosingStudioAgent() => 'closing',
     ClosedStudioAgent() => 'closed',
-    FaultedStudioAgent() => 'faulted',
-  };
-
-  String? get errorMessage => switch (this) {
-    ClosingStudioAgent(:final failure) => failure?.message,
-    FaultedStudioAgent(:final failure) => failure.message,
-    IdleStudioAgent() ||
-    QueuedStudioAgent() ||
-    RunningStudioAgent() ||
-    WaitingToolStudioAgent() ||
-    WaitingInteractionStudioAgent() ||
-    CancellingStudioAgent() ||
-    ClosedStudioAgent() => null,
   };
 
   @override
@@ -98,18 +75,6 @@ final class IdleStudioAgent extends StudioAgentState {
   const IdleStudioAgent();
 }
 
-final class QueuedStudioAgent extends StudioAgentState {
-  const QueuedStudioAgent(this.turnId);
-  final String turnId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is QueuedStudioAgent && turnId == other.turnId;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, turnId);
-}
-
 final class RunningStudioAgent extends StudioAgentState {
   const RunningStudioAgent(this.turnId);
   final String turnId;
@@ -117,18 +82,6 @@ final class RunningStudioAgent extends StudioAgentState {
   @override
   bool operator ==(Object other) =>
       other is RunningStudioAgent && turnId == other.turnId;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, turnId);
-}
-
-final class WaitingToolStudioAgent extends StudioAgentState {
-  const WaitingToolStudioAgent(this.turnId);
-  final String turnId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is WaitingToolStudioAgent && turnId == other.turnId;
 
   @override
   int get hashCode => Object.hash(runtimeType, turnId);
@@ -149,72 +102,12 @@ final class WaitingInteractionStudioAgent extends StudioAgentState {
   int get hashCode => Object.hash(runtimeType, turnId, interactionId);
 }
 
-final class CancellingStudioAgent extends StudioAgentState {
-  const CancellingStudioAgent(this.turnId);
-  final String turnId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is CancellingStudioAgent && turnId == other.turnId;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, turnId);
-}
-
 final class ClosingStudioAgent extends StudioAgentState {
-  const ClosingStudioAgent({this.turnId, this.failure});
-  final String? turnId;
-  final AgentStateError? failure;
-
-  @override
-  bool operator ==(Object other) =>
-      other is ClosingStudioAgent &&
-      turnId == other.turnId &&
-      failure == other.failure;
-  @override
-  int get hashCode => Object.hash(runtimeType, turnId, failure);
+  const ClosingStudioAgent();
 }
 
 final class ClosedStudioAgent extends StudioAgentState {
   const ClosedStudioAgent();
-}
-
-final class FaultedStudioAgent extends StudioAgentState {
-  const FaultedStudioAgent({required this.failure, this.diagnosticTurnId});
-
-  final AgentStateError failure;
-  final String? diagnosticTurnId;
-
-  @override
-  bool operator ==(Object other) =>
-      other is FaultedStudioAgent &&
-      failure == other.failure &&
-      diagnosticTurnId == other.diagnosticTurnId;
-
-  @override
-  int get hashCode => Object.hash(runtimeType, failure, diagnosticTurnId);
-}
-
-class AgentStateError {
-  const AgentStateError({
-    required this.code,
-    required this.message,
-    required this.retryable,
-  });
-
-  final String code;
-  final String message;
-  final bool retryable;
-
-  @override
-  bool operator ==(Object other) =>
-      other is AgentStateError &&
-      code == other.code &&
-      message == other.message &&
-      retryable == other.retryable;
-
-  @override
-  int get hashCode => Object.hash(code, message, retryable);
 }
 
 /// 目录运行事实按后端区分；ACP 未观察到的状态不映射为 Native 空闲。

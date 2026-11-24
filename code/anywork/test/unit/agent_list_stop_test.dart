@@ -99,15 +99,6 @@ void main() {
     expect(stopping.action, AgentListStopAction.stopping);
     expect(stopping.canStop, isFalse);
 
-    final cancelling = AgentListStopState.resolve(
-      agent: _agent(
-        execution: _execution,
-        state: const CancellingStudioAgent('turn-1'),
-      ),
-    );
-    expect(cancelling.action, AgentListStopAction.stopping);
-    expect(cancelling.canStop, isFalse);
-
     final accepted = AgentListStopState.resolve(
       agent: _agent(execution: _execution, canStop: true),
       acceptedExecutionId: 'exec-child-1',
@@ -134,13 +125,6 @@ void main() {
       IdleStudioAgent(),
       ClosingStudioAgent(),
       ClosedStudioAgent(),
-      FaultedStudioAgent(
-        failure: AgentStateError(
-          code: 'failed',
-          message: 'failed',
-          retryable: false,
-        ),
-      ),
     ]) {
       final resolved = AgentListStopState.resolve(agent: _agent(state: state));
       expect(resolved.action, AgentListStopAction.none, reason: state.label);
@@ -166,13 +150,6 @@ void main() {
   test('没有当前执行的终态成员不产生任何控制', () {
     for (final state in const <StudioAgentState>[
       IdleStudioAgent(),
-      FaultedStudioAgent(
-        failure: AgentStateError(
-          code: 'failed',
-          message: 'failed',
-          retryable: false,
-        ),
-      ),
       ClosingStudioAgent(),
       ClosedStudioAgent(),
     ]) {
@@ -184,43 +161,23 @@ void main() {
     }
   });
 
-  test('正在关闭与故障成员即使遗留执行与停止资格也不产生控制', () {
-    for (final state in const <StudioAgentState>[
-      ClosingStudioAgent(turnId: 'turn-1'),
-      FaultedStudioAgent(
-        failure: AgentStateError(
-          code: 'failed',
-          message: 'failed',
-          retryable: false,
-        ),
-        diagnosticTurnId: 'turn-1',
-      ),
+  test('正在关闭的成员即使遗留执行与停止资格也不产生控制', () {
+    for (final phase in const [
+      AgentExecutionPhase.preparing,
+      AgentExecutionPhase.running,
+      AgentExecutionPhase.stopping,
     ]) {
-      for (final phase in const [
-        AgentExecutionPhase.preparing,
-        AgentExecutionPhase.running,
-        AgentExecutionPhase.stopping,
-      ]) {
-        final resolved = AgentListStopState.resolve(
-          agent: _agent(
-            state: state,
-            execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
-            canStop: true,
-          ),
-          acceptedExecutionId: 'exec-child-1',
-        );
-        expect(
-          resolved.action,
-          AgentListStopAction.none,
-          reason: '${state.label} / $phase',
-        );
-        expect(resolved.canStop, isFalse, reason: '${state.label} / $phase');
-        expect(
-          resolved.showsControl,
-          isFalse,
-          reason: '${state.label} / $phase',
-        );
-      }
+      final resolved = AgentListStopState.resolve(
+        agent: _agent(
+          state: const ClosingStudioAgent(),
+          execution: AgentExecutionView(id: 'exec-child-1', phase: phase),
+          canStop: true,
+        ),
+        acceptedExecutionId: 'exec-child-1',
+      );
+      expect(resolved.action, AgentListStopAction.none, reason: '$phase');
+      expect(resolved.canStop, isFalse, reason: '$phase');
+      expect(resolved.showsControl, isFalse, reason: '$phase');
     }
   });
 
@@ -313,12 +270,6 @@ void main() {
   test('清理中即使同时带等待调度事实也显示正在停止', () {
     for (final agent in [
       _agent(
-        state: const CancellingStudioAgent('turn-1'),
-        execution: _execution,
-        canStop: true,
-        awaitingScheduling: true,
-      ),
-      _agent(
         state: const RunningStudioAgent('turn-1'),
         execution: const AgentExecutionView(
           id: 'exec-child-1',
@@ -339,8 +290,7 @@ void main() {
       final resolved = AgentListStopState.resolve(agent: agent);
       expect(
         resolved.action,
-        activity.execution!.phase.isStopping ||
-                activity.state is CancellingStudioAgent
+        activity.execution!.phase.isStopping
             ? AgentListStopAction.stopping
             : AgentListStopAction.stop,
       );
@@ -364,9 +314,7 @@ void main() {
 
   test('可执行中但无停止资格时不提供停止', () {
     for (final state in const <StudioAgentState>[
-      QueuedStudioAgent('turn-1'),
       RunningStudioAgent('turn-1'),
-      WaitingToolStudioAgent('turn-1'),
       WaitingInteractionStudioAgent('turn-1', 'interaction-1'),
     ]) {
       final resolved = AgentListStopState.resolve(

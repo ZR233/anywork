@@ -71,16 +71,9 @@ List<StudioAgentView> _layoutAgents({bool selectedWaiting = false}) => [
     awaitingScheduling: true,
   ),
   _layoutAgent(
-    threadId: 'thread-faulted',
-    task: 'Faulted member keeps the diagnostic discoverable without changing row identity',
-    state: const FaultedStudioAgent(
-      failure: AgentStateError(
-        code: 'failed',
-        message: 'The synthetic member failed',
-        retryable: false,
-      ),
-      diagnosticTurnId: 'faulted-turn',
-    ),
+    threadId: 'thread-closing',
+    task: 'Closing member keeps its row identity during cleanup',
+    state: const ClosingStudioAgent(),
   ),
   _layoutAgent(
     threadId: 'thread-running',
@@ -413,13 +406,6 @@ void main() {
       final transitions =
           <({String name, String label, List<StudioAgentView> agents})>[
             (
-              name: 'approval',
-              label: 'Approval',
-              agents: _agentsWithSelectedState(
-                state: const WaitingToolStudioAgent('selected-turn'),
-              ),
-            ),
-            (
               name: 'input',
               label: 'Input',
               agents: _agentsWithSelectedState(
@@ -433,7 +419,7 @@ void main() {
               name: 'cancelling',
               label: 'Stopping',
               agents: _agentsWithSelectedState(
-                state: const CancellingStudioAgent('selected-turn'),
+                state: const RunningStudioAgent('selected-turn'),
                 execution: const AgentExecutionView(
                   id: 'selected-execution',
                   phase: AgentExecutionPhase.stopping,
@@ -456,17 +442,10 @@ void main() {
               agents: _agentsWithSelectedState(state: const IdleStudioAgent()),
             ),
             (
-              name: 'faulted',
-              label: 'Failed',
+              name: 'closing',
+              label: 'Closing',
               agents: _agentsWithSelectedState(
-                state: const FaultedStudioAgent(
-                  failure: AgentStateError(
-                    code: 'selected-failed',
-                    message: 'The selected synthetic member failed',
-                    retryable: false,
-                  ),
-                  diagnosticTurnId: 'selected-turn',
-                ),
+                state: const ClosingStudioAgent(),
               ),
             ),
             (

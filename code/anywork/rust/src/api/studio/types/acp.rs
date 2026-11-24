@@ -113,10 +113,8 @@ pub enum BridgeAcpAuthFailureCode {
     Timeout,
     ResourceLimit,
     Cancelled,
-    StaleOperation,
     ConfigChanged,
     Cleanup,
-    Internal,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

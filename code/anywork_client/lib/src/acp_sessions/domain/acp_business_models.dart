@@ -573,7 +573,6 @@ final class AcpBusinessCloseView {
     required this.unfinishedControls,
     this.remoteCloseError,
     this.sdkError,
-    this.workerError,
     this.driverError,
     this.unfinishedPrompt,
     this.lastCompleted,
@@ -584,7 +583,6 @@ final class AcpBusinessCloseView {
   final bool cleanupTimedOut;
   final AcpBusinessFailureView? remoteCloseError;
   final AcpBusinessFailureView? sdkError;
-  final String? workerError;
   final String? driverError;
   final AcpRunIdView? unfinishedPrompt;
   final bool unfinishedControls;

@@ -916,7 +916,6 @@ mod mixed_tests {
             parent_close.local_complete,
             "ACP root cleanup retained local resources: {parent_close:?}"
         );
-        assert!(parent_close.worker_error.is_none(), "{parent_close:?}");
         assert!(parent_close.driver_error.is_none(), "{parent_close:?}");
         assert!(owner.close_session().await.is_empty());
         Ok(())

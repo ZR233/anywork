@@ -832,7 +832,6 @@ void main() {
         cleanupTimedOut: true,
         remoteCloseError: failure,
         sdkError: failure,
-        workerError: 'worker',
         driverError: 'driver',
         unfinishedPrompt: run,
         unfinishedControls: true,
@@ -850,7 +849,6 @@ void main() {
     expect(close.cleanupTimedOut, true);
     expect(close.remoteCloseError!.rpcCode, -32001);
     expect(close.sdkError!.rpcCode, -32001);
-    expect(close.workerError, 'worker');
     expect(close.driverError, 'driver');
     expect(close.unfinishedPrompt!.instance, run.instance);
     expect(close.unfinishedControls, true);

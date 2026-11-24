@@ -70,17 +70,14 @@ final class AgentListStopState {
     if (activity.state is ClosedStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
-    // 正在关闭与故障成员没有当前工作：关闭由关闭流程推进，故障成员不会被用户停止
-    // 回收。二者即使仍带遗留执行与停止资格，也不提供可点停止或「正在停止」。
-    if (activity.state is ClosingStudioAgent ||
-        activity.state is FaultedStudioAgent) {
+    // 正在关闭的成员没有当前工作：关闭由关闭流程推进；即使仍带遗留执行与停止资格，
+    // 也不提供可点停止或「正在停止」。
+    if (activity.state is ClosingStudioAgent) {
       return const AgentListStopState(action: AgentListStopAction.none);
     }
     final execution = activity.execution;
     if (execution != null &&
-        (activity.state is CancellingStudioAgent ||
-            execution.phase.isStopping ||
-            execution.id == acceptedExecutionId)) {
+        (execution.phase.isStopping || execution.id == acceptedExecutionId)) {
       // 停止已受理但清理未结束：目标仍是同一执行，禁止重复点击。
       return AgentListStopState(
         action: AgentListStopAction.stopping,

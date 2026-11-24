@@ -326,7 +326,6 @@ pub struct AcpBusinessClose {
     pub cleanup_timed_out: bool,
     pub remote_close_error: Option<AcpBusinessFailure>,
     pub sdk_error: Option<AcpBusinessFailure>,
-    pub worker_error: Option<String>,
     pub driver_error: Option<String>,
     pub unfinished_prompt: Option<AcpRunId>,
     pub unfinished_controls: bool,

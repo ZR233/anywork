@@ -191,14 +191,10 @@ pub enum AcpAuthFailureCode {
     ResourceLimit,
     /// 显式取消。
     Cancelled,
-    /// 操作已过期（配置变化、删除或迟到结果）。
-    StaleOperation,
     /// 所属接入的连接身份已被改写，旧操作不再代表当前配置。
     ConfigChanged,
     /// 进程或管道未能确认回收。
     Cleanup,
-    /// 内部不变量被破坏（例如受理期间接入记录消失）。
-    Internal,
 }
 
 /// 失败发生在哪个阶段。

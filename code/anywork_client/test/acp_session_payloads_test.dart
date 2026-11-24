@@ -438,7 +438,6 @@ void main() {
       cleanupTimedOut: true,
       remoteCloseError: failure,
       sdkError: failure,
-      workerError: 'worker join',
       driverError: 'driver EOF',
       unfinishedPrompt: _run,
       unfinishedControls: true,
@@ -513,7 +512,6 @@ void main() {
     expect(close.ownerFailures.single.message, 'owner join');
     expect(close.remoteCloseError, same(failure));
     expect(close.sdkError, same(failure));
-    expect(close.workerError, 'worker join');
     expect(close.driverError, 'driver EOF');
     expect(failure.rpcCode, -32000);
     expect(failure.rpcData, same(_meta));

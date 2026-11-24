@@ -115,7 +115,6 @@ final class _BusinessApi implements RustLibApi {
     sdkFinished: true,
     cleanupTimedOut: true,
     remoteCloseError: _failure,
-    workerError: 'worker cleanup',
     unfinishedPrompt: _wireRun,
     unfinishedControls: true,
     ownerFailures: const [

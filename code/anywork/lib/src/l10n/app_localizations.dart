@@ -9609,12 +9609,6 @@ abstract class AppLocalizations {
   /// **'Cancelled'**
   String get acpFailureCodeCancelled;
 
-  /// No description provided for @acpFailureCodeStaleOperation.
-  ///
-  /// In en, this message translates to:
-  /// **'Operation was superseded'**
-  String get acpFailureCodeStaleOperation;
-
   /// No description provided for @acpFailureCodeConfigChanged.
   ///
   /// In en, this message translates to:
@@ -9626,12 +9620,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cleanup failed'**
   String get acpFailureCodeCleanup;
-
-  /// No description provided for @acpFailureCodeInternal.
-  ///
-  /// In en, this message translates to:
-  /// **'Internal error'**
-  String get acpFailureCodeInternal;
 
   /// No description provided for @acpFailureStageProcess.
   ///

@@ -327,10 +327,8 @@ enum BridgeAcpAuthFailureCode {
   timeout,
   resourceLimit,
   cancelled,
-  staleOperation,
   configChanged,
   cleanup,
-  internal,
 }
 
 class BridgeAcpAuthMethod {

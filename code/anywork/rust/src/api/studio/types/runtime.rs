@@ -228,14 +228,10 @@ pub struct BridgeStudioRecoveryIssueDto {
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum BridgeAgentState {
     Idle(BridgeIdleAgent),
-    Queued(BridgeQueuedAgent),
     Running(BridgeRunningAgent),
-    WaitingTool(BridgeWaitingToolAgent),
     WaitingInteraction(BridgeWaitingInteractionAgent),
-    Cancelling(BridgeCancellingAgent),
     Closing(BridgeClosingAgent),
     Closed(BridgeClosedAgent),
-    Faulted(BridgeFaultedAgent),
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -243,19 +239,7 @@ pub struct BridgeIdleAgent {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeQueuedAgent {
-    pub turn_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct BridgeRunningAgent {
-    pub turn_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeWaitingToolAgent {
     pub turn_id: String,
 }
 
@@ -266,28 +250,11 @@ pub struct BridgeWaitingInteractionAgent {
     pub interaction_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeCancellingAgent {
-    pub turn_id: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeClosingAgent {
-    pub turn_id: Option<String>,
-    pub error: Option<BridgeStateError>,
-}
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeClosingAgent {}
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeClosedAgent {}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeFaultedAgent {
-    pub error: BridgeStateError,
-    pub diagnostic_turn_id: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

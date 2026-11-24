@@ -338,9 +338,7 @@ enum AcpAuthFailureCodeView {
   resourceLimit,
   cancelled,
   cleanup,
-  staleOperation,
   configChanged,
-  internal,
 }
 
 /// 失败发生的阶段。

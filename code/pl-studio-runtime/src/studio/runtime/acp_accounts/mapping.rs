@@ -224,9 +224,7 @@ pub(super) fn canonical_failure_message(code: AcpAuthFailureCode, stage: AcpAuth
         (AcpAuthFailureCode::Timeout, _) => "等待超时",
         (AcpAuthFailureCode::ResourceLimit, _) => "输出超出预算",
         (AcpAuthFailureCode::Cancelled, _) => "已取消",
-        (AcpAuthFailureCode::StaleOperation, _) => "该操作已被新的接入配置取代",
         (AcpAuthFailureCode::ConfigChanged, _) => "该接入的连接配置已变化",
-        (AcpAuthFailureCode::Internal, _) => "内部状态不一致",
     };
     let step = match stage {
         AcpAuthStage::Prepare => "安装验证",

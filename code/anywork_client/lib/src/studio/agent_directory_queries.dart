@@ -80,12 +80,7 @@ abstract final class AgentDirectoryQueries {
       };
 
   static int _nativeStatusPriority(StudioAgentState state) => switch (state) {
-    QueuedStudioAgent() ||
-    RunningStudioAgent() ||
-    WaitingToolStudioAgent() ||
-    WaitingInteractionStudioAgent() ||
-    CancellingStudioAgent() => 0,
-    FaultedStudioAgent() => 1,
+    RunningStudioAgent() || WaitingInteractionStudioAgent() => 0,
     IdleStudioAgent() => 2,
     ClosingStudioAgent() || ClosedStudioAgent() => 3,
   };
