@@ -19,7 +19,7 @@ use crate::agent::definition::{
 
 use super::{
     AgentInstructionShape, InstructionBlock, InstructionSnapshot, InstructionSource,
-    InstructionSourceKind, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, structure,
+    InstructionSourceKind, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, snapshot,
 };
 
 /// Previous generic identity version; its root Agent block count depended on a hard-coded ID.
@@ -90,7 +90,7 @@ pub(crate) fn saved_mode_instruction(payload: &OpaquePayload) -> Result<Option<(
         }
         PREVIOUS_SNAPSHOT_VERSION => {
             let snapshot = decode_previous(payload)?;
-            structure::validate_v2(&snapshot)?;
+            snapshot::validate_v2(&snapshot)?;
             Ok(snapshot
                 .developer
                 .iter()
@@ -165,7 +165,7 @@ fn upgrade_legacy_snapshot(
         user,
     };
     snapshot.agent_shape = AgentInstructionShape::from_agent_blocks(&snapshot.developer)?;
-    structure::validate(&snapshot)?;
+    snapshot::validate(&snapshot)?;
     Ok(snapshot)
 }
 
@@ -174,7 +174,7 @@ fn upgrade_previous_snapshot(
     identity: &VerifiedAgentIdentity,
 ) -> Result<InstructionSnapshot> {
     let mut snapshot = decode_previous(payload)?;
-    structure::validate_v2(&snapshot)?;
+    snapshot::validate_v2(&snapshot)?;
     identity.validate_v2(&snapshot.agent)?;
 
     snapshot.agent.usage_binding = match identity {
@@ -194,7 +194,7 @@ fn upgrade_previous_snapshot(
     }
 
     snapshot.agent_shape = AgentInstructionShape::from_agent_blocks(&snapshot.developer)?;
-    structure::validate(&snapshot)?;
+    snapshot::validate(&snapshot)?;
     Ok(snapshot)
 }
 
