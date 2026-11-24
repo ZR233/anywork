@@ -91,13 +91,15 @@ impl StudioRuntime {
             .await?;
         let workspace_path = local_thread_workspace(&project, &thread_id).await?;
         let (mut delta, session, agent) = DirectoryDelta::register_session(
-            thread_id,
-            workspace_id,
-            title,
-            crate::mode::ThreadModeId::auto(),
-            crate::ThreadWorkspaceMode::Local,
-            workspace_path,
-            crate::config::ROOT_AGENT_ROUTE_KEY,
+            crate::studio::store::directory::SessionDirectoryUpsert {
+                session_id: thread_id,
+                workspace_id: workspace_id,
+                title: title,
+                mode: crate::mode::ThreadModeId::auto(),
+                workspace_mode: crate::ThreadWorkspaceMode::Local,
+                workspace_path: workspace_path,
+                role: crate::config::ROOT_AGENT_ROUTE_KEY,
+            },
         );
         let delegation = self.config_runtime.read()?.config.delegation;
         let mut session = session;
@@ -279,13 +281,15 @@ impl StudioRuntime {
             None,
         );
         let (mut delta, mut session, agent) = DirectoryDelta::register_session(
-            thread_id,
-            &request.workspace_id,
-            &provisional,
-            request.mode,
-            request.workspace_mode,
-            workspace_path,
-            crate::config::ROOT_AGENT_ROUTE_KEY,
+            crate::studio::store::directory::SessionDirectoryUpsert {
+                session_id: thread_id,
+                workspace_id: &request.workspace_id,
+                title: &provisional,
+                mode: request.mode,
+                workspace_mode: request.workspace_mode,
+                workspace_path: workspace_path,
+                role: crate::config::ROOT_AGENT_ROUTE_KEY,
+            },
         );
         session.delegation_mode = request
             .delegation_mode

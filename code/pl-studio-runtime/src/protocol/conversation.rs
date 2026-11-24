@@ -159,10 +159,3 @@ pub struct ContentManifestEntry {
     pub payload: Vec<u8>,
     pub reference: ContentRef,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContentManifestPage {
-    pub entries: Vec<ContentManifestEntry>,
-    pub continuation: Option<String>,
-}

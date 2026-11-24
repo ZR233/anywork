@@ -58,12 +58,14 @@ pub(super) fn project_input(
     };
     Ok(Some(ExecutionItem::new(
         input.input.id.clone(),
-        thread_id.into(),
-        turn_id,
-        ordinal,
-        revision,
-        created_at,
-        updated_at,
+        crate::ItemStamp {
+            thread_id: std::borrow::Cow::Owned(thread_id.into()),
+            turn_id: std::borrow::Cow::Owned(turn_id),
+            ordinal: ordinal,
+            revision: revision,
+            created_at: created_at,
+            updated_at: updated_at,
+        },
         state,
     )))
 }

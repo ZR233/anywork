@@ -77,9 +77,6 @@ pub(super) async fn capture(
             workspace_root: &root,
             current_dir: &root,
             workspace_documents: Some(&documents),
-            workspace_instructions: None,
-            subagent_constraint: None,
-            skill_suggestions: None,
             execution_environment: Some(&environment),
             delegation_preference: seed
                 .delegation

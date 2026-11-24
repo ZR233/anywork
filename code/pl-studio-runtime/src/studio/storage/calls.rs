@@ -39,7 +39,7 @@ use sea_orm::{
 use tokio::sync::{Notify, watch};
 use tracing::Instrument;
 
-use crate::hash::merge_costs;
+use crate::studio::thread_projection::merge_runtime_costs as merge_costs;
 
 mod event;
 mod log;

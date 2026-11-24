@@ -4,11 +4,11 @@
 //! content blobs (`events.jsonl` + `contents/<sha256>.bin`), idempotent accounting handoffs with
 //! bounded backpressure, and atomic `result.json` / `runSealed` closure after persistence flush.
 
-pub mod manifest;
-pub mod reader;
-pub mod types;
-pub mod usage;
-pub mod writer;
+mod manifest;
+mod reader;
+mod types;
+mod usage;
+mod writer;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;

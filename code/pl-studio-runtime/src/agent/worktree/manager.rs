@@ -38,13 +38,6 @@ impl WorktreeOwnership {
             Self::Child { child_id } => child_id,
         }
     }
-
-    pub fn owner_id(&self) -> &str {
-        match self {
-            Self::Session { thread_id } => thread_id,
-            Self::Child { child_id } => child_id,
-        }
-    }
 }
 
 /// Authorization is supplied by the owning lifecycle entry, not inferred from Git state.

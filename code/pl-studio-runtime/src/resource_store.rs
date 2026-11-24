@@ -82,33 +82,6 @@ impl FileResourceStore {
         tokio::task::spawn_blocking(move || retain(&root, &source, media_type, None)).await?
     }
 
-    /// Retains a completed command capture under the command-archive ceiling.
-    ///
-    /// It shares the exact streaming copy and idempotent content-addressed identity of
-    /// [`Self::retain_file`], but bounds the copy at [`MAX_COMMAND_ARCHIVE_BYTES`] so a runaway capture
-    /// cannot fill the disk. The limit is scoped to this command path only: it never narrows the
-    /// generic resource/attachment semantics.
-    ///
-    /// # Errors
-    /// Returns [`ResourceStoreError::TooLarge`] for a capture past the ceiling and the same IO,
-    /// integrity and metadata failures as [`Self::retain_file`].
-    pub async fn retain_command_capture(
-        &self,
-        source: &Path,
-    ) -> Result<ResourceReference, ResourceStoreError> {
-        let source = source.to_owned();
-        let root = self.root.clone();
-        tokio::task::spawn_blocking(move || {
-            retain(
-                &root,
-                &source,
-                "application/octet-stream".to_owned(),
-                Some(MAX_COMMAND_ARCHIVE_BYTES),
-            )
-        })
-        .await?
-    }
-
     /// Retains exact in-memory bytes with the same immutable identity and durability as file captures.
     ///
     /// # Errors
@@ -655,10 +628,11 @@ mod tests {
         let oversized = vec![0_u8; MAX_COMMAND_ARCHIVE_BYTES as usize + 1];
         std::fs::write(&source, &oversized).expect("the oversized capture is written");
 
-        let error = store
-            .retain_command_capture(&source)
-            .await
-            .expect_err("a command capture past the ceiling is a typed refusal");
+        let error = retain_command_capture_file(
+            root.path(),
+            std::fs::File::open(&source).expect("the oversized capture opens"),
+        )
+        .expect_err("a command capture past the ceiling is a typed refusal");
         assert!(matches!(
             error,
             ResourceStoreError::TooLarge { limit } if limit == MAX_COMMAND_ARCHIVE_BYTES

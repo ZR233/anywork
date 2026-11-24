@@ -4190,12 +4190,14 @@ mod migration_tests {
     fn text_item(thread_id: &str, id: &str, ordinal: u64, body: &str) -> ExecutionItem {
         ExecutionItem::new(
             id.into(),
-            thread_id.into(),
-            "turn-1".into(),
-            ordinal,
-            1,
-            1,
-            2,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn-1"),
+                ordinal: ordinal,
+                revision: 1,
+                created_at: 1,
+                updated_at: 2,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 body.into(),

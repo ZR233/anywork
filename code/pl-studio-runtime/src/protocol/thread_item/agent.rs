@@ -26,8 +26,6 @@ impl ThreadAgentItem {
 pub struct ThreadAgentIdentity {
     id: String,
     path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    parent_path: Option<String>,
     role: String,
     task: String,
     depth: u32,
@@ -38,7 +36,6 @@ impl ThreadAgentIdentity {
         Self {
             id,
             path,
-            parent_path: None,
             role,
             task,
             depth,
@@ -51,10 +48,6 @@ impl ThreadAgentIdentity {
 
     pub fn path(&self) -> &str {
         &self.path
-    }
-
-    pub fn parent_path(&self) -> Option<&str> {
-        self.parent_path.as_deref()
     }
 
     pub fn role(&self) -> &str {

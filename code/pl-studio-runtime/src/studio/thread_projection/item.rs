@@ -18,26 +18,29 @@ pub(crate) struct ExecutionItem {
     state: ExecutionShape,
 }
 
+/// Identity, order and timestamps shared by one projected execution item.
+///
+/// Text may be borrowed until [`ExecutionItem::new`] copies it into the owned item.
+#[derive(Debug, Clone)]
+pub(crate) struct ItemStamp<'a> {
+    pub(crate) thread_id: std::borrow::Cow<'a, str>,
+    pub(crate) turn_id: std::borrow::Cow<'a, str>,
+    pub(crate) ordinal: u64,
+    pub(crate) revision: u64,
+    pub(crate) created_at: i64,
+    pub(crate) updated_at: i64,
+}
+
 impl ExecutionItem {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        id: String,
-        thread_id: String,
-        turn_id: String,
-        ordinal: u64,
-        revision: u64,
-        created_at: i64,
-        updated_at: i64,
-        state: ExecutionShape,
-    ) -> Self {
+    pub fn new(id: String, stamp: ItemStamp<'_>, state: ExecutionShape) -> Self {
         Self {
             id,
-            thread_id,
-            turn_id,
-            ordinal,
-            revision,
-            created_at,
-            updated_at,
+            thread_id: stamp.thread_id.into_owned(),
+            turn_id: stamp.turn_id.into_owned(),
+            ordinal: stamp.ordinal,
+            revision: stamp.revision,
+            created_at: stamp.created_at,
+            updated_at: stamp.updated_at,
             state,
         }
     }
@@ -53,33 +56,31 @@ impl ExecutionItem {
     ) -> Self {
         Self::completed_input_message(
             id,
-            thread_id,
-            turn_id,
+            ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id),
+                turn_id: std::borrow::Cow::Owned(turn_id),
+                ordinal: 0,
+                revision: 0,
+                created_at: completed_at,
+                updated_at: completed_at,
+            },
             ThreadTextChannel::User,
             text,
             attachments,
-            completed_at,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn completed_input_message(
         id: String,
-        thread_id: String,
-        turn_id: String,
+        stamp: ItemStamp<'_>,
         channel: ThreadTextChannel,
         text: String,
         attachments: Vec<ThreadAttachment>,
-        completed_at: i64,
     ) -> Self {
+        let completed_at = stamp.created_at;
         Self::new(
             id,
-            thread_id,
-            turn_id,
-            0,
-            0,
-            completed_at,
-            completed_at,
+            stamp,
             ExecutionShape::Text(ThreadTextItem::new(
                 channel,
                 text,

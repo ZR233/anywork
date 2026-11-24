@@ -820,12 +820,14 @@ mod tests {
     fn turn_payload(state: TurnState) -> Result<Vec<u8>> {
         let item = ExecutionItem::new(
             "turn-receipt".into(),
-            THREAD.into(),
-            "turn".into(),
-            1,
-            1,
-            1,
-            10,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 1,
+                revision: 1,
+                created_at: 1,
+                updated_at: 10,
+            },
             ExecutionShape::Turn(ThreadTurnItem::new(state)),
         );
         Ok(
@@ -1521,12 +1523,14 @@ mod background_tests {
                     7,
                     ExecutionItem::new(
                         item.clone(),
-                        THREAD.into(),
-                        "synthetic-turn".into(),
-                        1,
-                        1,
-                        10,
-                        12,
+                        crate::ItemStamp {
+                            thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                            turn_id: std::borrow::Cow::Borrowed("synthetic-turn"),
+                            ordinal: 1,
+                            revision: 1,
+                            created_at: 10,
+                            updated_at: 12,
+                        },
                         ExecutionShape::Tool(ThreadToolItem::new(
                             ThreadToolInvocation::new(CALL.into(), "exec".into(), "{}".into()),
                             ThreadToolState::Succeeded(SucceededThreadTool::new(

@@ -393,12 +393,14 @@ impl LiveProjection {
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
             let item = ExecutionItem::new(
                 id.clone(),
-                effect.thread_id.clone(),
-                start.turn_id.clone(),
-                order,
-                self.bump_content_revision(&id),
-                effect.committed_at,
-                effect.committed_at,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(effect.thread_id.clone()),
+                    turn_id: std::borrow::Cow::Owned(start.turn_id.clone()),
+                    ordinal: order,
+                    revision: self.bump_content_revision(&id),
+                    created_at: effect.committed_at,
+                    updated_at: effect.committed_at,
+                },
                 shape.clone(),
             );
             self.fact(&item);

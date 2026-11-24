@@ -15,18 +15,30 @@ use super::super::{
     StudioAgentFacility, StudioExternalRuntimes, StudioUpdateRuntime,
 };
 
+/// Owners and sources required to assemble one [`StudioRuntime`].
+pub(super) struct RuntimeAssemblyParts {
+    pub(super) store: StudioStore,
+    pub(super) config_runtime: ConfigRuntime,
+    pub(super) system_skills_dir: std::path::PathBuf,
+    pub(super) helper_source: crate::worker_assets::RemoteHelperSource,
+    pub(super) host_mcp_source: crate::host_mcp_assets::HostMcpSource,
+    pub(super) ssh_config: Option<crate::SshConfigFile>,
+    pub(super) skill_search: pl_tool::skill::SkillSearchOptions,
+    pub(super) run_export: Option<std::sync::Arc<super::super::run_export::RunExportCoordinator>>,
+}
+
 impl StudioRuntime {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn assemble(
-        store: StudioStore,
-        config_runtime: ConfigRuntime,
-        system_skills_dir: std::path::PathBuf,
-        helper_source: crate::worker_assets::RemoteHelperSource,
-        host_mcp_source: crate::host_mcp_assets::HostMcpSource,
-        ssh_config: Option<crate::SshConfigFile>,
-        skill_search: pl_tool::skill::SkillSearchOptions,
-        run_export: Option<std::sync::Arc<super::super::run_export::RunExportCoordinator>>,
-    ) -> Result<Self> {
+    pub(super) async fn assemble(parts: RuntimeAssemblyParts) -> Result<Self> {
+        let RuntimeAssemblyParts {
+            store,
+            config_runtime,
+            system_skills_dir,
+            helper_source,
+            host_mcp_source,
+            ssh_config,
+            skill_search,
+            run_export,
+        } = parts;
         let local_executor = pl_remote_helper::Executor::local()?;
         let owner_epoch = crate::studio::ids::new_id("runtime");
         let (settings_updates, _) = tokio::sync::watch::channel(config_runtime.read()?);

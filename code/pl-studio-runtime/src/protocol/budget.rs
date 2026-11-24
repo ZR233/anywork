@@ -1,11 +1,4 @@
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct UserInputAnswer {
-    pub answers: Vec<String>,
-}
 
 /// Kind of runtime budget that stopped a turn or agent.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

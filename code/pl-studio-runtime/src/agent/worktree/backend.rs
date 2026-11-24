@@ -23,10 +23,6 @@ pub enum WorktreeError {
     IdentityMismatch(String),
     #[error("invalid worktree resource: {0}")]
     InvalidResource(String),
-    #[error("failed to launch git {args}: {message}")]
-    GitLaunchFailed { args: String, message: String },
-    #[error("git {args} timed out")]
-    GitTimedOut { args: String },
     #[error("git {args} exited with {exit_code}: {stderr}")]
     GitExited {
         args: String,

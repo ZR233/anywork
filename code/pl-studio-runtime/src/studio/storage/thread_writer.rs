@@ -755,12 +755,14 @@ impl RuntimeOrderIndex {
         let stamp = entry.stamp.as_ref()?;
         Some(crate::ExecutionItem::new(
             id.to_owned(),
-            thread_id.to_owned(),
-            stamp.turn_id.clone(),
-            entry.ordinal,
-            stamp.revision,
-            stamp.created_at,
-            stamp.updated_at,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(thread_id.to_owned()),
+                turn_id: std::borrow::Cow::Owned(stamp.turn_id.clone()),
+                ordinal: entry.ordinal,
+                revision: stamp.revision,
+                created_at: stamp.created_at,
+                updated_at: stamp.updated_at,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
                 Vec::new(),
                 "Pending execution body belongs to its prepared batch.",
@@ -5040,12 +5042,14 @@ mod execution_index_tests {
         );
         let item = crate::ExecutionItem::new(
             "completed".into(),
-            "thread".into(),
-            "turn".into(),
-            order,
-            9,
-            10,
-            20,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: order,
+                revision: 9,
+                created_at: 10,
+                updated_at: 20,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         index.materialize_execution_batch([ExecutionMaterialization::from_item(&item)], 7)?;
@@ -5097,12 +5101,14 @@ mod execution_index_tests {
         let retained = index.retained_bytes();
         let large = crate::ExecutionItem::new(
             "observed".into(),
-            "thread".into(),
-            "turn".into(),
-            first,
-            9,
-            10,
-            20,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: first,
+                revision: 9,
+                created_at: 10,
+                updated_at: 20,
+            },
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         process.store(MAX_HISTORY_PROCESS_BYTES, Ordering::Release);

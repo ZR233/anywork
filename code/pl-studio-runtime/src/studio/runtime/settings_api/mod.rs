@@ -9,8 +9,8 @@ use crate::{
 };
 use anyhow::{Context, Result};
 
-use crate::PermissionMode;
 use crate::account_usage::account_usage_query_kind;
+use crate::approval::PermissionMode;
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort};
 
 use super::StudioRuntime;

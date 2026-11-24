@@ -103,7 +103,7 @@ pub(crate) struct BuiltinAgentDefinition {
     pub workspace_mode: Option<AgentWorkspaceMode>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 struct Declaration {
     id: &'static str,

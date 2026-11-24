@@ -72,19 +72,3 @@ pub struct CancelInteraction {
     pub reason: String,
     pub cancelled_at: i64,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExpireInteraction {
-    pub interaction_id: String,
-    pub expected_revision: u64,
-    pub operation_id: String,
-    pub expired_at: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReopenRecoveredInteraction {
-    pub interaction_id: String,
-    pub expected_revision: u64,
-    pub operation_id: String,
-    pub reopened_at: i64,
-}

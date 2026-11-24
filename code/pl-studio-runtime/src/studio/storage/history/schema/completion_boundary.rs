@@ -395,12 +395,14 @@ mod tests {
             .try_get("", "database_id")?;
         let item = ExecutionItem::new(
             "A".into(),
-            THREAD.into(),
-            "turn".into(),
-            1,
-            1,
-            1,
-            2,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 1,
+                revision: 1,
+                created_at: 1,
+                updated_at: 2,
+            },
             ExecutionShape::Thinking(ThreadThinkingItem::new(
                 vec!["完整摘要".into()],
                 vec!["完整正文".into()],
@@ -707,12 +709,14 @@ mod tests {
             let id = crate::studio::thread_projection::order::tool_id("old-call");
             let item = ExecutionItem::new(
                 id.clone(),
-                THREAD.into(),
-                "tool-turn".into(),
-                2,
-                1,
-                3,
-                3,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                    turn_id: std::borrow::Cow::Borrowed("tool-turn"),
+                    ordinal: 2,
+                    revision: 1,
+                    created_at: 3,
+                    updated_at: 3,
+                },
                 ExecutionShape::Tool(ThreadToolItem::new(
                     ThreadToolInvocation::new(
                         "old-call".into(),

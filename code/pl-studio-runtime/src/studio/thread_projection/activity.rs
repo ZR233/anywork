@@ -1275,8 +1275,18 @@ mod tests {
             &crate::ThreadContentLifecycle::streaming(),
         )
         .unwrap();
-        let item =
-            crate::ExecutionItem::new(id, "thread".into(), "turn".into(), 1, 1, 10, 10, shape);
+        let item = crate::ExecutionItem::new(
+            id,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 1,
+                revision: 1,
+                created_at: 10,
+                updated_at: 10,
+            },
+            shape,
+        );
         let mut atom = crate::studio::runtime::chat_item::atom(&item);
         atom.attempt_id = Some("attempt".into());
         let thinking = project_activity_using(
@@ -1298,8 +1308,18 @@ mod tests {
             &crate::ThreadContentLifecycle::streaming(),
         )
         .unwrap();
-        let item =
-            crate::ExecutionItem::new(id, "thread".into(), "turn".into(), 2, 1, 11, 11, shape);
+        let item = crate::ExecutionItem::new(
+            id,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Borrowed("thread"),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 2,
+                revision: 1,
+                created_at: 11,
+                updated_at: 11,
+            },
+            shape,
+        );
         let mut atom = crate::studio::runtime::chat_item::atom(&item);
         atom.attempt_id = Some("attempt".into());
         state.model_progress = None;

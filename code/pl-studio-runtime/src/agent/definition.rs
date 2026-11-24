@@ -126,7 +126,7 @@ impl ResolvedAgentDefinition {
     pub(crate) fn from_current(profile: &crate::AgentProfile) -> Result<Self, PureError> {
         let crate::AgentBinding::Native(native) = &profile.binding else {
             return Err(PureError::ConfigError(
-                "ACP execution is not supported before S4".into(),
+                "ACP profiles are prepared on the ACP child path".into(),
             ));
         };
         let instructions = native.system_instructions.as_deref().ok_or_else(|| {

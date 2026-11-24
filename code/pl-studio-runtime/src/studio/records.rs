@@ -111,7 +111,7 @@ impl SessionDirectoryRecord {
         }
     }
 
-    /// 与 `SessionDescriptor::directory_sort_time` 相同的目录排序键。
+    /// 与 [`crate::SessionDirectoryRow::directory_sort_time`] 相同的目录排序键。
     pub(in crate::studio) fn directory_sort_time(&self) -> i64 {
         self.last_user_message_at.unwrap_or(self.created_at)
     }

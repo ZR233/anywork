@@ -3457,12 +3457,14 @@ mod atomic_tests {
         input.updated_at = 9999;
         let thinking = ExecutionItem::new(
             "thinking".into(),
-            THREAD.into(),
-            "turn".into(),
-            30,
-            1,
-            18,
-            9999,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 30,
+                revision: 1,
+                created_at: 18,
+                updated_at: 9999,
+            },
             ExecutionShape::Thinking(ThreadThinkingItem::new(
                 vec!["第一段".into(), "第二段".into()],
                 vec![],
@@ -3471,12 +3473,14 @@ mod atomic_tests {
         );
         let running = ExecutionItem::new(
             "still-running".into(),
-            THREAD.into(),
-            "turn".into(),
-            25,
-            1,
-            18,
-            9999,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 25,
+                revision: 1,
+                created_at: 18,
+                updated_at: 9999,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "尚未可靠完成".into(),
@@ -3486,12 +3490,14 @@ mod atomic_tests {
         );
         let pending = ExecutionItem::new(
             "pending-question".into(),
-            THREAD.into(),
-            "turn".into(),
-            26,
-            1,
-            18,
-            9999,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("turn"),
+                ordinal: 26,
+                revision: 1,
+                created_at: 18,
+                updated_at: 9999,
+            },
             ExecutionShape::Tool(
                 ThreadToolItem::new(
                     ThreadToolInvocation::new("question-call".into(), "ask".into(), "{}".into()),

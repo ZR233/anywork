@@ -204,12 +204,14 @@ mod tests {
         for part in 1..=2_u64 {
             let member = ExecutionItem::new(
                 format!("sealed-member-{part}"),
-                THREAD.into(),
-                "sealed-turn".into(),
-                part,
-                1,
-                1,
-                2,
+                crate::ItemStamp {
+                    thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                    turn_id: std::borrow::Cow::Borrowed("sealed-turn"),
+                    ordinal: part,
+                    revision: 1,
+                    created_at: 1,
+                    updated_at: 2,
+                },
                 ExecutionShape::Thinking(ThreadThinkingItem::new(
                     vec![],
                     vec![format!("历史成员正文 {part} 🦀")],
@@ -225,12 +227,14 @@ mod tests {
         }
         let sealed = ExecutionItem::new(
             "sealed-text".into(),
-            THREAD.into(),
-            "sealed-turn".into(),
-            3,
-            1,
-            1,
-            3,
+            crate::ItemStamp {
+                thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                turn_id: std::borrow::Cow::Borrowed("sealed-turn"),
+                ordinal: 3,
+                revision: 1,
+                created_at: 1,
+                updated_at: 3,
+            },
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
                 "封口正文 retained 🦀".into(),
@@ -262,12 +266,14 @@ mod tests {
                     4,
                     ExecutionItem::new(
                         id.clone(),
-                        THREAD.into(),
-                        "active-turn".into(),
-                        u64::try_from(part + 3)?,
-                        1,
-                        1,
-                        2,
+                        crate::ItemStamp {
+                            thread_id: std::borrow::Cow::Owned(THREAD.into()),
+                            turn_id: std::borrow::Cow::Borrowed("active-turn"),
+                            ordinal: u64::try_from(part + 3)?,
+                            revision: 1,
+                            created_at: 1,
+                            updated_at: 2,
+                        },
                         ExecutionShape::Thinking(ThreadThinkingItem::new(
                             vec![],
                             vec![text.clone()],
