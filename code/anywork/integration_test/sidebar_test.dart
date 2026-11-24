@@ -626,19 +626,20 @@ void main() {
         await tester.tap(
           find.byKey(StudioDriverKeys.deleteThreadConfirm(deletedThreadId)),
         );
-        bool commandSettled() {
-          if (dialog.evaluate().isEmpty) return true;
-          return client.mutations
-                  .latest('delete:$deletedThreadId')
-                  ?.state
-                  .value
-                  .failurePhase !=
-              null;
-        }
-
         await scene.until(
-          commandSettled,
-          'delete command settles and closes confirmation',
+          () => dialog.evaluate().isEmpty,
+          'delete confirmation closes',
+        );
+        await scene.until(
+          () {
+            final operation = client.mutations
+                .latest('delete:$deletedThreadId')
+                ?.state
+                .value;
+            return operation?.receipt != null ||
+                operation?.failurePhase != null;
+          },
+          'delete command settles',
           timeout: const Duration(seconds: 60),
         );
         final operation = client.mutations
@@ -651,11 +652,6 @@ void main() {
         if (operation.failurePhase case final failure?) {
           throw StateError(
             'Delete command failed in $failure: ${operation.error}',
-          );
-        }
-        if (dialog.evaluate().isNotEmpty) {
-          throw StateError(
-            'Delete command returned without closing confirmation',
           );
         }
         final receipt = operation.receipt;

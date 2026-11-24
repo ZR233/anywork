@@ -323,7 +323,10 @@ void main() {
           await client.threadCommands.renameThread(child.threadId, 'No'),
           isNull,
         );
-        await client.threadCommands.archiveThread(child.threadId);
+        await expectLater(
+          client.threadCommands.archiveThread(child.threadId),
+          throwsStateError,
+        );
         expect(port.renames, isEmpty);
         expect(port.archives, isEmpty);
         expect(child.parentAgentId, root.agentId);

@@ -1019,6 +1019,18 @@ abstract class AppLocalizations {
   /// **'Archive'**
   String get sidebarArchiveSessionConfirmAction;
 
+  /// No description provided for @sidebarArchiveSessionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Archived “{title}”'**
+  String sidebarArchiveSessionSucceeded(String title);
+
+  /// No description provided for @sidebarArchiveSessionResultFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not archive “{title}”. {reason}'**
+  String sidebarArchiveSessionResultFailed(String title, String reason);
+
   /// No description provided for @sidebarDeleteSession.
   ///
   /// In en, this message translates to:
@@ -1042,6 +1054,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Delete permanently'**
   String get sidebarDeleteSessionConfirmAction;
+
+  /// No description provided for @sidebarDeleteSessionSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Deleted “{title}”'**
+  String sidebarDeleteSessionSucceeded(String title);
+
+  /// No description provided for @sidebarDeleteSessionResultFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not delete “{title}”. {reason}'**
+  String sidebarDeleteSessionResultFailed(String title, String reason);
 
   /// No description provided for @sidebarRenameSession.
   ///

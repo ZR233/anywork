@@ -524,6 +524,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sidebarArchiveSessionConfirmAction => 'Archive';
 
   @override
+  String sidebarArchiveSessionSucceeded(String title) {
+    return 'Archived “$title”';
+  }
+
+  @override
+  String sidebarArchiveSessionResultFailed(String title, String reason) {
+    return 'Could not archive “$title”. $reason';
+  }
+
+  @override
   String get sidebarDeleteSession => 'Delete session';
 
   @override
@@ -537,6 +547,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sidebarDeleteSessionConfirmAction => 'Delete permanently';
+
+  @override
+  String sidebarDeleteSessionSucceeded(String title) {
+    return 'Deleted “$title”';
+  }
+
+  @override
+  String sidebarDeleteSessionResultFailed(String title, String reason) {
+    return 'Could not delete “$title”. $reason';
+  }
 
   @override
   String get sidebarRenameSession => 'Rename session';

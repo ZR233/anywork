@@ -1,18 +1,24 @@
 import 'dart:async';
 
+import 'package:anywork/src/app/app_graph.dart';
+import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_views.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _openDialog = ValueKey<String>('open-thread-action-dialog');
-const _dialog = ValueKey<String>('thread-action-dialog');
-const _confirm = ValueKey<String>('thread-action-confirm');
+import '../support/pump_client_future.dart';
+import '../support/recording_demo_transport.dart';
+import '../support/test_app_lifecycle.dart';
+import '../support/test_statistics_feed.dart';
+
 const _project = StudioProject(
   id: 'project',
   name: 'Project',
@@ -35,53 +41,6 @@ SessionDirectoryRow _thread({required String id}) => SessionDirectoryRow(
   updatedAt: DateTime.utc(2026),
   workspacePath: _project.path,
 );
-
-Widget _host({
-  required bool deleting,
-  String threadTitle = 'Target session',
-  required Future<void> Function() onConfirm,
-}) {
-  return MaterialApp(
-    theme: pureStudioTheme(),
-    locale: const Locale('zh'),
-    localizationsDelegates: [
-      AppLocalizations.delegate,
-      ...GlobalMaterialLocalizations.delegates,
-    ],
-    supportedLocales: AppLocalizations.supportedLocales,
-    home: Builder(
-      builder: (context) => Scaffold(
-        body: TextButton(
-          key: _openDialog,
-          onPressed: () => unawaited(
-            showDialog<void>(
-              context: context,
-              barrierDismissible: false,
-              builder: (dialogContext) => ThreadDestructiveActionDialog(
-                key: _dialog,
-                title: deleting
-                    ? dialogContext.l10n.sidebarDeleteSessionConfirmTitle(
-                        threadTitle,
-                      )
-                    : dialogContext.l10n.sidebarArchiveSessionConfirmTitle,
-                body: deleting
-                    ? dialogContext.l10n.sidebarDeleteSessionConfirmBody
-                    : dialogContext.l10n.sidebarArchiveSessionConfirmBody,
-                actionLabel: deleting
-                    ? dialogContext.l10n.sidebarDeleteSessionConfirmAction
-                    : dialogContext.l10n.sidebarArchiveSessionConfirmAction,
-                confirmKey: _confirm,
-                danger: deleting,
-                onConfirm: onConfirm,
-              ),
-            ),
-          ),
-          child: const Text('Open'),
-        ),
-      ),
-    ),
-  );
-}
 
 Widget _sidebarRowHost(Widget row) => MaterialApp(
   theme: pureStudioTheme(),
@@ -115,6 +74,118 @@ SidebarThreadRow _sidebarRow({
   archived: archived,
   touchMode: true,
 );
+
+class _GatedRemovalTransport extends RecordingDemoTransport {
+  final cleanup = Completer<void>();
+  final requests = <String>[];
+
+  Future<void> seedArchivedThread() => super.archiveThread(
+    'thread-alt',
+    operationId: const OperationId('seed-archived-thread'),
+  );
+
+  @override
+  Future<ArchiveThreadCommandReply> archiveThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    requests.add('archive:$threadId');
+    await cleanup.future;
+    return super.archiveThread(threadId, operationId: operationId);
+  }
+
+  @override
+  Future<DeleteThreadCommandReply?> deleteThread(
+    String threadId, {
+    required OperationId operationId,
+  }) async {
+    requests.add('delete:$threadId');
+    await cleanup.future;
+    return super.deleteThread(threadId, operationId: operationId);
+  }
+}
+
+const _target = 'thread-main';
+const _alternate = 'thread-alt';
+const _targetTitle = 'Flutter + FRB 重构';
+
+Future<AnyworkClient> _mountShell(
+  WidgetTester tester,
+  _GatedRemovalTransport transport,
+) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = const Size(1280, 900);
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  final graph = testAppGraph(
+    transport: transport,
+    statisticsFeed: const TestStatisticsFeedPort(),
+  );
+  final router = createApplicationRouter();
+  addTearDown(() async {
+    if (!transport.cleanup.isCompleted) transport.cleanup.complete();
+    await tester.pumpWidget(const SizedBox.shrink());
+    router.dispose();
+    final report = await pumpClientFuture(
+      tester,
+      graph.close(budget: testCloseBudget()),
+      'close sidebar shell',
+    );
+    expect(report.complete, isTrue, reason: describeTestCloseReport(report));
+  });
+  await pumpClientFuture(tester, graph.initialize(), 'initialize sidebar');
+  await pumpClientFuture(
+    tester,
+    graph.client.directoryCommands.selectThread(_target),
+    'select removal target',
+  );
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [appGraphProvider.overrideWithValue(graph)],
+      child: MaterialApp.router(
+        theme: pureStudioTheme(),
+        locale: const Locale('zh'),
+        localizationsDelegates: [
+          AppLocalizations.delegate,
+          ...GlobalMaterialLocalizations.delegates,
+        ],
+        supportedLocales: AppLocalizations.supportedLocales,
+        routerConfig: router,
+      ),
+    ),
+  );
+  await pumpClientUntil(
+    tester,
+    () => find.byKey(StudioDriverKeys.threadRow(_target)).evaluate().isNotEmpty,
+    'show target in sidebar',
+  );
+  return graph.client;
+}
+
+Future<void> _openTargetMenu(WidgetTester tester) async {
+  final row = find.byKey(StudioDriverKeys.threadRow(_target));
+  final pointer = await tester.createGesture(kind: PointerDeviceKind.mouse);
+  await pointer.addPointer(location: tester.getCenter(row));
+  try {
+    await pointer.moveTo(tester.getCenter(row));
+    await tester.pump();
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(StudioDriverKeys.threadMenu(_target)),
+        matching: find.byType(IconButton),
+      ),
+    );
+    await _pumpOverlayTransition(tester);
+  } finally {
+    await pointer.removePointer();
+  }
+}
+
+Future<void> _pumpOverlayTransition(WidgetTester tester) async {
+  await tester.pump();
+  // Advance the menu/dialog animation without waiting on the shell's spinners.
+  await tester.pump(const Duration(milliseconds: 300));
+}
 
 void main() {
   testWidgets('active session menu deletes with a text-only item', (
@@ -220,91 +291,164 @@ void main() {
     },
   );
 
-  testWidgets(
-    'cancel leaves the archive command untouched and shows only archive scope',
-    (tester) async {
-      var archiveCalls = 0;
-      var deleteCalls = 0;
-      await tester.pumpWidget(
-        _host(
-          deleting: false,
-          onConfirm: () async {
-            archiveCalls++;
-          },
-        ),
-      );
-      await tester.tap(find.byKey(_openDialog));
-      await tester.pumpAndSettle();
-
-      final l10n = tester.element(find.byKey(_dialog)).l10n;
-      expect(find.text(l10n.sidebarArchiveSessionConfirmBody), findsOneWidget);
-      expect(find.text(l10n.sidebarDeleteSessionConfirmBody), findsNothing);
-      await tester.tap(find.text(l10n.commonCancel));
-      await tester.pumpAndSettle();
-
-      expect(archiveCalls, 0);
-      expect(deleteCalls, 0);
-      expect(find.byKey(_dialog), findsNothing);
-    },
-  );
-
-  testWidgets('confirm invokes only delete once while its command is pending', (
+  testWidgets('cancel leaves the selected session and issues no command', (
     tester,
   ) async {
-    var deleteCalls = 0;
-    var archiveCalls = 0;
-    final command = Completer<void>();
-    await tester.pumpWidget(
-      _host(
-        deleting: true,
-        threadTitle: 'The target',
-        onConfirm: () {
-          deleteCalls++;
-          return command.future;
-        },
-      ),
-    );
-    await tester.tap(find.byKey(_openDialog));
-    await tester.pumpAndSettle();
+    final transport = _GatedRemovalTransport();
+    final client = await _mountShell(tester, transport);
+    await _openTargetMenu(tester);
+    await tester.tap(find.byKey(StudioDriverKeys.archiveThread(_target)));
+    await _pumpOverlayTransition(tester);
 
-    final l10n = tester.element(find.byKey(_dialog)).l10n;
-    expect(
-      find.text(l10n.sidebarDeleteSessionConfirmTitle('The target')),
-      findsOneWidget,
-    );
-    expect(find.text(l10n.sidebarDeleteSessionConfirmBody), findsOneWidget);
-    expect(find.text(l10n.sidebarArchiveSessionConfirmBody), findsNothing);
-    await tester.tap(find.byKey(_confirm));
-    await tester.pump();
-    expect(deleteCalls, 1);
-    expect(archiveCalls, 0);
-    expect(tester.widget<FilledButton>(find.byKey(_confirm)).onPressed, isNull);
-    await tester.tap(find.byKey(_confirm));
-    expect(deleteCalls, 1);
+    final dialog = find.byType(ThreadDestructiveActionDialog);
+    final l10n = tester.element(dialog).l10n;
+    expect(find.text(l10n.sidebarArchiveSessionConfirmBody), findsOneWidget);
+    expect(find.text(l10n.sidebarDeleteSessionConfirmBody), findsNothing);
+    await tester.tap(find.text(l10n.commonCancel));
+    await _pumpOverlayTransition(tester);
 
-    command.complete();
-    await tester.pumpAndSettle();
-    expect(find.byKey(_dialog), findsNothing);
+    expect(transport.requests, isEmpty);
+    expect(client.selection.state.selectedThreadId, _target);
+    expect(dialog, findsNothing);
+    expect(find.byType(SnackBar), findsNothing);
   });
 
-  testWidgets(
-    'a failed command keeps its dialog open with the original error',
-    (tester) async {
-      final failure = StateError('original delete failure');
-      await tester.pumpWidget(
-        _host(deleting: true, onConfirm: () => Future<void>.error(failure)),
-      );
-      await tester.tap(find.byKey(_openDialog));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byKey(_confirm));
-      await tester.pumpAndSettle();
+  for (final (deleting, succeeds) in [
+    (true, true),
+    (true, false),
+    (false, false),
+  ]) {
+    testWidgets(
+      '${deleting ? 'delete' : 'archive'} switches while cleanup is pending '
+      'and reports ${succeeds ? 'success' : 'failure'} after it settles',
+      (tester) async {
+        final transport = _GatedRemovalTransport();
+        final client = await _mountShell(tester, transport);
+        await _openTargetMenu(tester);
+        final delete = find.byKey(StudioDriverKeys.deleteThread(_target));
+        final archive = find.byKey(StudioDriverKeys.archiveThread(_target));
+        await tester.tap(deleting ? delete : archive);
+        await _pumpOverlayTransition(tester);
 
-      expect(find.byKey(_dialog), findsOneWidget);
-      expect(find.text(failure.toString()), findsOneWidget);
-      expect(
-        tester.widget<FilledButton>(find.byKey(_confirm)).onPressed,
-        isNotNull,
-      );
-    },
-  );
+        final dialog = find.byType(ThreadDestructiveActionDialog);
+        final l10n = tester.element(dialog).l10n;
+        if (deleting) {
+          expect(
+            find.text(l10n.sidebarDeleteSessionConfirmTitle(_targetTitle)),
+            findsOneWidget,
+          );
+          expect(
+            find.text(l10n.sidebarDeleteSessionConfirmBody),
+            findsOneWidget,
+          );
+          expect(
+            find.text(l10n.sidebarArchiveSessionConfirmBody),
+            findsNothing,
+          );
+        }
+        await tester.tap(
+          find.byKey(
+            deleting
+                ? StudioDriverKeys.deleteThreadConfirm(_target)
+                : StudioDriverKeys.archiveThreadConfirm,
+          ),
+        );
+        await pumpClientUntil(
+          tester,
+          () => transport.requests.isNotEmpty,
+          'start the gated cleanup',
+        );
+        await _pumpOverlayTransition(tester);
+
+        expect(dialog, findsNothing);
+        expect(client.selection.state.selectedThreadId, _alternate);
+        expect(find.byType(SnackBar), findsNothing);
+        final row = find.byKey(StudioDriverKeys.threadRow(_target));
+        expect(row, findsOneWidget);
+        await _openTargetMenu(tester);
+        expect(tester.widget<MenuItemButton>(delete).onPressed, isNull);
+        expect(tester.widget<MenuItemButton>(archive).onPressed, isNull);
+        await tester.tapAt(const Offset(650, 450));
+        await _pumpOverlayTransition(tester);
+
+        const failure = StudioFailure(
+          code: StudioFailureCode.permissionDenied,
+          message: 'Cleanup refused',
+          retryable: true,
+          correlationId: 'test-removal',
+        );
+        if (succeeds) {
+          transport.cleanup.complete();
+        } else {
+          transport.cleanup.completeError(failure);
+        }
+        final message = succeeds
+            ? l10n.sidebarDeleteSessionSucceeded(_targetTitle)
+            : (deleting
+                  ? l10n.sidebarDeleteSessionResultFailed
+                  : l10n.sidebarArchiveSessionResultFailed)(
+                _targetTitle,
+                failure.toString(),
+              );
+        await pumpClientUntil(
+          tester,
+          () => find.text(message).evaluate().isNotEmpty,
+          'show the actual cleanup outcome',
+        );
+        expect(find.byType(SnackBar), findsOneWidget);
+        expect(transport.requests, [
+          '${deleting ? 'delete' : 'archive'}:$_target',
+        ]);
+        expect(client.selection.state.selectedThreadId, _alternate);
+        if (succeeds) {
+          await pumpClientUntil(
+            tester,
+            () => row.evaluate().isEmpty,
+            'committed directory removal',
+          );
+        } else {
+          expect(row, findsOneWidget);
+          await _openTargetMenu(tester);
+          expect(tester.widget<MenuItemButton>(archive).onPressed, isNotNull);
+          await tester.tapAt(const Offset(650, 450));
+          await _pumpOverlayTransition(tester);
+        }
+      },
+    );
+  }
+
+  testWidgets('confirming an archived deletion returns to the active list', (
+    tester,
+  ) async {
+    final transport = _GatedRemovalTransport();
+    await pumpClientFuture(
+      tester,
+      transport.seedArchivedThread(),
+      'archive fixture',
+    );
+    final client = await _mountShell(tester, transport);
+    final activeRow = find.byKey(StudioDriverKeys.threadRow(_target));
+    await tester.tap(find.byKey(const ValueKey('sidebar-archived')));
+    final delete = find.byKey(StudioDriverKeys.deleteThread(_alternate));
+    await pumpClientUntil(
+      tester,
+      () => delete.hitTestable().evaluate().isNotEmpty,
+      'show archived delete action',
+    );
+    expect(activeRow, findsNothing);
+    await tester.tap(delete);
+    await _pumpOverlayTransition(tester);
+    await tester.tap(
+      find.byKey(StudioDriverKeys.deleteThreadConfirm(_alternate)),
+    );
+    await pumpClientUntil(
+      tester,
+      () => transport.requests.isNotEmpty && activeRow.evaluate().isNotEmpty,
+      'return to active sessions during cleanup',
+    );
+    expect(client.selection.state.selectedThreadId, _target);
+    expect(delete, findsNothing);
+    expect(transport.cleanup.isCompleted, isFalse);
+    transport.cleanup.complete();
+  });
 }
