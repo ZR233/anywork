@@ -424,6 +424,17 @@ void main() {
         }
 
         await _pumpOverlayTransition(tester);
+        if (!deleting) {
+          final archiveToggle = find.byKey(const ValueKey('sidebar-archived'));
+          expect(archiveToggle.hitTestable(), findsOneWidget);
+          await tester.tap(archiveToggle);
+          await _pumpOverlayTransition(tester);
+          expect(
+            find.widgetWithText(SidebarSectionHeading, l10n.sidebarArchived),
+            findsOneWidget,
+          );
+          expect(snackBar, findsOneWidget);
+        }
         if (deleting && !succeeds) {
           await tester.tap(close);
         } else {

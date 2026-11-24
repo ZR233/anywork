@@ -128,6 +128,7 @@ class _SidebarState extends ConsumerState<_Sidebar> {
     messenger.showSnackBar(
       SnackBar(
         content: Text(message),
+        behavior: SnackBarBehavior.floating,
         showCloseIcon: true,
         duration: Duration(seconds: failure == null ? 5 : 8),
       ),
