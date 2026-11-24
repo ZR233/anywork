@@ -1,15 +1,33 @@
 use crate::api::studio::types::{
-    AccountSecretInput, AccountSettingsInput, AccountUsageDto, BridgeAccountSettingsDto,
-    BridgeAccountUsageData, BridgeAccountUsageState, BridgeCustomModelSettingsDto,
-    BridgeDeepSeekWebSearchSettingsDto, BridgeGeneralSettingsDto, BridgeInstructionsSettingsDto,
-    BridgeModeModelSettingsDto, BridgeModelAutoCompactSettingsDto, BridgeModelCatalogAccountDto,
-    BridgeModelCatalogSnapshotDto, BridgeModelConnectionSettingsDto, BridgeRoleSettingsDto,
-    BridgeSettingsConfigSnapshotDto, BridgeSettingsStateResponse, BridgeSkillsSettingsDto,
-    BridgeStudioSettingsDto, BridgeWebSearchSettingsDto, DeepSeekBalanceDto,
-    DeepSeekBalanceInfoDto, SubscriptionQuotaLimitDto, SubscriptionUsageDetailDto,
-    SubscriptionUsageDto,
+    AccountModelInput, AccountSecretInput, AccountSettingsInput, BridgeAccountSettingsDto,
+    BridgeCustomModelSettingsDto, BridgeDeepSeekWebSearchSettingsDto, BridgeGeneralSettingsDto,
+    BridgeInstructionsSettingsDto, BridgeModeModelSettingsDto, BridgeModelAutoCompactSettingsDto,
+    BridgeModelCatalogAccountDto, BridgeModelCatalogSnapshotDto, BridgeModelConnectionSettingsDto,
+    BridgeRoleSettingsDto, BridgeSettingsConfigSnapshotDto, BridgeSettingsStateResponse,
+    BridgeSkillsSettingsDto, BridgeStudioSettingsDto, BridgeWebSearchSettingsDto,
 };
-use pl_studio_runtime::{AccountUsageData, AccountUsageState, SubscriptionQuotaWindow};
+
+impl From<AccountSecretInput> for pl_studio_runtime::AccountSecretUpdate {
+    fn from(value: AccountSecretInput) -> Self {
+        match value {
+            AccountSecretInput::Preserve => Self::Preserve,
+            AccountSecretInput::Replace { value } => Self::Replace { value },
+            AccountSecretInput::Clear => Self::Clear,
+        }
+    }
+}
+
+impl From<AccountModelInput> for pl_studio_runtime::AccountModelUpdate {
+    fn from(value: AccountModelInput) -> Self {
+        Self {
+            model_id: value.model_id,
+            display_name: value.display_name,
+            wire_api: value.wire_api,
+            context_window: value.context_window,
+            max_output_tokens: value.max_output_tokens,
+        }
+    }
+}
 
 pub(crate) fn bridge_settings_snapshot(
     snapshot: pl_studio_runtime::SettingsStateResponse,
@@ -39,15 +57,7 @@ pub(crate) fn bridge_model_catalog_snapshot(
         accounts: snapshot
             .accounts
             .into_iter()
-            .map(|account| BridgeModelCatalogAccountDto {
-                account_id: account.account_id,
-                effective_models: account
-                    .effective_models
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-                model_catalog: account.model_catalog.into(),
-            })
+            .map(bridge_model_catalog_account)
             .collect(),
     }
 }
@@ -203,25 +213,9 @@ pub(crate) fn account_settings_request(
             protocol: account.protocol,
             name: account.name,
             base_url: account.base_url,
-            secret: match account.secret {
-                AccountSecretInput::Preserve => pl_studio_runtime::AccountSecretUpdate::Preserve,
-                AccountSecretInput::Replace { value } => {
-                    pl_studio_runtime::AccountSecretUpdate::Replace { value }
-                }
-                AccountSecretInput::Clear => pl_studio_runtime::AccountSecretUpdate::Clear,
-            },
+            secret: account.secret.into(),
             initial_billing_kind: account.initial_billing_kind.map(Into::into),
-            custom_models: account
-                .custom_models
-                .into_iter()
-                .map(|model| pl_studio_runtime::AccountModelUpdate {
-                    model_id: model.model_id,
-                    display_name: model.display_name,
-                    wire_api: model.wire_api,
-                    context_window: model.context_window,
-                    max_output_tokens: model.max_output_tokens,
-                })
-                .collect(),
+            custom_models: account.custom_models.into_iter().map(Into::into).collect(),
             model_connection_modes: account
                 .model_connection_modes
                 .into_iter()
@@ -239,80 +233,6 @@ pub(crate) fn account_settings_request(
                 })
                 .collect(),
         },
-    }
-}
-pub(crate) fn account_usage_dto(record: pl_studio_runtime::AccountUsageRecord) -> AccountUsageDto {
-    let state = match record.state() {
-        AccountUsageState::Unsupported(_) => BridgeAccountUsageState::Unsupported,
-        AccountUsageState::MissingCredential(state) => BridgeAccountUsageState::MissingCredential {
-            message: state.message().to_string(),
-        },
-        AccountUsageState::Failed(state) => BridgeAccountUsageState::Failed {
-            error: state.error().into(),
-        },
-        AccountUsageState::Ready(state) => match state.data() {
-            AccountUsageData::DeepSeekBalance(balance) => BridgeAccountUsageState::Ready {
-                data: BridgeAccountUsageData::DeepSeekBalance(DeepSeekBalanceDto {
-                    is_available: balance.is_available,
-                    balances: balance
-                        .balances
-                        .iter()
-                        .map(|item| DeepSeekBalanceInfoDto {
-                            currency: item.currency.clone(),
-                            total_balance: item.total_balance.clone(),
-                            granted_balance: item.granted_balance.clone(),
-                            topped_up_balance: item.topped_up_balance.clone(),
-                        })
-                        .collect(),
-                }),
-            },
-            AccountUsageData::Subscription(usage) => BridgeAccountUsageState::Ready {
-                data: BridgeAccountUsageData::Subscription(SubscriptionUsageDto {
-                    level: usage.level.clone(),
-                    limits: usage
-                        .limits
-                        .iter()
-                        .map(|limit| {
-                            let (window, label) = zhipu_window_labels(&limit.window);
-                            SubscriptionQuotaLimitDto {
-                                window: window.to_string(),
-                                label: label.to_string(),
-                                percentage: limit.percentage,
-                                current_value: limit.current_value,
-                                total: limit.total,
-                                remaining: limit.remaining,
-                                next_reset_at: limit.next_reset_at,
-                                usage_details: limit
-                                    .usage_details
-                                    .iter()
-                                    .map(|detail| SubscriptionUsageDetailDto {
-                                        name: detail.name.clone(),
-                                        current_value: detail.current_value,
-                                        total: detail.total,
-                                        percentage: detail.percentage,
-                                    })
-                                    .collect(),
-                            }
-                        })
-                        .collect(),
-                }),
-            },
-        },
-    };
-    AccountUsageDto {
-        account_id: record.account_id().to_string(),
-        revision: record.revision(),
-        updated_at: record.updated_at(),
-        state,
-    }
-}
-
-fn zhipu_window_labels(window: &SubscriptionQuotaWindow) -> (&'static str, &str) {
-    match window {
-        SubscriptionQuotaWindow::FiveHour => ("fiveHour", "5h"),
-        SubscriptionQuotaWindow::Weekly => ("weekly", "7d"),
-        SubscriptionQuotaWindow::McpMonthly => ("mcpMonthly", "MCP"),
-        SubscriptionQuotaWindow::Other(label) => ("other", label.as_str()),
     }
 }
 

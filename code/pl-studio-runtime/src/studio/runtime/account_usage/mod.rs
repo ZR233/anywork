@@ -1,7 +1,6 @@
 //! Canonical per-account query stages, last-good facts and retained operation ownership.
 
 mod cache;
-mod projection;
 pub(crate) use cache::AccountUsageCacheMigrationError;
 
 use std::collections::BTreeMap;
@@ -9,34 +8,19 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::{
     AccountUsageFailure, AccountUsageFailureCode, AccountUsageObservation, AccountUsagePhase,
-    ObservedResource,
+    AccountUsageSuccess,
 };
 use anyhow::{Result, anyhow};
 use futures::FutureExt;
 use pl_model::config::AccountId;
-use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::account_usage::query_account_usage;
+use crate::StudioStore;
+use crate::account_usage::{AccountUsageQueryOutcome, query_account_usage};
 use crate::config::{ConfigRuntime, ConfigRuntimeSnapshot};
 use crate::studio::ids::unix_seconds;
 use crate::studio::store::settings::payload::KEY as CACHE_KEY;
-use crate::{AccountUsageRecord, StudioStore};
-
-/// Public product-topic projection only. Historical persisted shapes are decoded by the
-/// frozen wire types at the Settings schema migration boundary, not here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountUsageStateSnapshot {
-    pub state: ObservedResource<AccountUsageStateData>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AccountUsageStateData {
-    pub config_fingerprint: String,
-    pub usages: Vec<AccountUsageRecord>,
-}
 
 #[derive(Clone)]
 pub(crate) struct AccountUsageRuntime {
@@ -45,7 +29,7 @@ pub(crate) struct AccountUsageRuntime {
     state: Arc<Mutex<UsageState>>,
     tasks: Arc<Mutex<UsageTasks>>,
     commit: Arc<tokio::sync::Mutex<()>>,
-    events: crate::ProductEventBus,
+    updates: watch::Sender<()>,
 }
 
 #[derive(Default)]
@@ -105,7 +89,7 @@ impl UsageTask {
 struct UsageConfigObserver {
     state: Weak<Mutex<UsageState>>,
     tasks: Weak<Mutex<UsageTasks>>,
-    events: crate::ProductEventBus,
+    updates: watch::Sender<()>,
 }
 
 impl crate::config::SettingsCommitObserver for UsageConfigObserver {
@@ -143,8 +127,7 @@ impl crate::config::SettingsCommitObserver for UsageConfigObserver {
             state.revision = state.revision.saturating_add(1);
             state.updated_at = unix_seconds();
             // No IO/await/reentry while ConfigRuntime holds its command boundary.
-            self.events
-                .emit_account_usage_state(projection::legacy_snapshot(&state));
+            let _ = self.updates.send(());
         }
         drop(state);
         if let Some(tasks) = self.tasks.upgrade() {
@@ -161,19 +144,19 @@ impl crate::config::SettingsCommitObserver for UsageConfigObserver {
 }
 
 impl AccountUsageRuntime {
-    pub(crate) fn new(
-        store: StudioStore,
-        config: ConfigRuntime,
-        events: crate::ProductEventBus,
-    ) -> Self {
+    pub(crate) fn new(store: StudioStore, config: ConfigRuntime) -> Self {
         Self {
             store,
             config,
-            events,
+            updates: watch::channel(()).0,
             state: Arc::new(Mutex::new(UsageState::default())),
             tasks: Arc::new(Mutex::new(UsageTasks::default())),
             commit: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub(crate) fn subscribe(&self) -> watch::Receiver<()> {
+        self.updates.subscribe()
     }
 
     pub(crate) async fn load_cache(&self) -> Result<()> {
@@ -191,13 +174,9 @@ impl AccountUsageRuntime {
             .install_settings_observer(Arc::new(UsageConfigObserver {
                 state: Arc::downgrade(&self.state),
                 tasks: Arc::downgrade(&self.tasks),
-                events: self.events.clone(),
+                updates: self.updates.clone(),
             }))?;
         Ok(())
-    }
-
-    pub(crate) async fn read(&self) -> AccountUsageStateSnapshot {
-        projection::legacy_snapshot(&self.state.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     pub(crate) fn observations(&self) -> (u64, Vec<AccountUsageObservation>) {
@@ -206,7 +185,7 @@ impl AccountUsageRuntime {
     }
 
     /// Caller cancellation stops waiting, never the registered network/commit owner.
-    pub(crate) async fn check(&self, account_id: &str) -> Result<AccountUsageStateSnapshot> {
+    pub(crate) async fn check(&self, account_id: &str) -> Result<()> {
         let id = AccountId::new(account_id)?;
         let finished = {
             let tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
@@ -245,7 +224,7 @@ impl AccountUsageRuntime {
             // arriving after a newer generation must not cancel/overwrite that generation's slot.
             let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.accounts.get(&id).map(|entry| entry.query_revision) != Some(revision) {
-                return Ok(projection::legacy_snapshot(&state));
+                return Ok(());
             }
             let mut tasks = self.tasks.lock().unwrap_or_else(PoisonError::into_inner);
             if tasks.closing {
@@ -307,8 +286,7 @@ impl AccountUsageRuntime {
                 task
             }
         };
-        task.wait().await?;
-        Ok(self.read().await)
+        task.wait().await
     }
 
     async fn run_check(
@@ -335,13 +313,13 @@ impl AccountUsageRuntime {
         let observed = tokio::select! {
             biased;
             _ = cancel.cancelled() => None,
-            result = query_account_usage(AccountUsageRecord::new(id.to_string()), account, operation_id.clone()) => Some(result?),
+            outcome = query_account_usage(account) => Some(outcome),
         };
         let _commit = self.commit.lock().await;
         let accepted = self.config.if_usage_query_current(&id, revision, || {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(entry) = state.accounts.get_mut(&id) {
-                projection::complete(entry, observed.as_ref());
+                complete_observation(entry, observed.clone());
                 self.publish_locked(&mut state);
             }
         })?;
@@ -357,8 +335,7 @@ impl AccountUsageRuntime {
     fn publish_locked(&self, state: &mut UsageState) {
         state.revision = state.revision.saturating_add(1);
         state.updated_at = unix_seconds();
-        self.events
-            .emit_account_usage_state(projection::legacy_snapshot(state));
+        let _ = self.updates.send(());
     }
 
     fn fail_query(&self, id: &AccountId, revision: u64) {
@@ -411,6 +388,34 @@ impl AccountUsageRuntime {
         tasks.retained.clear();
         Ok(())
     }
+}
+
+fn complete_observation(
+    entry: &mut AccountUsageObservation,
+    result: Option<AccountUsageQueryOutcome>,
+) {
+    entry.checked_at = Some(unix_seconds());
+    entry.revision = entry.revision.saturating_add(1);
+    entry.failure = None;
+    entry.phase = match result {
+        Some(AccountUsageQueryOutcome::Ready { checked_at, value }) => {
+            entry.last_good = Some(AccountUsageSuccess { checked_at, value });
+            AccountUsagePhase::Succeeded
+        }
+        Some(AccountUsageQueryOutcome::Unsupported) => AccountUsagePhase::Unsupported,
+        Some(AccountUsageQueryOutcome::MissingCredential) => AccountUsagePhase::MissingCredential,
+        Some(AccountUsageQueryOutcome::Failed(failure)) => {
+            entry.failure = Some(failure);
+            AccountUsagePhase::Failed
+        }
+        None => {
+            entry.failure = Some(AccountUsageFailure {
+                code: AccountUsageFailureCode::Cancelled,
+                retryable: true,
+            });
+            AccountUsagePhase::Failed
+        }
+    };
 }
 
 fn unchecked(id: &AccountId, revision: u64) -> AccountUsageObservation {

@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use super::error::BridgeError;
 use super::event::BridgeProductEventEnvelope;
 use super::{
-    BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeAgentProfilesStateSnapshot, BridgeBotsStateSnapshot,
     BridgeChildInteractionSummary, BridgeDegradedResource, BridgeFailedResource,
     BridgeLoadingResource, BridgeLspStateSnapshot, BridgeMcpCatalogSnapshot, BridgeMcpScope,
@@ -13,9 +12,8 @@ use super::{
     BridgePersistenceStateSnapshot, BridgeProjectDirectoryState, BridgeReadyResource,
     BridgeRecoveryStateSnapshot, BridgeRefreshingResource, BridgeSessionCostsState,
     BridgeSettingsConfigStateSnapshot, BridgeSkillsStateSnapshot, BridgeStaleResource,
-    BridgeStoppedResource, BridgeThreadDirectoryPage, BridgeThreadLspStateSnapshot,
-    BridgeThreadMcpStateSnapshot, BridgeThreadModeCatalogSnapshot, BridgeUninitializedResource,
-    BridgeUpdaterStateSnapshot,
+    BridgeStoppedResource, BridgeThreadLspStateSnapshot, BridgeThreadMcpStateSnapshot,
+    BridgeThreadModeCatalogSnapshot, BridgeUninitializedResource, BridgeUpdaterStateSnapshot,
 };
 
 /// 产品订阅 topic；带 payload 的变体表达作用域，不存在无作用域组合形式。
@@ -23,7 +21,6 @@ use super::{
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeProductTopic {
     ProjectDirectory,
-    ThreadDirectory,
     AgentDirectory,
     SettingsConfig,
     ModelCatalog,
@@ -34,10 +31,6 @@ pub enum BridgeProductTopic {
     Lsp,
     Skills { workspace_id: String },
     ThreadModeCatalog,
-    AccountUsage,
-    AcpAuth,
-    AcpInstall,
-    AcpLocalDetection,
     SessionCosts { root_thread_id: String },
     ChildInteractions { host_thread_id: String },
     Updater,
@@ -80,7 +73,6 @@ impl BridgeProductTopic {
         use pl_studio_runtime::StudioProductTopic;
         match self.clone() {
             Self::ProjectDirectory => StudioProductTopic::ProjectDirectory,
-            Self::ThreadDirectory => StudioProductTopic::ThreadDirectory,
             Self::AgentDirectory => StudioProductTopic::AgentDirectory,
             Self::SettingsConfig => StudioProductTopic::SettingsConfig,
             Self::ModelCatalog => StudioProductTopic::ModelCatalog,
@@ -93,10 +85,6 @@ impl BridgeProductTopic {
             Self::Lsp => StudioProductTopic::Lsp,
             Self::Skills { workspace_id } => StudioProductTopic::Skills { workspace_id },
             Self::ThreadModeCatalog => StudioProductTopic::ThreadModeCatalog,
-            Self::AccountUsage => StudioProductTopic::AccountUsage,
-            Self::AcpAuth => StudioProductTopic::AcpAuth,
-            Self::AcpInstall => StudioProductTopic::AcpInstall,
-            Self::AcpLocalDetection => StudioProductTopic::AcpLocalDetection,
             Self::SessionCosts { root_thread_id } => {
                 StudioProductTopic::SessionCosts { root_thread_id }
             }
@@ -117,7 +105,6 @@ impl BridgeProductTopic {
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeProductBaseline {
     ProjectDirectory(BridgeProjectDirectoryState),
-    ThreadDirectory(BridgeThreadDirectoryPage),
     AgentDirectory(BridgeAgentDirectoryState),
     SettingsConfig(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalog(Box<BridgeModelCatalogStateSnapshot>),
@@ -128,10 +115,6 @@ pub enum BridgeProductBaseline {
     Lsp(BridgeLspStateSnapshot),
     Skills(BridgeSkillsStateSnapshot),
     ThreadModeCatalog(BridgeThreadModeCatalogSnapshot),
-    AccountUsage(BridgeAccountUsageStateSnapshot),
-    AcpAuth(Box<BridgeAcpAuthSnapshot>),
-    AcpInstall(Box<BridgeAcpInstallSnapshot>),
-    AcpLocalDetection(Box<super::BridgeAcpLocalDetectionSnapshot>),
     SessionCosts(Box<BridgeSessionCostsState>),
     ChildInteractions(Box<BridgeChildInteractionsState>),
     Updater(BridgeUpdaterStateSnapshot),

@@ -43,10 +43,7 @@ pub(crate) use agent_profile::{
     effective_system_profile_route, system_agent_profile, system_agent_profiles,
     validate_user_agent_profile_id,
 };
-pub use mcp::{
-    BuiltinMcpServerState as StudioBuiltinMcpServerState, build_builtin_effective_config,
-    builtin_mcp_server_ids, is_builtin_mcp_server_id, zhipu_coding_plan_token,
-};
+pub use mcp::{build_builtin_effective_config, builtin_mcp_server_ids, is_builtin_mcp_server_id};
 pub use mcp_document::{
     ALL_BUILTIN_IDS, MCP_DOCUMENT_SCHEMA_VERSION, McpFileSpecV1, McpFileV1,
     validate_server_config_strict,
@@ -270,13 +267,5 @@ impl StudioConfig {
             .get(mode)
             .or_else(|| self.mode_model_routes.get(&ThreadModeId::auto()))
             .ok_or_else(|| PureError::ConfigError("missing model route for mode.auto".to_string()))
-    }
-
-    pub fn resolve_mode_model_route(
-        &self,
-        mode: &ThreadModeId,
-    ) -> Result<pl_model::config::ResolvedModelRoute> {
-        self.models
-            .resolve_route(root_agent_route_id(), self.mode_model_route(mode)?)
     }
 }

@@ -8,8 +8,8 @@
 //! 迟到交付为新的成功。
 
 use super::{
-    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, error::open_error,
-    startup_child_scope, task::OwnedTaskSlot,
+    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind,
+    BridgeSubscriptionReceiver, error::open_error, startup_child_scope, task::OwnedTaskSlot,
 };
 use crate::api::studio::handlers::{startup_attempt_active, subscribe_startup_attempt};
 use crate::api::studio::types::{BridgeError, BridgeStartupStage};
@@ -33,9 +33,9 @@ pub async fn subscribe_startup_progress(
                 cancel,
                 producer_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
                 sink_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
-                product_topic_receiver: tokio::sync::Mutex::new(None),
-                shutdown_receiver: tokio::sync::Mutex::new(None),
-                startup_receiver: tokio::sync::Mutex::new(Some(events)),
+                receiver: tokio::sync::Mutex::new(Some(BridgeSubscriptionReceiver::Startup(
+                    events,
+                ))),
             })
         })
         .await
@@ -66,9 +66,14 @@ impl BridgeEventSubscription {
                 ));
             }
         };
-        let mut events = inner.startup_receiver.lock().await.take().ok_or_else(|| {
-            BridgeError::invalid_argument("startup stream can only be opened once")
-        })?;
+        let mut events = match inner.receiver.lock().await.take() {
+            Some(BridgeSubscriptionReceiver::Startup(events)) => events,
+            _ => {
+                return Err(BridgeError::invalid_argument(
+                    "startup stream can only be opened once",
+                ));
+            }
+        };
         let cancel = inner.cancel.clone();
         inner
             .attach_sink(async move {

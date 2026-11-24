@@ -59,46 +59,6 @@ AgentTaskCategory _taskCategoryFromFrb(frb.BridgeAgentTaskCategory value) =>
       frb.BridgeAgentTaskCategory.general => AgentTaskCategory.general,
     };
 
-frb.BridgeDelegationModelCapability _delegationCapabilityToFrb(
-  DelegationModelCapability value,
-) => switch (value) {
-  DelegationModelCapability.toolCalling =>
-    frb.BridgeDelegationModelCapability.toolCalling,
-  DelegationModelCapability.parallelToolCalls =>
-    frb.BridgeDelegationModelCapability.parallelToolCalls,
-  DelegationModelCapability.reasoning =>
-    frb.BridgeDelegationModelCapability.reasoning,
-  DelegationModelCapability.imageInput =>
-    frb.BridgeDelegationModelCapability.imageInput,
-  DelegationModelCapability.audioInput =>
-    frb.BridgeDelegationModelCapability.audioInput,
-  DelegationModelCapability.videoInput =>
-    frb.BridgeDelegationModelCapability.videoInput,
-  DelegationModelCapability.fileInput =>
-    frb.BridgeDelegationModelCapability.fileInput,
-  DelegationModelCapability.customTools =>
-    frb.BridgeDelegationModelCapability.customTools,
-  DelegationModelCapability.freeformTools =>
-    frb.BridgeDelegationModelCapability.freeformTools,
-  DelegationModelCapability.webSearch =>
-    frb.BridgeDelegationModelCapability.webSearch,
-  DelegationModelCapability.streaming =>
-    frb.BridgeDelegationModelCapability.streaming,
-};
-
-frb.BridgeListDelegationModelsRequest _delegationListRequestToFrb(
-  ListDelegationModelsRequest value,
-) => frb.BridgeListDelegationModelsRequest(
-  capabilities: value.capabilities.map(_delegationCapabilityToFrb).toList(),
-  accountId: value.accountId,
-  billingKind: value.billingKind == null
-      ? null
-      : _billingKindToFrb(value.billingKind!),
-  minContextWindow: value.minContextWindow == null
-      ? null
-      : BigInt.from(value.minContextWindow!),
-);
-
 LocalModelPerformanceSummary _delegationPerformanceFromFrb(
   frb.BridgeLocalModelPerformanceSummary value,
 ) => LocalModelPerformanceSummary(
@@ -119,50 +79,6 @@ AgentEvaluationSummary _evaluationSummaryFromFrb(
   notRated: value.notRated,
   averageQuality: value.averageQuality,
   averageInstructionFollowing: value.averageInstructionFollowing,
-);
-
-DelegationModelList _delegationListFromFrb(
-  frb.BridgeDelegationModelList value,
-) => DelegationModelList(
-  catalogRevision: value.catalogRevision.toInt(),
-  models: List.unmodifiable(
-    value.models.map(
-      (model) => DelegationModelListItem(
-        key: DelegationModelKey(
-          accountId: model.accountId,
-          modelId: model.modelId,
-        ),
-        accountName: model.accountName,
-        displayName: model.displayName,
-        summary: model.summary,
-        taskSuitability: List.unmodifiable(
-          model.taskSuitability.map(_taskCategoryFromFrb),
-        ),
-        contextWindow: model.contextWindow?.toInt(),
-        capabilities: DelegationModelCapabilities(
-          input: List.unmodifiable(
-            model.capabilities.input.map(_modelInputCapabilityFromFrb),
-          ),
-          output: List.unmodifiable(
-            model.capabilities.output.map(_modelModalityFromFrb),
-          ),
-          streaming: model.capabilities.streaming,
-          temperature: model.capabilities.temperature,
-          reasoning: model.capabilities.reasoning,
-          webSearch: model.capabilities.webSearch,
-          functionCalling: model.capabilities.functionCalling,
-          parallelToolCalls: model.capabilities.parallelToolCalls,
-          customTools: model.capabilities.customTools,
-          freeformTools: model.capabilities.freeformTools,
-          instructionSnapshotOverrides:
-              model.capabilities.instructionSnapshotOverrides,
-          nativeContextFamily: model.capabilities.nativeContextFamily,
-        ),
-        reasoningEfforts: List.unmodifiable(model.reasoningEfforts),
-        billingKind: _billingKindFromFrb(model.billingKind),
-      ),
-    ),
-  ),
 );
 
 /// Public adapter boundary also used by the typed Client contract suite.

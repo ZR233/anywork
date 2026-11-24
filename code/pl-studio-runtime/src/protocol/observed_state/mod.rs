@@ -148,21 +148,6 @@ impl<T> ObservedResource<T> {
         Self::Ready(ReadyResource::new(revision, updated_at, value))
     }
 
-    /// 从已持久化或 canonical 查询结果构造已就绪资源。
-    pub fn ready_observed(
-        revision: u64,
-        updated_at: i64,
-        last_checked_at: Option<i64>,
-        value: T,
-    ) -> Self {
-        Self::Ready(ReadyResource::new_observed(
-            revision,
-            updated_at,
-            last_checked_at,
-            value,
-        ))
-    }
-
     /// 返回领域 revision。
     pub fn revision(&self) -> u64 {
         match self {

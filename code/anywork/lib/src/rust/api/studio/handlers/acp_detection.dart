@@ -10,12 +10,6 @@ import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-/// 纯读取当前检测状态；不启动探测。
-Future<BridgeAcpLocalDetectionSnapshot> readAcpLocalDetectionState() => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersAcpDetectionReadAcpLocalDetectionState();
-
 /// 显式受理检测；不等待后台进程完成。
 Future<BridgeAcpLocalDetectionCommandReply> startAcpLocalDetection({
   required String operationId,

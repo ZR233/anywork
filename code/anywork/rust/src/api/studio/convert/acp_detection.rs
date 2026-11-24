@@ -63,7 +63,6 @@ pub(crate) fn bridge_acp_local_detection_reply(
 mod tests {
     use super::*;
     use crate::api::studio::convert::event::{bridge_product_baseline, bridge_product_event};
-    use crate::api::studio::types::{BridgeProductBaseline, BridgeProductEventPayload};
     use pl_studio_runtime::AcpLocalDetectionFailure;
     use pl_studio_runtime::{
         StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
@@ -152,30 +151,26 @@ mod tests {
                 assert_eq!(mapped.revision, 29);
                 assert_eq!(mapped.operation_id, operation_id);
                 assert_eq!(mapped.state, expected);
-                let (revision, baseline) = bridge_product_baseline(StudioProductBaseline {
-                    topic: StudioProductTopic::AcpLocalDetection,
-                    revision: 29,
-                    state: StudioProductBaselineState::AcpLocalDetection(Box::new(
-                        snapshot.clone(),
-                    )),
-                })?;
-                assert_eq!(revision, 29);
-                assert_eq!(
-                    baseline,
-                    BridgeProductBaseline::AcpLocalDetection(Box::new(mapped.clone()))
+                assert!(
+                    bridge_product_baseline(StudioProductBaseline {
+                        topic: StudioProductTopic::AcpLocalDetection,
+                        revision: 29,
+                        state: StudioProductBaselineState::AcpLocalDetection(Box::new(
+                            snapshot.clone(),
+                        )),
+                    })
+                    .is_err()
                 );
-                let event = bridge_product_event(StudioProductEventEnvelope {
-                    event_id: "event-id".into(),
-                    sequence: 9,
-                    created_at: 100,
-                    kind: StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(snapshot)),
-                })?;
-                assert_eq!(event.sequence, 9);
-                assert_eq!(event.event_id, "event-id");
-                assert_eq!(event.created_at, 100);
-                assert_eq!(
-                    event.payload,
-                    BridgeProductEventPayload::AcpLocalDetectionStateChanged(Box::new(mapped))
+                assert!(
+                    bridge_product_event(StudioProductEventEnvelope {
+                        event_id: "event-id".into(),
+                        sequence: 9,
+                        created_at: 100,
+                        kind: StudioProductEventKind::AcpLocalDetectionStateChanged(Box::new(
+                            snapshot,
+                        )),
+                    })
+                    .is_err()
                 );
             }
         }

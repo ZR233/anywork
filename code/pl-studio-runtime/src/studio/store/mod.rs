@@ -12,7 +12,6 @@ pub(crate) mod attachment;
 pub(in crate::studio) mod catalog;
 pub(in crate::studio) mod directory;
 mod error;
-mod interaction;
 pub(in crate::studio) mod object;
 mod project;
 pub(super) mod schema;

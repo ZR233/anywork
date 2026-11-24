@@ -58,48 +58,6 @@ impl StudioStore {
             .collect()
     }
 
-    pub async fn list_root_threads(&self, workspace_id: &str) -> Result<Vec<ThreadRecord>> {
-        self.catalog()
-            .sessions()
-            .into_iter()
-            .filter(|session| {
-                session.workspace_id == workspace_id
-                    && !session.archived
-                    && self
-                        .catalog()
-                        .get_agent(&session.root_agent_id)
-                        .is_some_and(|root| root.is_root_agent())
-            })
-            .filter_map(|session| root_thread_record(self.catalog(), &session))
-            .collect()
-    }
-
-    /// Archive selection reads only directory facts, not historical journals.
-    pub async fn list_root_threads_for_archive(
-        &self,
-        root_thread_id: &str,
-    ) -> Result<Vec<ThreadRecord>> {
-        let Some(root) = self
-            .catalog()
-            .agent_by_thread(root_thread_id)
-            .filter(|agent| agent.is_root_agent())
-            .and_then(|agent| {
-                self.catalog()
-                    .get_session(&agent.session_id)
-                    .filter(|session| session.root_agent_id == agent.agent_id)
-            })
-        else {
-            return Ok(Vec::new());
-        };
-        let workspace_id = root.workspace_id;
-        self.catalog()
-            .sessions()
-            .into_iter()
-            .filter(|session| session.workspace_id == workspace_id && !session.archived)
-            .filter_map(|session| root_thread_record(self.catalog(), &session))
-            .collect()
-    }
-
     /// Cleanup includes archived descendants without replaying their journals.
     pub async fn list_threads_for_archive(
         &self,
@@ -177,21 +135,6 @@ impl StudioStore {
             .collect()
     }
 
-    pub async fn list_project_thread_ids(&self, workspace_id: &str) -> Result<Vec<String>> {
-        let catalog = self.catalog();
-        Ok(catalog
-            .sessions()
-            .into_iter()
-            .filter(|session| session.workspace_id == workspace_id)
-            .flat_map(|session| {
-                catalog
-                    .agents_for_session(&session.session_id)
-                    .into_iter()
-                    .map(|agent| agent.thread_id)
-            })
-            .collect())
-    }
-
     pub async fn read_thread(&self, thread_id: &str) -> Result<Option<ThreadRecord>> {
         let catalog = self.catalog();
         catalog
@@ -209,21 +152,6 @@ impl StudioStore {
             })
             .transpose()
     }
-}
-
-fn root_thread_record(
-    catalog: &CatalogStore,
-    session: &crate::studio::records::SessionDirectoryRecord,
-) -> Option<Result<ThreadRecord>> {
-    catalog
-        .get_agent(&session.root_agent_id)
-        .filter(|root| root.is_root_agent() && root.session_id == session.session_id)
-        .map(|root| {
-            thread_projection(session, &root, |id| {
-                catalog.get_agent(id).map(|agent| agent.thread_id)
-            })
-            .map(ThreadRecord::from_directory_thread)
-        })
 }
 
 fn session_tree(

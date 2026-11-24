@@ -2,7 +2,7 @@ use super::{convert, types::*};
 use crate::api::studio::{
     bridge_runtime::active_bridge,
     convert::commands::settings_command_reply,
-    types::{AccountSecretInput, BridgeError, BridgeSettingsCommandReply},
+    types::{BridgeError, BridgeSettingsCommandReply},
 };
 use pl_studio_runtime as p;
 
@@ -12,25 +12,12 @@ pub async fn patch_account(
     account_id: String,
     input: BridgePatchAccountInput,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
-    let secret = match input.secret {
-        AccountSecretInput::Preserve => p::AccountSecretUpdate::Preserve,
-        AccountSecretInput::Replace { value } => p::AccountSecretUpdate::Replace { value },
-        AccountSecretInput::Clear => p::AccountSecretUpdate::Clear,
-    };
+    let secret = input.secret.into();
     let custom_models = match input.custom_models {
         BridgeAccountModelsPatch::Keep => p::AccountModelsPatch::Keep,
         BridgeAccountModelsPatch::Restore => p::AccountModelsPatch::Restore,
         BridgeAccountModelsPatch::Set { models } => p::AccountModelsPatch::Set {
-            models: models
-                .into_iter()
-                .map(|model| p::AccountModelUpdate {
-                    model_id: model.model_id,
-                    display_name: model.display_name,
-                    wire_api: model.wire_api,
-                    context_window: model.context_window,
-                    max_output_tokens: model.max_output_tokens,
-                })
-                .collect(),
+            models: models.into_iter().map(Into::into).collect(),
         },
     };
     Ok(settings_command_reply(

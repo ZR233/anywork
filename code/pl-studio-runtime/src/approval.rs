@@ -34,10 +34,6 @@ impl PermissionMode {
         }
     }
 
-    pub fn allows_workspace_escape(self) -> bool {
-        matches!(self, Self::FullAccess)
-    }
-
     pub fn is_default(&self) -> bool {
         matches!(self, Self::RequestApproval)
     }

@@ -211,7 +211,6 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
         StudioProductTopic::Lsp => "lsp",
         StudioProductTopic::Skills { .. } => "skills",
         StudioProductTopic::ThreadModeCatalog => "threadModeCatalog",
-        StudioProductTopic::AccountUsage => "accountUsage",
         StudioProductTopic::AcpAuth => "acpAuth",
         StudioProductTopic::AcpInstall => "acpInstall",
         StudioProductTopic::AcpLocalDetection => "acpLocalDetection",

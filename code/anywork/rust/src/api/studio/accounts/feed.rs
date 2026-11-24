@@ -8,10 +8,9 @@ use crate::api::studio::subscription::{
     factory::BridgeObservationFactory,
 };
 use crate::api::studio::types::BridgeError;
-use pl_lifecycle::{Managed, ManagedResource};
+use crate::pull_observation::{ManagedPullObservation, PullObservationSource};
+use pl_lifecycle::Managed;
 use pl_studio_runtime::accounts::AccountObservation;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tokio_util::sync::CancellationToken;
 
 /// 在作用域登记创建过程；迟到的原始观察仍由同一作用域关闭。
 pub async fn open_account_observation(
@@ -30,12 +29,11 @@ impl BridgeObservationFactory {
         let inner = self
             .scope
             .open("accountObservations", move |shutdown| async move {
-                Ok(BridgeAccountObservationInner {
-                    observation: source.open_account_observation(target.into())?,
+                Ok(ManagedPullObservation::new(
+                    source.open_account_observation(target.into())?,
                     shutdown,
-                    closing: AtomicBool::new(false),
-                    next_gate: tokio::sync::Mutex::new(()),
-                })
+                    "An account next read is already in flight",
+                ))
             })
             .await
             .map_err(open_error)?;
@@ -54,54 +52,30 @@ pub async fn read_account_domain(
     ))
 }
 
-/// An opaque pull handle: no FRB StreamSink or native port queue can bypass its one-next limit.
-pub struct BridgeAccountObservation {
-    inner: Managed<BridgeAccountObservationInner>,
-}
+impl PullObservationSource for AccountObservation {
+    type Frame = BridgeAccountDomainFrame;
 
-pub(crate) struct BridgeAccountObservationInner {
-    observation: AccountObservation,
-    shutdown: CancellationToken,
-    closing: AtomicBool,
-    next_gate: tokio::sync::Mutex<()>,
-}
-
-impl ManagedResource for BridgeAccountObservationInner {
-    type Error = BridgeError;
+    async fn next(&self) -> Result<Option<Self::Frame>, BridgeError> {
+        Ok(self.next().await?.map(convert::frame))
+    }
 
     fn request_close(&self) {
-        self.closing.store(true, Ordering::Release);
-        self.observation.request_close();
-    }
-    async fn close(&self) -> Result<(), BridgeError> {
         self.request_close();
-        self.observation.close().await?;
-        let _next = self.next_gate.lock().await;
-        Ok(())
     }
+
+    async fn close(&self) -> Result<(), BridgeError> {
+        Ok(self.close().await?)
+    }
+}
+
+/// An opaque pull handle: no FRB StreamSink or native port queue can bypass its one-next limit.
+pub struct BridgeAccountObservation {
+    inner: Managed<ManagedPullObservation<AccountObservation>>,
 }
 
 impl BridgeAccountObservation {
     pub async fn next(&self) -> Result<Option<BridgeAccountDomainFrame>, BridgeError> {
-        let inner = self.inner.get();
-        if inner.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        let _next = inner.next_gate.try_lock().map_err(|_| {
-            BridgeError::from(pl_studio_runtime::StudioError::new(
-                pl_studio_runtime::StudioErrorCode::Busy,
-                "An account next read is already in flight",
-                true,
-            ))
-        })?;
-        if inner.closing.load(Ordering::Acquire) {
-            return Ok(None);
-        }
-        tokio::select! {
-            biased;
-            _ = inner.shutdown.cancelled() => { self.inner.request_close(); Ok(None) },
-            next = inner.observation.next() => Ok(next?.map(convert::frame)),
-        }
+        self.inner.get().next().await
     }
 
     #[flutter_rust_bridge::frb(sync)]

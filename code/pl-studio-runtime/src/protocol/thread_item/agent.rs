@@ -45,11 +45,6 @@ impl ThreadAgentIdentity {
         }
     }
 
-    pub fn with_parent_path(mut self, parent_path: Option<String>) -> Self {
-        self.parent_path = parent_path;
-        self
-    }
-
     pub fn id(&self) -> &str {
         &self.id
     }

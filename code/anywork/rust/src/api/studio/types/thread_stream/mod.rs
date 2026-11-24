@@ -619,14 +619,6 @@ pub struct BridgeRuntimeCostAmount {
     pub amount: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BridgeTokenUsageSnapshot {
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
-    pub cached_prompt_tokens: u64,
-    pub total_tokens: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeThreadMcpHealthSnapshot {
     pub generation: u64,

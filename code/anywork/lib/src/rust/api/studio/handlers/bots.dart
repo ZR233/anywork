@@ -10,9 +10,6 @@ import '../types/error.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<BridgeBotsStateSnapshot> readBots() =>
-    RustLib.instance.api.crateApiStudioHandlersBotsReadBots();
-
 Future<BridgeBotsCommandReply> saveBot({
   required BridgeSaveBotRequest request,
 }) => RustLib.instance.api.crateApiStudioHandlersBotsSaveBot(request: request);

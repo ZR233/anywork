@@ -31,21 +31,21 @@ struct ReadState {
 
 enum AccountSignal {
     Topic(ProductTopicSignal),
-    Login(watch::Receiver<()>),
+    Watch(watch::Receiver<()>),
 }
 
 impl AccountSignal {
     async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         match self {
             Self::Topic(signal) => signal.changed().await,
-            Self::Login(signal) => signal.changed().await,
+            Self::Watch(signal) => signal.changed().await,
         }
     }
 
     fn mark_current(&mut self) {
         match self {
             Self::Topic(signal) => signal.mark_current(),
-            Self::Login(signal) => {
+            Self::Watch(signal) => {
                 signal.borrow_and_update();
             }
         }
@@ -56,37 +56,46 @@ pub(super) fn open(
     runtime: StudioRuntime,
     target: AccountObservationTarget,
 ) -> Result<AccountObservation> {
-    let topic = match &target {
-        AccountObservationTarget::ChatGptLogin { .. } => StudioProductTopic::SettingsConfig,
-        AccountObservationTarget::Summaries => StudioProductTopic::SettingsConfig,
-        AccountObservationTarget::Detail { identity } => {
-            let id = match identity {
-                super::AccountIdentity::Native { account_id }
-                | super::AccountIdentity::Acp { account_id } => account_id,
+    let signal = match &target {
+        AccountObservationTarget::ChatGptLogin { .. } => {
+            AccountSignal::Watch(runtime.chatgpt_auth.subscribe())
+        }
+        AccountObservationTarget::Usage => AccountSignal::Watch(runtime.account_usage.subscribe()),
+        other => {
+            let topic = match other {
+                AccountObservationTarget::Summaries => StudioProductTopic::SettingsConfig,
+                AccountObservationTarget::Detail { identity } => {
+                    let id = match identity {
+                        super::AccountIdentity::Native { account_id }
+                        | super::AccountIdentity::Acp { account_id } => account_id,
+                    };
+                    if id.trim().is_empty() {
+                        return Err(
+                            StudioError::invalid_argument("Account identity is required").into(),
+                        );
+                    }
+                    StudioProductTopic::SettingsConfig
+                }
+                AccountObservationTarget::Models { account_id } => {
+                    pl_model::config::AccountId::new(account_id)?;
+                    StudioProductTopic::ModelCatalog
+                }
+                AccountObservationTarget::AcpAuth => StudioProductTopic::AcpAuth,
+                AccountObservationTarget::AcpInstall => StudioProductTopic::AcpInstall,
+                AccountObservationTarget::AcpLocalDetection => {
+                    StudioProductTopic::AcpLocalDetection
+                }
+                AccountObservationTarget::ChatGptLogin { .. } | AccountObservationTarget::Usage => {
+                    unreachable!("handled above")
+                }
             };
-            if id.trim().is_empty() {
-                return Err(StudioError::invalid_argument("Account identity is required").into());
-            }
-            StudioProductTopic::SettingsConfig
+            AccountSignal::Topic(
+                runtime
+                    .agent_facility
+                    .product_events
+                    .subscribe_topic_signal(&topic),
+            )
         }
-        AccountObservationTarget::Models { account_id } => {
-            pl_model::config::AccountId::new(account_id)?;
-            StudioProductTopic::ModelCatalog
-        }
-        AccountObservationTarget::Usage => StudioProductTopic::AccountUsage,
-        AccountObservationTarget::AcpAuth => StudioProductTopic::AcpAuth,
-        AccountObservationTarget::AcpInstall => StudioProductTopic::AcpInstall,
-        AccountObservationTarget::AcpLocalDetection => StudioProductTopic::AcpLocalDetection,
-    };
-    let signal = if matches!(&target, AccountObservationTarget::ChatGptLogin { .. }) {
-        AccountSignal::Login(runtime.chatgpt_auth.subscribe())
-    } else {
-        AccountSignal::Topic(
-            runtime
-                .agent_facility
-                .product_events
-                .subscribe_topic_signal(&topic),
-        )
     };
     Ok(AccountObservation {
         inner: Arc::new(ObservationInner {

@@ -87,7 +87,6 @@ mod updater;
 
 pub(crate) use account_usage::AccountUsageCacheMigrationError;
 pub(crate) use account_usage::AccountUsageRuntime;
-pub use account_usage::{AccountUsageStateData, AccountUsageStateSnapshot};
 pub(crate) use model_performance::ModelPerformanceOwner;
 pub(crate) use shutdown_progress::ShutdownProgressBus;
 pub(crate) use skill_catalog::SkillCatalogRuntime;
@@ -312,7 +311,9 @@ impl StudioRuntime {
     ///
     /// 纯缓存读取（完整配置与逐文件诊断），不扫描文件；外部手改 Profile 后需显式
     /// reload 设置才会形成新事实。
-    pub fn read_agent_profiles_state(&self) -> Result<crate::StudioAgentProfilesStateSnapshot> {
+    pub(crate) fn read_agent_profiles_state(
+        &self,
+    ) -> Result<crate::StudioAgentProfilesStateSnapshot> {
         Ok(self.config_runtime.agent_profiles_snapshot()?.into())
     }
 

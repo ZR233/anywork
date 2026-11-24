@@ -3,8 +3,9 @@
 use tokio::sync::mpsc;
 
 use super::{
-    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind, error::open_error,
-    factory::BridgeObservationFactory, send_or_cancel, task::OwnedTaskSlot,
+    BridgeEventSubscription, BridgeSubscriptionInner, BridgeSubscriptionKind,
+    BridgeSubscriptionReceiver, error::open_error, factory::BridgeObservationFactory,
+    send_or_cancel, task::OwnedTaskSlot,
 };
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::event::{bridge_product_baseline, bridge_product_event};
@@ -121,9 +122,9 @@ impl BridgeObservationFactory {
                             outcome: None,
                         }),
                         sink_task: tokio::sync::Mutex::new(OwnedTaskSlot::default()),
-                        product_topic_receiver: tokio::sync::Mutex::new(Some(receiver)),
-                        shutdown_receiver: tokio::sync::Mutex::new(None),
-                        startup_receiver: tokio::sync::Mutex::new(None),
+                        receiver: tokio::sync::Mutex::new(Some(
+                            BridgeSubscriptionReceiver::ProductTopic(receiver),
+                        )),
                     })
                 })
                 .await
@@ -150,14 +151,14 @@ impl BridgeEventSubscription {
                 "non-product subscription cannot open a product topic stream",
             ));
         }
-        let mut receiver = inner
-            .product_topic_receiver
-            .lock()
-            .await
-            .take()
-            .ok_or_else(|| {
-                BridgeError::invalid_argument("product topic stream can only be opened once")
-            })?;
+        let mut receiver = match inner.receiver.lock().await.take() {
+            Some(BridgeSubscriptionReceiver::ProductTopic(receiver)) => receiver,
+            _ => {
+                return Err(BridgeError::invalid_argument(
+                    "product topic stream can only be opened once",
+                ));
+            }
+        };
         let cancel = inner.cancel.clone();
         inner
             .attach_sink(async move {

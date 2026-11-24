@@ -39,9 +39,14 @@ pub(crate) struct BridgeSubscriptionInner {
     cancel: CancellationToken,
     producer_task: Mutex<OwnedTaskSlot>,
     sink_task: Mutex<OwnedTaskSlot>,
-    product_topic_receiver: Mutex<Option<mpsc::Receiver<BridgeProductTopicStreamEnvelope>>>,
-    shutdown_receiver: Mutex<Option<tokio::sync::broadcast::Receiver<StudioShutdownProgress>>>,
-    startup_receiver: Mutex<Option<tokio::sync::watch::Receiver<StartupFrame>>>,
+    receiver: Mutex<Option<BridgeSubscriptionReceiver>>,
+}
+
+#[flutter_rust_bridge::frb(ignore)]
+pub(crate) enum BridgeSubscriptionReceiver {
+    ProductTopic(mpsc::Receiver<BridgeProductTopicStreamEnvelope>),
+    Shutdown(tokio::sync::broadcast::Receiver<StudioShutdownProgress>),
+    Startup(tokio::sync::watch::Receiver<StartupFrame>),
 }
 
 #[derive(Debug, Clone)]
@@ -251,9 +256,7 @@ mod tests {
                     cancel,
                     producer_task: Mutex::new(OwnedTaskSlot::default()),
                     sink_task: Mutex::new(OwnedTaskSlot::default()),
-                    product_topic_receiver: Mutex::new(None),
-                    shutdown_receiver: Mutex::new(None),
-                    startup_receiver: Mutex::new(None),
+                    receiver: Mutex::new(None),
                 })
             })
             .await

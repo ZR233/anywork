@@ -254,31 +254,6 @@ impl StudioThreadTools {
         Ok(self)
     }
 
-    /// Installs independent search with explicit service parameters and core-provided frozen context.
-    ///
-    /// # Errors
-    /// Returns model declaration encoding or registry failures.
-    pub fn with_web_search(
-        mut self,
-        client: pl_tool::search::WebSearchClient,
-        options: pl_tool::search::ThreadSearchOptions,
-    ) -> Result<Self, ThreadAssemblyError> {
-        let adapter = prepare_native_tool::<pl_tool::search::ThreadWebSearchTool>()?;
-        let declaration = prepare_registration(
-            adapter.definition().name(),
-            adapter.definition(),
-            ToolCallPolicy::DirectOnly,
-        )?;
-        self.registrations.push(
-            declaration
-                .attach(ToolHandle::new(adapter.attach(
-                    pl_tool::search::ThreadWebSearchTool::new(client, options),
-                )))
-                .with_presentation_contract(ToolPresentationContract::new("builtin.web_search@1")),
-        );
-        Ok(self)
-    }
-
     /// Installs independent image generation over the selected account backend and media host.
     ///
     /// The caller resolves the backend from the current directory observation, so an absent

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use super::{
-    BridgeAccountUsageStateSnapshot, BridgeAcpAuthSnapshot, BridgeAcpInstallSnapshot,
     BridgeAgentDirectoryState, BridgeBotsStateSnapshot, BridgeLspStateSnapshot,
     BridgeMcpCatalogSnapshot, BridgeModelCatalogStateSnapshot, BridgePersistenceStateSnapshot,
     BridgeProjectDirectoryState, BridgeRecoveryStateSnapshot, BridgeSettingsConfigStateSnapshot,
@@ -25,8 +24,6 @@ pub struct BridgeProductEventEnvelope {
 #[serde(rename_all = "camelCase")]
 pub enum BridgeProductEventPayload {
     ProjectDirectoryChanged(BridgeProjectDirectoryState),
-    /// Thread directory 增量：GUI 按身份合并进分页窗口，未加载条目的增量忽略。
-    ThreadDirectoryChanged(BridgeThreadDirectoryDelta),
     AgentDirectoryChanged(BridgeAgentDirectoryState),
     SettingsConfigStateChanged(Box<BridgeSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<BridgeModelCatalogStateSnapshot>),
@@ -37,10 +34,6 @@ pub enum BridgeProductEventPayload {
     LspStateChanged(BridgeLspStateSnapshot),
     SkillsStateChanged(BridgeSkillsStateSnapshot),
     ThreadModeCatalogChanged(BridgeThreadModeCatalogSnapshot),
-    AccountUsageStateChanged(BridgeAccountUsageStateSnapshot),
-    AcpAuthStateChanged(Box<BridgeAcpAuthSnapshot>),
-    AcpInstallStateChanged(Box<BridgeAcpInstallSnapshot>),
-    AcpLocalDetectionStateChanged(Box<super::BridgeAcpLocalDetectionSnapshot>),
     SessionCostsChanged(Box<super::response::BridgeSessionCostsState>),
     ChildInteractionsChanged(Box<super::product_topic::BridgeChildInteractionsState>),
     UpdaterStateChanged(BridgeUpdaterStateSnapshot),
@@ -48,16 +41,6 @@ pub enum BridgeProductEventPayload {
     PersistenceQueueStateChanged(Box<super::response::BridgePersistenceQueueStateSnapshot>),
     AgentProfilesStateChanged(Box<super::response::BridgeAgentProfilesStateSnapshot>),
     BotsStateChanged(Box<BridgeBotsStateSnapshot>),
-}
-
-/// Thread directory 增量事件 payload。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeThreadDirectoryDelta {
-    pub revision: u64,
-    pub updated_at: i64,
-    pub upserted: Vec<crate::api::studio::types::BridgeSessionDirectoryRow>,
-    pub removed: Vec<String>,
 }
 
 /// 一次关机进度的精确阶段状态；只有持久化刷新阶段携带 pending commit 数。

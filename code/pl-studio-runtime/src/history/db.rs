@@ -432,26 +432,6 @@ pub(super) async fn events_filtered(
     rows.into_iter().map(decode_row).collect()
 }
 
-pub(super) async fn review_finish(
-    db: &impl ConnectionTrait,
-    turn_id: &str,
-    cut: u64,
-) -> Result<Option<Record>> {
-    db.query_one_raw(statement(
-        &format!(
-            "SELECT {COLUMNS} FROM history_events \
-             WHERE turn_id=? AND tool_name='finish_turn' AND seq<=? ORDER BY seq DESC LIMIT 1"
-        ),
-        vec![turn_id.into(), number(cut)?.into()],
-    ))
-    .await
-    .inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-    .map(decode_row)
-    .transpose()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Body {
     pub id: String,

@@ -18,7 +18,6 @@ const WORKSPACES_DIR_NAME: &str = "workspaces";
 const SESSIONS_DIR_NAME: &str = "sessions";
 const BOTS_DIR_NAME: &str = "bots";
 const CALLS_DIR_NAME: &str = "calls";
-const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
 const HISTORY_FILE_NAME: &str = "history.sqlite";
 pub(in crate::studio) const CURRENT_FILE_NAME: &str = "current.json";
@@ -211,11 +210,6 @@ impl StudioPaths {
     /// Global, disposable call statistics database.
     pub fn calls_database(&self) -> PathBuf {
         self.calls_dir().join(CALLS_FILE_NAME)
-    }
-
-    /// Version-local migration state and consistent backups.
-    pub fn migrations_dir(&self) -> PathBuf {
-        self.data_dir.join(MIGRATIONS_DIR_NAME)
     }
 
     /// Temporary attachment-draft root. Persistent attachments live under the owning Thread's

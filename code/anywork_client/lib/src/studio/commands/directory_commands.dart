@@ -481,9 +481,6 @@ class DirectoryCommands extends ReadModel<DirectoryCommandState> {
     return receipt;
   });
 
-  Future<ThreadMcpStateSnapshot> readThreadMcp(String threadId) =>
-      _applyThreadMcp(threadId, () => _api.readThreadMcp(threadId));
-
   Future<ThreadMcpStateSnapshot> reconnectThreadMcp({
     required String threadId,
     String? serverId,

@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use crate::{PureError, Result};
 
 use crate::config::{AccountId, ModelRouteConfig, ReasoningEffort, StudioConfig};
-use crate::first_run::AccountTemplateKind;
 use pl_model::config::{
     AccountConfig, AccountModelCatalogConfig, AccountModelOverride, AccountTemplateId,
     builtin_account_catalog,
@@ -38,16 +37,6 @@ pub struct AccountEdit {
     pub model_connection_modes: BTreeMap<String, ConnectionMode>,
     /// 该 account 实例完整的上下文压缩阈值用户覆盖集合；未列出模型使用默认值。
     pub model_auto_compact_limits: BTreeMap<String, u64>,
-}
-
-/// # Errors
-/// Returns the bundled catalog assembly error without treating it as a missing template.
-pub fn account_template_kind(account: &AccountConfig) -> Result<Option<AccountTemplateKind>> {
-    account
-        .template_id()
-        .map(|template| AccountTemplateKind::from_key(template.as_str()))
-        .transpose()
-        .map(Option::flatten)
 }
 
 impl AccountModelEdit {

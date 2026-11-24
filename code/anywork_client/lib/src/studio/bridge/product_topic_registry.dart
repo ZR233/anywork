@@ -591,16 +591,12 @@ String describeBridgeProductTopic(ProductTopic topic) {
     LspTopic() => 'lsp',
     SkillsTopic(:final workspaceId) => 'skills:$workspaceId',
     ThreadModeCatalogTopic() => 'threadModeCatalog',
-    AccountUsageTopic() => 'accountUsage',
     SessionCostsTopic(:final rootThreadId) => 'sessionCosts:$rootThreadId',
     UpdaterTopic() => 'updater',
     PersistenceTopic() => 'persistence',
     PersistenceQueueTopic() => 'persistenceQueue',
     AgentProfilesTopic() => 'agentProfiles',
-    AcpAuthTopic() => 'acpAuth',
     BotsTopic() => 'bots',
-    AcpInstallTopic() => 'acpInstall',
-    AcpLocalDetectionTopic() => 'acpLocalDetection',
     ChildInteractionsTopic(:final hostThreadId) =>
       'childInteractions:$hostThreadId',
   };

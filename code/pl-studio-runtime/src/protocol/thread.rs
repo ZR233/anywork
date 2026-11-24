@@ -431,13 +431,6 @@ impl ThreadNotificationEnvelope {
             notification,
         }
     }
-
-    /// 本通知是否可由客户端接在上一条 `revision` 之后拼接。
-    ///
-    /// 同 epoch 且 `base_revision` 恰好等于客户端已知水位才连续；否则是缺口。
-    pub fn continues_from(&self, epoch: u64, last_revision: u64) -> bool {
-        self.epoch == epoch && self.base_revision == last_revision
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

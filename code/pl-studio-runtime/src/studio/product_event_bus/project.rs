@@ -2,7 +2,6 @@
 
 use anyhow::Result;
 
-use crate::studio::ids::unix_seconds;
 use crate::studio::store::directory::ProjectRemoval;
 use crate::{
     StudioProductEventEnvelope, StudioProductEventKind, StudioProjectDirectoryData,
@@ -114,22 +113,5 @@ impl ProductEventBus {
         self.apply_project_delta(std::slice::from_ref(&project), &[])
             .await?
             .ok_or_else(|| anyhow::anyhow!("project upsert did not produce an event"))
-    }
-
-    /// 从活动 Project 目录移除一个已归档或隔离的 Project。
-    pub async fn remove_project_entry(
-        &self,
-        workspace_id: &str,
-    ) -> Result<StudioProductEventEnvelope> {
-        self.apply_project_delta(
-            &[],
-            &[ProjectRemoval {
-                workspace_id: workspace_id.to_string(),
-                session_ids: Vec::new(),
-                closed_at: unix_seconds(),
-            }],
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("project removal did not produce an event"))
     }
 }

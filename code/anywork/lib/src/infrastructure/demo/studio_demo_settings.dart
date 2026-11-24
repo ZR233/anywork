@@ -373,24 +373,6 @@ const demoAccountCatalogFixture = AccountCatalogView(
   },
 );
 
-AccountUsageView _demoAccountUsage(AccountSettingsView account) {
-  final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  if (!account.hasBearerToken) {
-    return AccountUsageView(
-      accountId: account.id,
-      updatedAt: now,
-      state: const MissingCredentialAccountUsageView(
-        message: 'account API key is not configured',
-      ),
-    );
-  }
-  return AccountUsageView(
-    accountId: account.id,
-    updatedAt: now,
-    state: const UnsupportedAccountUsageView(),
-  );
-}
-
 List<AccountSettingsView> _accountsFromCreateCommands(
   List<CreateAccountCommand> commands, {
   required AccountCatalogView catalog,

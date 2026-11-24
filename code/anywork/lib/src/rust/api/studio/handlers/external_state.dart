@@ -49,12 +49,6 @@ Future<BridgeMcpDocumentCommitReceipt> deleteMcpDocument({
   input: input,
 );
 
-Future<BridgeThreadMcpStateSnapshot> readThreadMcp({
-  required String threadId,
-}) => RustLib.instance.api.crateApiStudioHandlersExternalStateReadThreadMcp(
-  threadId: threadId,
-);
-
 Future<BridgeThreadMcpStateSnapshot> reconnectThreadMcp({
   required BridgeReconnectThreadMcpInput input,
 }) => RustLib.instance.api

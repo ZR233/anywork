@@ -1,4 +1,3 @@
-pub mod accounts;
 pub mod acp;
 pub mod acp_business;
 pub mod acp_detection;
@@ -14,13 +13,13 @@ pub mod mode_editor;
 pub mod persistence;
 pub mod prompt;
 pub mod settings;
+pub mod skills;
 pub mod snapshot;
 pub mod ssh;
 pub mod thread;
 pub mod timeline;
 pub mod updater;
 
-pub use accounts::*;
 pub use acp::*;
 pub use acp_business::*;
 pub use acp_detection::*;
@@ -36,6 +35,7 @@ pub use mode_editor::*;
 pub use persistence::*;
 pub use prompt::*;
 pub use settings::*;
+pub use skills::*;
 pub use snapshot::*;
 pub use ssh::*;
 pub use thread::*;

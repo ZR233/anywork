@@ -11,19 +11,10 @@ import '../types/command.dart';
 import '../types/delegation.dart';
 import '../types/error.dart';
 import '../types/response.dart';
-import '../types/runtime.dart';
 import '../types/session_directory.dart';
 import '../types/settings.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
-
-/// 读取配置 owner 已发布的 Agent Profiles 资源快照（完整配置与逐文件诊断）。
-///
-/// 纯缓存读取，不扫描文件；外部手改 Profile 后需要显式 reload 设置。
-Future<BridgeAgentProfilesStateSnapshot> readAgentProfilesState() => RustLib
-    .instance
-    .api
-    .crateApiStudioHandlersAgentProfilesReadAgentProfilesState();
 
 /// Enables or disables an immutable built-in Agent Profile.
 Future<BridgeSettingsCommandReply> setSystemAgentEnabled({

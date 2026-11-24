@@ -4,6 +4,7 @@ import 'package:anywork_client/statistics_ports.dart';
 import '../../../rust/api/studio/statistics/feed.dart' as frb_statistics;
 import '../../../rust/api/studio/statistics/types.dart' as frb_types;
 import '../../../rust/api/studio/types/error.dart' as frb_error;
+import '../studio_bridge_error.dart';
 import '../usage_diagnostics.dart';
 
 /// Native statistics adapter. It speaks only to the dedicated typed feed/scope API.
@@ -384,32 +385,7 @@ StatisticsFailure _statisticsFailureFromBridge(frb_error.BridgeError error) {
   };
   return StatisticsFailure.fromStudioFailure(
     StudioFailure(
-      code: switch (error.code) {
-        frb_error.BridgeErrorCode.notInitialized =>
-          StudioFailureCode.notInitialized,
-        frb_error.BridgeErrorCode.runtimeStopped =>
-          StudioFailureCode.runtimeStopped,
-        frb_error.BridgeErrorCode.instanceBusy =>
-          StudioFailureCode.instanceBusy,
-        frb_error.BridgeErrorCode.invalidArgument =>
-          StudioFailureCode.invalidArgument,
-        frb_error.BridgeErrorCode.notFound => StudioFailureCode.notFound,
-        frb_error.BridgeErrorCode.busy => StudioFailureCode.busy,
-        frb_error.BridgeErrorCode.conflict => StudioFailureCode.conflict,
-        frb_error.BridgeErrorCode.staleRevision =>
-          StudioFailureCode.staleRevision,
-        frb_error.BridgeErrorCode.permissionDenied =>
-          StudioFailureCode.permissionDenied,
-        frb_error.BridgeErrorCode.cancelled => StudioFailureCode.cancelled,
-        frb_error.BridgeErrorCode.cancellationTooLate =>
-          StudioFailureCode.cancellationTooLate,
-        frb_error.BridgeErrorCode.overloaded => StudioFailureCode.overloaded,
-        frb_error.BridgeErrorCode.unavailable => StudioFailureCode.unavailable,
-        frb_error.BridgeErrorCode.protocol => StudioFailureCode.protocol,
-        frb_error.BridgeErrorCode.storage => StudioFailureCode.storage,
-        frb_error.BridgeErrorCode.update => StudioFailureCode.update,
-        frb_error.BridgeErrorCode.internal => StudioFailureCode.internal,
-      },
+      code: studioFailureCodeFromBridge(error.code),
       message: error.message,
       retryable: error.retryable,
       correlationId: error.correlationId,

@@ -5,11 +5,10 @@
 use tokio::sync::watch;
 
 use crate::{
-    AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
-    StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioModelCatalogStateSnapshot,
-    StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
-    StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
-    StudioUpdateStateSnapshot,
+    PersistenceStateSnapshot, SkillsStateSnapshot, StudioAgentProfilesStateSnapshot,
+    StudioLspStateSnapshot, StudioModelCatalogStateSnapshot, StudioPersistenceQueueStateSnapshot,
+    StudioProductEventEnvelope, StudioProductEventKind, StudioRecoveryStateSnapshot,
+    StudioSessionCostsState, StudioSettingsConfigStateSnapshot, StudioUpdateStateSnapshot,
 };
 use pl_studio_statistics::StudioModelPerformanceSnapshot;
 
@@ -86,13 +85,6 @@ impl ProductEventBus {
         }
         *published = state.revision;
         Some(self.emit(StudioProductEventKind::ThreadModeCatalogChanged(state)))
-    }
-
-    pub fn emit_account_usage_state(
-        &self,
-        state: AccountUsageStateSnapshot,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::AccountUsageStateChanged(state))
     }
 
     pub fn emit_model_performance_state(

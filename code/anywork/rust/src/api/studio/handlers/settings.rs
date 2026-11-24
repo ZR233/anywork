@@ -1,39 +1,15 @@
 use crate::api::studio::bridge_runtime::{active_bridge, installed_bridge};
 use crate::api::studio::convert::commands::settings_command_reply;
-use crate::api::studio::convert::settings::{
-    account_settings_request, bridge_deepseek_web_search_settings, bridge_settings_snapshot,
-    bridge_web_search_settings,
-};
+use crate::api::studio::convert::settings::{account_settings_request, bridge_settings_snapshot};
 use crate::api::studio::types::{
-    AccountSettingsInput, BridgeAccountCatalogSnapshot, BridgeBillingKind,
-    BridgeDeepSeekWebSearchSettingsDto, BridgeError, BridgeSettingsCommandReply,
-    BridgeSettingsStateResponse, BridgeWebSearchSettingsDto, RemoveAccountInput,
+    AccountSettingsInput, BridgeAccountCatalogSnapshot, BridgeBillingKind, BridgeError,
+    BridgeSettingsCommandReply, BridgeSettingsStateResponse, RemoveAccountInput,
     SettingsFieldInput,
 };
 // ── Settings ──
 
 pub fn load_account_catalog() -> Result<BridgeAccountCatalogSnapshot, BridgeError> {
     Ok(installed_bridge()?.studio.load_account_catalog()?.into())
-}
-
-pub async fn read_web_search_settings() -> Result<BridgeWebSearchSettingsDto, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge_web_search_settings(
-        bridge.studio.read_settings()?.config.settings.web_search,
-    ))
-}
-
-pub async fn read_deepseek_web_search_settings()
--> Result<BridgeDeepSeekWebSearchSettingsDto, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge_deepseek_web_search_settings(
-        bridge
-            .studio
-            .read_settings()?
-            .config
-            .settings
-            .deepseek_web_search,
-    ))
 }
 
 /// Applies one typed settings field/resource mutation. Sibling values are
@@ -113,18 +89,6 @@ pub async fn set_account_billing_kind(
                 billing_kind,
             },
         )?,
-    ))
-}
-
-pub async fn reload_settings_from_disk(
-    expected_settings_revision: u64,
-) -> Result<BridgeSettingsStateResponse, BridgeError> {
-    let bridge = active_bridge().await?;
-    Ok(bridge_settings_snapshot(
-        bridge
-            .studio
-            .reload_settings(expected_settings_revision)
-            .await?,
     ))
 }
 

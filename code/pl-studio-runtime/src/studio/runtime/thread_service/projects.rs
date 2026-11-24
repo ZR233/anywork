@@ -274,10 +274,6 @@ impl StudioRuntime {
         Ok(project)
     }
 
-    pub async fn list_projects(&self) -> Result<Vec<WorkspaceRecord>> {
-        Ok(self.agent_facility.product_events.project_snapshot().await)
-    }
-
     pub async fn archive_project(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
         let runtime = self.clone();
         let workspace_id = workspace_id.to_owned();
@@ -971,7 +967,14 @@ mod standalone_tests {
         assert_eq!(project, right?);
         assert_eq!(project.kind, WorkspaceKind::Standalone);
         assert_eq!(Path::new(&project.path), dunce::canonicalize(&root)?);
-        assert_eq!(runtime.list_projects().await?, vec![project.clone()]);
+        assert_eq!(
+            runtime
+                .agent_facility
+                .product_events
+                .project_snapshot()
+                .await,
+            vec![project.clone()]
+        );
         assert_eq!(
             runtime.prepare_standalone_workspace_at(None).await?,
             project
@@ -1004,7 +1007,14 @@ mod standalone_tests {
             runtime.prepare_standalone_workspace_at(None).await?,
             project
         );
-        assert_eq!(runtime.list_projects().await?, vec![project]);
+        assert_eq!(
+            runtime
+                .agent_facility
+                .product_events
+                .project_snapshot()
+                .await,
+            vec![project]
+        );
         runtime.shutdown_runtime().await?;
         Ok(())
     }
@@ -1022,7 +1032,14 @@ mod standalone_tests {
                 .await
                 .is_err()
         );
-        assert!(runtime.list_projects().await?.is_empty());
+        assert!(
+            runtime
+                .agent_facility
+                .product_events
+                .project_snapshot()
+                .await
+                .is_empty()
+        );
         let root = temp.path().join("user-project");
         tokio::fs::create_dir(&root).await?;
         let project = runtime.open_project(&root).await?;
@@ -1032,7 +1049,14 @@ mod standalone_tests {
                 .await
                 .is_err()
         );
-        assert_eq!(runtime.list_projects().await?, vec![project]);
+        assert_eq!(
+            runtime
+                .agent_facility
+                .product_events
+                .project_snapshot()
+                .await,
+            vec![project]
+        );
         runtime.shutdown_runtime().await?;
         Ok(())
     }

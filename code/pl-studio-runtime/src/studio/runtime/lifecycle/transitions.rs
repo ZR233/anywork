@@ -38,7 +38,7 @@ impl StudioRuntime {
     }
 
     /// Whether this runtime has committed to shutdown (one-way latch).
-    pub fn shutdown_committed(&self) -> bool {
+    pub(crate) fn shutdown_committed(&self) -> bool {
         self.shutdown_latch.is_committed()
     }
 

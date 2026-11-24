@@ -179,7 +179,6 @@ class StudioChannels {
         _client.existingSkills(workspaceId)?.state,
       ),
       ThreadModeCatalogTopic() => _clock(_client.modeCatalog.state),
-      AccountUsageTopic() => throw StateError('Use account usage domain'),
       SessionCostsTopic(:final rootThreadId) => _clock(
         _client.existingSessionCosts(rootThreadId)?.state,
       ),
@@ -195,9 +194,6 @@ class StudioChannels {
         _client.persistence.state.queueLoaded,
         _client.persistence.state.queueRevision,
       ),
-      AcpAuthTopic() => throw StateError('Use ACP domain'),
-      AcpInstallTopic() => throw StateError('Use ACP domain'),
-      AcpLocalDetectionTopic() => throw StateError('Use ACP domain'),
       BotsTopic() => _clock(_client.bots.state),
     };
   }
@@ -247,8 +243,6 @@ class StudioChannels {
         _client.existingSkills(state.workspaceId)?.apply(state);
       case ThreadModeCatalogBaseline(:final state):
         _client.modeCatalog.apply(state);
-      case AccountUsageBaseline():
-        throw StateError('Use account domain observation');
       case SessionCostsBaseline(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case ChildInteractionsBaseline(:final state):
@@ -261,11 +255,6 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesBaseline(:final state):
         _client.settings.applyAgentProfiles(state);
-      case AcpAuthBaseline():
-        throw StateError('Use account domain observation');
-      case AcpInstallBaseline():
-      case AcpLocalDetectionBaseline():
-        throw StateError('Use account domain observation');
       case BotsBaseline(:final state):
         _client.bots.apply(state);
     }
@@ -308,8 +297,6 @@ class StudioChannels {
         _client.existingSkills(state.workspaceId)?.apply(state);
       case ThreadModeCatalogChangedPayload(:final state):
         _client.modeCatalog.apply(state);
-      case AccountUsageStateChangedPayload():
-        throw StateError('Use account domain observation');
       case SessionCostsChangedPayload(:final state):
         _client.existingSessionCosts(state.rootThreadId)?.apply(state);
       case ChildInteractionsChangedPayload(:final state):
@@ -322,11 +309,6 @@ class StudioChannels {
         _client.persistence.applyQueue(state);
       case AgentProfilesStateChangedPayload(:final state):
         _client.settings.applyAgentProfiles(state);
-      case AcpAuthStateChangedPayload():
-        throw StateError('Use account domain observation');
-      case AcpInstallStateChangedPayload():
-      case AcpLocalDetectionStateChangedPayload():
-        throw StateError('Use account domain observation');
       case BotsStateChangedPayload(:final state):
         _client.bots.apply(state);
     }
@@ -360,8 +342,6 @@ class StudioChannels {
         _client.existingSkills(workspaceId)?.applyTransport(sync);
       case ThreadModeCatalogTopic():
         _client.modeCatalog.applyTransport(sync);
-      case AccountUsageTopic():
-        throw StateError('Use account domain observation');
       case SessionCostsTopic(:final rootThreadId):
         _client.existingSessionCosts(rootThreadId)?.applyTransport(sync);
       case ChildInteractionsTopic(:final hostThreadId):
@@ -372,11 +352,6 @@ class StudioChannels {
         _client.persistence.applyStateTransport(sync);
       case PersistenceQueueTopic():
         _client.persistence.applyQueueTransport(sync);
-      case AcpAuthTopic():
-        throw StateError('Use account domain observation');
-      case AcpInstallTopic():
-      case AcpLocalDetectionTopic():
-        throw StateError('Use account domain observation');
       case BotsTopic():
         _client.bots.applyTransport(sync);
     }
@@ -430,16 +405,12 @@ int? _incomingRevision(ProductTopicFrame frame) {
         LspBaseline(:final state) => state.revision,
         SkillsBaseline(:final state) => state.revision,
         ThreadModeCatalogBaseline(:final state) => state.revision,
-        AccountUsageBaseline(:final state) => state.revision,
         SessionCostsBaseline(:final state) => state.revision,
         ChildInteractionsBaseline(:final state) => state.state.revision,
         UpdaterBaseline(:final state) => state.revision,
         PersistenceBaseline(:final state) => state.revision,
         PersistenceQueueBaseline(:final state) => state.revision,
         AgentProfilesBaseline(:final state) => state.revision,
-        AcpAuthBaseline(:final state) => state.revision,
-        AcpInstallBaseline(:final state) => state.revision,
-        AcpLocalDetectionBaseline(:final state) => state.revision,
         BotsBaseline(:final state) => state.revision,
       },
     ProductTopicDataFrame(:final event) => switch (event.payload) {
@@ -456,16 +427,12 @@ int? _incomingRevision(ProductTopicFrame frame) {
       LspStateChangedPayload(:final state) => state.revision,
       SkillsStateChangedPayload(:final state) => state.revision,
       ThreadModeCatalogChangedPayload(:final state) => state.revision,
-      AccountUsageStateChangedPayload(:final state) => state.revision,
       SessionCostsChangedPayload(:final state) => state.revision,
       ChildInteractionsChangedPayload(:final state) => state.state.revision,
       UpdaterStateChangedPayload(:final state) => state.revision,
       PersistenceStateChangedPayload(:final state) => state.revision,
       PersistenceQueueStateChangedPayload(:final state) => state.revision,
       AgentProfilesStateChangedPayload(:final state) => state.revision,
-      AcpAuthStateChangedPayload(:final state) => state.revision,
-      AcpInstallStateChangedPayload(:final state) => state.revision,
-      AcpLocalDetectionStateChangedPayload(:final state) => state.revision,
       BotsStateChangedPayload(:final state) => state.revision,
     },
     ProductTopicLaggedFrame() || ProductTopicFailureFrame() => null,

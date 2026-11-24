@@ -7,7 +7,7 @@
 // 边界约定：
 // - 不写包装函数、类型别名或 raw JSON 回退，不复制 DTO，只做 `export` 汇集；
 // - 模块集合跟随当前生成输出，旧模块（如已移除的 `handlers/providers.dart`）
-//   在这里不保留转发，账号操作导出当前的 `handlers/accounts.dart`；
+//   在这里不保留转发，技能查询导出当前的 `handlers/skills.dart`；
 // - 生成器统一重建输出集后，本文件与引用方保持同一份 canonical 生成 API。
 
 export '../../rust/api/studio/handlers/agent_profiles.dart';
@@ -15,7 +15,7 @@ export '../../rust/api/studio/handlers/external_state.dart';
 export '../../rust/api/studio/handlers/lifecycle.dart';
 export '../../rust/api/studio/handlers/prompt.dart';
 export '../../rust/api/studio/handlers/persistence.dart';
-export '../../rust/api/studio/handlers/accounts.dart';
+export '../../rust/api/studio/handlers/skills.dart';
 export '../../rust/api/studio/handlers/acp.dart';
 export '../../rust/api/studio/handlers/acp_install.dart';
 export '../../rust/api/studio/handlers/acp_detection.dart';

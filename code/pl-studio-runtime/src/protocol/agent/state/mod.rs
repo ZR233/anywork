@@ -64,41 +64,6 @@ impl AgentState {
         }
     }
 
-    /// 返回状态是否仍接受执行命令。
-    pub fn is_operational(&self) -> bool {
-        matches!(
-            self,
-            Self::Idle(_)
-                | Self::Queued(_)
-                | Self::Running(_)
-                | Self::WaitingTool(_)
-                | Self::WaitingInteraction(_)
-                | Self::Cancelling(_)
-        )
-    }
-
-    /// 返回状态是否仍接受新工作。
-    pub fn is_accepting_work(&self) -> bool {
-        matches!(
-            self,
-            Self::Idle(_)
-                | Self::Queued(_)
-                | Self::Running(_)
-                | Self::WaitingTool(_)
-                | Self::WaitingInteraction(_)
-        )
-    }
-
-    /// 返回 Agent 是否 idle。
-    pub fn is_idle(&self) -> bool {
-        matches!(self, Self::Idle(_))
-    }
-
-    /// 返回 Agent 是否正等待父 Agent 检查预算终态并显式续跑。
-    pub fn is_budget_paused(&self) -> bool {
-        matches!(self, Self::Idle(state) if state.budget_pause().is_some())
-    }
-
     /// 返回 child 预算暂停快照。
     pub fn budget_pause(&self) -> Option<&AgentBudgetPause> {
         match self {
@@ -112,16 +77,6 @@ impl AgentState {
             | Self::Closed(_)
             | Self::Faulted(_) => None,
         }
-    }
-
-    /// 返回 Agent 是否已排队。
-    pub fn is_queued(&self) -> bool {
-        matches!(self, Self::Queued(_))
-    }
-
-    /// 返回 Agent 是否等待用户 Interaction。
-    pub fn is_waiting_interaction(&self) -> bool {
-        matches!(self, Self::WaitingInteraction(_))
     }
 
     /// 返回 Agent 是否已停止执行并可供等待方收束。

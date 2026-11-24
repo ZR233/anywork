@@ -176,17 +176,6 @@ impl Pending {
             .collect()
     }
 
-    pub fn finish(&self, turn_id: &str, cut: u64) -> Option<&Arc<Accepted>> {
-        self.events
-            .range(..=cut)
-            .rev()
-            .map(|(_, entry)| entry)
-            .find(|entry| {
-                entry.event.turn_id.as_deref() == Some(turn_id)
-                    && entry.event.tool_name.as_deref() == Some("finish_turn")
-            })
-    }
-
     pub fn business_anchors(
         &self,
         scope: HistoryBusinessRowScope,

@@ -14,21 +14,10 @@ impl ClosingAgentState {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_turn(mut self, turn_id: Option<crate::TurnId>) -> Self {
-        self.turn_id = turn_id;
-        self
-    }
-    pub fn with_error(mut self, error: crate::StateError) -> Self {
-        self.error = Some(error);
-        self
-    }
     pub fn turn_id(&self) -> Option<&crate::TurnId> {
         self.turn_id.as_ref()
     }
     pub fn error(&self) -> Option<&crate::StateError> {
         self.error.as_ref()
-    }
-    pub fn clear_turn(&mut self) {
-        self.turn_id = None;
     }
 }
