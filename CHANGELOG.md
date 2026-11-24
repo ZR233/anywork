@@ -13,6 +13,30 @@ anywork release notes are generated from Conventional Commits by Release Please.
 - 用户输入与公开外部收件在首次可靠接纳时即成为不可变完成记录，后续消费/恢复不重复发布；旧会话中仅保存在执行历史的材料不猜测回填完成顺序。Plan/交互资源引用改随原 State 的必填 `businessRefs` 与专用变化通知交付，Thread State schema 升至17；删除 `ChatBatch.current` 及旧展示投影 DTO，调用方使用原内容范围/集合查询，不从历史回放重建可操作业务状态。
 - 工具作者接口迁至独立 `pl-agent-tool`；移除 `pl_core::tool::opaque::Tool`、旧工具声明构造器及重复参数 helper。普通 JSON 作者改用可选 typed/宏与 `pl_tool::binding`，raw/dynamic 工具直接实现新消费契约。注册先准备身份和声明，再附着 `RuntimeTool`；控制权限仍显式配置在注册值上。现有模型 wire、会话历史与用户数据格式保持。升级示例见 [工具接口说明](code/pl-agent-tool/README.md)。
 
+## [6.50.0](https://github.com/ZR233/anywork/compare/v6.49.0...v6.50.0) (2026-11-24)
+
+
+### Features
+
+* **studio:** 优化自动工作流各阶段提示词并强化计划与审查契约 ([#572](https://github.com/ZR233/anywork/issues/572)) ([65aac66](https://github.com/ZR233/anywork/commit/65aac66d10583bd1189ef2fcca0e61747fcbae31))
+
+
+### Bug Fixes
+
+* **ci:** 提高 Studio 工作树续接与 MCP 启动测试的确定性 ([#569](https://github.com/ZR233/anywork/issues/569)) ([bb3b3ae](https://github.com/ZR233/anywork/commit/bb3b3ae08aeebd3d15c4c4262e096eace0b32f6d))
+* **studio:** 升级受管 Antigravity 最低版本至 1.5.2 并修复 ACP Host MCP 自动批准 ([#566](https://github.com/ZR233/anywork/issues/566)) ([b895b5c](https://github.com/ZR233/anywork/commit/b895b5cfa3b0b1f9bbc167229362c5a8006a8dab))
+* **studio:** 按在线目录排序并解析模型默认启用状态 ([#573](https://github.com/ZR233/anywork/issues/573)) ([4dab3b2](https://github.com/ZR233/anywork/commit/4dab3b2c6e143aa45e4ae2b5a76628e209ba2801))
+* **studio:** 支持运行中切换模型并续接会话 ([#565](https://github.com/ZR233/anywork/issues/565)) ([4a93a6c](https://github.com/ZR233/anywork/commit/4a93a6c1e8724de9b97b487043179037da9ddf0b))
+* **studio:** 统一会话模型选择菜单 ([#564](https://github.com/ZR233/anywork/issues/564)) ([caa33e0](https://github.com/ZR233/anywork/commit/caa33e012a31a502c414be77829f63921f680d1d))
+* **studio:** 隔离实时工作组成员更新并稳定重连提示 ([#574](https://github.com/ZR233/anywork/issues/574)) ([06cfb0e](https://github.com/ZR233/anywork/commit/06cfb0ed66f7465aff1e0ca537c621e59db68879))
+
+
+### Refactoring
+
+* **model:** 清理 Gemini 内置目录为 Gemini 4 系列并补齐官网定价 ([#562](https://github.com/ZR233/anywork/issues/562)) ([f97d443](https://github.com/ZR233/anywork/commit/f97d443070b971a11c657bcdfa8a8b20b9caa52f))
+* **studio:** 清理 FRB bridge 与 runtime 遗留接口及冗余逻辑 ([#560](https://github.com/ZR233/anywork/issues/560)) ([6ff7bab](https://github.com/ZR233/anywork/commit/6ff7babe0359cca0e3d702dd55160a3153ffec13))
+* **studio:** 统一 Native 与 ACP 会话右侧可收缩边栏与布局 ([#567](https://github.com/ZR233/anywork/issues/567)) ([4299ee2](https://github.com/ZR233/anywork/commit/4299ee2ce0008d321e220a5e91255b9667d4c7d4))
+
 ## [6.49.0](https://github.com/ZR233/anywork/compare/v6.48.0...v6.49.0) (2026-11-24)
 
 
