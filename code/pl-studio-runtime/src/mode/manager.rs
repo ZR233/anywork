@@ -77,7 +77,6 @@ impl ThreadModeSource {
 #[derive(Debug, Clone)]
 pub struct RegisteredThreadMode {
     descriptor: ThreadModeDescriptor,
-    source: ThreadModeSource,
     prompt: Arc<str>,
     graph_revision: u64,
     workflow: Option<Arc<CompiledWorkflowDefinition>>,
@@ -119,7 +118,6 @@ impl RegisteredThreadMode {
         let (_, prepared) = batch.pop_first().expect("one prepared definition");
         Ok(Arc::new(Self {
             descriptor: prepared.descriptor,
-            source,
             prompt: prepared.prompt,
             graph_revision,
             workflow: prepared.workflow,
@@ -263,7 +261,6 @@ impl ThreadModeManager {
                 id,
                 Arc::new(RegisteredThreadMode {
                     descriptor: mode.descriptor,
-                    source: source.clone(),
                     prompt: mode.prompt,
                     graph_revision,
                     workflow: mode.workflow,

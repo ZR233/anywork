@@ -120,6 +120,7 @@ where
         }
     }
 
+    #[cfg(test)]
     pub(in crate::studio::product_event_bus) fn len(&self) -> usize {
         self.entries.len()
     }
@@ -132,11 +133,8 @@ where
         self.entries.get(key).map(|entry| &entry.sender)
     }
 
-    pub(in crate::studio::product_event_bus) fn remove(
-        &mut self,
-        key: &K,
-    ) -> Option<TopicEntry<S>> {
-        self.entries.remove(key)
+    fn remove(&mut self, key: &K) {
+        self.entries.remove(key);
     }
 
     fn next_generation(&mut self) -> u64 {

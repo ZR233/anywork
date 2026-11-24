@@ -1329,7 +1329,8 @@ pub(crate) fn admit_main(path: &Path, content: &str) -> Result<AdmittedMain> {
     Ok(AdmittedMain { loaded, table })
 }
 
-pub(crate) fn extract_legacy_acp_from_main(
+#[cfg(test)]
+fn extract_legacy_acp_from_main(
     path: &Path,
     content: &str,
 ) -> Result<BTreeMap<String, crate::config::AcpServiceDefinition>> {
@@ -1344,23 +1345,6 @@ pub(crate) fn extract_historical_acp_accounts(
     content: &str,
 ) -> Result<BTreeMap<String, wire::AcpAccountConfig>> {
     admit_main(path, content)?.historical_acp_accounts(path)
-}
-
-/// Extracts the legacy `[mcp]` section when migrating a schema 18..=30 `config.toml` to 31.
-pub(crate) fn extract_legacy_mcp_from_main(
-    path: &Path,
-    content: &str,
-) -> Result<Option<wire::StudioMcpConfig>> {
-    admit_main(path, content)?.legacy_mcp(path)
-}
-
-/// Returns the legacy LSP server documents without decoding them through the mutable runtime
-/// configuration type. This keeps every schema-31 field value available to the migration.
-pub(crate) fn extract_legacy_lsp_from_main(
-    path: &Path,
-    content: &str,
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    admit_main(path, content)?.legacy_lsp()
 }
 
 impl AdmittedMain {

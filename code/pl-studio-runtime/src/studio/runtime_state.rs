@@ -136,7 +136,7 @@ struct StudioRuntimeTransitionDecision {
 
 /// runtime 生命周期转换错误。
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-enum StudioRuntimeTransitionError {
+pub(in crate::studio) enum StudioRuntimeTransitionError {
     #[error("Studio runtime revision is stale: expected {expected}, actual {actual}")]
     StaleRevision {
         expected: u64,
@@ -161,7 +161,7 @@ pub struct StudioRuntimeSnapshot {
 }
 
 impl StudioRuntimeSnapshot {
-    pub fn decide(
+    fn decide(
         &self,
         command: StudioRuntimeCommand,
     ) -> Result<StudioRuntimeTransitionDecision, StudioRuntimeTransitionError> {
@@ -240,7 +240,7 @@ impl StudioRuntimeState {
             .clone()
     }
 
-    pub fn apply(
+    pub(in crate::studio) fn apply(
         &self,
         command: StudioRuntimeCommand,
     ) -> Result<StudioRuntimeSnapshot, StudioRuntimeTransitionError> {

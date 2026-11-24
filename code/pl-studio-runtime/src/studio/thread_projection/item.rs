@@ -1,4 +1,5 @@
 //! 仅用于执行投影的局部类型；旧持久 JSON 仅由 schema 的冻结解码器读取。
+#[cfg(test)]
 use crate::ThreadAttachment;
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,7 @@ impl ExecutionItem {
         )
     }
 
+    #[cfg(test)]
     fn completed_input_message(
         id: String,
         stamp: ItemStamp<'_>,

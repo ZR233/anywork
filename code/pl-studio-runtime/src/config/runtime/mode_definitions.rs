@@ -338,8 +338,8 @@ fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadMo
                     DocumentReadError::Symlink | DocumentReadError::NotRegularFile => {
                         anyhow::anyhow!("Thread Mode path {} is not a regular file", path.display())
                     }
-                    DocumentReadError::TooLarge { .. } => anyhow::anyhow!(
-                        "Thread Mode file {} exceeds the {MAX_MODE_DOCUMENT_BYTES} byte limit",
+                    DocumentReadError::TooLarge { limit } => anyhow::anyhow!(
+                        "Thread Mode file {} exceeds the {limit} byte limit",
                         path.display()
                     ),
                 }

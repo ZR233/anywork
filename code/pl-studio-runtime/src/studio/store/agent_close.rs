@@ -13,7 +13,7 @@ use crate::studio::agent_host::worktree_lease::{
 };
 use anyhow::{Result, ensure};
 pub(super) use migration::upgrade_bindings;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{EntityTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

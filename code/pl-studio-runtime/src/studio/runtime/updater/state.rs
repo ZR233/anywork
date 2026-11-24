@@ -449,7 +449,7 @@ struct StudioUpdateTransitionDecision {
 }
 
 impl StudioUpdateActivity {
-    pub fn decide(
+    fn decide(
         &self,
         command: StudioUpdateCommand,
     ) -> Result<StudioUpdateTransitionDecision, StudioUpdateTransitionError> {
