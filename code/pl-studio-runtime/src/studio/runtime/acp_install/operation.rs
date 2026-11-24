@@ -692,8 +692,8 @@ pub(super) async fn release_staging(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
-            let managed = ManagedRoot::open(&home, root, AcpInstallStage::Extract)?;
-            managed.remove_owned_tree(&removal_target, AcpInstallStage::Extract)
+            let managed = ManagedRoot::open(&home, root, AcpInstallStage::Close)?;
+            managed.remove_owned_tree(&removal_target, AcpInstallStage::Close)
         })
         .await
         .unwrap_or_else(|_| {

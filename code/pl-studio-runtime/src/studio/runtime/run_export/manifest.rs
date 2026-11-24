@@ -193,7 +193,7 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV3, 
     with_newline.extend_from_slice(&bytes);
     with_newline.push(b'\n');
     let sha256 = sha256_hex(&with_newline);
-    write_file_atomic(
+    pl_tool::workspace::write_file_atomically(
         &options.output_dir.join(RUN_MANIFEST_FILE_NAME),
         &with_newline,
     )
@@ -207,33 +207,8 @@ pub fn write_result_atomic(output_dir: &Path, result: &super::types::ResultV3) -
     let mut with_newline = Vec::with_capacity(bytes.len() + 1);
     with_newline.extend_from_slice(&bytes);
     with_newline.push(b'\n');
-    write_file_atomic(&output_dir.join(RESULT_FILE_NAME), &with_newline)
+    pl_tool::workspace::write_file_atomically(&output_dir.join(RESULT_FILE_NAME), &with_newline)
         .context("write result.json atomically")
-}
-
-/// Writes bytes to a unique sibling temp file, fsyncs it, and renames over `target`.
-pub fn write_file_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = target
-        .parent()
-        .context("atomic write target has no parent directory")?;
-    let name = target
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("artifact");
-    let temp = temp_path(parent, name);
-    let write_res = (|| -> Result<()> {
-        let mut file = File::create(&temp)
-            .with_context(|| format!("create temporary artifact {}", temp.display()))?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&temp, target)
-            .with_context(|| format!("rename {} -> {}", temp.display(), target.display()))?;
-        Ok(())
-    })();
-    if write_res.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    write_res
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
