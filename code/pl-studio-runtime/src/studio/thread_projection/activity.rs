@@ -1122,7 +1122,7 @@ impl ActivityProjection {
         thread_id: &str,
         state: &ThreadSnapshot,
     ) -> Option<ThreadActivity> {
-        self.observe_using(thread_id, state, None)
+        self.observe_using(thread_id, state, None, 0)
     }
 
     pub(super) fn observe_admitted(
@@ -1131,9 +1131,10 @@ impl ActivityProjection {
         state: &ThreadSnapshot,
         atoms: &[crate::ChatAtom],
         active: &[super::current::ActiveText],
+        observed_at: i64,
     ) -> Option<ThreadActivity> {
         let admitted = AdmittedActivity::new(state, atoms, active);
-        self.observe_using(thread_id, state, Some(&admitted))
+        self.observe_using(thread_id, state, Some(&admitted), observed_at)
     }
 
     fn observe_using(
@@ -1141,11 +1142,11 @@ impl ActivityProjection {
         thread_id: &str,
         state: &ThreadSnapshot,
         admitted: Option<&AdmittedActivity<'_>>,
+        now: i64,
     ) -> Option<ThreadActivity> {
         let mut activity =
             project_activity_using(thread_id, state, self.previous.as_ref(), admitted);
         if let Some(act) = activity.as_mut() {
-            let now = now_unix_seconds();
             if act.kind == ThreadActivityKind::Thinking {
                 let same_step = self.thinking_started_at.as_ref().is_some_and(|started| {
                     started.turn_id == act.turn_id

@@ -154,9 +154,13 @@ impl CurrentOwner {
             .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?
             .clone();
         let active = active.into_iter().collect::<Vec<_>>();
-        let activity = self
-            .activity
-            .observe_admitted(&thread.id, state, &self.atoms, &active);
+        let activity = self.activity.observe_admitted(
+            &thread.id,
+            state,
+            &self.atoms,
+            &active,
+            crate::studio::ids::unix_seconds(),
+        );
         let mut projection = CurrentProjection::empty(super::status(state));
         projection.sources = self
             .sources

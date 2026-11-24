@@ -4,7 +4,7 @@
 use super::*;
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
 use crate::studio::thread_projection::LiveProjection;
-use pl_core::thread::history_sink::HistorySink;
+use pl_core::thread::{ThreadSnapshot, history_sink::HistorySink};
 use std::path::Path;
 
 struct ActiveThread {
@@ -163,7 +163,7 @@ impl WriterFixture {
         let status = active.sink.0.channel.subscribe().borrow().clone();
         let usage = lock_progress(&active.sink.0).usage.clone();
         ensure!(
-            history.watermark().await? == active.sequence
+            history.reader().head().await? == u64::from(active.sequence != 0)
                 && status.committed_sequence == active.sequence
                 && usage
                     == UsageSummary {
