@@ -179,9 +179,7 @@ impl FeishuIm {
             .open_typed(Method::GET, BOT_INFO_PATH, Some(token), &[], None::<&()>)
             .await?;
         let code = parsed.code;
-        if code != 0 {
-            return Err(super::http::classify_open_api(code, parsed.msg.as_deref()));
-        }
+        super::http::require_open_success(code, parsed.msg.as_deref())?;
         parsed
             .bot
             .and_then(|bot| bot.open_id)

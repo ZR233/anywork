@@ -1,6 +1,6 @@
 use super::error::{FeishuError, FeishuErrorKind};
 use super::frame::{FrameType, HeaderKey, MessageType, Pbbp2Frame};
-use super::http::FeishuHttp;
+use super::http::{FeishuHttp, OpenApiEnvelope, parse_json};
 use super::{
     FRAGMENT_TTL_MS, MAX_EVENT_BYTES, MAX_EVENT_FRAGMENTS, MAX_PENDING_EVENTS, WS_ENDPOINT_PATH,
 };
@@ -25,15 +25,6 @@ pub struct ConnectConfig {
     pub reconnect_count: i32,
     pub reconnect_interval: Duration,
     pub reconnect_nonce: Duration,
-}
-
-#[derive(Debug, Deserialize)]
-struct EndpointEnvelope {
-    code: i64,
-    #[serde(default)]
-    msg: Option<String>,
-    #[serde(default)]
-    data: Option<EndpointData>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,14 +118,7 @@ impl WsEndpointDiscovery {
                 None,
             )
         })?;
-        let envelope: EndpointEnvelope = serde_json::from_slice(&bytes).map_err(|error| {
-            FeishuError::new(
-                FeishuErrorKind::Protocol,
-                format!("invalid ws endpoint JSON (HTTP {status}): {error}"),
-                status.is_server_error(),
-                None,
-            )
-        })?;
+        let envelope: OpenApiEnvelope<EndpointData> = parse_json(&bytes, status)?;
         if envelope.code != 0 {
             let retryable = matches!(envelope.code, 1 | 1000040343);
             let kind = match envelope.code {
