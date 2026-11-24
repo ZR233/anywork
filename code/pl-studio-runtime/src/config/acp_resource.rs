@@ -310,7 +310,7 @@ pub(crate) fn scan(paths: &ConfigPaths) -> AcpDefinitionsSnapshot {
             continue;
         }
         let id = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned);
-        let parsed = (|| {
+        let parsed = (|| -> Result<_, AcpDefinitionError> {
             let id = id
                 .as_deref()
                 .ok_or_else(|| AcpDefinitionError::Invalid("non-UTF-8 ACP filename".into()))?;

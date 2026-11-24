@@ -34,7 +34,9 @@ pub(super) trait RevisionedDocument: Clone + Serialize + Versioned + Send + 'sta
 }
 
 fn encode<D: RevisionedDocument>(document: &D) -> Result<String> {
-    crate::toml_schema::encode(document, D::VERSION_KEY)
+    // `Versioned` also declares `VERSION_KEY` (library default "version"); the
+    // Studio documents name the project-level schema key explicitly.
+    crate::toml_schema::encode(document, <D as RevisionedDocument>::VERSION_KEY)
         .with_context(|| format!("failed to serialize {}", D::KIND))
 }
 

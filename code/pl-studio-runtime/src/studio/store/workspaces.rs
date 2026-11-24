@@ -257,6 +257,8 @@ fn ensure_identity_stable(existing: &WorkspaceEntry, next: &WorkspaceEntry) -> R
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::studio::store::directory::{ProjectDirectoryRecord, ProjectRemoval};
     use crate::toml_schema::{self, DocumentMigrationFailed};
@@ -313,7 +315,7 @@ mod tests {
         let store = WorkspaceStore::load(path.clone())
             .await
             .expect("load current");
-        assert_eq!(store.lock().revision, 5);
+        assert_eq!(store.store.lock().revision, 5);
         assert_eq!(
             tokio::fs::read_to_string(&path).await.expect("read"),
             encoded
@@ -366,7 +368,7 @@ closed = true
 "#;
         tokio::fs::write(&path, old).await?;
         let store = WorkspaceStore::load(path.clone()).await?;
-        assert_eq!(store.lock().revision, 17);
+        assert_eq!(store.store.lock().revision, 17);
         assert_eq!(store.entries().len(), 2);
         let entries = store.entries();
         assert_eq!(entries[0].kind, WorkspaceKind::Project);
@@ -441,7 +443,7 @@ closed = true
 
             assert!(store.apply_delta(&delta).await.is_err());
             assert!(store.entries().is_empty());
-            assert_eq!(store.lock().revision, 9);
+            assert_eq!(store.store.lock().revision, 9);
             assert_eq!(tokio::fs::read_to_string(path).await?, original);
         }
         Ok(())

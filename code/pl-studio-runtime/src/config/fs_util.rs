@@ -21,7 +21,7 @@ pub(crate) enum DirectoryPresence {
 }
 
 /// Why [`ensure_regular_dir`] refused a resource directory.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum DirectoryError {
     /// The entry is a symlink; owners never follow user-controlled links.
     Symlink,
@@ -49,7 +49,7 @@ pub(crate) fn ensure_regular_dir(path: &Path) -> Result<DirectoryPresence, Direc
 }
 
 /// Why a document read was refused before its bytes could be returned.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum DocumentReadError {
     /// The entry is missing; the raw error is preserved for callers that
     /// propagate it as their own IO failure.
@@ -264,10 +264,10 @@ mod tests {
         let root = temp.path();
         let file = root.join("document.toml");
         fs::write(&file, b"  ,  ").unwrap();
-        assert_eq!(
+        assert!(matches!(
             read_regular_file_bounded(&file, 2),
             Err(DocumentReadError::TooLarge { limit: 2 })
-        );
+        ));
         assert_eq!(
             read_regular_file_bounded(&file, 6).unwrap(),
             b"  ,  ".to_vec()
