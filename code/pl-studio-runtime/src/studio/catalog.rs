@@ -140,6 +140,7 @@ impl CatalogStore {
         session_id: &str,
     ) -> Vec<AgentDirectoryRecord> {
         let mut agents = self
+            .store
             .lock()
             .agents
             .iter()
