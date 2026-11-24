@@ -468,9 +468,6 @@ void main() {
                   height: 400,
                   child: PlanDetailView(
                     identity: 'typography',
-                    title: '实施计划',
-                    status: PlanDetailStatus.approved,
-                    onClose: () {},
                     body: markdown('plan-detail-body'),
                   ),
                 ),

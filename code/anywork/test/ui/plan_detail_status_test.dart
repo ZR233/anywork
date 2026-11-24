@@ -43,12 +43,20 @@ void main() {
         ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
-          body: PlanDetailView(
-            identity: 'plan',
-            title: 'Delivery',
-            status: status,
-            onClose: () {},
-            body: const Text('plan body'),
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: PlanDetailStatusBadge(status: status),
+              ),
+              const Expanded(
+                child: PlanDetailView(
+                  identity: 'plan',
+                  body: Text('plan body'),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -99,12 +107,15 @@ void main() {
         ],
         supportedLocales: AppLocalizations.supportedLocales,
         home: Scaffold(
-          body: PlanDetailView(
-            identity: 'plan',
-            title: 'Delivery',
-            body: null,
-            status: PlanDetailStatus.drafting,
-            onClose: () {},
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: const [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: PlanDetailStatusBadge(status: PlanDetailStatus.drafting),
+              ),
+              Expanded(child: PlanDetailView(identity: 'plan', body: null)),
+            ],
           ),
         ),
       ),

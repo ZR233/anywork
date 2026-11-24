@@ -101,13 +101,10 @@ void main() {
 
     position.jumpTo(position.maxScrollExtent);
     await tester.pumpAndSettle();
-    final moreButton = find.descendant(
-      of: find.byKey(const ValueKey('status-overflow')),
-      matching: find.byType(IconButton),
-    );
-    expect(moreButton, findsOneWidget);
-    expect(tester.getRect(moreButton).right, lessThanOrEqualTo(280));
-    await tester.tap(moreButton);
+    final sidebarToggle = find.byKey(StudioDriverKeys.rightSidebarToggle);
+    expect(sidebarToggle, findsOneWidget);
+    expect(tester.getRect(sidebarToggle).right, lessThanOrEqualTo(280));
+    position.jumpTo(0);
     await tester.pumpAndSettle();
     final planEntry = find.byKey(StudioDriverKeys.statusPlanEntry);
     expect(planEntry, findsOneWidget);

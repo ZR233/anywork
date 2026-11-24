@@ -5,8 +5,8 @@ import '../state/acp_view_state.dart';
 import '../view_models/acp_plan_card_view_model.dart';
 import '../widgets/acp_plan_card.dart';
 
-/// Thin Riverpod connector binding [acpPlanCardViewModelProvider] to the pure
-/// collapsible [AcpPlanCard].
+/// Thin Riverpod connector binding [acpPlanCardViewModelProvider] to the
+/// sidebar [AcpPlanPanel].
 class AcpPlanCardConnector extends ConsumerWidget {
   const AcpPlanCardConnector({super.key, required this.threadId});
 
@@ -16,10 +16,9 @@ class AcpPlanCardConnector extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(acpPlanCardViewModelProvider(threadId));
     if (state == null) return const SizedBox.shrink();
-    return AcpPlanCard(
+    return AcpPlanPanel(
       key: ValueKey(AcpViewKeyValues.planCard(threadId)),
       state: state,
-      initiallyExpanded: false,
     );
   }
 }

@@ -349,13 +349,16 @@ void main() {
     );
     addTearDown(() => harness.close(tester));
     await tester.pumpWidget(
-      harness.scope(const AcpTimelineConnector(threadId: 'thread')),
+      harness.scope(const AcpWorkspaceConnector(threadId: 'thread')),
     );
     await tester.pumpAndSettle();
     expect(find.text('第一段'), findsOneWidget);
+    expect(find.byKey(const ValueKey('acp-plan-status-pill')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('acp-plan-status-pill')));
+    await tester.pumpAndSettle();
     expect(find.text('读取项目'), findsOneWidget);
     final container = ProviderScope.containerOf(
-      tester.element(find.byType(AcpTimelineConnector)),
+      tester.element(find.byType(AcpWorkspaceConnector)),
     );
     var planChanges = 0;
     var configChanges = 0;

@@ -7,7 +7,6 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:multi_split_view/multi_split_view.dart';
 
 import '../../app/app_graph.dart';
 import '../../app/routing/app_route.dart';
@@ -35,7 +34,6 @@ import '../../shared/studio_chrome.dart';
 import '../../shared/studio_driver_keys.dart';
 import '../../shared/delegation_labels.dart';
 import 'agent_switcher_menu.dart';
-import 'reading_workspace_state.dart';
 import '../../shared/studio_driver_state.dart';
 import '../settings/settings_common.dart';
 import '../settings/settings_ssh_password_dialog.dart';
@@ -44,6 +42,8 @@ import '../settings/settings_remote_directory_dialog.dart';
 import '../conversation/composer/composer.dart';
 import '../conversation/composer/view_models/conversation_backend_view_model.dart';
 import '../conversation/acp/connectors/acp_workspace_connector.dart';
+import '../conversation/workspace/conversation_workspace.dart';
+import '../status/status_view.dart';
 import '../status/thread_status_bar.dart';
 import '../status/workflow_graph_panel.dart';
 import '../conversation/timeline/live_status/live_status_bar.dart';
@@ -66,7 +66,6 @@ part 'runtime_banners.dart';
 part 'studio_shell_chrome.dart';
 part 'studio_startup.dart';
 part 'agent_workspace_pane.dart';
-part 'workspace_reading.dart';
 
 class StudioShell extends ConsumerStatefulWidget {
   const StudioShell({super.key});

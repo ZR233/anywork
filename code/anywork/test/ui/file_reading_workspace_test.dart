@@ -12,6 +12,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/timeline_m
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
@@ -255,7 +256,7 @@ void main() {
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
         expect(find.byType(TimelineConnector), findsNothing);
         expect(tester.element(timelineFinder), same(timeline));
-        await tester.tap(find.byTooltip('恢复分栏'));
+        await tester.tap(find.byTooltip('恢复并排'));
         await tester.pump();
         expect(
           tester.getSize(find.byType(FileReadingPanel)).width,
@@ -264,8 +265,12 @@ void main() {
         resize(() => width = 600);
         await tester.pump();
         expect(
+          find.byKey(StudioDriverKeys.rightSidebarOverlayScrim),
+          findsOneWidget,
+        );
+        expect(
           tester.getSize(find.byType(FileReadingPanel)).width,
-          closeTo(600, 1),
+          closeTo(440, 1),
         );
         expect(tester.element(timelineFinder), same(timeline));
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
@@ -307,11 +312,7 @@ void main() {
             tester.widget<TimelineMarkdown>(document).text,
             '# Read after row unmount',
           );
-          final close = find.descendant(
-            of: find.byType(FileReadingPanel),
-            matching: find.byIcon(Icons.close),
-          );
-          await tester.tap(close);
+          await tester.tap(find.byKey(StudioDriverKeys.rightSidebarFileClose));
           await tester.pump();
           expect(find.byType(FileReadingPanel), findsNothing);
           expect(tester.element(timelineFinder), same(timeline));

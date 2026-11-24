@@ -11,10 +11,9 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/interactions/connectors/plan_confirmation_connector.dart';
 import 'package:anywork/src/features/conversation/interactions/views/plan_confirmation_view.dart';
 import 'package:anywork/src/features/conversation/interactions/view_models/plan_confirmation_view_model.dart';
-import 'package:anywork/src/features/shell/studio_shell.dart';
-import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
+import 'package:anywork/src/features/conversation/workspace/conversation_workspace.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart' hide PlanConfirmationView;
@@ -25,13 +24,13 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/pump_client_future.dart';
 
-/// 计划详情头部右内边距（`PlanDetailView` 头部的
-/// `EdgeInsets.fromLTRB(20, 8, 8, 8)`）。
+/// 统一右侧边栏头部右内边距（`ConversationRightSidebar` 头部的
+/// `EdgeInsetsDirectional.fromSTEB(12, 0, 8, 0)`）。
 const _planHeaderContentInset = 8.0;
 
 /// 根因回归：阅读布局（并排 / 全宽 / 窄窗 / 计划详情关开）只改变几何。
 ///
-/// 变化的是 [StudioWorkspaceBody.readingArea]；反馈栏始终是同一个子位置，因此真实
+/// 变化的是 [ConversationWorkspaceShell] 的阅读区域；反馈栏始终是同一个子位置，因此真实
 /// `PlanConfirmationConnector` 的草稿、错误与在途决定锁必须在切换后仍然存在。旧实现把整个
 /// `conversation`（时间线 + 输入栏）交给两个不同父节点，切换时重建 State，这三项全部丢失。
 void main() {
@@ -121,17 +120,18 @@ void main() {
               child: StatefulBuilder(
                 builder: (context, setState) {
                   rebuild = setState;
-                  return StudioWorkspaceBody(
+                  return ConversationWorkspaceShell(
                     readingArea: planOpen
                         ? _planReadingArea(threadId: threadId, split: split)
                         : const SizedBox.shrink(),
-                    footer: feedbackMounted
+                    footerDockBuilder: (_, _) => feedbackMounted
                         ? PlanConfirmationConnector(
                             threadId: threadId,
                             plan: plan,
                             enabled: true,
                           )
                         : const SizedBox.shrink(),
+                    statusBar: const SizedBox.shrink(),
                   );
                 },
               ),
@@ -403,13 +403,14 @@ void main() {
               child: SizedBox(
                 width: width,
                 height: 900,
-                child: StudioWorkspaceBody(
+                child: ConversationWorkspaceShell(
                   readingArea: readingArea,
-                  footer: PlanConfirmationConnector(
+                  footerDockBuilder: (_, _) => PlanConfirmationConnector(
                     threadId: threadId,
                     plan: plan,
                     enabled: true,
                   ),
+                  statusBar: const SizedBox.shrink(),
                 ),
               ),
             ),
@@ -520,10 +521,10 @@ void main() {
         ),
         'approve': tester.getRect(find.byKey(const ValueKey('plan-approve'))),
         'readingMode': tester.getRect(
-          find.byKey(const ValueKey('plan-details-reading-mode')),
+          find.byKey(StudioDriverKeys.rightSidebarExpandMode),
         ),
         'close': tester.getRect(
-          find.byKey(const ValueKey('plan-details-close')),
+          find.byKey(StudioDriverKeys.rightSidebarCollapse),
         ),
       };
       for (final action in desktopActions.entries) {
@@ -563,19 +564,14 @@ void main() {
 
 double approveRectCenter(Rect rect) => rect.center.dy;
 
-/// 计划详情头部动作组必须锚在面板内容右边界。
-///
-/// 头部 `Padding` 的右内边距是 8px，因此组内最后一个动作（关闭）的布局盒右缘必须正好
-/// 落在面板右缘减 8px 处。旧实现把动作组放在宽松 `Flexible` 里，内部 `Row` 取自然宽度，
-/// 剩余空间留在动作组右侧——关闭按钮因此离面板右缘很远（720px 下实测 186px），
-/// 与“动作组靠右”的要求相反。
+/// 计划详情头部动作组必须锚在统一右侧边栏内容右边界。
 void expectPlanHeaderAnchoredToContentEdge(
   WidgetTester tester, {
   required String reason,
 }) {
-  final panel = tester.getRect(find.byType(PlanDetailView));
+  final panel = tester.getRect(find.byKey(StudioDriverKeys.rightSidebar));
   final close = tester.getRect(
-    find.byKey(const ValueKey('plan-details-close')),
+    find.byKey(StudioDriverKeys.rightSidebarCollapse),
   );
   expect(
     close.right,
@@ -589,18 +585,34 @@ void expectPlanHeaderAnchoredToContentEdge(
   );
 }
 
-/// 阅读区域的两种结构：并排（窄侧栏）与全宽阅读；两者都使用真实的计划详情面板。
+/// 阅读区域的两种结构：并排（窄侧栏）与全宽阅读；两者都使用真实的统一边栏 + 计划详情面板。
 Widget _planReadingArea({
   required String threadId,
   required bool split,
   double panelWidth = 420,
 }) {
-  final panel = PlanDetailConnector(
-    threadId: threadId,
-    identity: 'interaction:1',
-    status: PlanDetailStatus.awaitingConfirmation,
-    onToggleReadingMode: () {},
-    onClose: () {},
+  final panel = ConversationRightSidebar(
+    entries: [
+      ConversationSidebarPanelEntry(
+        kind: ConversationSidebarPanelKind.plan,
+        icon: Icons.description_outlined,
+        label: '计划',
+        badge: const PlanDetailStatusBadge(
+          status: PlanDetailStatus.awaitingConfirmation,
+        ),
+        builder: (_) =>
+            PlanDetailConnector(threadId: threadId, identity: 'interaction:1'),
+      ),
+    ],
+    activeKind: ConversationSidebarPanelKind.plan,
+    presentation: ConversationSidebarPresentation(
+      sideBySideFeasible: true,
+      isOverlay: false,
+      isExpandedFull: !split,
+    ),
+    onSelectKind: (_) {},
+    onToggleLayoutMode: () {},
+    onCollapse: () {},
   );
   if (!split) return panel;
   return Row(

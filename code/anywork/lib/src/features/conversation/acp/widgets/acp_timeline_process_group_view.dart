@@ -21,6 +21,7 @@ class AcpTimelineProcessGroupView extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.onOpenMarkdownResource,
   });
 
   final AcpTimelineProcessRow row;
@@ -28,6 +29,7 @@ class AcpTimelineProcessGroupView extends StatelessWidget {
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final void Function(String uri, String text)? onOpenMarkdownResource;
 
   @override
   Widget build(BuildContext context) {
@@ -55,6 +57,7 @@ class AcpTimelineProcessGroupView extends StatelessWidget {
                   isSafeLink: isSafeLink,
                   onOpenLink: onOpenLink,
                   imageBuilder: imageBuilder,
+                  onOpenMarkdownResource: onOpenMarkdownResource,
                 ),
             ],
           );

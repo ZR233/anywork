@@ -18,18 +18,24 @@ class AcpStatusBarView extends StatelessWidget {
     super.key,
     required this.status,
     this.workflow = const SizedBox.shrink(),
+    this.plan = const SizedBox.shrink(),
+    this.steps = const SizedBox.shrink(),
     required this.contextUsage,
     required this.cost,
     this.throughput = const SizedBox.shrink(),
     required this.externalHistory,
+    this.sidebarToggle = const SizedBox.shrink(),
   });
 
   final Widget status;
   final Widget workflow;
+  final Widget plan;
+  final Widget steps;
   final Widget contextUsage;
   final Widget cost;
   final Widget throughput;
   final Widget externalHistory;
+  final Widget sidebarToggle;
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
@@ -38,6 +44,7 @@ class AcpStatusBarView extends StatelessWidget {
       border: Border(top: BorderSide(color: context.colors.outlineVariant)),
     ),
     child: SizedBox(
+      width: double.infinity,
       height: 38,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -51,12 +58,18 @@ class AcpStatusBarView extends StatelessWidget {
                 children: [
                   Row(
                     mainAxisSize: MainAxisSize.min,
-                    children: [status, workflow],
+                    children: [status, workflow, plan, steps],
                   ),
                   const SizedBox(width: 12),
                   Row(
                     mainAxisSize: MainAxisSize.min,
-                    children: [contextUsage, throughput, cost, externalHistory],
+                    children: [
+                      contextUsage,
+                      throughput,
+                      cost,
+                      externalHistory,
+                      sidebarToggle,
+                    ],
                   ),
                 ],
               ),

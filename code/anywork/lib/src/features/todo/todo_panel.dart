@@ -5,67 +5,44 @@ import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 
 class TodoPanel extends StatelessWidget {
-  const TodoPanel({
-    required this.todo,
-    this.onClose,
-    this.inDrawer = false,
-    super.key,
-  });
+  const TodoPanel({required this.todo, super.key});
 
   final TimelineTodoListUpdate todo;
-  final VoidCallback? onClose;
-  final bool inDrawer;
 
   @override
   Widget build(BuildContext context) {
-    final title = todo.explanation?.trim().isNotEmpty == true
-        ? todo.explanation!.trim()
-        : context.l10n.timelineTodoListFallback;
+    final total = todo.items.length;
+    final completed = todo.items
+        .where((item) => item.status == 'completed')
+        .length;
+    final allDone = total > 0 && completed == total;
+    final progress = total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+
     return Material(
-      color: context.colors.surfaceContainer,
-      shape: inDrawer
-          ? null
-          : Border(left: BorderSide(color: context.colors.outlineVariant)),
-      child: SafeArea(
-        left: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ListTile(
-              dense: true,
-              leading: Icon(
-                Icons.checklist_outlined,
-                color: context.colors.primary,
-              ),
-              title: Text(
-                title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleSmall
-                    ?.copyWith(fontWeight: FontWeight.w700),
-              ),
-              trailing: onClose == null
-                  ? null
-                  : IconButton(
-                      key: const ValueKey('todo-close-button'),
-                      tooltip: MaterialLocalizations.of(context)
-                          .closeButtonTooltip,
-                      icon: const Icon(Icons.chevron_right),
-                      onPressed: onClose,
-                    ),
+      key: const ValueKey('todo-side-panel'),
+      color: context.colors.surfaceContainerLowest,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (total > 0)
+            LinearProgressIndicator(
+              value: progress,
+              minHeight: 2,
+              backgroundColor: context.colors.surfaceContainerHigh,
+              color: allDone
+                  ? context.statusColors.success
+                  : context.colors.primary,
             ),
-            Divider(height: 1, color: context.colors.outlineVariant),
-            Expanded(
-              child: ListView.separated(
-                padding: const EdgeInsets.symmetric(vertical: 6),
-                itemCount: todo.items.length,
-                separatorBuilder: (context, index) => const SizedBox(height: 1),
-                itemBuilder: (context, index) =>
-                    _TodoStepTile(item: todo.items[index]),
-              ),
+          Expanded(
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              itemCount: todo.items.length,
+              separatorBuilder: (context, index) => const SizedBox(height: 1),
+              itemBuilder: (context, index) =>
+                  _TodoStepTile(item: todo.items[index]),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -95,11 +72,15 @@ class _TodoStepTile extends StatelessWidget {
         : inProgress
         ? context.statusColors.activeIndicator
         : context.colors.onSurfaceVariant;
+    final statusLabel = context.todoStatusLabel(status);
     return ListTile(
       dense: true,
       visualDensity: VisualDensity.compact,
       minLeadingWidth: 24,
-      leading: Icon(icon, size: 18, color: color),
+      leading: Tooltip(
+        message: statusLabel,
+        child: Icon(icon, size: 18, color: color, semanticLabel: statusLabel),
+      ),
       title: Text(
         item.step,
         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -111,11 +92,14 @@ class _TodoStepTile extends StatelessWidget {
           decorationColor: context.colors.onSurfaceVariant,
         ),
       ),
-      // 未知状态保留原始值，并使用中性样式，而不是伪装成“待处理”。
-      trailing: Text(
-        context.todoStatusLabel(status),
-        style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
-      ),
+      // 常规状态由图标、颜色与删除线直观表达；仅未知状态保留原始值以免丢失语义。
+      trailing: unknown
+          ? Text(
+              statusLabel,
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: color),
+            )
+          : null,
     );
   }
 }

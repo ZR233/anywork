@@ -115,11 +115,13 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
     return DecoratedBox(
       decoration: BoxDecoration(
         color: context.colors.surfaceContainerLowest,
-        border: Border.all(color: context.colors.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: context.colors.outlineVariant.withValues(alpha: 0.86),
+        ),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           mainAxisSize: MainAxisSize.min,
@@ -129,14 +131,7 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
                 alignment: AlignmentDirectional.centerEnd,
                 child: widget.trailing!,
               ),
-            if (widget.trailing != null) const SizedBox(height: 8),
-            Text(
-              context.l10n.interactionPlanAdjust,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 4),
+            if (widget.trailing != null) const SizedBox(height: 6),
             MultilineEnterShortcuts(
               controller: _controller,
               child: TextField(
@@ -149,7 +144,13 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
                 onSubmitted: (_) => _submitRevision(),
                 decoration: InputDecoration(
                   hintText: context.l10n.interactionPlanAdjustHint,
-                  contentPadding: const EdgeInsets.all(12),
+                  isDense: true,
+                  filled: false,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
                 ),
               ),
             ),

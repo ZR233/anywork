@@ -187,28 +187,31 @@ Widget acpConfigurationNarrowPreview() =>
 Widget acpConfigurationFlashPreview() =>
     _acpPreviewShell(_acpConfigurationBar(enabled: true, flash: true));
 
-@Preview(name: 'ACP 执行计划卡片', group: 'ACP', size: Size(680, 240))
+@Preview(name: 'ACP 执行步骤面板', group: 'ACP', size: Size(420, 260))
 Widget acpPlanCardPreview() => _acpPreviewShell(
-  const AcpPlanCard(
-    state: AcpPlanCardViewState(
-      completedCount: 1,
-      entries: [
-        AcpPlanEntryPresentation(
-          content: '建立纯展示 State 与独立组件 ViewModel',
-          priority: AcpPlanPriorityKind.high,
-          status: AcpPlanStatusKind.completed,
-        ),
-        AcpPlanEntryPresentation(
-          content: '接入权限停靠面板与内联配置工具栏',
-          priority: AcpPlanPriorityKind.high,
-          status: AcpPlanStatusKind.inProgress,
-        ),
-        AcpPlanEntryPresentation(
-          content: '运行客户端边界静态检查与桌面集成验收',
-          priority: AcpPlanPriorityKind.medium,
-          status: AcpPlanStatusKind.pending,
-        ),
-      ],
+  const SizedBox(
+    height: 220,
+    child: AcpPlanPanel(
+      state: AcpPlanCardViewState(
+        completedCount: 1,
+        entries: [
+          AcpPlanEntryPresentation(
+            content: '建立纯展示 State 与独立组件 ViewModel',
+            priority: AcpPlanPriorityKind.high,
+            status: AcpPlanStatusKind.completed,
+          ),
+          AcpPlanEntryPresentation(
+            content: '接入权限停靠面板与内联配置工具栏',
+            priority: AcpPlanPriorityKind.high,
+            status: AcpPlanStatusKind.inProgress,
+          ),
+          AcpPlanEntryPresentation(
+            content: '运行客户端边界静态检查与桌面集成验收',
+            priority: AcpPlanPriorityKind.medium,
+            status: AcpPlanStatusKind.pending,
+          ),
+        ],
+      ),
     ),
   ),
 );

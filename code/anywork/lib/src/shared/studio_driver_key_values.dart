@@ -58,6 +58,16 @@ abstract final class StudioDriverKeyValues {
   static String deleteThreadDialog(String id) => 'thread-delete-dialog-$id';
   static String deleteThreadConfirm(String id) => 'thread-delete-confirm-$id';
   static const sidebarResize = 'sidebar-resize';
+  static const rightSidebar = 'conversation-right-sidebar';
+  static const rightSidebarResizeHandle = 'conversation-right-sidebar-resize';
+  static const rightSidebarExpandMode =
+      'conversation-right-sidebar-expand-mode';
+  static const rightSidebarCollapse = 'conversation-right-sidebar-collapse';
+  static const rightSidebarToggle = 'conversation-right-sidebar-toggle';
+  static const rightSidebarOverlayScrim = 'conversation-right-sidebar-scrim';
+  static const rightSidebarFileClose = 'conversation-right-sidebar-file-close';
+  static String rightSidebarTab(String kind) =>
+      'conversation-right-sidebar-tab-$kind';
   static const settingsBack = 'settings-back';
   static const sessionMode = 'session-mode-selector';
   static const sessionModeLabel = 'session-mode-label';

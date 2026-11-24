@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
@@ -6,6 +8,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
+import '../../timeline/connectors/file_reading_panel.dart';
 import '../../timeline/widgets/timeline_image_view.dart';
 import '../state/acp_view_state.dart';
 import '../state/acp_timeline_row.dart';
@@ -13,7 +16,6 @@ import '../widgets/acp_timeline_process_group_view.dart';
 import '../view_models/acp_content_view_model.dart';
 import '../view_models/acp_timeline_view_model.dart';
 import '../views/acp_conversation_content_view.dart';
-import 'acp_plan_card_connector.dart';
 
 /// Thin Riverpod connector binding [acpTimelineHeaderViewModelProvider] and
 /// per-index [acpTimelineItemViewModelProvider] to [AcpConversationContentView].
@@ -29,9 +31,6 @@ class AcpTimelineConnector extends ConsumerWidget {
       threadId: threadId,
       header: header,
       outputRevision: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
-      planCard: header.hasPlan
-          ? AcpPlanCardConnector(threadId: threadId)
-          : null,
       onInsertSlashCommand: (name) => ref
           .read(anyworkClientProvider)
           .drafts
@@ -55,10 +54,22 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final row = ref.watch(acpTimelineItemViewModelProvider(threadId, index));
+    final fileScope = FileReadingScope.maybeOf(context);
     bool isSafeLink(String url) => safeExternalWebUrl(url) != null;
     void onOpenLink(String url) => _openSafeExternalLink(context, ref, url);
     Widget imageBuilder(String itemId, AcpImageBlockPresentation image) =>
         _AcpDecodedImageConnector(itemId: itemId, image: image);
+    final void Function(String uri, String text)? onOpenMarkdownResource =
+        fileScope == null
+        ? null
+        : (uri, text) => fileScope.onOpen(
+            FileReadingRequest(
+              identity: ('acp-resource', threadId, uri, text.hashCode),
+              filename: _resourceFilename(uri),
+              readBytes: () async => Uint8List.fromList(utf8.encode(text)),
+              isActive: () => true,
+            ),
+          );
     return switch (row) {
       null => const SizedBox.shrink(),
       AcpTimelineMessageRow(:final item) => AcpTimelineEntryView(
@@ -67,6 +78,7 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
+        onOpenMarkdownResource: onOpenMarkdownResource,
       ),
       final AcpTimelineProcessRow process => AcpTimelineProcessGroupView(
         key: ValueKey(process.id),
@@ -74,8 +86,19 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
+        onOpenMarkdownResource: onOpenMarkdownResource,
       ),
     };
+  }
+
+  static String _resourceFilename(String uri) {
+    final parsed = Uri.tryParse(uri);
+    final segments = parsed?.pathSegments.where((s) => s.isNotEmpty).toList();
+    if (segments != null && segments.isNotEmpty) {
+      return segments.last;
+    }
+    final fallback = uri.split('/').where((s) => s.isNotEmpty).toList();
+    return fallback.isNotEmpty ? fallback.last : uri;
   }
 
   void _openSafeExternalLink(

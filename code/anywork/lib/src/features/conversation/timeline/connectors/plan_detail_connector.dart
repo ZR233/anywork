@@ -8,11 +8,12 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../acp/view_models/acp_session_view_model.dart';
 import '../view_models/plan_document_view_model.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/plan_detail_view.dart';
 export '../views/plan_detail_view.dart'
-    show PlanDetailStatus, planDetailStatusFromRuntime;
+    show PlanDetailStatus, PlanDetailStatusBadge, planDetailStatusFromRuntime;
 import '../widgets/timeline_markdown.dart';
 import '../widgets/timeline_content_range_view.dart';
 import 'timeline_media_connector.dart';
@@ -22,17 +23,11 @@ class PlanDetailConnector extends ConsumerWidget {
     super.key,
     required this.threadId,
     required this.identity,
-    required this.status,
-    required this.onClose,
-    this.onToggleReadingMode,
-    this.fullWidth = false,
   });
+
   final String threadId;
   final String identity;
-  final PlanDetailStatus status;
-  final VoidCallback onClose;
-  final VoidCallback? onToggleReadingMode;
-  final bool fullWidth;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(threadSessionStoreProvider(threadId));
@@ -56,11 +51,6 @@ class PlanDetailConnector extends ConsumerWidget {
         session.state.businessRefs?.plan?.document == document;
     return PlanDetailView(
       identity: identity,
-      title: context.l10n.interactionPlanDetailsTitle,
-      status: plan == null ? status : planDetailStatusFromRuntime(plan.phase),
-      onClose: onClose,
-      onToggleReadingMode: onToggleReadingMode,
-      fullWidth: fullWidth,
       body: document == null
           ? null
           : Column(
@@ -119,6 +109,54 @@ class PlanDetailConnector extends ConsumerWidget {
                         ),
                 ),
               ],
+            ),
+    );
+  }
+}
+
+/// ACP Host MCP 实施计划展示连接器，与 Native 共用 [PlanDetailView] 与 Markdown 安全规则。
+class AcpPlanDetailConnector extends ConsumerWidget {
+  const AcpPlanDetailConnector({
+    super.key,
+    required this.threadId,
+    required this.identity,
+  });
+
+  final String threadId;
+  final String identity;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final plan = ref.watch(
+      acpConversationStateProvider(threadId)
+          .select((value) => value.value?.workflowState?.plan),
+    );
+    final markdown = plan?.document?.markdown;
+    return PlanDetailView(
+      identity: identity,
+      body: markdown == null || markdown.isEmpty
+          ? null
+          : TimelineMarkdown(
+              key: StudioDriverKeys.planDetailsMarkdown,
+              id: identity,
+              text: markdown,
+              isSafeLink: (url) => safeExternalWebUrl(url) != null,
+              onLink: (raw) {
+                final url = safeExternalWebUrl(raw);
+                if (url == null) return;
+                unawaited(
+                  ref.read(externalUrlLauncherProvider)(url).catchError((
+                    Object error,
+                  ) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(
+                        context,
+                      ).showSnackBar(SnackBar(content: Text(error.toString())));
+                    }
+                  }),
+                );
+              },
+              imageBuilder: (_, url) => TimelineRemoteImageConnector(url: url),
             ),
     );
   }

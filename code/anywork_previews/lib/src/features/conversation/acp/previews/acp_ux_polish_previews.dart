@@ -2,6 +2,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/timeline/state/patch_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
+import 'package:anywork/src/features/conversation/workspace/conversation_workspace.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:material_ui/material_ui.dart';
@@ -183,15 +184,15 @@ Widget acpUxMultiHunkDiffPreview() => _shell(
   ),
 );
 
-@Preview(name: 'UX 2 · 吸顶计划条、空态速览与斜杠补全', group: 'ACP UX', size: Size(840, 680))
+@Preview(
+  name: 'UX 2 · 右侧边栏步骤、空态速览与斜杠补全',
+  group: 'ACP UX',
+  size: Size(1040, 680),
+)
 Widget acpUxStickyPlanAndSlashPreview() => _shell(
   AcpWorkspaceView(
     readingArea: AcpConversationContentView(
       threadId: 'preview-slash',
-      planCard: const AcpPlanCard(
-        state: _samplePlanState,
-        initiallyExpanded: false,
-      ),
       header: const AcpTimelineHeaderViewState(
         ready: true,
         loading: false,
@@ -206,7 +207,21 @@ Widget acpUxStickyPlanAndSlashPreview() => _shell(
       onInsertSlashCommand: (_) {},
       itemBuilder: (_, _) => const SizedBox.shrink(),
     ),
-    composer: AcpConversationComposerView(
+    sidebarBuilder: (_, presentation) => ConversationRightSidebar(
+      entries: [
+        ConversationSidebarPanelEntry(
+          kind: ConversationSidebarPanelKind.todo,
+          icon: Icons.checklist_outlined,
+          label: '执行步骤',
+          builder: (_) => const AcpPlanPanel(state: _samplePlanState),
+        ),
+      ],
+      activeKind: ConversationSidebarPanelKind.todo,
+      presentation: presentation,
+      onSelectKind: (_) {},
+      onCollapse: () {},
+    ),
+    composerBuilder: (_, compact) => AcpConversationComposerView(
       state: const AcpComposerViewState(
         threadId: 'preview-slash',
         draftText: '/re',
@@ -214,6 +229,7 @@ Widget acpUxStickyPlanAndSlashPreview() => _shell(
         canAttach: true,
         availableCommands: _sampleSlashCommands,
       ),
+      compact: compact,
       onDraftChanged: (_) {},
       onSubmit: () {},
       onInterrupt: () {},
@@ -289,10 +305,6 @@ Widget _conversationWithFoldAndPermission({required bool narrow}) {
   return AcpWorkspaceView(
     readingArea: AcpConversationContentView(
       threadId: narrow ? 'preview-narrow' : 'preview-wide',
-      planCard: AcpPlanCard(
-        state: _samplePlanState,
-        initiallyExpanded: !narrow,
-      ),
       header: AcpTimelineHeaderViewState(
         ready: true,
         loading: false,
@@ -305,6 +317,22 @@ Widget _conversationWithFoldAndPermission({required bool narrow}) {
         item: items[index].item,
       ),
     ),
+    sidebarBuilder: narrow
+        ? null
+        : (_, presentation) => ConversationRightSidebar(
+            entries: [
+              ConversationSidebarPanelEntry(
+                kind: ConversationSidebarPanelKind.todo,
+                icon: Icons.checklist_outlined,
+                label: '执行步骤',
+                builder: (_) => const AcpPlanPanel(state: _samplePlanState),
+              ),
+            ],
+            activeKind: ConversationSidebarPanelKind.todo,
+            presentation: presentation,
+            onSelectKind: (_) {},
+            onCollapse: () {},
+          ),
     permissionDock: AcpPermissionDock(
       state: AcpPermissionDockViewState(
         pendingCount: 2,
@@ -338,13 +366,14 @@ Widget _conversationWithFoldAndPermission({required bool narrow}) {
       onSelectOption: (_, _) {},
       onCancel: (_) {},
     ),
-    composer: AcpConversationComposerView(
+    composerBuilder: (_, compact) => AcpConversationComposerView(
       state: const AcpComposerViewState(
         threadId: 'preview-ux',
         canSend: true,
         isRunning: true,
         canInterrupt: true,
       ),
+      compact: compact,
       onDraftChanged: (_) {},
       onSubmit: () {},
       onInterrupt: () {},

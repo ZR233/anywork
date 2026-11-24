@@ -6,7 +6,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/studio_shell.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
-import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -126,18 +125,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
-    final statusOverflow = find.descendant(
-      of: find.byType(ThreadStatusBar),
-      matching: find.byWidgetPredicate(
-        (widget) =>
-            widget is IconButton &&
-            widget.icon is Icon &&
-            (widget.icon as Icon).icon == Icons.more_horiz,
-      ),
-    );
-    expect(statusOverflow, findsOneWidget);
-    await tester.tap(statusOverflow);
-    await tester.pumpAndSettle();
+    expect(find.byKey(StudioDriverKeys.statusPlanEntry), findsOneWidget);
     await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
     await tester.pumpAndSettle();
 
@@ -149,13 +137,20 @@ void main() {
     expect(find.text('等待确认'), findsNothing);
     expect(find.byKey(const ValueKey('plan-approve')), findsNothing);
     expect(
-      tester.widget<Text>(find.byKey(StudioDriverKeys.planDetailsTitle)).data,
-      '实施计划',
+      tester
+          .widget<Text>(find.byKey(StudioDriverKeys.rightSidebarTab('plan')))
+          .data,
+      '计划',
       reason: '导航标题不再重复 Markdown 文档标题',
     );
 
     final timelineFinder = find.byType(TimelineConnector, skipOffstage: false);
-    expect(find.byType(TimelineConnector), findsNothing);
+    // 非待确认 Plan 默认右侧并排展示，主时间线与边栏共存。
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
+    expect(find.byType(TimelineConnector), findsOneWidget);
     final timelineElement = tester.element(timelineFinder);
     final planState = tester.state(find.byType(PlanDetailView));
     final scroll = tester
@@ -167,29 +162,39 @@ void main() {
     await tester.pump();
     final readingOffset = scroll.offset;
     expect(readingOffset, greaterThan(0));
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarExpandMode));
     await tester.pumpAndSettle();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(find.byKey(StudioDriverKeys.rightSidebarResizeHandle), findsNothing);
+    expect(find.byType(TimelineConnector), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarExpandMode));
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
     tester.view.physicalSize = const Size(640, 900);
     await tester.pumpAndSettle();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(find.byKey(StudioDriverKeys.rightSidebarResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
     tester.view.physicalSize = const Size(1200, 900);
     await tester.pumpAndSettle();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
     expect(scroll.offset, closeTo(readingOffset, 1));
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarExpandMode));
     await tester.pumpAndSettle();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(find.byKey(StudioDriverKeys.rightSidebarResizeHandle), findsNothing);
     expect(tester.state(find.byType(PlanDetailView)), same(planState));
     expect(tester.element(timelineFinder), same(timelineElement));
     expect(scroll.offset, closeTo(readingOffset, 1));
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarCollapse));
     await tester.pumpAndSettle();
     await publishPlan(
       PlanRuntimeView(
@@ -209,8 +214,6 @@ void main() {
     expect(session.state.runtime?.execution, isNull);
     expect(session.state.activity, isNull);
     expect(session.state.businessRefs?.plan?.document, isNotNull);
-    await tester.tap(statusOverflow);
-    await tester.pumpAndSettle();
     await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
     await tester.pumpAndSettle();
     expect(
@@ -227,7 +230,7 @@ void main() {
     );
     expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
     expect(find.byKey(StudioDriverKeys.planSubmitRevision), findsNothing);
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarCollapse));
     await tester.pumpAndSettle();
     await publishPlan(
       PlanRuntimeView(
@@ -239,8 +242,6 @@ void main() {
     );
     await tester.pumpAndSettle();
     for (var reopen = 0; reopen < 2; reopen++) {
-      await tester.tap(statusOverflow);
-      await tester.pumpAndSettle();
       await tester.tap(find.byKey(StudioDriverKeys.statusPlanEntry));
       await tester.pumpAndSettle();
       expect(
@@ -253,20 +254,14 @@ void main() {
       expect(find.text('准备好后，你可以在这里阅读完整计划。'), findsNothing);
       expect(find.byKey(StudioDriverKeys.planDetailsMarkdown), findsNothing);
       expect(find.byKey(StudioDriverKeys.planApprove), findsNothing);
-      await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+      await tester.tap(find.byKey(StudioDriverKeys.rightSidebarCollapse));
       await tester.pumpAndSettle();
     }
 
     await publishPlan(null);
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
-    if (statusOverflow.evaluate().isNotEmpty) {
-      await tester.tap(statusOverflow);
-      await tester.pumpAndSettle();
-      expect(find.byKey(StudioDriverKeys.statusPlanEntry), findsNothing);
-      await tester.tapAt(const Offset(30, 30));
-      await tester.pumpAndSettle();
-    }
+    expect(find.byKey(StudioDriverKeys.statusPlanEntry), findsNothing);
 
     // Exercise the actual shell footer, whose height budget is smaller than
     // the full Plan form in this viewport.
@@ -301,7 +296,7 @@ void main() {
       () => find.byKey(StudioDriverKeys.planDetails).evaluate().isNotEmpty,
       'new pending Plan opens',
     );
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(find.byKey(StudioDriverKeys.rightSidebarResizeHandle), findsNothing);
     expect(
       tester.getSize(find.byKey(StudioDriverKeys.planDetails)).width,
       tester.getSize(find.byType(AgentWorkspacePane)).width,
@@ -311,22 +306,28 @@ void main() {
     final pendingTimeline = tester.element(timelineFinder);
     final pendingPlanState = tester.state(find.byType(PlanDetailView));
     final feedback = tester.element(find.byKey(StudioDriverKeys.planApprove));
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsReadingMode));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarExpandMode));
     await tester.pump();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
     tester.view.physicalSize = const Size(640, 900);
     await tester.pump();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsNothing);
+    expect(find.byKey(StudioDriverKeys.rightSidebarResizeHandle), findsNothing);
     tester.view.physicalSize = const Size(1200, 900);
     await tester.pump();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
     expect(tester.state(find.byType(PlanDetailView)), same(pendingPlanState));
     expect(tester.element(timelineFinder), same(pendingTimeline));
     expect(
       tester.element(find.byKey(StudioDriverKeys.planApprove)),
       same(feedback),
     );
-    await tester.tap(find.byKey(StudioDriverKeys.planDetailsClose));
+    await tester.tap(find.byKey(StudioDriverKeys.rightSidebarCollapse));
     await tester.pump();
     expect(find.byKey(StudioDriverKeys.planDetails), findsNothing);
     tester.view.physicalSize = const Size(1190, 900);
@@ -339,7 +340,10 @@ void main() {
     // Reopen through the actual summary intent without changing interaction.
     await tester.tap(find.byKey(StudioDriverKeys.planSummary));
     await tester.pump();
-    expect(find.byKey(StudioDriverKeys.planResizeHandle), findsOneWidget);
+    expect(
+      find.byKey(StudioDriverKeys.rightSidebarResizeHandle),
+      findsOneWidget,
+    );
     tester.view.physicalSize = const Size(640, 480);
     // The real shell may keep activity animations alive. Wait for the Plan
     // outlet instead of requiring all unrelated animations to stop.

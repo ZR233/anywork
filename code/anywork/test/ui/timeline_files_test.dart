@@ -754,13 +754,8 @@ void main() {
           readBytes: read,
           isActive: () => true,
         );
-    Widget panel(FileReadingRequest value) => app(
-      FileReadingPanel(
-        key: const ValueKey('panel'),
-        request: value,
-        onClose: () {},
-      ),
-    );
+    Widget panel(FileReadingRequest value) =>
+        app(FileReadingPanel(key: const ValueKey('panel'), request: value));
     await tester.pumpWidget(panel(request('old', () => first.future)));
     final current = request('new', () async {
       currentReads++;
@@ -822,19 +817,8 @@ void main() {
             child: SizedBox(
               width: width,
               child: plan
-                  ? PlanDetailView(
-                      identity: 'plan',
-                      title: 'Plan',
-                      status: PlanDetailStatus.approved,
-                      onClose: () {},
-                      body: body(),
-                    )
-                  : FileDocumentView(
-                      identity: 'file',
-                      filename: 'notes.md',
-                      onClose: () {},
-                      body: body(),
-                    ),
+                  ? PlanDetailView(identity: 'plan', body: body())
+                  : FileDocumentView(identity: 'file', body: body()),
             ),
           ),
         );
