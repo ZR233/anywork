@@ -343,7 +343,7 @@ impl WorktreeBackend for ExecutorWorktreeBackend {
         async move {
             let args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
             let output = self.run_git(path, &args).await?;
-            let root = non_empty_head(&args, &output.stdout)?;
+            let root = non_empty_output(&args, &output.stdout)?;
             let root = self.path(Path::new(&root))?;
             self.executor
                 .fs()
@@ -502,8 +502,7 @@ impl WorktreeBackend for ExecutorWorktreeBackend {
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
             let args = worktree_list_args();
-            let output = self.run_git(repo_root, &args).await?;
-            checked_output(&args, output).map(|output| output.stdout)
+            Ok(self.run_git(repo_root, &args).await?.stdout)
         }
         .boxed()
     }
@@ -514,8 +513,7 @@ impl WorktreeBackend for ExecutorWorktreeBackend {
     ) -> BoxFuture<'a, Result<String, WorktreeError>> {
         async move {
             let args = git_common_dir_args();
-            let output = self.run_git(path, &args).await?;
-            checked_output(&args, output).map(|output| output.stdout)
+            Ok(self.run_git(path, &args).await?.stdout)
         }
         .boxed()
     }
@@ -595,15 +593,15 @@ pub(super) fn head_result(
     if output.status == 1 {
         return Err(WorktreeError::MissingHead);
     }
-    non_empty_head(args, &checked_output(args, output)?.stdout)
+    non_empty_output(args, &checked_output(args, output)?.stdout)
 }
 
-pub(super) fn non_empty_head(args: &[String], stdout: &str) -> Result<String, WorktreeError> {
+pub(super) fn non_empty_output(args: &[String], stdout: &str) -> Result<String, WorktreeError> {
     let head = stdout.trim();
     if head.is_empty() {
         Err(WorktreeError::GitStatusUnknown {
             args: args.join(" "),
-            stderr: "git rev-parse HEAD returned an empty value".to_string(),
+            stderr: "git command returned an empty value".to_string(),
         })
     } else {
         Ok(head.to_string())
@@ -631,7 +629,7 @@ fn status_files(stdout: &str, ignored: bool) -> Vec<String> {
     files
 }
 
-/// The git arguments that report which branch a directory is on.
+/// The git arguments that list registered worktrees in porcelain form.
 pub(super) fn worktree_list_args() -> Vec<String> {
     vec![
         "worktree".to_string(),
@@ -677,7 +675,7 @@ pub(super) fn decode_backlink(bytes: &[u8], admin_dir: &str) -> Result<String, W
     })
 }
 
-// --- worktree path normalization (self-contained; verified offline by a scratch harness) ---
+// --- worktree path normalization ---
 //
 // Git answers `--git-common-dir` in one of two shapes: `.git` (relative to the directory it was asked
 // in) or an absolute path. Two answers are comparable only after the same lexical resolution, and that
@@ -841,4 +839,24 @@ pub(super) fn current_branch(output: &ExecutionOutput) -> Option<String> {
         return None;
     }
     Some(branch.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::non_empty_output;
+
+    #[test]
+    fn empty_output_names_the_command_that_returned_it() {
+        let args = vec!["rev-parse".to_string(), "--show-toplevel".to_string()];
+        let error = non_empty_output(&args, "   ").expect_err("empty stdout");
+        let display = error.to_string();
+        let diagnostic = error.safe_diagnostic();
+        assert!(display.contains("rev-parse --show-toplevel"), "{display}");
+        assert!(
+            diagnostic.contains("rev-parse --show-toplevel"),
+            "{diagnostic}"
+        );
+        assert!(!display.contains("rev-parse HEAD"), "{display}");
+        assert!(!diagnostic.contains("rev-parse HEAD"), "{diagnostic}");
+    }
 }

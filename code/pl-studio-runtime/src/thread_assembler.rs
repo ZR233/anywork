@@ -356,6 +356,14 @@ impl State {
 
 pub(crate) type SessionCloseReport = Arc<Vec<(String, Arc<ThreadAssemblyError>)>>;
 
+/// Fields mutated by session installers. Restoring them is the table's rollback for a failed install.
+#[derive(Clone)]
+pub(crate) struct InstallerSlots {
+    agent_services: Option<Arc<agent_services::AgentServices>>,
+    observation: Option<observation::AssemblyObservation>,
+    child_factory: Option<children::ChildFactory>,
+}
+
 type CloseCompletion =
     futures::future::Shared<futures::future::BoxFuture<'static, SessionCloseReport>>;
 
@@ -765,6 +773,30 @@ impl SessionRuntime {
         }
         state.child_factory = Some(children::ChildFactory::new(factory));
         Ok(())
+    }
+
+    /// Installer-owned slots. `push_installer` restores this snapshot when a later callback fails,
+    /// so a rejected installer cannot leave some generations mutated and others untouched.
+    pub(crate) fn installer_slots(&self) -> InstallerSlots {
+        let state = self.0.state();
+        InstallerSlots {
+            agent_services: state.agent_services.clone(),
+            observation: state.observation.clone(),
+            child_factory: state.child_factory.clone(),
+        }
+    }
+
+    pub(crate) fn restore_installer_slots(&self, slots: InstallerSlots) {
+        let mut state = self.0.state();
+        state.agent_services = slots.agent_services;
+        state.observation = slots.observation;
+        state.child_factory = slots.child_factory;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_enter_closing(&self) {
+        let mut life = self.0.life();
+        life.phase = crate::session::SessionPhase::Closing;
     }
 
     /// Validates history, opens a fresh model session, binds tools/services and publishes once.
