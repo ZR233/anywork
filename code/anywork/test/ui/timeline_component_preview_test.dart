@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -9,18 +10,182 @@ import 'package:anywork/src/features/conversation/interactions/views/plan_confir
 import 'package:anywork/src/features/conversation/timeline/views/plan_detail_view.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_document_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/views/plan_receipt_view.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_children_view.dart';
+import 'package:anywork/src/features/conversation/widgets/latest_scroll.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gpt_markdown/custom_widgets/custom_divider.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 void main() {
+  testWidgets('one latest action resumes both conversation viewports', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(960, 720);
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    Future<void> layout() async {
+      // The live indicator keeps animating. Pump the layout, its scroll
+      // callbacks and the resulting button/viewport update.
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+    }
+
+    await tester.pumpWidget(timelineFollowLatestPreview());
+    await layout();
+
+    final latest = find.byKey(StudioDriverKeys.timelineReturnLatest);
+    final history = find.descendant(
+      of: find.byType(TimelineView),
+      matching: find.byType(Scrollable),
+    );
+    final response = find.descendant(
+      of: find.byType(ConversationResponseView),
+      matching: find.byType(Scrollable),
+    );
+    final historyPosition = tester.state<ScrollableState>(history).position;
+    final responsePosition = tester.state<ScrollableState>(response).position;
+
+    Future<void> wheel(Finder viewport, double delta) async {
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: tester.getCenter(viewport),
+          scrollDelta: Offset(0, delta),
+        ),
+      );
+      await layout();
+    }
+
+    expect(latest, findsNothing);
+    expect(historyPosition.extentBefore, 0);
+    expect(responsePosition.extentAfter, 0);
+
+    await wheel(response, -110);
+    expect(responsePosition.extentAfter, greaterThan(0));
+    expect(latest, findsOneWidget);
+    await wheel(response, 1000);
+    expect(responsePosition.extentAfter, 0);
+    expect(latest, findsNothing);
+
+    await wheel(history, -235);
+    expect(historyPosition.extentBefore, greaterThan(0));
+    expect(latest, findsOneWidget);
+    await wheel(response, -110);
+    expect(latest, findsOneWidget);
+    final historyOffset = historyPosition.pixels;
+    final responseOffset = responsePosition.pixels;
+
+    await tester.tap(find.text('追加模拟输出'));
+    await layout();
+    expect(historyPosition.pixels, historyOffset);
+    expect(responsePosition.pixels, responseOffset);
+    expect(
+      find.descendant(of: latest, matching: find.text('有新输出 · 回到最新')),
+      findsOneWidget,
+    );
+
+    await tester.tap(latest);
+    await layout();
+    expect(historyPosition.extentBefore, 0);
+    expect(responsePosition.extentAfter, 0);
+    expect(latest, findsNothing);
+
+    await tester.tap(find.text('追加模拟输出'));
+    await layout();
+    expect(historyPosition.extentBefore, 0);
+    expect(responsePosition.extentAfter, 0);
+    expect(latest, findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('hiding a viewport cancels its pending reposition', (
+    tester,
+  ) async {
+    final controller = ScrollController();
+    final restore = Completer<bool>();
+    var visible = true;
+    var requests = 0;
+    late StateSetter updateVisibility;
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppLocalizations.localizationsDelegates,
+        supportedLocales: AppLocalizations.supportedLocales,
+        home: Scaffold(
+          body: LatestScrollScope(
+            child: Column(
+              children: [
+                Expanded(
+                  child: StatefulBuilder(
+                    builder: (context, setState) {
+                      updateVisibility = setState;
+                      return Visibility(
+                        visible: visible,
+                        maintainState: true,
+                        child: LatestScrollViewport(
+                          controller: controller,
+                          onResume: () => ++requests == 1
+                              ? restore.future
+                              : Future.value(true),
+                          child: ListView.builder(
+                            controller: controller,
+                            itemCount: 32,
+                            itemExtent: 48,
+                            itemBuilder: (_, index) => Text('Message $index'),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const ReturnToLatestButton(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      controller.dispose();
+    });
+    await tester.pumpAndSettle();
+
+    final action = find.byKey(StudioDriverKeys.timelineReturnLatest);
+    await tester.drag(find.byType(ListView), const Offset(0, 220));
+    await tester.pumpAndSettle();
+    final readingOffset = controller.offset;
+    expect(action, findsOneWidget);
+    await tester.tap(action);
+    expect(requests, 1);
+
+    updateVisibility(() => visible = false);
+    await tester.pumpAndSettle();
+    expect(action, findsNothing);
+    updateVisibility(() => visible = true);
+    await tester.pumpAndSettle();
+    restore.complete(true);
+    await tester.pumpAndSettle();
+    expect(controller.offset, readingOffset);
+    expect(action, findsOneWidget);
+
+    await tester.tap(action);
+    await tester.pumpAndSettle();
+    expect(controller.position.extentAfter, 0);
+    expect(action, findsNothing);
+  });
+
   testWidgets('已封存工具工作组只在展开后呈现成员，失败不改变工作组标题', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(1067, 720);

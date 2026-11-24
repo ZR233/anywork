@@ -11,13 +11,13 @@ import '../../../../domain/models/timeline_commands.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../composer/views/composer_submission_status.dart';
+import '../../widgets/latest_scroll.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_ui_controllers.dart';
 import '../state/timeline_view_state.dart';
 import '../widgets/chat_item_view.dart';
 import '../widgets/timeline_markdown.dart';
-import '../widgets/timeline_scroll_intent.dart';
 
 typedef CanonicalPresentationBuilder = Widget Function(
   ChatItemPresentation item,
@@ -60,7 +60,7 @@ class TimelineView extends StatefulWidget {
   final TimelineUiControllers controls;
   final Future<void> Function() onLoadOlder;
   final Future<void> Function() onRetryOlder;
-  final Future<void> Function() onReturnLive;
+  final Future<bool> Function() onReturnLive;
   final VoidCallback onEnterHistory;
   final VoidCallback onRetryConnection;
   final ValueChanged<String> onLink;
@@ -84,21 +84,20 @@ class TimelineView extends StatefulWidget {
 }
 
 class _TimelineViewState extends State<TimelineView> {
+  final _latestScroll = GlobalKey<LatestScrollViewportState>();
   StreamSubscription<ChatOperation>? _operations;
-  VoidCallback? _scrollToBottom;
-  bool _userIntent = false;
-  bool _actionIntent = false;
   bool _scheduled = false;
   // Only a layout barrier, not a request gate. Every entry still delegates
   // single-flight and errors to the existing session owner.
   int _pendingPageLayouts = 0;
+  bool _recheckFillAfterPage = false;
   bool _tickersEnabled = true;
   @override
   void initState() {
     super.initState();
     widget.controls.bind();
     _operations = widget.controls.controller.operationsStream.listen(
-      (_) => _scheduleFill(),
+      (_) => _scheduleFill(recheckAfterPage: true),
     );
     _scheduleFill();
   }
@@ -124,10 +123,12 @@ class _TimelineViewState extends State<TimelineView> {
       (submission) => !oldSubmissionIds.contains(submission.inputId),
     )) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _displayActive) unawaited(_returnToLatest());
+        if (_displayActive) {
+          unawaited(_latestScroll.currentState?.requestLatest(force: true));
+        }
       });
     }
-    _scheduleFill();
+    _scheduleFill(recheckAfterPage: oldWidget.view != widget.view);
   }
 
   @override
@@ -159,11 +160,17 @@ class _TimelineViewState extends State<TimelineView> {
 
   bool get _canPage =>
       _displayActive &&
+      widget.view.connection == TimelineConnectionPhase.ready &&
       widget.view.hasOlder &&
       !widget.view.isLoadingOlder &&
       widget.view.olderError == null;
-  void _scheduleFill() {
-    if (!mounted || _scheduled) return;
+  void _scheduleFill({bool recheckAfterPage = false}) {
+    if (!mounted) return;
+    if (_pendingPageLayouts != 0) {
+      _recheckFillAfterPage |= recheckAfterPage;
+      return;
+    }
+    if (_scheduled) return;
     _scheduled = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scheduled = false;
@@ -208,55 +215,20 @@ class _TimelineViewState extends State<TimelineView> {
     await WidgetsBinding.instance.endOfFrame;
     if (!mounted || !identical(widget.controls, controls)) return;
     _pendingPageLayouts--;
-    // Owner reports errors, including same-cursor protocol failures. A swallowed
-    // error's successful Future is not progress, and never starts a polling loop.
-    if (_displayActive && widget.view.olderCursor != before) {
-      _scheduleFill();
-    }
+    if (_pendingPageLayouts != 0) return;
+    // A new live cut can invalidate the pending fill and reuse its cursor.
+    // Metrics and published state request a fresh check after this layout.
+    final recheck = _recheckFillAfterPage || widget.view.olderCursor != before;
+    _recheckFillAfterPage = false;
+    if (recheck && _canPage) _scheduleFill();
   }
 
-  bool _scroll(ScrollNotification notification) {
-    if (notification.depth != 0 || !_displayActive) return false;
-    if (notification is UserScrollNotification) {
-      _userIntent = notification.direction != ScrollDirection.idle;
+  void _pageOnUserScroll(ScrollUpdateNotification notification) {
+    final metrics = notification.metrics;
+    if ((notification.scrollDelta ?? 0) > 0 &&
+        metrics.extentAfter <= metrics.viewportDimension) {
+      unawaited(_loadOlder());
     }
-    if (notification is ScrollEndNotification) {
-      _userIntent = false;
-      _actionIntent = false;
-    }
-    if (notification is ScrollUpdateNotification &&
-        (notification.dragDetails != null || _userIntent || _actionIntent)) {
-      final metrics = notification.metrics;
-      if (widget.view.mode == TimelineDisplayMode.live && metrics.pixels > .5) {
-        widget.onEnterHistory();
-      }
-      if (_canPage &&
-          (notification.scrollDelta ?? 0) > 0 &&
-          metrics.extentAfter <= metrics.viewportDimension) {
-        unawaited(_loadOlder());
-      }
-    }
-    return false;
-  }
-
-  Future<void> _returnToLatest() async {
-    final controls = widget.controls;
-    final scrollToBottom = _scrollToBottom;
-    if (scrollToBottom == null) return;
-    await widget.onReturnLive();
-    if (!mounted ||
-        !identical(widget.controls, controls) ||
-        controls.isRetired ||
-        !controls.scrollController.hasClients) {
-      return;
-    }
-    // Keep our explicit reading intent/footer, but delegate geometry and timing
-    // to Flyer's public builder callback for this mounted list.
-    scrollToBottom();
-    // The official callback only registers a postFrameCallback, which never
-    // schedules a frame itself. If this continuation lands after the last
-    // scheduled frame, guarantee one frame so that scroll can actually run.
-    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Widget _body(String id, String text) => TimelineMarkdown(
@@ -275,8 +247,6 @@ class _TimelineViewState extends State<TimelineView> {
 
   Widget _buildTimeline(BuildContext context) {
     final controls = widget.controls;
-    final returnLiveLabel = context.l10n.timelineBackToLive;
-    final newOutputReturnLiveLabel = '有新输出 · $returnLiveLabel';
     return Column(
       children: [
         if (widget.view.connection != TimelineConnectionPhase.ready)
@@ -320,284 +290,198 @@ class _TimelineViewState extends State<TimelineView> {
             ),
           ),
         Expanded(
-          child: Actions(
-            actions: <Type, Action<Intent>>{
-              ScrollIntent: TimelineScrollIntentAction(
-                controller: controls.scrollController,
-                onUserIntent: () => _actionIntent = true,
-                onNoMovement: () => _actionIntent = false,
-              ),
-            },
-            child: PrimaryScrollController(
-              controller: controls.scrollController,
-              automaticallyInheritForPlatforms: const <TargetPlatform>{},
-              child: NotificationListener<ScrollMetricsNotification>(
-                onNotification: (notification) {
-                  if (notification.depth == 0) {
-                    if (_actionIntent &&
-                        (!controls.scrollController.hasClients ||
-                            !controls
-                                .scrollController
-                                .position
-                                .isScrollingNotifier
-                                .value)) {
-                      _actionIntent = false;
-                    }
-                    _scheduleFill();
-                  }
-                  return false;
-                },
-                child: NotificationListener<ScrollNotification>(
-                  onNotification: _scroll,
-                  child: SelectionArea(
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(
-                          maxWidth: StudioLayout.conversationWidth,
-                        ),
-                        child: ScrollConfiguration(
-                          behavior: ScrollConfiguration.of(context)
-                              .copyWith(scrollbars: false),
-                          child: TimelineScrollbar(
-                            controller: controls.scrollController,
-                            thumbVisibility: false,
-                            onTrackTap: () => _actionIntent = true,
-                            onNoMovement: () => _actionIntent = false,
-                            child: KeyedSubtree(
-                              key: StudioDriverKeys.timeline,
-                              child: Chat(
-                                currentUserId: 'user',
-                                resolveUser: (id) async => User(id: id),
-                                chatController: controls.controller,
-                                backgroundColor: Colors.transparent,
-                                builders: Builders(
-                                  composerBuilder: (_) =>
-                                      const SizedBox.shrink(),
-                                  scrollToBottomBuilder: (_, _, onPressed) {
-                                    _scrollToBottom = onPressed;
-                                    return const SizedBox.shrink();
-                                  },
-                                  emptyChatListBuilder: (_) => Center(
-                                    child: SelectionContainer.disabled(
-                                      child: Text(
-                                        context.l10n.timelineEmptyMessage,
-                                        style: context.text.bodyMedium,
-                                      ),
-                                    ),
+          child: LatestScrollViewport(
+            key: _latestScroll,
+            controller: controls.scrollController,
+            latestAtStart: true,
+            isActive: () => _displayActive,
+            historyPaused: widget.view.mode == TimelineDisplayMode.history,
+            hasNewOutput: widget.view.hasNewOutput,
+            onPause: widget.onEnterHistory,
+            onResume: widget.onReturnLive,
+            onUserScroll: _pageOnUserScroll,
+            onMetricsChanged: () => _scheduleFill(recheckAfterPage: true),
+            child: SelectionArea(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: StudioLayout.conversationWidth,
+                  ),
+                  child: KeyedSubtree(
+                    key: StudioDriverKeys.timeline,
+                    child: Chat(
+                      currentUserId: 'user',
+                      resolveUser: (id) async => User(id: id),
+                      chatController: controls.controller,
+                      backgroundColor: Colors.transparent,
+                      builders: Builders(
+                        composerBuilder: (_) => const SizedBox.shrink(),
+                        scrollToBottomBuilder: (_, _, _) =>
+                            const SizedBox.shrink(),
+                        emptyChatListBuilder: (_) =>
+                            widget.submissions.isNotEmpty
+                            ? const SizedBox.shrink()
+                            : Center(
+                                child: SelectionContainer.disabled(
+                                  child: Text(
+                                    context.l10n.timelineEmptyMessage,
+                                    style: context.text.bodyMedium,
                                   ),
-                                  chatAnimatedListBuilder:
-                                      (
-                                        context,
-                                        itemBuilder,
-                                      ) => ChatAnimatedListReversed(
-                                        // Preserve Flyer's ID lookup for moves
-                                        // while replacing its row State when a
-                                        // Set supplies a new immutable Message.
-                                        // ChatMessageInternal otherwise retains
-                                        // its initState message for the same ID.
-                                        itemBuilder:
-                                            (
-                                              context,
-                                              message,
-                                              index,
-                                              animation, {
-                                              messagesGroupingMode,
-                                              messageGroupingTimeoutInSeconds,
-                                              isRemoved,
-                                            }) => KeyedSubtree(
-                                              key: ValueKey(message.id),
-                                              child: KeyedSubtree(
-                                                key: ObjectKey(message),
-                                                child: itemBuilder(
-                                                  context,
-                                                  message,
-                                                  index,
-                                                  animation,
-                                                  messagesGroupingMode:
-                                                      messagesGroupingMode,
-                                                  messageGroupingTimeoutInSeconds:
-                                                      messageGroupingTimeoutInSeconds,
-                                                  isRemoved: isRemoved,
-                                                ),
-                                              ),
-                                            ),
-                                        scrollController:
-                                            controls.scrollController,
-                                        insertAnimationDuration: Duration.zero,
-                                        removeAnimationDuration: Duration.zero,
-                                        scrollToEndAnimationDuration:
-                                            Duration.zero,
-                                        shouldScrollToEndWhenSendingMessage:
-                                            false,
-                                        handleSafeArea: false,
-                                        topPadding: 16,
-                                        bottomPadding: 16,
-                                        keyboardDismissBehavior:
-                                            ScrollViewKeyboardDismissBehavior
-                                                .manual,
-                                        onEndReached: _canPage
-                                            ? _loadOlder
-                                            : null,
-                                        paginationThreshold: 0,
-                                        bottomSliver:
-                                            widget.planSummary == null &&
-                                                widget.submissions.isEmpty
-                                            ? null
-                                            : SliverToBoxAdapter(
-                                                child: Column(
-                                                  children: [
-                                                    if (widget.planSummary !=
-                                                        null)
-                                                      widget.planSummary!,
-                                                    for (final submission
-                                                        in widget.submissions)
-                                                      _ComposerSubmissionCard(
-                                                        submission: submission,
-                                                        bodyBuilder: _body,
-                                                        controls: widget
-                                                            .submissionControlsBuilder
-                                                            ?.call(submission),
-                                                      ),
-                                                  ],
-                                                ),
-                                              ),
-                                      ),
-                                  chatMessageBuilder:
-                                      (
+                                ),
+                              ),
+                        chatAnimatedListBuilder: (context, itemBuilder) =>
+                            ChatAnimatedListReversed(
+                              // Preserve Flyer's ID lookup for moves
+                              // while replacing its row State when a
+                              // Set supplies a new immutable Message.
+                              // ChatMessageInternal otherwise retains
+                              // its initState message for the same ID.
+                              itemBuilder:
+                                  (
+                                    context,
+                                    message,
+                                    index,
+                                    animation, {
+                                    messagesGroupingMode,
+                                    messageGroupingTimeoutInSeconds,
+                                    isRemoved,
+                                  }) => KeyedSubtree(
+                                    key: ValueKey(message.id),
+                                    child: KeyedSubtree(
+                                      key: ObjectKey(message),
+                                      child: itemBuilder(
                                         context,
                                         message,
                                         index,
                                         animation,
-                                        child, {
-                                        bool? isRemoved,
-                                        required bool isSentByMe,
-                                        MessageGroupStatus? groupStatus,
-                                      }) {
-                                        if (isRemoved == true) {
-                                          return const SizedBox.shrink();
-                                        }
-                                        if (chatItemPresentationOf(message)
-                                                ?.isKnownEmptyText ==
-                                            true) {
-                                          return const SizedBox.shrink();
-                                        }
-                                        return ChatMessage(
-                                          key: StudioDriverKeys.timelineRow(
-                                            message.id,
-                                          ),
-                                          message: message,
-                                          index: index,
-                                          animation: animation,
-                                          isRemoved: isRemoved,
-                                          groupStatus: groupStatus,
-                                          horizontalPadding: 24,
-                                          // 条目已由 Studio 投影分组，不再按作者和
-                                          // 时间套用聊天气泡的第二套间距规则。
-                                          verticalPadding: 12,
-                                          verticalGroupedPadding: 12,
-                                          child: SizedBox(
-                                            width: double.infinity,
-                                            child: child,
-                                          ),
-                                        );
-                                      },
-                                  customMessageBuilder:
-                                      (
-                                        context,
-                                        message,
-                                        index, {
-                                        required bool isSentByMe,
-                                        MessageGroupStatus? groupStatus,
-                                      }) {
-                                        final item = chatItemPresentationOf(
-                                          message,
-                                        )!;
-                                        final promptBubble =
-                                            isSentByMe ||
-                                            item.authorId == 'parentAgent';
-                                        Widget render(
-                                          ChatItemPresentation resolved,
-                                        ) => ChatItemView(
-                                          item: resolved,
-                                          promptBubble: promptBubble,
-                                          bodyBuilder: _body,
-                                          attachmentBuilder:
-                                              widget.attachmentBuilder,
-                                          monotonicMicros:
-                                              widget.monotonicMicros,
-                                          onContentLayout:
-                                              widget.onContentLayout,
-                                          onCurrentContentLayout:
-                                              widget.onCurrentContentLayout,
-                                          onCurrentContentUnmounted:
-                                              widget.onCurrentContentUnmounted,
-                                          isDisplayActive:
-                                              widget.isDisplayActive,
-                                          groupMembersBuilder:
-                                              widget.groupMembersBuilder,
-                                        );
-                                        final rendered =
-                                            widget.canonicalPresentationBuilder
-                                                ?.call(item, render) ??
-                                            render(item);
-                                        if (!promptBubble) return rendered;
-                                        return Align(
-                                          alignment:
-                                              AlignmentDirectional.centerEnd,
-                                          child: ConstrainedBox(
-                                            constraints: const BoxConstraints(
-                                              maxWidth: StudioLayout
-                                                  .conversationPromptWidth,
+                                        messagesGroupingMode:
+                                            messagesGroupingMode,
+                                        messageGroupingTimeoutInSeconds:
+                                            messageGroupingTimeoutInSeconds,
+                                        isRemoved: isRemoved,
+                                      ),
+                                    ),
+                                  ),
+                              scrollController: controls.scrollController,
+                              insertAnimationDuration: Duration.zero,
+                              removeAnimationDuration: Duration.zero,
+                              shouldScrollToEndWhenSendingMessage: false,
+                              handleSafeArea: false,
+                              topPadding: 16,
+                              bottomPadding: 16,
+                              keyboardDismissBehavior:
+                                  ScrollViewKeyboardDismissBehavior.manual,
+                              bottomSliver:
+                                  widget.planSummary == null &&
+                                      widget.submissions.isEmpty
+                                  ? null
+                                  : SliverToBoxAdapter(
+                                      child: Column(
+                                        children: [
+                                          if (widget.planSummary != null)
+                                            widget.planSummary!,
+                                          for (final submission
+                                              in widget.submissions)
+                                            _ComposerSubmissionCard(
+                                              submission: submission,
+                                              bodyBuilder: _body,
+                                              controls: widget
+                                                  .submissionControlsBuilder
+                                                  ?.call(submission),
                                             ),
-                                            child: rendered,
-                                          ),
-                                        );
-                                      },
-                                ),
-                              ),
+                                        ],
+                                      ),
+                                    ),
                             ),
-                          ),
-                        ),
+                        chatMessageBuilder:
+                            (
+                              context,
+                              message,
+                              index,
+                              animation,
+                              child, {
+                              bool? isRemoved,
+                              required bool isSentByMe,
+                              MessageGroupStatus? groupStatus,
+                            }) {
+                              if (isRemoved == true) {
+                                return const SizedBox.shrink();
+                              }
+                              if (chatItemPresentationOf(message)
+                                      ?.isKnownEmptyText ==
+                                  true) {
+                                return const SizedBox.shrink();
+                              }
+                              return ChatMessage(
+                                key: StudioDriverKeys.timelineRow(message.id),
+                                message: message,
+                                index: index,
+                                animation: animation,
+                                isRemoved: isRemoved,
+                                groupStatus: groupStatus,
+                                horizontalPadding: 24,
+                                // 条目已由 Studio 投影分组，不再按作者和
+                                // 时间套用聊天气泡的第二套间距规则。
+                                verticalPadding: 12,
+                                verticalGroupedPadding: 12,
+                                child: SizedBox(
+                                  width: double.infinity,
+                                  child: child,
+                                ),
+                              );
+                            },
+                        customMessageBuilder:
+                            (
+                              context,
+                              message,
+                              index, {
+                              required bool isSentByMe,
+                              MessageGroupStatus? groupStatus,
+                            }) {
+                              final item = chatItemPresentationOf(message)!;
+                              final promptBubble =
+                                  isSentByMe || item.authorId == 'parentAgent';
+                              Widget render(ChatItemPresentation resolved) =>
+                                  ChatItemView(
+                                    item: resolved,
+                                    promptBubble: promptBubble,
+                                    bodyBuilder: _body,
+                                    attachmentBuilder: widget.attachmentBuilder,
+                                    monotonicMicros: widget.monotonicMicros,
+                                    onContentLayout: widget.onContentLayout,
+                                    onCurrentContentLayout:
+                                        widget.onCurrentContentLayout,
+                                    onCurrentContentUnmounted:
+                                        widget.onCurrentContentUnmounted,
+                                    isDisplayActive: widget.isDisplayActive,
+                                    groupMembersBuilder:
+                                        widget.groupMembersBuilder,
+                                  );
+                              final rendered =
+                                  widget.canonicalPresentationBuilder?.call(
+                                    item,
+                                    render,
+                                  ) ??
+                                  render(item);
+                              if (!promptBubble) return rendered;
+                              return Align(
+                                alignment: AlignmentDirectional.centerEnd,
+                                child: ConstrainedBox(
+                                  constraints: const BoxConstraints(
+                                    maxWidth:
+                                        StudioLayout.conversationPromptWidth,
+                                  ),
+                                  child: rendered,
+                                ),
+                              );
+                            },
                       ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-        ),
-        SelectionContainer.disabled(
-          // IndexedStack reserves both labels' natural size, including text
-          // scaling, but only the real History control is ever onstage. This
-          // footer never overlays body text or changes height with the mode.
-          child: IndexedStack(
-            index: widget.view.mode == TimelineDisplayMode.history ? 0 : null,
-            children: [
-              Align(
-                alignment: AlignmentDirectional.centerEnd,
-                child: TextButton.icon(
-                  key: StudioDriverKeys.timelineReturnLive,
-                  onPressed: widget.view.mode != TimelineDisplayMode.history
-                      ? null
-                      : () => unawaited(_returnToLatest()),
-                  icon: const Icon(Icons.south),
-                  label: Text(
-                    widget.view.hasNewOutput
-                        ? newOutputReturnLiveLabel
-                        : returnLiveLabel,
-                  ),
-                ),
-              ),
-              Align(
-                alignment: AlignmentDirectional.centerEnd,
-                child: TextButton.icon(
-                  onPressed: null,
-                  icon: const Icon(Icons.south),
-                  label: Text(newOutputReturnLiveLabel),
-                ),
-              ),
-            ],
           ),
         ),
       ],

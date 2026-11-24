@@ -5,15 +5,12 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../timeline/widgets/timeline_activity_row.dart';
 import '../../timeline/widgets/timeline_reasoning_view.dart';
+import '../../widgets/latest_scroll.dart';
 import '../state/acp_view_state.dart';
 import '../widgets/acp_content_block_view.dart';
 import '../widgets/acp_tool_card.dart';
 
 /// Pure conversation reading stream for ACP sessions.
-///
-/// Enforces the `1040px` centered reading column, `680px` warm user message
-/// bubbles, `StudioNotice` banners, handshake/ready empty state with capability
-/// pills, and a floating "Jump to latest" pill when scrolled away from bottom.
 class AcpConversationContentView extends StatefulWidget {
   const AcpConversationContentView({
     super.key,
@@ -21,14 +18,12 @@ class AcpConversationContentView extends StatefulWidget {
     required this.header,
     required this.itemBuilder,
     this.planCard,
-    this.contentIdentity,
   });
 
   final String threadId;
   final AcpTimelineHeaderViewState header;
   final IndexedWidgetBuilder itemBuilder;
   final Widget? planCard;
-  final Object? contentIdentity;
 
   @override
   State<AcpConversationContentView> createState() =>
@@ -37,54 +32,11 @@ class AcpConversationContentView extends StatefulWidget {
 
 class _AcpConversationContentViewState
     extends State<AcpConversationContentView> {
-  final ScrollController _scrollController = ScrollController();
-  bool _showJumpToLatest = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _scrollController.addListener(_onScroll);
-  }
-
-  @override
-  void didUpdateWidget(covariant AcpConversationContentView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if ((widget.header.itemCount > oldWidget.header.itemCount ||
-            !identical(widget.contentIdentity, oldWidget.contentIdentity)) &&
-        !_showJumpToLatest) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !_scrollController.hasClients) return;
-        final position = _scrollController.position;
-        if (position.maxScrollExtent > position.pixels) {
-          _scrollController.jumpTo(position.maxScrollExtent);
-        }
-      });
-    }
-  }
-
-  void _onScroll() {
-    if (!_scrollController.hasClients) return;
-    final extentAfter = _scrollController.position.extentAfter;
-    final away = extentAfter > 160;
-    if (away != _showJumpToLatest) {
-      setState(() => _showJumpToLatest = away);
-    }
-  }
-
-  void _jumpToLatest() {
-    if (!_scrollController.hasClients) return;
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-    );
-  }
+  final _scrollController = ScrollController(keepScrollOffset: false);
 
   @override
   void dispose() {
-    _scrollController
-      ..removeListener(_onScroll)
-      ..dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -197,63 +149,66 @@ class _AcpConversationContentViewState
     final totalCount = leadingCount + header.itemCount + trailingCount;
 
     return LiveStatusMotionHost(
-      child: Stack(
-        children: [
-          SelectionArea(
-            child: ListView.builder(
-              controller: _scrollController,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              itemCount: totalCount,
-              itemBuilder: (context, rawIndex) {
-                if (hasLeadingSlot && rawIndex == 0) {
-                  return _CenteredReadingConstraint(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (var i = 0; i < notices.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 8),
-                          notices[i],
-                        ],
-                        if (widget.planCard case final plan?) ...[
-                          if (notices.isNotEmpty) const SizedBox(height: 12),
-                          plan,
-                        ],
-                        if (header.itemCount > 0) const SizedBox(height: 16),
-                      ],
-                    ),
-                  );
-                }
-                if (showTrailingWelcome && rawIndex == totalCount - 1) {
-                  return Padding(
-                    padding: const EdgeInsets.only(top: 56, bottom: 24),
-                    child: Center(child: _EmptySessionState(header: header)),
-                  );
-                }
-                final itemIndex = rawIndex - leadingCount;
-                return _CenteredReadingConstraint(
-                  key: ValueKey(
-                    AcpViewKeyValues.timelineItem(widget.threadId, itemIndex),
+      child: LatestScrollScope(
+        key: ValueKey(widget.threadId),
+        child: Column(
+          children: [
+            Expanded(
+              child: LatestScrollViewport(
+                controller: _scrollController,
+                child: SelectionArea(
+                  child: ListView.builder(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                    itemCount: totalCount,
+                    itemBuilder: (context, rawIndex) {
+                      if (hasLeadingSlot && rawIndex == 0) {
+                        return _CenteredReadingConstraint(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              for (var i = 0; i < notices.length; i++) ...[
+                                if (i > 0) const SizedBox(height: 8),
+                                notices[i],
+                              ],
+                              if (widget.planCard case final plan?) ...[
+                                if (notices.isNotEmpty)
+                                  const SizedBox(height: 12),
+                                plan,
+                              ],
+                              if (header.itemCount > 0)
+                                const SizedBox(height: 16),
+                            ],
+                          ),
+                        );
+                      }
+                      if (showTrailingWelcome && rawIndex == totalCount - 1) {
+                        return Padding(
+                          padding: const EdgeInsets.only(top: 56, bottom: 24),
+                          child: Center(
+                            child: _EmptySessionState(header: header),
+                          ),
+                        );
+                      }
+                      final itemIndex = rawIndex - leadingCount;
+                      return _CenteredReadingConstraint(
+                        key: ValueKey(
+                          AcpViewKeyValues.timelineItem(
+                            widget.threadId,
+                            itemIndex,
+                          ),
+                        ),
+                        child: widget.itemBuilder(context, itemIndex),
+                      );
+                    },
                   ),
-                  child: widget.itemBuilder(context, itemIndex),
-                );
-              },
-            ),
-          ),
-          if (_showJumpToLatest)
-            Positioned(
-              bottom: 12,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: FilledButton.tonalIcon(
-                  onPressed: _jumpToLatest,
-                  icon: const Icon(Icons.arrow_downward_rounded, size: 16),
-                  label: Text(context.l10n.timelineJumpToLatest),
                 ),
               ),
             ),
-        ],
+            const ReturnToLatestButton(),
+          ],
+        ),
       ),
     );
   }

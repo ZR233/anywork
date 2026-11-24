@@ -51,6 +51,7 @@ import '../conversation/timeline/connectors/timeline_read_demand_viewport.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/connectors/file_reading_panel.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
+import '../conversation/widgets/latest_scroll.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'sidebar/sidebar_views.dart';

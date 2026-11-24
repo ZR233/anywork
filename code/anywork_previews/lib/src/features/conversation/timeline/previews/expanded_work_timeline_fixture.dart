@@ -13,6 +13,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_mark
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/tools/tool_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/features/conversation/widgets/latest_scroll.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:material_ui/material_ui.dart';
@@ -206,54 +207,57 @@ class ExpandedWorkTimelineFixtureState
       ),
     ),
     home: Scaffold(
-      body: Column(
-        children: [
-          Wrap(
-            spacing: 12,
-            children: [
-              TextButton(
-                key: const ValueKey('expanded-append'),
-                onPressed: appendMember,
-                child: const Text('追加成员'),
-              ),
-              TextButton(
-                key: const ValueKey('expanded-grow'),
-                onPressed: growMiddle,
-                child: Text('异步加高中段第 $middle 项'),
-              ),
-              Text('完整 $count 项 · ${isHistory ? '历史消息行' : '当前消息行'}'),
-            ],
-          ),
-          Expanded(
-            child: TimelineView(
-              threadId: 'expanded-work-preview',
-              controls: controls,
-              view: TimelineSessionViewState(
-                threadId: 'expanded-work-preview',
-                generation: 1,
-                mode: mode,
-                connection: TimelineConnectionPhase.ready,
-              ),
-              onLoadOlder: () async {},
-              onRetryOlder: () async {},
-              onReturnLive: () async {
-                if (mounted) {
-                  setState(() => mode = TimelineDisplayMode.live);
-                }
-              },
-              onEnterHistory: () {
-                if (mounted && mode != TimelineDisplayMode.history) {
-                  setState(() => mode = TimelineDisplayMode.history);
-                }
-              },
-              onRetryConnection: () {},
-              onLink: (_) {},
-              isSafeLink: (_) => false,
-              remoteImageBuilder: (_, _) => const SizedBox.shrink(),
-              groupMembersBuilder: (_) => _rows(),
+      body: LatestScrollScope(
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 12,
+              children: [
+                TextButton(
+                  key: const ValueKey('expanded-append'),
+                  onPressed: appendMember,
+                  child: const Text('追加成员'),
+                ),
+                TextButton(
+                  key: const ValueKey('expanded-grow'),
+                  onPressed: growMiddle,
+                  child: Text('异步加高中段第 $middle 项'),
+                ),
+                Text('完整 $count 项 · ${isHistory ? '历史消息行' : '当前消息行'}'),
+              ],
             ),
-          ),
-        ],
+            Expanded(
+              child: TimelineView(
+                threadId: 'expanded-work-preview',
+                controls: controls,
+                view: TimelineSessionViewState(
+                  threadId: 'expanded-work-preview',
+                  generation: 1,
+                  mode: mode,
+                  connection: TimelineConnectionPhase.ready,
+                ),
+                onLoadOlder: () async {},
+                onRetryOlder: () async {},
+                onReturnLive: () async {
+                  if (!mounted) return false;
+                  setState(() => mode = TimelineDisplayMode.live);
+                  return true;
+                },
+                onEnterHistory: () {
+                  if (mounted && mode != TimelineDisplayMode.history) {
+                    setState(() => mode = TimelineDisplayMode.history);
+                  }
+                },
+                onRetryConnection: () {},
+                onLink: (_) {},
+                isSafeLink: (_) => false,
+                remoteImageBuilder: (_, _) => const SizedBox.shrink(),
+                groupMembersBuilder: (_) => _rows(),
+              ),
+            ),
+            const ReturnToLatestButton(),
+          ],
+        ),
       ),
     ),
   );

@@ -10,8 +10,10 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_work_group_shell.dart';
+import 'package:anywork/src/features/conversation/widgets/latest_scroll.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_chrome.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_previews/src/features/conversation/acp/previews/acp_process_group_previews.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -215,8 +217,7 @@ void main() {
           .widget<ListView>(find.byType(ListView))
           .controller!;
       expect(controller.position.maxScrollExtent, greaterThan(300));
-      controller.jumpTo(controller.position.maxScrollExtent);
-      await tester.pumpAndSettle();
+      expect(controller.position.extentAfter, lessThan(1));
       final oldCount = tester
           .widget<AcpConversationContentView>(
             find.byType(AcpConversationContentView),
@@ -258,7 +259,7 @@ void main() {
     });
   }
 
-  testWidgets('已展开组内追加时不强拉主动上滚的用户', (tester) async {
+  testWidgets('ACP 上翻暂停跟随，手动滚回或点击共用按钮恢复', (tester) async {
     final harness = await AcpComponentHarness.create(
       updates: [_protocolTool('reading', output: _longOutput('初始', 80))],
     );
@@ -271,15 +272,20 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('工具 reading'));
     await tester.pumpAndSettle();
-    final controller = tester
-        .widget<ListView>(find.byType(ListView))
-        .controller!;
-    controller.jumpTo(controller.position.maxScrollExtent);
+    final list = find.byType(ListView);
+    final position = tester.widget<ListView>(list).controller!.position;
+    final returnButton = find.byKey(StudioDriverKeys.timelineReturnLatest);
+    expect(find.byType(ReturnToLatestButton), findsOneWidget);
+    expect(returnButton.hitTestable(), findsNothing);
+    expect(position.extentAfter, lessThan(1));
+
+    await tester.drag(list, const Offset(0, 400));
     await tester.pumpAndSettle();
-    await tester.drag(find.byType(ListView), const Offset(0, 400));
-    await tester.pumpAndSettle();
-    final oldPixels = controller.position.pixels;
-    expect(controller.position.extentAfter, greaterThan(160));
+    final oldPixels = position.pixels;
+    final oldEnd = position.maxScrollExtent;
+    expect(position.extentAfter, greaterThan(160));
+    expect(returnButton.hitTestable(), findsOneWidget);
+    expect(find.text('回到最新').hitTestable(), findsOneWidget);
     harness.update(
       _protocolTool(
         'reading-appended',
@@ -287,8 +293,28 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(controller.position.pixels, closeTo(oldPixels, 1));
-    expect(controller.position.extentAfter, greaterThan(160));
+    expect(position.maxScrollExtent, greaterThan(oldEnd));
+    expect(position.pixels, closeTo(oldPixels, 1));
+    expect(returnButton.hitTestable(), findsOneWidget);
+
+    await tester.drag(list, Offset(0, -(position.extentAfter + 100)));
+    await tester.pumpAndSettle();
+    expect(position.extentAfter, lessThan(1));
+    expect(returnButton.hitTestable(), findsNothing);
+
+    final resumedEnd = position.maxScrollExtent;
+    harness.update(_protocolTool('reading-resumed'));
+    await tester.pumpAndSettle();
+    expect(position.maxScrollExtent, greaterThan(resumedEnd));
+    expect(position.extentAfter, lessThan(1));
+
+    await tester.drag(list, const Offset(0, 400));
+    await tester.pumpAndSettle();
+    expect(returnButton.hitTestable(), findsOneWidget);
+    await tester.tap(returnButton);
+    await tester.pumpAndSettle();
+    expect(returnButton.hitTestable(), findsNothing);
+    expect(position.extentAfter, lessThan(1));
   });
 
   for (final patch in [false, true]) {
@@ -601,29 +627,68 @@ void main() {
         ),
       ),
     );
+    final list = find.byType(ListView);
+    await tester.pumpAndSettle();
+    await tester.drag(list, const Offset(0, 6000));
+    await tester.pumpAndSettle();
     await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pumpAndSettle();
     expect(find.byType(AcpToolCard), findsOneWidget);
-    final controller = tester
-        .widget<ListView>(find.byType(ListView))
-        .controller!;
-    controller.jumpTo(controller.position.maxScrollExtent);
+    await tester.drag(list, const Offset(0, -6000));
     await tester.pumpAndSettle();
     expect(
       find.byType(AcpTimelineProcessGroupView),
       findsNothing,
       reason: '确实离开虚拟列表缓存范围',
     );
-    controller.jumpTo(0);
+    await tester.drag(list, const Offset(0, 6000));
     await tester.pumpAndSettle();
     expect(find.byType(AcpToolCard), findsOneWidget);
     await tester.tap(find.byType(TimelineActivityRow).first);
     await tester.pumpAndSettle();
-    controller.jumpTo(controller.position.maxScrollExtent);
+    await tester.drag(list, const Offset(0, -6000));
     await tester.pumpAndSettle();
-    controller.jumpTo(0);
+    await tester.drag(list, const Offset(0, 6000));
     await tester.pumpAndSettle();
     expect(find.byType(AcpToolCard), findsNothing, reason: '明确收起后也不能被滚动重新展开');
+  });
+
+  testWidgets('切换 ACP 会话后从新会话的最新位置开始跟随', (tester) async {
+    final thread = ValueNotifier('previous');
+    addTearDown(thread.dispose);
+    await tester.pumpWidget(
+      acpTestApp(
+        ValueListenableBuilder(
+          valueListenable: thread,
+          builder: (context, threadId, _) => AcpConversationContentView(
+            threadId: threadId,
+            header: const AcpTimelineHeaderViewState(
+              ready: true,
+              loading: false,
+              hasConversationalContent: true,
+              itemCount: 12,
+            ),
+            itemBuilder: (context, index) =>
+                SizedBox(height: 100, child: Text('$threadId $index')),
+          ),
+        ),
+      ),
+    );
+    final list = find.byType(ListView);
+    final returnButton = find.byKey(StudioDriverKeys.timelineReturnLatest);
+    await tester.pumpAndSettle();
+    await tester.drag(list, const Offset(0, 400));
+    await tester.pumpAndSettle();
+    expect(returnButton.hitTestable(), findsOneWidget);
+
+    thread.value = 'next';
+    await tester.pumpAndSettle();
+    expect(returnButton.hitTestable(), findsNothing);
+    expect(
+      tester.widget<ListView>(list).controller!.position.extentAfter,
+      lessThan(1),
+    );
+    expect(find.text('next 11').hitTestable(), findsOneWidget);
   });
 
   testWidgets('实际 connector 按可见消息分组并原位更新旧工具', (tester) async {

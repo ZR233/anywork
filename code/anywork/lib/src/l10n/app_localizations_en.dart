@@ -2004,7 +2004,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get timelineFileDownloadComplete => 'Download complete';
 
   @override
-  String get timelineJumpToLatest => 'Jump to latest';
+  String get timelineJumpToLatest => 'Back to latest';
+
+  @override
+  String get timelineJumpToLatestWithNewOutput => 'New output · Back to latest';
 
   @override
   String get timelineNew => 'New';
@@ -2014,9 +2017,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineActivityNotLoaded => 'More activity to load';
-
-  @override
-  String get timelineBackToLive => 'Back to live';
 
   @override
   String get timelineDetailUnavailable => 'This content is no longer available';
@@ -6319,9 +6319,6 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get conversationActivityResponding => 'Generating response';
-
-  @override
-  String get conversationActivityFollowOutput => 'Follow output';
 
   @override
   String get timelineBackgroundResults => 'Background results';
