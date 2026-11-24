@@ -9,8 +9,8 @@ use crate::studio::records::{DirectoryMember, WorkspaceRecord};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
 use crate::studio::store::thread_archive::{ArchivePhase, ArchiveScope};
 
-use super::super::StudioRuntime;
 use super::super::thread_title::ThreadTitleCancellationCause;
+use super::super::{ARCHIVE_TREE_SETTLE_TIMEOUT, StudioRuntime};
 
 impl StudioRuntime {
     pub async fn open_project(&self, path: impl AsRef<Path>) -> Result<WorkspaceRecord> {
@@ -301,7 +301,7 @@ impl StudioRuntime {
                     && project.kind == WorkspaceKind::Standalone),
             "the standalone workspace cannot be archived"
         );
-        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
         let has_pending_archive = self
             .store
             .thread_archive(&ArchiveScope::Workspace(workspace_id.into()))
@@ -392,7 +392,7 @@ impl StudioRuntime {
                 .cancel(id, ThreadTitleCancellationCause::ProjectArchive)
                 .await;
         }
-        tokio::time::timeout(self.archive_settle_timeout(), async {
+        tokio::time::timeout(ARCHIVE_TREE_SETTLE_TIMEOUT, async {
             for (session, scope) in &scopes {
                 session.drain_archive_preparations(scope).await?;
             }
@@ -400,7 +400,7 @@ impl StudioRuntime {
         })
         .await
         .context("project archive preparations did not join")??;
-        let threads = self.load_project_archive_scope(workspace_id).await?;
+        let threads = self.load_project_archive_scope(workspace_id)?;
         ensure!(
             threads
                 .iter()
@@ -433,11 +433,6 @@ impl StudioRuntime {
                 &admitted,
             )
             .await?;
-        for thread_id in &thread_ids {
-            self.title_tasks
-                .cancel(thread_id, ThreadTitleCancellationCause::ProjectArchive)
-                .await;
-        }
         if archive.phase == ArchivePhase::Sealed {
             self.retire_archived_thread_tree(&thread_ids).await?;
             self.retire_private_archive_members(&mut archive).await?;
@@ -484,7 +479,7 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
+    fn load_project_archive_scope(&self, workspace_id: &str) -> Result<Vec<DirectoryMember>> {
         let threads = self.store.directory_members_for_project(workspace_id)?;
         Ok(threads)
     }
@@ -1215,11 +1210,10 @@ mod standalone_tests {
 
         let runtime = StudioRuntime::initialize(options(&home)).await?;
         let restored = runtime
-            .find_owned_thread(&first.id)
-            .await?
+            .find_owned_thread(&first.id)?
             .context("cold Thread")?;
         assert_eq!(restored.workspace_path, first.workspace_path);
-        runtime.register_new_thread(restored).await?;
+        runtime.ensure_thread_owner(&restored.id).await?;
         assert_eq!(
             runtime
                 .store
@@ -4649,7 +4643,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime
@@ -4960,7 +4954,7 @@ mod standalone_tests {
                                 .map(|agent| agent.thread_id)
                         })?,
                     );
-                    runtime.register_new_thread(root.clone()).await?;
+                    runtime.ensure_thread_owner(&root.id).await?;
                     root
                 } else {
                     let root = runtime

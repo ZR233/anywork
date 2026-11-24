@@ -30,7 +30,6 @@ struct ReadResource {
     cancel: CancellationToken,
     closing: AtomicBool,
     _permit: OwnedSemaphorePermit,
-    fingerprint: Option<String>,
 }
 
 impl ReadResource {
@@ -76,13 +75,6 @@ fn search_cancelled() -> anyhow::Error {
     anyhow::anyhow!("search cancelled")
 }
 
-async fn cancelled(cancel: Option<&CancellationToken>) {
-    match cancel {
-        Some(cancel) => cancel.cancelled().await,
-        None => std::future::pending().await,
-    }
-}
-
 fn operation_and_cleanup<T>(operation: Result<T>, cleanup: Result<()>) -> Result<T> {
     match (operation, cleanup) {
         (Err(error), Err(cleanup)) => Err(error.context(format!(
@@ -110,9 +102,7 @@ impl ReadOwners {
         runtime: &StudioRuntime,
         session: &str,
         demand: ReadDemand,
-        fingerprint: Option<&str>,
-        cancel: Option<&CancellationToken>,
-    ) -> Result<Arc<ReadResource>> {
+    ) -> Result<(String, Arc<ReadResource>)> {
         let _open = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
             open=self.opens.read()=>open
@@ -125,12 +115,10 @@ impl ReadOwners {
         })?;
         let current = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
-            _=cancelled(cancel)=>return Err(search_cancelled()),
             result=runtime.open_current_reader(session, crate::CURRENT_PROTOCOL_VERSION, demand)=>result?
         };
         let history_result = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
-            _=cancelled(cancel)=>return Err(search_cancelled()),
             result=runtime.open_history_reader(session, crate::history::HISTORY_PROTOCOL_VERSION)=>result
         };
         let history = match history_result {
@@ -145,19 +133,16 @@ impl ReadOwners {
             cancel: current.cancellation_token(),
             closing: AtomicBool::new(false),
             _permit: permit,
-            fingerprint: fingerprint.map(str::to_owned),
         });
         let id = crate::studio::new_id("read");
-        self.readers.lock().await.insert(id, resource.clone());
-        Ok(resource)
+        self.readers
+            .lock()
+            .await
+            .insert(id.clone(), resource.clone());
+        Ok((id, resource))
     }
 
-    async fn get(
-        &self,
-        id: &str,
-        session: &str,
-        fingerprint: Option<&str>,
-    ) -> Result<Arc<ReadResource>> {
+    async fn get(&self, id: &str, session: &str) -> Result<Arc<ReadResource>> {
         if self.stopping.is_cancelled() {
             return Err(stale_scope());
         }
@@ -169,9 +154,7 @@ impl ReadOwners {
             .cloned()
             .ok_or_else(stale_scope)?;
         ensure!(
-            !resource.closing.load(Ordering::Acquire)
-                && resource.current.thread_id() == session
-                && resource.fingerprint.as_deref() == fingerprint,
+            !resource.closing.load(Ordering::Acquire) && resource.current.thread_id() == session,
             stale_scope()
         );
         Ok(resource)
@@ -197,7 +180,7 @@ impl ReadOwners {
     }
 
     async fn close_target(&self, id: &str, session: &str) -> Result<()> {
-        let resource = self.get(id, session, None).await?;
+        let resource = self.get(id, session).await?;
         ensure!(resource.current.thread_id() == session, stale_scope());
         self.close(id).await
     }
@@ -296,16 +279,7 @@ pub(super) async fn get(
     owners: &ReadOwners,
     session: &str,
 ) -> Result<pl_core::tool::ToolOutput> {
-    let resource = owners
-        .open(runtime, session, demand(16)?, None, None)
-        .await?;
-    let id = owners
-        .readers
-        .lock()
-        .await
-        .iter()
-        .find_map(|(id, value)| Arc::ptr_eq(value, &resource).then(|| id.clone()))
-        .ok_or_else(stale_scope)?;
+    let (id, resource) = owners.open(runtime, session, demand(16)?).await?;
     let result = async {
         let view = resource.current.snapshot(demand(16)?).await?;
         let mut pending = Vec::new();
@@ -363,26 +337,13 @@ pub(super) async fn read(
     });
     page_demand.validate(1)?;
     let (id, resource, created) = if let Some(id) = args.read_scope.clone() {
-        (
-            id.clone(),
-            owners.get(&id, &args.session_id, None).await?,
-            false,
-        )
+        (id.clone(), owners.get(&id, &args.session_id).await?, false)
     } else {
         ensure!(
             args.scope.is_some() || args.read_business_refs || args.collection.is_some(),
             "scope is required when opening a history read"
         );
-        let resource = owners
-            .open(runtime, &args.session_id, page_demand, None, None)
-            .await?;
-        let id = owners
-            .readers
-            .lock()
-            .await
-            .iter()
-            .find_map(|(id, value)| Arc::ptr_eq(value, &resource).then(|| id.clone()))
-            .ok_or_else(stale_scope)?;
+        let (id, resource) = owners.open(runtime, &args.session_id, page_demand).await?;
         (id, resource, true)
     };
     let result = async {

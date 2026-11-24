@@ -2920,7 +2920,6 @@ pub(super) mod archive_tests {
                         bound.bot_id, bound.chat_id, bound.message_id
                     ),
                 )
-                .await?
                 .eq(&crate::bots::BotInputRead::Absent)
         );
         fixture

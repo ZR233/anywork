@@ -39,7 +39,8 @@ fn set_list_membership(list: &mut Vec<String>, id: String, present: bool) {
 }
 
 impl StudioRuntime {
-    pub(super) fn read_settings_response(&self) -> Result<SettingsStateResponse> {
+    /// Reads the secret-free canonical Settings snapshot from the in-memory owner.
+    pub fn read_settings(&self) -> Result<SettingsStateResponse> {
         // 同一 Settings command 边界内取得配置与 ACP 投影：不会看到"提交已生效但身份未对齐"的中间态。
         // 外层是命令边界错误，内层是投影错误；两层都保留为命令错误，不丢弃任何一层。
         self.config_runtime
@@ -83,11 +84,6 @@ impl StudioRuntime {
         let value = serde_json::to_value(&snapshot)?;
         snapshot.revision = crate::hash::canonical_json_hash(&value);
         Ok(snapshot)
-    }
-
-    /// Reads the secret-free canonical Settings snapshot from the in-memory owner.
-    pub fn read_settings(&self) -> Result<SettingsStateResponse> {
-        self.read_settings_response()
     }
 
     /// Applies one typed settings field/resource mutation.
@@ -401,7 +397,7 @@ impl StudioRuntime {
         self.config_runtime.reload_from_disk(expected_revision)?;
         self.publish_settings_state()?;
         self.skills.mark_all_stale().await;
-        self.read_settings_response()
+        self.read_settings()
     }
 
     pub async fn create_account(
@@ -788,7 +784,7 @@ impl StudioRuntime {
                 CommandEffectPoint::NextTurn,
                 false,
             ),
-            settings: self.read_settings_response()?,
+            settings: self.read_settings()?,
             mode_default_saved,
             warning,
         })

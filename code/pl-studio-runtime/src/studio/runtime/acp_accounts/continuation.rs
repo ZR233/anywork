@@ -319,7 +319,6 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 cancel: CancellationToken::new(),
                 cancel_requested: false.into(),
                 authentication: sender,
-                cleanup_retry: tokio::sync::Notify::new(),
                 join: tokio::sync::Mutex::new(None),
             });
             slot.operation = Some(operation.clone());
@@ -460,7 +459,6 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 cancel: CancellationToken::new(),
                 cancel_requested: false.into(),
                 authentication: sender,
-                cleanup_retry: tokio::sync::Notify::new(),
                 join: tokio::sync::Mutex::new(None),
             });
             slot.operation = Some(operation.clone());

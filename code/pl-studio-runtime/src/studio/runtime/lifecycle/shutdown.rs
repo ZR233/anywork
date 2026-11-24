@@ -1659,7 +1659,6 @@ impl StudioRuntime {
                 if let Some(exporter) = &runtime.agent_facility.run_export {
                     let _report = exporter
                         .finalize_during_shutdown(
-                            runtime.store.clone(),
                             budget.deadline().map(tokio::time::Instant::from_std),
                             agent_ok,
                             flush_ok,

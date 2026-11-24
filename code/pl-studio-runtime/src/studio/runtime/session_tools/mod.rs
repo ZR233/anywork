@@ -560,7 +560,7 @@ impl StudioRuntime {
             duplicate,
         };
         if matches!(
-            self.bot_input_fact(&args.session_id, &input_id).await?,
+            self.bot_input_fact(&args.session_id, &input_id)?,
             crate::bots::BotInputRead::Ready { .. }
         ) {
             return output(&receipt(true));

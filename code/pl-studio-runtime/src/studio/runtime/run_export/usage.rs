@@ -190,13 +190,6 @@ fn reasoning_subset_valid(usage: &ModelUsage) -> bool {
 
 fn has_field_issue(analysis: &UsageAnalysis, field: UsageField) -> bool {
     analysis.issues.iter().any(|issue| issue.field == field)
-        || (field == UsageField::Total
-            && analysis.status == UsageStatus::Invalid
-            && analysis.context_tokens.is_none()
-            && analysis
-                .issues
-                .iter()
-                .any(|issue| issue.field == UsageField::Total))
 }
 
 fn add_u64_metric(

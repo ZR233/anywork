@@ -873,47 +873,6 @@ impl HistoryReader {
         .await
     }
 
-    pub async fn latest_original(
-        &self,
-        cut: Option<HistoryCut>,
-        demand: HistoryDemand,
-    ) -> Result<Option<HistoryEventRecord>> {
-        self.run(move |reader| async move {
-            demand.validate()?;
-            let snapshot = reader.snapshot().await?;
-            let through = match cut {
-                Some(cut) => {
-                    let pos = reader.inner.codec.through(&cut)?;
-                    if pos > snapshot.head {
-                        return Err(HistoryError::InvalidCursor);
-                    }
-                    pos
-                }
-                None => snapshot.head,
-            };
-            let pending_rec = snapshot
-                .pending
-                .latest_original(through)
-                .map(|accepted| Record::from_event(&accepted.event));
-            let rec = match pending_rec {
-                Some(rec) => Some(rec),
-                None => db::latest_original(&snapshot.tx, through).await?,
-            };
-            snapshot.tx.commit().await?;
-            if let Some(rec) = rec {
-                if !demand.fits(&rec.record)? {
-                    return Err(HistoryError::InvalidDemand(
-                        "latest original exceeds byte demand".into(),
-                    ));
-                }
-                Ok(Some(rec.record))
-            } else {
-                Ok(None)
-            }
-        })
-        .await
-    }
-
     pub async fn latest_row(
         &self,
         row_key: String,

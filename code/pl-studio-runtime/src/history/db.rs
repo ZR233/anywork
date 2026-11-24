@@ -272,25 +272,6 @@ pub(super) async fn original_by_entity(
     .transpose()
 }
 
-pub(super) async fn latest_original(
-    db: &impl ConnectionTrait,
-    through: u64,
-) -> Result<Option<Record>> {
-    db.query_one_raw(statement(
-        &format!(
-            "SELECT {COLUMNS} FROM history_events \
-             WHERE query_class IS NOT NULL AND seq<=? ORDER BY seq DESC LIMIT 1"
-        ),
-        vec![number(through)?.into()],
-    ))
-    .await
-    .inspect(|_| {
-        tracing::debug!(target: "conversation_work", history_sql_read = 1u64, "history SQL read completed");
-    })?
-    .map(decode_row)
-    .transpose()
-}
-
 pub(super) async fn head(db: &impl ConnectionTrait, row: &str, cut: u64) -> Result<Option<Record>> {
     db.query_one_raw(statement(
         &format!(

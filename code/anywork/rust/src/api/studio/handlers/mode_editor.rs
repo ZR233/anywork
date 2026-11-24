@@ -40,10 +40,11 @@ pub async fn save_thread_mode_definition(
 ) -> Result<BridgeThreadModeDefinitionCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(bridge_thread_mode_command_reply(
-        bridge
-            .studio
-            .save_thread_mode_definition(&operation_id, expected_revision, document.try_into()?)
-            .await?,
+        bridge.studio.save_thread_mode_definition(
+            &operation_id,
+            expected_revision,
+            document.try_into()?,
+        )?,
     ))
 }
 
@@ -58,8 +59,7 @@ pub async fn delete_thread_mode_definition(
     Ok(bridge_thread_mode_command_reply(
         bridge
             .studio
-            .delete_thread_mode_definition(&operation_id, expected_revision, &mode_id)
-            .await?,
+            .delete_thread_mode_definition(&operation_id, expected_revision, &mode_id)?,
     ))
 }
 
@@ -72,8 +72,7 @@ pub async fn reload_thread_mode_definitions(
     Ok(bridge_thread_mode_command_reply(
         bridge
             .studio
-            .reload_thread_mode_definitions(&operation_id, expected_revision)
-            .await?,
+            .reload_thread_mode_definitions(&operation_id, expected_revision)?,
     ))
 }
 

@@ -338,10 +338,6 @@ pub fn storage_key(id: &str, kind: &str) -> Result<String> {
     Ok(hex::encode(Sha256::digest(id.as_bytes())))
 }
 
-pub fn default_db_path() -> Result<PathBuf> {
-    Ok(StudioPaths::resolve(None)?.database())
-}
-
 fn user_home_dir() -> Result<PathBuf> {
     #[cfg(windows)]
     const HOME_VARS: &[&str] = &["USERPROFILE", "HOME"];

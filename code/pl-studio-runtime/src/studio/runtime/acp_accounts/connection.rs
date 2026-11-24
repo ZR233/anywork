@@ -719,10 +719,10 @@ fn spawn_failure(error: AcpSpawnError) -> AcpFailure {
             stage: AcpAuthStage::Process,
             retryable: false,
         },
-        AcpSpawnError::Startup { step, source } => {
+        AcpSpawnError::Startup { source } => {
             // 原始原因只作内部诊断：日志只记录安全步骤与有界长度，绝不记录或透出任意文本。
             tracing::warn!(
-                step = step.label(),
+                step = "process",
                 source_bytes = source.len(),
                 "ACP 连接启动失败"
             );

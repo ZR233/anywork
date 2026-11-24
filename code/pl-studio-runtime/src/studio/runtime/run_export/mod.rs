@@ -41,7 +41,6 @@ use writer::{
     spawn_writer_task,
 };
 
-use crate::StudioStore;
 use crate::history::{HistoryCut, HistoryEvent, HistoryReader};
 use crate::studio::thread_projection::CurrentState;
 use crate::studio::thread_projection::PreparedAccounting;
@@ -196,9 +195,7 @@ impl RunExporter {
         if let Some(report) = self.inner.cached_report() {
             return report;
         }
-        self.inner
-            .finalize_internal(None, false, false, None, None)
-            .await
+        self.inner.finalize_internal(false, false, None, None).await
     }
 
     /// Atomically writes `result.json` into `<output-dir>/result.json`.
@@ -657,13 +654,12 @@ impl RunExportCoordinator {
     /// Runs inside `shutdown.rs::write_chain` after `flush_persistence` and before `store.close()`.
     pub async fn finalize_during_shutdown(
         &self,
-        store: StudioStore,
         deadline: Option<tokio::time::Instant>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
     ) -> RunExportReport {
-        self.finalize_internal(Some(store), agent_ok, flush_ok, pending_after, deadline)
+        self.finalize_internal(agent_ok, flush_ok, pending_after, deadline)
             .await
     }
 
@@ -687,7 +683,6 @@ impl RunExportCoordinator {
 
     async fn finalize_internal(
         &self,
-        store: Option<StudioStore>,
         agent_ok: bool,
         flush_ok: bool,
         pending_after: Option<usize>,
@@ -700,7 +695,7 @@ impl RunExportCoordinator {
         let finalize_start = Instant::now();
         let outcome = match self
             .queue
-            .enqueue_finalize(store, agent_ok, flush_ok, pending_after)
+            .enqueue_finalize(agent_ok, flush_ok, pending_after)
             .await
         {
             Ok(rx) => await_finalize_with_budget(&self.queue, rx, deadline).await,

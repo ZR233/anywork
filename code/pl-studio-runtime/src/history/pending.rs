@@ -288,12 +288,4 @@ impl Pending {
                     && entry.event.entity_id.as_deref() == Some(entity_id)
             })
     }
-
-    pub fn latest_original(&self, cut: u64) -> Option<&Arc<Accepted>> {
-        self.events
-            .range(..=cut)
-            .rev()
-            .map(|(_, entry)| entry)
-            .find(|entry| entry.event.original.is_some())
-    }
 }

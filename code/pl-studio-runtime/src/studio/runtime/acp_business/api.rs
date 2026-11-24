@@ -1189,12 +1189,6 @@ async fn submit_acp_prompt(
     resources: &AcpResources,
     mut content: Vec<ContentBlock>,
 ) -> Result<sdk::RunId, AcpBusinessFailure> {
-    resources
-        .ensure_input_ready()
-        .map_err(projection::failure)?;
-    if !resources.association_published().await {
-        return Err(projection::failure(sdk::Error::NotReady));
-    }
     if let Some(wp) = resources.workflow_plan.get()
         && let Some(host_state) = wp
             .reconcile_run_for_turn()

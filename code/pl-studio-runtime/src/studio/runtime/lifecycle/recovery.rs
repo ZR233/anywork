@@ -421,7 +421,7 @@ impl StudioRuntime {
                 .retained,
             "worktree lease still has retained Thread ownership"
         );
-        let owner = self.find_owned_thread(&lease.owner_thread_id).await?;
+        let owner = self.find_owned_thread(&lease.owner_thread_id)?;
         if let Some(owner) = &owner {
             anyhow::ensure!(
                 lease.workspace_id == owner.workspace_id

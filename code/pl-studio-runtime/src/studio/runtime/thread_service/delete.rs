@@ -5,7 +5,9 @@ use anyhow::{Context, Result, ensure};
 use pl_tool::workspace::{SessionFiles, SessionTempBackend, path_safety};
 use tracing::Instrument;
 
-use super::super::{DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime};
+use super::super::{
+    ARCHIVE_TREE_SETTLE_TIMEOUT, DeleteThreadCommandReply, StudioDeleteThreadResult, StudioRuntime,
+};
 use super::threads::{next_project_root, sort_project_roots};
 use crate::studio::{
     agent_host::worktree_lease::WorkspaceEndpoint,
@@ -145,7 +147,7 @@ impl StudioRuntime {
                     .await;
             }
             tokio::time::timeout(
-                self.archive_settle_timeout(),
+                ARCHIVE_TREE_SETTLE_TIMEOUT,
                 session.drain_archive_preparations(scope),
             )
             .await
@@ -206,7 +208,7 @@ impl StudioRuntime {
             )
             .await?;
             for id in &ids {
-                self.residency.remove(id).await;
+                self.residency.remove(id);
             }
             // Git owns worktree removal. Dedicated execution and host roots are removed below
             // as a whole; archive temp migration/cleanup would only traverse them twice.

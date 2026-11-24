@@ -321,7 +321,7 @@ impl StudioRuntime {
             // Session resources were retained before admission. Staging remains
             // immutable and reusable while a newer Client draft still references
             // these ids; only an explicit last-owner release removes staging.
-            self.residency.touch(&thread_id).await;
+            self.residency.touch(&thread_id);
             Ok(StudioSubmitPromptResponse {
                 thread_id,
                 input_id: accepted.input.id,
@@ -330,7 +330,7 @@ impl StudioRuntime {
         })
     }
 
-    pub(in crate::studio::runtime) async fn ensure_prompt_runtime_ready(&self) -> Result<()> {
+    pub(in crate::studio::runtime) fn ensure_prompt_runtime_ready(&self) -> Result<()> {
         if !self.runtime_state.snapshot().state.is_ready() {
             bail!("Studio runtime is not ready");
         }
