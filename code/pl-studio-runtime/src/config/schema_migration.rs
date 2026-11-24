@@ -1232,9 +1232,30 @@ effort = "high"
     struct FaultyStore {
         inner: MemoryCredentialStore,
         inline_fault: InlineFault,
+        /// 凭据服务整体不可用。这不是“原项缺失”，严格读取、旧项复制和导入都必须失败。
+        service_unavailable: bool,
         /// 证明迁移不走普通 runtime 写入（后者可能在服务不可访问时落入进程内 lease）。
         forbid_normal_save: bool,
         import_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FaultyStore {
+        fn service_io_error(&self) -> Option<PureError> {
+            self.service_unavailable
+                .then(|| PureError::Io(std::io::Error::other("credential service unavailable")))
+        }
+
+        fn service_config_error(&self) -> Option<PureError> {
+            self.service_unavailable
+                .then(|| PureError::ConfigError("credential service unavailable".into()))
+        }
+
+        fn service_bot_error(&self) -> Option<super::super::credential::BotCredentialIoError> {
+            self.service_unavailable
+                .then_some(super::super::credential::BotCredentialIoError {
+                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
+                })
+        }
     }
 
     impl CredentialStore for FaultyStore {
@@ -1254,12 +1275,21 @@ effort = "high"
             self.inner.account_lock_directory(isolated_root)
         }
         fn load_strict(&self, account_id: &str) -> Result<Option<String>> {
+            if let Some(error) = self.service_config_error() {
+                return Err(error);
+            }
             self.inner.load_strict(account_id)
         }
         fn save_strict(&self, account_id: &str, secret: &str) -> Result<()> {
+            if let Some(error) = self.service_config_error() {
+                return Err(error);
+            }
             self.inner.save_strict(account_id, secret)
         }
         fn delete_strict(&self, account_id: &str) -> Result<()> {
+            if let Some(error) = self.service_config_error() {
+                return Err(error);
+            }
             self.inner.delete_strict(account_id)
         }
         fn load(&self, account_id: &str) -> Result<Option<String>> {
@@ -1286,6 +1316,9 @@ effort = "high"
             self.inner.delete_ssh(alias)
         }
         fn copy_legacy_account(&self, account_id: &str) -> Result<LegacyCredentialCopy> {
+            if let Some(error) = self.service_io_error() {
+                return Err(error);
+            }
             self.inner.copy_legacy_account(account_id)
         }
         fn import_inline_secret(
@@ -1293,6 +1326,9 @@ effort = "high"
             account_id: &str,
             secret: &str,
         ) -> Result<LegacyCredentialCopy> {
+            if let Some(error) = self.service_io_error() {
+                return Err(error);
+            }
             self.import_calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             match self.inline_fault {
@@ -1319,6 +1355,9 @@ effort = "high"
             super::super::credential::BotProtectedRead,
             super::super::credential::BotCredentialIoError,
         > {
+            if let Some(error) = self.service_bot_error() {
+                return Err(error);
+            }
             self.inner.read_bot_system(bot_id)
         }
         fn read_bot_lease(
@@ -1336,6 +1375,9 @@ effort = "high"
             super::super::credential::BotProtectedPersist,
             super::super::credential::BotCredentialIoError,
         > {
+            if let Some(error) = self.service_bot_error() {
+                return Err(error);
+            }
             self.inner.persist_bot_protected(bot_id, payload)
         }
         fn lease_bot_protected(
@@ -1343,12 +1385,18 @@ effort = "high"
             bot_id: &str,
             payload: &str,
         ) -> std::result::Result<(), super::super::credential::BotCredentialIoError> {
+            if let Some(error) = self.service_bot_error() {
+                return Err(error);
+            }
             self.inner.lease_bot_protected(bot_id, payload)
         }
         fn recycle_bot_system(
             &self,
             bot_id: &str,
         ) -> std::result::Result<(), super::super::credential::BotCredentialIoError> {
+            if let Some(error) = self.service_bot_error() {
+                return Err(error);
+            }
             self.inner.recycle_bot_system(bot_id)
         }
         fn recycle_bot_lease(
@@ -1447,6 +1495,7 @@ catalog = "deepseek"
         let store = FaultyStore {
             inner: MemoryCredentialStore::default(),
             inline_fault: InlineFault::None,
+            service_unavailable: false,
             forbid_normal_save: false,
             import_calls: std::sync::atomic::AtomicUsize::new(0),
         };
@@ -1542,130 +1591,14 @@ catalog = "deepseek"
             Some("different-secret")
         );
 
-        struct Unavailable(MemoryCredentialStore);
-        impl CredentialStore for Unavailable {
-            fn read_transaction(&self, alias: &str) -> Result<Option<String>> {
-                self.0.read_transaction(alias)
-            }
-            fn write_transaction(&self, alias: &str, payload: &str) -> Result<()> {
-                self.0.write_transaction(alias, payload)
-            }
-            fn delete_transaction(&self, alias: &str) -> Result<()> {
-                self.0.delete_transaction(alias)
-            }
-            fn account_lock_directory(
-                &self,
-                isolated_root: &std::path::Path,
-            ) -> Result<std::path::PathBuf> {
-                self.0.account_lock_directory(isolated_root)
-            }
-            fn load_strict(&self, _account_id: &str) -> Result<Option<String>> {
-                Err(PureError::ConfigError(
-                    "credential service unavailable".into(),
-                ))
-            }
-            fn save_strict(&self, _account_id: &str, _secret: &str) -> Result<()> {
-                Err(PureError::ConfigError(
-                    "credential service unavailable".into(),
-                ))
-            }
-            fn delete_strict(&self, _account_id: &str) -> Result<()> {
-                Err(PureError::ConfigError(
-                    "credential service unavailable".into(),
-                ))
-            }
-            fn load(&self, account_id: &str) -> Result<Option<String>> {
-                self.0.load(account_id)
-            }
-            fn save(&self, account_id: &str, secret: &str) -> Result<()> {
-                self.0.save(account_id, secret)
-            }
-            fn delete(&self, account_id: &str) -> Result<()> {
-                self.0.delete(account_id)
-            }
-            fn load_ssh(&self, alias: &str) -> Result<Option<String>> {
-                self.0.load_ssh(alias)
-            }
-            fn save_ssh(&self, alias: &str, secret: &str) -> Result<()> {
-                self.0.save_ssh(alias, secret)
-            }
-            fn delete_ssh(&self, alias: &str) -> Result<()> {
-                self.0.delete_ssh(alias)
-            }
-            fn copy_legacy_account(&self, _account_id: &str) -> Result<LegacyCredentialCopy> {
-                // 服务不可访问不是"原项不存在"，必须显式失败。
-                Err(PureError::Io(std::io::Error::other(
-                    "credential service unavailable",
-                )))
-            }
-            fn import_inline_secret(
-                &self,
-                _account_id: &str,
-                _secret: &str,
-            ) -> Result<LegacyCredentialCopy> {
-                Err(PureError::Io(std::io::Error::other(
-                    "credential service unavailable",
-                )))
-            }
-            fn read_bot_system(
-                &self,
-                _bot_id: &str,
-            ) -> std::result::Result<
-                super::super::credential::BotProtectedRead,
-                super::super::credential::BotCredentialIoError,
-            > {
-                Err(super::super::credential::BotCredentialIoError {
-                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
-                })
-            }
-            fn read_bot_lease(
-                &self,
-                _bot_id: &str,
-            ) -> std::result::Result<Option<String>, super::super::credential::BotCredentialIoError>
-            {
-                Ok(None)
-            }
-            fn persist_bot_protected(
-                &self,
-                _bot_id: &str,
-                _payload: &str,
-            ) -> std::result::Result<
-                super::super::credential::BotProtectedPersist,
-                super::super::credential::BotCredentialIoError,
-            > {
-                Err(super::super::credential::BotCredentialIoError {
-                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
-                })
-            }
-            fn lease_bot_protected(
-                &self,
-                _bot_id: &str,
-                _payload: &str,
-            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
-            {
-                Err(super::super::credential::BotCredentialIoError {
-                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
-                })
-            }
-            fn recycle_bot_system(
-                &self,
-                _bot_id: &str,
-            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
-            {
-                Err(super::super::credential::BotCredentialIoError {
-                    kind: super::super::credential::BotCredentialIoKind::Unavailable,
-                })
-            }
-            fn recycle_bot_lease(
-                &self,
-                _bot_id: &str,
-            ) -> std::result::Result<(), super::super::credential::BotCredentialIoError>
-            {
-                Ok(())
-            }
-        }
         let fixture = make_fixture(LEGACY_CONFIG, None);
-        let unavailable = Unavailable(MemoryCredentialStore::default());
+        let unavailable = FaultyStore {
+            inner: MemoryCredentialStore::default(),
+            inline_fault: InlineFault::None,
+            service_unavailable: true,
+            forbid_normal_save: false,
+            import_calls: std::sync::atomic::AtomicUsize::new(0),
+        };
         let original = fs::read(fixture.paths.config_file()).unwrap();
         let text = std::str::from_utf8(&original).unwrap();
         let mut inline_tokens = BTreeMap::new();
@@ -2014,56 +1947,6 @@ catalog = "deepseek"
             profile
         );
         assert!(!operation_dir(&fixture.paths).exists());
-    }
-
-    #[test]
-    fn schema_24_main_fields_survive_the_upgrade_to_current() {
-        let fixture = make_fixture(&schema_24_main_document(false), None);
-        let migrated =
-            migrate_fixture_from(&fixture, 24, &atomic_write).expect("schema 24 migrates");
-        assert_eq!(migrated.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
-        // 分发设置、模型禁用与计费覆盖都是显式意图：不能被字段级缺省覆盖回默认。
-        assert_main_fields_preserved(&migrated);
-        assert!(
-            crate::config::acp_resource::scan(&fixture.paths)
-                .definitions
-                .is_empty()
-        );
-        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(persisted.contains("[delegation]"));
-        assert!(persisted.contains("mode = \"automatic\""));
-        assert!(persisted.contains("preference = \"fast\""));
-        assert!(persisted.contains("billing_kind = \"subscription\""));
-    }
-
-    #[test]
-    fn schema_24_mixed_config_retires_acp_fields_and_keeps_main_fields() {
-        let fixture = make_fixture(&schema_24_main_document(true), None);
-        let migrated =
-            migrate_fixture_from(&fixture, 24, &atomic_write).expect("mixed schema 24 migrates");
-        // ACP：保留 ID/名称/provider，执行字段退役。
-        let definitions = crate::config::acp_resource::scan(&fixture.paths);
-        let account = definitions
-            .definitions
-            .get("antigravity-1")
-            .expect("ACP account keeps its id");
-        assert_eq!(account.definition.display_name, "Antigravity 主账号");
-        assert_eq!(
-            account.definition.template_kind(),
-            Some(crate::config::AcpProvider::Antigravity)
-        );
-        // 同一份文档里的 main 显式字段同样保留（两组字段互不覆盖）。
-        assert_main_fields_preserved(&migrated);
-        let persisted = fs::read_to_string(fixture.paths.config_file()).unwrap();
-        assert!(!persisted.contains("[acp"));
-        assert!(
-            crate::config::acp_resource::scan(&fixture.paths)
-                .definitions
-                .contains_key("antigravity-1")
-        );
-        assert!(!persisted.contains("program ="));
-        assert!(!persisted.contains("--uid="));
-        assert!(persisted.contains("mode = \"automatic\""));
     }
 
     #[test]

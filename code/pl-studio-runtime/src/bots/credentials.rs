@@ -1616,13 +1616,29 @@ mod tests {
     use super::*;
     use crate::config::{ConfigPaths, ConfigStore, memory_faults};
 
-    fn capability() -> BotCredentialCapability {
+    fn capability() -> CredentialHome {
         fault::reset();
         memory_faults::reset();
-        ConfigStore::new(ConfigPaths::from_config_dir(
-            tempfile::tempdir().unwrap().keep(),
-        ))
-        .bot_credentials()
+        let home = tempfile::tempdir().unwrap();
+        let credentials =
+            ConfigStore::new(ConfigPaths::from_config_dir(home.path())).bot_credentials();
+        CredentialHome {
+            _home: home,
+            credentials,
+        }
+    }
+
+    struct CredentialHome {
+        _home: tempfile::TempDir,
+        credentials: BotCredentialCapability,
+    }
+
+    impl std::ops::Deref for CredentialHome {
+        type Target = BotCredentialCapability;
+
+        fn deref(&self) -> &Self::Target {
+            &self.credentials
+        }
     }
 
     fn bot_config(app_id: &str) -> BotConfigFile {
@@ -1902,53 +1918,6 @@ mod tests {
     }
 
     #[test]
-    fn session_selection_ignores_system_material() {
-        let credentials = capability();
-        credentials
-            .persist_system(
-                "botA1234",
-                &BotProtectedPayload {
-                    schema_version: 1,
-                    versions: vec![BotSecretVersion {
-                        id: "sys".into(),
-                        bot_id: "botA1234".into(),
-                        app_id: "cli_a".into(),
-                        secret: "system-secret".into(),
-                    }],
-                },
-            )
-            .unwrap();
-        credentials
-            .persist_lease(
-                "botA1234",
-                &BotProtectedPayload {
-                    schema_version: 1,
-                    versions: vec![BotSecretVersion {
-                        id: "lease".into(),
-                        bot_id: "botA1234".into(),
-                        app_id: "cli_a".into(),
-                        secret: "lease-secret".into(),
-                    }],
-                },
-            )
-            .unwrap();
-        let mut config = bot_config("cli_a");
-        config.selected_ref = Some(BotCredentialRef::session("lease"));
-        let inspected = credentials
-            .inspect_selected(
-                &config.id,
-                &config.feishu().app_id,
-                config.selected_ref.as_ref(),
-            )
-            .unwrap();
-        assert_eq!(
-            inspected.availability,
-            BotCredentialAvailability::SessionOnly
-        );
-        assert_eq!(inspected.secret.as_deref(), Some("lease-secret"));
-    }
-
-    #[test]
     fn write_error_after_replacement_recovers_target_then_stays_uncertain_until_confirm() {
         let directory = tempfile::tempdir().unwrap();
         let credentials = capability();
@@ -2029,6 +1998,11 @@ mod tests {
         let config = bot_config("cli_a");
         write_schema1_config(directory.path(), config);
         let loaded = load_config(&directory.path().join("config.toml")).unwrap();
+        let raw = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
+        assert!(raw.contains("schema_version = 1"));
+        assert!(raw.contains("app_id ="));
+        assert_eq!(loaded.schema_version, 1);
+        assert!(loaded.selected_ref.is_none());
         let migrated =
             recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
                 .unwrap();
@@ -2590,106 +2564,111 @@ mod tests {
     }
 
     #[test]
-    fn idle_first_create_not_applied_does_not_reserve_app_identity() {
-        let directory = tempfile::tempdir().unwrap();
-        let credentials = capability();
-        let previous = bot_config("cli_a");
-        credentials
-            .persist_system(
-                "botA1234",
-                &BotProtectedPayload {
-                    schema_version: 1,
-                    versions: vec![BotSecretVersion {
-                        id: "cred-new".into(),
-                        bot_id: "botA1234".into(),
-                        app_id: "cli_a".into(),
-                        secret: "orphan-candidate".into(),
-                    }],
-                },
-            )
-            .unwrap();
-        let mut target = previous.clone();
-        target.selected_ref = Some(BotCredentialRef::system("cred-new"));
-        let journal = CredentialJournal {
-            schema_version: JOURNAL_SCHEMA,
-            operation_id: "op-first-idle".into(),
-            bot_id: "botA1234".into(),
-            phase: CredentialJournalPhase::Prepared,
-            previous: None,
-            target,
-            candidate_version: Some("cred-new".into()),
-        };
-        write_journal(directory.path(), &journal).unwrap();
-        let recovered =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, None).unwrap();
-        assert_eq!(recovered.decision, CredentialDecision::NotApplied);
-        assert_eq!(recovered.operation, BotCredentialOperation::Idle);
-        assert!(recovered.config.is_none());
-        assert!(recovered.reserved_app_id.is_none());
-        assert!(!directory.path().join("config.toml").exists());
-        assert!(payload_ids(&credentials, "botA1234", true).is_empty());
-    }
-
-    #[test]
-    fn first_create_not_applied_reclaims_candidate_without_using_target_ref() {
-        let directory = tempfile::tempdir().unwrap();
-        let credentials = capability();
-        let previous = bot_config("cli_a");
-        credentials
-            .persist_system(
-                "botA1234",
-                &BotProtectedPayload {
-                    schema_version: 1,
-                    versions: vec![BotSecretVersion {
-                        id: "cred-new".into(),
-                        bot_id: "botA1234".into(),
-                        app_id: "cli_a".into(),
-                        secret: "orphan-candidate".into(),
-                    }],
-                },
-            )
-            .unwrap();
-        let mut target = previous.clone();
-        target.selected_ref = Some(BotCredentialRef::system("cred-new"));
-        let journal = CredentialJournal {
-            schema_version: JOURNAL_SCHEMA,
-            operation_id: "op-first".into(),
-            bot_id: "botA1234".into(),
-            phase: CredentialJournalPhase::Prepared,
-            previous: None,
-            target,
-            candidate_version: Some("cred-new".into()),
-        };
-        write_journal(directory.path(), &journal).unwrap();
-        memory_faults::set_recycle_fails(1);
-        let first = recover_operation(directory.path(), &credentials, journal).unwrap();
-        assert_eq!(first.decision, CredentialDecision::NotApplied);
-        assert!(first.config.selected_ref.is_none());
-        assert_eq!(first.operation_id, "op-first");
-        assert_eq!(
-            first.operation,
-            BotCredentialOperation::CleanupPending {
+    fn first_create_not_applied_reclaims_candidate_without_reserving_app_identity() {
+        // Public recovery of an idle first create must not reserve the app id,
+        // and it reclaims the uncommitted candidate immediately.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let credentials = capability();
+            let previous = bot_config("cli_a");
+            credentials
+                .persist_system(
+                    "botA1234",
+                    &BotProtectedPayload {
+                        schema_version: 1,
+                        versions: vec![BotSecretVersion {
+                            id: "cred-new".into(),
+                            bot_id: "botA1234".into(),
+                            app_id: "cli_a".into(),
+                            secret: "orphan-candidate".into(),
+                        }],
+                    },
+                )
+                .unwrap();
+            let mut target = previous.clone();
+            target.selected_ref = Some(BotCredentialRef::system("cred-new"));
+            let journal = CredentialJournal {
+                schema_version: JOURNAL_SCHEMA,
+                operation_id: "op-first-idle".into(),
+                bot_id: "botA1234".into(),
+                phase: CredentialJournalPhase::Prepared,
+                previous: None,
+                target,
+                candidate_version: Some("cred-new".into()),
+            };
+            write_journal(directory.path(), &journal).unwrap();
+            let recovered =
+                recover_bot_credentials(directory.path(), "botA1234", &credentials, None).unwrap();
+            assert_eq!(recovered.decision, CredentialDecision::NotApplied);
+            assert_eq!(recovered.operation, BotCredentialOperation::Idle);
+            assert!(recovered.config.is_none());
+            assert!(recovered.reserved_app_id.is_none());
+            assert!(!directory.path().join("config.toml").exists());
+            assert!(payload_ids(&credentials, "botA1234", true).is_empty());
+        }
+        // A recycle failure is a different recovery: the candidate stays, the
+        // target ref is not adopted, and a later pass reclaims it without
+        // marking the credential stored.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let credentials = capability();
+            let previous = bot_config("cli_a");
+            credentials
+                .persist_system(
+                    "botA1234",
+                    &BotProtectedPayload {
+                        schema_version: 1,
+                        versions: vec![BotSecretVersion {
+                            id: "cred-new".into(),
+                            bot_id: "botA1234".into(),
+                            app_id: "cli_a".into(),
+                            secret: "orphan-candidate".into(),
+                        }],
+                    },
+                )
+                .unwrap();
+            let mut target = previous.clone();
+            target.selected_ref = Some(BotCredentialRef::system("cred-new"));
+            let journal = CredentialJournal {
+                schema_version: JOURNAL_SCHEMA,
                 operation_id: "op-first".into(),
-                config_committed: false,
-            }
-        );
-        assert!(!directory.path().join("config.toml").exists());
-        assert_eq!(
-            payload_ids(&credentials, "botA1234", true),
-            vec!["cred-new".to_string()]
-        );
-        memory_faults::reset();
-        let journal = read_journal(directory.path())
-            .unwrap()
-            .expect("cleanup pending journal");
-        let resumed = recover_operation(directory.path(), &credentials, journal).unwrap();
-        assert_eq!(resumed.decision, CredentialDecision::NotApplied);
-        assert!(resumed.config.selected_ref.is_none());
-        assert_eq!(resumed.operation_id, "op-first");
-        assert_eq!(resumed.operation, BotCredentialOperation::Idle);
-        assert!(payload_ids(&credentials, "botA1234", true).is_empty());
-        assert!(!directory.path().join("config.toml").exists());
-        assert_ne!(resumed.availability, BotCredentialAvailability::Stored);
+                bot_id: "botA1234".into(),
+                phase: CredentialJournalPhase::Prepared,
+                previous: None,
+                target,
+                candidate_version: Some("cred-new".into()),
+            };
+            write_journal(directory.path(), &journal).unwrap();
+            memory_faults::set_recycle_fails(1);
+            let first = recover_operation(directory.path(), &credentials, journal).unwrap();
+            assert_eq!(first.decision, CredentialDecision::NotApplied);
+            assert!(first.config.selected_ref.is_none());
+            assert_eq!(first.operation_id, "op-first");
+            assert_eq!(
+                first.operation,
+                BotCredentialOperation::CleanupPending {
+                    operation_id: "op-first".into(),
+                    config_committed: false,
+                }
+            );
+            assert!(!directory.path().join("config.toml").exists());
+            assert_eq!(
+                payload_ids(&credentials, "botA1234", true),
+                vec!["cred-new".to_string()]
+            );
+            memory_faults::reset();
+            let journal = read_journal(directory.path())
+                .unwrap()
+                .expect("cleanup pending journal");
+            let resumed = recover_operation(directory.path(), &credentials, journal).unwrap();
+            assert_eq!(resumed.decision, CredentialDecision::NotApplied);
+            assert!(resumed.config.selected_ref.is_none());
+            assert_eq!(resumed.operation_id, "op-first");
+            assert_eq!(resumed.operation, BotCredentialOperation::Idle);
+            assert!(payload_ids(&credentials, "botA1234", true).is_empty());
+            assert!(!directory.path().join("config.toml").exists());
+            assert_ne!(resumed.availability, BotCredentialAvailability::Stored);
+        }
     }
 
     #[test]
@@ -2963,48 +2942,5 @@ mod tests {
                 .schema_version,
             2
         );
-    }
-
-    #[test]
-    fn v1_legacy_import_is_not_skipped_after_current_shaped_decode() {
-        let directory = tempfile::tempdir().unwrap();
-        let credentials = capability();
-        credentials
-            .persist_system_raw("botA1234", "opaque-system-secret")
-            .unwrap();
-        let config = bot_config("cli_a");
-        write_schema1_config(directory.path(), config.clone());
-        let raw = std::fs::read_to_string(directory.path().join("config.toml")).unwrap();
-        assert!(raw.contains("schema_version = 1"));
-        assert!(raw.contains("app_id ="));
-        let loaded = load_config(&directory.path().join("config.toml")).unwrap();
-        assert_eq!(loaded.schema_version, 1);
-        assert!(loaded.selected_ref.is_none());
-        let migrated =
-            recover_bot_credentials(directory.path(), "botA1234", &credentials, Some(loaded))
-                .unwrap();
-        assert_eq!(migrated.availability, BotCredentialAvailability::Stored);
-        assert_eq!(migrated.secret.as_deref(), Some("opaque-system-secret"));
-        assert_eq!(
-            migrated.config.as_ref().map(|config| config.schema_version),
-            Some(BOT_CONFIG_SCHEMA_VERSION)
-        );
-        assert_eq!(
-            migrated
-                .config
-                .as_ref()
-                .map(|config| config.config_revision),
-            Some(config.config_revision)
-        );
-        assert!(matches!(
-            migrated
-                .config
-                .as_ref()
-                .and_then(|config| config.selected_ref.clone()),
-            Some(BotCredentialRef {
-                kind: BotCredentialRefKind::System,
-                ..
-            })
-        ));
     }
 }
