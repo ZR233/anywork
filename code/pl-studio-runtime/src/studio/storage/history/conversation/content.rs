@@ -190,35 +190,6 @@ async fn write_chunks(
     Ok(())
 }
 
-/// Decode only the generic key container. Encoding is always delegated to the one product mapper.
-#[cfg(test)]
-pub(in crate::studio::storage::history) fn current_owner(
-    key: &ChatKey,
-) -> Result<Option<crate::ContentOwner>> {
-    let (length, rest) = key
-        .as_str()
-        .split_once(':')
-        .context("invalid content owner key")?;
-    let length: usize = length.parse()?;
-    let (domain, id) = rest
-        .split_at_checked(length)
-        .context("invalid content owner domain")?;
-    if domain != "current" {
-        return Ok(None);
-    }
-    let (domain, id, revision): (String, String, u64) = serde_json::from_str(id)?;
-    let owner = crate::ContentOwner::Current {
-        domain,
-        id,
-        revision,
-    };
-    ensure!(
-        crate::studio::content_owner_key(&owner)? == *key,
-        "noncanonical current content owner"
-    );
-    Ok(Some(owner))
-}
-
 pub(in crate::studio::storage::history) async fn read_body_bytes(
     db: &impl ConnectionTrait,
     key: &ChatContentKey,

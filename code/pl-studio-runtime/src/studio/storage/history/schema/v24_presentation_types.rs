@@ -75,15 +75,6 @@ pub(crate) struct DisplayMemberHead {
     pub record: DisplayRecord,
 }
 
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CompletedEntry {
-    pub record_id: String,
-    pub completion_seq: u64,
-    pub atom: ChatAtom,
-}
-
 /// 仅用于导出旧格式中未被现有业务事实覆盖的原始字节，不是新的完成记录。
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,26 +89,4 @@ pub(crate) struct LegacyExecutionEvidence {
     pub source_row: serde_json::Value,
     pub byte_length: u64,
     pub raw_digest: String,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum ChatPlacement {
-    Set,
-    Prepend,
-    Append,
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ChatBatch {
-    pub placement: ChatPlacement,
-    pub entries: Vec<CompletedEntry>,
-    pub before: Option<String>,
-    /// The previously checked prefix, present only on Append.
-    pub from_seq: Option<u64>,
-    /// The checked global completion prefix, including filtered-out records.
-    pub through_seq: u64,
 }
