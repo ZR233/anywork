@@ -3104,7 +3104,7 @@ impl LiveProjection {
             // delivery, and everything else keeps placement metadata only.
             retained
                 && (!item.state().is_terminal()
-                    || item.kind() == crate::ExecutionKind::Tool
+                    || matches!(item.state(), ExecutionShape::Tool(_))
                     || referenced.contains(id))
         });
         // A Turn that opened more identities than the window is still bounded here: the oldest

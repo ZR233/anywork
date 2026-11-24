@@ -3,7 +3,7 @@
 use super::sqlite_util::is_retryable_write;
 #[cfg(test)]
 use crate::{
-    ExecutionItem, ExecutionKind, ExecutionShape,
+    ExecutionItem, ExecutionShape,
     studio::storage::history::schema::legacy_execution_item::LegacyTurn,
 };
 use std::{
@@ -1135,7 +1135,7 @@ impl HistoryStore {
                 vec![item.id.clone().into()],
             ))
             .await?;
-        let kind = kind_label(item.kind());
+        let kind = kind_label(item.state());
         let lifecycle = if item.is_terminal() {
             "terminal"
         } else {
@@ -2338,18 +2338,18 @@ fn integer(value: impl TryInto<i64>) -> Result<i64> {
 }
 
 #[cfg(test)]
-fn kind_label(kind: ExecutionKind) -> &'static str {
-    match kind {
-        ExecutionKind::Raw => "raw",
-        ExecutionKind::Text => "text",
-        ExecutionKind::Thinking => "thinking",
-        ExecutionKind::Tool => "tool",
-        ExecutionKind::Agent => "agent",
-        ExecutionKind::Turn => "turn",
-        ExecutionKind::Inference => "inference",
-        ExecutionKind::Skill => "skill",
-        ExecutionKind::File => "file",
-        ExecutionKind::ContextCompaction => "contextCompaction",
+fn kind_label(shape: &ExecutionShape) -> &'static str {
+    match shape {
+        ExecutionShape::Raw(_) => "raw",
+        ExecutionShape::Text(_) => "text",
+        ExecutionShape::Thinking(_) => "thinking",
+        ExecutionShape::Tool(_) => "tool",
+        ExecutionShape::Agent(_) => "agent",
+        ExecutionShape::Turn(_) => "turn",
+        ExecutionShape::Inference(_) => "inference",
+        ExecutionShape::Skill(_) => "skill",
+        ExecutionShape::File(_) => "file",
+        ExecutionShape::ContextCompaction(_) => "contextCompaction",
     }
 }
 

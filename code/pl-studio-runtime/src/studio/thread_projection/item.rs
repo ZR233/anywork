@@ -106,10 +106,6 @@ impl ExecutionItem {
         self
     }
 
-    pub fn kind(&self) -> ExecutionKind {
-        self.state.kind()
-    }
-
     pub fn is_terminal(&self) -> bool {
         self.state.is_terminal()
     }
@@ -161,21 +157,6 @@ pub(crate) enum ExecutionShape {
 }
 
 impl ExecutionShape {
-    pub fn kind(&self) -> ExecutionKind {
-        match self {
-            Self::Raw(_) => ExecutionKind::Raw,
-            Self::Text(_) => ExecutionKind::Text,
-            Self::Thinking(_) => ExecutionKind::Thinking,
-            Self::Tool(_) => ExecutionKind::Tool,
-            Self::Agent(_) => ExecutionKind::Agent,
-            Self::Turn(_) => ExecutionKind::Turn,
-            Self::Inference(_) => ExecutionKind::Inference,
-            Self::Skill(_) => ExecutionKind::Skill,
-            Self::File(_) => ExecutionKind::File,
-            Self::ContextCompaction(_) => ExecutionKind::ContextCompaction,
-        }
-    }
-
     pub fn is_terminal(&self) -> bool {
         match self {
             Self::Text(value) => value.lifecycle().is_terminal(),
@@ -202,19 +183,4 @@ impl ExecutionShape {
             Self::ContextCompaction(value) => Some(value.compacted_at()),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum ExecutionKind {
-    Raw,
-    Text,
-    Thinking,
-    Tool,
-    Agent,
-    Turn,
-    Inference,
-    Skill,
-    File,
-    ContextCompaction,
 }

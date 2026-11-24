@@ -8,9 +8,7 @@
 extern crate self as pl_studio_runtime;
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
-pub(crate) use studio::thread_projection::{
-    ExecutionItem, ExecutionKind, ExecutionShape, ItemStamp,
-};
+pub(crate) use studio::thread_projection::{ExecutionItem, ExecutionShape, ItemStamp};
 pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
 mod hash;
 mod toml_schema;

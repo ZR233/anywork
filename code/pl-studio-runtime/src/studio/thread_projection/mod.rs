@@ -2,7 +2,7 @@
 mod agent_directory;
 mod item;
 pub(in crate::studio) use agent_directory::{awaiting_scheduling, native_activity};
-pub(crate) use item::{ExecutionItem, ExecutionKind, ExecutionShape, ItemStamp};
+pub(crate) use item::{ExecutionItem, ExecutionShape, ItemStamp};
 mod accounting;
 mod billing;
 pub(crate) use accounting::PreparedAccounting;
